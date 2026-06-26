@@ -1,6 +1,8 @@
 use zellij_tile::prelude::*;
 use std::collections::BTreeMap;
 
+mod status;
+
 #[derive(Default)]
 struct State;
 
