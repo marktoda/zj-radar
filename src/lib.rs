@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 mod status;
 mod payload;
 mod state;
+mod model;
 
 #[derive(Default)]
 struct State;
