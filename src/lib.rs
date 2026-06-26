@@ -5,6 +5,7 @@ mod status;
 mod payload;
 mod state;
 mod model;
+mod render;
 
 #[derive(Default)]
 struct State;
