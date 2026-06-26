@@ -48,6 +48,18 @@ fn detail_tag(agg: &TabAgg, now_tick: u64) -> String {
     }
 }
 
+/// Single source of truth for how many lines a tab row occupies.
+/// - plain tab (no detail): 1 line
+/// - agent tab with empty msg: 2 lines
+/// - agent tab with non-empty msg: 3 lines
+pub fn row_lines(agg: &TabAgg) -> usize {
+    match &agg.detail {
+        None => 1,
+        Some(d) if d.msg.trim().is_empty() => 2,
+        Some(_) => 3,
+    }
+}
+
 pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
     let mut out = String::new();
     for row in rows {
@@ -77,6 +89,13 @@ pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
             let tag = detail_tag(&row.agg, now_tick);
             let second = truncate(&format!("{} · {}", loc, tag), width.saturating_sub(2));
             out.push_str(&format!("  {}\n", second));
+
+            // line 3: `  "msg"` (only when msg is non-empty). The fixed
+            // overhead is 4 cols (2 spaces + 2 quotes), so reserve 4.
+            if !d.msg.trim().is_empty() {
+                let msg_line = format!("  \"{}\"\n", truncate(&d.msg, width.saturating_sub(4)));
+                out.push_str(&msg_line);
+            }
         }
     }
     out
@@ -113,11 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_tab_has_two_lines_with_count_and_tag() {
+    fn agent_tab_has_three_lines_with_count_tag_and_msg() {
         let detail = Detail {
             repo: "pinky".into(),
             branch: "fix/x".into(),
-            msg: "m".into(),
+            msg: "doing the thing".into(),
             since_tick: 0,
             status: Status::Running,
         };
@@ -131,7 +150,65 @@ mod tests {
         assert!(s.contains("2/4"));
         assert!(s.contains("pinky/fix/x"));
         assert!(s.contains("0:14"));
-        assert_eq!(s.matches('\n').count(), 2); // two lines
+        assert_eq!(s.matches('\n').count(), 3); // three lines
+        assert!(s.contains("\"doing the thing\""));
+    }
+
+    #[test]
+    fn agent_tab_with_empty_msg_has_two_lines() {
+        let detail = Detail {
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "   ".into(), // whitespace-only → empty
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 2,
+            name: "pinky".into(),
+            active: true,
+            agg: agg(Status::Running, 2, 4, Some(detail)),
+        }];
+        let s = render(&rows, 24, 14);
+        assert_eq!(s.matches('\n').count(), 2); // two lines, no quoted line
+        assert!(!s.contains('"'));
+    }
+
+    #[test]
+    fn row_lines_all_three_cases() {
+        // None → 1
+        let plain = agg(Status::Idle, 0, 0, None);
+        assert_eq!(row_lines(&plain), 1);
+
+        // detail with empty msg → 2
+        let empty_msg = agg(
+            Status::Running,
+            1,
+            1,
+            Some(Detail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: "  ".into(),
+                since_tick: 0,
+                status: Status::Running,
+            }),
+        );
+        assert_eq!(row_lines(&empty_msg), 2);
+
+        // detail with non-empty msg → 3
+        let with_msg = agg(
+            Status::Running,
+            1,
+            1,
+            Some(Detail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: "hello".into(),
+                since_tick: 0,
+                status: Status::Running,
+            }),
+        );
+        assert_eq!(row_lines(&with_msg), 3);
     }
 
     #[test]
@@ -144,5 +221,57 @@ mod tests {
         }];
         let s = render(&rows, 12, 0);
         assert!(s.contains('…'));
+    }
+
+    /// Strip `\x1b[...m` SGR escape sequences and count remaining visible chars.
+    fn visible_len(line: &str) -> usize {
+        let mut count = 0usize;
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // consume "[...m"
+                if chars.peek() == Some(&'[') {
+                    for inner in chars.by_ref() {
+                        if inner == 'm' {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn no_emitted_line_exceeds_width() {
+        let width = 20;
+        let detail = Detail {
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 2,
+            name: "a-very-long-tab-name-indeed".into(),
+            active: true, // exercises BOLD escapes too
+            agg: agg(Status::Running, 2, 4, Some(detail)),
+        }];
+        let s = render(&rows, width, 14);
+        // three lines emitted
+        assert_eq!(s.matches('\n').count(), 3);
+        // every visible (ANSI-stripped) line fits within the sidebar width
+        for line in s.lines() {
+            assert!(
+                visible_len(line) <= width,
+                "line exceeds width {}: {:?} (visible {})",
+                width,
+                line,
+                visible_len(line)
+            );
+        }
     }
 }

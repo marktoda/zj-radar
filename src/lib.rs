@@ -1,17 +1,36 @@
-use std::collections::HashMap;
-
+// On a plain host build (`cargo build`, not wasm, not test) the only consumers
+// of the pure modules are the wasm glue (cfg'd out) and the unit tests (cfg'd
+// out), so every public item appears dead. The pure modules stay warning-free
+// under `cargo test` via their own tests; this scoped allow covers only the
+// non-test host build and leaves the module sources untouched.
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod payload;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod state;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod model;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
 
+// `render::TabRow` and `state::StateStore` are referenced by the pure helpers
+// and the wasm glue; the helpers themselves are only consumed by tests on the
+// host target, so these imports look dead to a non-test host build.
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
 use render::TabRow;
 use state::StateStore;
+use std::collections::HashMap;
+
+#[cfg(target_arch = "wasm32")]
+use zellij_tile::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use std::collections::{BTreeMap, HashSet};
 
 #[cfg(target_arch = "wasm32")]
 const PIPE_NAME: &str = "zj_agents.status.v1";
 
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Clone)]
 struct TabLite {
     position: usize,
@@ -19,12 +38,14 @@ struct TabLite {
     active: bool,
 }
 
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Default)]
 struct State {
     store: StateStore,
     tabs: Vec<TabLite>,
     tab_panes: HashMap<usize, Vec<u32>>, // tab position -> terminal pane ids
-    // Used only in wasm32 glue (timer management)
+    // `tick`/`timer_armed` are read only by the wasm glue; on any host build
+    // (including tests, which construct State but never read them) they are dead.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     tick: u64,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -33,6 +54,7 @@ struct State {
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
 
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 impl State {
     fn build_rows(&self) -> Vec<TabRow> {
         let mut rows = Vec::new();
@@ -65,7 +87,7 @@ impl State {
             let empty = Vec::new();
             let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
             let agg = model::aggregate(panes, &self.store);
-            let span = if agg.detail.is_some() { 2 } else { 1 };
+            let span = render::row_lines(&agg);
             if target >= cursor && target < cursor + span {
                 return Some(t.position);
             }
@@ -75,114 +97,113 @@ impl State {
     }
 }
 
-// ── Wasm-only glue — guarded so host `cargo test` never links these ──
+// ── Wasm-only glue — each item gated so host `cargo test` never links these.
+// register_plugin! and the no_mangle exports it generates must live at crate
+// root (the macro defines `fn main()` + `#[no_mangle]` entrypoints), so the
+// glue is kept here rather than nested in a submodule.
 
 #[cfg(target_arch = "wasm32")]
-mod wasm_glue {
-    use super::*;
-    use zellij_tile::prelude::*;
-    use std::collections::{BTreeMap, HashSet};
+register_plugin!(State);
 
-    impl State {
-        fn arm_timer_if_needed(&mut self) {
-            if !self.timer_armed && self.store.any_active() {
-                set_timeout(1.0);
-                self.timer_armed = true;
+#[cfg(target_arch = "wasm32")]
+impl State {
+    fn arm_timer_if_needed(&mut self) {
+        if !self.timer_armed && self.store.any_active() {
+            set_timeout(1.0);
+            self.timer_armed = true;
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ZellijPlugin for State {
+    fn load(&mut self, _config: BTreeMap<String, String>) {
+        request_permission(&[
+            PermissionType::ReadApplicationState,
+            PermissionType::ReadCliPipes,
+            PermissionType::ChangeApplicationState,
+        ]);
+        subscribe(&[
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
+            EventType::Timer,
+            EventType::Mouse,
+            EventType::PermissionRequestResult,
+        ]);
+        set_selectable(false);
+    }
+
+    fn update(&mut self, event: Event) -> bool {
+        match event {
+            Event::TabUpdate(tabs) => {
+                self.tabs = tabs
+                    .into_iter()
+                    .map(|t| TabLite {
+                        position: t.position,
+                        name: t.name,
+                        active: t.active,
+                    })
+                    .collect();
+                true
             }
+            Event::PaneUpdate(manifest) => {
+                let mut tab_panes: HashMap<usize, Vec<u32>> = HashMap::new();
+                let mut live: HashSet<u32> = HashSet::new();
+                let mut focused_terminal: Option<u32> = None;
+                for (tab_pos, panes) in manifest.panes {
+                    for p in panes {
+                        if p.is_plugin {
+                            continue;
+                        }
+                        tab_panes.entry(tab_pos).or_default().push(p.id);
+                        live.insert(p.id);
+                        if p.is_focused {
+                            focused_terminal = Some(p.id);
+                        }
+                    }
+                }
+                self.tab_panes = tab_panes;
+                self.store.prune(&live);
+                if let Some(id) = focused_terminal {
+                    self.store.on_pane_focused(id, self.tick);
+                }
+                true
+            }
+            Event::Timer(_) => {
+                self.timer_armed = false;
+                self.tick += 1;
+                self.arm_timer_if_needed();
+                self.store.any_active()
+            }
+            Event::Mouse(Mouse::LeftClick(line, _col)) => {
+                if let Some(pos) = self.tab_position_at_line(line) {
+                    // switch_tab_to is 1-based; `pos` is 0-based position,
+                    // so position + 1 gives the correct tab index.
+                    switch_tab_to(pos as u32 + 1);
+                }
+                false
+            }
+            Event::PermissionRequestResult(_) => true,
+            _ => false,
         }
     }
 
-    register_plugin!(State);
-
-    impl ZellijPlugin for State {
-        fn load(&mut self, _config: BTreeMap<String, String>) {
-            request_permission(&[
-                PermissionType::ReadApplicationState,
-                PermissionType::ReadCliPipes,
-                PermissionType::ChangeApplicationState,
-            ]);
-            subscribe(&[
-                EventType::TabUpdate,
-                EventType::PaneUpdate,
-                EventType::Timer,
-                EventType::Mouse,
-                EventType::PermissionRequestResult,
-            ]);
-            set_selectable(false);
-        }
-
-        fn update(&mut self, event: Event) -> bool {
-            match event {
-                Event::TabUpdate(tabs) => {
-                    self.tabs = tabs
-                        .into_iter()
-                        .map(|t| TabLite {
-                            position: t.position,
-                            name: t.name,
-                            active: t.active,
-                        })
-                        .collect();
-                    true
-                }
-                Event::PaneUpdate(manifest) => {
-                    let mut tab_panes: HashMap<usize, Vec<u32>> = HashMap::new();
-                    let mut live: HashSet<u32> = HashSet::new();
-                    let mut focused_terminal: Option<u32> = None;
-                    for (tab_pos, panes) in manifest.panes {
-                        for p in panes {
-                            if p.is_plugin {
-                                continue;
-                            }
-                            tab_panes.entry(tab_pos).or_default().push(p.id);
-                            live.insert(p.id);
-                            if p.is_focused {
-                                focused_terminal = Some(p.id);
-                            }
-                        }
-                    }
-                    self.tab_panes = tab_panes;
-                    self.store.prune(&live);
-                    if let Some(id) = focused_terminal {
-                        self.store.on_pane_focused(id, self.tick);
-                    }
-                    true
-                }
-                Event::Timer(_) => {
-                    self.timer_armed = false;
-                    self.tick += 1;
+    fn pipe(&mut self, message: PipeMessage) -> bool {
+        if message.name == PIPE_NAME {
+            if let Some(raw) = &message.payload {
+                if let Some(p) = payload::parse(raw) {
+                    self.store.apply(p, self.tick);
                     self.arm_timer_if_needed();
-                    self.store.any_active()
-                }
-                Event::Mouse(Mouse::LeftClick(line, _col)) => {
-                    if let Some(pos) = self.tab_position_at_line(line) {
-                        // switch_tab_to is 1-based; `pos` is 0-based position,
-                        // so position + 1 gives the correct tab index.
-                        switch_tab_to(pos as u32 + 1);
-                    }
-                    false
-                }
-                Event::PermissionRequestResult(_) => true,
-                _ => false,
-            }
-        }
-
-        fn pipe(&mut self, message: PipeMessage) -> bool {
-            if message.name == PIPE_NAME {
-                if let Some(raw) = &message.payload {
-                    if let Some(p) = payload::parse(raw) {
-                        self.store.apply(p, self.tick);
-                        self.arm_timer_if_needed();
-                        return true;
-                    }
+                    return true;
                 }
             }
-            false
         }
+        false
+    }
 
-        fn render(&mut self, _rows: usize, cols: usize) {
-            let rows = self.build_rows();
-            print!("{}", render::render(&rows, cols.max(1), self.tick));
-        }
+    fn render(&mut self, _rows: usize, cols: usize) {
+        let rows = self.build_rows();
+        print!("{}", render::render(&rows, cols.max(1), self.tick));
     }
 }
 
@@ -211,13 +232,23 @@ mod tests {
     }
 
     fn apply_payload(state: &mut State, pane_id: u32, status: Status, tick: u64) {
+        apply_payload_with_msg(state, pane_id, status, tick, "msg");
+    }
+
+    fn apply_payload_with_msg(
+        state: &mut State,
+        pane_id: u32,
+        status: Status,
+        tick: u64,
+        msg: &str,
+    ) {
         state.store.apply(
             StatusPayload {
                 pane_id,
                 status,
                 repo: "repo".into(),
                 branch: "branch".into(),
-                msg: "msg".into(),
+                msg: msg.into(),
                 on_focus: None,
                 seq: None,
                 source: "test".into(),
@@ -305,13 +336,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_tab_occupies_two_lines() {
-        // Tab at position 0 has a Running pane → 2 lines
+    fn agent_tab_with_msg_occupies_three_lines() {
+        // Tab at position 0 has a Running pane with a non-empty msg → 3 lines
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![10]);
-        apply_payload(&mut state, 10, Status::Running, 1);
+        apply_payload(&mut state, 10, Status::Running, 1); // msg="msg" (non-empty)
 
-        // Line 0 and 1 both belong to the agent tab (position 0)
+        // Lines 0, 1, 2 all belong to the agent tab (position 0)
+        assert_eq!(state.tab_position_at_line(0), Some(0));
+        assert_eq!(state.tab_position_at_line(1), Some(0));
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        // Line 3 belongs to the plain tab (position 1)
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+        // Line 4 is beyond
+        assert!(state.tab_position_at_line(4).is_none());
+    }
+
+    #[test]
+    fn agent_tab_with_empty_msg_occupies_two_lines() {
+        // Tab at position 0 has a Running pane with an empty msg → 2 lines
+        let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
+        state.tab_panes.insert(0, vec![10]);
+        apply_payload_with_msg(&mut state, 10, Status::Running, 1, "  "); // whitespace-only
+
+        // Lines 0, 1 both belong to the agent tab (position 0)
         assert_eq!(state.tab_position_at_line(0), Some(0));
         assert_eq!(state.tab_position_at_line(1), Some(0));
         // Line 2 belongs to the plain tab (position 1)
@@ -322,24 +370,27 @@ mod tests {
 
     #[test]
     fn multiple_agent_tabs_line_spans_accumulate_correctly() {
-        // position 0: Running (2 lines), position 1: plain (1 line), position 2: Running (2 lines)
+        // position 0: Running with msg (3 lines), position 1: plain (1 line),
+        // position 2: Running with msg (3 lines)
         let mut state =
             make_state_with_tabs(&[(0, "a0", false), (1, "a1", false), (2, "a2", false)]);
         state.tab_panes.insert(0, vec![1]);
         state.tab_panes.insert(2, vec![2]);
-        apply_payload(&mut state, 1, Status::Running, 1);
-        apply_payload(&mut state, 2, Status::Running, 2);
+        apply_payload(&mut state, 1, Status::Running, 1); // msg="msg" non-empty → 3 lines
+        apply_payload(&mut state, 2, Status::Running, 2); // msg="msg" non-empty → 3 lines
 
-        // position 0 → lines 0, 1
+        // position 0 → lines 0, 1, 2
         assert_eq!(state.tab_position_at_line(0), Some(0));
         assert_eq!(state.tab_position_at_line(1), Some(0));
-        // position 1 → line 2
-        assert_eq!(state.tab_position_at_line(2), Some(1));
-        // position 2 → lines 3, 4
-        assert_eq!(state.tab_position_at_line(3), Some(2));
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        // position 1 → line 3
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+        // position 2 → lines 4, 5, 6
         assert_eq!(state.tab_position_at_line(4), Some(2));
+        assert_eq!(state.tab_position_at_line(5), Some(2));
+        assert_eq!(state.tab_position_at_line(6), Some(2));
         // beyond
-        assert!(state.tab_position_at_line(5).is_none());
+        assert!(state.tab_position_at_line(7).is_none());
     }
 
     #[test]
