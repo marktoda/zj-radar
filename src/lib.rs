@@ -2,6 +2,7 @@ use zellij_tile::prelude::*;
 use std::collections::BTreeMap;
 
 mod status;
+mod payload;
 
 #[derive(Default)]
 struct State;
