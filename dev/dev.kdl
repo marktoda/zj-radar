@@ -1,0 +1,27 @@
+// Dev layout for hot-reloading the zj-agents sidebar plugin.
+//
+// Build first (needs a wasm32-wasip1 toolchain — see docs/TOOLCHAIN.md):
+//   cargo build --target wasm32-wasip1
+// Then:
+//   zellij --layout dev/dev.kdl
+//
+// The sidebar is a pinned, borderless left column inside default_tab_template,
+// OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The
+// bottom status-bar is kept (mode/keybind hints); the top compact-bar is
+// intentionally absent (the sidebar replaces it).
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=24 borderless=true {
+                plugin location="file:/Users/mark.toda/dev/zj-agents/target/wasm32-wasip1/debug/zj_agents.wasm"
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+    tab name="one" focus=true { pane }
+    tab name="two" { pane split_direction="vertical" { pane; pane } }
+    tab name="three" { pane }
+}
