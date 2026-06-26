@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 mod status;
 mod payload;
+mod state;
 
 #[derive(Default)]
 struct State;
