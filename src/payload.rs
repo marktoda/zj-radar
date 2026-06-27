@@ -142,6 +142,33 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
     })
 }
 
+/// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). `on_focus` is
+/// omitted entirely when `None`. Shared by the CLI producer and tested against
+/// `parse` so the two can never drift.
+pub fn to_wire(
+    pane_id: u32,
+    status: Status,
+    repo: &str,
+    branch: &str,
+    msg: &str,
+    on_focus: Option<Status>,
+    source: &str,
+) -> String {
+    let mut obj = serde_json::json!({
+        "v": 1,
+        "source": source,
+        "pane": { "type": "terminal", "id": pane_id },
+        "status": status.as_wire(),
+        "repo": repo,
+        "branch": branch,
+        "msg": msg,
+    });
+    if let Some(f) = on_focus {
+        obj["on_focus"] = serde_json::Value::String(f.as_wire().to_string());
+    }
+    obj.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +252,35 @@ mod tests {
         let out = sanitize(&input, 50);
         assert_eq!(out.chars().count(), 50);
         assert_eq!(out, "x".repeat(50));
+    }
+
+    #[test]
+    fn to_wire_round_trips_through_parse() {
+        use crate::status::Status;
+        let json = to_wire(12, Status::Running, "pinky", "fix/x", "running tests", Some(Status::Idle), "claude");
+        let got = parse(&json).expect("to_wire output must parse");
+        assert_eq!(got.pane_id, 12);
+        assert_eq!(got.status, Status::Running);
+        assert_eq!(got.repo, "pinky");
+        assert_eq!(got.branch, "fix/x");
+        assert_eq!(got.msg, "running tests");
+        assert_eq!(got.on_focus, Some(Status::Idle));
+        assert_eq!(got.source, "claude");
+    }
+
+    #[test]
+    fn to_wire_omits_on_focus_when_none() {
+        use crate::status::Status;
+        let json = to_wire(3, Status::Done, "r", "b", "m", None, "codex");
+        assert!(!json.contains("on_focus"));
+        assert_eq!(parse(&json).unwrap().on_focus, None);
+    }
+
+    #[test]
+    fn as_wire_round_trips_for_all_statuses() {
+        use crate::status::Status;
+        for s in [Status::Idle, Status::Running, Status::Pending, Status::Done, Status::Error] {
+            assert_eq!(Status::from_wire(s.as_wire()), s);
+        }
     }
 }

@@ -21,6 +21,17 @@ impl Status {
         }
     }
 
+    /// Serialize to the wire vocabulary (inverse of `from_wire`).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Status::Running => "running",
+            Status::Pending => "pending",
+            Status::Done => "done",
+            Status::Error => "error",
+            Status::Idle => "idle",
+        }
+    }
+
     /// Higher = more urgent. Used for per-tab aggregation.
     pub fn severity(self) -> u8 {
         match self {
