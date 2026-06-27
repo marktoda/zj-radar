@@ -91,7 +91,21 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
                 .or_else(|| v.get("last_assistant_message").and_then(|x| x.as_str()))
                 .unwrap_or("");
             let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
-            (derive_claude(status_arg, event, msg), cwd)
+            let mut derived = derive_claude(status_arg, event, msg);
+            // For PreToolUse/PostToolUse (running status), substitute the tool
+            // activity string when available so the sidebar shows live action.
+            if let Some(ref mut upd) = derived {
+                if upd.status == Status::Running
+                    && matches!(event, Some("PreToolUse") | Some("PostToolUse"))
+                {
+                    let tool_name = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
+                    let tool_input = v.get("tool_input").unwrap_or(&serde_json::Value::Null);
+                    if let Some(activity) = tool_activity(tool_name, tool_input) {
+                        upd.msg = activity;
+                    }
+                }
+            }
+            (derived, cwd)
         }
         "codex" => {
             let raw = input.unwrap_or("");
@@ -123,6 +137,61 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     let _ = Command::new("zellij")
         .args(["pipe", "--name", "zj_radar.status.v1", "--", &payload])
         .output();
+}
+
+/// Short present-tense activity string for a tool invocation, or None if the
+/// tool has no useful activity phrasing (caller keeps the prior msg).
+pub fn tool_activity(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "Edit" | "Write" | "MultiEdit" => {
+            let path = tool_input.get("file_path")?.as_str()?;
+            if path.is_empty() { return None; }
+            let base = path.rsplit('/').next().unwrap_or(path);
+            Some(format!("editing {base}"))
+        }
+        "NotebookEdit" => {
+            let path = tool_input.get("notebook_path")?.as_str()?;
+            if path.is_empty() { return None; }
+            let base = path.rsplit('/').next().unwrap_or(path);
+            Some(format!("editing {base}"))
+        }
+        "Read" => {
+            let path = tool_input.get("file_path")?.as_str()?;
+            if path.is_empty() { return None; }
+            let base = path.rsplit('/').next().unwrap_or(path);
+            Some(format!("reading {base}"))
+        }
+        "Grep" | "Glob" => Some("searching".to_string()),
+        "WebFetch" | "WebSearch" => Some("searching web".to_string()),
+        "Task" => Some("delegating".to_string()),
+        "TodoWrite" => Some("planning".to_string()),
+        "Bash" => {
+            let cmd = tool_input.get("command")?.as_str()?;
+            let cmd_lower = cmd.to_lowercase();
+            if cmd.trim().is_empty() {
+                return None;
+            }
+            if cmd_lower.contains("git push") {
+                Some("pushing".to_string())
+            } else if cmd_lower.contains("git commit") {
+                Some("committing".to_string())
+            } else if cmd_lower.contains("git pull") || cmd_lower.contains("git fetch") {
+                Some("syncing".to_string())
+            } else if cmd_lower.contains("test") {
+                Some("running tests".to_string())
+            } else if cmd_lower.contains("build") || cmd_lower.contains("compile") {
+                Some("building".to_string())
+            } else if cmd_lower.contains("install") {
+                Some("installing".to_string())
+            } else {
+                let first_token = cmd.split_whitespace().next()?;
+                let base = first_token.rsplit('/').next().unwrap_or(first_token);
+                if base.is_empty() { return None; }
+                Some(format!("running {base}"))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +232,111 @@ mod tests {
         assert_eq!(derive_codex("agent-turn-complete", "shipped it").unwrap().status, Status::Done);
         assert_eq!(derive_codex("agent-turn-complete", "shipped it").unwrap().msg, "shipped it");
         assert!(derive_codex("task-started", "").is_none());
+    }
+
+    // --- tool_activity tests ---
+
+    fn json(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn tool_edit_write_multiedit_reduce_to_basename() {
+        for tool in &["Edit", "Write", "MultiEdit"] {
+            let input = json(r#"{"file_path": "/path/to/auth.rs"}"#);
+            assert_eq!(tool_activity(tool, &input).unwrap(), "editing auth.rs", "tool={tool}");
+        }
+    }
+
+    #[test]
+    fn tool_read_reduces_to_basename() {
+        let input = json(r#"{"file_path": "/some/deep/path/mod.rs"}"#);
+        assert_eq!(tool_activity("Read", &input).unwrap(), "reading mod.rs");
+    }
+
+    #[test]
+    fn tool_notebook_edit_uses_notebook_path() {
+        let input = json(r#"{"notebook_path": "/notebooks/analysis.ipynb"}"#);
+        assert_eq!(tool_activity("NotebookEdit", &input).unwrap(), "editing analysis.ipynb");
+    }
+
+    #[test]
+    fn tool_grep_and_glob_return_searching() {
+        assert_eq!(tool_activity("Grep", &json(r#"{"pattern": "foo"}"#)).unwrap(), "searching");
+        assert_eq!(tool_activity("Glob", &json(r#"{"pattern": "*.rs"}"#)).unwrap(), "searching");
+    }
+
+    #[test]
+    fn tool_webfetch_and_websearch_return_searching_web() {
+        assert_eq!(tool_activity("WebFetch", &json(r#"{"url": "https://example.com"}"#)).unwrap(), "searching web");
+        assert_eq!(tool_activity("WebSearch", &json(r#"{"query": "rust async"}"#)).unwrap(), "searching web");
+    }
+
+    #[test]
+    fn tool_task_returns_delegating() {
+        assert_eq!(tool_activity("Task", &json(r#"{"description": "do X"}"#)).unwrap(), "delegating");
+    }
+
+    #[test]
+    fn tool_todowrite_returns_planning() {
+        assert_eq!(tool_activity("TodoWrite", &json(r#"{"todos": []}"#)).unwrap(), "planning");
+    }
+
+    #[test]
+    fn tool_bash_git_push() {
+        let input = json(r#"{"command": "git push origin main"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "pushing");
+    }
+
+    #[test]
+    fn tool_bash_git_commit() {
+        let input = json(r#"{"command": "git commit -m x"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "committing");
+    }
+
+    #[test]
+    fn tool_bash_git_pull() {
+        let input = json(r#"{"command": "git pull"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "syncing");
+    }
+
+    #[test]
+    fn tool_bash_cargo_test() {
+        let input = json(r#"{"command": "cargo test --features cli"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "running tests");
+    }
+
+    #[test]
+    fn tool_bash_npm_run_build() {
+        let input = json(r#"{"command": "npm run build"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "building");
+    }
+
+    #[test]
+    fn tool_bash_pip_install() {
+        let input = json(r#"{"command": "pip install foo"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "installing");
+    }
+
+    #[test]
+    fn tool_bash_path_stripped_to_basename() {
+        let input = json(r#"{"command": "/usr/bin/ls -la"}"#);
+        assert_eq!(tool_activity("Bash", &input).unwrap(), "running ls");
+    }
+
+    #[test]
+    fn tool_bash_empty_command_returns_none() {
+        let input = json(r#"{"command": "   "}"#);
+        assert!(tool_activity("Bash", &input).is_none());
+    }
+
+    #[test]
+    fn tool_unknown_returns_none() {
+        assert!(tool_activity("SomeFutureTool", &json("{}")).is_none());
+    }
+
+    #[test]
+    fn tool_edit_missing_file_path_returns_none() {
+        assert!(tool_activity("Edit", &json("{}")).is_none());
     }
 }
