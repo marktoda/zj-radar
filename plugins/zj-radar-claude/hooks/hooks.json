@@ -10,7 +10,8 @@
       { "matcher": "*", "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running" }] }
     ],
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending" }] }
+      { "matcher": "permission_prompt",  "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending" }] },
+      { "matcher": "elicitation_dialog", "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending" }] }
     ],
     "SubagentStop": [
       { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running" }] }
