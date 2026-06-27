@@ -73,8 +73,48 @@ pub fn row_lines(agg: &TabAgg) -> usize {
     }
 }
 
+/// Count tabs by their dominant active status, severity-descending, non-zero only.
+pub fn summary(rows: &[TabRow]) -> Vec<(Status, usize)> {
+    use Status::*;
+    let order = [Error, Pending, Running, Done];
+    let mut counts = [0usize; 4];
+    for r in rows {
+        match r.agg.status {
+            Error => counts[0] += 1,
+            Pending => counts[1] += 1,
+            Running => counts[2] += 1,
+            Done => counts[3] += 1,
+            Idle => {}
+        }
+    }
+    order
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| (counts[i] > 0).then_some((*s, counts[i])))
+        .collect()
+}
+
+/// 1 if a summary header will be rendered, else 0. Single source of truth for
+/// the header's vertical span (consumed by click mapping in lib.rs).
+pub fn header_lines(rows: &[TabRow]) -> usize {
+    if summary(rows).is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
 pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
     let mut out = String::new();
+    let sum = summary(rows);
+    if !sum.is_empty() {
+        let parts: Vec<String> = sum
+            .iter()
+            .map(|(s, n)| format!("{}{}{}{}", s.ansi(), s.glyph(), n, RESET))
+            .collect();
+        out.push_str(&parts.join(" "));
+        out.push('\n');
+    }
     for row in rows {
         let dot = format!("{}{}{}", row.agg.status.ansi(), row.agg.status.glyph(), RESET);
         let count = if row.agg.total > 1 {
@@ -172,7 +212,7 @@ mod tests {
         assert!(s.contains("2/4"));
         assert!(s.contains("pinky/fix/x"));
         assert!(s.contains("0:14"));
-        assert_eq!(s.matches('\n').count(), 3); // three lines
+        assert_eq!(s.matches('\n').count(), 4); // header + three lines
         assert!(s.contains("\"doing the thing\""));
     }
 
@@ -193,7 +233,7 @@ mod tests {
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, 24, 14);
-        assert_eq!(s.matches('\n').count(), 2); // two lines, no quoted line
+        assert_eq!(s.matches('\n').count(), 3); // header + two lines, no quoted line
         assert!(!s.contains('"'));
     }
 
@@ -286,8 +326,8 @@ mod tests {
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, width, 14);
-        // three lines emitted
-        assert_eq!(s.matches('\n').count(), 3);
+        // header + three lines emitted
+        assert_eq!(s.matches('\n').count(), 4);
         // every visible (ANSI-stripped) line fits within the sidebar width
         for line in s.lines() {
             assert!(
@@ -331,5 +371,33 @@ mod tests {
     fn no_bell_no_marker() {
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
         assert!(!render(&rows, 24, 0).contains('⚑'));
+    }
+
+    #[test]
+    fn summary_counts_tabs_by_dominant_status_active_only() {
+        let rows = vec![
+            TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) },
+            TabRow { number: 2, name: "b".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) },
+            TabRow { number: 3, name: "c".into(), active: false, has_bell: false, agg: agg(Status::Pending, 0, 0, None) },
+            TabRow { number: 4, name: "d".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) },
+        ];
+        // severity order: Error, Pending, Running, Done; Idle excluded
+        assert_eq!(summary(&rows), vec![(Status::Pending, 1), (Status::Running, 2)]);
+    }
+
+    #[test]
+    fn summary_empty_when_all_idle() {
+        let rows = vec![TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(summary(&rows).is_empty());
+        assert_eq!(header_lines(&rows), 0);
+    }
+
+    #[test]
+    fn header_line_emitted_when_active() {
+        let rows = vec![TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) }];
+        assert_eq!(header_lines(&rows), 1);
+        let s = render(&rows, 24, 0);
+        // first line is the header (contains the running glyph + count), then the tab row
+        assert!(s.lines().next().unwrap().contains(Status::Running.glyph()));
     }
 }
