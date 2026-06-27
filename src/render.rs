@@ -1,7 +1,7 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
 
 use crate::config::Density;
-use crate::model::TabAgg;
+use crate::model::{PaneEntry, TabAgg};
 use crate::status::{Role, Status};
 use crate::theme::DerivedColors;
 pub use crate::status::GlyphSet;
@@ -99,19 +99,75 @@ pub fn card_spacing(d: Density) -> CardSpacing {
 /// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
 /// external-separation rows). Both `render()` and `tab_position_at_line()` (via
 /// `plan_layout`) MUST budget in terms of this so click-mapping stays exact.
-pub fn card_block_lines(agg: &TabAgg, spacing: CardSpacing) -> usize {
-    spacing.pad_y + row_lines(agg) + spacing.gap
+pub fn card_block_lines(agg: &TabAgg, active: bool, spacing: CardSpacing) -> usize {
+    spacing.pad_y + row_lines(agg, active) + spacing.gap
+}
+
+/// A pane is "multi-pane" for tree purposes when it has more than one ever-active
+/// pane. Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
+/// the adaptive tree (`pane_tree_plan`).
+pub fn is_multi_pane(agg: &TabAgg) -> bool {
+    agg.panes.len() > 1
+}
+
+/// The expand/collapse split for a multi-pane tab's adaptive tree. The SINGLE
+/// SOURCE OF TRUTH consulted by `row_lines`, `render`, and (via lib.rs)
+/// `tab_position_at_line`, so line counts and click targets stay in lockstep.
+///
+/// Rules:
+///   - Panes that NEED YOU (Pending or Error) ALWAYS expand.
+///   - If the tab is the ACTIVE (focused) tab, ALL its panes expand.
+///   - The remaining calm panes (Running/Done/Idle) collapse into a single
+///     count line. `collapsed_verb` is "working" if any collapsed pane is
+///     Running, else "done".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneTreePlan {
+    pub expanded: Vec<PaneEntry>,
+    pub collapsed_count: usize,
+    /// The dominant calm verb for the collapse line ("working" or "done").
+    pub collapsed_verb: &'static str,
+}
+
+/// Compute the expand/collapse split for a multi-pane tab. Callers should only
+/// invoke this when `is_multi_pane(agg)` is true; for a single-pane tab it would
+/// return all panes collapsed (which is not how single-pane tabs render).
+pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
+    let needs_you = |s: Status| matches!(s, Status::Pending | Status::Error);
+    let mut expanded: Vec<PaneEntry> = Vec::new();
+    let mut collapsed: Vec<&PaneEntry> = Vec::new();
+    for p in &agg.panes {
+        if active || needs_you(p.status) {
+            expanded.push(p.clone());
+        } else {
+            collapsed.push(p);
+        }
+    }
+    let any_running = collapsed.iter().any(|p| p.status == Status::Running);
+    let collapsed_verb = if any_running { "working" } else { "done" };
+    PaneTreePlan {
+        expanded,
+        collapsed_count: collapsed.len(),
+        collapsed_verb,
+    }
 }
 
 /// Single source of truth for how many lines a tab row occupies.
 ///
-/// New line-2 rule (chunk 1): idle/done → 1 line; any other active single-pane
-/// state with a non-empty msg → 2 lines (line 1 = status, line 2 = mark + activity).
-/// A non-empty detail without a msg → 1 line (line 2 suppressed).
-/// The old 3-line Pending case (branch · needs-you + quoted msg) is gone — the
-/// question IS the line-2 activity now.
-pub fn row_lines(agg: &TabAgg) -> usize {
-    let base = match agg.status {
+/// Single-pane tabs (chunk-1 line-2 rule): idle/done → 1 line; any other active
+/// state with a non-empty msg → 2 lines (line 1 = status, line 2 = mark +
+/// activity); a detail without a msg → 1 line (line 2 suppressed).
+///
+/// Multi-pane tabs (chunk-2 adaptive tree): 1 header line + one child line per
+/// expanded pane + one collapse line when any calm pane is collapsed. The split
+/// is computed by `pane_tree_plan(agg, active)` so render and click-mapping stay
+/// in lockstep.
+pub fn row_lines(agg: &TabAgg, active: bool) -> usize {
+    if is_multi_pane(agg) {
+        let plan = pane_tree_plan(agg, active);
+        let collapse_line = if plan.collapsed_count > 0 { 1 } else { 0 };
+        return 1 + plan.expanded.len() + collapse_line;
+    }
+    match agg.status {
         Status::Idle | Status::Done => 1,
         Status::Running | Status::Error | Status::Pending => {
             match &agg.detail {
@@ -119,11 +175,7 @@ pub fn row_lines(agg: &TabAgg) -> usize {
                 _ => 1,
             }
         }
-    };
-    // Add one extra line for the per-member roster when the tab has >1 agent,
-    // the overall status is active (not Idle), and the roster is non-empty.
-    // Must match the three-part guard in render() exactly.
-    if agg.total > 1 && agg.status.is_active() && !agg.roster.is_empty() { base + 1 } else { base }
+    }
 }
 
 /// Right-aligned status slot text (no color). Empty for idle.
@@ -189,11 +241,11 @@ fn is_calm(status: Status) -> bool {
 /// `row_lines` remains the *uncompressed* line count; this function produces
 /// the *planned* per-row line count actually rendered.
 pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
-    let total: usize = rows.iter().map(|r| row_lines(&r.agg)).sum();
+    let total: usize = rows.iter().map(|r| row_lines(&r.agg, r.active)).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
         let plan = rows.iter().enumerate()
-            .map(|(i, r)| (i, row_lines(&r.agg)))
+            .map(|(i, r)| (i, row_lines(&r.agg, r.active)))
             .collect();
         return (plan, 0);
     }
@@ -210,7 +262,7 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
     // Each kept row starts at its full (uncompressed) line count.
     let mut planned: Vec<(usize, usize)> = non_idle_idx
         .iter()
-        .map(|&i| (i, row_lines(&rows[i].agg)))
+        .map(|&i| (i, row_lines(&rows[i].agg, rows[i].active)))
         .collect();
 
     // Step 2: check if the strip line itself (1 extra line) would overflow.
@@ -308,9 +360,9 @@ pub fn plan_layout(
     // Fast path: if every row's FULL block (pad_y + content + gap) fits, render
     // everything at full fidelity with full spacing. `card_block_lines` is the
     // single footprint source shared with the budgeting below.
-    let full_footprint: usize = rows.iter().map(|r| card_block_lines(&r.agg, base)).sum();
+    let full_footprint: usize = rows.iter().map(|r| card_block_lines(&r.agg, r.active, base)).sum();
     if full_footprint <= body_budget {
-        let plan = rows.iter().enumerate().map(|(i, r)| (i, row_lines(&r.agg))).collect();
+        let plan = rows.iter().enumerate().map(|(i, r)| (i, row_lines(&r.agg, r.active))).collect();
         return (plan, 0, base);
     }
 
@@ -471,18 +523,51 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
         bar, pad, label_color, label_bold, glyph_char, num, name, RESET, " ".repeat(gap), bell, slot_styled
     ));
 
-    // Line 1 done. Emit detail/roster only within the remaining budget.
+    // Line 1 done. Emit child/detail lines only within the remaining budget.
     if max_lines <= 1 {
         return;
     }
     let mut emitted = 1usize;
 
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
-    // dim_weak for the identity mark glyph (neutral/muted vendor color).
+    // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
     // Both are truecolor foreground escapes derived from the bg/fg palette blend.
     let dim_strong = tc_fg(opts.theme.dim_strong);
     let idle_color = tc_fg(opts.theme.idle_text);
 
+    // ── Multi-pane adaptive tree (chunk 2) ─────────────────────────────────
+    // A tab with >1 reporting pane renders as: header (line 1, above) + one
+    // child line per EXPANDED pane (needs-you always; all panes when active) +
+    // one collapse line for the calm remainder. The expand/collapse split comes
+    // from `pane_tree_plan`, the SINGLE source of truth shared with `row_lines`
+    // and the click mapping, so emitted lines stay in lockstep.
+    if is_multi_pane(&row.agg) {
+        let plan = pane_tree_plan(&row.agg, row.active);
+        let has_collapse = plan.collapsed_count > 0;
+        let total_children = plan.expanded.len() + if has_collapse { 1 } else { 0 };
+
+        for (idx, pane) in plan.expanded.iter().enumerate() {
+            if emitted >= max_lines {
+                return;
+            }
+            // The last child line (the collapse line, or the last expanded pane
+            // when nothing collapses) gets the `└ ` corner; the rest get `├ `.
+            let is_last = !has_collapse && idx + 1 == total_children;
+            let tree = if is_last { "└ " } else { "├ " };
+            emit_child_line(out, tree, pane, opts, &idle_color, &dim_strong);
+            emitted += 1;
+        }
+
+        if has_collapse && emitted < max_lines {
+            // Collapse line: `  └ N more working` (or "done").
+            let text = format!("└ {} more {}", plan.collapsed_count, plan.collapsed_verb);
+            let clamped = truncate(&text, width.saturating_sub(2));
+            out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
+        }
+        return;
+    }
+
+    // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
     // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
     // Only emitted when the status is active, a detail with a non-empty msg exists,
     // and there is remaining budget. For Running, the braille spinner is appended.
@@ -515,61 +600,52 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                         "   {}{}{} {}{}{}\n",
                         idle_color, mark, RESET, activity_color, activity_str, RESET
                     ));
-                    emitted += 1;
                 }
             }
         }
     }
+}
 
-    // Roster line: one extra line for multi-agent active tabs showing each
-    // member's status glyph colored by its role. This is the lowest-priority
-    // line and is only emitted when we still have budget.
-    if emitted < max_lines
-        && row.agg.total > 1
-        && row.agg.status.is_active()
-        && !row.agg.roster.is_empty()
-    {
-        let indent = "   ";
-        let indent_width = 3usize;
-        // Build glyph tokens: "<color><glyph><reset>", measure visible width.
-        let tokens: Vec<(String, usize)> = row.agg.roster.iter().map(|&rst| {
-            let glyph = rst.glyph_for(opts.glyphs);
-            let token = format!("{}{}{}", rst.role().ansi(), glyph, RESET);
-            let vis = UnicodeWidthChar::width(glyph).unwrap_or(1);
-            (token, vis)
-        }).collect();
-        // Build the visible line, dropping trailing glyphs that would overflow.
-        // Layout: indent(3) + glyph(w) + " "(1) + glyph(w) + ...
-        let max_vis = width.saturating_sub(indent_width);
-        let mut parts: Vec<&str> = Vec::new();
-        let mut vis_used = 0usize;
-        for (idx, (tok, vis)) in tokens.iter().enumerate() {
-            let needed = if idx == 0 { *vis } else { 1 + vis }; // space separator
-            if vis_used + needed > max_vis {
-                break;
-            }
-            parts.push(tok.as_str());
-            vis_used += needed;
-        }
-        // Always emit the roster physical line when it is within budget, even
-        // at very narrow widths where no glyphs fit (parts.is_empty()). This
-        // keeps the emitted line count in lockstep with row_lines(), which
-        // counts the roster unconditionally. Without this, render() emits one
-        // fewer line than tab_position_at_line() budgets, causing all rows
-        // below a narrow-width multi-agent active row to map one line too high.
-        //
-        // Do NOT run the ANSI-colored `joined` string through `truncate()`:
-        // the glyph-fitting loop above already guarantees `vis_used <= max_vis
-        // = width - indent_width`, so the content fits. We only need to
-        // width-clamp the plain-text indent (at extreme narrow widths where
-        // even the 3-space indent overflows).
-        let safe_indent = &indent[..indent.len().min(width)];
-        if parts.is_empty() {
-            out.push_str(&format!("{}\n", safe_indent));
-        } else {
-            out.push_str(&format!("{}{}\n", safe_indent, parts.join(" ")));
-        }
-    }
+/// Emit one expanded-pane child line of the adaptive tree:
+/// `  ‹tree›‹mark›‹status-glyph› ‹activity›` — 2-space indent, then the tree char
+/// (muted/idle_text), the pane's `kind.mark()` in the neutral vendor color
+/// (idle_text), the pane's status glyph in its status role color, then the
+/// activity (`msg`), width-truncated (attention color when Pending, else dim).
+fn emit_child_line(
+    out: &mut String,
+    tree: &str,
+    pane: &PaneEntry,
+    opts: &RenderOpts,
+    idle_color: &str,
+    dim_strong: &str,
+) {
+    let width = opts.width;
+    let mark = pane.kind.mark();
+    let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
+    // Status glyph: working spins; others use the static glyph.
+    let glyph = if pane.status == Status::Running {
+        crate::status::working_spin(opts.now_tick as usize)
+    } else {
+        pane.status.glyph_for(opts.glyphs)
+    };
+    let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
+    // Visible prefix: 2 indent + tree(2) + mark + glyph + 1 space before activity.
+    let tree_w = UnicodeWidthStr::width(tree);
+    let prefix_vis = 2 + tree_w + mark_w + glyph_w + 1;
+    let avail = width.saturating_sub(prefix_vis);
+    let activity_str = truncate(&pane.msg, avail);
+    let activity_color = if pane.status == Status::Pending {
+        Role::Attention.ansi().to_string()
+    } else {
+        dim_strong.to_string()
+    };
+    out.push_str(&format!(
+        "  {}{}{}{}{}{}{}{} {}{}{}\n",
+        idle_color, tree, RESET,        // tree char (muted)
+        idle_color, mark,               // mark (neutral vendor color)
+        pane.status.role().ansi(), glyph, RESET, // status glyph in role color
+        activity_color, activity_str, RESET,     // activity
+    ));
 }
 
 /// Measure visible (display) width of a string that may contain ANSI SGR escapes.
@@ -772,7 +848,7 @@ mod tests {
     use crate::model::Detail;
 
     fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
-        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail, roster: vec![] }
+        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail, panes: vec![] }
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
@@ -826,21 +902,21 @@ mod tests {
 
     #[test]
     fn row_lines_by_state() {
-        assert_eq!(row_lines(&agg(Status::Idle, 0, 0, None)), 1);
+        assert_eq!(row_lines(&agg(Status::Idle, 0, 0, None), false), 1);
 
         let detail = |status, msg: &str| Some(Detail {
             repo: "r".into(), branch: "b".into(), msg: msg.into(),
             kind: Kind::Claude, since_tick: 0, status,
         });
-        assert_eq!(row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, ""))), 1);
-        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "x"))), 2);
-        assert_eq!(row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x"))), 2);
+        assert_eq!(row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, "")), false), 1);
+        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "x")), false), 2);
+        assert_eq!(row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x")), false), 2);
         // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
         // Old 3-line case (branch · needs you + quoted msg) is gone.
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, ""))), 1);
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?"))), 2);
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "")), false), 1);
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?")), false), 2);
         // Running with no msg: only 1 line
-        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, ""))), 1);
+        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "")), false), 1);
     }
 
     #[test]
@@ -1195,7 +1271,7 @@ mod tests {
             name: "agents".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail_with_msg), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail_with_msg), panes: vec![] },
         }];
         let s = render(&rows, &ro(30, 0));
         // line 2 must show the mark and the activity text
@@ -1206,7 +1282,7 @@ mod tests {
         // No old "needs you" text
         assert!(!s.contains("needs you"), "old 'needs you' text must not appear: {:?}", s);
         // row_lines = 2 (mark+activity line present)
-        assert_eq!(row_lines(&rows[0].agg), 2);
+        assert_eq!(row_lines(&rows[0].agg, false), 2);
 
         // Case 2: pending without msg → 1 line only, no line 2.
         let detail_no_msg = Detail {
@@ -1222,10 +1298,10 @@ mod tests {
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail_no_msg), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail_no_msg), panes: vec![] },
         }];
         // row_lines = 1 (no msg → no line 2)
-        assert_eq!(row_lines(&rows2[0].agg), 1);
+        assert_eq!(row_lines(&rows2[0].agg, false), 1);
 
         // Width constraint: pending detail line must not exceed width
         let detail_long = Detail {
@@ -1241,7 +1317,7 @@ mod tests {
             name: "multi".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail_long), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail_long), panes: vec![] },
         }];
         for width in [20usize, 24, 30] {
             let s3 = render(&rows3, &ro(width, 0));
@@ -1275,7 +1351,7 @@ mod tests {
             name: "m".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail), panes: vec![] },
         }];
         for width in [14usize, 16, 17, 20, 24] {
             let s = render(&rows, &ro(width, 0));
@@ -1361,148 +1437,171 @@ mod tests {
         assert!(s.contains('a') || s.matches('\n').count() >= 1);
     }
 
+    // ── Multi-pane adaptive tree (chunk 2) ──
+
+    use crate::model::PaneEntry;
+
+    /// Build a PaneEntry for tree tests.
+    fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneEntry {
+        PaneEntry { pane_id: id, kind, status, msg: msg.into() }
+    }
+
+    /// Build a multi-pane TabAgg from per-pane entries. The header status is the
+    /// most-urgent (highest-severity) member; done/total derive from the entries.
+    fn agg_multi(panes: Vec<PaneEntry>) -> TabAgg {
+        let status = panes.iter().map(|p| p.status)
+            .max_by_key(|s| s.severity()).unwrap_or(Status::Idle);
+        let total = panes.len();
+        let done = panes.iter().filter(|p| p.status == Status::Done).count();
+        let pending = panes.iter().filter(|p| p.status == Status::Pending).count();
+        let detail = panes.iter().find(|p| p.status == status).map(|p| Detail {
+            repo: "r".into(), branch: "b".into(), msg: p.msg.clone(),
+            kind: p.kind, since_tick: 0, status: p.status,
+        });
+        TabAgg { status, done, total, pending, detail, panes }
+    }
+
     #[test]
-    fn multi_agent_active_tab_shows_roster_line() {
-        use crate::status::Status::*;
-        // Build a multi-agent running tab with a 4-member roster.
-        let detail = Detail {
-            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Running,
-        };
-        let mut a = agg(Running, 2, 4, Some(detail));
-        a.roster = vec![Running, Done, Done, Pending];
+    fn pane_tree_plan_needs_you_always_expands() {
+        // Inactive tab: only Pending/Error panes expand; calm panes collapse.
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Pending, "approve?"),
+            pe(2, Kind::Claude, Status::Running, "building"),
+            pe(3, Kind::Claude, Status::Running, "testing"),
+            pe(4, Kind::Claude, Status::Error, "boom"),
+        ]);
+        let plan = pane_tree_plan(&a, false);
+        // Pending + Error expand; two Running collapse.
+        assert_eq!(plan.expanded.len(), 2);
+        assert_eq!(plan.expanded[0].pane_id, 1);
+        assert_eq!(plan.expanded[1].pane_id, 4);
+        assert_eq!(plan.collapsed_count, 2);
+        assert_eq!(plan.collapsed_verb, "working"); // any running → "working"
+    }
 
-        // row_lines should be base + 1 for multi-agent active tab.
-        // Running with detail normally = 2 lines; +1 roster = 3.
-        assert_eq!(row_lines(&a), 3, "multi-agent active tab should add roster line");
+    #[test]
+    fn pane_tree_plan_active_expands_all() {
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Running, "a"),
+            pe(2, Kind::Claude, Status::Done, "b"),
+            pe(3, Kind::Claude, Status::Idle, "c"),
+        ]);
+        let plan = pane_tree_plan(&a, true);
+        assert_eq!(plan.expanded.len(), 3, "active tab expands ALL panes");
+        assert_eq!(plan.collapsed_count, 0);
+    }
 
-        let row = TabRow { number: 1, name: "agents".into(), active: false, has_bell: false, agg: a };
+    #[test]
+    fn pane_tree_plan_calm_collapse_verb_done_when_no_running() {
+        // No needs-you panes, inactive: all collapse. No running → verb "done".
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Done, "a"),
+            pe(2, Kind::Claude, Status::Done, "b"),
+            pe(3, Kind::Claude, Status::Idle, "c"),
+        ]);
+        let plan = pane_tree_plan(&a, false);
+        assert_eq!(plan.expanded.len(), 0);
+        assert_eq!(plan.collapsed_count, 3);
+        assert_eq!(plan.collapsed_verb, "done");
+    }
+
+    #[test]
+    fn row_lines_multi_pane_counts_header_children_collapse() {
+        // 1 pending (expands) + 3 running (collapse) → 1 header + 1 child + 1 collapse = 3.
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Pending, "run migration?"),
+            pe(2, Kind::Claude, Status::Running, "x"),
+            pe(3, Kind::Claude, Status::Running, "y"),
+            pe(4, Kind::Claude, Status::Running, "z"),
+        ]);
+        assert_eq!(row_lines(&a, false), 3, "header + 1 expanded + collapse");
+        // Active → all 4 expand: 1 header + 4 children, no collapse = 5.
+        assert_eq!(row_lines(&a, true), 5, "active expands all, no collapse line");
+    }
+
+    #[test]
+    fn multi_pane_render_emits_header_child_and_collapse_lines() {
+        // Design example: pending child expanded + collapse line for the calm rest.
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Pending, "run migration?"),
+            pe(2, Kind::Claude, Status::Running, "x"),
+            pe(3, Kind::Claude, Status::Running, "y"),
+            pe(4, Kind::Claude, Status::Running, "z"),
+        ]);
+        let row = TabRow { number: 7, name: "monorepo".into(), active: false, has_bell: false, agg: a };
         let s = render(&[row], &ro(30, 0));
-        // The pending glyph should appear (roster member)
-        assert!(s.contains('◆'), "roster line must contain pending glyph: {:?}", s);
-        // A working/half-circle glyph should appear (Running member)
-        assert!(s.contains('◐') || s.contains('◓') || s.contains('◑') || s.contains('◒'),
-            "roster line must contain a working glyph: {:?}", s);
-        // The roster line is separate from line 1 (which has the tab name)
-        let lines: Vec<&str> = s.lines().collect();
-        // header(2) + line1(1) + detail(1) + roster(1) = 5 lines
-        assert!(lines.len() >= 4, "expected at least 4 lines, got {}: {:?}", lines.len(), s);
+        let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
+        // Header line shows the done/total count (0/4) and the most-urgent pending glyph.
+        assert!(body[0].contains("0/4"), "header must show done/total: {:?}", body[0]);
+        assert!(body[0].contains('◆'), "header glyph is the most-urgent (pending): {:?}", body[0]);
+        // Expanded pending child: tree char `└ ` (it is last expanded, collapse line follows
+        // so it uses ├ ), mark ✳, pending glyph ◆, activity.
+        assert!(body[1].contains('├') || body[1].contains('└'), "child has a tree char: {:?}", body[1]);
+        assert!(body[1].contains('✳'), "child shows the kind mark: {:?}", body[1]);
+        assert!(body[1].contains("run migration?"), "child shows activity: {:?}", body[1]);
+        assert!(body[1].contains(Role::Attention.ansi()), "pending child activity in attention: {:?}", body[1]);
+        // Collapse line: `└ 3 more working`.
+        assert!(body[2].contains("└"), "collapse line uses corner char: {:?}", body[2]);
+        assert!(body[2].contains("3 more working"), "collapse line counts calm panes: {:?}", body[2]);
+        // Exactly 3 body lines (header + 1 child + collapse).
+        assert_eq!(body.len(), 3, "header + 1 child + collapse: {:?}", s);
     }
 
     #[test]
-    fn roster_line_never_exceeds_width() {
-        use crate::status::Status::*;
-        for &width in &[16usize, 20, 24] {
-            let detail = Detail {
-                repo: "r".into(), branch: "b".into(), msg: "m".into(),
-                kind: Kind::Claude, since_tick: 0, status: Running,
-            };
-            // 10-member roster
-            let mut a = agg(Running, 0, 10, Some(detail));
-            a.roster = vec![Running, Done, Pending, Running, Done, Running, Pending, Done, Running, Error];
-            let row = TabRow { number: 1, name: "big-team".into(), active: false, has_bell: false, agg: a };
-            let s = render(&[row], &RenderOpts {
-                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default(),
-            });
-            for line in s.lines() {
+    fn multi_pane_active_expands_all_no_collapse() {
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Running, "a"),
+            pe(2, Kind::Claude, Status::Done, "b"),
+        ]);
+        let row = TabRow { number: 1, name: "team".into(), active: true, has_bell: false, agg: a };
+        let s = render(&[row], &ro(30, 0));
+        let body: Vec<&str> = s.lines().skip(2).collect();
+        // header + 2 children, no collapse line.
+        assert_eq!(body.len(), 3, "active: header + 2 children: {:?}", s);
+        assert!(!s.contains("more working"), "no collapse line when all expand: {:?}", s);
+        // First child ├, last child └.
+        assert!(body[1].contains('├'), "first child uses ├: {:?}", body[1]);
+        assert!(body[2].contains('└'), "last child uses └: {:?}", body[2]);
+    }
+
+    #[test]
+    fn multi_pane_child_and_collapse_lines_never_exceed_width() {
+        // The chunk-2 tree CHILD lines (expanded panes) and the collapse line
+        // must be width-safe at narrow widths. (The header line-1 follows the
+        // existing renderer's own width rules, covered by other line-1 tests.)
+        // Use an inactive tab so a collapse line accompanies an expanded child.
+        for &width in &[16usize, 20, 24, 30] {
+            let a = agg_multi(vec![
+                pe(1, Kind::Claude, Status::Pending, "a very long question that must be truncated to fit"),
+                pe(2, Kind::Claude, Status::Running, "x"),
+                pe(3, Kind::Claude, Status::Running, "y"),
+            ]);
+            let row = TabRow { number: 1, name: "tab".into(), active: false, has_bell: false, agg: a };
+            let s = render(&[row], &ro(width, 5));
+            let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
+            // body = [card header line, expanded child, collapse line]; check the
+            // tree's own child (idx 1) and collapse (idx 2) lines.
+            for line in &body[1..] {
                 assert!(visible_len(line) <= width,
-                    "roster line exceeds width {} at width {}: {:?} (visible {})",
-                    width, width, line, visible_len(line));
-            }
-        }
-    }
-
-    /// Regression: at width ≤ 3 the 3-col indent leaves no room for any glyph
-    /// so `parts` is empty, but the roster line must still be physically emitted
-    /// to keep the emitted line count in lockstep with `row_lines()`.
-    #[test]
-    fn roster_line_emitted_even_when_too_narrow_for_glyphs() {
-        use crate::status::Status::*;
-        let detail = crate::model::Detail {
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: "working".into(),
-            since_tick: 0,
-            kind: Kind::Claude,
-            status: Running,
-        };
-        // Multi-agent running tab with a roster; total=3, status=Running.
-        // row_lines() = 2 (running+detail) + 1 (roster) = 3 lines.
-        let mut a = agg(Running, 1, 3, Some(detail));
-        a.roster = vec![Running, Done, Pending];
-        let expected_lines = row_lines(&a);
-
-        for &width in &[1usize, 2, 3, 4] {
-            let row = TabRow {
-                number: 1,
-                name: "a".into(),
-                active: false,
-                has_bell: false,
-                agg: a.clone(),
-            };
-            // Use header:false to isolate the row count to just this row's lines.
-            let opts = RenderOpts {
-                width,
-                height: 100,
-                now_tick: 0,
-                glyphs: GlyphSet::Plain,
-                header: false,
-                density: crate::config::Density::Compact,
-                theme: crate::theme::DerivedColors::default(),
-            };
-            let s = render(&[row], &opts);
-            let emitted = s.matches('\n').count();
-            assert_eq!(
-                emitted, expected_lines,
-                "at width={}: emitted {} lines but row_lines()={} (output: {:?})",
-                width, emitted, expected_lines, s
-            );
-            // The roster line itself (the last line emitted) must not exceed `width`.
-            // (Other lines may be wider at extreme narrow widths, but the roster
-            // line is the one this test focuses on.)
-            let lines: Vec<&str> = s.lines().collect();
-            if let Some(last) = lines.last() {
-                assert!(
-                    visible_len(last) <= width,
-                    "at width={}: roster line exceeds width: {:?} (visible {})",
-                    width, last, visible_len(last)
-                );
+                    "tree child/collapse line exceeds width {}: {:?} (visible {})",
+                    width, line, visible_len(line));
             }
         }
     }
 
     #[test]
-    fn single_agent_pending_no_roster_line() {
-        use crate::status::Status::*;
-        let detail = Detail {
-            repo: "r".into(), branch: "b".into(), msg: "approve?".into(),
-            kind: Kind::Claude, since_tick: 0, status: Pending,
-        };
-        // Single-agent: roster is empty, total == 1.
-        let a = agg(Pending, 0, 1, Some(detail));
-        // row_lines should be 2 (mark + activity line) — old 3-line case (branch·needs-you + quoted
-        // msg) is gone; the question IS the activity on line 2 now.
-        let base = row_lines(&a);
-        assert_eq!(base, 2, "single-agent pending+msg should be 2 lines");
-        // Roster vec is empty so no extra line.
-        assert!(a.roster.is_empty());
-    }
-
-    #[test]
-    fn row_lines_no_roster_line_when_roster_empty() {
-        use crate::status::Status::*;
-        // Multi-agent active tab but roster is empty — row_lines must NOT add +1.
-        // Running with detail = base 2 lines; empty roster => still 2, not 3.
-        let detail = crate::model::Detail {
-            repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Running,
-        };
-        let a = agg(Running, 1, 3, Some(detail));
-        assert!(a.roster.is_empty(), "agg() helper always creates empty roster");
-        assert_eq!(
-            row_lines(&a), 2,
-            "multi-agent active tab with empty roster must not add roster line"
-        );
+    fn single_pane_tab_unchanged_no_tree() {
+        // A single ever-active pane is NOT multi-pane → keeps chunk-1 line 2.
+        let a = agg_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
+        assert!(!is_multi_pane(&a), "one pane is not multi-pane");
+        assert_eq!(row_lines(&a, false), 2, "single-pane pending+msg = 2 lines (chunk-1)");
+        let row = TabRow { number: 1, name: "solo".into(), active: false, has_bell: false, agg: a };
+        let s = render(&[row], &ro(30, 0));
+        // No tree chars, no collapse line.
+        assert!(!s.contains("more working") && !s.contains("more done"), "no collapse line: {:?}", s);
+        assert!(!s.contains('├'), "no tree branch char: {:?}", s);
+        // Chunk-1 line 2 present: mark + activity.
+        assert!(s.contains('✳') && s.contains("approve?"), "chunk-1 line 2 present: {:?}", s);
     }
 
     /// Calm rows (Running/Done) are compressed to 1 line before urgent rows
@@ -1536,10 +1635,10 @@ mod tests {
         ];
 
         // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
-        assert_eq!(row_lines(&rows[0].agg), 2);
-        assert_eq!(row_lines(&rows[1].agg), 2);
-        assert_eq!(row_lines(&rows[2].agg), 2);
-        assert_eq!(row_lines(&rows[3].agg), 2); // pending + msg = 2 (mark + activity)
+        assert_eq!(row_lines(&rows[0].agg, false), 2);
+        assert_eq!(row_lines(&rows[1].agg, false), 2);
+        assert_eq!(row_lines(&rows[2].agg, false), 2);
+        assert_eq!(row_lines(&rows[3].agg, false), 2); // pending + msg = 2 (mark + activity)
 
         // body_budget = 5 (height 7, header 2)
         let body_budget = 5usize;
@@ -1933,13 +2032,13 @@ mod tests {
     fn card_block_lines_is_pad_y_plus_content_plus_gap() {
         // The single footprint source: pad_y + row_lines + gap.
         let idle = agg(Status::Idle, 0, 0, None);
-        assert_eq!(row_lines(&idle), 1);
+        assert_eq!(row_lines(&idle, false), 1);
         // Cards: 0 pad_y + 1 content + 1 gap = 2.
-        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Cards)), 2);
+        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Cards)), 2);
         // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
-        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Comfortable)), 2);
+        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Comfortable)), 2);
         // Compact: 0 + 1 + 0 = 1.
-        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Compact)), 1);
+        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Compact)), 1);
     }
 
     #[test]

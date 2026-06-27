@@ -116,15 +116,27 @@ impl State {
     }
 
     /// Map a clicked line back to a tab position by replaying render()'s fold
-    /// plan. Both render() and this function call plan_layout with the same
-    /// body_budget and density, guaranteeing that "line N → tab X" is
-    /// consistent with what the user actually sees on screen.
+    /// plan. Thin wrapper over `target_at_line` that drops the pane id; used by
+    /// host unit tests that only assert tab membership (the wasm click handler
+    /// calls `target_at_line` directly to also resolve the pane target).
+    #[cfg(test)]
+    fn tab_position_at_line(&self, line: isize) -> Option<usize> {
+        self.target_at_line(line).map(|(pos, _pane)| pos)
+    }
+
+    /// Map a clicked line to `(tab_position, Option<pane_id>)`. Both render()
+    /// and this function consult the SAME `plan_layout` + `pane_tree_plan`, so
+    /// "line N → tab X (pane P)" is exactly what the user sees on screen.
     ///
     /// Each tab's visual block is `pad_y + content + gap` (the cohesive
-    /// CardSpacing footprint). The `pad_y` internal-pad rows (if any) and the
-    /// content rows belong to that tab; the trailing `gap` rows are external
-    /// separation and map to None.
-    fn tab_position_at_line(&self, line: isize) -> Option<usize> {
+    /// CardSpacing footprint). The `pad_y` rows and content rows belong to that
+    /// tab; the trailing `gap` rows are external separation and map to None.
+    ///
+    /// For a MULTI-PANE tab the content rows are: header (line 0, tab-only) +
+    /// one child line per expanded pane (each maps to its pane id) + a collapse
+    /// line (tab-only). Clicking an expanded child line targets THAT pane via
+    /// `show_pane_with_id`; everything else targets the tab.
+    fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
         if line < 0 {
             return None;
         }
@@ -149,16 +161,35 @@ impl State {
         for &(i, planned_lines) in &plan {
             // owned = pad_y + content rows belonging to this tab; trailing gap
             // rows are external separation and do not belong to any tab.
-            // Span the owned rows for the membership test, then advance the
-            // cursor past the gap too.
-            let owned = spacing.pad_y + planned_lines.max(1);
+            let content = planned_lines.max(1);
+            let owned = spacing.pad_y + content;
             if target >= cursor && target < cursor + owned {
-                return Some((rows[i].number - 1) as usize);
+                let tab_pos = (rows[i].number - 1) as usize;
+                // Offset of the clicked line within this tab's CONTENT rows
+                // (after pad_y). 0 = header line; 1.. = child/collapse lines.
+                let content_off = (target - cursor).saturating_sub(spacing.pad_y);
+                let pane = self.pane_at_content_offset(&rows[i], content_off);
+                return Some((tab_pos, pane));
             }
             cursor += owned + spacing.gap;
         }
         // Any line at/after the folded idle strip maps to no tab.
         None
+    }
+
+    /// Resolve which pane (if any) a content-row offset within a tab targets.
+    /// Offset 0 is the header (tab-only → None). For a multi-pane tab, offsets
+    /// 1.. index the expanded child lines from `pane_tree_plan`; the collapse
+    /// line (past the expanded children) is tab-only. Single-pane tabs have no
+    /// per-pane child target (their line 2 is tab-only).
+    fn pane_at_content_offset(&self, row: &TabRow, content_off: usize) -> Option<u32> {
+        if content_off == 0 || !render::is_multi_pane(&row.agg) {
+            return None;
+        }
+        let plan = render::pane_tree_plan(&row.agg, row.active);
+        // child index k = content_off - 1; expanded children come first.
+        let k = content_off - 1;
+        plan.expanded.get(k).map(|p| p.pane_id)
     }
 }
 
@@ -301,10 +332,18 @@ impl ZellijPlugin for State {
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
                 if self.permission_granted {
-                    if let Some(pos) = self.tab_position_at_line(line) {
-                        // switch_tab_to is 1-based; `pos` is 0-based position,
-                        // so position + 1 gives the correct tab index.
-                        switch_tab_to(pos as u32 + 1);
+                    if let Some((pos, pane)) = self.target_at_line(line) {
+                        match pane {
+                            // A child pane line → focus THAT pane (and switch to
+                            // its tab). show_pane_with_id unsuppresses + focuses
+                            // the pane by id and switches to its tab in one call.
+                            Some(id) => {
+                                show_pane_with_id(PaneId::Terminal(id), false, true);
+                            }
+                            // Header / collapse / single-pane lines → switch tab.
+                            // switch_tab_to is 1-based; `pos` is 0-based, so +1.
+                            None => switch_tab_to(pos as u32 + 1),
+                        }
                     }
                 }
                 false
@@ -617,9 +656,9 @@ mod tests {
     }
 
     #[test]
-    fn multi_agent_running_tab_occupies_extra_roster_line() {
-        // A tab with 2 panes both running → total=2, status=Running, detail present.
-        // row_lines = 2 (running+detail) + 1 (roster) = 3 lines.
+    fn multi_pane_inactive_collapses_to_header_plus_count() {
+        // A tab with 2 panes both running, NOT active → multi-pane tree: both
+        // calm panes collapse, so row_lines = 1 header + 1 collapse = 2 lines.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![pane(10), pane(11)]);
         apply_payload(&mut state, 10, Status::Running, 1);
@@ -627,13 +666,51 @@ mod tests {
         // header = lines 0,1
         assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(1), None);
-        // 3-line multi-agent running tab at position 0: lines 2, 3, 4
+        // 2-line multi-pane tab at position 0: header (line 2) + collapse (line 3).
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(0));
-        assert_eq!(state.tab_position_at_line(4), Some(0));
-        // plain tab at position 1: line 5
+        // Both lines are tab-only (collapse line has no per-pane target).
+        assert_eq!(state.target_at_line(2), Some((0, None)));
+        assert_eq!(state.target_at_line(3), Some((0, None)));
+        // plain tab at position 1: line 4
+        assert_eq!(state.tab_position_at_line(4), Some(1));
+        assert!(state.tab_position_at_line(5).is_none());
+    }
+
+    #[test]
+    fn multi_pane_child_line_click_targets_that_pane() {
+        // 3-pane tab: pane 10 Pending (expands), 11 + 12 Running (collapse).
+        // Tree: header + 1 expanded child (pane 10) + collapse line = 3 lines.
+        let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
+        state.tab_panes.insert(0, vec![pane(10), pane(11), pane(12)]);
+        apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "run migration?");
+        apply_payload(&mut state, 11, Status::Running, 1);
+        apply_payload(&mut state, 12, Status::Running, 1);
+        state.last_render_height = 100;
+        // header = lines 0,1
+        assert_eq!(state.target_at_line(2), Some((0, None)), "header → tab only");
+        // child line → pane 10 (the expanded Pending pane)
+        assert_eq!(state.target_at_line(3), Some((0, Some(10))), "child line → pane 10");
+        // collapse line → tab only
+        assert_eq!(state.target_at_line(4), Some((0, None)), "collapse line → tab only");
+        // plain tab follows at line 5
         assert_eq!(state.tab_position_at_line(5), Some(1));
         assert!(state.tab_position_at_line(6).is_none());
+    }
+
+    #[test]
+    fn multi_pane_active_all_children_clickable() {
+        // Active tab → ALL panes expand; each child line targets its pane.
+        let mut state = make_state_with_tabs(&[(0, "team", true)]);
+        state.tab_panes.insert(0, vec![pane(20), pane(21)]);
+        apply_payload(&mut state, 20, Status::Running, 1);
+        apply_payload(&mut state, 21, Status::Done, 1);
+        state.last_render_height = 100;
+        // header(2) + 2 children, no collapse.
+        assert_eq!(state.target_at_line(2), Some((0, None)), "header");
+        assert_eq!(state.target_at_line(3), Some((0, Some(20))), "child 0 → pane 20");
+        assert_eq!(state.target_at_line(4), Some((0, Some(21))), "child 1 → pane 21");
+        assert!(state.tab_position_at_line(5).is_none());
     }
 
     /// Click mapping uses PLANNED (compressed) line counts, not uncompressed
@@ -681,34 +758,32 @@ mod tests {
         assert_eq!(state.tab_position_at_line(7), None);
     }
 
-    /// Regression: a multi-agent active tab at very narrow width (≤ 3) must
-    /// consume exactly `row_lines()` lines in the click-mapping, so that a
-    /// plain tab appearing immediately after it maps to the correct line.
-    ///
-    /// Before the fix, `render_row` suppressed the roster line when `parts`
-    /// was empty (width ≤ 3), emitting one fewer line than `row_lines()`
-    /// budgets. That shifted every following row up by one, causing clicks to
-    /// route to the wrong tab.
+    /// Lockstep: a multi-pane tab's tree lines (header + expanded children +
+    /// collapse) must consume exactly `row_lines()` lines in the click-mapping,
+    /// so a plain tab immediately after it maps to the correct line. The tree
+    /// plan is the single source of truth for both render() and click-mapping.
     #[test]
-    fn narrow_multi_agent_roster_line_click_mapping_correct() {
+    fn multi_pane_tree_click_mapping_lockstep() {
         use crate::status::Status;
-        // Set up: a 2-pane (multi-agent) running tab followed by a plain tab.
+        // 3-pane tab (1 Pending expands, 2 Running collapse) → header + 1 child
+        // + collapse = 3 content lines. Followed by a plain tab.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10), pane(11)]);
-        apply_payload(&mut state, 10, Status::Running, 1);
+        state.tab_panes.insert(0, vec![pane(10), pane(11), pane(12)]);
+        apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?");
         apply_payload(&mut state, 11, Status::Running, 1);
-        // Use a large height so no compression occurs.
+        apply_payload(&mut state, 12, Status::Running, 1);
         state.last_render_height = 100;
-        // config.header is true (default), so header = 2 lines.
-        // Multi-agent running tab: row_lines = 2 (running+detail) + 1 (roster) = 3 lines.
-        // Lines 0-1: header. Lines 2-4: multi-agent tab. Line 5: plain tab.
+        // Confirm row_lines agrees: header(1) + 1 expanded + collapse(1) = 3.
+        let rows = state.build_rows();
+        assert_eq!(render::row_lines(&rows[0].agg, rows[0].active), 3, "tree is 3 content lines");
+        // header = lines 0,1. Tree at position 0: lines 2,3,4. Plain tab: line 5.
         assert_eq!(state.tab_position_at_line(0), None, "header line 0");
         assert_eq!(state.tab_position_at_line(1), None, "header line 1");
-        assert_eq!(state.tab_position_at_line(2), Some(0), "multi-agent tab line 1");
-        assert_eq!(state.tab_position_at_line(3), Some(0), "multi-agent tab line 2");
-        assert_eq!(state.tab_position_at_line(4), Some(0), "multi-agent tab line 3 (roster)");
-        // The plain tab must start at line 5, not 4.
-        assert_eq!(state.tab_position_at_line(5), Some(1), "plain tab — must follow roster line");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tree header line");
+        assert_eq!(state.tab_position_at_line(3), Some(0), "tree child line");
+        assert_eq!(state.tab_position_at_line(4), Some(0), "tree collapse line");
+        // The plain tab must start at line 5, not earlier.
+        assert_eq!(state.tab_position_at_line(5), Some(1), "plain tab follows the tree");
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
 
@@ -812,7 +887,7 @@ mod tests {
 
         // Confirm tab 0 really is 2 content lines.
         let rows = state.build_rows();
-        assert_eq!(render::row_lines(&rows[0].agg), 2, "tab 0 should be 2 content lines");
+        assert_eq!(render::row_lines(&rows[0].agg, rows[0].active), 2, "tab 0 should be 2 content lines");
 
         assert_eq!(state.tab_position_at_line(0), None, "header");
         assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content line 1");
