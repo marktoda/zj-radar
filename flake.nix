@@ -44,10 +44,12 @@
         zj-radar = craneLib.buildPackage (wasmArgs // {
           cargoArtifacts = cargoArtifactsWasm;
           doInstallCargoArtifacts = false;
-          # The wasm bin isn't an ELF executable; install it by hand to $out/lib.
+          # Install the wasm to $out/bin to match the Zellij-plugin convention
+          # (e.g. zjstatus → ${pkgs.zjstatus}/bin/zjstatus.wasm), so downstream
+          # layouts reference ${pkg}/bin/zj_radar.wasm like every other plugin.
           installPhaseCommand = ''
-            mkdir -p $out/lib
-            cp target/wasm32-wasip1/release/zj_radar.wasm $out/lib/zj_radar.wasm
+            mkdir -p $out/bin
+            cp target/wasm32-wasip1/release/zj_radar.wasm $out/bin/zj_radar.wasm
           '';
         });
 

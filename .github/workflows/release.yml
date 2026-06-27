@@ -39,7 +39,7 @@ jobs:
         run: nix build .#zj-radar -L
 
       - name: Stage artifact
-        run: cp result/lib/zj_radar.wasm zj_radar.wasm
+        run: cp result/bin/zj_radar.wasm zj_radar.wasm
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -89,6 +89,21 @@ On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
 press `y` to grant. It never runs commands; notifications stay in the producer.
 
+#### Loading straight from a release URL (caveat)
+
+Zellij can also load a plugin directly from an `https://` URL, downloading and
+caching it (no manual `cp`) — once a release is tagged:
+
+```kdl
+plugin location="https://github.com/mark-toda/zj-radar/releases/download/v0.1.0/zj_radar.wasm"
+```
+
+**Not recommended as the default for zj-radar**, though: the sidebar loads once
+*per tab* (it lives in `default_tab_template`), and Zellij has a known bug where
+several tabs fetching the same remote plugin at once can corrupt the download.
+Prefer the `file:` path above or the Nix package below; use the URL form only
+for a quick single-tab try.
+
 #### Installing via Nix / home-manager
 
 This flake exposes the wasm as `packages.default`, so a flake-based config can
@@ -103,7 +118,7 @@ Then reference the built wasm at a stable store path in your Zellij layout
 derivation (build-from-source, works today):
 
 ```nix
-plugin location="file:${inputs.zj-radar.packages.${system}.default}/lib/zj_radar.wasm"
+plugin location="file:${inputs.zj-radar.packages.${system}.default}/bin/zj_radar.wasm"
 ```
 
 Once tagged releases exist, you can instead pin a prebuilt artifact without a
