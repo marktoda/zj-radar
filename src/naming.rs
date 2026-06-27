@@ -14,7 +14,7 @@ pub struct PaneLite {
 /// True if `name` is a Zellij default tab name like "Tab #1".
 pub fn is_default_name(name: &str) -> bool {
     name.strip_prefix("Tab #")
-        .map_or(false, |rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Desired display name for one tab, or None if no push signal is available.
@@ -73,7 +73,7 @@ pub fn compute_renames(
         if &desired == current {
             continue;
         }
-        let ours = applied.get(pos).map_or(false, |n| n == current);
+        let ours = applied.get(pos) == Some(current);
         if force || is_default_name(current) || ours {
             out.push((*pos, desired));
         }

@@ -44,7 +44,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
         }
         let better = s.status.severity() > best_status.severity()
             || (s.status.severity() == best_status.severity()
-                && best.as_ref().map_or(true, |d| s.last_change_tick >= d.since_tick));
+                && best.as_ref().is_none_or(|d| s.last_change_tick >= d.since_tick));
         if s.status.is_active() && better {
             best_status = s.status;
             best = Some(Detail {
