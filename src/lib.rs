@@ -96,7 +96,7 @@ impl State {
         }
         let target = line as usize;
         let rows = self.build_rows();
-        let mut cursor = render::header_lines(&rows); // header occupies the first line(s)
+        let mut cursor = render::header_lines(&rows, true); // header occupies the first line(s)
         if target < cursor {
             return None; // click landed on the header → no tab
         }
@@ -252,7 +252,7 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, _rows: usize, cols: usize) {
         let rows = self.build_rows();
-        print!("{}", render::render(&rows, cols.max(1), self.tick));
+        print!("{}", render::render(&rows, cols.max(1), self.tick, render::RenderOpts::default()));
     }
 }
 
