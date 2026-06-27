@@ -67,6 +67,42 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// The ONE source of truth for inter- and intra-card spacing, by density.
+///
+/// Three knobs, all measured in terminal cells:
+///   - `pad_x`: columns of internal LEFT padding inserted before a card's
+///     content (so content isn't flush to the band edge).
+///   - `pad_y`: rows of internal TOP padding — blank rows painted with THIS
+///     card's own surface bg, giving the card a small bit of breathing room
+///     without a full rail gap. (Cards/panel mode only.)
+///   - `gap`: rows of EXTERNAL separation after a card — blank rows painted
+///     `rail_bg` in Cards, plain blank in Comfortable. Sheds first under
+///     overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardSpacing {
+    pub pad_x: usize,
+    pub pad_y: usize,
+    pub gap: usize,
+}
+
+/// Map a density to its spacing knobs. This is the single place to tune the
+/// sidebar's vertical/horizontal rhythm.
+pub fn card_spacing(d: Density) -> CardSpacing {
+    match d {
+        Density::Compact => CardSpacing { pad_x: 0, pad_y: 0, gap: 0 },
+        Density::Comfortable => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
+        Density::Cards => CardSpacing { pad_x: 1, pad_y: 1, gap: 0 },
+    }
+}
+
+/// Single source of truth for a card's full vertical footprint (top→bottom:
+/// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
+/// external-separation rows). Both `render()` and `tab_position_at_line()` (via
+/// `plan_layout`) MUST budget in terms of this so click-mapping stays exact.
+pub fn card_block_lines(agg: &TabAgg, spacing: CardSpacing) -> usize {
+    spacing.pad_y + row_lines(agg) + spacing.gap
+}
+
 /// Single source of truth for how many lines a tab row occupies.
 pub fn row_lines(agg: &TabAgg) -> usize {
     let base = match agg.status {
@@ -250,35 +286,56 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
 /// `tab_position_at_line()`. Returns:
 ///   - the per-row planned content-line counts (same as `plan_overflow`),
 ///   - the number of idle rows folded into the strip (`strip_folded`), and
-///   - `gap_used`: 0 (no blank lines) or 1 (one blank line after each kept tab).
+///   - the EFFECTIVE `CardSpacing` actually applied (luxury rows may be shed
+///     under overflow): `pad_x` is unchanged; `pad_y` and `gap` are each 1 or 0.
 ///
-/// Gap rule:
-///   - Compact and Cards → `gap_used` is always 0 (Cards uses background tints
-///     to visually separate adjacent cards; Compact uses flush spacing).
-///   - Comfortable → gaps are included only when ALL of them still fit within
-///     `body_budget` (after accounting for content lines and the strip line).
-///     If even one gap would overflow, `gap_used` falls back to 0 (flush
-///     spacing), letting T3+ overflow compression handle the rest.
+/// Luxury-shedding rule (mirrors "gaps are dropped first"): the per-card block
+/// is `pad_y + content + gap`. Under overflow we shed the cheapest separation
+/// first — drop `gap`, then drop `pad_y` — before letting `plan_overflow`
+/// compress the content itself. We pick the richest spacing whose total block
+/// footprint (plus the strip line) still fits the budget.
 pub fn plan_layout(
     rows: &[TabRow],
     body_budget: usize,
     density: Density,
-) -> (Vec<(usize, usize)>, usize, usize) {
-    let (plan, strip_folded) = plan_overflow(rows, body_budget);
-    let gap_used = if density == Density::Compact || density == Density::Cards {
-        0
-    } else {
-        // Comfortable only: include gaps only when they all fit.
+) -> (Vec<(usize, usize)>, usize, CardSpacing) {
+    let base = card_spacing(density);
+
+    // Fast path: if every row's FULL block (pad_y + content + gap) fits, render
+    // everything at full fidelity with full spacing. `card_block_lines` is the
+    // single footprint source shared with the budgeting below.
+    let full_footprint: usize = rows.iter().map(|r| card_block_lines(&r.agg, base)).sum();
+    if full_footprint <= body_budget {
+        let plan = rows.iter().enumerate().map(|(i, r)| (i, row_lines(&r.agg))).collect();
+        return (plan, 0, base);
+    }
+
+    // Candidate spacings, richest → leanest: full, then drop gap, then drop pad_y.
+    // pad_x never sheds (it's a fixed horizontal inset, not a vertical row).
+    let candidates = [
+        base,
+        CardSpacing { gap: 0, ..base },
+        CardSpacing { gap: 0, pad_y: 0, ..base },
+    ];
+
+    for spacing in candidates {
+        // Budget the content against the space left after this spacing's luxury
+        // rows. Each kept row costs `pad_y + gap` luxury rows on top of content.
+        let (plan, strip_folded) = plan_overflow(rows, body_budget);
         let content_total: usize = plan.iter().map(|(_, l)| l).sum();
-        let kept_count = plan.len();
+        let kept = plan.len();
         let strip_line = if strip_folded > 0 { 1 } else { 0 };
-        if content_total + kept_count + strip_line <= body_budget {
-            1
-        } else {
-            0
+        let luxury = kept * (spacing.pad_y + spacing.gap);
+        if content_total + luxury + strip_line <= body_budget {
+            return (plan, strip_folded, spacing);
         }
-    };
-    (plan, strip_folded, gap_used)
+    }
+
+    // Even the leanest spacing (no pad_y, no gap) overflows: let plan_overflow
+    // compress content against the raw budget and apply no luxury rows.
+    let lean = CardSpacing { gap: 0, pad_y: 0, ..base };
+    let (plan, strip_folded) = plan_overflow(rows, body_budget);
+    (plan, strip_folded, lean)
 }
 
 /// The rail's resting "hello / how it works" face — shown on cold start or
@@ -326,7 +383,6 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.agg.status;
-    let cards = opts.density == Density::Cards;
 
     // Status HUES are always ANSI-16 role codes so the terminal renders them in
     // its OWN theme (any theme, zero config): attention `\x1b[91m` (waiting),
@@ -349,10 +405,11 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
         " ".to_string()
     };
 
-    // Internal left padding (Cards only): one pad space after the col-0
-    // spine/space, before the glyph, so content isn't flush to the band edge.
-    let pad = if cards { " " } else { "" };
-    let pad_len = pad.len(); // ASCII space → 1 display col when present.
+    // Internal left padding: `pad_x` cells after the col-0 spine/space, before
+    // the glyph, so content isn't flush to the band edge. From the cohesive
+    // CardSpacing model (Cards → 1, else 0).
+    let pad_len = card_spacing(opts.density).pad_x;
+    let pad = " ".repeat(pad_len);
 
     // col 1: status glyph (working spins).
     let glyph_char = if st == Status::Running {
@@ -636,7 +693,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let rail = tc_bg(opts.theme.rail_bg);
 
     let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header, opts.density));
-    let (plan, strip_folded, gap_used) = plan_layout(rows, body_budget, opts.density);
+    let (plan, strip_folded, spacing) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
     // Right-aligned count: total tabs (·N, or "N ▲" when overflowing), plus a
@@ -686,18 +743,28 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         // active) — a subtle step up from the dark panel.
         if cards {
             let bg = card_tint(&rows[i], &opts.theme);
+            // pad_y rows: blank, painted with THIS card's own surface bg —
+            // card-colored internal TOP padding (breathing room) that belongs
+            // to this tab's click span.
+            for _ in 0..spacing.pad_y {
+                out.push_str(&paint_card_line("\n", width, &bg));
+            }
             let mut tab_buf = String::new();
             render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
             for line in tab_buf.split_inclusive('\n') {
                 out.push_str(&paint_card_line(line, width, &bg));
             }
         } else {
+            // Non-card densities: pad_y is 0, so emit content directly.
+            for _ in 0..spacing.pad_y {
+                out.push('\n');
+            }
             render_row(&mut out, &rows[i], opts, max_lines.max(1));
         }
-        // Emit blank gap line(s) after each tab's content block when density > Compact.
-        // In Cards the gap is painted with the dark panel base (so the whole
-        // column is one cohesive panel); otherwise it stays bare.
-        for _ in 0..gap_used {
+        // Emit blank gap line(s) after each tab's content block (external
+        // separation). In Cards the gap is painted with the dark panel base (so
+        // the whole column is one cohesive panel); otherwise it stays bare.
+        for _ in 0..spacing.gap {
             if cards {
                 out.push_str(&paint_card_line("\n", width, &rail));
             } else {
@@ -1643,7 +1710,8 @@ mod tests {
         // Without gaps: 3 content fits in 4. With gaps: 3+3=6 > 4. → gap_used = 0.
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let height = 6; // body_budget = 4
-        let (plan, strip, gap_used) = plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
+        let (plan, strip, spacing) = plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
+        let gap_used = spacing.gap;
         // All 3 idle rows fit at 1 line each (total=3 ≤ body_budget=4).
         assert_eq!(plan.len(), 3, "all 3 rows should be kept");
         assert_eq!(strip, 0, "no rows folded into strip");
@@ -1667,16 +1735,16 @@ mod tests {
     fn plan_layout_compact_always_zero_gap() {
         let rows: Vec<TabRow> = (1..=5).map(idle_row).collect();
         // Even with very large budget, compact never adds gaps.
-        let (_, _, gap_used) = plan_layout(&rows, 100, crate::config::Density::Compact);
-        assert_eq!(gap_used, 0, "Compact density must never produce gaps");
+        let (_, _, spacing) = plan_layout(&rows, 100, crate::config::Density::Compact);
+        assert_eq!(spacing.gap, 0, "Compact density must never produce gaps");
     }
 
     #[test]
     fn plan_layout_comfortable_gap_when_space_available() {
         // 2 idle rows, body_budget=10: 2 content + 2 gaps = 4 ≤ 10 → gap_used = 1.
         let rows: Vec<TabRow> = (1..=2).map(idle_row).collect();
-        let (_, _, gap_used) = plan_layout(&rows, 10, crate::config::Density::Comfortable);
-        assert_eq!(gap_used, 1, "Comfortable with room should use gaps");
+        let (_, _, spacing) = plan_layout(&rows, 10, crate::config::Density::Comfortable);
+        assert_eq!(spacing.gap, 1, "Comfortable with room should use gaps");
     }
 
     // ── Cards density background band tests ──
@@ -1867,6 +1935,68 @@ mod tests {
         }
     }
 
+    #[test]
+    fn card_spacing_per_density() {
+        // The ONE source of truth for spacing knobs, by density.
+        use crate::config::Density::*;
+        assert_eq!(card_spacing(Compact), CardSpacing { pad_x: 0, pad_y: 0, gap: 0 });
+        assert_eq!(card_spacing(Comfortable), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
+        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 1, pad_y: 1, gap: 0 });
+    }
+
+    #[test]
+    fn card_block_lines_is_pad_y_plus_content_plus_gap() {
+        // The single footprint source: pad_y + row_lines + gap.
+        let idle = agg(Status::Idle, 0, 0, None);
+        assert_eq!(row_lines(&idle), 1);
+        // Cards: 1 pad_y + 1 content + 0 gap = 2.
+        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Cards)), 2);
+        // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
+        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Comfortable)), 2);
+        // Compact: 0 + 1 + 0 = 1.
+        assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Compact)), 1);
+    }
+
+    #[test]
+    fn cards_have_pad_y_row() {
+        // A cards-rendered tab emits a LEADING pad_y row painted with its OWN
+        // surface bg, and that row is blank once ANSI is stripped.
+        let rows = vec![TabRow {
+            number: 1, name: "idle".into(), active: false, has_bell: false,
+            agg: agg(Status::Idle, 0, 0, None),
+        }];
+        let s = render(&rows, &ro_cards(24, 100));
+        let lines: Vec<&str> = s.lines().collect();
+        // line 0 = header (rail). line 1 = the card's pad_y row.
+        let pad_row = lines[1];
+        // It carries the idle card surface tint (its OWN surface), not rail_bg.
+        assert!(pad_row.contains("\x1b[48;2;20;21;30m"),
+            "pad_y row must carry the card's own idle surface tint: {:?}", pad_row);
+        assert!(!pad_row.contains("\x1b[48;2;18;19;27m"),
+            "pad_y row must NOT be the rail panel base: {:?}", pad_row);
+        // ANSI-stripped, the pad row is blank (only spaces / no glyphs or text).
+        fn strip_ansi(line: &str) -> String {
+            let mut out = String::new();
+            let mut chars = line.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    if chars.peek() == Some(&'[') {
+                        for inner in chars.by_ref() {
+                            if inner == 'm' { break; }
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        assert!(strip_ansi(pad_row).trim().is_empty(),
+            "pad_y row must be visually blank (no content): {:?}", pad_row);
+        // The next line (line 2) is the actual content row, carrying the glyph + name.
+        assert!(lines[2].contains("idle"), "content row must follow the pad_y row: {:?}", lines[2]);
+    }
+
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
     /// Classify each rendered line for a tint-map snapshot by which truecolor
@@ -1920,17 +2050,25 @@ mod tests {
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
-        // Cards header is now 1 line (no rule), so content starts at line 1.
-        // Cards has no inter-card gaps; tabs are adjacent.
-        // line 1 = idle content → barely-above-panel idle surface (20,21,30)
+        // Cards header is 1 line (no rule); each card leads with a pad_y row in
+        // its own surface tint, then content. No inter-card gaps. Layout:
+        //   line 0 header(rail)
+        //   line 1 idle pad_y, line 2 idle content        → idle (20,21,30)
+        //   line 3 agent pad_y, lines 4-5 agent content   → agent (24,25,35)
+        //   line 6 focus pad_y, lines 7-8 focus content   → active (56,59,71)
+        // The pad_y row carries the SAME surface tint as the card it precedes.
         assert!(lines[1].contains("\x1b[48;2;20;21;30m"),
-            "idle row must carry the dim truecolor card tint (20;21;30): {:?}", lines[1]);
-        // agent line 1 at line 2 (no gap) → mid surface (24,25,35)
-        assert!(lines[2].contains("\x1b[48;2;24;25;35m"),
-            "agent row must carry the mid truecolor card tint (24;25;35): {:?}", lines[2]);
-        // focused agent line 1 at line 4 (after agent detail at line 3) → active surface (56,59,71)
-        assert!(lines[4].contains("\x1b[48;2;56;59;71m"),
-            "focused row must carry the active truecolor card tint (56;59;71): {:?}", lines[4]);
+            "idle pad_y row must carry the dim card tint (20;21;30): {:?}", lines[1]);
+        assert!(lines[2].contains("\x1b[48;2;20;21;30m"),
+            "idle content must carry the dim card tint (20;21;30): {:?}", lines[2]);
+        assert!(lines[3].contains("\x1b[48;2;24;25;35m"),
+            "agent pad_y row must carry the mid card tint (24;25;35): {:?}", lines[3]);
+        assert!(lines[4].contains("\x1b[48;2;24;25;35m"),
+            "agent content must carry the mid card tint (24;25;35): {:?}", lines[4]);
+        assert!(lines[6].contains("\x1b[48;2;56;59;71m"),
+            "focus pad_y row must carry the active card tint (56;59;71): {:?}", lines[6]);
+        assert!(lines[7].contains("\x1b[48;2;56;59;71m"),
+            "focused content must carry the active card tint (56;59;71): {:?}", lines[7]);
     }
 
     #[test]
@@ -1961,13 +2099,25 @@ mod tests {
         // Cards is now a cohesive dark panel: the 1-line header (no rule) is
         // painted with rail_bg; card content carries its surface. No inter-card
         // gap rows — adjacent cards are visually separated by background tints.
+        // Each card leads with ONE pad_y row painted in its OWN surface tint
+        // (internal vertical padding), then its content rows. So per card:
+        //   Claude (active, 2 content) → 1 pad_y + 2 content = 3 "active"
+        //   api    (agent, 2 content)  → 1 pad_y + 2 content = 3 "agent"
+        //   worker (agent, 1 content)  → 1 pad_y + 1 content = 2 "agent"
+        //   Pane#1 (idle, 1 content)   → 1 pad_y + 1 content = 2 "idle"
+        //   Pane#2 (idle, 1 content)   → 1 pad_y + 1 content = 2 "idle"
         let expected = "\
 rail\n\
 active\n\
 active\n\
+active\n\
 agent\n\
 agent\n\
 agent\n\
+agent\n\
+agent\n\
+idle\n\
+idle\n\
 idle\n\
 idle";
         assert_eq!(tint_map(&s), expected,

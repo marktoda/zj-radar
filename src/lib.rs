@@ -118,9 +118,10 @@ impl State {
     /// body_budget and density, guaranteeing that "line N → tab X" is
     /// consistent with what the user actually sees on screen.
     ///
-    /// Each tab's click span = its planned content lines + gap_used (the blank
-    /// line after it). Clicking anywhere in a tab's span — including the gap
-    /// line that follows its content — maps to that tab.
+    /// Each tab's visual block is `pad_y + content + gap` (the cohesive
+    /// CardSpacing footprint). The `pad_y` internal-pad rows and the content
+    /// rows belong to that tab; the trailing `gap` rows are external separation
+    /// and map to None.
     fn tab_position_at_line(&self, line: isize) -> Option<usize> {
         if line < 0 {
             return None;
@@ -142,14 +143,16 @@ impl State {
             self.last_render_height
                 .saturating_sub(render::header_lines(&rows, self.config.header, self.config.density))
         };
-        let (plan, _strip_folded, gap_used) = render::plan_layout(&rows, body_budget, self.config.density);
+        let (plan, _strip_folded, spacing) = render::plan_layout(&rows, body_budget, self.config.density);
         for &(i, planned_lines) in &plan {
-            // Each tab's visual block = content lines + gap.
-            let span = planned_lines.max(1) + gap_used;
-            if target >= cursor && target < cursor + span {
+            // pad_y + content rows belong to this tab; the trailing gap rows do
+            // not. Span the owned rows for the membership test, then advance the
+            // cursor past the gap too.
+            let owned = spacing.pad_y + planned_lines.max(1);
+            if target >= cursor && target < cursor + owned {
                 return Some((rows[i].number - 1) as usize);
             }
-            cursor += span;
+            cursor += owned + spacing.gap;
         }
         // Any line at/after the folded idle strip maps to no tab.
         None
@@ -709,12 +712,13 @@ mod tests {
 
     #[test]
     fn click_mapping_accounts_for_gaps_comfortable() {
-        // Comfortable density, large height → gap_used=1.
+        // Comfortable density, large height → spacing.gap = 1, pad_y = 0.
         // 2 idle tabs, header=2 lines.
         // Layout: header(2) | tab0 content(1) | tab0 gap(1) | tab1 content(1) | tab1 gap(1)
         // Lines:   0,1      | 2               | 3           | 4               | 5
         //
-        // The gap line (3) belongs to tab 0's block. Tab 1 starts at line 4.
+        // The gap is EXTERNAL separation, so the gap line (3) maps to None — only
+        // the owned pad_y + content rows belong to a tab. Tab 1 starts at line 4.
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.last_render_height = 100; // large → no overflow
         state.config = config::Config {
@@ -727,12 +731,12 @@ mod tests {
         assert_eq!(state.tab_position_at_line(1), None, "header line 1");
         // tab 0 content line
         assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line");
-        // tab 0 gap line — maps to tab 0 (its block)
-        assert_eq!(state.tab_position_at_line(3), Some(0), "tab 0 gap line maps to tab 0");
+        // tab 0 gap line — external separation, maps to None
+        assert_eq!(state.tab_position_at_line(3), None, "tab 0 gap line maps to None");
         // tab 1 content line starts at 4
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content line");
-        // tab 1 gap line — maps to tab 1 (its block)
-        assert_eq!(state.tab_position_at_line(5), Some(1), "tab 1 gap line maps to tab 1");
+        // tab 1 gap line — external separation, maps to None
+        assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap line maps to None");
         // beyond
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
@@ -759,13 +763,16 @@ mod tests {
     #[test]
     fn click_mapping_cards_one_line_header() {
         // Cards density: the carded hero is a single " RADAR …" title line (no
-        // rule), so the header occupies ONE line, not two. Cards has no inter-card
-        // gaps (background tints visually separate adjacent cards). The click
+        // rule), so the header occupies ONE line, not two. Cards now carries a
+        // pad_y = 1 internal-pad row per card (gap = 0). Each card's owned span
+        // is pad_y + content; the pad_y row maps to its OWN tab. The click
         // mapping must stay in lockstep with render():
-        //   line 0       → header (1 line, no rule)
-        //   line 1       → tab 0 content
-        //   line 2       → tab 1 content
-        //   line 3       → None (beyond last tab)
+        //   line 0  → header (1 line, no rule) → None
+        //   line 1  → tab 0 pad_y row          → Some(0)
+        //   line 2  → tab 0 content            → Some(0)
+        //   line 3  → tab 1 pad_y row          → Some(1)
+        //   line 4  → tab 1 content            → Some(1)
+        //   line 5  → None (beyond last tab)
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.last_render_height = 100;
         state.config = config::Config {
@@ -774,8 +781,44 @@ mod tests {
         };
 
         assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
-        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
-        assert_eq!(state.tab_position_at_line(2), Some(1), "tab 1 content (no gap)");
-        assert_eq!(state.tab_position_at_line(3), None, "beyond last tab");
+        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 pad_y row maps to tab 0");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content");
+        assert_eq!(state.tab_position_at_line(3), Some(1), "tab 1 pad_y row maps to tab 1");
+        assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content");
+        assert_eq!(state.tab_position_at_line(5), None, "beyond last tab");
+    }
+
+    #[test]
+    fn click_mapping_cards_pad_y_and_post_content_row() {
+        // Exercises the pad_y semantics explicitly with a multi-line card so the
+        // boundary between one card's last content row and the next card's pad_y
+        // row is unambiguous.
+        //   header(1) | tab0 pad_y(1) | tab0 content×2 | tab1 pad_y(1) | tab1 content(1)
+        //   line 0    | line 1        | lines 2,3      | line 4        | line 5
+        // A click on tab 0's pad row (1) maps to tab 0; the row right after tab
+        // 0's last content (line 4) is tab 1's pad row → maps to tab 1, not tab 0.
+        // tab 0 is a Running tab WITH detail → 2 content lines.
+        let mut state = make_state_with_tabs(&[(0, "work", false), (1, "b", false)]);
+        // Make tab 0 a running agent with a detail line (2 content lines).
+        state.tab_panes.insert(0, vec![pane(10)]);
+        apply_payload(&mut state, 10, Status::Running, 1);
+        state.last_render_height = 100;
+        state.config = config::Config {
+            density: config::Density::Cards,
+            ..config::Config::default()
+        };
+
+        // Confirm tab 0 really is 2 content lines.
+        let rows = state.build_rows();
+        assert_eq!(render::row_lines(&rows[0].agg), 2, "tab 0 should be 2 content lines");
+
+        assert_eq!(state.tab_position_at_line(0), None, "header");
+        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 pad_y row → tab 0");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line 1");
+        assert_eq!(state.tab_position_at_line(3), Some(0), "tab 0 content line 2");
+        // The row right after tab 0's last content is tab 1's pad_y row.
+        assert_eq!(state.tab_position_at_line(4), Some(1), "row after tab 0 content → tab 1 pad_y");
+        assert_eq!(state.tab_position_at_line(5), Some(1), "tab 1 content");
+        assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
 }
