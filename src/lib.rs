@@ -15,6 +15,8 @@ mod model;
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod naming;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod config;
 
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
@@ -59,9 +61,11 @@ pub struct State {
     applied_names: HashMap<usize, String>,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     last_render_height: usize,
-    // `glyphs` and `permission_granted` are read by both the wasm glue and the
-    // host tests, so no dead_code gate is needed.
-    glyphs: crate::status::GlyphSet,
+    // `permission_granted` is read by both the wasm glue and the host tests,
+    // so no dead_code gate is needed. `config` carries the parsed plugin
+    // config (naming/header/glyphs) and is read by the wasm glue.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    config: config::Config,
     permission_granted: bool,
 }
 
@@ -101,7 +105,7 @@ impl State {
         if rows.is_empty() {
             return None;
         }
-        let mut cursor = render::header_lines(&rows);
+        let mut cursor = render::header_lines(&rows, self.config.header);
         if target < cursor {
             return None; // click landed on the header → no tab
         }
@@ -110,7 +114,7 @@ impl State {
         let body_budget = if self.last_render_height == 0 {
             usize::MAX
         } else {
-            self.last_render_height.saturating_sub(render::header_lines(&rows))
+            self.last_render_height.saturating_sub(render::header_lines(&rows, self.config.header))
         };
         let (kept, _folded) = render::plan_overflow(&rows, body_budget);
         for &i in &kept {
@@ -140,13 +144,22 @@ impl State {
     }
 
     fn apply_renames(&mut self) {
+        if self.config.naming == config::NamingMode::Off {
+            return;
+        }
+        let force = self.config.naming == config::NamingMode::Force;
         let tabs: Vec<(usize, String)> = self
             .tabs
             .iter()
             .map(|t| (t.position, t.name.clone()))
             .collect();
-        let changes =
-            naming::compute_renames(&tabs, &self.tab_panes, &self.store, &self.applied_names);
+        let changes = naming::compute_renames(
+            &tabs,
+            &self.tab_panes,
+            &self.store,
+            &self.applied_names,
+            force,
+        );
         for (pos, name) in changes {
             rename_tab(pos as u32 + 1, &name);
             self.applied_names.insert(pos, name);
@@ -157,9 +170,7 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
     fn load(&mut self, config: BTreeMap<String, String>) {
-        if let Some(g) = config.get("glyphs") {
-            self.glyphs = crate::status::GlyphSet::from_config(g);
-        }
+        self.config = config::Config::from_map(&config);
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
@@ -262,7 +273,8 @@ impl ZellijPlugin for State {
             width: cols.max(1),
             height: rows,
             now_tick: self.tick,
-            glyphs: self.glyphs,
+            glyphs: self.config.glyphs,
+            header: self.config.header,
         };
         if !self.permission_granted || tabrows.is_empty() {
             print!("{}", render::onboarding(&opts));
@@ -488,7 +500,7 @@ mod tests {
     #[test]
     fn state_defaults_glyphs_to_plain_and_ungranted() {
         let s = State::default();
-        assert_eq!(s.glyphs, crate::status::GlyphSet::Plain);
+        assert_eq!(s.config.glyphs, crate::status::GlyphSet::Plain);
         assert!(!s.permission_granted);
     }
 }

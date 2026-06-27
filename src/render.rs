@@ -8,13 +8,15 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
+#[derive(Clone, Copy)]
 pub struct RenderOpts {
     pub width: usize,
     pub height: usize,
     pub now_tick: u64,
     pub glyphs: GlyphSet,
+    /// Whether to render the " AGENTS" identity header block.
+    pub header: bool,
 }
-
 
 pub struct TabRow {
     pub number: u32,
@@ -96,9 +98,10 @@ fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
 /// The rail's identity header is two lines (title + rule) whenever any rows
 /// exist (always-on identity). Single source of truth for the header's
 /// vertical span (consumed by click mapping in lib.rs). Only the truly-empty
-/// case (no rows at all) is headerless.
-pub fn header_lines(rows: &[TabRow]) -> usize {
-    if rows.is_empty() {
+/// case (no rows at all) is headerless. When `header` is false the identity
+/// block is suppressed and rows start at line 0.
+pub fn header_lines(rows: &[TabRow], header: bool) -> usize {
+    if rows.is_empty() || !header {
         0
     } else {
         2
@@ -163,7 +166,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let now_tick = opts.now_tick;
     let accent = Role::Accent.ansi();
 
-    let body_budget = opts.height.saturating_sub(2); // header is 2 lines
+    let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header));
     let (kept, folded) = plan_overflow(rows, body_budget);
     let overflow = folded > 0;
     let count = if overflow {
@@ -172,18 +175,20 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         format!("·{}", rows.len())
     };
 
-    // Always emit the header block for non-empty rows (always-on rail identity).
+    // Emit the identity header block only when configured on (and rows exist).
     // Header line 1: " AGENTS" + right-aligned count.
-    let title = " AGENTS";
-    let gap = width
-        .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(count.as_str()))
-        .max(1);
-    out.push_str(&format!(
-        "{}{}{}{}{}\n",
-        accent, title, " ".repeat(gap), count, RESET
-    ));
-    // Header line 2: rule across the full width.
-    out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
+    if opts.header {
+        let title = " AGENTS";
+        let gap = width
+            .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(count.as_str()))
+            .max(1);
+        out.push_str(&format!(
+            "{}{}{}{}{}\n",
+            accent, title, " ".repeat(gap), count, RESET
+        ));
+        // Header line 2: rule across the full width.
+        out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
+    }
 
     for &i in &kept {
         let row = &rows[i];
@@ -337,7 +342,7 @@ mod tests {
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
-        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain }
+        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true }
     }
 
     #[test]
@@ -353,7 +358,7 @@ mod tests {
             number: 1, name: "a".into(), active: false, has_bell: false,
             agg: agg(Status::Running, 0, 0, None),
         }];
-        assert_eq!(header_lines(&rows), 2);
+        assert_eq!(header_lines(&rows, true), 2);
         let s = render(&rows, &ro(24, 0));
         let mut lines = s.lines();
         let title = lines.next().unwrap();
@@ -366,7 +371,7 @@ mod tests {
     #[test]
     fn header_absent_for_empty_rows() {
         let rows: Vec<TabRow> = vec![];
-        assert_eq!(header_lines(&rows), 0);
+        assert_eq!(header_lines(&rows, true), 0);
         assert!(render(&rows, &ro(24, 0)).is_empty());
     }
 
@@ -454,8 +459,8 @@ mod tests {
                          since_tick: 0, status: Status::Running };
         let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
                                agg: agg(Status::Running, 0, 1, Some(d.clone())) };
-        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain });
-        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain });
+        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
+        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true });
         assert!(f0.contains('◐'));
         assert!(f1.contains('◓'));
     }
@@ -622,7 +627,7 @@ mod tests {
     fn overflow_folds_idle_into_strip_and_marks_header() {
         // 20 idle tabs, height only fits a few → fold.
         let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain });
+        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
         assert!(s.contains("idle"));   // "+N idle ▾" footer
         assert!(s.contains('▾'));
         assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
@@ -638,7 +643,7 @@ mod tests {
                          since_tick: 0, status: Status::Pending };
         rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
                            has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
-        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain });
+        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true });
         assert!(s.contains("pinky"));     // urgent row never folded
         assert!(s.contains("needs you")); // its detail survives
     }
@@ -646,7 +651,7 @@ mod tests {
     #[test]
     fn no_overflow_when_everything_fits() {
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain });
+        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
     }
@@ -683,7 +688,7 @@ mod tests {
                      agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))) },
         ];
 
-        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain };
+        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true };
         let s = render(&rows, &opts);
 
         // Must NOT contain truecolor sequences
@@ -829,7 +834,7 @@ mod tests {
     fn idle_strip_never_exceeds_width() {
         let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
         for width in [18usize, 24, 30] {
-            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain });
+            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
             // folding must have happened
             assert!(s.contains("idle ▾"), "expected idle strip at width {}", width);
             for line in s.lines() {
@@ -869,5 +874,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn header_false_emits_no_header_lines() {
+        let rows = vec![TabRow {
+            number: 1, name: "a".into(), active: false, has_bell: false,
+            agg: agg(Status::Running, 0, 0, None),
+        }];
+        assert_eq!(header_lines(&rows, false), 0);
+        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false };
+        let s = render(&rows, &opts);
+        // No identity header: rows start at line 0, so no "AGENTS"/"═" line.
+        assert!(!s.contains("AGENTS"));
+        assert!(!s.contains('═'));
+        // The single tab row is still rendered.
+        assert!(s.contains('a') || s.matches('\n').count() >= 1);
     }
 }

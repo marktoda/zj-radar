@@ -51,14 +51,17 @@ pub fn computed_name(panes: &[PaneLite], store: &StateStore) -> Option<String> {
     None
 }
 
-/// Position→new-name diff. Only renames a tab whose current name is a Zellij
-/// default OR equals the name we last auto-applied (clobber guard); and only
-/// when the desired name differs from the current name (change/loop guard).
+/// Position→new-name diff. By default only renames a tab whose current name is
+/// a Zellij default OR equals the name we last auto-applied (clobber guard), so
+/// user-chosen names are never stomped. With `force`, that guard is bypassed and
+/// any tab with a name signal is renamed to it. The change/loop guard (skip when
+/// desired == current) always applies, so force can't cause a rename loop.
 pub fn compute_renames(
     tabs: &[(usize, String)],
     tab_panes: &HashMap<usize, Vec<PaneLite>>,
     store: &StateStore,
     applied: &HashMap<usize, String>,
+    force: bool,
 ) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (pos, current) in tabs {
@@ -71,7 +74,7 @@ pub fn compute_renames(
             continue;
         }
         let ours = applied.get(pos).map_or(false, |n| n == current);
-        if is_default_name(current) || ours {
+        if force || is_default_name(current) || ours {
             out.push((*pos, desired));
         }
     }
@@ -158,7 +161,7 @@ mod tests {
             (2, "pinky".to_string()),
         ];
         let applied = HashMap::new();
-        let out = compute_renames(&tabs, &tab_panes, &store, &applied);
+        let out = compute_renames(&tabs, &tab_panes, &store, &applied, false);
         assert_eq!(out, vec![(0, "pinky".to_string())]);
     }
 
@@ -171,7 +174,35 @@ mod tests {
         let tabs = vec![(0, "oldrepo".to_string())];
         let mut applied = HashMap::new();
         applied.insert(0usize, "oldrepo".to_string()); // we set "oldrepo" before
-        let out = compute_renames(&tabs, &tab_panes, &store, &applied);
+        let out = compute_renames(&tabs, &tab_panes, &store, &applied, false);
         assert_eq!(out, vec![(0, "newrepo".to_string())]);
+    }
+
+    #[test]
+    fn compute_renames_force_overrides_manual_name() {
+        // force=true bypasses the clobber guard: a user-chosen name is renamed.
+        let store = store_with(7, "pinky");
+        let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
+        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]);
+        let tabs = vec![(0, "my-manual-name".to_string())];
+        let applied = HashMap::new();
+        // default behavior leaves the manual name alone...
+        assert!(compute_renames(&tabs, &tab_panes, &store, &applied, false).is_empty());
+        // ...but force renames it to the agent repo.
+        assert_eq!(
+            compute_renames(&tabs, &tab_panes, &store, &applied, true),
+            vec![(0, "pinky".to_string())]
+        );
+    }
+
+    #[test]
+    fn compute_renames_force_still_skips_when_equal() {
+        // change/loop guard holds even under force (desired == current → no-op).
+        let store = store_with(7, "pinky");
+        let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
+        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]);
+        let tabs = vec![(0, "pinky".to_string())];
+        let applied = HashMap::new();
+        assert!(compute_renames(&tabs, &tab_panes, &store, &applied, true).is_empty());
     }
 }
