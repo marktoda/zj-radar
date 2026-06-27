@@ -72,9 +72,10 @@ pub fn row_lines(agg: &TabAgg) -> usize {
             None => 1,
         },
     };
-    // Add one extra line for the per-member roster when the tab has >1 agent
-    // and the overall status is active (not Idle).
-    if agg.total > 1 && agg.status.is_active() { base + 1 } else { base }
+    // Add one extra line for the per-member roster when the tab has >1 agent,
+    // the overall status is active (not Idle), and the roster is non-empty.
+    // Must match the three-part guard in render() exactly.
+    if agg.total > 1 && agg.status.is_active() && !agg.roster.is_empty() { base + 1 } else { base }
 }
 
 /// Right-aligned status slot text (no color). Empty for idle.
@@ -990,5 +991,22 @@ mod tests {
         assert_eq!(base, 3, "single-agent pending+msg should be 3 lines");
         // Roster vec is empty so no extra line.
         assert!(a.roster.is_empty());
+    }
+
+    #[test]
+    fn row_lines_no_roster_line_when_roster_empty() {
+        use crate::status::Status::*;
+        // Multi-agent active tab but roster is empty — row_lines must NOT add +1.
+        // Running with detail = base 2 lines; empty roster => still 2, not 3.
+        let detail = crate::model::Detail {
+            repo: "r".into(), branch: "b".into(), msg: "working".into(),
+            since_tick: 0, status: Running,
+        };
+        let a = agg(Running, 1, 3, Some(detail));
+        assert!(a.roster.is_empty(), "agg() helper always creates empty roster");
+        assert_eq!(
+            row_lines(&a), 2,
+            "multi-agent active tab with empty roster must not add roster line"
+        );
     }
 }
