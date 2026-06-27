@@ -61,7 +61,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// Single source of truth for how many lines a tab row occupies.
 pub fn row_lines(agg: &TabAgg) -> usize {
-    match agg.status {
+    let base = match agg.status {
         Status::Idle | Status::Done => 1,
         Status::Running | Status::Error => {
             if agg.detail.is_some() { 2 } else { 1 }
@@ -71,7 +71,10 @@ pub fn row_lines(agg: &TabAgg) -> usize {
             Some(_) => 2,
             None => 1,
         },
-    }
+    };
+    // Add one extra line for the per-member roster when the tab has >1 agent
+    // and the overall status is active (not Idle).
+    if agg.total > 1 && agg.status.is_active() { base + 1 } else { base }
 }
 
 /// Right-aligned status slot text (no color). Empty for idle.
@@ -314,6 +317,36 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                 Status::Done | Status::Idle => {}
             }
         }
+        // Roster line: one extra line for multi-agent active tabs showing each
+        // member's status glyph colored by its role.
+        if row.agg.total > 1 && row.agg.status.is_active() && !row.agg.roster.is_empty() {
+            let indent = "   ";
+            let indent_width = 3usize;
+            // Build glyph tokens: "<color><glyph><reset>", measure visible width.
+            let tokens: Vec<(String, usize)> = row.agg.roster.iter().map(|&st| {
+                let glyph = st.glyph_for(opts.glyphs);
+                let token = format!("{}{}{}", st.role().ansi(), glyph, RESET);
+                let vis = UnicodeWidthChar::width(glyph).unwrap_or(1);
+                (token, vis)
+            }).collect();
+            // Build the visible line, dropping trailing glyphs that would overflow.
+            // Layout: indent(3) + glyph(w) + " "(1) + glyph(w) + ...
+            let max_vis = width.saturating_sub(indent_width);
+            let mut parts: Vec<&str> = Vec::new();
+            let mut used = 0usize;
+            for (idx, (tok, vis)) in tokens.iter().enumerate() {
+                let needed = if idx == 0 { *vis } else { 1 + vis }; // space separator
+                if used + needed > max_vis {
+                    break;
+                }
+                parts.push(tok.as_str());
+                used += needed;
+            }
+            if !parts.is_empty() {
+                out.push_str(&format!("{}{}
+", indent, parts.join(" ")));
+            }
+        }
     }
     if folded > 0 {
         // Width-safe idle strip: keep the "── +N idle ▾" suffix, fill the
@@ -338,7 +371,7 @@ mod tests {
     use crate::model::Detail;
 
     fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
-        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail }
+        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail, roster: vec![] }
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
@@ -728,7 +761,7 @@ mod tests {
             name: "agents".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail) },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail), roster: vec![] },
         }];
         let s = render(&rows, &ro(30, 0));
         assert!(s.contains("2 needs you"), "expected '2 needs you' in output: {:?}", s);
@@ -747,7 +780,7 @@ mod tests {
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail2) },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail2), roster: vec![] },
         }];
         let s2 = render(&rows2, &ro(30, 0));
         assert!(s2.contains("needs you"), "expected 'needs you' in single-pending output: {:?}", s2);
@@ -767,7 +800,7 @@ mod tests {
             name: "multi".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail3) },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail3), roster: vec![] },
         }];
         // Width constraint check: use widths where the slot ("0/5 ⏵ 0:00" = 11 cols)
         // plus row chrome can actually fit on the first line (>=20).
@@ -807,7 +840,7 @@ mod tests {
             name: "m".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail) },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail), roster: vec![] },
         }];
         for width in [14usize, 16, 17, 20, 24] {
             let s = render(&rows, &ro(width, 0));
@@ -890,5 +923,72 @@ mod tests {
         assert!(!s.contains('═'));
         // The single tab row is still rendered.
         assert!(s.contains('a') || s.matches('\n').count() >= 1);
+    }
+
+    #[test]
+    fn multi_agent_active_tab_shows_roster_line() {
+        use crate::status::Status::*;
+        // Build a multi-agent running tab with a 4-member roster.
+        let detail = Detail {
+            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
+            since_tick: 0, status: Running,
+        };
+        let mut a = agg(Running, 2, 4, Some(detail));
+        a.roster = vec![Running, Done, Done, Pending];
+
+        // row_lines should be base + 1 for multi-agent active tab.
+        // Running with detail normally = 2 lines; +1 roster = 3.
+        assert_eq!(row_lines(&a), 3, "multi-agent active tab should add roster line");
+
+        let row = TabRow { number: 1, name: "agents".into(), active: false, has_bell: false, agg: a };
+        let s = render(&[row], &ro(30, 0));
+        // The pending glyph should appear (roster member)
+        assert!(s.contains('◆'), "roster line must contain pending glyph: {:?}", s);
+        // A working/half-circle glyph should appear (Running member)
+        assert!(s.contains('◐') || s.contains('◓') || s.contains('◑') || s.contains('◒'),
+            "roster line must contain a working glyph: {:?}", s);
+        // The roster line is separate from line 1 (which has the tab name)
+        let lines: Vec<&str> = s.lines().collect();
+        // header(2) + line1(1) + detail(1) + roster(1) = 5 lines
+        assert!(lines.len() >= 4, "expected at least 4 lines, got {}: {:?}", lines.len(), s);
+    }
+
+    #[test]
+    fn roster_line_never_exceeds_width() {
+        use crate::status::Status::*;
+        for &width in &[16usize, 20, 24] {
+            let detail = Detail {
+                repo: "r".into(), branch: "b".into(), msg: "m".into(),
+                since_tick: 0, status: Running,
+            };
+            // 10-member roster
+            let mut a = agg(Running, 0, 10, Some(detail));
+            a.roster = vec![Running, Done, Pending, Running, Done, Running, Pending, Done, Running, Error];
+            let row = TabRow { number: 1, name: "big-team".into(), active: false, has_bell: false, agg: a };
+            let s = render(&[row], &RenderOpts {
+                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true,
+            });
+            for line in s.lines() {
+                assert!(visible_len(line) <= width,
+                    "roster line exceeds width {} at width {}: {:?} (visible {})",
+                    width, width, line, visible_len(line));
+            }
+        }
+    }
+
+    #[test]
+    fn single_agent_pending_no_roster_line() {
+        use crate::status::Status::*;
+        let detail = Detail {
+            repo: "r".into(), branch: "b".into(), msg: "approve?".into(),
+            since_tick: 0, status: Pending,
+        };
+        // Single-agent: roster is empty, total == 1.
+        let a = agg(Pending, 0, 1, Some(detail));
+        // row_lines should be 3 (pending + msg) — NOT 4.
+        let base = row_lines(&a);
+        assert_eq!(base, 3, "single-agent pending+msg should be 3 lines");
+        // Roster vec is empty so no extra line.
+        assert!(a.roster.is_empty());
     }
 }

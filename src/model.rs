@@ -19,6 +19,9 @@ pub struct TabAgg {
     pub total: usize,
     pub pending: usize,
     pub detail: Option<Detail>,
+    /// Status of each ever-active pane in the tab, in pane-id iteration order.
+    /// Empty for single-agent or plain (non-multi) tabs.
+    pub roster: Vec<Status>,
 }
 
 /// Highest-severity pane wins (tie → most recent last_change_tick). `total`
@@ -30,11 +33,13 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
     let mut done = 0usize;
     let mut total = 0usize;
     let mut pending = 0usize;
+    let mut roster: Vec<Status> = Vec::new();
 
     for &id in pane_ids {
         let Some(s) = store.get(id) else { continue };
         if s.ever_active {
             total += 1;
+            roster.push(s.status);
             if s.status == Status::Done {
                 done += 1;
             }
@@ -63,6 +68,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
         total,
         pending,
         detail: best,
+        roster,
     }
 }
 
@@ -135,5 +141,24 @@ mod tests {
         put(&mut store, 2, Status::Running, 9, "newer");
         let agg = aggregate(&[1, 2], &store);
         assert_eq!(agg.detail.unwrap().repo, "newer");
+    }
+
+    #[test]
+    fn aggregate_populates_roster_per_ever_active_pane() {
+        // Three ever-active panes → roster has 3 entries with their statuses.
+        let mut store = StateStore::default();
+        put(&mut store, 1, Status::Running, 1, "a");
+        put(&mut store, 2, Status::Done, 2, "b");
+        put(&mut store, 3, Status::Pending, 3, "c");
+        let agg = aggregate(&[1, 2, 3], &store);
+        assert_eq!(agg.roster.len(), 3);
+        assert!(agg.roster.contains(&Status::Running));
+        assert!(agg.roster.contains(&Status::Done));
+        assert!(agg.roster.contains(&Status::Pending));
+
+        // A single idle pane (never active) → empty roster.
+        let store2 = StateStore::default();
+        let agg2 = aggregate(&[10], &store2);
+        assert!(agg2.roster.is_empty());
     }
 }

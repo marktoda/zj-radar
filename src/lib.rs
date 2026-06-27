@@ -503,4 +503,24 @@ mod tests {
         assert_eq!(s.config.glyphs, crate::status::GlyphSet::Plain);
         assert!(!s.permission_granted);
     }
+
+    #[test]
+    fn multi_agent_running_tab_occupies_extra_roster_line() {
+        // A tab with 2 panes both running → total=2, status=Running, detail present.
+        // row_lines = 2 (running+detail) + 1 (roster) = 3 lines.
+        let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
+        state.tab_panes.insert(0, vec![pane(10), pane(11)]);
+        apply_payload(&mut state, 10, Status::Running, 1);
+        apply_payload(&mut state, 11, Status::Running, 1);
+        // header = lines 0,1
+        assert_eq!(state.tab_position_at_line(0), None);
+        assert_eq!(state.tab_position_at_line(1), None);
+        // 3-line multi-agent running tab at position 0: lines 2, 3, 4
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(0));
+        assert_eq!(state.tab_position_at_line(4), Some(0));
+        // plain tab at position 1: line 5
+        assert_eq!(state.tab_position_at_line(5), Some(1));
+        assert!(state.tab_position_at_line(6).is_none());
+    }
 }
