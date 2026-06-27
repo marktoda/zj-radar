@@ -90,6 +90,12 @@ pub struct State {
     theme: theme::DerivedColors,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     command: command::CommandStore,
+    // The terminal pane focused as of the last PaneUpdate. Clear-on-focus fires
+    // only when this CHANGES (a focus transition into a pane), so a pane that
+    // becomes Done while already focused stays lit until you leave and return —
+    // the design's "stays lit until visited" rule. None until the first focus.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    last_focused: Option<u32>,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -113,6 +119,31 @@ impl State {
             });
         }
         rows
+    }
+
+    /// Apply clear-on-focus only on a focus TRANSITION — when focus enters a
+    /// pane that wasn't focused on the previous PaneUpdate. The "visit" that
+    /// clears a Done/finished pane (per the design's "stays lit until visited")
+    /// is the act of focusing INTO it, not merely being focused: a pane that
+    /// finishes while already focused must stay lit until you leave and return.
+    ///
+    /// Without this gate, `on_pane_focused` ran on EVERY PaneUpdate for the
+    /// focused pane, so a pane that became Done while focused was auto-cleared to
+    /// Idle by the next (frequent) update — and whether a focus-move "beat" that
+    /// clearing update was a timing race, surfacing as direction-dependent
+    /// Done↔Idle flicker. Gating on the transition makes it deterministic.
+    ///
+    /// Returns true when a transition was applied (focus actually changed).
+    fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        if focused == self.last_focused {
+            return false;
+        }
+        self.last_focused = focused;
+        if let Some(id) = focused {
+            self.store.on_pane_focused(id, tick);
+            self.command.on_pane_focused(id, tick);
+        }
+        true
     }
 
     /// Map a clicked line back to a tab position by replaying render()'s fold
@@ -316,10 +347,12 @@ impl ZellijPlugin for State {
                 self.store.prune(&live);
                 self.command.prune(&live);
                 self.pane_cwd.retain(|id, _| live.contains(id));
-                if let Some(id) = focused_terminal {
-                    self.store.on_pane_focused(id, self.tick);
-                    self.command.on_pane_focused(id, self.tick);
-                }
+                // Clear-on-focus fires only on a focus TRANSITION (focus enters
+                // a new pane), not on every update while a pane stays focused —
+                // otherwise a pane that finishes while already focused is
+                // auto-cleared to Idle by the next update (a timing race that
+                // showed up as direction-dependent Done↔Idle flicker).
+                self.apply_focus_transition(focused_terminal, self.tick);
                 self.apply_renames();
                 true
             }
@@ -896,5 +929,54 @@ mod tests {
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content");
         assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap row → None");
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
+    }
+
+    // ── Clear-on-focus fires only on a focus TRANSITION ──
+
+    #[test]
+    fn focus_transition_clears_only_on_entry_not_while_focused() {
+        let mut state = make_state_with_tabs(&[(0, "a", true), (1, "b", false)]);
+        state.tab_panes.insert(0, vec![pane(10)]);
+        state.tab_panes.insert(1, vec![pane(11)]);
+        // Pane 10 finished a command WHILE focused → Done with on_focus=Idle.
+        state.command.on_exit(10, Some(0), 1);
+        state.last_focused = Some(10);
+        // A subsequent PaneUpdate with the SAME focused pane is not a transition
+        // → must NOT clear it (stays lit while you sit on it).
+        assert!(!state.apply_focus_transition(Some(10), 2), "no transition when focus unchanged");
+        assert_eq!(state.command.get(10).unwrap().status, Status::Done,
+            "Done pane stays lit while focus remains on it");
+        // Leaving to pane 11 is a transition, but must not touch the pane we left.
+        assert!(state.apply_focus_transition(Some(11), 3));
+        assert_eq!(state.command.get(10).unwrap().status, Status::Done,
+            "leaving does not change the pane you left");
+        // Re-entering pane 10 is a transition → NOW it clears to Idle ("visited").
+        assert!(state.apply_focus_transition(Some(10), 4));
+        assert_eq!(state.command.get(10).unwrap().status, Status::Idle,
+            "re-entering a Done pane clears it to Idle");
+    }
+
+    #[test]
+    fn done_pane_left_behind_is_direction_independent() {
+        // Reproduce the reported bug: a command pane that finished while focused
+        // must show the SAME state whether you then move to a higher- or
+        // lower-numbered pane. Before the fix, a redraw update while still
+        // focused could clear it to Idle, so the result depended on timing.
+        let run = |dest: u32| {
+            let mut state = make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
+            state.tab_panes.insert(0, vec![pane(1)]);
+            state.tab_panes.insert(1, vec![pane(2)]);
+            state.tab_panes.insert(2, vec![pane(3)]);
+            // Focus is on pane 2; its command finishes → Done while focused.
+            state.last_focused = Some(2);
+            state.command.on_exit(2, Some(0), 1);
+            // A redraw update arrives while still focused (must not clear).
+            state.apply_focus_transition(Some(2), 2);
+            // Now move focus to the destination pane.
+            state.apply_focus_transition(Some(dest), 3);
+            state.command.get(2).unwrap().status
+        };
+        assert_eq!(run(3), Status::Done, "moving 'right' (2→3) leaves pane 2 Done");
+        assert_eq!(run(1), Status::Done, "moving 'left' (2→1) leaves pane 2 Done");
     }
 }
