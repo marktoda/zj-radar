@@ -123,7 +123,7 @@ impl State {
         if rows.is_empty() {
             return None;
         }
-        let mut cursor = render::header_lines(&rows, self.config.header);
+        let mut cursor = render::header_lines(&rows, self.config.header, self.config.density);
         if target < cursor {
             return None; // click landed on the header → no tab
         }
@@ -132,7 +132,8 @@ impl State {
         let body_budget = if self.last_render_height == 0 {
             usize::MAX
         } else {
-            self.last_render_height.saturating_sub(render::header_lines(&rows, self.config.header))
+            self.last_render_height
+                .saturating_sub(render::header_lines(&rows, self.config.header, self.config.density))
         };
         let (plan, _strip_folded, gap_used) = render::plan_layout(&rows, body_budget, self.config.density);
         for &(i, planned_lines) in &plan {
@@ -272,11 +273,11 @@ impl ZellijPlugin for State {
                 true
             }
             Event::ModeUpdate(mode_info) => {
-                let bg_raw = mode_info.style.colors.text_unselected.background;
-                let fg_raw = mode_info.style.colors.text_unselected.base;
-                let bg = theme::palette_color_to_rgb(bg_raw);
-                let fg = theme::palette_color_to_rgb(fg_raw);
-                self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
+                // `style.colors` is a `Styling`; convert it to the role-hued
+                // `Palette` (zellij provides `From<Styling>`), then derive the
+                // dark-panel ladder + vivid role hues from the whole palette.
+                let palette: Palette = mode_info.style.colors.into();
+                self.theme = theme::DerivedColors::from_palette(&palette);
                 false // color update doesn't require a full re-render on its own
             }
             Event::CwdChanged(pane_id, path, _clients) => {
@@ -718,5 +719,31 @@ mod tests {
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
         assert_eq!(state.tab_position_at_line(4), None);
+    }
+
+    #[test]
+    fn click_mapping_cards_one_line_header_and_gaps() {
+        // Cards density: the carded hero is a single " RADAR …" title line (no
+        // rule), so the header occupies ONE line, not two. Each tab content line
+        // is followed by one rail gap line (like Comfortable). The click mapping
+        // must stay in lockstep with render():
+        //   line 0       → header (1 line, no rule)
+        //   line 1       → tab 0 content
+        //   line 2       → tab 0 gap  (maps to tab 0's block)
+        //   line 3       → tab 1 content
+        //   line 4       → tab 1 gap  (maps to tab 1's block)
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        state.last_render_height = 100;
+        state.config = config::Config {
+            density: config::Density::Cards,
+            ..config::Config::default()
+        };
+
+        assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
+        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 gap maps to tab 0");
+        assert_eq!(state.tab_position_at_line(3), Some(1), "tab 1 content");
+        assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 gap maps to tab 1");
+        assert_eq!(state.tab_position_at_line(5), None, "beyond last tab");
     }
 }
