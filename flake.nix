@@ -1,5 +1,5 @@
 {
-  description = "zj-agents — Zellij sidebar plugin for AI-agent status (dev shell with wasm32-wasip1 toolchain)";
+  description = "zj-radar — Zellij sidebar plugin for AI-agent status (dev shell with wasm32-wasip1 toolchain)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,7 +24,7 @@
         devShells.default = pkgs.mkShell {
           packages = [ toolchain pkgs.zellij ];
           shellHook = ''
-            echo "zj-agents dev shell: $(rustc --version)"
+            echo "zj-radar dev shell: $(rustc --version)"
             echo "build:  cargo build --release --target wasm32-wasip1"
             echo "test:   cargo test"
           '';

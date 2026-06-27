@@ -1,4 +1,4 @@
-# zj-agents — UI Design Brief
+# zj-radar — UI Design Brief
 
 **For:** a designer crafting the visual language of the sidebar
 **From:** Mark (with Claude)
@@ -9,7 +9,7 @@
 
 ## 1. TL;DR
 
-`zj-agents` is a **left sidebar inside the terminal** that shows, at a glance, the
+`zj-radar` is a **left sidebar inside the terminal** that shows, at a glance, the
 status of every tab — and especially of AI coding agents (Claude Code, Codex)
 running in those tabs: which are *working*, which are *waiting for me*, which are
 *done*, which *errored*. You can click a row to jump to that tab. Think of the
@@ -141,7 +141,7 @@ Please mock these as a sequence of sidebar states (a few "frames" each):
 
 5. **First-run permission (onboarding).** On first launch the plugin must ask the
    OS-multiplexer for permission; until granted it should present a clear,
-   friendly "press `y` to allow zj-agents to read tab state" affordance in the
+   friendly "press `y` to allow zj-radar to read tab state" affordance in the
    rail, then transition to the normal sidebar once granted. Design this
    onboarding moment.
 

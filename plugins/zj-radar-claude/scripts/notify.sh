@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# zj-agents Claude Code plugin notifier.
+# zj-radar Claude Code plugin notifier.
 #
 # Registered by the bundled hooks/hooks.json; called as `notify.sh <status>`
 # where <status> is running | pending | done (the hook event determines which).
 # Reads the Claude hook JSON on stdin for cwd + last message, then broadcasts a
-# zj_agents.status.v1 message to the zj-agents Zellij sidebar.
+# zj_radar.status.v1 message to the zj-radar Zellij sidebar.
 #
 # Design contract (matches the sidebar plugin's pipe schema):
 #   - BROADCAST by name (never --plugin): reaches every sidebar instance and
@@ -13,7 +13,7 @@
 #   - No-op outside Zellij, or on a non-terminal pane id.
 #
 # Dependency: jq (used to parse the hook payload + build JSON). The productized
-# `zj-agents notify` binary will remove this dependency.
+# `zj-radar notify` binary will remove this dependency.
 set -euo pipefail
 
 status="${1:-running}"
@@ -46,9 +46,9 @@ payload="$(jq -nc \
       status: $status, repo: $repo, branch: $branch, msg: $msg}
      + (if $on_focus == "" then {} else {on_focus: $on_focus} end)')"
 
-if [[ "${ZJ_AGENTS_DEBUG:-}" == "1" ]]; then
-    printf 'zj-agents payload: %s\n' "$payload" >&2
+if [[ "${ZJ_RADAR_DEBUG:-}" == "1" ]]; then
+    printf 'zj-radar payload: %s\n' "$payload" >&2
     exit 0
 fi
 
-( zellij pipe --name zj_agents.status.v1 -- "$payload" >/dev/null 2>&1 || true ) &
+( zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true ) &

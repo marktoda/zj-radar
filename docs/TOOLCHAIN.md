@@ -11,7 +11,7 @@ Use the dev shell, which pins a Rust toolchain with the `wasm32-wasip1` target:
 ```sh
 nix develop          # enter the shell (first run fetches the toolchain)
 cargo build --release --target wasm32-wasip1
-# → target/wasm32-wasip1/release/zj_agents.wasm
+# → target/wasm32-wasip1/release/zj_radar.wasm
 ```
 
 Or run a one-off without entering the shell:

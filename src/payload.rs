@@ -1,4 +1,4 @@
-//! Parse + sanitize the zj_agents.status.v1 pipe payload. No zellij-tile dependency.
+//! Parse + sanitize the zj_radar.status.v1 pipe payload. No zellij-tile dependency.
 
 use crate::status::Status;
 use serde::Deserialize;

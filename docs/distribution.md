@@ -21,7 +21,7 @@ There are **two install surfaces**, and they have *different* best answers:
    primary agent).
 
 2. **Every other agent** (Codex, Gemini, Aider, opencode, …) — no plugin-hooks
-   system, so we need a small **`zj-agents setup` installer** that idempotently
+   system, so we need a small **`zj-radar setup` installer** that idempotently
    writes each agent's own config to call **one universal notifier**, modeled on
    `cmux hooks setup`.
 
@@ -39,7 +39,7 @@ uninstall, and hook commands can reference bundled scripts via
 
 Plugin layout:
 ```
-zj-agents-claude/
+zj-radar-claude/
 ├── .claude-plugin/
 │   └── plugin.json            # name, version, description
 ├── hooks/
@@ -62,10 +62,10 @@ zj-agents-claude/
 ```
 
 Install (any of):
-- one-line marketplace: `/plugin marketplace add <gh-org/zj-agents>` then
-  `/plugin install zj-agents-claude@…`,
-- scriptable: `claude plugin install zj-agents-claude@…`,
-- no-marketplace/dev: `claude --plugin-dir ./zj-agents-claude` (session-only).
+- one-line marketplace: `/plugin marketplace add <gh-org/zj-radar>` then
+  `/plugin install zj-radar-claude@…`,
+- scriptable: `claude plugin install zj-radar-claude@…`,
+- no-marketplace/dev: `claude --plugin-dir ./zj-radar-claude` (session-only).
 
 Uninstall: `claude plugin uninstall …` — hooks vanish, no file surgery. Set
 `"defaultEnabled": false` in the manifest if we want it opt-in.
@@ -73,7 +73,7 @@ Uninstall: `claude plugin uninstall …` — hooks vanish, no file surgery. Set
 **Our existing `claude-zellij-notify.sh` becomes this plugin's bundled
 `scripts/notify.sh`** — the logic we just wrote is reused, not thrown away.
 
-## 2. Other agents → a `zj-agents setup` installer (Cmux model)
+## 2. Other agents → a `zj-radar setup` installer (Cmux model)
 
 Mirror Cmux/code-notify's proven shape:
 
@@ -100,7 +100,7 @@ Mirror Cmux/code-notify's proven shape:
 Per-agent specifics (verified):
 | Agent | File | Insert | Event → status |
 |---|---|---|---|
-| Codex | `~/.codex/config.toml` `notify` | `notify = ["zj-agents","notify","codex"]` (top-level, before tables) | `agent-turn-complete` → done |
+| Codex | `~/.codex/config.toml` `notify` | `notify = ["zj-radar","notify","codex"]` (top-level, before tables) | `agent-turn-complete` → done |
 | Gemini (≥0.26) | `~/.gemini/settings.json` | `hooks.AfterAgent` + `hooks.Notification` | AfterAgent → done |
 | Aider | `.aider.conf.yml` | `notifications-command` (no payload — bake pane id into the cmd) | done/waiting |
 | opencode / amp / pi | a `*.ts`/`*.js` plugin file (no command-hook config) | marker-tagged template | session.idle / agent.end → done |
@@ -108,14 +108,14 @@ Per-agent specifics (verified):
 ## 3. One universal notifier (not per-agent scripts)
 
 Both Cmux and code-notify converge here: **a single entrypoint every agent
-calls** — `zj-agents notify <agent> [event]` — which figures out the event from
+calls** — `zj-radar notify <agent> [event]` — which figures out the event from
 its argv subcommand + the JSON the agent passes (Codex: JSON on argv; Claude/
 Gemini: type on argv + JSON on stdin; Aider: bare). It maps all of them to one
-`zellij pipe --name zj_agents.status.v1` broadcast and **no-ops when not running
+`zellij pipe --name zj_radar.status.v1` broadcast and **no-ops when not running
 under Zellij** (gate on `$ZELLIJ`). This collapses our two shell scripts into one
 code path and keeps the "wire up with one command" promise.
 
-**Form factor:** a small native **`zj-agents` CLI binary** (Rust) with
+**Form factor:** a small native **`zj-radar` CLI binary** (Rust) with
 subcommands `notify`, `setup`, `setup --uninstall`. Native = no `jq`/`bash`
 runtime deps, cross-platform, easy to vendor. It ships alongside the wasm plugin.
 (Interim: the current bash scripts work for Mark; the binary is the productized
@@ -127,7 +127,7 @@ Installing the *sidebar* itself still needs: the `.wasm` at a **stable path**
 (not a per-rebuild Nix store path, so the permission grant sticks), the layout
 edit (`default_tab_template`), and the first-run **permission grant**
 (selectable-until-granted in-code + optional `permissions.kdl` pre-seed). A
-`zj-agents init` could: copy the wasm to `~/.config/zellij/plugins/`, print the
+`zj-radar init` could: copy the wasm to `~/.config/zellij/plugins/`, print the
 `default_tab_template` snippet to paste (or patch a layout), and pre-seed the
 permission. Document the one-time grant for the manual path.
 
@@ -136,19 +136,19 @@ permission. Document the one-time grant for the manual path.
 1. **Phase 1 (biggest bang, least work):** package the Claude hooks as a **Claude
    Code plugin** (§1). Most users are on Claude Code; this delivers the
    "no-config install" they asked for immediately, reusing our notify logic.
-2. **Phase 2:** the **`zj-agents` CLI** with the universal `notify` + the
+2. **Phase 2:** the **`zj-radar` CLI** with the universal `notify` + the
    `setup`/`--uninstall` installer for Codex/Gemini/Aider (§2–3).
-3. **Phase 3:** `zj-agents init` for the sidebar wasm + layout + permission (§4),
+3. **Phase 3:** `zj-radar init` for the sidebar wasm + layout + permission (§4),
    and a README documenting all of it.
 
 Net new-user story we're aiming for:
 ```
 # Claude users:
-/plugin install zj-agents-claude@zj-agents
+/plugin install zj-radar-claude@zj-radar
 # Other agents:
-zj-agents setup            # detects installed agents, wires them up idempotently
+zj-radar setup            # detects installed agents, wires them up idempotently
 # The sidebar:
-zj-agents init             # installs the wasm + layout snippet + permission
+zj-radar init             # installs the wasm + layout snippet + permission
 ```
 
 ---

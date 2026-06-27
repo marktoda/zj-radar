@@ -1,4 +1,4 @@
-# zj-agents — rich tab signals sprint
+# zj-radar — rich tab signals sprint
 
 **Status:** approved design (brainstormed 2026-06-26)
 **Depends on:** `design.md` (base sidebar), `smart-tabs-postmortem.md` (the no-blocking-host-calls rule)

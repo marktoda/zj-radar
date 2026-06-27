@@ -1,4 +1,4 @@
-# zj-agents — a native Zellij sidebar for AI-agent status
+# zj-radar — a native Zellij sidebar for AI-agent status
 
 **Status:** design / approved for spec-review (revised after external review; reconciled
 after the smart-tabs removal — see `smart-tabs-postmortem.md`)
@@ -9,8 +9,8 @@ after the smart-tabs removal — see `smart-tabs-postmortem.md`)
 > Zellij setup after it melted down under a many-agent workload (poll-every-pane-on-every-output
 > issuing blocking host calls on the server's single main thread — full writeup in
 > `smart-tabs-postmortem.md`). This invalidates the earlier plan to *keep* smart-tabs for base
-> tab naming. **zj-agents now owns all tab display, including naming** (see §6.1). The hard
-> architectural constraint that follows: zj-agents must never issue blocking host queries
+> tab naming. **zj-radar now owns all tab display, including naming** (see §6.1). The hard
+> architectural constraint that follows: zj-radar must never issue blocking host queries
 > (`get_pane_running_command`, `get_pane_cwd`, …) — all signals come from pushed events
 > (`pipe`, `TabUpdate`, `PaneUpdate`, `CwdChanged`) or the hook payload.
 
@@ -77,7 +77,7 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
   truncated last message.
 - **Display tab number = `TabInfo.position + 1`** (see §6 — position is 0-indexed).
 - Plain (non-agent) tabs render name only — agent decoration is purely additive. The name is
-  `TabInfo.name` (from the layout or zj-agents' own push-based naming, §6.1) — **not** from
+  `TabInfo.name` (from the layout or zj-radar' own push-based naming, §6.1) — **not** from
   smart-tabs, which no longer exists.
 - Click a row → switch to that tab.
 
@@ -91,11 +91,11 @@ lives *outside* the plugin (shell scripts / agent config).
 │ Claude → claude-zellij-notify.sh   (running/pending/done) │  exists; extend payload
 │ Codex  → codex-zellij-notify.sh    (done only, v1)        │  ~15 lines, new
 └───────────────────────────┬───────────────────────────────┘
-   zellij pipe --name zj_agents.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus,seq}
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus,seq}
    (BROADCAST by name — not --plugin: see §6)
                             │
                             ▼
-┌ zj-agents plugin (Rust → wasm32-wasi) ────────────────────┐
+┌ zj-radar plugin (Rust → wasm32-wasi) ────────────────────┐
 │  ① StateStore   PaneId → AgentState                        │  ← pipe()
 │       { status, repo, branch, msg, last_change_tick, seq } │
 │  ② TabModel     tab→panes (PaneUpdate), names/active       │  ← TabUpdate/PaneUpdate
@@ -142,7 +142,7 @@ tab), so tab state cannot come from names. The store keys by `PaneId`; `PaneUpda
 
 ## 5. The pipe contract (producer ↔ plugin seam)
 
-Broadcast by name `zj_agents.status.v1` (namespaced + versioned). Each sidebar instance
+Broadcast by name `zj_radar.status.v1` (namespaced + versioned). Each sidebar instance
 filters on the name and keeps its own copy of the state map (same pattern as the built-in
 tab-bar; cheap for a handful of tabs).
 
@@ -205,15 +205,15 @@ tab-bar; cheap for a handful of tabs).
   The top `compact-bar` line is removed (the sidebar replaces it). The bottom `status-bar`
   (mode/keybind hints) is kept. A future `MOD+a` `MessagePlugin` keybind can toggle collapse.
 
-### 6.1 Tab naming (zj-agents owns it — smart-tabs is gone)
+### 6.1 Tab naming (zj-radar owns it — smart-tabs is gone)
 
 smart-tabs used to auto-name every tab `git-root + program` by polling
 `get_pane_running_command()` / `get_pane_cwd()` on every dirty tick — the exact pattern that
-melted the session (`smart-tabs-postmortem.md`). zj-agents must **not** reproduce that. The
+melted the session (`smart-tabs-postmortem.md`). zj-radar must **not** reproduce that. The
 replacement is push-only and tiered:
 
 - **v1 (default — no naming work in the plugin):** tab names come from the layout's `tab name=…`
-  and any manual `MOD+r` renames; zj-agents reads them via `TabInfo.name` and renders them
+  and any manual `MOD+r` renames; zj-radar reads them via `TabInfo.name` and renders them
   verbatim. For *agent* tabs the rich context smart-tabs used to encode in the name
   (repo/branch/program) is already shown on the sidebar's second/third lines, so the tab name is
   no longer load-bearing. This ships zero regression risk and zero added host calls.
@@ -234,7 +234,7 @@ replacement is push-only and tiered:
 ## 7. Agent adapters (v1: Claude + Codex)
 
 - **Claude Code** — extend the existing `claude-zellij-notify.sh` to *also* broadcast the rich
-  `zj_agents.status.v1` payload (it already computes repo/branch/msg/pane). Claude supports the
+  `zj_radar.status.v1` payload (it already computes repo/branch/msg/pane). Claude supports the
   full state set (`running` via UserPromptSubmit/Pre/PostToolUse, `pending` via Notification,
   `done` via Stop). Keep its desktop notification + click-to-focus behavior unchanged.
 - **Codex CLI — `done`-only in v1.** Codex's `notify` program currently runs only on
@@ -249,9 +249,9 @@ replacement is push-only and tiered:
 ## 8. Build & packaging (Nix)
 
 - Rust, `zellij-tile = "0.44"` (pinned to 0.44.3), `crate-type=["cdylib"]`, target
-  `wasm32-wasi`. Repo: `~/dev/zj-agents`.
+  `wasm32-wasi`. Repo: `~/dev/zj-radar`.
 - **Dev loop:** `cargo build` + a dev layout pane running
-  `zellij action start-or-reload-plugin file:…/debug/zj-agents.wasm` for hot reload.
+  `zellij action start-or-reload-plugin file:…/debug/zj-radar.wasm` for hot reload.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
   release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
   reference via a `@zjAgents@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
@@ -277,7 +277,7 @@ Pure-function `cargo test` (renderer/store/aggregation are pure):
 
 Manual integration (Phase 2, a "fake agent" before real hooks):
 ```sh
-zellij pipe --name zj_agents.status.v1 -- \
+zellij pipe --name zj_radar.status.v1 -- \
   '{"v":1,"source":"test","pane":{"type":"terminal","id":12},"status":"running","repo":"demo","branch":"main","msg":"hello"}'
 ```
 
@@ -287,7 +287,7 @@ zellij pipe --name zj_agents.status.v1 -- \
 |---|---|
 | 0 | Scaffold: cargo + zellij-tile + permissions + hot-reload layout; renders a static sidebar |
 | 1 | Real tab list from `TabUpdate` (names, **display numbers = position+1**, active highlight, click→`switch_tab_to(position+1)`). Replaces compact-bar. **No agent state yet.** |
-| 2 | Consume `zj_agents.status.v1` broadcast (start with the **fake shell adapter** above to isolate plugin bugs from hook bugs); per-pane store + per-tab aggregation + pruning; state-color dots. Then extend Claude adapter payload; add Codex (`done`-only) adapter. |
+| 2 | Consume `zj_radar.status.v1` broadcast (start with the **fake shell adapter** above to isolate plugin bugs from hook bugs); per-pane store + per-tab aggregation + pruning; state-color dots. Then extend Claude adapter payload; add Codex (`done`-only) adapter. |
 | 3 | Rich second line: repo/branch, elapsed (one-shot Timer), truncated last message. **Sanitization/truncation lives in the renderer**, not the adapter. |
 
 v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
@@ -317,7 +317,7 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 5. **Per-tab plugin instances** (N timers + N state copies) — minor; the only-tick-while-active
    optimization bounds it; mirrors the built-in tab-bar.
 6. **Repeating the smart-tabs meltdown** (`smart-tabs-postmortem.md`) — bounded *by design*:
-   zj-agents is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
+   zj-radar is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
    blocking `get_pane_*` queries, so high-output panes cost it nothing and there is no poll loop
    to storm the server's main thread. The standing rule (no blocking host calls on any path)
    keeps it that way; any future naming/program feature must stay event-sourced (§6.1).

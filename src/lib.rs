@@ -31,7 +31,7 @@ use zellij_tile::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 
 #[cfg(target_arch = "wasm32")]
-const PIPE_NAME: &str = "zj_agents.status.v1";
+const PIPE_NAME: &str = "zj_radar.status.v1";
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Clone)]

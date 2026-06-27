@@ -82,21 +82,21 @@ output-triggered.
 
 ---
 
-## Implications for zj-agents
+## Implications for zj-radar
 
-zj-agents is architecturally immune to this specific meltdown, and the postmortem
+zj-radar is architecturally immune to this specific meltdown, and the postmortem
 crystallizes *why* — these are constraints to preserve, not just happy accidents:
 
 - **Push, not poll (recommendation #5 is already the design).** State arrives via the
-  `zj_agents.status.v1` broadcast pipe from Claude/Codex hooks. The plugin never asks the
+  `zj_radar.status.v1` broadcast pipe from Claude/Codex hooks. The plugin never asks the
   server "what's running in this pane?" — the hook tells it. There is no per-pane,
   per-output query path, so there is no storm to feed.
-- **No blocking host calls on the hot path.** zj-agents must *never* add
+- **No blocking host calls on the hot path.** zj-radar must *never* add
   `get_pane_running_command()` / `get_pane_cwd()` (or any blocking host call) inside
   `update`/`pipe`/`render`. If we ever want program/cwd for non-agent tabs, derive it from
   the `PaneUpdate` manifest and `CwdChanged` events (push), or from the hook payload — never
   by polling.
-- **The one-shot timer must stay event-gated.** zj-agents re-arms its timer only while
+- **The one-shot timer must stay event-gated.** zj-radar re-arms its timer only while
   `any_active()` is true, and only to refresh elapsed-time display — it does no work
   proportional to pane count. Keep it that way; never let a timer tick fan out into N host
   calls.

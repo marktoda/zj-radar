@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add four push-only "richer tab signal" features to the zj-agents sidebar — bell/attention marker, roll-up summary header, long-running cue, and real tab naming — so a many-agent Zellij session is triageable at a glance.
+**Goal:** Add four push-only "richer tab signal" features to the zj-radar sidebar — bell/attention marker, roll-up summary header, long-running cue, and real tab naming — so a many-agent Zellij session is triageable at a glance.
 
 **Architecture:** Three features (long-running cue, bell, header) are pure additions to `render.rs` plus small `lib.rs` capture/glue. The fourth (tab naming) adds a pure `naming.rs` module whose `compute_renames` returns a position→name diff, with the host glue making fire-and-forget `rename_tab` calls. No blocking host queries anywhere (the smart-tabs-postmortem.md rule).
 

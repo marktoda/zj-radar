@@ -1,4 +1,4 @@
-// Dev layout for hot-reloading the zj-agents sidebar plugin.
+// Dev layout for hot-reloading the zj-radar sidebar plugin.
 //
 // Build first (needs a wasm32-wasip1 toolchain — see docs/TOOLCHAIN.md):
 //   nix develop -c cargo build --target wasm32-wasip1
@@ -13,7 +13,7 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
-                plugin location="file:/Users/mark.toda/dev/zj-agents/target/wasm32-wasip1/debug/zj_agents.wasm"
+                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm"
             }
             children
         }

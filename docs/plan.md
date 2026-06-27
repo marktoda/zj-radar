@@ -1,4 +1,4 @@
-# zj-agents Sidebar Implementation Plan
+# zj-radar Sidebar Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,7 +13,7 @@
 - `zellij-tile = "0.44"` pinned (matches Zellij 0.44.3). Read `PaneId`/`TabInfo`/`PaneInfo`/`Mouse` against the 0.44.x API.
 - Build target is **`wasm32-wasip1`** (Rust 1.96 renamed/removed `wasm32-wasi`; artifact is WASI-preview1, loaded identically by Zellij).
 - **Pure modules (`status`, `payload`, `state`, `model`, `render`) must NOT import `zellij-tile`.** Only `lib.rs` imports it and converts Zellij types to/from plain data. This keeps `cargo test` host-only.
-- Pipe broadcast name is exactly `zj_agents.status.v1`.
+- Pipe broadcast name is exactly `zj_radar.status.v1`.
 - Plugin permissions: `ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`. **No `RunCommands`** (notifications stay in shell adapters).
 - Tab numbering: display number = `TabInfo.position + 1`; `switch_tab_to` is **1-indexed** → call `switch_tab_to(position + 1)`.
 - Aggregation severity (highest wins): `error > pending > running > done > idle`.
@@ -23,7 +23,7 @@
 ## File Structure
 
 ```
-zj-agents/
+zj-radar/
 ├── Cargo.toml                      # crate-type = ["cdylib"]; deps
 ├── rust-toolchain.toml             # targets = ["wasm32-wasip1"]
 ├── .gitignore                      # /target
@@ -41,9 +41,9 @@ zj-agents/
 
 Producer-side (in the `dotfiles` repo, `home-manager/modules/zellij/`):
 ```
-claude-zellij-notify.sh   # MODIFY: also broadcast zj_agents.status.v1
+claude-zellij-notify.sh   # MODIFY: also broadcast zj_radar.status.v1
 codex-zellij-notify.sh    # CREATE: Codex notify adapter (done-only)
-default.nix               # MODIFY: vendor zj-agents.wasm + install codex adapter; drop @smartTabs@ fetchurl
+default.nix               # MODIFY: vendor zj-radar.wasm + install codex adapter; drop @smartTabs@ fetchurl
 zellij.kdl                # MODIFY: sidebar in default_tab_template; drop compact-bar (smart-tabs already removed)
 ```
 
@@ -60,7 +60,7 @@ zellij.kdl                # MODIFY: sidebar in default_tab_template; drop compac
 - [ ] **Step 1: Init repo and toolchain**
 
 ```bash
-cd ~/dev/zj-agents
+cd ~/dev/zj-radar
 git init
 rustup target add wasm32-wasip1
 ```
@@ -82,7 +82,7 @@ targets = ["wasm32-wasip1"]
 
 ```toml
 [package]
-name = "zj-agents"
+name = "zj-radar"
 version = "0.1.0"
 edition = "2021"
 
@@ -120,13 +120,13 @@ impl ZellijPlugin for State {
 - [ ] **Step 6: Build to wasm**
 
 Run: `cargo build --target wasm32-wasip1`
-Expected: compiles; produces `target/wasm32-wasip1/debug/zj_agents.wasm`
+Expected: compiles; produces `target/wasm32-wasip1/debug/zj_radar.wasm`
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add -A
-git commit -m "chore: scaffold zj-agents wasm plugin"
+git commit -m "chore: scaffold zj-radar wasm plugin"
 ```
 
 ---
@@ -274,7 +274,7 @@ git commit -m "feat: status vocabulary (parse/severity/glyph/color)"
 - [ ] **Step 1: Write the failing test (`src/payload.rs`)**
 
 ```rust
-//! Parse + sanitize the zj_agents.status.v1 pipe payload. No zellij-tile dependency.
+//! Parse + sanitize the zj_radar.status.v1 pipe payload. No zellij-tile dependency.
 
 use crate::status::Status;
 use serde::Deserialize;
@@ -986,7 +986,7 @@ mod render;
 use render::TabRow;
 use state::StateStore;
 
-const PIPE_NAME: &str = "zj_agents.status.v1";
+const PIPE_NAME: &str = "zj_radar.status.v1";
 
 #[derive(Clone)]
 struct TabLite {
@@ -1153,7 +1153,7 @@ impl State {
 - [ ] **Step 2: Verify host build**
 
 Run: `cargo build --target wasm32-wasip1`
-Expected: compiles to `target/wasm32-wasip1/debug/zj_agents.wasm`.
+Expected: compiles to `target/wasm32-wasip1/debug/zj_radar.wasm`.
 
 **Note (verify against zellij-tile 0.44 during this step):** confirm `Mouse::LeftClick(isize, usize)` is `(line, column)`; confirm `switch_tab_to(u32)` is 1-based; confirm `PaneManifest { panes: HashMap<usize, Vec<PaneInfo>> }` and `PaneInfo { id, is_plugin, is_focused }`. Adjust field/variant names if the API differs; the logic is unaffected.
 
@@ -1177,7 +1177,7 @@ git commit -m "feat: zellij host glue wiring events to the pure core"
 - Create: `dev/dev.kdl`
 
 **Interfaces:**
-- Consumes: the built `zj_agents.wasm`.
+- Consumes: the built `zj_radar.wasm`.
 - Produces: a runnable Zellij session proving the sidebar pins, numbers tabs, renders state from a fake pipe, and switches tabs on click.
 
 - [ ] **Step 1: Write `dev/dev.kdl` (absolute path to the debug wasm)**
@@ -1187,7 +1187,7 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
-                plugin location="file:/Users/mark.toda/dev/zj-agents/target/wasm32-wasip1/debug/zj_agents.wasm"
+                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm"
             }
             children
         }
@@ -1220,7 +1220,7 @@ Expected: a left sidebar lists `1 one`, `2 two`, `3 three`; grant the permission
 From a pane inside the dev session, with `$ZELLIJ_PANE_ID` pointing at a real terminal pane:
 
 ```sh
-zellij pipe --name zj_agents.status.v1 -- \
+zellij pipe --name zj_radar.status.v1 -- \
   "{\"v\":1,\"source\":\"test\",\"pane\":{\"type\":\"terminal\",\"id\":${ZELLIJ_PANE_ID#terminal_}},\"status\":\"running\",\"repo\":\"demo\",\"branch\":\"main\",\"msg\":\"hello\"}"
 ```
 Expected: that pane's tab shows `◐` + `demo/main · 0:NN` and the elapsed counter increments each second. Send `"status":"done"` and confirm green `●` + `done 0:NN`.
@@ -1243,7 +1243,7 @@ git commit -m "chore: dev layout + record Phase 1/2 acceptance results"
 - Modify: `~/dotfiles/home-manager/modules/zellij/zellij.kdl`
 
 **Interfaces:**
-- Consumes: the plugin's `zj_agents.status.v1` pipe contract.
+- Consumes: the plugin's `zj_radar.status.v1` pipe contract.
 - Produces: live agent state from Claude (full lifecycle) and Codex (`done`).
 
 - [ ] **Step 1: Add a broadcast helper to `claude-zellij-notify.sh`**
@@ -1251,7 +1251,7 @@ git commit -m "chore: dev layout + record Phase 1/2 acceptance results"
 Insert after the existing `publish_pane_status` function:
 
 ```bash
-# Broadcast the rich payload consumed by the zj-agents sidebar plugin.
+# Broadcast the rich payload consumed by the zj-radar sidebar plugin.
 publish_agent_status() {
     local status="$1"
     local on_focus="${2:-}"
@@ -1267,7 +1267,7 @@ publish_agent_status() {
         --arg on_focus "$on_focus" \
         '{v:1, source:"claude", pane:{type:"terminal", id:$id}, status:$status, repo:$repo, branch:$branch, msg:$msg}
          + (if $on_focus == "" then {} else {on_focus:$on_focus} end)')"
-    run_with_timeout 0.3 zellij pipe --name zj_agents.status.v1 -- "$payload" >/dev/null 2>&1 || true
+    run_with_timeout 0.3 zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true
 }
 ```
 
@@ -1294,7 +1294,7 @@ Expected: no shell errors (function defined). (Full integration is verified in t
 
 ```bash
 #!/usr/bin/env bash
-# Codex `notify` adapter → zj-agents sidebar. Codex passes one JSON arg.
+# Codex `notify` adapter → zj-radar sidebar. Codex passes one JSON arg.
 # v1: emit "done" on agent-turn-complete (the only documented event type).
 set -euo pipefail
 
@@ -1312,12 +1312,12 @@ pane_num="${ZELLIJ_PANE_ID#terminal_}"
 
 payload="$(jq -nc --argjson id "$pane_num" --arg repo "$repo" --arg branch "$branch" --arg msg "$msg" \
     '{v:1, source:"codex", pane:{type:"terminal", id:$id}, status:"done", repo:$repo, branch:$branch, msg:$msg, on_focus:"idle"}')"
-zellij pipe --name zj_agents.status.v1 -- "$payload" >/dev/null 2>&1 || true
+zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true
 ```
 
 - [ ] **Step 5: Wire both adapters + the wasm + the layout in Nix**
 
-In `default.nix`, add a `fetchurl`/local reference for the built `zj-agents.wasm` (mirror the
+In `default.nix`, add a `fetchurl`/local reference for the built `zj-radar.wasm` (mirror the
 `zellij-room` vendoring pattern) bound to `@zjAgents@`, and remove the now-dead `@smartTabs@`
 `fetchurl` + `replaceStrings` entry (smart-tabs has been removed — see
 `smart-tabs-postmortem.md`). Install `codex-zellij-notify` into `~/.local/bin`, and add
@@ -1325,7 +1325,7 @@ In `default.nix`, add a `fetchurl`/local reference for the built `zj-agents.wasm
 (a) replace the top `compact-bar` line of `default_tab_template` with the sidebar `pane
 split_direction="vertical"` block from `dev/dev.kdl` (using `@zjAgents@`); (b) confirm the
 `smart-tabs` plugin alias, its `load_plugins` entry, and the two `MessagePlugin` rename
-keybindings are already gone (they were stripped during the postmortem cleanup) — zj-agents owns
+keybindings are already gone (they were stripped during the postmortem cleanup) — zj-radar owns
 all tab display, with naming per design §6.1. No `{% if status %}` format edit is needed anymore;
 there is no smart-tabs `format` left to edit.
 
@@ -1341,7 +1341,7 @@ shell adapters.
 ```bash
 cd ~/dotfiles
 git add -A
-git commit -m "feat: drive zj-agents sidebar from Claude + Codex hooks"
+git commit -m "feat: drive zj-radar sidebar from Claude + Codex hooks"
 ```
 
 ---
@@ -1352,4 +1352,4 @@ git commit -m "feat: drive zj-agents sidebar from Claude + Codex hooks"
 
 **Placeholder scan:** No TBD/TODO. The two genuinely API-version-sensitive spots (Mouse variant shape, exact `switch_tab_to`/`PaneManifest` field names) carry concrete code plus an explicit "verify against 0.44" note in Task 6 Step 2 — not placeholders.
 
-**Type consistency:** `StateStore::{apply, on_pane_focused, prune, get, any_active}` used consistently in Tasks 3/4/6. `TabAgg { status, done, total, detail }` and `Detail { repo, branch, msg, since_tick, status }` consistent across Tasks 4/5. `TabRow { number, name, active, agg }` consistent in Tasks 5/6. `payload::parse -> Option<StatusPayload>` and `StatusPayload` fields consistent in Tasks 2/3/6. Pipe name `zj_agents.status.v1` identical in Tasks 6/7/8.
+**Type consistency:** `StateStore::{apply, on_pane_focused, prune, get, any_active}` used consistently in Tasks 3/4/6. `TabAgg { status, done, total, detail }` and `Detail { repo, branch, msg, since_tick, status }` consistent across Tasks 4/5. `TabRow { number, name, active, agg }` consistent in Tasks 5/6. `payload::parse -> Option<StatusPayload>` and `StatusPayload` fields consistent in Tasks 2/3/6. Pipe name `zj_radar.status.v1` identical in Tasks 6/7/8.

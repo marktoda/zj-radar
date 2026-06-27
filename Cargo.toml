@@ -1,5 +1,5 @@
 [package]
-name = "zj-agents"
+name = "zj-radar"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,10 +9,10 @@ edition = "2021"
 # BINARY crate (the `register_plugin!` macro's `fn main` becomes `_start`); the
 # library target holds the pure, host-testable logic.
 [lib]
-name = "zj_agents"
+name = "zj_radar"
 
 [[bin]]
-name = "zj_agents"
+name = "zj_radar"
 path = "src/main.rs"
 
 [dependencies]
