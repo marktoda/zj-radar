@@ -27,8 +27,10 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          # openssl-sys is a transitive dep (zellij-tile → isahc → curl → openssl-sys)
-          # and is needed for host builds (test/clippy checks).
+          # zellij-tile's dependency tree pulls openssl-sys (via isahc → curl);
+          # its build script needs openssl + pkg-config present. Shared via
+          # commonArgs so both the host checks (test/clippy) and the wasm dep
+          # build can compile it.
           buildInputs = [ pkgs.openssl ];
           nativeBuildInputs = [ pkgs.pkg-config ];
         };

@@ -13,7 +13,11 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      # Caches the /nix/store between runs so flake check isn't a cold build every time.
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Cache /nix between runs via the GitHub Actions cache (no external service),
+      # keyed on the lockfiles so it invalidates when dependencies change.
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: nix flake check
         run: nix flake check -L
