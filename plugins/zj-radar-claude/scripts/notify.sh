@@ -69,8 +69,10 @@ if [[ "$status" == "running" ]]; then
                 ;;
             Bash)
                 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
-                cmd_lower="${cmd,,}"  # bash 4+ lowercase
-                if [[ -n "${cmd// }" ]]; then
+                # POSIX lowercase (works on macOS' stock Bash 3.2; ${cmd,,} is Bash 4+).
+                cmd_lower="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
+                # Non-empty after stripping ALL whitespace (mirrors Rust .trim()).
+                if [[ -n "$(printf '%s' "$cmd" | tr -d '[:space:]')" ]]; then
                     if [[ "$cmd_lower" == *"git push"* ]]; then
                         tool_activity="pushing"
                     elif [[ "$cmd_lower" == *"git commit"* ]]; then
