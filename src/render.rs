@@ -339,10 +339,14 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     };
     let glyph = format!("{}{}{}", role, glyph_char, RESET);
 
-    // right slot (reserved width even when empty).
+    // right slot (reserved width even when empty). Waiting/done/error color
+    // their slot with the status role (it carries meaning); the *working*
+    // elapsed is ambient info, not an alarm, so it's dimmed (design uses `id`).
     let slot = right_slot(&row.agg, now_tick, width);
     let slot_styled = if slot.is_empty() {
         String::new()
+    } else if st == Status::Running {
+        format!("{}{}{}", tc_fg(opts.theme.idle_text), slot, RESET)
     } else {
         format!("{}{}{}", role, slot, RESET)
     };
@@ -796,6 +800,23 @@ mod tests {
         assert!(waiting.contains("0:02"));
         let multi = render(&[mk(Status::Pending, 2, 4)], &ro(30, 18));
         assert!(multi.contains("2/4"));
+    }
+
+    #[test]
+    fn working_slot_is_dim_not_role_colored() {
+        // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
+        let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
+                         since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "n".into(), active: false,
+                                 has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
+        let opts = ro(30, 14);
+        let s = render(&rows, &opts);
+        // elapsed is wrapped in the theme idle_text (dim) color…
+        assert!(s.contains(&format!("{}0:14", tc_fg(opts.theme.idle_text))),
+            "working elapsed should be dim idle_text: {:?}", s);
+        // …NOT the working role color.
+        assert!(!s.contains(&format!("{}0:14", Role::Working.ansi())),
+            "working elapsed must not be work-yellow: {:?}", s);
     }
 
     #[test]
