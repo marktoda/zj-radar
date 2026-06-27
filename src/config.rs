@@ -87,12 +87,13 @@ impl NamingMode {
 impl Config {
     pub fn from_map(cfg: &BTreeMap<String, String>) -> Config {
         let d = Config::default();
-        let naming = match cfg.get("naming").map(|s| s.trim().to_ascii_lowercase()) {
-            Some(s) if s == "off" => NamingMode::Off,
-            Some(s) if s == "managed" => NamingMode::Managed,
-            Some(s) if s == "force" => NamingMode::Force,
-            _ => d.naming,
-        };
+        // Delegate per-field parsing to the same `from_config` helpers used by
+        // the runtime-override path, so the KDL-load and live-pipe paths can
+        // never disagree on how a value is interpreted.
+        let naming = cfg
+            .get("naming")
+            .map(|s| NamingMode::from_config(s))
+            .unwrap_or(d.naming);
         let header = cfg.get("header").and_then(|s| parse_bool(s)).unwrap_or(d.header);
         let glyphs = cfg
             .get("glyphs")

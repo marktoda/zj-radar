@@ -1,5 +1,11 @@
 # zj-radar — rich tab signals sprint
 
+> **⚠ Mostly shipped, one feature dropped (kept for context).** The bell marker
+> (`⚑`), header summary, and push-only tab naming all shipped. The
+> **long-running "stuck" `⚠` cue (feature C) was dropped** along with its
+> `stuck_secs` config knob (commit `d3c6b75`); the renderer now asserts that no
+> `⚠` glyph is emitted. Source of truth: `src/render.rs`, `src/naming.rs`.
+
 **Status:** approved design (brainstormed 2026-06-26)
 **Depends on:** `design.md` (base sidebar), `smart-tabs-postmortem.md` (the no-blocking-host-calls rule)
 

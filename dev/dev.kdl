@@ -5,6 +5,11 @@
 // Then:
 //   zellij --layout dev/dev.kdl
 //
+// NOTE: the plugin `location` below is an absolute path to THIS checkout's
+// debug artifact. Zellij resolves plugin paths relative to its own cwd, not the
+// layout file, so a relative path is unreliable here. If you cloned elsewhere,
+// update the path to <your-checkout>/target/wasm32-wasip1/debug/zj_radar.wasm.
+//
 // The sidebar is a pinned, borderless left column inside default_tab_template,
 // OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The
 // bottom status-bar is kept (mode/keybind hints); the top compact-bar is

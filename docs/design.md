@@ -95,7 +95,7 @@ lives *outside* the plugin (shell scripts / agent config).
    (BROADCAST by name — not --plugin: see §6)
                             │
                             ▼
-┌ zj-radar plugin (Rust → wasm32-wasi) ────────────────────┐
+┌ zj-radar plugin (Rust → wasm32-wasip1) ──────────────────┐
 │  ① StateStore   PaneId → AgentState                        │  ← pipe()
 │       { status, repo, branch, msg, last_change_tick, seq } │
 │  ② TabModel     tab→panes (PaneUpdate), names/active       │  ← TabUpdate/PaneUpdate
@@ -248,8 +248,11 @@ replacement is push-only and tiered:
 
 ## 8. Build & packaging (Nix)
 
-- Rust, `zellij-tile = "0.44"` (pinned to 0.44.3), `crate-type=["cdylib"]`, target
-  `wasm32-wasi`. Repo: `~/dev/zj-radar`.
+- Rust, `zellij-tile = "0.44"` (pinned to 0.44.3), target `wasm32-wasip1`. Repo:
+  `~/dev/zj-radar`. **Note:** the artifact is a *binary* crate, not `cdylib` —
+  Zellij loads plugins as WASI command modules (it calls `_start`, which
+  `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
+  `_start` and won't load. See the comment block in `src/main.rs`.
 - **Dev loop:** `cargo build` + a dev layout pane running
   `zellij action start-or-reload-plugin file:…/debug/zj-radar.wasm` for hot reload.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub

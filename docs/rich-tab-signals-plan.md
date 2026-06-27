@@ -1,5 +1,9 @@
 # Rich Tab Signals Implementation Plan
 
+> **⚠ Historical / completed-and-diverged (kept for context).** Bell, header,
+> and tab naming shipped; the long-running `⚠` "stuck" cue (and its `stuck_secs`
+> knob) was dropped in commit `d3c6b75`. See `src/render.rs` / `src/naming.rs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add four push-only "richer tab signal" features to the zj-radar sidebar — bell/attention marker, roll-up summary header, long-running cue, and real tab naming — so a many-agent Zellij session is triageable at a glance.

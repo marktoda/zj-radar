@@ -1,5 +1,10 @@
 # Config Surface Implementation Plan
 
+> **⚠ Historical / completed-and-diverged (kept for context).** The config
+> surface shipped, but without `stuck_secs` and the long-running `⚠` cue (both
+> dropped in commit `d3c6b75`). The shipped knobs are `naming`, `header`,
+> `glyphs`, `density`. See `src/config.rs` for the source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Replace zj-radar's hardcoded behavior constants with a typed, validated `Config` parsed once from the plugin's KDL config map, exposing `naming` (off/managed/force), `stuck_secs`, and `header`.

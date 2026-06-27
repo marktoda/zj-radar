@@ -2,6 +2,10 @@
 name = "zj-radar"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A native Zellij sidebar that shows live AI-agent status (working/waiting/done) per tab."
+repository = "https://github.com/mark-toda/zj-radar"
+readme = "README.md"
 
 # Zellij loads plugins as WASI *command* modules (it calls `_start` then `load`
 # directly). A cdylib builds a *reactor* whose exports are `.command_export`
@@ -20,3 +24,13 @@ zellij-tile = "0.44"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-width = "0.2"
+
+# Size-optimize the wasm artifact Zellij loads. A Zellij plugin is read from
+# disk and instantiated on every session/layout load, so a smaller module loads
+# faster. These flags are behavior-preserving (the code is panic-free in
+# production); they typically cut the artifact roughly in half.
+[profile.release]
+opt-level = "z"   # optimize for size
+lto = true        # cross-crate inlining + dead-code elimination
+codegen-units = 1 # better optimization at the cost of build parallelism
+strip = true      # drop symbols/debuginfo from the shipped wasm

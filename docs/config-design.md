@@ -1,5 +1,11 @@
 # zj-radar config surface (behavior knobs)
 
+> **⚠ Historical / partially superseded (kept for context).** This was an early
+> design. The shipped `src/config.rs` has fields `naming`, `header`, `glyphs`,
+> and `density` — it does **not** have `stuck_secs`, and the long-running "stuck"
+> `⚠` cue described here was dropped (commit `d3c6b75`; the renderer now asserts
+> its absence). Treat `src/config.rs` as the source of truth.
+
 **Status:** design / approved for spec-review
 **Date:** 2026-06-26
 
