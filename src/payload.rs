@@ -43,21 +43,78 @@ struct Raw {
     source: String,
 }
 
-/// Strip control/ANSI chars, fold newlines to spaces, truncate to `max_chars`.
+/// Strip control/ANSI chars, fold newlines/tabs/CR to spaces, truncate to `max_chars`.
+///
+/// Stripped sequences:
+/// - CSI (`\x1b[` … final byte in 0x40–0x7E)
+/// - OSC (`\x1b]` … terminated by BEL `\x07` or ST `\x1b\`)
+/// - Any other ESC-introduced 2-byte sequence (`\x1b` + one byte)
+/// - C0 control chars (0x00–0x1F) — `\n`, `\t`, `\r` become a single space; all others dropped
+/// - DEL (0x7F) — dropped
 pub fn sanitize(s: &str, max_chars: usize) -> String {
     let mut cleaned = String::new();
-    let mut in_ansi = false;
-    for c in s.chars() {
-        if c == '\u{1b}' {
-            in_ansi = true;
-        } else if in_ansi {
-            if c.is_alphabetic() {
-                in_ansi = false;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            // ESC — decide what kind of sequence follows
+            let next = bytes.get(i + 1).copied();
+            match next {
+                Some(b'[') => {
+                    // CSI: consume until a byte in 0x40–0x7E (inclusive)
+                    i += 2;
+                    while i < bytes.len() {
+                        let fb = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7e).contains(&fb) {
+                            break; // final byte consumed
+                        }
+                    }
+                }
+                Some(b']') => {
+                    // OSC: consume until BEL (0x07) or ST (ESC \)
+                    i += 2;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && bytes.get(i + 1).copied() == Some(b'\\') {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                Some(_) => {
+                    // Any other ESC + one byte: skip both
+                    i += 2;
+                }
+                None => {
+                    // Lone ESC at end of string: skip it
+                    i += 1;
+                }
             }
-        } else if c == '\n' || c == '\t' {
+        } else if b == b'\n' || b == b'\t' || b == b'\r' {
             cleaned.push(' ');
-        } else if !c.is_control() {
-            cleaned.push(c);
+            i += 1;
+        } else if b < 0x20 || b == 0x7f {
+            // Other C0 control chars and DEL: drop
+            i += 1;
+        } else {
+            // Normal byte — reconstruct as char (handle multi-byte UTF-8)
+            // Find the char boundary and push the whole char
+            let ch_len = {
+                let remaining = &s[i..];
+                remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+            };
+            // Safety: we know `s` is valid UTF-8 and `i` is a char boundary
+            // (we only advance by 1 for single ASCII bytes or by ch_len here)
+            if let Some(c) = s[i..].chars().next() {
+                cleaned.push(c);
+            }
+            i += ch_len;
         }
     }
     cleaned.chars().take(max_chars).collect()
@@ -132,5 +189,41 @@ mod tests {
         let dirty = "a\nb\t\x1b[31mc\x07";
         assert_eq!(sanitize(dirty, 10), "a b c");
         assert_eq!(sanitize("abcdef", 3), "abc");
+    }
+
+    // ── hardening tests (FIX 1) ──
+
+    #[test]
+    fn sanitize_strips_truecolor_csi() {
+        // CSI 38;2;R;G;Bm (truecolor foreground) + reset — only the text survives
+        let input = "\x1b[38;2;255;0;0mred\x1b[0m";
+        assert_eq!(sanitize(input, 100), "red");
+    }
+
+    #[test]
+    fn sanitize_strips_osc_bel_terminated() {
+        // OSC 0 ; title BEL — the sequence is removed, trailing text survives
+        let input = "\x1b]0;evil title\x07ok";
+        assert_eq!(sanitize(input, 100), "ok");
+    }
+
+    #[test]
+    fn sanitize_converts_newline_to_space() {
+        assert_eq!(sanitize("a\nb", 100), "a b");
+    }
+
+    #[test]
+    fn sanitize_drops_bel_control_char() {
+        // BEL (0x07) not preceded by ESC+] should be dropped entirely
+        assert_eq!(sanitize("a\x07b", 100), "ab");
+    }
+
+    #[test]
+    fn sanitize_length_cap_still_applies_after_hardening() {
+        // A truecolor sequence followed by many chars — cap must still hold
+        let input = format!("\x1b[38;2;0;128;0m{}\x1b[0m", "x".repeat(200));
+        let out = sanitize(&input, 50);
+        assert_eq!(out.chars().count(), 50);
+        assert_eq!(out, "x".repeat(50));
     }
 }
