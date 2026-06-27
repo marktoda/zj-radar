@@ -14,9 +14,8 @@ layout {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
                 plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
-                    // Opt-in: rename tabs even when they have an explicit name,
-                    // so the dev layout demonstrates auto-naming.
-                    force_rename "true"
+                    // Opt-in: rename tabs even when they have an explicit name.
+                    naming "force"
                 }
             }
             children
@@ -27,7 +26,7 @@ layout {
     }
 
     // Tabs intentionally UNNAMED → Zellij gives them default "Tab #N" names so
-    // auto-naming is visible even without force_rename.
+    // auto-naming is visible even without naming "force".
     tab focus=true {
         pane
     }

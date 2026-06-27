@@ -59,10 +59,8 @@ pub struct State {
     timer_armed: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     applied_names: HashMap<usize, String>,
-    // Opt-in (`force_rename` plugin config): rename tabs even when the user gave
-    // them an explicit name. Default false so we never stomp user-chosen names.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    force_names: bool,
+    config: config::Config,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -96,7 +94,7 @@ impl State {
         }
         let target = line as usize;
         let rows = self.build_rows();
-        let mut cursor = render::header_lines(&rows, true); // header occupies the first line(s)
+        let mut cursor = render::header_lines(&rows, self.config.header); // header occupies the first line(s)
         if target < cursor {
             return None; // click landed on the header → no tab
         }
@@ -132,6 +130,10 @@ impl State {
     }
 
     fn apply_renames(&mut self) {
+        if self.config.naming == config::NamingMode::Off {
+            return;
+        }
+        let force = self.config.naming == config::NamingMode::Force;
         let tabs: Vec<(usize, String)> = self
             .tabs
             .iter()
@@ -142,7 +144,7 @@ impl State {
             &self.tab_panes,
             &self.store,
             &self.applied_names,
-            self.force_names,
+            force,
         );
         for (pos, name) in changes {
             rename_tab(pos as u32 + 1, &name);
@@ -154,12 +156,7 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
     fn load(&mut self, config: BTreeMap<String, String>) {
-        // `force_rename "true"` in the plugin's KDL config block opts into
-        // renaming tabs that already have a user-chosen name.
-        self.force_names = matches!(
-            config.get("force_rename").map(String::as_str),
-            Some("true" | "1" | "yes")
-        );
+        self.config = config::Config::from_map(&config);
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
@@ -252,7 +249,11 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, _rows: usize, cols: usize) {
         let rows = self.build_rows();
-        print!("{}", render::render(&rows, cols.max(1), self.tick, render::RenderOpts::default()));
+        let opts = render::RenderOpts {
+            stuck_secs: self.config.stuck_secs,
+            header: self.config.header,
+        };
+        print!("{}", render::render(&rows, cols.max(1), self.tick, opts));
     }
 }
 
