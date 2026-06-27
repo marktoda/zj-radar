@@ -95,6 +95,10 @@ pub enum GlyphSet {
     Plain,
 }
 
+impl Default for GlyphSet {
+    fn default() -> Self { GlyphSet::Nerd }
+}
+
 impl GlyphSet {
     pub fn from_config(s: &str) -> GlyphSet {
         match s {

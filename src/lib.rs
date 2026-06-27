@@ -59,6 +59,10 @@ pub struct State {
     applied_names: HashMap<usize, String>,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     last_render_height: usize,
+    // `glyphs` and `permission_granted` are read by both the wasm glue and the
+    // host tests, so no dead_code gate is needed.
+    glyphs: crate::status::GlyphSet,
+    permission_granted: bool,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -152,7 +156,10 @@ impl State {
 
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
-    fn load(&mut self, _config: BTreeMap<String, String>) {
+    fn load(&mut self, config: BTreeMap<String, String>) {
+        if let Some(g) = config.get("glyphs") {
+            self.glyphs = crate::status::GlyphSet::from_config(g);
+        }
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
@@ -224,7 +231,10 @@ impl ZellijPlugin for State {
                 }
                 false
             }
-            Event::PermissionRequestResult(_) => true,
+            Event::PermissionRequestResult(_) => {
+                self.permission_granted = true;
+                true
+            }
             _ => false,
         }
     }
@@ -250,9 +260,9 @@ impl ZellijPlugin for State {
             width: cols.max(1),
             height: rows,
             now_tick: self.tick,
-            glyphs: render::GlyphSet::Nerd,
+            glyphs: self.glyphs,
         };
-        if tabrows.is_empty() {
+        if !self.permission_granted || tabrows.is_empty() {
             print!("{}", render::onboarding(&opts));
         } else {
             print!("{}", render::render(&tabrows, &opts));
@@ -471,5 +481,12 @@ mod tests {
         assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
+    }
+
+    #[test]
+    fn state_defaults_glyphs_to_nerd_and_ungranted() {
+        let s = State::default();
+        assert_eq!(s.glyphs, crate::status::GlyphSet::Nerd);
+        assert!(!s.permission_granted);
     }
 }
