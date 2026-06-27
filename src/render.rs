@@ -3,6 +3,7 @@
 use crate::model::TabAgg;
 use crate::status::{Role, Status};
 pub use crate::status::GlyphSet;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -35,12 +36,23 @@ pub fn format_elapsed(secs: u64) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if UnicodeWidthStr::width(s) <= max {
         s.to_string()
     } else if max == 0 {
         String::new()
     } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        // Reserve 1 column for '…' (which itself has display width 1).
+        let budget = max.saturating_sub(1);
+        let mut kept = String::new();
+        let mut used = 0usize;
+        for c in s.chars() {
+            let w = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + w > budget {
+                break;
+            }
+            kept.push(c);
+            used += w;
+        }
         format!("{}…", kept)
     }
 }
@@ -164,7 +176,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     // Header line 1: " AGENTS" + right-aligned count.
     let title = " AGENTS";
     let gap = width
-        .saturating_sub(title.chars().count() + count.chars().count())
+        .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(count.as_str()))
         .max(1);
     out.push_str(&format!(
         "{}{}{}{}{}\n",
@@ -214,9 +226,9 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 
         // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
         let num = row.number.to_string();
-        let prefix_len = 1 + 1 + 1 + num.chars().count() + 1; // bar+glyph+sp+num+sp
+        let prefix_len = 1 + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+glyph+sp+num+sp
         let bell_len = if row.has_bell { 2 } else { 0 };
-        let slot_len = slot.chars().count();
+        let slot_len = UnicodeWidthStr::width(slot.as_str());
         let name_budget = width
             .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
             .max(1);
@@ -228,7 +240,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         };
 
         // pad so the slot sits flush right.
-        let used = prefix_len + name.chars().count() + bell_len + slot_len;
+        let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
         let gap = width.saturating_sub(used).max(1);
         out.push_str(&format!(
             "{}{} {} {}{}{}{}\n",
@@ -246,12 +258,12 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                         let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
                         format!("{} {} {}", loc, spin, d.msg)
                     };
-                    let body = if full.chars().count() <= avail {
+                    let body = if UnicodeWidthStr::width(full.as_str()) <= avail {
                         full
                     } else {
                         // drop branch
                         let no_branch = format!("{} {} {}", d.repo, spin, d.msg);
-                        if no_branch.chars().count() <= avail {
+                        if UnicodeWidthStr::width(no_branch.as_str()) <= avail {
                             no_branch
                         } else {
                             // drop message, keep repo + spinner
@@ -280,9 +292,9 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         // Width-safe idle strip: keep the "── +N idle ▾" suffix, fill the
         // space before it with as many "○ " dot pairs as fit.
         let suffix = format!("── +{} idle ▾", folded);
-        let dot_budget = width.saturating_sub(suffix.chars().count() + 1); // +1 gap
+        let dot_budget = width.saturating_sub(UnicodeWidthStr::width(suffix.as_str()) + 1); // +1 gap
         let mut dots = String::new();
-        while dots.chars().count() + 2 <= dot_budget {
+        while UnicodeWidthStr::width(dots.as_str()) + 2 <= dot_budget {
             dots.push_str("○ ");
         }
         let plain = format!("{}{}", dots, suffix);
@@ -451,9 +463,9 @@ mod tests {
         assert!(s.contains('…'));
     }
 
-    /// Strip `\x1b[...m` SGR escape sequences and count remaining visible chars.
+    /// Strip `\x1b[...m` SGR escape sequences and sum display widths of remaining chars.
     fn visible_len(line: &str) -> usize {
-        let mut count = 0usize;
+        let mut width = 0usize;
         let mut chars = line.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '\x1b' {
@@ -466,10 +478,10 @@ mod tests {
                     }
                 }
             } else {
-                count += 1;
+                width += UnicodeWidthChar::width(c).unwrap_or(0);
             }
         }
-        count
+        width
     }
 
     #[test]
@@ -693,6 +705,38 @@ mod tests {
             for line in s.lines() {
                 assert!(visible_len(line) <= width,
                     "idle strip/line exceeds width {}: {:?} (visible {})", width, line, visible_len(line));
+            }
+        }
+    }
+
+    #[test]
+    fn cjk_and_emoji_names_never_exceed_width() {
+        // CJK: each char is 2 display columns. "作業中デプロイ" = 7 chars = 14 cols.
+        // Emoji in msg: 🚀 = 2 cols.
+        let detail = Detail {
+            repo: "proj".into(),
+            branch: "main".into(),
+            msg: "🚀 deploying now".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "作業中デプロイ".into(),
+            active: true,
+            has_bell: false,
+            agg: agg(Status::Pending, 0, 1, Some(detail)),
+        }];
+        for width in [16usize, 20, 24, 30] {
+            let s = render(&rows, &ro(width, 5));
+            for line in s.lines() {
+                assert!(
+                    visible_len(line) <= width,
+                    "CJK/emoji line exceeds width {}: {:?} (visible {})",
+                    width,
+                    line,
+                    visible_len(line)
+                );
             }
         }
     }
