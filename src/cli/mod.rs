@@ -7,7 +7,7 @@ mod notify;
 mod setup;
 
 #[derive(Parser)]
-#[command(name = "zj-radar", about = "Broadcast agent status to the zj-radar Zellij sidebar, and wire agents up.")]
+#[command(name = "zj-radar", version, about = "Broadcast agent status to the zj-radar Zellij sidebar, and wire agents up.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

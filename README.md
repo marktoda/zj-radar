@@ -251,10 +251,10 @@ gated behind `#[cfg(target_arch = "wasm32")]`. See
 - ✅ **Sidebar plugin** — tab list, click-to-switch, per-tab agent aggregation,
   overflow folding, theme-derived card surfaces, runtime config.
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
-- 📋 **Designed, not yet built** — a native `zj-radar` CLI (universal `notify` +
-  idempotent `setup`) to drop the `jq`/`bash` dependency, and a Codex adapter.
-  See [`docs/cli-design.md`](docs/cli-design.md) and
-  [`docs/distribution.md`](docs/distribution.md).
+- ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
+  conflict-aware `setup`; see [Optional: the `zj-radar` CLI](#optional-the-zj-radar-cli).
+- 📋 **Not yet built** — cross-platform prebuilt release binaries and a
+  `zj-radar init` sidebar installer. See [`docs/distribution.md`](docs/distribution.md).
 
 ## License
 

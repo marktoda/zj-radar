@@ -1,11 +1,11 @@
 # zj-radar CLI (notify + setup) — revised design
 
-**Status:** design / approved for plan (grilled 2026-06-27)
+**Status:** implemented (shipped on `main`)
 **Date:** 2026-06-27
 **Author:** Mark Toda (with Claude)
-**Supersedes:** the scope of `docs/cli-design.md` where they differ — this revision
-narrows agents to Claude+Codex, drops the Claude `settings.json` editor / double-fire
-guard / Aider / `serde_yaml`, and makes Codex `setup` conflict-aware.
+**History:** this is the authoritative CLI design. It narrows an earlier broader
+draft to Claude+Codex, drops the Claude `settings.json` editor / double-fire guard
+/ Aider / `serde_yaml`, and makes Codex `setup` conflict-aware.
 
 ## Goal
 
@@ -83,7 +83,7 @@ where `Update { status, msg }`. Returns `None` for no-op cases.
 | agent | input | status |
 |---|---|---|
 | claude | `--status` from the hook (matcher-driven `hooks.json`), stdin JSON for `cwd` + `message`/`last_assistant_message` | running / pending / done as passed; **`pending` backstop**: drop `pending` when `message` is empty or a generic phrase ("Claude needs attention", "Claude Code needs your attention") — preserves commits `d1dbe1b`/`e86b43f` |
-| codex | trailing-argv JSON: `type`, `last-assistant-message`, `cwd` | `type == "agent-turn-complete"` → `done`; else `None` (no-op). **Implementation must verify the exact event-type string against the installed Codex before relying on it.** |
+| codex | trailing-argv JSON: `type`, `last-assistant-message`, `cwd` | `type == "agent-turn-complete"` → `done`; else `None` (no-op). Verified: `agent-turn-complete` is the event Codex's `notify` (legacy) program emits, and the payload carries `last-assistant-message`/`cwd`. (`approval-requested` belongs to Codex's separate newer hooks system, not the `notify` program — out of scope.) |
 
 Bare `zj-radar notify claude` (no `--status`) may self-derive status from
 `hook_event_name` in stdin as a convenience for hand-wiring; the plugin path uses
