@@ -61,7 +61,7 @@ pub fn row_lines(agg: &TabAgg) -> usize {
 }
 
 /// Right-aligned status slot text (no color). Empty for idle.
-fn right_slot(agg: &TabAgg, now_tick: u64) -> String {
+fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
     let elapsed = agg
         .detail
         .as_ref()
@@ -77,7 +77,7 @@ fn right_slot(agg: &TabAgg, now_tick: u64) -> String {
         Status::Running => format!("{}{}", count, elapsed),
         Status::Pending => format!("{}⏵ {}", count, elapsed),
         Status::Done => "done".to_string(),
-        Status::Error => "failed".to_string(),
+        Status::Error => if width < 16 { "err".to_string() } else { "failed".to_string() },
     }
 }
 
@@ -140,7 +140,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         let glyph = format!("{}{}{}", role, glyph_char, RESET);
 
         // right slot (reserved width even when empty).
-        let slot = right_slot(&row.agg, now_tick);
+        let slot = right_slot(&row.agg, now_tick, width);
         let slot_styled = if slot.is_empty() {
             String::new()
         } else {
@@ -183,9 +183,24 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
             match st {
                 Status::Running => {
                     let spin = crate::status::msg_spin(now_tick as usize);
-                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
-                    let body = format!("{} {} {}", loc, spin, d.msg);
-                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
+                    let avail = width.saturating_sub(3);
+                    let full = {
+                        let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
+                        format!("{} {} {}", loc, spin, d.msg)
+                    };
+                    let body = if full.chars().count() <= avail {
+                        full
+                    } else {
+                        // drop branch
+                        let no_branch = format!("{} {} {}", d.repo, spin, d.msg);
+                        if no_branch.chars().count() <= avail {
+                            no_branch
+                        } else {
+                            // drop message, keep repo + spinner
+                            truncate(&format!("{} {}", d.repo, spin), avail)
+                        }
+                    };
+                    out.push_str(&format!("   {}{}{}\n", Role::Muted.ansi(), truncate(&body, avail), RESET));
                 }
                 Status::Error => {
                     let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
@@ -463,5 +478,32 @@ mod tests {
     fn no_bell_no_marker() {
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
         assert!(!render(&rows, &ro(24, 0)).contains('⚑'));
+    }
+
+    #[test]
+    fn error_word_narrows_when_tight() {
+        let d = Detail { repo: "infra".into(), branch: "".into(), msg: "".into(),
+                         since_tick: 0, status: Status::Error };
+        let rows = vec![TabRow { number: 5, name: "infra".into(), active: false,
+                                 has_bell: false, agg: agg(Status::Error, 0, 1, Some(d)) }];
+        // wide: "failed"; narrow: "err"
+        assert!(render(&rows, &ro(30, 0)).contains("failed"));
+        let narrow = render(&rows, &ro(14, 0));
+        assert!(narrow.contains("err"));
+        assert!(!narrow.contains("failed"));
+    }
+
+    #[test]
+    fn working_detail_drops_branch_before_message_when_narrow() {
+        let d = Detail { repo: "web".into(), branch: "main".into(),
+                         msg: "running tests".into(), since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "api".into(), active: false,
+                                 has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
+        let narrow = render(&rows, &ro(16, 5));
+        for line in narrow.lines() {
+            assert!(visible_len(line) <= 16);
+        }
+        // branch path is the first thing to go: "web/main" should not survive at 16 cols
+        assert!(!narrow.contains("web/main"));
     }
 }
