@@ -1,0 +1,11 @@
+{
+  "name": "zj-agents",
+  "owner": { "name": "Mark Toda" },
+  "plugins": [
+    {
+      "name": "zj-agents-claude",
+      "source": "./plugins/zj-agents-claude",
+      "description": "Broadcast Claude Code agent status (working/waiting/done) to the zj-agents Zellij sidebar — installs hooks with zero settings.json editing."
+    }
+  ]
+}
