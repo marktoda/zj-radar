@@ -19,7 +19,7 @@ pub enum NamingMode {
 ///
 /// - `Compact`: flush rail — no blank lines between tabs (original behaviour).
 /// - `Comfortable`: one blank separator line after each tab's content block.
-/// - `Cards`: background bands (future step); currently renders identically to Comfortable.
+/// - `Cards`: each tab is a background band (ANSI-16 bright-black surface); active card adds the mauve spine + bold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Density {
     /// No blank lines between tabs.
@@ -27,7 +27,7 @@ pub enum Density {
     /// One blank separator line after each tab's content block.
     #[default]
     Comfortable,
-    /// Background bands (future step). Currently renders like Comfortable.
+    /// Each tab is a background band (ANSI-16 bright-black surface); active card adds the mauve spine + bold.
     Cards,
 }
 
