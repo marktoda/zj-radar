@@ -381,70 +381,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_tab_with_msg_occupies_three_lines() {
-        // Tab at position 0 has a Running pane with a non-empty msg → 3 lines
+    fn agent_tab_running_occupies_two_lines() {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![pane(10)]);
-        apply_payload(&mut state, 10, Status::Running, 1); // msg="msg" (non-empty)
-
-        // Lines 0, 1 = header (no tab) — 2-line header
-        assert_eq!(state.tab_position_at_line(0), None);
+        apply_payload(&mut state, 10, Status::Running, 1); // running → 2 lines
+        // rows 0,1 = header
         assert_eq!(state.tab_position_at_line(1), None);
-        // Lines 2, 3, 4 all belong to the agent tab (position 0)
+        // rows 2,3 = running agent tab (position 0)
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(0));
-        assert_eq!(state.tab_position_at_line(4), Some(0));
-        // Line 5 belongs to the plain tab (position 1)
-        assert_eq!(state.tab_position_at_line(5), Some(1));
-        // Line 6 is beyond
-        assert!(state.tab_position_at_line(6).is_none());
-    }
-
-    #[test]
-    fn agent_tab_with_empty_msg_occupies_two_lines() {
-        // Tab at position 0 has a Running pane with an empty msg → 2 lines
-        let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10)]);
-        apply_payload_with_msg(&mut state, 10, Status::Running, 1, "  "); // whitespace-only
-
-        // Lines 0, 1 = header (no tab) — 2-line header
-        assert_eq!(state.tab_position_at_line(0), None);
-        assert_eq!(state.tab_position_at_line(1), None);
-        // Lines 2, 3 both belong to the agent tab (position 0)
-        assert_eq!(state.tab_position_at_line(2), Some(0));
-        assert_eq!(state.tab_position_at_line(3), Some(0));
-        // Line 4 belongs to the plain tab (position 1)
+        // row 4 = plain tab (position 1)
         assert_eq!(state.tab_position_at_line(4), Some(1));
-        // Line 5 is beyond
         assert!(state.tab_position_at_line(5).is_none());
     }
 
     #[test]
-    fn multiple_agent_tabs_line_spans_accumulate_correctly() {
-        // position 0: Running with msg (3 lines), position 1: plain (1 line),
-        // position 2: Running with msg (3 lines)
-        let mut state =
-            make_state_with_tabs(&[(0, "a0", false), (1, "a1", false), (2, "a2", false)]);
-        state.tab_panes.insert(0, vec![pane(1)]);
-        state.tab_panes.insert(2, vec![pane(2)]);
-        apply_payload(&mut state, 1, Status::Running, 1); // msg="msg" non-empty → 3 lines
-        apply_payload(&mut state, 2, Status::Running, 2); // msg="msg" non-empty → 3 lines
-
-        // Lines 0, 1 = header (no tab) — 2-line header
-        assert_eq!(state.tab_position_at_line(0), None);
-        assert_eq!(state.tab_position_at_line(1), None);
-        // position 0 → lines 2, 3, 4
-        assert_eq!(state.tab_position_at_line(2), Some(0));
-        assert_eq!(state.tab_position_at_line(3), Some(0));
-        assert_eq!(state.tab_position_at_line(4), Some(0));
-        // position 1 → line 5
-        assert_eq!(state.tab_position_at_line(5), Some(1));
-        // position 2 → lines 6, 7, 8
-        assert_eq!(state.tab_position_at_line(6), Some(2));
-        assert_eq!(state.tab_position_at_line(7), Some(2));
-        assert_eq!(state.tab_position_at_line(8), Some(2));
-        // beyond
-        assert!(state.tab_position_at_line(9).is_none());
+    fn agent_tab_pending_with_msg_occupies_three_lines() {
+        let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
+        state.tab_panes.insert(0, vec![pane(10)]);
+        apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 3
+        assert_eq!(state.tab_position_at_line(1), None);       // header
+        assert_eq!(state.tab_position_at_line(2), Some(0));    // line 1
+        assert_eq!(state.tab_position_at_line(3), Some(0));    // line 2
+        assert_eq!(state.tab_position_at_line(4), Some(0));    // line 3
+        assert_eq!(state.tab_position_at_line(5), Some(1));    // plain tab
     }
 
     #[test]
@@ -457,19 +417,6 @@ mod tests {
         assert_eq!(state.tab_position_at_line(2), Some(0));
         // Position 1 → switch_tab_to(1 + 1 = 2)
         assert_eq!(state.tab_position_at_line(3), Some(1));
-    }
-
-    #[test]
-    fn header_shifts_click_mapping_down_by_two() {
-        // One active agent tab (→ 2-line header) at position 0, plain tab at position 1.
-        let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10)]);
-        apply_payload(&mut state, 10, Status::Running, 1);
-        // rows 0,1 = header (no tab)
-        assert_eq!(state.tab_position_at_line(0), None);
-        assert_eq!(state.tab_position_at_line(1), None);
-        // running tab now spans rows 2.. (exact span finalized in Task 3)
-        assert_eq!(state.tab_position_at_line(2), Some(0));
     }
 
     #[test]

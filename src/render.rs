@@ -6,7 +6,6 @@ pub use crate::status::GlyphSet;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
-const YELLOW: &str = "\x1b[33m";
 
 pub struct RenderOpts {
     pub width: usize,
@@ -15,9 +14,6 @@ pub struct RenderOpts {
     pub glyphs: GlyphSet,
 }
 
-/// A `running` agent whose elapsed time reaches this (seconds ≈ ticks) is
-/// flagged as long-running / possibly stuck.
-const STUCK_SECS: u64 = 600;
 
 pub struct TabRow {
     pub number: u32,
@@ -49,35 +45,39 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Second-line tag for a tab's aggregate state.
-fn detail_tag(agg: &TabAgg, now_tick: u64) -> String {
-    let Some(d) = &agg.detail else { return String::new() };
-    let elapsed = now_tick.saturating_sub(d.since_tick);
-    match d.status {
-        Status::Done => format!("done {}", format_elapsed(elapsed)),
-        Status::Running => {
-            let e = format_elapsed(elapsed);
-            if elapsed >= STUCK_SECS {
-                format!("{} ⚠", e)
-            } else {
-                e
-            }
+/// Single source of truth for how many lines a tab row occupies.
+pub fn row_lines(agg: &TabAgg) -> usize {
+    match agg.status {
+        Status::Idle | Status::Done => 1,
+        Status::Running | Status::Error => {
+            if agg.detail.is_some() { 2 } else { 1 }
         }
-        Status::Pending => "needs you".to_string(),
-        Status::Error => "error".to_string(),
-        Status::Idle => String::new(),
+        Status::Pending => match &agg.detail {
+            Some(d) if !d.msg.trim().is_empty() => 3,
+            Some(_) => 2,
+            None => 1,
+        },
     }
 }
 
-/// Single source of truth for how many lines a tab row occupies.
-/// - plain tab (no detail): 1 line
-/// - agent tab with empty msg: 2 lines
-/// - agent tab with non-empty msg: 3 lines
-pub fn row_lines(agg: &TabAgg) -> usize {
-    match &agg.detail {
-        None => 1,
-        Some(d) if d.msg.trim().is_empty() => 2,
-        Some(_) => 3,
+/// Right-aligned status slot text (no color). Empty for idle.
+fn right_slot(agg: &TabAgg, now_tick: u64) -> String {
+    let elapsed = agg
+        .detail
+        .as_ref()
+        .map(|d| format_elapsed(now_tick.saturating_sub(d.since_tick)))
+        .unwrap_or_default();
+    let count = if agg.total > 1 {
+        format!("{}/{} ", agg.done, agg.total)
+    } else {
+        String::new()
+    };
+    match agg.status {
+        Status::Idle => String::new(),
+        Status::Running => format!("{}{}", count, elapsed),
+        Status::Pending => format!("{}⏵ {}", count, elapsed),
+        Status::Done => "done".to_string(),
+        Status::Error => "failed".to_string(),
     }
 }
 
@@ -117,45 +117,89 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
 
     for row in rows {
-        let dot = format!("{}{}{}", row.agg.status.ansi(), row.agg.status.glyph(), RESET);
-        let count = if row.agg.total > 1 {
-            format!(" {}/{}", row.agg.done, row.agg.total)
+        let st = row.agg.status;
+        let role = st.role().ansi();
+
+        // col 0: active bar — accent normally, attention when active+urgent.
+        let bar = if row.active {
+            let bar_role = match st {
+                Status::Pending | Status::Error => Role::Attention,
+                _ => Role::Accent,
+            };
+            format!("{}▌{}", bar_role.ansi(), RESET)
+        } else {
+            " ".to_string()
+        };
+
+        // col 1: status glyph (working spins).
+        let glyph_char = if st == Status::Running {
+            crate::status::working_spin(now_tick as usize)
+        } else {
+            st.glyph_for(opts.glyphs)
+        };
+        let glyph = format!("{}{}{}", role, glyph_char, RESET);
+
+        // right slot (reserved width even when empty).
+        let slot = right_slot(&row.agg, now_tick);
+        let slot_styled = if slot.is_empty() {
+            String::new()
+        } else {
+            format!("{}{}{}", role, slot, RESET)
+        };
+
+        // bell marker just before the slot.
+        let bell = if row.has_bell {
+            format!("{}⚑{} ", Role::Working.ansi(), RESET)
         } else {
             String::new()
         };
-        // reserve 2 cols for " ⚑" when a bell is set
-        let bell_budget = if row.has_bell { 2 } else { 0 };
-        let name_budget = width.saturating_sub(4 + count.chars().count() + bell_budget);
+
+        // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
+        let num = row.number.to_string();
+        let prefix_len = 1 + 1 + 1 + num.chars().count() + 1; // bar+glyph+sp+num+sp
+        let bell_len = if row.has_bell { 2 } else { 0 };
+        let slot_len = slot.chars().count();
+        let name_budget = width
+            .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
+            .max(1);
         let name = truncate(&row.name, name_budget);
         let name_styled = if row.active {
             format!("{}{}{}", BOLD, name, RESET)
         } else {
-            name
+            name.clone()
         };
-        let bell = if row.has_bell {
-            format!(" {}⚑{}", YELLOW, RESET)
-        } else {
-            String::new()
-        };
-        // line 1: "<dot> <n> <name><count><bell>"
-        out.push_str(&format!("{} {} {}{}{}\n", dot, row.number, name_styled, count, bell));
 
-        // line 2: "  repo/branch · tag"  (only when there is agent detail)
+        // pad so the slot sits flush right.
+        let used = prefix_len + name.chars().count() + bell_len + slot_len;
+        let gap = width.saturating_sub(used).max(1);
+        out.push_str(&format!(
+            "{}{} {} {}{}{}{}\n",
+            bar, glyph, num, name_styled, " ".repeat(gap), bell, slot_styled
+        ));
+
+        // detail lines, per state.
         if let Some(d) = &row.agg.detail {
-            let loc = if d.branch.is_empty() {
-                d.repo.clone()
-            } else {
-                format!("{}/{}", d.repo, d.branch)
-            };
-            let tag = detail_tag(&row.agg, now_tick);
-            let second = truncate(&format!("{} · {}", loc, tag), width.saturating_sub(2));
-            out.push_str(&format!("  {}\n", second));
-
-            // line 3: `  "msg"` (only when msg is non-empty). The fixed
-            // overhead is 4 cols (2 spaces + 2 quotes), so reserve 4.
-            if !d.msg.trim().is_empty() {
-                let msg_line = format!("  \"{}\"\n", truncate(&d.msg, width.saturating_sub(4)));
-                out.push_str(&msg_line);
+            let muted = Role::Muted.ansi();
+            match st {
+                Status::Running => {
+                    let spin = crate::status::msg_spin(now_tick as usize);
+                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
+                    let body = format!("{} {} {}", loc, spin, d.msg);
+                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
+                }
+                Status::Error => {
+                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
+                    let body = if d.msg.trim().is_empty() { loc } else { format!("{} · {}", loc, d.msg) };
+                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
+                }
+                Status::Pending => {
+                    let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
+                    out.push_str(&format!("   {}{} · {}needs you{}\n", muted, truncate(&loc, width.saturating_sub(14)), Role::Attention.ansi(), RESET));
+                    if !d.msg.trim().is_empty() {
+                        out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
+                    }
+                }
+                Status::Done | Status::Idle => {}
             }
         }
     }
@@ -217,89 +261,94 @@ mod tests {
         let s = render(&rows, &ro(24, 0));
         assert!(s.contains("notes"));
         assert_eq!(s.matches('\n').count(), 3); // always-on header (2) + tab row (1)
-        assert!(s.contains(Status::Idle.glyph()));
+        assert!(s.contains(Status::Idle.glyph_for(GlyphSet::Plain)));
     }
 
     #[test]
-    fn agent_tab_has_three_lines_with_count_tag_and_msg() {
-        let detail = Detail {
-            repo: "pinky".into(),
-            branch: "fix/x".into(),
-            msg: "doing the thing".into(),
-            since_tick: 0,
-            status: Status::Running,
-        };
+    fn row_lines_by_state() {
+        assert_eq!(row_lines(&agg(Status::Idle, 0, 0, None)), 1);
+
+        let detail = |status, msg: &str| Some(Detail {
+            repo: "r".into(), branch: "b".into(), msg: msg.into(),
+            since_tick: 0, status,
+        });
+        assert_eq!(row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, ""))), 1);
+        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "x"))), 2);
+        assert_eq!(row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x"))), 2);
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, ""))), 2);
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?"))), 3);
+    }
+
+    #[test]
+    fn active_row_has_accent_bar_idle_does_not() {
+        let rows = vec![
+            TabRow { number: 1, name: "a".into(), active: true, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "b".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+        ];
+        let s = render(&rows, &ro(24, 0));
+        let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
+        assert!(body[0].contains('▌'));         // active row → bar
+        assert!(body[0].contains(Role::Accent.ansi())); // accent-colored bar
+        assert!(!body[1].contains('▌'));        // idle non-active → no bar
+    }
+
+    #[test]
+    fn active_and_waiting_row_bar_is_attention_not_accent() {
+        let detail = Detail { repo: "p".into(), branch: "fix".into(), msg: "".into(),
+                              since_tick: 0, status: Status::Pending };
         let rows = vec![TabRow {
-            number: 2,
-            name: "pinky".into(),
-            active: true,
-            has_bell: false,
-            agg: agg(Status::Running, 2, 4, Some(detail)),
+            number: 3, name: "pinky".into(), active: true, has_bell: false,
+            agg: agg(Status::Pending, 0, 0, Some(detail)),
         }];
-        let s = render(&rows, &ro(24, 14));
-        assert!(s.contains("2/4"));
-        assert!(s.contains("pinky/fix/x"));
-        assert!(s.contains("0:14"));
-        assert_eq!(s.matches('\n').count(), 5); // header (2) + three tab lines
-        assert!(s.contains("\"doing the thing\""));
+        let s = render(&rows, &ro(30, 5));
+        let line1 = s.lines().nth(2).unwrap();
+        assert!(line1.contains('▌'));
+        // the bar uses the attention role when the active tab is also waiting
+        assert!(line1.contains(Role::Attention.ansi()));
     }
 
     #[test]
-    fn agent_tab_with_empty_msg_has_two_lines() {
-        let detail = Detail {
-            repo: "pinky".into(),
-            branch: "fix/x".into(),
-            msg: "   ".into(), // whitespace-only → empty
-            since_tick: 0,
-            status: Status::Running,
+    fn right_slot_per_state() {
+        let mk = |status, done, total| {
+            let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
+                             since_tick: 0, status };
+            TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
+                     agg: agg(status, done, total, Some(d)) }
         };
-        let rows = vec![TabRow {
-            number: 2,
-            name: "pinky".into(),
-            active: true,
-            has_bell: false,
-            agg: agg(Status::Running, 2, 4, Some(detail)),
-        }];
-        let s = render(&rows, &ro(24, 14));
-        assert_eq!(s.matches('\n').count(), 4); // header (2) + two tab lines, no quoted line
-        assert!(!s.contains('"'));
+        assert!(render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
+        assert!(render(&[mk(Status::Error, 0, 1)], &ro(30, 0)).contains("failed"));
+        assert!(render(&[mk(Status::Running, 0, 1)], &ro(30, 14)).contains("0:14"));
+        let waiting = render(&[mk(Status::Pending, 0, 1)], &ro(30, 2));
+        assert!(waiting.contains('⏵'));
+        assert!(waiting.contains("0:02"));
+        let multi = render(&[mk(Status::Pending, 2, 4)], &ro(30, 18));
+        assert!(multi.contains("2/4"));
     }
 
     #[test]
-    fn row_lines_all_three_cases() {
-        // None → 1
-        let plain = agg(Status::Idle, 0, 0, None);
-        assert_eq!(row_lines(&plain), 1);
+    fn working_glyph_spins_with_tick() {
+        let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
+                         since_tick: 0, status: Status::Running };
+        let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
+                               agg: agg(Status::Running, 0, 1, Some(d.clone())) };
+        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain });
+        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain });
+        assert!(f0.contains('◐'));
+        assert!(f1.contains('◓'));
+    }
 
-        // detail with empty msg → 2
-        let empty_msg = agg(
-            Status::Running,
-            1,
-            1,
-            Some(Detail {
-                repo: "r".into(),
-                branch: "b".into(),
-                msg: "  ".into(),
-                since_tick: 0,
-                status: Status::Running,
-            }),
-        );
-        assert_eq!(row_lines(&empty_msg), 2);
-
-        // detail with non-empty msg → 3
-        let with_msg = agg(
-            Status::Running,
-            1,
-            1,
-            Some(Detail {
-                repo: "r".into(),
-                branch: "b".into(),
-                msg: "hello".into(),
-                since_tick: 0,
-                status: Status::Running,
-            }),
-        );
-        assert_eq!(row_lines(&with_msg), 3);
+    #[test]
+    fn idle_row_is_single_line_with_no_right_slot_text() {
+        let rows = vec![TabRow {
+            number: 7, name: "logs".into(), active: false, has_bell: false,
+            agg: agg(Status::Idle, 0, 0, None),
+        }];
+        let s = render(&rows, &ro(24, 0));
+        assert_eq!(s.lines().skip(2).count(), 1); // exactly one body line
+        assert!(s.contains('○'));
+        assert!(s.contains("logs"));
     }
 
     #[test]
@@ -354,8 +403,8 @@ mod tests {
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, &ro(width, 14));
-        // header (2) + three tab lines emitted
-        assert_eq!(s.matches('\n').count(), 5);
+        // header (2) + two tab lines emitted (Running+detail = 2 lines)
+        assert_eq!(s.matches('\n').count(), 4);
         // every visible (ANSI-stripped) line fits within the sidebar width
         for line in s.lines() {
             assert!(
@@ -369,21 +418,14 @@ mod tests {
     }
 
     #[test]
-    fn running_under_threshold_has_no_warning() {
+    fn running_has_no_warning_glyph() {
         let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
         assert!(!render(&rows, &ro(30, 599)).contains('⚠'));
     }
 
     #[test]
-    fn running_at_threshold_shows_warning() {
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
-        assert!(render(&rows, &ro(30, 600)).contains('⚠'));
-    }
-
-    #[test]
-    fn done_with_long_elapsed_has_no_warning() {
+    fn done_has_no_warning_glyph() {
         let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Done };
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
         assert!(!render(&rows, &ro(30, 10_000)).contains('⚠'));

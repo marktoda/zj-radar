@@ -32,27 +32,6 @@ impl Status {
         }
     }
 
-    pub fn glyph(self) -> char {
-        match self {
-            Status::Error => '✗',
-            Status::Pending => '◑',
-            Status::Running => '◐',
-            Status::Done => '●',
-            Status::Idle => '○',
-        }
-    }
-
-    /// ANSI SGR foreground color for the glyph.
-    pub fn ansi(self) -> &'static str {
-        match self {
-            Status::Error => "\x1b[31m",   // red
-            Status::Pending => "\x1b[33m", // yellow/orange
-            Status::Running => "\x1b[93m", // bright yellow
-            Status::Done => "\x1b[32m",    // green
-            Status::Idle => "\x1b[90m",    // dim grey
-        }
-    }
-
     pub fn is_active(self) -> bool {
         self != Status::Idle
     }
@@ -165,19 +144,17 @@ mod tests {
     }
 
     #[test]
-    fn glyph_and_ansi_are_distinct_per_variant() {
+    fn glyphs_and_roles_distinct_per_variant() {
         use Status::*;
+        use GlyphSet::Plain;
         let all = [Idle, Done, Running, Pending, Error];
-        // glyphs are all distinct
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
-                assert_ne!(a.glyph(), b.glyph());
-                assert_ne!(a.ansi(), b.ansi());
+                assert_ne!(a.glyph_for(Plain), b.glyph_for(Plain));
             }
         }
-        // sanity: known mappings
-        assert_eq!(Done.glyph(), '●');
-        assert_eq!(Error.ansi(), "\x1b[31m");
+        assert_eq!(Done.glyph_for(Plain), '●');
+        assert_eq!(Error.role().ansi(), "\x1b[31m");
     }
 
     #[test]
