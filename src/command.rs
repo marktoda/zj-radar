@@ -120,6 +120,7 @@ impl CommandStore {
                         seq: None,
                         on_focus: None,
                         ever_active: true,
+                        source: "command".into(),
                     },
                 );
             }
@@ -164,6 +165,7 @@ impl CommandStore {
                     seq: None,
                     on_focus: Some(Status::Idle),
                     ever_active: true,
+                    source: "command".into(),
                 },
             );
         }
