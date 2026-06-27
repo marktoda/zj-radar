@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (=$tag) does not match Cargo.toml version $manifest" >&2
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches Cargo.toml version $manifest"
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build wasm
+        run: nix build .#zj-radar -L
+
+      - name: Stage artifact
+        run: cp result/lib/zj_radar.wasm zj_radar.wasm
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zj_radar.wasm
+          fail_on_unmatched_files: true
+          generate_release_notes: true
