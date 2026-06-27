@@ -1937,7 +1937,7 @@ mod tests {
     fn cards_3tint_layout_snapshot() {
         // Golden tint-map for the canonical sidebar.dc.html "cards" session:
         // active running agent, pending agent, done agent, then two idle panes.
-        // Every tab is a card; one gap row after each; tints encode the class.
+        // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
         use crate::model::Detail;
         let running = Detail { repo: "web".into(), branch: "".into(),
             msg: "building…".into(), since_tick: 0, status: Status::Running };
