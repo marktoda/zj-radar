@@ -80,8 +80,8 @@ pub struct State {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     config: config::Config,
     permission_granted: bool,
-    // Theme-derived surface + text colors; updated on ModeUpdate; only used
-    // by the wasm render path.
+    // Terminal-derived surface + dim colors; updated on PaneUpdate from the
+    // panes' reported default_bg/default_fg; only used by the wasm render path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     theme: theme::DerivedColors,
 }
@@ -126,7 +126,7 @@ impl State {
         if rows.is_empty() {
             return None;
         }
-        let mut cursor = render::header_lines(&rows, self.config.header);
+        let mut cursor = render::header_lines(&rows, self.config.header, self.config.density);
         if target < cursor {
             return None; // click landed on the header → no tab
         }
@@ -135,7 +135,8 @@ impl State {
         let body_budget = if self.last_render_height == 0 {
             usize::MAX
         } else {
-            self.last_render_height.saturating_sub(render::header_lines(&rows, self.config.header))
+            self.last_render_height
+                .saturating_sub(render::header_lines(&rows, self.config.header, self.config.density))
         };
         let (plan, _strip_folded, gap_used) = render::plan_layout(&rows, body_budget, self.config.density);
         for &(i, planned_lines) in &plan {
@@ -206,7 +207,6 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
-            EventType::ModeUpdate,
         ]);
         set_selectable(false);
     }
@@ -229,10 +229,29 @@ impl ZellijPlugin for State {
                 let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
                 let mut live: HashSet<u32> = HashSet::new();
                 let mut focused_terminal: Option<u32> = None;
+                // Capture the terminal's reported default bg/fg so we can derive
+                // the dark-panel surfaces in the terminal's own theme. Prefer the
+                // focused pane; otherwise accept the first terminal pane that
+                // reports both colors.
+                let mut focused_colors: Option<(theme::Rgb, theme::Rgb)> = None;
+                let mut any_colors: Option<(theme::Rgb, theme::Rgb)> = None;
                 for (tab_pos, panes) in manifest.panes {
                     for p in panes {
                         if p.is_plugin {
                             continue;
+                        }
+                        let colors = match (
+                            p.default_bg.as_deref().and_then(theme::parse_hex),
+                            p.default_fg.as_deref().and_then(theme::parse_hex),
+                        ) {
+                            (Some(bg), Some(fg)) => Some((bg, fg)),
+                            _ => None,
+                        };
+                        if let Some(c) = colors {
+                            any_colors.get_or_insert(c);
+                            if p.is_focused {
+                                focused_colors = Some(c);
+                            }
                         }
                         tab_panes.entry(tab_pos).or_default().push(PaneLite {
                             id: p.id,
@@ -244,6 +263,9 @@ impl ZellijPlugin for State {
                             focused_terminal = Some(p.id);
                         }
                     }
+                }
+                if let Some((bg, fg)) = focused_colors.or(any_colors) {
+                    self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
                 }
                 self.tab_panes = tab_panes;
                 self.store.prune(&live);
@@ -273,14 +295,6 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(status) => {
                 self.permission_granted = status == PermissionStatus::Granted;
                 true
-            }
-            Event::ModeUpdate(mode_info) => {
-                let bg_raw = mode_info.style.colors.text_unselected.background;
-                let fg_raw = mode_info.style.colors.text_unselected.base;
-                let bg = theme::palette_color_to_rgb(bg_raw);
-                let fg = theme::palette_color_to_rgb(fg_raw);
-                self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
-                false // color update doesn't require a full re-render on its own
             }
             Event::CwdChanged(pane_id, path, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
@@ -721,5 +735,28 @@ mod tests {
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
         assert_eq!(state.tab_position_at_line(4), None);
+    }
+
+    #[test]
+    fn click_mapping_cards_one_line_header() {
+        // Cards density: the carded hero is a single " RADAR …" title line (no
+        // rule), so the header occupies ONE line, not two. Cards has no inter-card
+        // gaps (background tints visually separate adjacent cards). The click
+        // mapping must stay in lockstep with render():
+        //   line 0       → header (1 line, no rule)
+        //   line 1       → tab 0 content
+        //   line 2       → tab 1 content
+        //   line 3       → None (beyond last tab)
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        state.last_render_height = 100;
+        state.config = config::Config {
+            density: config::Density::Cards,
+            ..config::Config::default()
+        };
+
+        assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
+        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
+        assert_eq!(state.tab_position_at_line(2), Some(1), "tab 1 content (no gap)");
+        assert_eq!(state.tab_position_at_line(3), None, "beyond last tab");
     }
 }

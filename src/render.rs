@@ -20,8 +20,9 @@ pub struct RenderOpts {
     pub header: bool,
     /// Vertical density between tabs.
     pub density: Density,
-    /// Theme-derived colors for card surfaces and readable detail text.
-    /// Defaults to Catppuccin Mocha values before the first ModeUpdate.
+    /// Terminal-derived colors for card surfaces and readable dim text. These
+    /// are the only truecolor values (status hues are ANSI-16). Defaults to a
+    /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
 }
 
@@ -106,14 +107,20 @@ fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
     }
 }
 
-/// The rail's identity header is two lines (title + rule) whenever any rows
-/// exist (always-on identity). Single source of truth for the header's
-/// vertical span (consumed by click mapping in lib.rs). Only the truly-empty
-/// case (no rows at all) is headerless. When `header` is false the identity
-/// block is suppressed and rows start at line 0.
-pub fn header_lines(rows: &[TabRow], header: bool) -> usize {
+/// The rail's identity header. Single source of truth for the header's vertical
+/// span (consumed by click mapping in lib.rs). Only the truly-empty case (no
+/// rows at all) is headerless; when `header` is false the identity block is
+/// suppressed and rows start at line 0.
+///
+/// In Cards density the carded hero is just the " RADAR …" title (1 line) — the
+/// `═` rule is dropped so cards begin immediately under the title. Compact and
+/// Comfortable keep the two-line title+rule header. `render()` and the click
+/// mapping both consult this function, so the count stays in lockstep.
+pub fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
     if rows.is_empty() || !header {
         0
+    } else if density == Density::Cards {
+        1
     } else {
         2
     }
@@ -246,8 +253,9 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
 ///   - `gap_used`: 0 (no blank lines) or 1 (one blank line after each kept tab).
 ///
 /// Gap rule:
-///   - If `density == Compact`, `gap_used` is always 0.
-///   - Otherwise, gaps are included only when ALL of them still fit within
+///   - Compact and Cards → `gap_used` is always 0 (Cards uses background tints
+///     to visually separate adjacent cards; Compact uses flush spacing).
+///   - Comfortable → gaps are included only when ALL of them still fit within
 ///     `body_budget` (after accounting for content lines and the strip line).
 ///     If even one gap would overflow, `gap_used` falls back to 0 (flush
 ///     spacing), letting T3+ overflow compression handle the rest.
@@ -257,13 +265,13 @@ pub fn plan_layout(
     density: Density,
 ) -> (Vec<(usize, usize)>, usize, usize) {
     let (plan, strip_folded) = plan_overflow(rows, body_budget);
-    let gap_used = if density == Density::Compact {
+    let gap_used = if density == Density::Compact || density == Density::Cards {
         0
     } else {
+        // Comfortable only: include gaps only when they all fit.
         let content_total: usize = plan.iter().map(|(_, l)| l).sum();
         let kept_count = plan.len();
         let strip_line = if strip_folded > 0 { 1 } else { 0 };
-        // Include gaps only when content + one-gap-per-tab + strip all fit.
         if content_total + kept_count + strip_line <= body_budget {
             1
         } else {
@@ -318,18 +326,33 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.agg.status;
-    let role = st.role().ansi();
+    let cards = opts.density == Density::Cards;
 
-    // col 0: active bar — accent normally, attention when active+urgent.
+    // Status HUES are always ANSI-16 role codes so the terminal renders them in
+    // its OWN theme (any theme, zero config): attention `\x1b[91m` (waiting),
+    // error `\x1b[31m`, working `\x1b[33m`, success `\x1b[32m`, accent `\x1b[35m`
+    // (spine). ANSI has no orange/peach, so waiting (also bright-red-family)
+    // stays distinct from the error row via shape + bold (◆ + bold vs ✗), not
+    // hue. Only the dark panel surfaces + dim greys are truecolor (terminal-bg/fg
+    // derived), so those match the terminal's theme too.
+    let hue = |r: Role| -> String { r.ansi().to_string() };
+
+    // col 0: active spine — accent (mauve) normally, attention (peach) when the
+    // active row is also waiting/error.
     let bar = if row.active {
         let bar_role = match st {
             Status::Pending | Status::Error => Role::Attention,
             _ => Role::Accent,
         };
-        format!("{}▌{}", bar_role.ansi(), RESET)
+        format!("{}▌{}", hue(bar_role), RESET)
     } else {
         " ".to_string()
     };
+
+    // Internal left padding (Cards only): one pad space after the col-0
+    // spine/space, before the glyph, so content isn't flush to the band edge.
+    let pad = if cards { " " } else { "" };
+    let pad_len = pad.len(); // ASCII space → 1 display col when present.
 
     // col 1: status glyph (working spins).
     let glyph_char = if st == Status::Running {
@@ -337,14 +360,28 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     } else {
         st.glyph_for(opts.glyphs)
     };
-    let glyph = format!("{}{}{}", role, glyph_char, RESET);
+    // The whole label (glyph + number + name) shares the status color so each
+    // row reads as its state at a glance — design: "4 web" is green, "5 infra"
+    // red, "3 pinky" peach+bold. Idle recedes to the dim idle_text; waiting is
+    // also bold (it's the alarm). Active is shown by the spine + brighter card,
+    // NOT bold, so the two cues stay independent.
+    let label_color = if st == Status::Idle {
+        tc_fg(opts.theme.idle_text)
+    } else {
+        hue(st.role())
+    };
+    let label_bold = if st == Status::Pending { BOLD } else { "" };
 
-    // right slot (reserved width even when empty).
+    // right slot (reserved width even when empty). Waiting/done/error color
+    // their slot with the status role (it carries meaning); the *working*
+    // elapsed is ambient info, not an alarm, so it's dimmed (design uses `id`).
     let slot = right_slot(&row.agg, now_tick, width);
     let slot_styled = if slot.is_empty() {
         String::new()
+    } else if st == Status::Running {
+        format!("{}{}{}", tc_fg(opts.theme.idle_text), slot, RESET)
     } else {
-        format!("{}{}{}", role, slot, RESET)
+        format!("{}{}{}", hue(st.role()), slot, RESET)
     };
 
     // bell marker just before the slot.
@@ -354,31 +391,23 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
         String::new()
     };
 
-    // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
+    // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
+    // `pad_len` is the Cards-only internal left pad (1 col, else 0).
     let num = row.number.to_string();
-    let prefix_len = 1 + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+glyph+sp+num+sp
+    let prefix_len = 1 + pad_len + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+pad+glyph+sp+num+sp
     let bell_len = if row.has_bell { 2 } else { 0 };
     let slot_len = UnicodeWidthStr::width(slot.as_str());
     let name_budget = width
         .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
         .max(1);
     let name = truncate(&row.name, name_budget);
-    let name_styled = if row.active {
-        format!("{}{}{}", BOLD, name, RESET)
-    } else if st == Status::Idle {
-        // Idle row names are dimmed to readable-but-recessive using the
-        // theme-derived idle_text color (fg blended 45% toward bg).
-        format!("{}{}{}", tc_fg(opts.theme.idle_text), name, RESET)
-    } else {
-        name.clone()
-    };
 
     // pad so the slot sits flush right.
     let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
     let gap = width.saturating_sub(used).max(1);
     out.push_str(&format!(
-        "{}{} {} {}{}{}{}\n",
-        bar, glyph, num, name_styled, " ".repeat(gap), bell, slot_styled
+        "{}{}{}{}{} {} {}{}{}{}{}\n",
+        bar, pad, label_color, label_bold, glyph_char, num, name, RESET, " ".repeat(gap), bell, slot_styled
     ));
 
     // Line 1 done. Emit detail/roster only within the remaining budget.
@@ -449,7 +478,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                     let visible_content = format!("   {} · {}", loc_str, needs_phrase);
                     let visible_len = UnicodeWidthStr::width(visible_content.as_str());
                     if visible_len <= width {
-                        out.push_str(&format!("   {}{} · {}{}{}\n", dim_strong, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
+                        out.push_str(&format!("   {}{} · {}{}{}\n", dim_strong, loc_str, hue(Role::Attention), needs_phrase, RESET));
                     } else {
                         let clamped = truncate(&visible_content, width);
                         out.push_str(&format!("{}{}{}\n", dim_strong, clamped, RESET));
@@ -600,8 +629,13 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     }
     let width = opts.width;
     let accent = Role::Accent.ansi();
+    let cards = opts.density == Density::Cards;
+    // In Cards density the whole sidebar is a cohesive dark panel: the header,
+    // gaps and idle strip all sit on `rail_bg`; only card content lines carry
+    // their (subtle, ladder-derived) surface tint.
+    let rail = tc_bg(opts.theme.rail_bg);
 
-    let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header));
+    let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header, opts.density));
     let (plan, strip_folded, gap_used) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
@@ -626,24 +660,31 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         // Title in accent; total count muted (accent when overflowing, so the
         // ▲ marker stays loud); urgent marker in the attention role.
         let count_color = if overflow { accent } else { Role::Muted.ansi() };
-        out.push_str(&format!(
+        let mut title_line = String::new();
+        title_line.push_str(&format!(
             "{}{}{}{}{}{}{}",
             accent, title, RESET, " ".repeat(gap), count_color, count, RESET
         ));
         if pending > 0 {
-            out.push_str(&format!("{}{}{}", Role::Attention.ansi(), urgent, RESET));
+            title_line.push_str(&format!("{}{}{}", Role::Attention.ansi(), urgent, RESET));
         }
-        out.push('\n');
-        // Header line 2: rule across the full width.
-        out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
+        title_line.push('\n');
+        if cards {
+            // Carded hero: just the " RADAR …" title on the dark panel — no
+            // rule line (header_lines() returns 1 for Cards to match).
+            out.push_str(&paint_card_line(&title_line, width, &rail));
+        } else {
+            out.push_str(&title_line);
+            // Header line 2: rule across the full width.
+            out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
+        }
     }
 
-    let use_card_bg = opts.density == Density::Cards;
     for &(i, max_lines) in &plan {
         // Every tab is a card: render it into a temporary buffer, then paint
         // each content line with its class's surface tint (idle < agent <
-        // active). Gaps between cards stay on the bare rail.
-        if use_card_bg {
+        // active) — a subtle step up from the dark panel.
+        if cards {
             let bg = card_tint(&rows[i], &opts.theme);
             let mut tab_buf = String::new();
             render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
@@ -654,9 +695,14 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
             render_row(&mut out, &rows[i], opts, max_lines.max(1));
         }
         // Emit blank gap line(s) after each tab's content block when density > Compact.
-        // Gap lines stay rail-background (NOT painted).
+        // In Cards the gap is painted with the dark panel base (so the whole
+        // column is one cohesive panel); otherwise it stays bare.
         for _ in 0..gap_used {
-            out.push('\n');
+            if cards {
+                out.push_str(&paint_card_line("\n", width, &rail));
+            } else {
+                out.push('\n');
+            }
         }
     }
 
@@ -672,7 +718,13 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         let plain = format!("{}{}", dots, suffix);
         // Guard the extreme-narrow case where even the suffix overflows.
         let clamped = truncate(&plain, width);
-        out.push_str(&format!("{}{}{}\n", Role::Accent.ansi(), clamped, RESET));
+        let strip_line = format!("{}{}{}\n", Role::Accent.ansi(), clamped, RESET);
+        // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
+        if cards {
+            out.push_str(&paint_card_line(&strip_line, width, &rail));
+        } else {
+            out.push_str(&strip_line);
+        }
     }
     out
 }
@@ -703,7 +755,7 @@ mod tests {
             number: 1, name: "a".into(), active: false, has_bell: false,
             agg: agg(Status::Running, 0, 0, None),
         }];
-        assert_eq!(header_lines(&rows, true), 2);
+        assert_eq!(header_lines(&rows, true, crate::config::Density::Compact), 2);
         let s = render(&rows, &ro(24, 0));
         let mut lines = s.lines();
         let title = lines.next().unwrap();
@@ -716,7 +768,7 @@ mod tests {
     #[test]
     fn header_absent_for_empty_rows() {
         let rows: Vec<TabRow> = vec![];
-        assert_eq!(header_lines(&rows, true), 0);
+        assert_eq!(header_lines(&rows, true, crate::config::Density::Compact), 0);
         assert!(render(&rows, &ro(24, 0)).is_empty());
     }
 
@@ -796,6 +848,23 @@ mod tests {
         assert!(waiting.contains("0:02"));
         let multi = render(&[mk(Status::Pending, 2, 4)], &ro(30, 18));
         assert!(multi.contains("2/4"));
+    }
+
+    #[test]
+    fn working_slot_is_dim_not_role_colored() {
+        // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
+        let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
+                         since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "n".into(), active: false,
+                                 has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
+        let opts = ro(30, 14);
+        let s = render(&rows, &opts);
+        // elapsed is wrapped in the theme idle_text (dim) color…
+        assert!(s.contains(&format!("{}0:14", tc_fg(opts.theme.idle_text))),
+            "working elapsed should be dim idle_text: {:?}", s);
+        // …NOT the working role color.
+        assert!(!s.contains(&format!("{}0:14", Role::Working.ansi())),
+            "working elapsed must not be work-yellow: {:?}", s);
     }
 
     #[test]
@@ -1231,7 +1300,7 @@ mod tests {
             number: 1, name: "a".into(), active: false, has_bell: false,
             agg: agg(Status::Running, 0, 0, None),
         }];
-        assert_eq!(header_lines(&rows, false), 0);
+        assert_eq!(header_lines(&rows, false, crate::config::Density::Compact), 0);
         let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
         // No identity header: rows start at line 0, so no "RADAR"/"═" line.
@@ -1642,32 +1711,32 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
 
-        // lines[0] and lines[1] are the header (RADAR + rule) — must NOT have bg
-        assert!(!lines[0].contains("\x1b[48;2;"),
-            "header title line must NOT have card bg: {:?}", lines[0]);
-        assert!(!lines[1].contains("\x1b[48;2;"),
-            "header rule line must NOT have card bg: {:?}", lines[1]);
+        // Cards is now ONE cohesive dark panel: EVERY emitted line is painted.
+        // The 1-line header and the gap carry the dark panel base (rail_bg, the
+        // neutral-dark fallback's = 18,19,27); content lines carry their own
+        // (subtle) surface tint.
+        const RAIL: &str = "\x1b[48;2;18;19;27m";
 
-        // lines[2] is the idle tab content line — every tab is a card now.
-        assert!(lines[2].contains("\x1b[48;2;"),
-            "idle content line must carry a truecolor card band: {:?}", lines[2]);
+        // line 0 = header title (no rule in Cards) → painted with rail_bg.
+        assert!(lines[0].contains(RAIL),
+            "header title line must carry the rail panel band: {:?}", lines[0]);
+        assert!(lines[0].contains("RADAR"),
+            "header title must read RADAR: {:?}", lines[0]);
 
-        // lines[3] is a blank gap line — must NOT have bg
-        assert!(!lines[3].contains("\x1b[48;2;"),
-            "gap line must NOT have card bg: {:?}", lines[3]);
+        // line 1 = idle tab content → a card surface (NOT the rail base).
+        assert!(lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
+            "idle content line must carry a card surface band, not rail: {:?}", lines[1]);
 
-        // lines[4] is the working tab line 1 — MUST have bg
-        assert!(lines[4].contains("\x1b[48;2;"),
-            "working tab line 1 must have card bg: {:?}", lines[4]);
+        // Cards has no inter-card gap: line 2 = working tab line 1, line 3 = working detail.
+        assert!(lines[2].contains("\x1b[48;2;") && !lines[2].contains(RAIL),
+            "working tab line 1 must carry a card surface band: {:?}", lines[2]);
+        assert!(lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
+            "working tab detail line must carry a card surface band: {:?}", lines[3]);
 
-        // lines[5] is the working tab detail line — MUST have bg
-        assert!(lines[5].contains("\x1b[48;2;"),
-            "working tab detail line must have card bg: {:?}", lines[5]);
-
-        // Each carded content line must end with bg reset (\x1b[49m).
-        for &i in &[2usize, 4, 5] {
-            assert!(lines[i].contains("\x1b[49m"),
-                "carded line {} must contain bg reset: {:?}", i, lines[i]);
+        // Every painted line must end with bg reset (\x1b[49m).
+        for (i, line) in lines.iter().enumerate() {
+            assert!(line.contains("\x1b[49m"),
+                "panel line {} must contain bg reset: {:?}", i, line);
         }
     }
 
@@ -1686,8 +1755,8 @@ mod tests {
         ];
         let width = 24usize;
         let s = render(&rows, &ro_cards(width, 100));
-        // Skip 2 header lines; first body line is the painted content line.
-        let body: Vec<&str> = s.lines().skip(2).collect();
+        // Cards has a 1-line header (no rule); first body line is the painted content line.
+        let body: Vec<&str> = s.lines().skip(1).collect();
         let content_line = body[0];
         assert!(content_line.contains("\x1b[48;2;"),
             "content line must have truecolor card bg: {:?}", content_line);
@@ -1713,8 +1782,8 @@ mod tests {
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        // The default theme (Mocha) active surface is (58,59,78).
-        assert!(s.contains("\x1b[0m\x1b[48;2;58;59;78m"),
+        // The neutral-dark fallback active surface from the dark-panel ladder is (56,59,71).
+        assert!(s.contains("\x1b[0m\x1b[48;2;56;59;71m"),
             "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}", s);
     }
 
@@ -1801,22 +1870,27 @@ mod tests {
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
     /// Classify each rendered line for a tint-map snapshot by which truecolor
-    /// surface band it carries (using Mocha defaults):
-    ///   "active" = surface_active (58,59,78)
-    ///   "agent"  = surface_agent  (46,47,64)
-    ///   "idle"   = surface_idle   (39,39,56)
-    ///   "gap"    = blank separator, "bare" = no band (e.g. the header).
+    /// surface band it carries (using the neutral-dark fallback's dark-panel ladder):
+    ///   "active" = surface_active (56,59,71)  — brighter than bg, gently pops
+    ///   "agent"  = surface_agent  (24,25,35)  — mid step up from rail
+    ///   "idle"   = surface_idle   (20,21,30)  — barely above the panel
+    ///   "rail"   = rail_bg        (18,19,27)  — the dark panel base (gaps/header)
+    ///   "bare"   = no band at all.
+    /// Note: in Cards every emitted line is painted, so blank gaps now carry the
+    /// rail band rather than being empty — they classify as "rail", not "gap".
     fn tint_map(s: &str) -> String {
         s.lines()
             .map(|line| {
-                if line.is_empty() {
-                    "gap"
-                } else if line.contains("\x1b[48;2;58;59;78m") {
+                if line.contains("\x1b[48;2;56;59;71m") {
                     "active"
-                } else if line.contains("\x1b[48;2;46;47;64m") {
+                } else if line.contains("\x1b[48;2;24;25;35m") {
                     "agent"
-                } else if line.contains("\x1b[48;2;39;39;56m") {
+                } else if line.contains("\x1b[48;2;20;21;30m") {
                     "idle"
+                } else if line.contains("\x1b[48;2;18;19;27m") {
+                    "rail"
+                } else if line.is_empty() {
+                    "gap"
                 } else {
                     "bare"
                 }
@@ -1846,22 +1920,24 @@ mod tests {
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
-        // line 2 = idle content → dim truecolor tint (Mocha idle surface: 39,39,56)
-        assert!(lines[2].contains("\x1b[48;2;39;39;56m"),
-            "idle row must carry the dim truecolor card tint (39;39;56): {:?}", lines[2]);
-        // line 4 = agent line 1 → mid truecolor tint (Mocha agent surface: 46,47,64)
-        assert!(lines[4].contains("\x1b[48;2;46;47;64m"),
-            "agent row must carry the mid truecolor card tint (46;47;64): {:?}", lines[4]);
-        // line 7 = focused agent line 1 → active truecolor tint (Mocha active surface: 58,59,78)
-        assert!(lines[7].contains("\x1b[48;2;58;59;78m"),
-            "focused row must carry the active truecolor card tint (58;59;78): {:?}", lines[7]);
+        // Cards header is now 1 line (no rule), so content starts at line 1.
+        // Cards has no inter-card gaps; tabs are adjacent.
+        // line 1 = idle content → barely-above-panel idle surface (20,21,30)
+        assert!(lines[1].contains("\x1b[48;2;20;21;30m"),
+            "idle row must carry the dim truecolor card tint (20;21;30): {:?}", lines[1]);
+        // agent line 1 at line 2 (no gap) → mid surface (24,25,35)
+        assert!(lines[2].contains("\x1b[48;2;24;25;35m"),
+            "agent row must carry the mid truecolor card tint (24;25;35): {:?}", lines[2]);
+        // focused agent line 1 at line 4 (after agent detail at line 3) → active surface (56,59,71)
+        assert!(lines[4].contains("\x1b[48;2;56;59;71m"),
+            "focused row must carry the active truecolor card tint (56;59;71): {:?}", lines[4]);
     }
 
     #[test]
     fn cards_3tint_layout_snapshot() {
         // Golden tint-map for the canonical sidebar.dc.html "cards" session:
         // active running agent, pending agent, done agent, then two idle panes.
-        // Every tab is a card; one gap row after each; tints encode the class.
+        // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
         use crate::model::Detail;
         let running = Detail { repo: "web".into(), branch: "".into(),
             msg: "building…".into(), since_tick: 0, status: Status::Running };
@@ -1882,23 +1958,64 @@ mod tests {
                      agg: agg(Status::Idle, 0, 0, None) },
         ];
         let s = render(&rows, &ro_cards(24, 100));
+        // Cards is now a cohesive dark panel: the 1-line header (no rule) is
+        // painted with rail_bg; card content carries its surface. No inter-card
+        // gap rows — adjacent cards are visually separated by background tints.
         let expected = "\
-bare\n\
-bare\n\
+rail\n\
 active\n\
 active\n\
-gap\n\
 agent\n\
 agent\n\
-gap\n\
 agent\n\
-gap\n\
 idle\n\
-gap\n\
-idle\n\
-gap";
+idle";
         assert_eq!(tint_map(&s), expected,
             "3-tint card map drifted from the design:\n{:?}", s);
+    }
+
+    #[test]
+    fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
+        // THE KEY OUTCOME: status hues are ANSI-16 so the terminal renders them
+        // in its own theme. ANSI has no orange/peach, so a waiting "needs you"
+        // row and a red error row are both red-FAMILY — they're kept distinct by
+        // SHAPE + BOLD + CODE, not by hue:
+        //   waiting → `\x1b[91m` (bright red) + ◆ glyph + bold
+        //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
+        use crate::model::Detail;
+        let pending = Detail { repo: "pinky".into(), branch: "fix".into(),
+            msg: "".into(), since_tick: 0, status: Status::Pending };
+        let err = Detail { repo: "infra".into(), branch: "".into(),
+            msg: "boom".into(), since_tick: 0, status: Status::Error };
+        let rows = vec![
+            TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
+            TabRow { number: 2, name: "infra".into(), active: false, has_bell: false,
+                     agg: agg(Status::Error, 0, 1, Some(err)) },
+        ];
+        let s = render(&rows, &ro_cards(30, 100));
+        let lines: Vec<&str> = s.lines().collect();
+        // Cards header is 1 line; line 1 = waiting row, then its detail, then the
+        // error row. Find the waiting first-line and the error first-line.
+        let waiting_line = lines.iter().find(|l| l.contains("pinky")).expect("waiting row");
+        let error_line = lines.iter().find(|l| l.contains("infra")).expect("error row");
+        // Waiting: bright-red ANSI + ◆ glyph + bold.
+        assert!(waiting_line.contains(Role::Attention.ansi()),
+            "waiting row must use the ANSI-16 attention code (\\x1b[91m): {:?}", waiting_line);
+        assert!(waiting_line.contains('◆'),
+            "waiting row must use the ◆ glyph: {:?}", waiting_line);
+        assert!(waiting_line.contains(BOLD),
+            "waiting row must be bold: {:?}", waiting_line);
+        // Error: red ANSI + ✗ glyph, NOT bold.
+        assert!(error_line.contains(Role::Error.ansi()),
+            "error row must use the ANSI-16 error code (\\x1b[31m): {:?}", error_line);
+        assert!(error_line.contains('✗'),
+            "error row must use the ✗ glyph: {:?}", error_line);
+        assert!(!error_line.contains(BOLD),
+            "error row must not be bold: {:?}", error_line);
+        // The two ANSI codes are distinct.
+        assert_ne!(Role::Attention.ansi(), Role::Error.ansi(),
+            "attention (bright-red) and error (red) ANSI codes must differ");
     }
 
     #[test]
