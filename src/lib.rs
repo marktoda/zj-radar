@@ -57,6 +57,10 @@ pub struct State {
     timer_armed: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     applied_names: HashMap<usize, String>,
+    // Opt-in (`force_rename` plugin config): rename tabs even when the user gave
+    // them an explicit name. Default false so we never stomp user-chosen names.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    force_names: bool,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -131,8 +135,13 @@ impl State {
             .iter()
             .map(|t| (t.position, t.name.clone()))
             .collect();
-        let changes =
-            naming::compute_renames(&tabs, &self.tab_panes, &self.store, &self.applied_names);
+        let changes = naming::compute_renames(
+            &tabs,
+            &self.tab_panes,
+            &self.store,
+            &self.applied_names,
+            self.force_names,
+        );
         for (pos, name) in changes {
             rename_tab(pos as u32 + 1, &name);
             self.applied_names.insert(pos, name);
@@ -142,7 +151,13 @@ impl State {
 
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
-    fn load(&mut self, _config: BTreeMap<String, String>) {
+    fn load(&mut self, config: BTreeMap<String, String>) {
+        // `force_rename "true"` in the plugin's KDL config block opts into
+        // renaming tabs that already have a user-chosen name.
+        self.force_names = matches!(
+            config.get("force_rename").map(String::as_str),
+            Some("true" | "1" | "yes")
+        );
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,

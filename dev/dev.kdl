@@ -13,7 +13,11 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
-                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm"
+                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
+                    // Opt-in: rename tabs even when they have an explicit name,
+                    // so the dev layout demonstrates auto-naming.
+                    force_rename "true"
+                }
             }
             children
         }
@@ -22,18 +26,20 @@ layout {
         }
     }
 
-    tab name="one" focus=true {
+    // Tabs intentionally UNNAMED → Zellij gives them default "Tab #N" names so
+    // auto-naming is visible even without force_rename.
+    tab focus=true {
         pane
     }
 
-    tab name="two" {
+    tab {
         pane split_direction="vertical" {
             pane
             pane
         }
     }
 
-    tab name="three" {
+    tab {
         pane
     }
 }
