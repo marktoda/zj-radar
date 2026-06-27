@@ -93,6 +93,25 @@ pub fn header_lines(rows: &[TabRow]) -> usize {
     }
 }
 
+/// Decide which rows render in full and how many idle tabs fold, given the
+/// vertical budget (height minus the 2-line header). Non-idle rows are always
+/// kept; idle rows fold into a strip when space is tight.
+fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<usize>, usize) {
+    let total: usize = rows.iter().map(|r| row_lines(&r.agg)).sum();
+    if total <= body_budget {
+        return ((0..rows.len()).collect(), 0); // everything, no fold
+    }
+    // Keep all non-idle rows (in position order); fold idle ones.
+    let kept: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.agg.status != Status::Idle)
+        .map(|(i, _)| i)
+        .collect();
+    let folded = rows.iter().filter(|r| r.agg.status == Status::Idle).count();
+    (kept, folded)
+}
+
 pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let mut out = String::new();
     if rows.is_empty() {
@@ -102,10 +121,18 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let now_tick = opts.now_tick;
     let accent = Role::Accent.ansi();
 
+    let body_budget = opts.height.saturating_sub(2); // header is 2 lines
+    let (kept, folded) = plan_overflow(rows, body_budget);
+    let overflow = folded > 0;
+    let count = if overflow {
+        format!("{} ▲", rows.len())
+    } else {
+        format!("·{}", rows.len())
+    };
+
     // Always emit the header block for non-empty rows (always-on rail identity).
-    // Header line 1: " AGENTS" + right-aligned "·N" tab count.
+    // Header line 1: " AGENTS" + right-aligned count.
     let title = " AGENTS";
-    let count = format!("·{}", rows.len());
     let gap = width
         .saturating_sub(title.chars().count() + count.chars().count())
         .max(1);
@@ -116,7 +143,8 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     // Header line 2: rule across the full width.
     out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
 
-    for row in rows {
+    for &i in &kept {
+        let row = &rows[i];
         let st = row.agg.status;
         let role = st.role().ansi();
 
@@ -217,6 +245,14 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                 Status::Done | Status::Idle => {}
             }
         }
+    }
+    if folded > 0 {
+        let dots: String = std::iter::repeat('○').take(folded.min(11))
+            .map(|c| c.to_string()).collect::<Vec<_>>().join(" ");
+        out.push_str(&format!(
+            "{}{} ── +{} idle ▾{}\n",
+            Role::Accent.ansi(), dots, folded, RESET
+        ));
     }
     out
 }
@@ -505,5 +541,43 @@ mod tests {
         }
         // branch path is the first thing to go: "web/main" should not survive at 16 cols
         assert!(!narrow.contains("web/main"));
+    }
+
+    fn idle_row(n: u32) -> TabRow {
+        TabRow { number: n, name: format!("t{}", n), active: false, has_bell: false,
+                 agg: agg(Status::Idle, 0, 0, None) }
+    }
+
+    #[test]
+    fn overflow_folds_idle_into_strip_and_marks_header() {
+        // 20 idle tabs, height only fits a few → fold.
+        let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
+        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain });
+        assert!(s.contains("idle"));   // "+N idle ▾" footer
+        assert!(s.contains('▾'));
+        assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
+        // total emitted lines fit the height budget
+        assert!(s.lines().count() <= 6);
+    }
+
+    #[test]
+    fn overflow_keeps_non_idle_rows_visible() {
+        let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
+        // an urgent waiting tab at the very end (high position)
+        let d = Detail { repo: "p".into(), branch: "x".into(), msg: "approve?".into(),
+                         since_tick: 0, status: Status::Pending };
+        rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
+                           has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
+        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain });
+        assert!(s.contains("pinky"));     // urgent row never folded
+        assert!(s.contains("needs you")); // its detail survives
+    }
+
+    #[test]
+    fn no_overflow_when_everything_fits() {
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain });
+        assert!(!s.contains("idle ▾"));
+        assert!(!s.lines().next().unwrap().contains('▲'));
     }
 }
