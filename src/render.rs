@@ -73,11 +73,11 @@ fn truncate(s: &str, max: usize) -> String {
 ///   - `pad_x`: columns of internal LEFT padding inserted before a card's
 ///     content (so content isn't flush to the band edge).
 ///   - `pad_y`: rows of internal TOP padding — blank rows painted with THIS
-///     card's own surface bg, giving the card a small bit of breathing room
-///     without a full rail gap. (Cards/panel mode only.)
+///     card's own surface bg (internal breathing room). Currently 0 for all
+///     densities; retained as a knob for future tuning.
 ///   - `gap`: rows of EXTERNAL separation after a card — blank rows painted
-///     `rail_bg` in Cards, plain blank in Comfortable. Sheds first under
-///     overflow.
+///     `rail_bg` in Cards (panel shows through), plain blank in Comfortable.
+///     Sheds first under overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CardSpacing {
     pub pad_x: usize,
@@ -91,7 +91,7 @@ pub fn card_spacing(d: Density) -> CardSpacing {
     match d {
         Density::Compact => CardSpacing { pad_x: 0, pad_y: 0, gap: 0 },
         Density::Comfortable => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
-        Density::Cards => CardSpacing { pad_x: 1, pad_y: 1, gap: 0 },
+        Density::Cards => CardSpacing { pad_x: 1, pad_y: 0, gap: 1 },
     }
 }
 
@@ -1795,11 +1795,15 @@ mod tests {
         assert!(lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
             "idle content line must carry a card surface band, not rail: {:?}", lines[1]);
 
-        // Cards has no inter-card gap: line 2 = working tab line 1, line 3 = working detail.
-        assert!(lines[2].contains("\x1b[48;2;") && !lines[2].contains(RAIL),
-            "working tab line 1 must carry a card surface band: {:?}", lines[2]);
+        // line 2 = idle card gap → painted with rail_bg (panel shows through).
+        assert!(lines[2].contains(RAIL),
+            "idle card gap row must carry the rail panel band: {:?}", lines[2]);
+
+        // line 3 = working tab line 1, line 4 = working detail.
         assert!(lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
-            "working tab detail line must carry a card surface band: {:?}", lines[3]);
+            "working tab line 1 must carry a card surface band: {:?}", lines[3]);
+        assert!(lines[4].contains("\x1b[48;2;") && !lines[4].contains(RAIL),
+            "working tab detail line must carry a card surface band: {:?}", lines[4]);
 
         // Every painted line must end with bg reset (\x1b[49m).
         for (i, line) in lines.iter().enumerate() {
@@ -1941,7 +1945,7 @@ mod tests {
         use crate::config::Density::*;
         assert_eq!(card_spacing(Compact), CardSpacing { pad_x: 0, pad_y: 0, gap: 0 });
         assert_eq!(card_spacing(Comfortable), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
-        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 1, pad_y: 1, gap: 0 });
+        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 1, pad_y: 0, gap: 1 });
     }
 
     #[test]
@@ -1949,7 +1953,7 @@ mod tests {
         // The single footprint source: pad_y + row_lines + gap.
         let idle = agg(Status::Idle, 0, 0, None);
         assert_eq!(row_lines(&idle), 1);
-        // Cards: 1 pad_y + 1 content + 0 gap = 2.
+        // Cards: 0 pad_y + 1 content + 1 gap = 2.
         assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Cards)), 2);
         // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
         assert_eq!(card_block_lines(&idle, card_spacing(crate::config::Density::Comfortable)), 2);
@@ -1958,23 +1962,31 @@ mod tests {
     }
 
     #[test]
-    fn cards_have_pad_y_row() {
-        // A cards-rendered tab emits a LEADING pad_y row painted with its OWN
-        // surface bg, and that row is blank once ANSI is stripped.
+    fn cards_have_rail_gap_row() {
+        // A cards-rendered tab emits a TRAILING gap row painted with the dark
+        // rail panel base (rail_bg), and that row is blank once ANSI is stripped.
         let rows = vec![TabRow {
             number: 1, name: "idle".into(), active: false, has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro_cards(24, 100));
         let lines: Vec<&str> = s.lines().collect();
-        // line 0 = header (rail). line 1 = the card's pad_y row.
-        let pad_row = lines[1];
-        // It carries the idle card surface tint (its OWN surface), not rail_bg.
-        assert!(pad_row.contains("\x1b[48;2;20;21;30m"),
-            "pad_y row must carry the card's own idle surface tint: {:?}", pad_row);
-        assert!(!pad_row.contains("\x1b[48;2;18;19;27m"),
-            "pad_y row must NOT be the rail panel base: {:?}", pad_row);
-        // ANSI-stripped, the pad row is blank (only spaces / no glyphs or text).
+        // line 0 = header (rail). line 1 = idle card content. line 2 = trailing gap row.
+        let content_row = lines[1];
+        // Content row carries the idle card surface tint (NOT rail_bg).
+        assert!(content_row.contains("\x1b[48;2;20;21;30m"),
+            "content row must carry the card's own idle surface tint: {:?}", content_row);
+        assert!(!content_row.contains("\x1b[48;2;18;19;27m"),
+            "content row must NOT be the rail panel base: {:?}", content_row);
+        assert!(content_row.contains("idle"),
+            "content row must contain the tab name: {:?}", content_row);
+        // The trailing gap row (line 2) carries the rail panel base.
+        let gap_row = lines[2];
+        assert!(gap_row.contains("\x1b[48;2;18;19;27m"),
+            "gap row must carry the rail panel base: {:?}", gap_row);
+        assert!(!gap_row.contains("\x1b[48;2;20;21;30m"),
+            "gap row must NOT be the card surface tint: {:?}", gap_row);
+        // ANSI-stripped, the gap row is blank (only spaces / no glyphs or text).
         fn strip_ansi(line: &str) -> String {
             let mut out = String::new();
             let mut chars = line.chars().peekable();
@@ -1991,10 +2003,8 @@ mod tests {
             }
             out
         }
-        assert!(strip_ansi(pad_row).trim().is_empty(),
-            "pad_y row must be visually blank (no content): {:?}", pad_row);
-        // The next line (line 2) is the actual content row, carrying the glyph + name.
-        assert!(lines[2].contains("idle"), "content row must follow the pad_y row: {:?}", lines[2]);
+        assert!(strip_ansi(gap_row).trim().is_empty(),
+            "gap row must be visually blank (no content): {:?}", gap_row);
     }
 
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
@@ -2050,25 +2060,32 @@ mod tests {
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
-        // Cards header is 1 line (no rule); each card leads with a pad_y row in
-        // its own surface tint, then content. No inter-card gaps. Layout:
-        //   line 0 header(rail)
-        //   line 1 idle pad_y, line 2 idle content        → idle (20,21,30)
-        //   line 3 agent pad_y, lines 4-5 agent content   → agent (24,25,35)
-        //   line 6 focus pad_y, lines 7-8 focus content   → active (56,59,71)
-        // The pad_y row carries the SAME surface tint as the card it precedes.
+        // Cards header is 1 line (no rule); each card emits content then a
+        // trailing gap row (rail_bg — the panel shows through). Layout:
+        //   line 0  header(rail)
+        //   line 1  idle content             → idle (20,21,30)
+        //   line 2  idle gap                 → rail (18,19,27)
+        //   line 3  agent content line 1     → agent (24,25,35)
+        //   line 4  agent detail             → agent (24,25,35)
+        //   line 5  agent gap                → rail (18,19,27)
+        //   line 6  focus content line 1     → active (56,59,71)
+        //   line 7  focus detail             → active (56,59,71)
+        //   line 8  focus gap                → rail (18,19,27)
+        let rail = "\x1b[48;2;18;19;27m";
         assert!(lines[1].contains("\x1b[48;2;20;21;30m"),
-            "idle pad_y row must carry the dim card tint (20;21;30): {:?}", lines[1]);
-        assert!(lines[2].contains("\x1b[48;2;20;21;30m"),
-            "idle content must carry the dim card tint (20;21;30): {:?}", lines[2]);
+            "idle content must carry the dim card tint (20;21;30): {:?}", lines[1]);
+        assert!(lines[2].contains(rail) && !lines[2].contains("\x1b[48;2;20;21;30m"),
+            "idle gap row must carry the rail panel base: {:?}", lines[2]);
         assert!(lines[3].contains("\x1b[48;2;24;25;35m"),
-            "agent pad_y row must carry the mid card tint (24;25;35): {:?}", lines[3]);
+            "agent content must carry the mid card tint (24;25;35): {:?}", lines[3]);
         assert!(lines[4].contains("\x1b[48;2;24;25;35m"),
-            "agent content must carry the mid card tint (24;25;35): {:?}", lines[4]);
+            "agent detail must carry the mid card tint (24;25;35): {:?}", lines[4]);
+        assert!(lines[5].contains(rail) && !lines[5].contains("\x1b[48;2;24;25;35m"),
+            "agent gap row must carry the rail panel base: {:?}", lines[5]);
         assert!(lines[6].contains("\x1b[48;2;56;59;71m"),
-            "focus pad_y row must carry the active card tint (56;59;71): {:?}", lines[6]);
+            "focused content must carry the active card tint (56;59;71): {:?}", lines[6]);
         assert!(lines[7].contains("\x1b[48;2;56;59;71m"),
-            "focused content must carry the active card tint (56;59;71): {:?}", lines[7]);
+            "focused detail must carry the active card tint (56;59;71): {:?}", lines[7]);
     }
 
     #[test]
@@ -2097,29 +2114,28 @@ mod tests {
         ];
         let s = render(&rows, &ro_cards(24, 100));
         // Cards is now a cohesive dark panel: the 1-line header (no rule) is
-        // painted with rail_bg; card content carries its surface. No inter-card
-        // gap rows — adjacent cards are visually separated by background tints.
-        // Each card leads with ONE pad_y row painted in its OWN surface tint
-        // (internal vertical padding), then its content rows. So per card:
-        //   Claude (active, 2 content) → 1 pad_y + 2 content = 3 "active"
-        //   api    (agent, 2 content)  → 1 pad_y + 2 content = 3 "agent"
-        //   worker (agent, 1 content)  → 1 pad_y + 1 content = 2 "agent"
-        //   Pane#1 (idle, 1 content)   → 1 pad_y + 1 content = 2 "idle"
-        //   Pane#2 (idle, 1 content)   → 1 pad_y + 1 content = 2 "idle"
+        // painted with rail_bg; each card emits its content lines then a
+        // trailing gap row (rail_bg — the panel shows through between cards).
+        // Per card:
+        //   Claude (active, 2 content) → 2 content + 1 gap = "active","active","rail"
+        //   api    (agent, 2 content)  → 2 content + 1 gap = "agent","agent","rail"
+        //   worker (agent, 1 content)  → 1 content + 1 gap = "agent","rail"
+        //   Pane#1 (idle, 1 content)   → 1 content + 1 gap = "idle","rail"
+        //   Pane#2 (idle, 1 content)   → 1 content + 1 gap = "idle","rail"
         let expected = "\
 rail\n\
 active\n\
 active\n\
-active\n\
+rail\n\
 agent\n\
 agent\n\
+rail\n\
 agent\n\
-agent\n\
-agent\n\
+rail\n\
 idle\n\
+rail\n\
 idle\n\
-idle\n\
-idle";
+rail";
         assert_eq!(tint_map(&s), expected,
             "3-tint card map drifted from the design:\n{:?}", s);
     }
