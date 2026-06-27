@@ -73,6 +73,17 @@ fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
+impl NamingMode {
+    pub fn from_config(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => NamingMode::Off,
+            "managed" => NamingMode::Managed,
+            "force" => NamingMode::Force,
+            _ => NamingMode::default(),
+        }
+    }
+}
+
 impl Config {
     pub fn from_map(cfg: &BTreeMap<String, String>) -> Config {
         let d = Config::default();
@@ -92,6 +103,26 @@ impl Config {
             .map(|s| Density::from_config(s))
             .unwrap_or_default();
         Config { naming, header, glyphs, density }
+    }
+
+    /// Apply runtime overrides from a flat string→string map (e.g. parsed from
+    /// a JSON pipe payload). Recognized keys: `"naming"`, `"density"`,
+    /// `"glyphs"`, `"header"`. Unknown keys are silently ignored.
+    pub fn apply_overrides(&mut self, kv: &BTreeMap<String, String>) {
+        if let Some(v) = kv.get("naming") {
+            self.naming = NamingMode::from_config(v);
+        }
+        if let Some(v) = kv.get("density") {
+            self.density = Density::from_config(v);
+        }
+        if let Some(v) = kv.get("glyphs") {
+            self.glyphs = crate::status::GlyphSet::from_config(v);
+        }
+        if let Some(v) = kv.get("header") {
+            if let Some(b) = parse_bool(v) {
+                self.header = b;
+            }
+        }
     }
 }
 
@@ -181,5 +212,60 @@ mod tests {
     fn density_is_case_insensitive() {
         assert_eq!(Config::from_map(&map(&[("density", "COMPACT")])).density, Density::Compact);
         assert_eq!(Config::from_map(&map(&[("density", "Cards")])).density, Density::Cards);
+    }
+
+    #[test]
+    fn apply_overrides_flips_two_fields_leaves_others_unchanged() {
+        // Start from defaults: naming=Managed, density=Comfortable, header=true, glyphs=Plain
+        let mut c = Config::default();
+        let kv = map(&[("density", "cards"), ("naming", "managed")]);
+        c.apply_overrides(&kv);
+        // density must flip to Cards
+        assert_eq!(c.density, Density::Cards);
+        // naming stays Managed (was already Managed — value explicitly set)
+        assert_eq!(c.naming, NamingMode::Managed);
+        // header and glyphs must be unchanged
+        assert!(c.header);
+        assert_eq!(c.glyphs, crate::status::GlyphSet::Plain);
+    }
+
+    #[test]
+    fn apply_overrides_unknown_key_ignored() {
+        let mut c = Config::default();
+        let kv = map(&[("totally_unknown_key", "something"), ("density", "compact")]);
+        c.apply_overrides(&kv);
+        assert_eq!(c.density, Density::Compact);
+        // everything else is default
+        assert_eq!(c.naming, NamingMode::Managed);
+        assert!(c.header);
+        assert_eq!(c.glyphs, crate::status::GlyphSet::Plain);
+    }
+
+    #[test]
+    fn apply_overrides_all_four_fields() {
+        let mut c = Config::default();
+        let kv = map(&[
+            ("naming", "force"),
+            ("density", "compact"),
+            ("glyphs", "nerd"),
+            ("header", "false"),
+        ]);
+        c.apply_overrides(&kv);
+        assert_eq!(c.naming, NamingMode::Force);
+        assert_eq!(c.density, Density::Compact);
+        assert_eq!(c.glyphs, crate::status::GlyphSet::Nerd);
+        assert!(!c.header);
+    }
+
+    #[test]
+    fn naming_from_config_parses_all_variants() {
+        assert_eq!(NamingMode::from_config("off"), NamingMode::Off);
+        assert_eq!(NamingMode::from_config("managed"), NamingMode::Managed);
+        assert_eq!(NamingMode::from_config("force"), NamingMode::Force);
+        // unknown → default (Managed)
+        assert_eq!(NamingMode::from_config("wat"), NamingMode::Managed);
+        // case-insensitive
+        assert_eq!(NamingMode::from_config("OFF"), NamingMode::Off);
+        assert_eq!(NamingMode::from_config("Force"), NamingMode::Force);
     }
 }

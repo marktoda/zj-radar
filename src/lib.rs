@@ -34,6 +34,8 @@ use std::collections::{BTreeMap, HashSet};
 
 #[cfg(target_arch = "wasm32")]
 const PIPE_NAME: &str = "zj_radar.status.v1";
+#[cfg(target_arch = "wasm32")]
+const CONFIG_PIPE: &str = "zj_radar.config.v1";
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Clone)]
@@ -265,6 +267,32 @@ impl ZellijPlugin for State {
                     self.apply_renames();
                     self.arm_timer_if_needed();
                     return true;
+                }
+            }
+        } else if message.name == CONFIG_PIPE {
+            if let Some(raw) = &message.payload {
+                // Parse as a flat JSON object; scalar values (bool/number) are
+                // stringified so callers may omit quotes for simple values.
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(obj) = val.as_object() {
+                        let kv: std::collections::BTreeMap<String, String> = obj
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                let s = match v {
+                                    serde_json::Value::String(s) => Some(s.clone()),
+                                    serde_json::Value::Bool(b) => {
+                                        Some(if *b { "true" } else { "false" }.to_string())
+                                    }
+                                    serde_json::Value::Number(n) => Some(n.to_string()),
+                                    _ => None,
+                                };
+                                s.map(|s| (k.clone(), s))
+                            })
+                            .collect();
+                        self.config.apply_overrides(&kv);
+                        self.apply_renames();
+                        return true;
+                    }
                 }
             }
         }
