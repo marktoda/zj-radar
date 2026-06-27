@@ -16,6 +16,22 @@ pub struct AgentState {
     pub ever_active: bool,
 }
 
+impl AgentState {
+    /// Apply a pending `on_focus` transition (clear-on-focus): adopt the queued
+    /// status and clear it. `last_change_tick` advances only when the status
+    /// actually changes. Shared by `StateStore` and `command::CommandStore`,
+    /// which both hold `AgentState` — the transition belongs to the data, not
+    /// the store.
+    pub fn apply_on_focus(&mut self, tick: u64) {
+        if let Some(next) = self.on_focus.take() {
+            if self.status != next {
+                self.last_change_tick = tick;
+            }
+            self.status = next;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct StateStore {
     map: HashMap<u32, AgentState>,
@@ -56,12 +72,7 @@ impl StateStore {
     /// One-shot: when the exact pane is focused, apply its pending on_focus status.
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
         if let Some(s) = self.map.get_mut(&pane_id) {
-            if let Some(next) = s.on_focus.take() {
-                if s.status != next {
-                    s.last_change_tick = tick;
-                }
-                s.status = next;
-            }
+            s.apply_on_focus(tick);
         }
     }
 

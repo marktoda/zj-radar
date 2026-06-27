@@ -169,16 +169,11 @@ impl CommandStore {
         }
     }
 
-    /// Clear-on-focus: apply a pending `on_focus` transition for this pane.
-    /// Mirrors `state::StateStore::on_pane_focused`.
+    /// Clear-on-focus: apply a pending `on_focus` transition for this pane via
+    /// the shared `AgentState::apply_on_focus` (same semantics as `StateStore`).
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
         if let Some(s) = self.resolved.get_mut(&pane_id) {
-            if let Some(next) = s.on_focus.take() {
-                if s.status != next {
-                    s.last_change_tick = tick;
-                }
-                s.status = next;
-            }
+            s.apply_on_focus(tick);
         }
     }
 
