@@ -3,13 +3,14 @@
 use crate::config::Density;
 use crate::model::TabAgg;
 use crate::status::{Role, Status};
+use crate::theme::DerivedColors;
 pub use crate::status::GlyphSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RenderOpts {
     pub width: usize,
     pub height: usize,
@@ -19,6 +20,9 @@ pub struct RenderOpts {
     pub header: bool,
     /// Vertical density between tabs.
     pub density: Density,
+    /// Theme-derived colors for card surfaces and readable detail text.
+    /// Defaults to Catppuccin Mocha values before the first ModeUpdate.
+    pub theme: DerivedColors,
 }
 
 pub struct TabRow {
@@ -361,6 +365,10 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     let name = truncate(&row.name, name_budget);
     let name_styled = if row.active {
         format!("{}{}{}", BOLD, name, RESET)
+    } else if st == Status::Idle {
+        // Idle row names are dimmed to readable-but-recessive using the
+        // theme-derived idle_text color (fg blended 45% toward bg).
+        format!("{}{}{}", tc_fg(opts.theme.idle_text), name, RESET)
     } else {
         name.clone()
     };
@@ -379,7 +387,11 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     }
     let mut emitted = 1usize;
 
-    let muted = Role::Muted.ansi();
+    // Theme-derived detail text colors: dim_strong for location/branch lines,
+    // dim_weak for quoted message lines. Both are truecolor foreground escapes
+    // derived from the bg/fg palette blend so they adapt to any Zellij theme.
+    let dim_strong = tc_fg(opts.theme.dim_strong);
+    let dim_weak = tc_fg(opts.theme.dim_weak);
 
     // Determine per-status detail line order.
     // For Pending: priority 1 = "branch · needs you"; priority 2 = "msg"; priority 3 = roster.
@@ -409,7 +421,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                             truncate(&format!("{} {}", d.repo, spin), avail)
                         }
                     };
-                    out.push_str(&format!("   {}{}{}\n", Role::Muted.ansi(), truncate(&body, avail), RESET));
+                    out.push_str(&format!("   {}{}{}\n", dim_strong, truncate(&body, avail), RESET));
                     emitted += 1;
                 }
             }
@@ -418,7 +430,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                 if emitted < max_lines {
                     let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
                     let body = if d.msg.trim().is_empty() { loc } else { format!("{} · {}", loc, d.msg) };
-                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
+                    out.push_str(&format!("   {}{}{}\n", dim_strong, truncate(&body, width.saturating_sub(3)), RESET));
                     emitted += 1;
                 }
             }
@@ -437,16 +449,16 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                     let visible_content = format!("   {} · {}", loc_str, needs_phrase);
                     let visible_len = UnicodeWidthStr::width(visible_content.as_str());
                     if visible_len <= width {
-                        out.push_str(&format!("   {}{} · {}{}{}\n", muted, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
+                        out.push_str(&format!("   {}{} · {}{}{}\n", dim_strong, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
                     } else {
                         let clamped = truncate(&visible_content, width);
-                        out.push_str(&format!("{}{}{}\n", muted, clamped, RESET));
+                        out.push_str(&format!("{}{}{}\n", dim_strong, clamped, RESET));
                     }
                     emitted += 1;
                 }
                 // Priority 2: quoted msg line (only if non-empty).
                 if emitted < max_lines && !d.msg.trim().is_empty() {
-                    out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
+                    out.push_str(&format!("   {}\"{}\"{}\n", dim_weak, truncate(&d.msg, width.saturating_sub(5)), RESET));
                     emitted += 1;
                 }
             }
@@ -525,27 +537,29 @@ fn visible_width(s: &str) -> usize {
     width
 }
 
-// 256-color surface tints for the card ramp. Backgrounds are the one place the
-// renderer steps outside ANSI-16 — the *foreground* stays theme-mapped role
-// colors (§14.10), but a 3-level surface ladder (idle < agent < active) is
-// impossible with ANSI-16's single off-rail background. The 256-color grayscale
-// indices 236/238/240 map onto a surface0/1/2-style ramp, so cards read as
-// progressively brighter objects on dark themes. Light-theme users pick
-// `density = comfortable|compact` (the design's escape hatch) instead.
-const CARD_BG_IDLE: &str = "\x1b[48;5;236m";
-const CARD_BG_AGENT: &str = "\x1b[48;5;238m";
-const CARD_BG_ACTIVE: &str = "\x1b[48;5;240m";
+/// Emit an ANSI truecolor background escape for a given (r, g, b) triple.
+fn tc_bg(c: (u8, u8, u8)) -> String {
+    format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
+}
 
-/// The surface tint for a card, by class: the focused tab is brightest, agent
-/// rows (active status) are mid, idle/plain panes are the dimmest surface.
-fn card_tint(row: &TabRow) -> &'static str {
-    if row.active {
-        CARD_BG_ACTIVE
+/// Emit an ANSI truecolor foreground escape for a given (r, g, b) triple.
+#[allow(dead_code)]
+fn tc_fg(c: (u8, u8, u8)) -> String {
+    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+}
+
+/// The truecolor surface tint for a card, by class: the focused tab is
+/// brightest, agent rows (active status) are mid, idle/plain panes are
+/// the dimmest surface. Returns an owned ANSI escape string.
+fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
+    let rgb = if row.active {
+        theme.surface_active
     } else if row.agg.status.is_active() {
-        CARD_BG_AGENT
+        theme.surface_agent
     } else {
-        CARD_BG_IDLE
-    }
+        theme.surface_idle
+    };
+    tc_bg(rgb)
 }
 
 /// Paint a single content line with a 256-color surface background band (`bg`).
@@ -630,11 +644,11 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         // each content line with its class's surface tint (idle < agent <
         // active). Gaps between cards stay on the bare rail.
         if use_card_bg {
-            let bg = card_tint(&rows[i]);
+            let bg = card_tint(&rows[i], &opts.theme);
             let mut tab_buf = String::new();
             render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
             for line in tab_buf.split_inclusive('\n') {
-                out.push_str(&paint_card_line(line, width, bg));
+                out.push_str(&paint_card_line(line, width, &bg));
             }
         } else {
             render_row(&mut out, &rows[i], opts, max_lines.max(1));
@@ -673,7 +687,7 @@ mod tests {
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
-        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact }
+        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() }
     }
 
     #[test]
@@ -790,8 +804,8 @@ mod tests {
                          since_tick: 0, status: Status::Running };
         let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
                                agg: agg(Status::Running, 0, 1, Some(d.clone())) };
-        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
-        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
+        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
         assert!(f0.contains('◐'));
         assert!(f1.contains('◓'));
     }
@@ -958,7 +972,7 @@ mod tests {
     fn overflow_folds_idle_into_strip_and_marks_header() {
         // 20 idle tabs, height only fits a few → fold.
         let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
         assert!(s.contains("idle"));   // "+N idle ▾" footer
         assert!(s.contains('▾'));
         assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
@@ -974,7 +988,7 @@ mod tests {
                          since_tick: 0, status: Status::Pending };
         rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
                            has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
-        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
         assert!(s.contains("pinky"));     // urgent row never folded
         assert!(s.contains("needs you")); // its detail survives
     }
@@ -982,15 +996,17 @@ mod tests {
     #[test]
     fn no_overflow_when_everything_fits() {
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
     }
 
     #[test]
-    fn render_emits_only_role_ansi_colors() {
-        // Spec §14.10: renderer must use only ANSI-16 palette role codes —
-        // no truecolor (38;2;/48;2;) and no raw '#' hex literals.
+    fn render_glyph_role_colors_are_present() {
+        // Verify that ANSI-16 palette role codes for glyphs/status indicators are
+        // still present in Compact-density output. (Detail text now uses theme-derived
+        // truecolor foregrounds; card surfaces use truecolor backgrounds in Cards
+        // density — but glyphs remain role-colored ANSI-16.)
         use crate::model::Detail;
 
         let mk_detail = |status: Status| Detail {
@@ -1019,29 +1035,31 @@ mod tests {
                      agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))) },
         ];
 
-        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
+        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
 
-        // Must NOT contain truecolor sequences
-        assert!(!s.contains("38;2;"),
-            "truecolor foreground sequence found in render output");
+        // Compact density must NOT have card background bands.
         assert!(!s.contains("48;2;"),
-            "truecolor background sequence found in render output");
+            "Compact must not emit truecolor bg bands");
         // Must NOT contain raw hex color literals
         assert!(!s.contains('#'),
             "'#' hex color literal found in render output");
-        // Must contain the accent role code (used for header + bars)
-        assert!(s.contains(Role::Accent.ansi()),  // "\x1b[35m"
+        // Glyph/status indicators must use ANSI-16 role codes.
+        // Accent role: header title bar + active-row bar (\x1b[35m)
+        assert!(s.contains(Role::Accent.ansi()),
             "expected accent role ANSI code not found");
-        // Must contain the attention role code (pending row)
-        assert!(s.contains(Role::Attention.ansi()),  // "\x1b[91m"
+        // Attention role: pending row glyph and "needs you" label (\x1b[91m)
+        assert!(s.contains(Role::Attention.ansi()),
             "expected attention role ANSI code not found");
-        // Must contain the working role code (running row)
-        assert!(s.contains(Role::Working.ansi()),  // "\x1b[33m"
+        // Working role: running row glyph (\x1b[33m)
+        assert!(s.contains(Role::Working.ansi()),
             "expected working role ANSI code not found");
-        // Must contain the error role code
-        assert!(s.contains(Role::Error.ansi()),  // "\x1b[31m"
+        // Error role: error row glyph (\x1b[31m)
+        assert!(s.contains(Role::Error.ansi()),
             "expected error role ANSI code not found");
+        // Detail lines use truecolor foreground for readable dims.
+        assert!(s.contains("38;2;"),
+            "detail lines must use theme-derived truecolor foreground for readable dims");
     }
 
     #[test]
@@ -1165,7 +1183,7 @@ mod tests {
     fn idle_strip_never_exceeds_width() {
         let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
         for width in [18usize, 24, 30] {
-            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
             // folding must have happened
             assert!(s.contains("idle ▾"), "expected idle strip at width {}", width);
             for line in s.lines() {
@@ -1214,7 +1232,7 @@ mod tests {
             agg: agg(Status::Running, 0, 0, None),
         }];
         assert_eq!(header_lines(&rows, false), 0);
-        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact };
+        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
         // No identity header: rows start at line 0, so no "RADAR"/"═" line.
         assert!(!s.contains("RADAR"));
@@ -1264,7 +1282,7 @@ mod tests {
             a.roster = vec![Running, Done, Pending, Running, Done, Running, Pending, Done, Running, Error];
             let row = TabRow { number: 1, name: "big-team".into(), active: false, has_bell: false, agg: a };
             let s = render(&[row], &RenderOpts {
-                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact,
+                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default(),
             });
             for line in s.lines() {
                 assert!(visible_len(line) <= width,
@@ -1309,6 +1327,7 @@ mod tests {
                 glyphs: GlyphSet::Plain,
                 header: false,
                 density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
             };
             let s = render(&[row], &opts);
             let emitted = s.matches('\n').count();
@@ -1428,7 +1447,7 @@ mod tests {
             "total body lines {} exceeds budget {}", total_body, body_budget);
 
         // Render and verify: Running rows have no detail line; urgent keeps "needs you".
-        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
+        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
         assert!(s.contains("needs you"), "urgent row detail must survive");
         // Total line count ≤ height
@@ -1451,7 +1470,7 @@ mod tests {
                      agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
         ];
         // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
-        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
+        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
         let line_count = s.lines().count();
         assert!(line_count <= 3,
@@ -1474,6 +1493,7 @@ mod tests {
             glyphs: GlyphSet::Plain,
             header: true,
             density: crate::config::Density::Comfortable,
+            theme: crate::theme::DerivedColors::default(),
         }
     }
 
@@ -1503,7 +1523,7 @@ mod tests {
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let opts = RenderOpts {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Compact,
+            header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default(),
         };
         let s = render(&rows, &opts);
         assert_eq!(s.matches('\n').count(), 5,
@@ -1531,11 +1551,11 @@ mod tests {
         ];
         let comfortable = render(&rows, &RenderOpts {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Comfortable,
+            header: true, density: crate::config::Density::Comfortable, theme: crate::theme::DerivedColors::default(),
         });
         let cards = render(&rows, &RenderOpts {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Cards,
+            header: true, density: crate::config::Density::Cards, theme: crate::theme::DerivedColors::default(),
         });
         assert_ne!(comfortable, cards, "Cards should differ from Comfortable (has bg bands)");
     }
@@ -1563,7 +1583,7 @@ mod tests {
         // Render and verify: no blank lines in output.
         let s = render(&rows, &RenderOpts {
             width: 24, height, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Comfortable,
+            header: true, density: crate::config::Density::Comfortable, theme: crate::theme::DerivedColors::default(),
         });
         let line_count = s.lines().count();
         assert!(line_count <= height,
@@ -1600,13 +1620,14 @@ mod tests {
             glyphs: GlyphSet::Plain,
             header: true,
             density: crate::config::Density::Cards,
+            theme: crate::theme::DerivedColors::default(),
         }
     }
 
     #[test]
     fn cards_paint_content_lines_with_bg() {
         // Render an idle tab and an active working tab at normal width with Cards.
-        // Every content line carries a 256-color band; gap lines and header must NOT.
+        // Every content line carries a truecolor band; gap lines and header must NOT.
         use crate::model::Detail;
         let detail = Detail {
             repo: "repo".into(), branch: "main".into(), msg: "working".into(),
@@ -1622,25 +1643,25 @@ mod tests {
         let lines: Vec<&str> = s.lines().collect();
 
         // lines[0] and lines[1] are the header (RADAR + rule) — must NOT have bg
-        assert!(!lines[0].contains("\x1b[48;5;"),
+        assert!(!lines[0].contains("\x1b[48;2;"),
             "header title line must NOT have card bg: {:?}", lines[0]);
-        assert!(!lines[1].contains("\x1b[48;5;"),
+        assert!(!lines[1].contains("\x1b[48;2;"),
             "header rule line must NOT have card bg: {:?}", lines[1]);
 
         // lines[2] is the idle tab content line — every tab is a card now.
-        assert!(lines[2].contains("\x1b[48;5;"),
-            "idle content line must carry a card band: {:?}", lines[2]);
+        assert!(lines[2].contains("\x1b[48;2;"),
+            "idle content line must carry a truecolor card band: {:?}", lines[2]);
 
         // lines[3] is a blank gap line — must NOT have bg
-        assert!(!lines[3].contains("\x1b[48;5;"),
+        assert!(!lines[3].contains("\x1b[48;2;"),
             "gap line must NOT have card bg: {:?}", lines[3]);
 
         // lines[4] is the working tab line 1 — MUST have bg
-        assert!(lines[4].contains("\x1b[48;5;"),
+        assert!(lines[4].contains("\x1b[48;2;"),
             "working tab line 1 must have card bg: {:?}", lines[4]);
 
         // lines[5] is the working tab detail line — MUST have bg
-        assert!(lines[5].contains("\x1b[48;5;"),
+        assert!(lines[5].contains("\x1b[48;2;"),
             "working tab detail line must have card bg: {:?}", lines[5]);
 
         // Each carded content line must end with bg reset (\x1b[49m).
@@ -1668,8 +1689,8 @@ mod tests {
         // Skip 2 header lines; first body line is the painted content line.
         let body: Vec<&str> = s.lines().skip(2).collect();
         let content_line = body[0];
-        assert!(content_line.contains("\x1b[48;5;"),
-            "content line must have card bg: {:?}", content_line);
+        assert!(content_line.contains("\x1b[48;2;"),
+            "content line must have truecolor card bg: {:?}", content_line);
         // Visible width must equal exactly `width`.
         let vw = visible_len(content_line);
         assert_eq!(vw, width,
@@ -1680,8 +1701,8 @@ mod tests {
     #[test]
     fn cards_rearm_bg_after_resets() {
         // Active working tab (line has multiple role-colored tokens with \x1b[0m
-        // resets) under Cards: the active tint must re-arm after every reset, so
-        // \x1b[0m\x1b[48;5;240m (reset immediately followed by the band) appears.
+        // resets) under Cards: the active truecolor tint must re-arm after every reset,
+        // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
         use crate::model::Detail;
         let detail = Detail {
             repo: "pinky".into(), branch: "fix/x".into(), msg: "some work".into(),
@@ -1692,14 +1713,15 @@ mod tests {
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        assert!(s.contains("\x1b[0m\x1b[48;5;240m"),
-            "reset immediately followed by bg re-arm must appear in Cards output: {:?}", s);
+        // The default theme (Mocha) active surface is (58,59,78).
+        assert!(s.contains("\x1b[0m\x1b[48;2;58;59;78m"),
+            "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}", s);
     }
 
     #[test]
-    fn cards_use_256color_not_truecolor() {
-        // Card surfaces step outside ANSI-16 via 256-color (48;5;), but must
-        // never use truecolor (48;2;/38;2;) or raw hex.
+    fn cards_use_truecolor_not_256color() {
+        // Card surfaces use theme-derived truecolor (48;2;r;g;b) — not fixed 256-color
+        // indices, not truecolor foreground (38;2;), and not raw hex literals.
         use crate::model::Detail;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "work".into(),
@@ -1712,10 +1734,13 @@ mod tests {
                      agg: agg(Status::Running, 0, 1, Some(detail)) },
         ];
         let s = render(&rows, &ro_cards(30, 100));
-        assert!(s.contains("\x1b[48;5;"), "cards must use a 256-color surface: {:?}", s);
-        assert!(!s.contains("48;2;"), "cards must not use truecolor bg: {:?}", s);
-        assert!(!s.contains("38;2;"), "cards must not use truecolor fg: {:?}", s);
+        // Card surfaces must emit truecolor backgrounds.
+        assert!(s.contains("\x1b[48;2;"), "cards must use a truecolor surface (48;2;): {:?}", s);
+        // Must NOT use legacy 256-color indices for the surface band.
+        assert!(!s.contains("\x1b[48;5;"), "cards must not use 256-color surface (48;5;): {:?}", s);
+        // Must NOT contain raw hex color literals.
         assert!(!s.contains('#'), "cards must not emit raw hex: {:?}", s);
+        // Note: 38;2; truecolor foreground IS expected (detail lines use theme-derived dim foreground).
     }
 
     #[test]
@@ -1735,10 +1760,10 @@ mod tests {
         for density in [crate::config::Density::Comfortable, crate::config::Density::Compact] {
             let s = render(&rows, &RenderOpts {
                 width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-                header: true, density,
+                header: true, density, theme: crate::theme::DerivedColors::default(),
             });
-            assert!(!s.contains("\x1b[48;5;"),
-                "density {:?} must NOT emit a card band: {:?}", density, s);
+            assert!(!s.contains("\x1b[48;2;"),
+                "density {:?} must NOT emit a truecolor card band: {:?}", density, s);
         }
     }
 
@@ -1775,19 +1800,22 @@ mod tests {
 
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
-    /// Classify each rendered line for a tint-map snapshot by which 256-color
-    /// surface band it carries: "active" (240) / "agent" (238) / "idle" (236),
-    /// "gap" = blank separator, "bare" = no band (e.g. the header).
+    /// Classify each rendered line for a tint-map snapshot by which truecolor
+    /// surface band it carries (using Mocha defaults):
+    ///   "active" = surface_active (58,59,78)
+    ///   "agent"  = surface_agent  (46,47,64)
+    ///   "idle"   = surface_idle   (39,39,56)
+    ///   "gap"    = blank separator, "bare" = no band (e.g. the header).
     fn tint_map(s: &str) -> String {
         s.lines()
             .map(|line| {
                 if line.is_empty() {
                     "gap"
-                } else if line.contains("\x1b[48;5;240m") {
+                } else if line.contains("\x1b[48;2;58;59;78m") {
                     "active"
-                } else if line.contains("\x1b[48;5;238m") {
+                } else if line.contains("\x1b[48;2;46;47;64m") {
                     "agent"
-                } else if line.contains("\x1b[48;5;236m") {
+                } else if line.contains("\x1b[48;2;39;39;56m") {
                     "idle"
                 } else {
                     "bare"
@@ -1818,15 +1846,15 @@ mod tests {
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
-        // line 2 = idle content → dim tint (236)
-        assert!(lines[2].contains("\x1b[48;5;236m"),
-            "idle row must carry the dim card tint (236): {:?}", lines[2]);
-        // line 4 = agent line 1 → mid tint (238)
-        assert!(lines[4].contains("\x1b[48;5;238m"),
-            "agent row must carry the mid card tint (238): {:?}", lines[4]);
-        // line 7 = focused agent line 1 → active tint (240)
-        assert!(lines[7].contains("\x1b[48;5;240m"),
-            "focused row must carry the active card tint (240): {:?}", lines[7]);
+        // line 2 = idle content → dim truecolor tint (Mocha idle surface: 39,39,56)
+        assert!(lines[2].contains("\x1b[48;2;39;39;56m"),
+            "idle row must carry the dim truecolor card tint (39;39;56): {:?}", lines[2]);
+        // line 4 = agent line 1 → mid truecolor tint (Mocha agent surface: 46,47,64)
+        assert!(lines[4].contains("\x1b[48;2;46;47;64m"),
+            "agent row must carry the mid truecolor card tint (46;47;64): {:?}", lines[4]);
+        // line 7 = focused agent line 1 → active truecolor tint (Mocha active surface: 58,59,78)
+        assert!(lines[7].contains("\x1b[48;2;58;59;78m"),
+            "focused row must carry the active truecolor card tint (58;59;78): {:?}", lines[7]);
     }
 
     #[test]

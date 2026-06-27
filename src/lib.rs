@@ -17,6 +17,10 @@ mod render;
 mod naming;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod config;
+// `theme` is only consumed by the wasm glue; on a non-wasm non-test host build
+// everything in it appears dead. Its own unit tests exercise it on the host.
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod theme;
 
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
@@ -69,6 +73,10 @@ pub struct State {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     config: config::Config,
     permission_granted: bool,
+    // Theme-derived surface + text colors; updated on ModeUpdate; only used
+    // by the wasm render path.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    theme: theme::DerivedColors,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -189,6 +197,7 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            EventType::ModeUpdate,
         ]);
         set_selectable(false);
     }
@@ -255,6 +264,14 @@ impl ZellijPlugin for State {
                 self.permission_granted = status == PermissionStatus::Granted;
                 true
             }
+            Event::ModeUpdate(mode_info) => {
+                let bg_raw = mode_info.style.colors.text_unselected.background;
+                let fg_raw = mode_info.style.colors.text_unselected.base;
+                let bg = theme::palette_color_to_rgb(bg_raw);
+                let fg = theme::palette_color_to_rgb(fg_raw);
+                self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
+                false // color update doesn't require a full re-render on its own
+            }
             _ => false,
         }
     }
@@ -309,6 +326,7 @@ impl ZellijPlugin for State {
             glyphs: self.config.glyphs,
             header: self.config.header,
             density: self.config.density,
+            theme: self.theme.clone(),
         };
         if !self.permission_granted || tabrows.is_empty() {
             print!("{}", render::onboarding(&opts));
