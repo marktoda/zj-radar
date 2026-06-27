@@ -77,8 +77,8 @@ pub struct State {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     config: config::Config,
     permission_granted: bool,
-    // Theme-derived surface + text colors; updated on ModeUpdate; only used
-    // by the wasm render path.
+    // Terminal-derived surface + dim colors; updated on PaneUpdate from the
+    // panes' reported default_bg/default_fg; only used by the wasm render path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     theme: theme::DerivedColors,
 }
@@ -204,7 +204,6 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
-            EventType::ModeUpdate,
         ]);
         set_selectable(false);
     }
@@ -227,10 +226,29 @@ impl ZellijPlugin for State {
                 let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
                 let mut live: HashSet<u32> = HashSet::new();
                 let mut focused_terminal: Option<u32> = None;
+                // Capture the terminal's reported default bg/fg so we can derive
+                // the dark-panel surfaces in the terminal's own theme. Prefer the
+                // focused pane; otherwise accept the first terminal pane that
+                // reports both colors.
+                let mut focused_colors: Option<(theme::Rgb, theme::Rgb)> = None;
+                let mut any_colors: Option<(theme::Rgb, theme::Rgb)> = None;
                 for (tab_pos, panes) in manifest.panes {
                     for p in panes {
                         if p.is_plugin {
                             continue;
+                        }
+                        let colors = match (
+                            p.default_bg.as_deref().and_then(theme::parse_hex),
+                            p.default_fg.as_deref().and_then(theme::parse_hex),
+                        ) {
+                            (Some(bg), Some(fg)) => Some((bg, fg)),
+                            _ => None,
+                        };
+                        if let Some(c) = colors {
+                            any_colors.get_or_insert(c);
+                            if p.is_focused {
+                                focused_colors = Some(c);
+                            }
                         }
                         tab_panes.entry(tab_pos).or_default().push(PaneLite {
                             id: p.id,
@@ -242,6 +260,9 @@ impl ZellijPlugin for State {
                             focused_terminal = Some(p.id);
                         }
                     }
+                }
+                if let Some((bg, fg)) = focused_colors.or(any_colors) {
+                    self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
                 }
                 self.tab_panes = tab_panes;
                 self.store.prune(&live);
@@ -271,14 +292,6 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(status) => {
                 self.permission_granted = status == PermissionStatus::Granted;
                 true
-            }
-            Event::ModeUpdate(mode_info) => {
-                // `style.colors` is a `Styling`; convert it to the role-hued
-                // `Palette` (zellij provides `From<Styling>`), then derive the
-                // dark-panel ladder + vivid role hues from the whole palette.
-                let palette: Palette = mode_info.style.colors.into();
-                self.theme = theme::DerivedColors::from_palette(&palette);
-                false // color update doesn't require a full re-render on its own
             }
             Event::CwdChanged(pane_id, path, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {

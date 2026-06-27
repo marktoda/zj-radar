@@ -20,8 +20,9 @@ pub struct RenderOpts {
     pub header: bool,
     /// Vertical density between tabs.
     pub density: Density,
-    /// Theme-derived colors for card surfaces and readable detail text.
-    /// Defaults to Catppuccin Mocha values before the first ModeUpdate.
+    /// Terminal-derived colors for card surfaces and readable dim text. These
+    /// are the only truecolor values (status hues are ANSI-16). Defaults to a
+    /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
 }
 
@@ -326,26 +327,14 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     let st = row.agg.status;
     let cards = opts.density == Density::Cards;
 
-    // In Cards density the label/slot/spine use vivid theme-derived truecolor
-    // hues (peach attention, red error, yellow working, green success, mauve
-    // accent) so each row reads in the theme's own colors; other densities keep
-    // the ANSI-16 role codes (Compact/Comfortable are intentionally unchanged).
-    // The KEY outcome: a waiting "needs you" row renders PEACH, not red.
-    let hue = |r: Role| -> String {
-        if cards {
-            let rgb = match r {
-                Role::Attention => opts.theme.attention,
-                Role::Error => opts.theme.error,
-                Role::Working => opts.theme.working,
-                Role::Success => opts.theme.success,
-                Role::Accent => opts.theme.accent,
-                Role::Muted => opts.theme.idle_text,
-            };
-            tc_fg(rgb)
-        } else {
-            r.ansi().to_string()
-        }
-    };
+    // Status HUES are always ANSI-16 role codes so the terminal renders them in
+    // its OWN theme (any theme, zero config): attention `\x1b[91m` (waiting),
+    // error `\x1b[31m`, working `\x1b[33m`, success `\x1b[32m`, accent `\x1b[35m`
+    // (spine). ANSI has no orange/peach, so waiting (also bright-red-family)
+    // stays distinct from the error row via shape + bold (◆ + bold vs ✗), not
+    // hue. Only the dark panel surfaces + dim greys are truecolor (terminal-bg/fg
+    // derived), so those match the terminal's theme too.
+    let hue = |r: Role| -> String { r.ansi().to_string() };
 
     // col 0: active spine — accent (mauve) normally, attention (peach) when the
     // active row is also waiting/error.
@@ -1722,9 +1711,10 @@ mod tests {
         let lines: Vec<&str> = s.lines().collect();
 
         // Cards is now ONE cohesive dark panel: EVERY emitted line is painted.
-        // The 1-line header and the gap carry the dark panel base (rail_bg =
-        // 21,21,32); content lines carry their own (subtle) surface tint.
-        const RAIL: &str = "\x1b[48;2;21;21;32m";
+        // The 1-line header and the gap carry the dark panel base (rail_bg, the
+        // neutral-dark fallback's = 18,19,27); content lines carry their own
+        // (subtle) surface tint.
+        const RAIL: &str = "\x1b[48;2;18;19;27m";
 
         // line 0 = header title (no rule in Cards) → painted with rail_bg.
         assert!(lines[0].contains(RAIL),
@@ -1795,8 +1785,8 @@ mod tests {
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        // The default theme (Mocha) active surface from the dark-panel ladder is (48,48,66).
-        assert!(s.contains("\x1b[0m\x1b[48;2;48;48;66m"),
+        // The neutral-dark fallback active surface from the dark-panel ladder is (43,45,56).
+        assert!(s.contains("\x1b[0m\x1b[48;2;43;45;56m"),
             "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}", s);
     }
 
@@ -1883,24 +1873,24 @@ mod tests {
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
     /// Classify each rendered line for a tint-map snapshot by which truecolor
-    /// surface band it carries (using Mocha defaults from the dark-panel ladder):
-    ///   "active" = surface_active (48,48,66)  — brighter than bg, gently pops
-    ///   "agent"  = surface_agent  (26,26,39)  — mid step up from rail
-    ///   "idle"   = surface_idle   (22,22,34)  — barely above the panel
-    ///   "rail"   = rail_bg        (21,21,32)  — the dark panel base (gaps/header)
+    /// surface band it carries (using the neutral-dark fallback's dark-panel ladder):
+    ///   "active" = surface_active (43,45,56)  — brighter than bg, gently pops
+    ///   "agent"  = surface_agent  (22,23,33)  — mid step up from rail
+    ///   "idle"   = surface_idle   (19,20,28)  — barely above the panel
+    ///   "rail"   = rail_bg        (18,19,27)  — the dark panel base (gaps/header)
     ///   "bare"   = no band at all.
     /// Note: in Cards every emitted line is painted, so blank gaps now carry the
     /// rail band rather than being empty — they classify as "rail", not "gap".
     fn tint_map(s: &str) -> String {
         s.lines()
             .map(|line| {
-                if line.contains("\x1b[48;2;48;48;66m") {
+                if line.contains("\x1b[48;2;43;45;56m") {
                     "active"
-                } else if line.contains("\x1b[48;2;26;26;39m") {
+                } else if line.contains("\x1b[48;2;22;23;33m") {
                     "agent"
-                } else if line.contains("\x1b[48;2;22;22;34m") {
+                } else if line.contains("\x1b[48;2;19;20;28m") {
                     "idle"
-                } else if line.contains("\x1b[48;2;21;21;32m") {
+                } else if line.contains("\x1b[48;2;18;19;27m") {
                     "rail"
                 } else if line.is_empty() {
                     "gap"
@@ -1934,15 +1924,15 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
         // Cards header is now 1 line (no rule), so content starts at line 1.
-        // line 1 = idle content → barely-above-panel idle surface (22,22,34)
-        assert!(lines[1].contains("\x1b[48;2;22;22;34m"),
-            "idle row must carry the dim truecolor card tint (22;22;34): {:?}", lines[1]);
-        // gap at line 2 (rail), agent line 1 at line 3 → mid surface (26,26,39)
-        assert!(lines[3].contains("\x1b[48;2;26;26;39m"),
-            "agent row must carry the mid truecolor card tint (26;26;39): {:?}", lines[3]);
-        // gap at line 5 (rail), focused agent line 1 at line 6 → active surface (48,48,66)
-        assert!(lines[6].contains("\x1b[48;2;48;48;66m"),
-            "focused row must carry the active truecolor card tint (48;48;66): {:?}", lines[6]);
+        // line 1 = idle content → barely-above-panel idle surface (19,20,28)
+        assert!(lines[1].contains("\x1b[48;2;19;20;28m"),
+            "idle row must carry the dim truecolor card tint (19;20;28): {:?}", lines[1]);
+        // gap at line 2 (rail), agent line 1 at line 3 → mid surface (22,23,33)
+        assert!(lines[3].contains("\x1b[48;2;22;23;33m"),
+            "agent row must carry the mid truecolor card tint (22;23;33): {:?}", lines[3]);
+        // gap at line 5 (rail), focused agent line 1 at line 6 → active surface (43,45,56)
+        assert!(lines[6].contains("\x1b[48;2;43;45;56m"),
+            "focused row must carry the active truecolor card tint (43;45;56): {:?}", lines[6]);
     }
 
     #[test]
@@ -1991,9 +1981,13 @@ rail";
     }
 
     #[test]
-    fn cards_waiting_is_peach_not_red() {
-        // THE KEY OUTCOME: in Cards density a waiting "needs you" row renders in
-        // the theme's peach attention hue, clearly different from a red error row.
+    fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
+        // THE KEY OUTCOME: status hues are ANSI-16 so the terminal renders them
+        // in its own theme. ANSI has no orange/peach, so a waiting "needs you"
+        // row and a red error row are both red-FAMILY — they're kept distinct by
+        // SHAPE + BOLD + CODE, not by hue:
+        //   waiting → `\x1b[91m` (bright red) + ◆ glyph + bold
+        //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
         use crate::model::Detail;
         let pending = Detail { repo: "pinky".into(), branch: "fix".into(),
             msg: "".into(), since_tick: 0, status: Status::Pending };
@@ -2005,23 +1999,29 @@ rail";
             TabRow { number: 2, name: "infra".into(), active: false, has_bell: false,
                      agg: agg(Status::Error, 0, 1, Some(err)) },
         ];
-        let theme = crate::theme::DerivedColors::default();
         let s = render(&rows, &ro_cards(30, 100));
-        // Examine the body only (skip the 1-line header, whose urgent "·N!"
-        // marker keeps the ANSI attention code — header styling is out of scope).
-        let body: String = s.lines().skip(1).collect::<Vec<_>>().join("\n");
-        let peach = tc_fg(theme.attention); // Mocha peach (250,179,135)
-        let red = tc_fg(theme.error);       // Mocha red   (243,139,168)
-        // Waiting label + "needs you" use the peach attention hue…
-        assert!(body.contains(&peach),
-            "waiting row must render in the peach attention hue: {:?}", body);
-        // …and the body never uses the ANSI bright-red that previously read as "error".
-        assert!(!body.contains("\x1b[91m"),
-            "Cards body must not use ANSI bright-red for attention: {:?}", body);
-        // The error row uses the distinct red hue.
-        assert!(body.contains(&red),
-            "error row must render in the red error hue: {:?}", body);
-        assert_ne!(peach, red, "peach attention must differ from red error");
+        let lines: Vec<&str> = s.lines().collect();
+        // Cards header is 1 line; line 1 = waiting row, then its detail, then the
+        // error row. Find the waiting first-line and the error first-line.
+        let waiting_line = lines.iter().find(|l| l.contains("pinky")).expect("waiting row");
+        let error_line = lines.iter().find(|l| l.contains("infra")).expect("error row");
+        // Waiting: bright-red ANSI + ◆ glyph + bold.
+        assert!(waiting_line.contains(Role::Attention.ansi()),
+            "waiting row must use the ANSI-16 attention code (\\x1b[91m): {:?}", waiting_line);
+        assert!(waiting_line.contains('◆'),
+            "waiting row must use the ◆ glyph: {:?}", waiting_line);
+        assert!(waiting_line.contains(BOLD),
+            "waiting row must be bold: {:?}", waiting_line);
+        // Error: red ANSI + ✗ glyph, NOT bold.
+        assert!(error_line.contains(Role::Error.ansi()),
+            "error row must use the ANSI-16 error code (\\x1b[31m): {:?}", error_line);
+        assert!(error_line.contains('✗'),
+            "error row must use the ✗ glyph: {:?}", error_line);
+        assert!(!error_line.contains(BOLD),
+            "error row must not be bold: {:?}", error_line);
+        // The two ANSI codes are distinct.
+        assert_ne!(Role::Attention.ansi(), Role::Error.ansi(),
+            "attention (bright-red) and error (red) ANSI codes must differ");
     }
 
     #[test]
