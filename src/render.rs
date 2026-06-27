@@ -279,7 +279,15 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                 }
                 Status::Pending => {
                     let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
-                    out.push_str(&format!("   {}{} · {}needs you{}\n", muted, truncate(&loc, width.saturating_sub(15)), Role::Attention.ansi(), RESET));
+                    let needs_phrase = if row.agg.pending > 1 {
+                        format!("{} needs you", row.agg.pending)
+                    } else {
+                        "needs you".to_string()
+                    };
+                    let phrase_len = UnicodeWidthStr::width(needs_phrase.as_str());
+                    // "   " (3) + loc + " · " (3) + phrase
+                    let loc_budget = width.saturating_sub(3 + 3 + phrase_len);
+                    out.push_str(&format!("   {}{} · {}{}{}\n", muted, truncate(&loc, loc_budget), Role::Attention.ansi(), needs_phrase, RESET));
                     if !d.msg.trim().is_empty() {
                         out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
                     }
@@ -311,7 +319,7 @@ mod tests {
     use crate::model::Detail;
 
     fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
-        TabAgg { status, done, total, detail }
+        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail }
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
@@ -684,6 +692,77 @@ mod tests {
         // Must contain the error role code
         assert!(s.contains(Role::Error.ansi()),  // "\x1b[31m"
             "expected error role ANSI code not found");
+    }
+
+    #[test]
+    fn multi_agent_pending_shows_count() {
+        // Multi-pending: agg.pending == 2 → detail line shows "2 needs you"
+        let detail = Detail {
+            repo: "proj".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "agents".into(),
+            active: false,
+            has_bell: false,
+            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail) },
+        }];
+        let s = render(&rows, &ro(30, 0));
+        assert!(s.contains("2 needs you"), "expected '2 needs you' in output: {:?}", s);
+        assert!(!s.contains("1 needs you"), "unexpected '1 needs you' in output: {:?}", s);
+
+        // Single-pending: agg.pending == 1 → detail line shows "needs you" (no count)
+        let detail2 = Detail {
+            repo: "proj".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows2 = vec![TabRow {
+            number: 2,
+            name: "solo".into(),
+            active: false,
+            has_bell: false,
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail2) },
+        }];
+        let s2 = render(&rows2, &ro(30, 0));
+        assert!(s2.contains("needs you"), "expected 'needs you' in single-pending output: {:?}", s2);
+        // Must NOT have a leading digit before "needs you" for the single case
+        assert!(!s2.contains("1 needs you"), "single-pending must not show count: {:?}", s2);
+
+        // Width constraint: multi-pending detail must not exceed width
+        let detail3 = Detail {
+            repo: "averylongreponame".into(),
+            branch: "feature/some-very-long-branch".into(),
+            msg: "".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows3 = vec![TabRow {
+            number: 3,
+            name: "multi".into(),
+            active: false,
+            has_bell: false,
+            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail3) },
+        }];
+        // Width constraint check: use widths where the slot ("0/5 ⏵ 0:00" = 11 cols)
+        // plus row chrome can actually fit on the first line (>=20).
+        for width in [20usize, 24, 30] {
+            let s3 = render(&rows3, &ro(width, 0));
+            assert!(s3.contains("3 needs you"), "expected '3 needs you' at width {}", width);
+            for line in s3.lines() {
+                assert!(
+                    visible_len(line) <= width,
+                    "multi-pending detail line exceeds width {}: {:?} (visible {})",
+                    width, line, visible_len(line)
+                );
+            }
+        }
     }
 
     #[test]

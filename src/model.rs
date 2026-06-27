@@ -17,6 +17,7 @@ pub struct TabAgg {
     pub status: Status,
     pub done: usize,
     pub total: usize,
+    pub pending: usize,
     pub detail: Option<Detail>,
 }
 
@@ -28,6 +29,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
     let mut best: Option<Detail> = None;
     let mut done = 0usize;
     let mut total = 0usize;
+    let mut pending = 0usize;
 
     for &id in pane_ids {
         let Some(s) = store.get(id) else { continue };
@@ -36,6 +38,9 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
             if s.status == Status::Done {
                 done += 1;
             }
+        }
+        if s.status == Status::Pending {
+            pending += 1;
         }
         let better = s.status.severity() > best_status.severity()
             || (s.status.severity() == best_status.severity()
@@ -56,6 +61,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore) -> TabAgg {
         status: best_status,
         done,
         total,
+        pending,
         detail: best,
     }
 }
@@ -110,6 +116,16 @@ mod tests {
         let agg = aggregate(&[1, 2, 3], &store);
         assert_eq!(agg.done, 2);
         assert_eq!(agg.total, 3);
+    }
+
+    #[test]
+    fn pending_count_matches_pending_panes() {
+        let mut store = StateStore::default();
+        put(&mut store, 1, Status::Pending, 1, "a");
+        put(&mut store, 2, Status::Pending, 2, "b");
+        put(&mut store, 3, Status::Running, 3, "c");
+        let agg = aggregate(&[1, 2, 3], &store);
+        assert_eq!(agg.pending, 2);
     }
 
     #[test]
