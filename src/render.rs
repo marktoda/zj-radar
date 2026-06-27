@@ -194,7 +194,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                 }
                 Status::Pending => {
                     let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
-                    out.push_str(&format!("   {}{} · {}needs you{}\n", muted, truncate(&loc, width.saturating_sub(14)), Role::Attention.ansi(), RESET));
+                    out.push_str(&format!("   {}{} · {}needs you{}\n", muted, truncate(&loc, width.saturating_sub(15)), Role::Attention.ansi(), RESET));
                     if !d.msg.trim().is_empty() {
                         out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
                     }
@@ -414,6 +414,28 @@ mod tests {
                 line,
                 visible_len(line)
             );
+        }
+    }
+
+    #[test]
+    fn pending_detail_lines_never_exceed_width() {
+        let detail = Detail {
+            repo: "averylongreponame".into(),
+            branch: "feature/some-long-branch".into(),
+            msg: "should we proceed with this long question".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows = vec![TabRow {
+            number: 3, name: "a-long-tab-name".into(), active: true, has_bell: false,
+            agg: agg(Status::Pending, 0, 1, Some(detail)),
+        }];
+        for width in [16usize, 20, 24, 30] {
+            let s = render(&rows, &ro(width, 5));
+            for line in s.lines() {
+                assert!(visible_len(line) <= width,
+                    "pending line exceeds width {}: {:?} (visible {})", width, line, visible_len(line));
+            }
         }
     }
 
