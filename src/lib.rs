@@ -56,6 +56,10 @@ pub struct State {
     store: StateStore,
     tabs: Vec<TabLite>,
     tab_panes: HashMap<usize, Vec<PaneLite>>, // tab position -> terminal panes
+    // `pane_cwd` maps terminal pane id → last-seen cwd string. Updated on
+    // CwdChanged; pruned in sync with tab_panes on PaneUpdate.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pane_cwd: HashMap<u32, String>,
     // `tick`/`timer_armed`/`applied_names` are read only by the wasm glue; on
     // any host build (including tests, which construct State but never read
     // them) they are dead.
@@ -174,6 +178,7 @@ impl State {
             &self.store,
             &self.applied_names,
             force,
+            &self.pane_cwd,
         );
         for (pos, name) in changes {
             rename_tab(pos as u32 + 1, &name);
@@ -194,6 +199,7 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
+            EventType::CwdChanged,
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
@@ -238,6 +244,7 @@ impl ZellijPlugin for State {
                 }
                 self.tab_panes = tab_panes;
                 self.store.prune(&live);
+                self.pane_cwd.retain(|id, _| live.contains(id));
                 if let Some(id) = focused_terminal {
                     self.store.on_pane_focused(id, self.tick);
                 }
@@ -271,6 +278,13 @@ impl ZellijPlugin for State {
                 let fg = theme::palette_color_to_rgb(fg_raw);
                 self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
                 false // color update doesn't require a full re-render on its own
+            }
+            Event::CwdChanged(pane_id, path, _clients) => {
+                if let PaneId::Terminal(id) = pane_id {
+                    self.pane_cwd.insert(id, path.to_string_lossy().to_string());
+                    self.apply_renames();
+                }
+                true
             }
             _ => false,
         }
