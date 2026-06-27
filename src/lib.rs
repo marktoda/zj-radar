@@ -231,8 +231,8 @@ impl ZellijPlugin for State {
                 }
                 false
             }
-            Event::PermissionRequestResult(_) => {
-                self.permission_granted = true;
+            Event::PermissionRequestResult(status) => {
+                self.permission_granted = status == PermissionStatus::Granted;
                 true
             }
             _ => false,
