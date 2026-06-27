@@ -91,7 +91,7 @@ pub fn card_spacing(d: Density) -> CardSpacing {
     match d {
         Density::Compact => CardSpacing { pad_x: 0, pad_y: 0, gap: 0 },
         Density::Comfortable => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
-        Density::Cards => CardSpacing { pad_x: 1, pad_y: 0, gap: 1 },
+        Density::Cards => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
     }
 }
 
@@ -462,8 +462,10 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     };
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
-    // the glyph, so content isn't flush to the band edge. From the cohesive
-    // CardSpacing model (Cards → 1, else 0).
+    // the glyph. Currently 0 for all densities — the col-0 bar/spine column
+    // already provides the design's 1-col card inset, so an extra pad column
+    // would double the left margin (and push content off the right at narrow
+    // widths). Retained as a knob.
     let pad_len = card_spacing(opts.density).pad_x;
     let pad = " ".repeat(pad_len);
 
@@ -580,8 +582,10 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                     // mark glyph in neutral idle_text color (vendor-neutral)
                     let mark = d.kind.mark();
                     let mark_width = UnicodeWidthChar::width(mark).unwrap_or(1);
-                    // "   ‹mark› " prefix: 3-space indent + mark + space
-                    let prefix_vis = 3 + mark_width + 1;
+                    // "  ‹mark› " prefix: 2-space indent + mark + space. The
+                    // mark sits one column right of the line-1 glyph (which is at
+                    // col 1 after the bar/spine column), matching the design.
+                    let prefix_vis = 2 + mark_width + 1;
                     let avail = width.saturating_sub(prefix_vis);
                     // Build activity string: for Running append braille spinner
                     let activity = if st == Status::Running {
@@ -597,7 +601,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                         dim_strong.clone()
                     };
                     out.push_str(&format!(
-                        "   {}{}{} {}{}{}\n",
+                        "  {}{}{} {}{}{}\n",
                         idle_color, mark, RESET, activity_color, activity_str, RESET
                     ));
                 }
@@ -1963,6 +1967,47 @@ mod tests {
         // Note: 38;2; truecolor foreground IS expected (detail lines use theme-derived dim foreground).
     }
 
+    /// Design alignment: the left chrome is exactly ONE column (the bar/spine),
+    /// which provides the card's 1-col inset. Content (the status glyph) sits at
+    /// column 1 for both active and idle rows — the active spine does NOT push
+    /// content right. Guards against re-introducing a second pad column.
+    fn strip_ansi_local(line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                if chars.peek() == Some(&'[') {
+                    for i in chars.by_ref() { if i == 'm' { break; } }
+                }
+            } else { out.push(c); }
+        }
+        out
+    }
+
+    #[test]
+    fn cards_left_chrome_is_single_column() {
+        use crate::model::Detail;
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "x".into(),
+            kind: Kind::Claude, since_tick: 0, status: Status::Running };
+        let rows = vec![
+            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+        ];
+        let s = render(&rows, &ro_cards(30, 100));
+        let lines: Vec<String> = s.lines().map(strip_ansi_local).collect();
+        // line 0 = header; line 1 = idle row; line 3 = active row (line 2 is its
+        // detail row, line between is the idle gap). Find by name.
+        let idle = lines.iter().find(|l| l.contains("idle")).unwrap();
+        let active = lines.iter().find(|l| l.contains("work")).unwrap();
+        // Idle: one leading space (the blank bar column), then the glyph at col 1.
+        assert!(idle.starts_with(" ○"), "idle row must be ' ○…' (1-col inset): {:?}", idle);
+        // Active: the spine in col 0 immediately followed by the glyph at col 1 —
+        // no second pad column.
+        assert!(active.starts_with("▌◐"), "active row must be '▌◐…' (spine+glyph, no pad): {:?}", active);
+    }
+
     #[test]
     fn comfortable_and_compact_emit_no_bg() {
         // Same tabs with Comfortable and Compact must contain NO card band.
@@ -2025,7 +2070,7 @@ mod tests {
         use crate::config::Density::*;
         assert_eq!(card_spacing(Compact), CardSpacing { pad_x: 0, pad_y: 0, gap: 0 });
         assert_eq!(card_spacing(Comfortable), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
-        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 1, pad_y: 0, gap: 1 });
+        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
     }
 
     #[test]
