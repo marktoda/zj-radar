@@ -1,7 +1,7 @@
 // Dev layout for hot-reloading the zj-agents sidebar plugin.
 //
 // Build first (needs a wasm32-wasip1 toolchain — see docs/TOOLCHAIN.md):
-//   cargo build --target wasm32-wasip1
+//   nix develop -c cargo build --target wasm32-wasip1
 // Then:
 //   zellij --layout dev/dev.kdl
 //
@@ -21,7 +21,19 @@ layout {
             plugin location="zellij:status-bar"
         }
     }
-    tab name="one" focus=true { pane }
-    tab name="two" { pane split_direction="vertical" { pane; pane } }
-    tab name="three" { pane }
+
+    tab name="one" focus=true {
+        pane
+    }
+
+    tab name="two" {
+        pane split_direction="vertical" {
+            pane
+            pane
+        }
+    }
+
+    tab name="three" {
+        pane
+    }
 }
