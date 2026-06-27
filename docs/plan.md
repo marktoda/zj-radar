@@ -43,8 +43,8 @@ Producer-side (in the `dotfiles` repo, `home-manager/modules/zellij/`):
 ```
 claude-zellij-notify.sh   # MODIFY: also broadcast zj_agents.status.v1
 codex-zellij-notify.sh    # CREATE: Codex notify adapter (done-only)
-default.nix               # MODIFY: vendor zj-agents.wasm + install codex adapter
-zellij.kdl                # MODIFY: sidebar in default_tab_template; drop compact-bar; smart-tabs format
+default.nix               # MODIFY: vendor zj-agents.wasm + install codex adapter; drop @smartTabs@ fetchurl
+zellij.kdl                # MODIFY: sidebar in default_tab_template; drop compact-bar (smart-tabs already removed)
 ```
 
 ---
@@ -1318,12 +1318,16 @@ zellij pipe --name zj_agents.status.v1 -- "$payload" >/dev/null 2>&1 || true
 - [ ] **Step 5: Wire both adapters + the wasm + the layout in Nix**
 
 In `default.nix`, add a `fetchurl`/local reference for the built `zj-agents.wasm` (mirror the
-`zellij-room`/`zellij-smart-tabs` pattern) bound to `@zjAgents@`, install
-`codex-zellij-notify` into `~/.local/bin`, and add `~/.codex/config.toml` `notify =
-["sh","-lc","codex-zellij-notify \"$1\"","_"]`. In `zellij.kdl`: (a) replace the top
-`compact-bar` line of `default_tab_template` with the sidebar `pane split_direction="vertical"`
-block from `dev/dev.kdl` (using `@zjAgents@`); (b) remove the `{% if status %}` segment from the
-`smart-tabs` `format` so the sidebar owns state display.
+`zellij-room` vendoring pattern) bound to `@zjAgents@`, and remove the now-dead `@smartTabs@`
+`fetchurl` + `replaceStrings` entry (smart-tabs has been removed — see
+`smart-tabs-postmortem.md`). Install `codex-zellij-notify` into `~/.local/bin`, and add
+`~/.codex/config.toml` `notify = ["sh","-lc","codex-zellij-notify \"$1\"","_"]`. In `zellij.kdl`:
+(a) replace the top `compact-bar` line of `default_tab_template` with the sidebar `pane
+split_direction="vertical"` block from `dev/dev.kdl` (using `@zjAgents@`); (b) confirm the
+`smart-tabs` plugin alias, its `load_plugins` entry, and the two `MessagePlugin` rename
+keybindings are already gone (they were stripped during the postmortem cleanup) — zj-agents owns
+all tab display, with naming per design §6.1. No `{% if status %}` format edit is needed anymore;
+there is no smart-tabs `format` left to edit.
 
 - [ ] **Step 6: Rebuild and verify end-to-end**
 
@@ -1344,7 +1348,7 @@ git commit -m "feat: drive zj-agents sidebar from Claude + Codex hooks"
 
 ## Self-Review
 
-**Spec coverage:** §3 visual → Tasks 1 (glyph/color), 5 (rows/two-line/count/elapsed). §4 architecture/aggregation → Tasks 3,4. §4.1 state machine → Task 8 (adapter branches). §5 pipe contract → Task 2 (+ seq guard in Task 3). §6 wiring (permissions, subscriptions, position+1, broadcast, one-shot timer, layout, smart-tabs) → Tasks 6,7,8. §7 adapters (Claude+Codex done-only) → Task 8. §8 build/Nix → Tasks 0,8. §9 testing → Tasks 1–5 unit tests + Task 7 manual + the fake-adapter script. §10 phasing → Tasks map to Phases 0–3; Phase-1/2 acceptance in Task 7. §11 risks (mouse/selectable, pinning) → Task 7 acceptance with fallback.
+**Spec coverage:** §3 visual → Tasks 1 (glyph/color), 5 (rows/two-line/count/elapsed). §4 architecture/aggregation → Tasks 3,4. §4.1 state machine → Task 8 (adapter branches). §5 pipe contract → Task 2 (+ seq guard in Task 3). §6 wiring (permissions, subscriptions, position+1, broadcast, one-shot timer, layout) + §6.1 tab naming (push-only, no blocking host calls) → Tasks 6,7,8. §7 adapters (Claude+Codex done-only) → Task 8. §8 build/Nix → Tasks 0,8. §9 testing → Tasks 1–5 unit tests + Task 7 manual + the fake-adapter script. §10 phasing → Tasks map to Phases 0–3; Phase-1/2 acceptance in Task 7. §11 risks (mouse/selectable, pinning) → Task 7 acceptance with fallback.
 
 **Placeholder scan:** No TBD/TODO. The two genuinely API-version-sensitive spots (Mouse variant shape, exact `switch_tab_to`/`PaneManifest` field names) carry concrete code plus an explicit "verify against 0.44" note in Task 6 Step 2 — not placeholders.
 

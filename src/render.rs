@@ -5,11 +5,17 @@ use crate::status::Status;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+const YELLOW: &str = "\x1b[33m";
+
+/// A `running` agent whose elapsed time reaches this (seconds ≈ ticks) is
+/// flagged as long-running / possibly stuck.
+const STUCK_SECS: u64 = 600;
 
 pub struct TabRow {
     pub number: u32,
     pub name: String,
     pub active: bool,
+    pub has_bell: bool,
     pub agg: TabAgg,
 }
 
@@ -41,7 +47,14 @@ fn detail_tag(agg: &TabAgg, now_tick: u64) -> String {
     let elapsed = now_tick.saturating_sub(d.since_tick);
     match d.status {
         Status::Done => format!("done {}", format_elapsed(elapsed)),
-        Status::Running => format_elapsed(elapsed),
+        Status::Running => {
+            let e = format_elapsed(elapsed);
+            if elapsed >= STUCK_SECS {
+                format!("{} ⚠", e)
+            } else {
+                e
+            }
+        }
         Status::Pending => "needs you".to_string(),
         Status::Error => "error".to_string(),
         Status::Idle => String::new(),
@@ -60,8 +73,48 @@ pub fn row_lines(agg: &TabAgg) -> usize {
     }
 }
 
+/// Count tabs by their dominant active status, severity-descending, non-zero only.
+pub fn summary(rows: &[TabRow]) -> Vec<(Status, usize)> {
+    use Status::*;
+    let order = [Error, Pending, Running, Done];
+    let mut counts = [0usize; 4];
+    for r in rows {
+        match r.agg.status {
+            Error => counts[0] += 1,
+            Pending => counts[1] += 1,
+            Running => counts[2] += 1,
+            Done => counts[3] += 1,
+            Idle => {}
+        }
+    }
+    order
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| (counts[i] > 0).then_some((*s, counts[i])))
+        .collect()
+}
+
+/// 1 if a summary header will be rendered, else 0. Single source of truth for
+/// the header's vertical span (consumed by click mapping in lib.rs).
+pub fn header_lines(rows: &[TabRow]) -> usize {
+    if summary(rows).is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
 pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
     let mut out = String::new();
+    let sum = summary(rows);
+    if !sum.is_empty() {
+        let parts: Vec<String> = sum
+            .iter()
+            .map(|(s, n)| format!("{}{}{}{}", s.ansi(), s.glyph(), n, RESET))
+            .collect();
+        out.push_str(&parts.join(" "));
+        out.push('\n');
+    }
     for row in rows {
         let dot = format!("{}{}{}", row.agg.status.ansi(), row.agg.status.glyph(), RESET);
         let count = if row.agg.total > 1 {
@@ -69,15 +122,22 @@ pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
         } else {
             String::new()
         };
-        let name_budget = width.saturating_sub(4 + count.chars().count());
+        // reserve 2 cols for " ⚑" when a bell is set
+        let bell_budget = if row.has_bell { 2 } else { 0 };
+        let name_budget = width.saturating_sub(4 + count.chars().count() + bell_budget);
         let name = truncate(&row.name, name_budget);
         let name_styled = if row.active {
             format!("{}{}{}", BOLD, name, RESET)
         } else {
             name
         };
-        // line 1: "<dot> <n> <name><count>"
-        out.push_str(&format!("{} {} {}{}\n", dot, row.number, name_styled, count));
+        let bell = if row.has_bell {
+            format!(" {}⚑{}", YELLOW, RESET)
+        } else {
+            String::new()
+        };
+        // line 1: "<dot> <n> <name><count><bell>"
+        out.push_str(&format!("{} {} {}{}{}\n", dot, row.number, name_styled, count, bell));
 
         // line 2: "  repo/branch · tag"  (only when there is agent detail)
         if let Some(d) = &row.agg.detail {
@@ -123,6 +183,7 @@ mod tests {
             number: 4,
             name: "notes".into(),
             active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, 24, 0);
@@ -144,13 +205,14 @@ mod tests {
             number: 2,
             name: "pinky".into(),
             active: true,
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, 24, 14);
         assert!(s.contains("2/4"));
         assert!(s.contains("pinky/fix/x"));
         assert!(s.contains("0:14"));
-        assert_eq!(s.matches('\n').count(), 3); // three lines
+        assert_eq!(s.matches('\n').count(), 4); // header + three lines
         assert!(s.contains("\"doing the thing\""));
     }
 
@@ -167,10 +229,11 @@ mod tests {
             number: 2,
             name: "pinky".into(),
             active: true,
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, 24, 14);
-        assert_eq!(s.matches('\n').count(), 2); // two lines, no quoted line
+        assert_eq!(s.matches('\n').count(), 3); // header + two lines, no quoted line
         assert!(!s.contains('"'));
     }
 
@@ -217,6 +280,7 @@ mod tests {
             number: 1,
             name: "a-very-long-tab-name-indeed".into(),
             active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, 12, 0);
@@ -258,11 +322,12 @@ mod tests {
             number: 2,
             name: "a-very-long-tab-name-indeed".into(),
             active: true, // exercises BOLD escapes too
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, width, 14);
-        // three lines emitted
-        assert_eq!(s.matches('\n').count(), 3);
+        // header + three lines emitted
+        assert_eq!(s.matches('\n').count(), 4);
         // every visible (ANSI-stripped) line fits within the sidebar width
         for line in s.lines() {
             assert!(
@@ -273,5 +338,66 @@ mod tests {
                 visible_len(line)
             );
         }
+    }
+
+    #[test]
+    fn running_under_threshold_has_no_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        assert!(!render(&rows, 30, 599).contains('⚠'));
+    }
+
+    #[test]
+    fn running_at_threshold_shows_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        assert!(render(&rows, 30, 600).contains('⚠'));
+    }
+
+    #[test]
+    fn done_with_long_elapsed_has_no_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Done };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
+        assert!(!render(&rows, 30, 10_000).contains('⚠'));
+    }
+
+    #[test]
+    fn bell_renders_marker() {
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: true, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(render(&rows, 24, 0).contains('⚑'));
+    }
+
+    #[test]
+    fn no_bell_no_marker() {
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(!render(&rows, 24, 0).contains('⚑'));
+    }
+
+    #[test]
+    fn summary_counts_tabs_by_dominant_status_active_only() {
+        let rows = vec![
+            TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) },
+            TabRow { number: 2, name: "b".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) },
+            TabRow { number: 3, name: "c".into(), active: false, has_bell: false, agg: agg(Status::Pending, 0, 0, None) },
+            TabRow { number: 4, name: "d".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) },
+        ];
+        // severity order: Error, Pending, Running, Done; Idle excluded
+        assert_eq!(summary(&rows), vec![(Status::Pending, 1), (Status::Running, 2)]);
+    }
+
+    #[test]
+    fn summary_empty_when_all_idle() {
+        let rows = vec![TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(summary(&rows).is_empty());
+        assert_eq!(header_lines(&rows), 0);
+    }
+
+    #[test]
+    fn header_line_emitted_when_active() {
+        let rows = vec![TabRow { number: 1, name: "a".into(), active: false, has_bell: false, agg: agg(Status::Running, 0, 0, None) }];
+        assert_eq!(header_lines(&rows), 1);
+        let s = render(&rows, 24, 0);
+        // first line is the header (contains the running glyph + count), then the tab row
+        assert!(s.lines().next().unwrap().contains(Status::Running.glyph()));
     }
 }
