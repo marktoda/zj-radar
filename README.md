@@ -133,6 +133,28 @@ repo/branch). See [`plugins/zj-radar-claude/README.md`](plugins/zj-radar-claude/
 for details. It's a no-op outside Zellij, so it's safe to leave enabled
 everywhere.
 
+### Optional: the `zj-radar` CLI
+
+A native binary that drops the `jq`/`bash` dependency and wires non-plugin agents.
+
+```sh
+# Nix:
+nix build github:mark-toda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
+# Cargo:
+cargo install --git https://github.com/mark-toda/zj-radar --features cli
+```
+
+- **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude
+  plugin's hook script automatically prefers it when it's on `PATH` (jq-free);
+  otherwise the plugin falls back to its bundled `bash`+`jq` script.
+- **`zj-radar setup [codex]`** — idempotently wires Codex's `~/.codex/config.toml`
+  `notify` to call `zj-radar notify codex`. It **never overwrites** an existing
+  `notify` program (e.g. a Computer Use notifier); pass `--force` to replace it,
+  `--dry-run` to preview, `--uninstall` to remove. (Claude needs no `setup` — use
+  the plugin in §2.)
+
+Codex reports only turn-completion, so it shows as `done` only (no `working`).
+
 ## Configuration
 
 Pass options in the layout's `plugin { ... }` block. Unknown keys are ignored

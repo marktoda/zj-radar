@@ -53,9 +53,20 @@
 
         # ── host-target deps shared by the test/clippy checks ──
         cargoArtifactsHost = craneLib.buildDepsOnly commonArgs;
+
+        # ── native CLI (host target, `cli` feature) ──
+        cliArgs = commonArgs // { cargoExtraArgs = "--features cli"; };
+        cargoArtifactsCli = craneLib.buildDepsOnly cliArgs;
+        zj-radar-cli = craneLib.buildPackage (cliArgs // {
+          pname = "zj-radar-cli";
+          cargoArtifacts = cargoArtifactsCli;
+          cargoExtraArgs = "--features cli --bin zj-radar";
+          doCheck = false;
+        });
       in {
         packages.default = zj-radar;
         packages.zj-radar = zj-radar;
+        packages.zj-radar-cli = zj-radar-cli;
 
         checks = {
           inherit zj-radar;
@@ -65,6 +76,9 @@
           });
           test = craneLib.cargoTest (commonArgs // {
             cargoArtifacts = cargoArtifactsHost;
+          });
+          cli-test = craneLib.cargoTest (cliArgs // {
+            cargoArtifacts = cargoArtifactsCli;
           });
         };
 

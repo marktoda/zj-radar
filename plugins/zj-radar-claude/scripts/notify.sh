@@ -18,6 +18,13 @@ set -euo pipefail
 
 status="${1:-running}"
 
+# Prefer the native CLI when present (drops the jq/bash dependency). It applies
+# the same Zellij gate, pending backstop, and payload schema. Falls back to the
+# bash implementation below when the binary isn't installed.
+if command -v zj-radar >/dev/null 2>&1; then
+    exec zj-radar notify claude --status "$status"
+fi
+
 [[ -n "${ZELLIJ:-}" && -n "${ZELLIJ_PANE_ID:-}" ]] || exit 0
 pane_num="${ZELLIJ_PANE_ID#terminal_}"
 [[ "$pane_num" =~ ^[0-9]+$ ]] || exit 0
