@@ -93,9 +93,13 @@ impl State {
     }
 
     /// Map a clicked line back to a tab position by replaying render()'s fold
-    /// plan. Both render() and this function call plan_overflow with the same
-    /// body_budget, guaranteeing that "line N → tab X" is consistent with what
-    /// the user actually sees on screen.
+    /// plan. Both render() and this function call plan_layout with the same
+    /// body_budget and density, guaranteeing that "line N → tab X" is
+    /// consistent with what the user actually sees on screen.
+    ///
+    /// Each tab's click span = its planned content lines + gap_used (the blank
+    /// line after it). Clicking anywhere in a tab's span — including the gap
+    /// line that follows its content — maps to that tab.
     fn tab_position_at_line(&self, line: isize) -> Option<usize> {
         if line < 0 {
             return None;
@@ -109,16 +113,17 @@ impl State {
         if target < cursor {
             return None; // click landed on the header → no tab
         }
-        // Replay render()'s fold plan. Height 0 means "not yet rendered" →
-        // treat as unbounded so no folding is assumed.
+        // Replay render()'s layout plan. Height 0 means "not yet rendered" →
+        // treat as unbounded so no folding/gap-dropping is assumed.
         let body_budget = if self.last_render_height == 0 {
             usize::MAX
         } else {
             self.last_render_height.saturating_sub(render::header_lines(&rows, self.config.header))
         };
-        let (plan, _strip_folded) = render::plan_overflow(&rows, body_budget);
+        let (plan, _strip_folded, gap_used) = render::plan_layout(&rows, body_budget, self.config.density);
         for &(i, planned_lines) in &plan {
-            let span = planned_lines.max(1);
+            // Each tab's visual block = content lines + gap.
+            let span = planned_lines.max(1) + gap_used;
             if target >= cursor && target < cursor + span {
                 return Some((rows[i].number - 1) as usize);
             }
@@ -275,6 +280,7 @@ impl ZellijPlugin for State {
             now_tick: self.tick,
             glyphs: self.config.glyphs,
             header: self.config.header,
+            density: self.config.density,
         };
         if !self.permission_granted || tabrows.is_empty() {
             print!("{}", render::onboarding(&opts));
@@ -298,6 +304,8 @@ mod tests {
 
     fn make_state_with_tabs(tab_specs: &[(usize, &str, bool)]) -> State {
         // tab_specs: (position, name, active)
+        // Uses Compact density so existing click-mapping tests (which hard-code
+        // line numbers assuming no gap lines) continue to pass unchanged.
         let tabs = tab_specs
             .iter()
             .map(|&(pos, name, active)| TabLite {
@@ -309,6 +317,7 @@ mod tests {
             .collect();
         State {
             tabs,
+            config: config::Config { density: config::Density::Compact, ..config::Config::default() },
             ..Default::default()
         }
     }
@@ -598,5 +607,56 @@ mod tests {
         // The plain tab must start at line 5, not 4.
         assert_eq!(state.tab_position_at_line(5), Some(1), "plain tab — must follow roster line");
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
+    }
+
+    // ── Density click-mapping tests ──
+
+    #[test]
+    fn click_mapping_accounts_for_gaps_comfortable() {
+        // Comfortable density, large height → gap_used=1.
+        // 2 idle tabs, header=2 lines.
+        // Layout: header(2) | tab0 content(1) | tab0 gap(1) | tab1 content(1) | tab1 gap(1)
+        // Lines:   0,1      | 2               | 3           | 4               | 5
+        //
+        // The gap line (3) belongs to tab 0's block. Tab 1 starts at line 4.
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        state.last_render_height = 100; // large → no overflow
+        state.config = config::Config {
+            density: config::Density::Comfortable,
+            ..config::Config::default()
+        };
+
+        // header lines
+        assert_eq!(state.tab_position_at_line(0), None, "header line 0");
+        assert_eq!(state.tab_position_at_line(1), None, "header line 1");
+        // tab 0 content line
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line");
+        // tab 0 gap line — maps to tab 0 (its block)
+        assert_eq!(state.tab_position_at_line(3), Some(0), "tab 0 gap line maps to tab 0");
+        // tab 1 content line starts at 4
+        assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content line");
+        // tab 1 gap line — maps to tab 1 (its block)
+        assert_eq!(state.tab_position_at_line(5), Some(1), "tab 1 gap line maps to tab 1");
+        // beyond
+        assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
+    }
+
+    #[test]
+    fn click_mapping_compact_no_gaps() {
+        // Compact density → no gaps, tabs are adjacent.
+        // 2 idle tabs, header=2 lines.
+        // Lines: 0,1 header | 2 tab0 | 3 tab1
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        state.last_render_height = 100;
+        state.config = config::Config {
+            density: config::Density::Compact,
+            ..config::Config::default()
+        };
+
+        assert_eq!(state.tab_position_at_line(0), None);
+        assert_eq!(state.tab_position_at_line(1), None);
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+        assert_eq!(state.tab_position_at_line(4), None);
     }
 }

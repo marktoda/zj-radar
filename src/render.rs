@@ -1,5 +1,6 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
 
+use crate::config::Density;
 use crate::model::TabAgg;
 use crate::status::{Role, Status};
 pub use crate::status::GlyphSet;
@@ -16,6 +17,8 @@ pub struct RenderOpts {
     pub glyphs: GlyphSet,
     /// Whether to render the " AGENTS" identity header block.
     pub header: bool,
+    /// Vertical density between tabs.
+    pub density: Density,
 }
 
 pub struct TabRow {
@@ -230,6 +233,40 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
         }
     }
     (trimmed, strip_folded)
+}
+
+/// Single source of truth for the layout plan consumed by BOTH `render()` and
+/// `tab_position_at_line()`. Returns:
+///   - the per-row planned content-line counts (same as `plan_overflow`),
+///   - the number of idle rows folded into the strip (`strip_folded`), and
+///   - `gap_used`: 0 (no blank lines) or 1 (one blank line after each kept tab).
+///
+/// Gap rule:
+///   - If `density == Compact`, `gap_used` is always 0.
+///   - Otherwise, gaps are included only when ALL of them still fit within
+///     `body_budget` (after accounting for content lines and the strip line).
+///     If even one gap would overflow, `gap_used` falls back to 0 (flush
+///     spacing), letting T3+ overflow compression handle the rest.
+pub fn plan_layout(
+    rows: &[TabRow],
+    body_budget: usize,
+    density: Density,
+) -> (Vec<(usize, usize)>, usize, usize) {
+    let (plan, strip_folded) = plan_overflow(rows, body_budget);
+    let gap_used = if density == Density::Compact {
+        0
+    } else {
+        let content_total: usize = plan.iter().map(|(_, l)| l).sum();
+        let kept_count = plan.len();
+        let strip_line = if strip_folded > 0 { 1 } else { 0 };
+        // Include gaps only when content + one-gap-per-tab + strip all fit.
+        if content_total + kept_count + strip_line <= body_budget {
+            1
+        } else {
+            0
+        }
+    };
+    (plan, strip_folded, gap_used)
 }
 
 /// The rail's resting "hello / how it works" face — shown on cold start or
@@ -477,7 +514,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let accent = Role::Accent.ansi();
 
     let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header));
-    let (plan, strip_folded) = plan_overflow(rows, body_budget);
+    let (plan, strip_folded, gap_used) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
     let count = if overflow {
@@ -503,6 +540,10 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 
     for &(i, max_lines) in &plan {
         render_row(&mut out, &rows[i], opts, max_lines.max(1));
+        // Emit blank gap line(s) after each tab's content block when density > Compact.
+        for _ in 0..gap_used {
+            out.push('\n');
+        }
     }
 
     if strip_folded > 0 {
@@ -532,7 +573,7 @@ mod tests {
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
-        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true }
+        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact }
     }
 
     #[test]
@@ -649,8 +690,8 @@ mod tests {
                          since_tick: 0, status: Status::Running };
         let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
                                agg: agg(Status::Running, 0, 1, Some(d.clone())) };
-        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
-        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true });
+        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
+        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
         assert!(f0.contains('◐'));
         assert!(f1.contains('◓'));
     }
@@ -817,7 +858,7 @@ mod tests {
     fn overflow_folds_idle_into_strip_and_marks_header() {
         // 20 idle tabs, height only fits a few → fold.
         let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
+        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
         assert!(s.contains("idle"));   // "+N idle ▾" footer
         assert!(s.contains('▾'));
         assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
@@ -833,7 +874,7 @@ mod tests {
                          since_tick: 0, status: Status::Pending };
         rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
                            has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
-        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true });
+        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
         assert!(s.contains("pinky"));     // urgent row never folded
         assert!(s.contains("needs you")); // its detail survives
     }
@@ -841,7 +882,7 @@ mod tests {
     #[test]
     fn no_overflow_when_everything_fits() {
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
+        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
     }
@@ -878,7 +919,7 @@ mod tests {
                      agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))) },
         ];
 
-        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true };
+        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
 
         // Must NOT contain truecolor sequences
@@ -1024,7 +1065,7 @@ mod tests {
     fn idle_strip_never_exceeds_width() {
         let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
         for width in [18usize, 24, 30] {
-            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true });
+            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact });
             // folding must have happened
             assert!(s.contains("idle ▾"), "expected idle strip at width {}", width);
             for line in s.lines() {
@@ -1073,7 +1114,7 @@ mod tests {
             agg: agg(Status::Running, 0, 0, None),
         }];
         assert_eq!(header_lines(&rows, false), 0);
-        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false };
+        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
         // No identity header: rows start at line 0, so no "AGENTS"/"═" line.
         assert!(!s.contains("AGENTS"));
@@ -1123,7 +1164,7 @@ mod tests {
             a.roster = vec![Running, Done, Pending, Running, Done, Running, Pending, Done, Running, Error];
             let row = TabRow { number: 1, name: "big-team".into(), active: false, has_bell: false, agg: a };
             let s = render(&[row], &RenderOpts {
-                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true,
+                width, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact,
             });
             for line in s.lines() {
                 assert!(visible_len(line) <= width,
@@ -1167,6 +1208,7 @@ mod tests {
                 now_tick: 0,
                 glyphs: GlyphSet::Plain,
                 header: false,
+                density: crate::config::Density::Compact,
             };
             let s = render(&[row], &opts);
             let emitted = s.matches('\n').count();
@@ -1286,7 +1328,7 @@ mod tests {
             "total body lines {} exceeds budget {}", total_body, body_budget);
 
         // Render and verify: Running rows have no detail line; urgent keeps "needs you".
-        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true };
+        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
         assert!(s.contains("needs you"), "urgent row detail must survive");
         // Total line count ≤ height
@@ -1309,7 +1351,7 @@ mod tests {
                      agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
         ];
         // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
-        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true };
+        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
         let line_count = s.lines().count();
         assert!(line_count <= 3,
@@ -1319,5 +1361,121 @@ mod tests {
         for (_, lines) in &plan {
             assert!(*lines >= 1, "every planned row must have at least 1 line");
         }
+    }
+
+    // ── Density tests ──
+
+    /// Helper: comfortable-density RenderOpts at the given width/height.
+    fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
+        RenderOpts {
+            width,
+            height,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Comfortable,
+        }
+    }
+
+    #[test]
+    fn comfortable_inserts_blank_line_between_tabs() {
+        // 3 idle tabs, large height → comfortable density inserts a gap after each tab.
+        // body = header(2) + 3 content lines + 3 gap lines = 8 total lines.
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let s = render(&rows, &ro_comfortable(24, 100));
+        // body lines: each idle row = 1 content + 1 gap = 2 lines each. Total body = 6.
+        // Plus 2 header = 8 \n chars.
+        assert_eq!(s.matches('\n').count(), 8,
+            "comfortable: expected 2 header + 3×(1 content + 1 gap) = 8 newlines, got {}:\n{:?}", s.matches('\n').count(), s);
+        // Check that there is a blank line between tabs (an empty line between non-empty lines).
+        let body_lines: Vec<&str> = s.lines().skip(2).collect();
+        assert_eq!(body_lines.len(), 6);
+        // Odd-indexed body lines (0-based: 1, 3, 5) should be blank gap lines.
+        assert!(body_lines[1].is_empty(), "body line 1 should be blank gap: {:?}", body_lines[1]);
+        assert!(body_lines[3].is_empty(), "body line 3 should be blank gap: {:?}", body_lines[3]);
+        assert!(body_lines[5].is_empty(), "body line 5 should be blank gap: {:?}", body_lines[5]);
+    }
+
+    #[test]
+    fn compact_has_no_gaps() {
+        // 3 idle tabs, compact → no gap lines at all.
+        // Total lines = 2 header + 3 content = 5 \n chars.
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let opts = RenderOpts {
+            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
+            header: true, density: crate::config::Density::Compact,
+        };
+        let s = render(&rows, &opts);
+        assert_eq!(s.matches('\n').count(), 5,
+            "compact: expected 2 header + 3 content = 5 newlines, got {}:\n{:?}", s.matches('\n').count(), s);
+        // No empty lines in the body.
+        for line in s.lines().skip(2) {
+            assert!(!line.is_empty(), "compact should have no blank lines, found one: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn cards_renders_like_comfortable() {
+        // Cards should produce the same output as Comfortable for now.
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let comfortable = render(&rows, &RenderOpts {
+            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
+            header: true, density: crate::config::Density::Comfortable,
+        });
+        let cards = render(&rows, &RenderOpts {
+            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
+            header: true, density: crate::config::Density::Cards,
+        });
+        assert_eq!(comfortable, cards, "Cards should render identically to Comfortable");
+    }
+
+    #[test]
+    fn gaps_dropped_under_overflow() {
+        // 4 idle tabs, height = 8 (header=2, body_budget=6).
+        // Comfortable: 4 content + 4 gaps = 8. That's exactly 8 — fits.
+        // So use height = 7 (body_budget = 5) → 4 content + 4 gaps = 8 > 5 → gaps dropped.
+        // At that point overflow compresses: 4 idle all folded (non-idle = 0), strip = 1 line.
+        // But let's use non-idle rows to ensure content lines > budget with gaps.
+        // 4 Running rows (2 content lines each) = 8 content lines. body_budget = 6.
+        // Without gaps: 8 > 6, so compression occurs. plan_overflow will compress them.
+        // With comfortable gaps: content total from plan * 2 would be even more.
+        // Simpler: use 3 idle rows, body_budget = 4 (height=6).
+        // Without gaps: 3 content fits in 4. With gaps: 3+3=6 > 4. → gap_used = 0.
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let height = 6; // body_budget = 4
+        let (plan, strip, gap_used) = plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
+        // All 3 idle rows fit at 1 line each (total=3 ≤ body_budget=4).
+        assert_eq!(plan.len(), 3, "all 3 rows should be kept");
+        assert_eq!(strip, 0, "no rows folded into strip");
+        // 3 content + 3 gaps = 6 > 4 (body_budget) → gaps dropped.
+        assert_eq!(gap_used, 0, "gaps should be dropped when they don't fit");
+        // Render and verify: no blank lines in output.
+        let s = render(&rows, &RenderOpts {
+            width: 24, height, now_tick: 0, glyphs: GlyphSet::Plain,
+            header: true, density: crate::config::Density::Comfortable,
+        });
+        let line_count = s.lines().count();
+        assert!(line_count <= height,
+            "rendered {} lines but height is {}", line_count, height);
+        // When gaps are dropped, no blank body lines.
+        for line in s.lines().skip(2) {
+            assert!(!line.is_empty(), "gaps dropped — no blank body lines expected: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn plan_layout_compact_always_zero_gap() {
+        let rows: Vec<TabRow> = (1..=5).map(idle_row).collect();
+        // Even with very large budget, compact never adds gaps.
+        let (_, _, gap_used) = plan_layout(&rows, 100, crate::config::Density::Compact);
+        assert_eq!(gap_used, 0, "Compact density must never produce gaps");
+    }
+
+    #[test]
+    fn plan_layout_comfortable_gap_when_space_available() {
+        // 2 idle rows, body_budget=10: 2 content + 2 gaps = 4 ≤ 10 → gap_used = 1.
+        let rows: Vec<TabRow> = (1..=2).map(idle_row).collect();
+        let (_, _, gap_used) = plan_layout(&rows, 10, crate::config::Density::Comfortable);
+        assert_eq!(gap_used, 1, "Comfortable with room should use gaps");
     }
 }
