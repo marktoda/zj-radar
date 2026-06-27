@@ -224,10 +224,12 @@ impl ZellijPlugin for State {
                 self.store.any_active()
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
-                if let Some(pos) = self.tab_position_at_line(line) {
-                    // switch_tab_to is 1-based; `pos` is 0-based position,
-                    // so position + 1 gives the correct tab index.
-                    switch_tab_to(pos as u32 + 1);
+                if self.permission_granted {
+                    if let Some(pos) = self.tab_position_at_line(line) {
+                        // switch_tab_to is 1-based; `pos` is 0-based position,
+                        // so position + 1 gives the correct tab index.
+                        switch_tab_to(pos as u32 + 1);
+                    }
                 }
                 false
             }
