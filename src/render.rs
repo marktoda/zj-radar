@@ -285,9 +285,23 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
                         "needs you".to_string()
                     };
                     let phrase_len = UnicodeWidthStr::width(needs_phrase.as_str());
-                    // "   " (3) + loc + " · " (3) + phrase
+                    // "   " (3) + loc + " · " (3) + phrase — compute loc budget,
+                    // then clamp the assembled visible line to width so narrow
+                    // widths (where phrase_len alone > width - 6) never overflow.
                     let loc_budget = width.saturating_sub(3 + 3 + phrase_len);
-                    out.push_str(&format!("   {}{} · {}{}{}\n", muted, truncate(&loc, loc_budget), Role::Attention.ansi(), needs_phrase, RESET));
+                    let loc_str = truncate(&loc, loc_budget);
+                    // Re-measure the assembled visible content and clamp if needed.
+                    let visible_content = format!("   {} · {}", loc_str, needs_phrase);
+                    let visible_len = UnicodeWidthStr::width(visible_content.as_str());
+                    if visible_len <= width {
+                        // Normal path: color split preserved.
+                        out.push_str(&format!("   {}{} · {}{}{}\n", muted, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
+                    } else {
+                        // Extreme-narrow path: clamp the whole visible line, then
+                        // emit in a single muted color (correctness > color split).
+                        let clamped = truncate(&visible_content, width);
+                        out.push_str(&format!("{}{}{}\n", muted, clamped, RESET));
+                    }
                     if !d.msg.trim().is_empty() {
                         out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
                     }
@@ -759,6 +773,43 @@ mod tests {
                 assert!(
                     visible_len(line) <= width,
                     "multi-pending detail line exceeds width {}: {:?} (visible {})",
+                    width, line, visible_len(line)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multi_pending_detail_never_exceeds_width() {
+        // Regression: at sub-17 widths the "N needs you" phrase is longer than
+        // the available space after indent (3) + sep (3), so loc_budget saturates
+        // to 0 and the raw phrase still overflows. This test must pass after the
+        // width-clamp fix.
+        //
+        // Use total=1 so the first-row right-slot is compact ("⏵ 0:00", 6 cols)
+        // and the first row fits at all tested widths — the focus is the detail
+        // line (line 2), where "3 needs you" (11 cols) + indent (3) + sep (3) = 17
+        // overflows at width ≤ 16 without the clamp.
+        let detail = Detail {
+            repo: "averylongreponame".into(),
+            branch: "feature/some-very-long-branch-name".into(),
+            msg: "".into(),
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "m".into(),
+            active: false,
+            has_bell: false,
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail) },
+        }];
+        for width in [14usize, 16, 17, 20, 24] {
+            let s = render(&rows, &ro(width, 0));
+            for line in s.lines() {
+                assert!(
+                    visible_len(line) <= width,
+                    "multi-pending detail exceeds width {}: {:?} (visible {})",
                     width, line, visible_len(line)
                 );
             }
