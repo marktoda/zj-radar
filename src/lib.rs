@@ -22,6 +22,9 @@ mod config;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
 // host target, so these imports look dead to a non-test host build.
