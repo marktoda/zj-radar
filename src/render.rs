@@ -337,7 +337,17 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     } else {
         st.glyph_for(opts.glyphs)
     };
-    let glyph = format!("{}{}{}", role, glyph_char, RESET);
+    // The whole label (glyph + number + name) shares the status color so each
+    // row reads as its state at a glance — design: "4 web" is green, "5 infra"
+    // red, "3 pinky" peach+bold. Idle recedes to the dim idle_text; waiting is
+    // also bold (it's the alarm). Active is shown by the spine + brighter card,
+    // NOT bold, so the two cues stay independent.
+    let label_color = if st == Status::Idle {
+        tc_fg(opts.theme.idle_text)
+    } else {
+        role.to_string()
+    };
+    let label_bold = if st == Status::Pending { BOLD } else { "" };
 
     // right slot (reserved width even when empty). Waiting/done/error color
     // their slot with the status role (it carries meaning); the *working*
@@ -367,22 +377,13 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
         .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
         .max(1);
     let name = truncate(&row.name, name_budget);
-    let name_styled = if row.active {
-        format!("{}{}{}", BOLD, name, RESET)
-    } else if st == Status::Idle {
-        // Idle row names are dimmed to readable-but-recessive using the
-        // theme-derived idle_text color (fg blended 45% toward bg).
-        format!("{}{}{}", tc_fg(opts.theme.idle_text), name, RESET)
-    } else {
-        name.clone()
-    };
 
     // pad so the slot sits flush right.
     let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
     let gap = width.saturating_sub(used).max(1);
     out.push_str(&format!(
-        "{}{} {} {}{}{}{}\n",
-        bar, glyph, num, name_styled, " ".repeat(gap), bell, slot_styled
+        "{}{}{}{} {} {}{}{}{}{}\n",
+        bar, label_color, label_bold, glyph_char, num, name, RESET, " ".repeat(gap), bell, slot_styled
     ));
 
     // Line 1 done. Emit detail/roster only within the remaining budget.
