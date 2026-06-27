@@ -112,23 +112,124 @@ pub fn header_lines(rows: &[TabRow], header: bool) -> usize {
     }
 }
 
-/// Decide which rows render in full and how many idle tabs fold, given the
-/// vertical budget (height minus the 2-line header). Non-idle rows are always
-/// kept; idle rows fold into a strip when space is tight.
-pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<usize>, usize) {
+/// Returns whether a row's status is "calm" (can be compressed first).
+fn is_calm(status: Status) -> bool {
+    matches!(status, Status::Done | Status::Running)
+}
+
+/// Decide which rows render and at how many lines each, given the vertical
+/// budget. Returns `(Vec<(row_idx, rendered_lines)>, strip_folded_count)`.
+///
+/// Compression order when `sum(full lines of kept rows) > body_budget`:
+///   1. Fold idle rows into a strip (existing behaviour).
+///   2. Drop the strip line itself (set `strip_folded_count = 0`) if even the
+///      non-idle rows exceed the budget.
+///   3. Compress calm non-idle rows (Done, Running) to 1 line each —
+///      lowest-position first, one at a time until it fits.
+///   4. Compress urgent rows (Pending, Error) toward 1 line — drop msg line
+///      first, then drop the branch/needs-you detail line — lowest-position
+///      first, one step at a time.
+///   5. If still over: include rows from the top as long as they fit; drop the
+///      rest (never panics, never exceeds budget).
+///
+/// `row_lines` remains the *uncompressed* line count; this function produces
+/// the *planned* per-row line count actually rendered.
+pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
     let total: usize = rows.iter().map(|r| row_lines(&r.agg)).sum();
     if total <= body_budget {
-        return ((0..rows.len()).collect(), 0); // everything, no fold
+        // Everything fits at full fidelity.
+        let plan = rows.iter().enumerate()
+            .map(|(i, r)| (i, row_lines(&r.agg)))
+            .collect();
+        return (plan, 0);
     }
-    // Keep all non-idle rows (in position order); fold idle ones.
-    let kept: Vec<usize> = rows
+
+    // Step 1: fold idle rows; keep non-idle at full line counts.
+    let non_idle_idx: Vec<usize> = rows
         .iter()
         .enumerate()
         .filter(|(_, r)| r.agg.status != Status::Idle)
         .map(|(i, _)| i)
         .collect();
-    let folded = rows.iter().filter(|r| r.agg.status == Status::Idle).count();
-    (kept, folded)
+    let folded_count = rows.iter().filter(|r| r.agg.status == Status::Idle).count();
+
+    // Each kept row starts at its full (uncompressed) line count.
+    let mut planned: Vec<(usize, usize)> = non_idle_idx
+        .iter()
+        .map(|&i| (i, row_lines(&rows[i].agg)))
+        .collect();
+
+    // Step 2: check if the strip line itself (1 extra line) would overflow.
+    let strip_line: usize = if folded_count > 0 { 1 } else { 0 };
+    let mut used: usize = planned.iter().map(|(_, l)| l).sum();
+    // `strip_folded` is what we actually show in the strip (0 = dropped).
+    let strip_folded = if used + strip_line <= body_budget {
+        folded_count // strip fits
+    } else {
+        0 // drop the strip; don't count its line
+    };
+    // `used` now reflects whether the strip is shown.
+    let strip_used = if strip_folded > 0 { 1 } else { 0 };
+
+    if used + strip_used <= body_budget {
+        return (planned, strip_folded);
+    }
+
+    // Step 3: compress calm rows (Done/Running) to 1 line, lowest-idx first.
+    for entry in planned.iter_mut() {
+        let (idx, ref mut lines) = *entry;
+        if *lines <= 1 { continue; }
+        if is_calm(rows[idx].agg.status) {
+            used -= *lines - 1; // account for the lines we're dropping
+            *lines = 1;
+            if used + strip_used <= body_budget {
+                return (planned, strip_folded);
+            }
+        }
+    }
+
+    // Step 4: compress urgent rows (Pending/Error) toward 1 line.
+    // Each urgent row: full -> drop msg -> drop branch/needs-you -> 1 line.
+    // We decrement one line at a time per row (lowest-idx first), repeating
+    // until the row reaches 1 or the budget is satisfied.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        if used + strip_used <= body_budget {
+            return (planned, strip_folded);
+        }
+        for entry in planned.iter_mut() {
+            let (idx, ref mut lines) = *entry;
+            if *lines <= 1 { continue; }
+            if !is_calm(rows[idx].agg.status) {
+                used -= 1;
+                *lines -= 1;
+                changed = true;
+                if used + strip_used <= body_budget {
+                    return (planned, strip_folded);
+                }
+                // Restart from lowest-idx for next step.
+                break;
+            }
+        }
+    }
+
+    // Step 5: everything is at 1 line; if still over, drop bottom rows that
+    // don't fit. (Extreme case: even 1-line rows exceed the budget.)
+    let mut trimmed: Vec<(usize, usize)> = Vec::new();
+    let mut remaining = body_budget;
+    for (idx, lines) in &planned {
+        if *lines <= remaining {
+            trimmed.push((*idx, *lines));
+            remaining -= lines;
+        } else if remaining > 0 {
+            trimmed.push((*idx, remaining));
+            remaining = 0;
+        } else {
+            break;
+        }
+    }
+    (trimmed, strip_folded)
 }
 
 /// The rail's resting "hello / how it works" face — shown on cold start or
@@ -161,18 +262,209 @@ pub fn onboarding(opts: &RenderOpts) -> String {
     out
 }
 
+/// Emit one row's body into `out`, respecting `max_lines`.
+///
+/// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
+/// Detail/roster lines are emitted in priority order while `lines_emitted < max_lines`:
+///
+/// - For urgent rows (Pending/Error): detail line comes before msg line;
+///   roster is least-priority and is dropped first.
+/// - For calm rows (Done/Running): there is at most 1 detail line + 1 roster;
+///   roster is dropped before the detail line.
+///
+/// Caller guarantees `max_lines >= 1`.
+fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usize) {
+    let width = opts.width;
+    let now_tick = opts.now_tick;
+    let st = row.agg.status;
+    let role = st.role().ansi();
+
+    // col 0: active bar — accent normally, attention when active+urgent.
+    let bar = if row.active {
+        let bar_role = match st {
+            Status::Pending | Status::Error => Role::Attention,
+            _ => Role::Accent,
+        };
+        format!("{}▌{}", bar_role.ansi(), RESET)
+    } else {
+        " ".to_string()
+    };
+
+    // col 1: status glyph (working spins).
+    let glyph_char = if st == Status::Running {
+        crate::status::working_spin(now_tick as usize)
+    } else {
+        st.glyph_for(opts.glyphs)
+    };
+    let glyph = format!("{}{}{}", role, glyph_char, RESET);
+
+    // right slot (reserved width even when empty).
+    let slot = right_slot(&row.agg, now_tick, width);
+    let slot_styled = if slot.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}{}", role, slot, RESET)
+    };
+
+    // bell marker just before the slot.
+    let bell = if row.has_bell {
+        format!("{}⚑{} ", Role::Working.ansi(), RESET)
+    } else {
+        String::new()
+    };
+
+    // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
+    let num = row.number.to_string();
+    let prefix_len = 1 + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+glyph+sp+num+sp
+    let bell_len = if row.has_bell { 2 } else { 0 };
+    let slot_len = UnicodeWidthStr::width(slot.as_str());
+    let name_budget = width
+        .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
+        .max(1);
+    let name = truncate(&row.name, name_budget);
+    let name_styled = if row.active {
+        format!("{}{}{}", BOLD, name, RESET)
+    } else {
+        name.clone()
+    };
+
+    // pad so the slot sits flush right.
+    let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
+    let gap = width.saturating_sub(used).max(1);
+    out.push_str(&format!(
+        "{}{} {} {}{}{}{}\n",
+        bar, glyph, num, name_styled, " ".repeat(gap), bell, slot_styled
+    ));
+
+    // Line 1 done. Emit detail/roster only within the remaining budget.
+    if max_lines <= 1 {
+        return;
+    }
+    let mut emitted = 1usize;
+
+    let muted = Role::Muted.ansi();
+
+    // Determine per-status detail line order.
+    // For Pending: priority 1 = "branch · needs you"; priority 2 = "msg"; priority 3 = roster.
+    // For Error: priority 1 = "loc · msg"; priority 2 = roster (no separate msg line).
+    // For Running: priority 1 = "loc ⠋ msg"; priority 2 = roster.
+    // For Done/Idle: no detail lines.
+    if let Some(d) = &row.agg.detail {
+        match st {
+            Status::Running => {
+                // Detail line (priority 1 after line 1).
+                if emitted < max_lines {
+                    let spin = crate::status::msg_spin(now_tick as usize);
+                    let avail = width.saturating_sub(3);
+                    let full = {
+                        let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
+                        format!("{} {} {}", loc, spin, d.msg)
+                    };
+                    let body = if UnicodeWidthStr::width(full.as_str()) <= avail {
+                        full
+                    } else {
+                        // drop branch
+                        let no_branch = format!("{} {} {}", d.repo, spin, d.msg);
+                        if UnicodeWidthStr::width(no_branch.as_str()) <= avail {
+                            no_branch
+                        } else {
+                            // drop message, keep repo + spinner
+                            truncate(&format!("{} {}", d.repo, spin), avail)
+                        }
+                    };
+                    out.push_str(&format!("   {}{}{}\n", Role::Muted.ansi(), truncate(&body, avail), RESET));
+                    emitted += 1;
+                }
+            }
+            Status::Error => {
+                // Detail line (priority 1 after line 1).
+                if emitted < max_lines {
+                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
+                    let body = if d.msg.trim().is_empty() { loc } else { format!("{} · {}", loc, d.msg) };
+                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
+                    emitted += 1;
+                }
+            }
+            Status::Pending => {
+                // Priority 1: "branch · needs you" line.
+                if emitted < max_lines {
+                    let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
+                    let needs_phrase = if row.agg.pending > 1 {
+                        format!("{} needs you", row.agg.pending)
+                    } else {
+                        "needs you".to_string()
+                    };
+                    let phrase_len = UnicodeWidthStr::width(needs_phrase.as_str());
+                    let loc_budget = width.saturating_sub(3 + 3 + phrase_len);
+                    let loc_str = truncate(&loc, loc_budget);
+                    let visible_content = format!("   {} · {}", loc_str, needs_phrase);
+                    let visible_len = UnicodeWidthStr::width(visible_content.as_str());
+                    if visible_len <= width {
+                        out.push_str(&format!("   {}{} · {}{}{}\n", muted, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
+                    } else {
+                        let clamped = truncate(&visible_content, width);
+                        out.push_str(&format!("{}{}{}\n", muted, clamped, RESET));
+                    }
+                    emitted += 1;
+                }
+                // Priority 2: quoted msg line (only if non-empty).
+                if emitted < max_lines && !d.msg.trim().is_empty() {
+                    out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
+                    emitted += 1;
+                }
+            }
+            Status::Done | Status::Idle => {}
+        }
+    }
+
+    // Roster line: one extra line for multi-agent active tabs showing each
+    // member's status glyph colored by its role. This is the lowest-priority
+    // line and is only emitted when we still have budget.
+    if emitted < max_lines
+        && row.agg.total > 1
+        && row.agg.status.is_active()
+        && !row.agg.roster.is_empty()
+    {
+        let indent = "   ";
+        let indent_width = 3usize;
+        // Build glyph tokens: "<color><glyph><reset>", measure visible width.
+        let tokens: Vec<(String, usize)> = row.agg.roster.iter().map(|&rst| {
+            let glyph = rst.glyph_for(opts.glyphs);
+            let token = format!("{}{}{}", rst.role().ansi(), glyph, RESET);
+            let vis = UnicodeWidthChar::width(glyph).unwrap_or(1);
+            (token, vis)
+        }).collect();
+        // Build the visible line, dropping trailing glyphs that would overflow.
+        // Layout: indent(3) + glyph(w) + " "(1) + glyph(w) + ...
+        let max_vis = width.saturating_sub(indent_width);
+        let mut parts: Vec<&str> = Vec::new();
+        let mut vis_used = 0usize;
+        for (idx, (tok, vis)) in tokens.iter().enumerate() {
+            let needed = if idx == 0 { *vis } else { 1 + vis }; // space separator
+            if vis_used + needed > max_vis {
+                break;
+            }
+            parts.push(tok.as_str());
+            vis_used += needed;
+        }
+        if !parts.is_empty() {
+            out.push_str(&format!("{}{}\n", indent, parts.join(" ")));
+        }
+    }
+}
+
 pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let mut out = String::new();
     if rows.is_empty() {
         return out;
     }
     let width = opts.width;
-    let now_tick = opts.now_tick;
     let accent = Role::Accent.ansi();
 
     let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header));
-    let (kept, folded) = plan_overflow(rows, body_budget);
-    let overflow = folded > 0;
+    let (plan, strip_folded) = plan_overflow(rows, body_budget);
+    // Overflow = any row is absent from the plan (those are idle-folded rows).
+    let overflow = plan.len() < rows.len();
     let count = if overflow {
         format!("{} ▲", rows.len())
     } else {
@@ -194,165 +486,14 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
     }
 
-    for &i in &kept {
-        let row = &rows[i];
-        let st = row.agg.status;
-        let role = st.role().ansi();
-
-        // col 0: active bar — accent normally, attention when active+urgent.
-        let bar = if row.active {
-            let bar_role = match st {
-                Status::Pending | Status::Error => Role::Attention,
-                _ => Role::Accent,
-            };
-            format!("{}▌{}", bar_role.ansi(), RESET)
-        } else {
-            " ".to_string()
-        };
-
-        // col 1: status glyph (working spins).
-        let glyph_char = if st == Status::Running {
-            crate::status::working_spin(now_tick as usize)
-        } else {
-            st.glyph_for(opts.glyphs)
-        };
-        let glyph = format!("{}{}{}", role, glyph_char, RESET);
-
-        // right slot (reserved width even when empty).
-        let slot = right_slot(&row.agg, now_tick, width);
-        let slot_styled = if slot.is_empty() {
-            String::new()
-        } else {
-            format!("{}{}{}", role, slot, RESET)
-        };
-
-        // bell marker just before the slot.
-        let bell = if row.has_bell {
-            format!("{}⚑{} ", Role::Working.ansi(), RESET)
-        } else {
-            String::new()
-        };
-
-        // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
-        let num = row.number.to_string();
-        let prefix_len = 1 + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+glyph+sp+num+sp
-        let bell_len = if row.has_bell { 2 } else { 0 };
-        let slot_len = UnicodeWidthStr::width(slot.as_str());
-        let name_budget = width
-            .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
-            .max(1);
-        let name = truncate(&row.name, name_budget);
-        let name_styled = if row.active {
-            format!("{}{}{}", BOLD, name, RESET)
-        } else {
-            name.clone()
-        };
-
-        // pad so the slot sits flush right.
-        let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
-        let gap = width.saturating_sub(used).max(1);
-        out.push_str(&format!(
-            "{}{} {} {}{}{}{}\n",
-            bar, glyph, num, name_styled, " ".repeat(gap), bell, slot_styled
-        ));
-
-        // detail lines, per state.
-        if let Some(d) = &row.agg.detail {
-            let muted = Role::Muted.ansi();
-            match st {
-                Status::Running => {
-                    let spin = crate::status::msg_spin(now_tick as usize);
-                    let avail = width.saturating_sub(3);
-                    let full = {
-                        let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
-                        format!("{} {} {}", loc, spin, d.msg)
-                    };
-                    let body = if UnicodeWidthStr::width(full.as_str()) <= avail {
-                        full
-                    } else {
-                        // drop branch
-                        let no_branch = format!("{} {} {}", d.repo, spin, d.msg);
-                        if UnicodeWidthStr::width(no_branch.as_str()) <= avail {
-                            no_branch
-                        } else {
-                            // drop message, keep repo + spinner
-                            truncate(&format!("{} {}", d.repo, spin), avail)
-                        }
-                    };
-                    out.push_str(&format!("   {}{}{}\n", Role::Muted.ansi(), truncate(&body, avail), RESET));
-                }
-                Status::Error => {
-                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
-                    let body = if d.msg.trim().is_empty() { loc } else { format!("{} · {}", loc, d.msg) };
-                    out.push_str(&format!("   {}{}{}\n", muted, truncate(&body, width.saturating_sub(3)), RESET));
-                }
-                Status::Pending => {
-                    let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
-                    let needs_phrase = if row.agg.pending > 1 {
-                        format!("{} needs you", row.agg.pending)
-                    } else {
-                        "needs you".to_string()
-                    };
-                    let phrase_len = UnicodeWidthStr::width(needs_phrase.as_str());
-                    // "   " (3) + loc + " · " (3) + phrase — compute loc budget,
-                    // then clamp the assembled visible line to width so narrow
-                    // widths (where phrase_len alone > width - 6) never overflow.
-                    let loc_budget = width.saturating_sub(3 + 3 + phrase_len);
-                    let loc_str = truncate(&loc, loc_budget);
-                    // Re-measure the assembled visible content and clamp if needed.
-                    let visible_content = format!("   {} · {}", loc_str, needs_phrase);
-                    let visible_len = UnicodeWidthStr::width(visible_content.as_str());
-                    if visible_len <= width {
-                        // Normal path: color split preserved.
-                        out.push_str(&format!("   {}{} · {}{}{}\n", muted, loc_str, Role::Attention.ansi(), needs_phrase, RESET));
-                    } else {
-                        // Extreme-narrow path: clamp the whole visible line, then
-                        // emit in a single muted color (correctness > color split).
-                        let clamped = truncate(&visible_content, width);
-                        out.push_str(&format!("{}{}{}\n", muted, clamped, RESET));
-                    }
-                    if !d.msg.trim().is_empty() {
-                        out.push_str(&format!("   {}\"{}\"{}\n", muted, truncate(&d.msg, width.saturating_sub(5)), RESET));
-                    }
-                }
-                Status::Done | Status::Idle => {}
-            }
-        }
-        // Roster line: one extra line for multi-agent active tabs showing each
-        // member's status glyph colored by its role.
-        if row.agg.total > 1 && row.agg.status.is_active() && !row.agg.roster.is_empty() {
-            let indent = "   ";
-            let indent_width = 3usize;
-            // Build glyph tokens: "<color><glyph><reset>", measure visible width.
-            let tokens: Vec<(String, usize)> = row.agg.roster.iter().map(|&st| {
-                let glyph = st.glyph_for(opts.glyphs);
-                let token = format!("{}{}{}", st.role().ansi(), glyph, RESET);
-                let vis = UnicodeWidthChar::width(glyph).unwrap_or(1);
-                (token, vis)
-            }).collect();
-            // Build the visible line, dropping trailing glyphs that would overflow.
-            // Layout: indent(3) + glyph(w) + " "(1) + glyph(w) + ...
-            let max_vis = width.saturating_sub(indent_width);
-            let mut parts: Vec<&str> = Vec::new();
-            let mut used = 0usize;
-            for (idx, (tok, vis)) in tokens.iter().enumerate() {
-                let needed = if idx == 0 { *vis } else { 1 + vis }; // space separator
-                if used + needed > max_vis {
-                    break;
-                }
-                parts.push(tok.as_str());
-                used += needed;
-            }
-            if !parts.is_empty() {
-                out.push_str(&format!("{}{}
-", indent, parts.join(" ")));
-            }
-        }
+    for &(i, max_lines) in &plan {
+        render_row(&mut out, &rows[i], opts, max_lines.max(1));
     }
-    if folded > 0 {
+
+    if strip_folded > 0 {
         // Width-safe idle strip: keep the "── +N idle ▾" suffix, fill the
         // space before it with as many "○ " dot pairs as fit.
-        let suffix = format!("── +{} idle ▾", folded);
+        let suffix = format!("── +{} idle ▾", strip_folded);
         let dot_budget = width.saturating_sub(UnicodeWidthStr::width(suffix.as_str()) + 1); // +1 gap
         let mut dots = String::new();
         while UnicodeWidthStr::width(dots.as_str()) + 2 <= dot_budget {
@@ -1008,5 +1149,104 @@ mod tests {
             row_lines(&a), 2,
             "multi-agent active tab with empty roster must not add roster line"
         );
+    }
+
+    /// Calm rows (Running/Done) are compressed to 1 line before urgent rows
+    /// (Pending) lose their detail lines.
+    #[test]
+    fn overflow_compresses_calm_before_urgent() {
+        // 3 Running rows (each 2 lines) + 1 Pending-with-msg (3 lines) = 9 lines.
+        // header = 2. body_budget = height - 2.
+        // We pick height = 7 → body_budget = 5.
+        // Compression: Running rows compressed to 1 line each (3 lines saved);
+        // total becomes 3×1 + 3 = 6, still > 5 → one more Running line → 3×1+3 = 6?
+        // Actually: 3×1 + 3 = 6 > 5, so one more calm row: but all calm are already at 1.
+        // Wait: calm rows each go from 2 to 1 (saving 1 line each). After all 3:
+        //   3×1 + 3 = 6 > 5. Then compress Pending: 3→2 (drop msg). 3×1 + 2 = 5 ≤ 5. Done.
+        // So Pending still has 2 lines (the "branch · needs you" line survives).
+        // Pending loses ONLY the msg line; its detail line stays.
+        let detail_running = |n: u8| Detail {
+            repo: format!("repo{}", n), branch: "main".into(), msg: "working".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let detail_pending = Detail {
+            repo: "urgent-proj".into(), branch: "fix/thing".into(),
+            msg: "please review".into(),
+            since_tick: 0, status: Status::Pending,
+        };
+
+        let rows = vec![
+            TabRow { number: 1, name: "r1".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail_running(1))) },
+            TabRow { number: 2, name: "r2".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail_running(2))) },
+            TabRow { number: 3, name: "r3".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail_running(3))) },
+            TabRow { number: 4, name: "urgent".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(detail_pending)) },
+        ];
+
+        // Verify uncompressed sizes.
+        assert_eq!(row_lines(&rows[0].agg), 2);
+        assert_eq!(row_lines(&rows[1].agg), 2);
+        assert_eq!(row_lines(&rows[2].agg), 2);
+        assert_eq!(row_lines(&rows[3].agg), 3); // pending + msg
+
+        // body_budget = 5 (height 7, header 2)
+        let body_budget = 5usize;
+        let (plan, strip_folded) = plan_overflow(&rows, body_budget);
+        assert_eq!(strip_folded, 0, "no idle rows to strip");
+        assert_eq!(plan.len(), 4, "all 4 rows kept");
+
+        // Running rows should be at 1 line each (calm, compressed first).
+        assert_eq!(plan[0].1, 1, "Running row 0 compressed to 1 line");
+        assert_eq!(plan[1].1, 1, "Running row 1 compressed to 1 line");
+        assert_eq!(plan[2].1, 1, "Running row 2 compressed to 1 line");
+
+        // Pending row: 3 lines initially, should still keep its detail (≥ 2 lines).
+        // After calm compression: 3 + 3 = 6 > 5; one step of urgent compression:
+        // pending → 2 → total = 3 + 2 = 5 ≤ 5. Done.
+        assert!(plan[3].1 >= 2,
+            "Pending row should retain detail (≥2 lines), got {}", plan[3].1);
+
+        // Total body lines must be ≤ budget.
+        let total_body: usize = plan.iter().map(|(_, l)| l).sum();
+        assert!(total_body <= body_budget,
+            "total body lines {} exceeds budget {}", total_body, body_budget);
+
+        // Render and verify: Running rows have no detail line; urgent keeps "needs you".
+        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true };
+        let s = render(&rows, &opts);
+        assert!(s.contains("needs you"), "urgent row detail must survive");
+        // Total line count ≤ height
+        assert!(s.lines().count() <= 7,
+            "rendered lines {} exceed height 7", s.lines().count());
+    }
+
+    /// When height is extremely small, every kept row is compressed to exactly
+    /// 1 line; no panic; total output lines ≤ budget.
+    #[test]
+    fn overflow_all_one_line_when_extreme() {
+        let detail = Detail {
+            repo: "r".into(), branch: "b".into(), msg: "msg".into(),
+            since_tick: 0, status: Status::Pending,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "pending".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(detail.clone())) },
+            TabRow { number: 2, name: "run".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
+        ];
+        // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
+        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true };
+        let s = render(&rows, &opts);
+        let line_count = s.lines().count();
+        assert!(line_count <= 3,
+            "rendered {} lines but height is 3", line_count);
+        // No panic means the test passes. Also verify each body row is ≥ 1 line.
+        let (plan, _) = plan_overflow(&rows, 1);
+        for (_, lines) in &plan {
+            assert!(*lines >= 1, "every planned row must have at least 1 line");
+        }
     }
 }

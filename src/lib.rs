@@ -116,9 +116,9 @@ impl State {
         } else {
             self.last_render_height.saturating_sub(render::header_lines(&rows, self.config.header))
         };
-        let (kept, _folded) = render::plan_overflow(&rows, body_budget);
-        for &i in &kept {
-            let span = render::row_lines(&rows[i].agg);
+        let (plan, _strip_folded) = render::plan_overflow(&rows, body_budget);
+        for &(i, planned_lines) in &plan {
+            let span = planned_lines.max(1);
             if target >= cursor && target < cursor + span {
                 return Some((rows[i].number - 1) as usize);
             }
@@ -522,5 +522,50 @@ mod tests {
         // plain tab at position 1: line 5
         assert_eq!(state.tab_position_at_line(5), Some(1));
         assert!(state.tab_position_at_line(6).is_none());
+    }
+
+    /// Click mapping uses PLANNED (compressed) line counts, not uncompressed
+    /// `row_lines`. When Running rows are compressed to 1 line each under
+    /// pressure, each click mapping span must shrink accordingly.
+    #[test]
+    fn click_mapping_matches_compressed_layout() {
+        // Setup: 3 Running tabs (each normally 2 lines) + 1 Pending-with-msg (3 lines).
+        // Uncompressed body = 3×2 + 3 = 9 lines. Header = 2.
+        // height = 7 → body_budget = 5.
+        // plan_overflow compresses Running rows to 1 line; Pending drops msg → 2 lines.
+        // Final plan spans: [1, 1, 1, 2] → total = 5.
+        // After header (lines 0-1):
+        //   position 0 (Running, 1 line) → line 2
+        //   position 1 (Running, 1 line) → line 3
+        //   position 2 (Running, 1 line) → line 4
+        //   position 3 (Pending, 2 lines) → lines 5-6
+        let mut state = make_state_with_tabs(&[
+            (0, "r0", false),
+            (1, "r1", false),
+            (2, "r2", false),
+            (3, "urgent", false),
+        ]);
+        state.tab_panes.insert(0, vec![pane(10)]);
+        state.tab_panes.insert(1, vec![pane(11)]);
+        state.tab_panes.insert(2, vec![pane(12)]);
+        state.tab_panes.insert(3, vec![pane(13)]);
+        apply_payload(&mut state, 10, Status::Running, 1);
+        apply_payload(&mut state, 11, Status::Running, 1);
+        apply_payload(&mut state, 12, Status::Running, 1);
+        apply_payload_with_msg(&mut state, 13, Status::Pending, 1, "please approve");
+        state.last_render_height = 7; // body_budget = 5
+
+        // Header lines
+        assert_eq!(state.tab_position_at_line(0), None);
+        assert_eq!(state.tab_position_at_line(1), None);
+        // Each Running tab compressed to 1 line → one click per tab.
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+        assert_eq!(state.tab_position_at_line(4), Some(2));
+        // Pending tab gets 2 lines (detail kept, msg dropped).
+        assert_eq!(state.tab_position_at_line(5), Some(3));
+        assert_eq!(state.tab_position_at_line(6), Some(3));
+        // Nothing beyond.
+        assert_eq!(state.tab_position_at_line(7), None);
     }
 }
