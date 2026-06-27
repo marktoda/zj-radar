@@ -15,6 +15,8 @@ mod model;
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod naming;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod config;
 
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
