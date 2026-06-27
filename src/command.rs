@@ -129,6 +129,10 @@ impl CommandStore {
     /// Apply a pane's exit status. Deduped: a repeated identical
     /// `(pane, exit_status)` is a no-op.
     /// `Some(0)` → Done, `Some(n != 0)` → Error.
+    /// `None` → Done (pane exited without a recorded exit code, e.g. killed by
+    /// a signal). We show it as Done rather than Error because we have no
+    /// evidence of failure — the user can see the pane's scrollback if they
+    /// care about the cause.
     pub fn on_exit(&mut self, pane_id: u32, exit_status: Option<i32>, tick: u64) {
         // Dedupe: if we've already applied the same exit status, skip.
         if self.exited.get(&pane_id) == Some(&exit_status) {
@@ -397,7 +401,10 @@ mod tests {
     #[test]
     fn ignore_set_covers_all_shells() {
         let mut store = CommandStore::default();
-        for shell in &["zsh", "bash", "fish", "sh", "dash"] {
+        // All shell/prompt names in IGNORE_NAMES must be filtered. "starship" is
+        // included because it fires a CommandChanged event before the real shell
+        // prompt reappears — treating it as a command would cause a spurious Done.
+        for shell in &["zsh", "bash", "fish", "sh", "dash", "starship"] {
             let cmd = vec![shell.to_string()];
             store.on_command_changed(1, &cmd, true, None, 1);
             assert!(
@@ -407,6 +414,24 @@ mod tests {
             );
             assert!(store.get(1).is_none(), "{} must leave no resolved state", shell);
         }
+    }
+
+    // ── Test: on_exit(None) → Done with on_focus=Some(Idle), ever_active=true
+
+    #[test]
+    fn on_exit_none_yields_done_and_ever_active() {
+        let mut store = CommandStore::default();
+
+        // A pane that exited without a recorded code (e.g. killed by signal)
+        // → Done (not Error), with on_focus=Some(Idle) so it clears when focused.
+        store.on_exit(1, None, 5);
+        let s = store.get(1).expect("must have a resolved entry after on_exit(None)");
+        assert_eq!(s.status, Status::Done, "None exit_status must yield Done");
+        assert_eq!(s.on_focus, Some(Status::Idle), "on_focus must be set to Idle");
+        // A fast `zellij run -- false` that never reached Running must still
+        // render as active (✗), so ever_active must be true even for a pane
+        // with no prior resolved entry.
+        assert!(s.ever_active, "ever_active must be true for a pane with no prior resolved entry");
     }
 
     #[test]
