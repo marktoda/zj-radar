@@ -15,7 +15,7 @@ pub struct RenderOpts {
     pub height: usize,
     pub now_tick: u64,
     pub glyphs: GlyphSet,
-    /// Whether to render the " AGENTS" identity header block.
+    /// Whether to render the " RADAR" identity header block.
     pub header: bool,
     /// Vertical density between tabs.
     pub density: Density,
@@ -276,7 +276,7 @@ pub fn onboarding(opts: &RenderOpts) -> String {
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
     let g = opts.glyphs;
-    out.push_str(&format!("{} AGENTS{}\n", accent, RESET));
+    out.push_str(&format!("{} RADAR{}\n", accent, RESET));
     out.push_str(&format!("{}{}{}\n", accent, "═".repeat(opts.width), RESET));
     out.push_str(&format!("{} watching your tabs for{}\n", muted, RESET));
     out.push_str(&format!("{} AI agent activity.{}\n", muted, RESET));
@@ -577,9 +577,9 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     };
 
     // Emit the identity header block only when configured on (and rows exist).
-    // Header line 1: " AGENTS" + right-aligned count.
+    // Header line 1: " RADAR" + right-aligned count.
     if opts.header {
-        let title = " AGENTS";
+        let title = " RADAR";
         let gap = width
             .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(count.as_str()))
             .max(1);
@@ -659,7 +659,7 @@ mod tests {
         let mut lines = s.lines();
         let title = lines.next().unwrap();
         let rule = lines.next().unwrap();
-        assert!(title.contains("AGENTS"));
+        assert!(title.contains("RADAR"));
         assert!(title.contains("·1")); // one tab
         assert!(rule.contains('═'));
     }
@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn onboarding_shows_legend_and_click_hint() {
         let s = onboarding(&ro(28, 0));
-        assert!(s.contains("AGENTS"));
+        assert!(s.contains("RADAR"));
         assert!(s.contains('◆')); // legend includes the waiting glyph (plain set)
         assert!(s.to_lowercase().contains("needs you"));
         assert!(s.to_lowercase().contains("click"));
@@ -1181,8 +1181,8 @@ mod tests {
         assert_eq!(header_lines(&rows, false), 0);
         let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
-        // No identity header: rows start at line 0, so no "AGENTS"/"═" line.
-        assert!(!s.contains("AGENTS"));
+        // No identity header: rows start at line 0, so no "RADAR"/"═" line.
+        assert!(!s.contains("RADAR"));
         assert!(!s.contains('═'));
         // The single tab row is still rendered.
         assert!(s.contains('a') || s.matches('\n').count() >= 1);
@@ -1575,7 +1575,7 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
 
-        // lines[0] and lines[1] are the header (AGENTS + rule) — must NOT have bg
+        // lines[0] and lines[1] are the header (RADAR + rule) — must NOT have bg
         assert!(!lines[0].contains("\x1b[100m"),
             "header title line must NOT have card bg: {:?}", lines[0]);
         assert!(!lines[1].contains("\x1b[100m"),
