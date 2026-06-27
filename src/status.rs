@@ -89,14 +89,11 @@ impl Role {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphSet {
     Nerd,
+    #[default]
     Plain,
-}
-
-impl Default for GlyphSet {
-    fn default() -> Self { GlyphSet::Plain }
 }
 
 impl GlyphSet {
