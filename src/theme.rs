@@ -54,8 +54,6 @@ pub struct DerivedColors {
     pub surface_active: (u8, u8, u8),
     /// Strong dim: detail location / spinner line
     pub dim_strong: (u8, u8, u8),
-    /// Weak dim: quoted message line
-    pub dim_weak: (u8, u8, u8),
     /// Idle text dim: row name when idle
     pub idle_text: (u8, u8, u8),
 }
@@ -73,7 +71,6 @@ impl DerivedColors {
             surface_agent: blend(rail_bg, bg, 0.72),
             surface_active: blend(bg, fg, 0.18),
             dim_strong: blend(fg, bg, 0.28),
-            dim_weak: blend(fg, bg, 0.55),
             idle_text: blend(fg, bg, 0.45),
         }
     }
@@ -179,7 +176,7 @@ mod tests {
         // dims blend fg toward bg, so they should be dimmer than fg but brighter than bg
         let l_bg = lum(bg);
         let l_fg = lum(fg);
-        for &dim in &[d.dim_strong, d.dim_weak, d.idle_text] {
+        for &dim in &[d.dim_strong, d.idle_text] {
             let l = lum(dim);
             assert!(l > l_bg, "dim {:?} not brighter than bg", dim);
             assert!(l < l_fg, "dim {:?} not dimmer than fg", dim);
