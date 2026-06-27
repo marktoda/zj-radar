@@ -6,6 +6,8 @@
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod kind;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod payload;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod state;
@@ -544,15 +546,16 @@ mod tests {
     }
 
     #[test]
-    fn agent_tab_pending_with_msg_occupies_three_lines() {
+    fn agent_tab_pending_with_msg_occupies_two_lines() {
+        // New line-2 rule: pending + msg → 2 lines (mark + activity). Old 3-line case gone.
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![pane(10)]);
-        apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 3
+        apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 2
         assert_eq!(state.tab_position_at_line(1), None);       // header
         assert_eq!(state.tab_position_at_line(2), Some(0));    // line 1
-        assert_eq!(state.tab_position_at_line(3), Some(0));    // line 2
-        assert_eq!(state.tab_position_at_line(4), Some(0));    // line 3
-        assert_eq!(state.tab_position_at_line(5), Some(1));    // plain tab
+        assert_eq!(state.tab_position_at_line(3), Some(0));    // line 2 (mark + activity)
+        assert_eq!(state.tab_position_at_line(4), Some(1));    // plain tab (was line 5 before)
+        assert!(state.tab_position_at_line(5).is_none());
     }
 
     #[test]
@@ -638,10 +641,10 @@ mod tests {
     /// pressure, each click mapping span must shrink accordingly.
     #[test]
     fn click_mapping_matches_compressed_layout() {
-        // Setup: 3 Running tabs (each normally 2 lines) + 1 Pending-with-msg (3 lines).
-        // Uncompressed body = 3×2 + 3 = 9 lines. Header = 2.
+        // Setup: 3 Running tabs (each normally 2 lines) + 1 Pending-with-msg (now 2 lines).
+        // Uncompressed body = 3×2 + 2 = 8 lines. Header = 2.
         // height = 7 → body_budget = 5.
-        // plan_overflow compresses Running rows to 1 line; Pending drops msg → 2 lines.
+        // plan_overflow compresses Running rows to 1 line; Pending stays at 2.
         // Final plan spans: [1, 1, 1, 2] → total = 5.
         // After header (lines 0-1):
         //   position 0 (Running, 1 line) → line 2
@@ -671,7 +674,7 @@ mod tests {
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
         assert_eq!(state.tab_position_at_line(4), Some(2));
-        // Pending tab gets 2 lines (detail kept, msg dropped).
+        // Pending tab gets 2 lines (mark + activity; fits without compression).
         assert_eq!(state.tab_position_at_line(5), Some(3));
         assert_eq!(state.tab_position_at_line(6), Some(3));
         // Nothing beyond.

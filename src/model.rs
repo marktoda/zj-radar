@@ -1,6 +1,7 @@
 //! Aggregate per-pane state into per-tab state. No zellij-tile dependency.
 
 use crate::command;
+use crate::kind::Kind;
 use crate::state::StateStore;
 use crate::status::Status;
 
@@ -11,6 +12,8 @@ pub struct Detail {
     pub msg: String,
     pub since_tick: u64,
     pub status: Status,
+    /// Source-agnostic kind of the winning pane (agent or task type).
+    pub kind: Kind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +63,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore, commands: &command::Comma
                 msg: s.msg.clone(),
                 since_tick: s.last_change_tick,
                 status: s.status,
+                kind: Kind::from_source(&s.source),
             });
         }
     }
@@ -89,7 +93,7 @@ mod tests {
                 msg: "m".into(),
                 on_focus: None,
                 seq: None,
-                source: "test".into(),
+                source: "claude".into(),
             },
             tick,
         );
