@@ -89,6 +89,35 @@ On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
 press `y` to grant. It never runs commands; notifications stay in the producer.
 
+#### Installing via Nix / home-manager
+
+This flake exposes the wasm as `packages.default`, so a flake-based config can
+consume the exact same artifact this repo builds. Add the repo as an input:
+
+```nix
+# flake.nix
+inputs.zj-radar.url = "github:mark-toda/zj-radar";
+```
+
+Then reference the built wasm at a stable store path in your Zellij layout
+derivation (build-from-source, works today):
+
+```nix
+plugin location="file:${inputs.zj-radar.packages.${system}.default}/lib/zj_radar.wasm"
+```
+
+Once tagged releases exist, you can instead pin a prebuilt artifact without a
+Rust toolchain (mirrors the older `room`/`smart-tabs` vendoring this replaces):
+
+```nix
+zjRadarWasm = pkgs.fetchurl {
+  url = "https://github.com/mark-toda/zj-radar/releases/download/v0.1.0/zj_radar.wasm";
+  hash = "sha256-..."; # nix-prefetch-url the asset to fill this in
+};
+```
+
+The old `@smartTabs@` substitution is fully retired — zj-radar owns the rail.
+
 ### 2. The Claude Code producer
 
 Installing this plugin auto-registers the status hooks — **no `settings.json`
