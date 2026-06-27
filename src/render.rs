@@ -247,12 +247,18 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         }
     }
     if folded > 0 {
-        let dots: String = std::iter::repeat('○').take(folded.min(11))
-            .map(|c| c.to_string()).collect::<Vec<_>>().join(" ");
-        out.push_str(&format!(
-            "{}{} ── +{} idle ▾{}\n",
-            Role::Accent.ansi(), dots, folded, RESET
-        ));
+        // Width-safe idle strip: keep the "── +N idle ▾" suffix, fill the
+        // space before it with as many "○ " dot pairs as fit.
+        let suffix = format!("── +{} idle ▾", folded);
+        let dot_budget = width.saturating_sub(suffix.chars().count() + 1); // +1 gap
+        let mut dots = String::new();
+        while dots.chars().count() + 2 <= dot_budget {
+            dots.push_str("○ ");
+        }
+        let plain = format!("{}{}", dots, suffix);
+        // Guard the extreme-narrow case where even the suffix overflows.
+        let clamped = truncate(&plain, width);
+        out.push_str(&format!("{}{}{}\n", Role::Accent.ansi(), clamped, RESET));
     }
     out
 }
@@ -579,5 +585,19 @@ mod tests {
         let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain });
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
+    }
+
+    #[test]
+    fn idle_strip_never_exceeds_width() {
+        let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
+        for width in [18usize, 24, 30] {
+            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain });
+            // folding must have happened
+            assert!(s.contains("idle ▾"), "expected idle strip at width {}", width);
+            for line in s.lines() {
+                assert!(visible_len(line) <= width,
+                    "idle strip/line exceeds width {}: {:?} (visible {})", width, line, visible_len(line));
+            }
+        }
     }
 }
