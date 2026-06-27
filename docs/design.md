@@ -1,8 +1,18 @@
 # zj-agents — a native Zellij sidebar for AI-agent status
 
-**Status:** design / approved for spec-review (revised after external review)
+**Status:** design / approved for spec-review (revised after external review; reconciled
+after the smart-tabs removal — see `smart-tabs-postmortem.md`)
 **Date:** 2026-06-26
 **Author:** Mark Toda (with Claude)
+
+> **Update (post-postmortem):** `zellij-smart-tabs` has been **removed entirely** from the
+> Zellij setup after it melted down under a many-agent workload (poll-every-pane-on-every-output
+> issuing blocking host calls on the server's single main thread — full writeup in
+> `smart-tabs-postmortem.md`). This invalidates the earlier plan to *keep* smart-tabs for base
+> tab naming. **zj-agents now owns all tab display, including naming** (see §6.1). The hard
+> architectural constraint that follows: zj-agents must never issue blocking host queries
+> (`get_pane_running_command`, `get_pane_cwd`, …) — all signals come from pushed events
+> (`pipe`, `TabUpdate`, `PaneUpdate`, `CwdChanged`) or the hook payload.
 
 ## 1. Goal
 
@@ -66,7 +76,9 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
   `done/total` count when a tab holds multiple agents); line 2 = `repo/branch · elapsed` and a
   truncated last message.
 - **Display tab number = `TabInfo.position + 1`** (see §6 — position is 0-indexed).
-- Plain (non-agent) tabs render name only — agent decoration is purely additive.
+- Plain (non-agent) tabs render name only — agent decoration is purely additive. The name is
+  `TabInfo.name` (from the layout or zj-agents' own push-based naming, §6.1) — **not** from
+  smart-tabs, which no longer exists.
 - Click a row → switch to that tab.
 
 ## 4. Architecture
@@ -155,8 +167,8 @@ tab-bar; cheap for a handful of tabs).
 - Sanitize `repo`/`branch`/`msg`: strip ANSI/control chars, convert newlines to spaces, cap
   `msg` to a fixed length before rendering.
 - Ignore payloads over a fixed size cap (e.g. 64 KB).
-- `on_focus` mirrors the existing smart-tabs convention so `done` can persist on other tabs
-  and auto-clear when the user focuses the pane.
+- `on_focus` lets `done` persist while you're on other tabs and auto-clear when you focus the
+  pane (a convention carried over from the old smart-tabs status hooks, now owned here).
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -192,8 +204,32 @@ tab-bar; cheap for a handful of tabs).
   ```
   The top `compact-bar` line is removed (the sidebar replaces it). The bottom `status-bar`
   (mode/keybind hints) is kept. A future `MOD+a` `MessagePlugin` keybind can toggle collapse.
-- **smart-tabs stays for base tab naming** (git-root + program). Remove the `{% if status %}`
-  glyph from its `format` — the sidebar now owns all state visualization.
+
+### 6.1 Tab naming (zj-agents owns it — smart-tabs is gone)
+
+smart-tabs used to auto-name every tab `git-root + program` by polling
+`get_pane_running_command()` / `get_pane_cwd()` on every dirty tick — the exact pattern that
+melted the session (`smart-tabs-postmortem.md`). zj-agents must **not** reproduce that. The
+replacement is push-only and tiered:
+
+- **v1 (default — no naming work in the plugin):** tab names come from the layout's `tab name=…`
+  and any manual `MOD+r` renames; zj-agents reads them via `TabInfo.name` and renders them
+  verbatim. For *agent* tabs the rich context smart-tabs used to encode in the name
+  (repo/branch/program) is already shown on the sidebar's second/third lines, so the tab name is
+  no longer load-bearing. This ships zero regression risk and zero added host calls.
+- **v1.x (optional auto-naming, push-sourced only):** if generic names on plain tabs feel like a
+  regression, derive names from **events we already receive**, never from queries:
+  - *Agent tabs* — the hook payload already carries `repo`; on a status change, optionally
+    `rename_tab(position+1, repo)`. `rename_tab` is a fire-and-forget `ChangeApplicationState`
+    action (no blocking return), and it fires only on change, not per tick — so it cannot
+    recreate the poll storm.
+  - *Plain tabs* — subscribe to **`CwdChanged`** (pushed) to learn a pane's cwd → git-root
+    basename; read program from **`PaneInfo.title`** in the `PaneUpdate` manifest we already
+    consume. Both are push signals; no `get_pane_*` call is ever made.
+
+  Guardrails: only `rename_tab` when the derived name actually differs (avoid redundant
+  main-thread work), and treat naming as best-effort cosmetics — a missing cwd/title just leaves
+  the existing name.
 
 ## 7. Agent adapters (v1: Claude + Codex)
 
@@ -217,9 +253,9 @@ tab-bar; cheap for a handful of tabs).
 - **Dev loop:** `cargo build` + a dev layout pane running
   `zellij action start-or-reload-plugin file:…/debug/zj-agents.wasm` for hot reload.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
-  release — exactly how `room`/`smart-tabs` are vendored in
-  `home-manager/modules/zellij/default.nix`), then reference via a `@zjAgents@` `replaceStrings`
-  substitution alongside `@room@`/`@smartTabs@`.
+  release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
+  reference via a `@zjAgents@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
+  substitution and its `fetchurl` are **removed** (smart-tabs is gone).
 
 ## 9. Testing
 
@@ -264,8 +300,9 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
   it selectable and immediately return focus, or bind tab-switch to a keybind.
 - Tab numbering is correct (`position + 1`).
 - Width 24 is tolerable in the real swap layouts.
-- Removing `compact-bar` does not regress any naming/status behavior still needed from
-  `smart-tabs`.
+- With `compact-bar` **and** smart-tabs both removed, the sidebar is the only tab UI: every tab
+  is still identifiable by `TabInfo.name` (layout/manual), and no naming/status behavior that was
+  actually in use is lost (agent context now lives on the sidebar's detail lines, §6.1).
 
 ## 11. Risks (all bounded)
 
@@ -279,6 +316,11 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
    `PaneId` enum against the 0.44.3 tag.
 5. **Per-tab plugin instances** (N timers + N state copies) — minor; the only-tick-while-active
    optimization bounds it; mirrors the built-in tab-bar.
+6. **Repeating the smart-tabs meltdown** (`smart-tabs-postmortem.md`) — bounded *by design*:
+   zj-agents is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
+   blocking `get_pane_*` queries, so high-output panes cost it nothing and there is no poll loop
+   to storm the server's main thread. The standing rule (no blocking host calls on any path)
+   keeps it that way; any future naming/program feature must stay event-sourced (§6.1).
 
 ## 12. Out of scope (follow-ups)
 
