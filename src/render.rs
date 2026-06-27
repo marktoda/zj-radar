@@ -618,6 +618,63 @@ mod tests {
     }
 
     #[test]
+    fn render_emits_only_role_ansi_colors() {
+        // Spec §14.10: renderer must use only ANSI-16 palette role codes —
+        // no truecolor (38;2;/48;2;) and no raw '#' hex literals.
+        use crate::model::Detail;
+
+        let mk_detail = |status: Status| Detail {
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "some message".into(),
+            since_tick: 0,
+            status,
+        };
+
+        let rows = vec![
+            // idle — one line, no detail
+            TabRow { number: 1, name: "idle-tab".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            // running — two lines, with detail
+            TabRow { number: 2, name: "run-tab".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 1, 2, Some(mk_detail(Status::Running))) },
+            // pending with msg — three lines
+            TabRow { number: 3, name: "pend-tab".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))) },
+            // done — one line
+            TabRow { number: 4, name: "done-tab".into(), active: false, has_bell: false,
+                     agg: agg(Status::Done, 1, 1, Some(mk_detail(Status::Done))) },
+            // error — two lines
+            TabRow { number: 5, name: "err-tab".into(), active: false, has_bell: false,
+                     agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))) },
+        ];
+
+        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain };
+        let s = render(&rows, &opts);
+
+        // Must NOT contain truecolor sequences
+        assert!(!s.contains("38;2;"),
+            "truecolor foreground sequence found in render output");
+        assert!(!s.contains("48;2;"),
+            "truecolor background sequence found in render output");
+        // Must NOT contain raw hex color literals
+        assert!(!s.contains('#'),
+            "'#' hex color literal found in render output");
+        // Must contain the accent role code (used for header + bars)
+        assert!(s.contains(Role::Accent.ansi()),  // "\x1b[35m"
+            "expected accent role ANSI code not found");
+        // Must contain the attention role code (pending row)
+        assert!(s.contains(Role::Attention.ansi()),  // "\x1b[91m"
+            "expected attention role ANSI code not found");
+        // Must contain the working role code (running row)
+        assert!(s.contains(Role::Working.ansi()),  // "\x1b[33m"
+            "expected working role ANSI code not found");
+        // Must contain the error role code
+        assert!(s.contains(Role::Error.ansi()),  // "\x1b[31m"
+            "expected error role ANSI code not found");
+    }
+
+    #[test]
     fn onboarding_shows_legend_and_click_hint() {
         let s = onboarding(&ro(28, 0));
         assert!(s.contains("AGENTS"));
