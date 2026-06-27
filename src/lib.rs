@@ -40,7 +40,7 @@ struct TabLite {
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Default)]
-struct State {
+pub struct State {
     store: StateStore,
     tabs: Vec<TabLite>,
     tab_panes: HashMap<usize, Vec<u32>>, // tab position -> terminal pane ids
@@ -98,12 +98,9 @@ impl State {
 }
 
 // ── Wasm-only glue — each item gated so host `cargo test` never links these.
-// register_plugin! and the no_mangle exports it generates must live at crate
-// root (the macro defines `fn main()` + `#[no_mangle]` entrypoints), so the
-// glue is kept here rather than nested in a submodule.
-
-#[cfg(target_arch = "wasm32")]
-register_plugin!(State);
+// `register_plugin!` lives in the BINARY crate (`src/main.rs`) so the `fn main`
+// it generates becomes the wasm `_start` Zellij requires; here we only provide
+// the `ZellijPlugin` impl + host-fn helpers it drives.
 
 #[cfg(target_arch = "wasm32")]
 impl State {

@@ -3,8 +3,17 @@ name = "zj-agents"
 version = "0.1.0"
 edition = "2021"
 
+# Zellij loads plugins as WASI *command* modules (it calls `_start` then `load`
+# directly). A cdylib builds a *reactor* whose exports are `.command_export`
+# shims with no `_start`, which Zellij can't load. So the wasm artifact is a
+# BINARY crate (the `register_plugin!` macro's `fn main` becomes `_start`); the
+# library target holds the pure, host-testable logic.
 [lib]
-crate-type = ["cdylib"]
+name = "zj_agents"
+
+[[bin]]
+name = "zj_agents"
+path = "src/main.rs"
 
 [dependencies]
 zellij-tile = "0.44"
