@@ -5,6 +5,7 @@ use crate::status::Status;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+const YELLOW: &str = "\x1b[33m";
 
 /// A `running` agent whose elapsed time reaches this (seconds ≈ ticks) is
 /// flagged as long-running / possibly stuck.
@@ -14,6 +15,7 @@ pub struct TabRow {
     pub number: u32,
     pub name: String,
     pub active: bool,
+    pub has_bell: bool,
     pub agg: TabAgg,
 }
 
@@ -80,15 +82,22 @@ pub fn render(rows: &[TabRow], width: usize, now_tick: u64) -> String {
         } else {
             String::new()
         };
-        let name_budget = width.saturating_sub(4 + count.chars().count());
+        // reserve 2 cols for " ⚑" when a bell is set
+        let bell_budget = if row.has_bell { 2 } else { 0 };
+        let name_budget = width.saturating_sub(4 + count.chars().count() + bell_budget);
         let name = truncate(&row.name, name_budget);
         let name_styled = if row.active {
             format!("{}{}{}", BOLD, name, RESET)
         } else {
             name
         };
-        // line 1: "<dot> <n> <name><count>"
-        out.push_str(&format!("{} {} {}{}\n", dot, row.number, name_styled, count));
+        let bell = if row.has_bell {
+            format!(" {}⚑{}", YELLOW, RESET)
+        } else {
+            String::new()
+        };
+        // line 1: "<dot> <n> <name><count><bell>"
+        out.push_str(&format!("{} {} {}{}{}\n", dot, row.number, name_styled, count, bell));
 
         // line 2: "  repo/branch · tag"  (only when there is agent detail)
         if let Some(d) = &row.agg.detail {
@@ -134,6 +143,7 @@ mod tests {
             number: 4,
             name: "notes".into(),
             active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, 24, 0);
@@ -155,6 +165,7 @@ mod tests {
             number: 2,
             name: "pinky".into(),
             active: true,
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, 24, 14);
@@ -178,6 +189,7 @@ mod tests {
             number: 2,
             name: "pinky".into(),
             active: true,
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, 24, 14);
@@ -228,6 +240,7 @@ mod tests {
             number: 1,
             name: "a-very-long-tab-name-indeed".into(),
             active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, 12, 0);
@@ -269,6 +282,7 @@ mod tests {
             number: 2,
             name: "a-very-long-tab-name-indeed".into(),
             active: true, // exercises BOLD escapes too
+            has_bell: false,
             agg: agg(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, width, 14);
@@ -289,21 +303,33 @@ mod tests {
     #[test]
     fn running_under_threshold_has_no_warning() {
         let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
         assert!(!render(&rows, 30, 599).contains('⚠'));
     }
 
     #[test]
     fn running_at_threshold_shows_warning() {
         let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
         assert!(render(&rows, 30, 600).contains('⚠'));
     }
 
     #[test]
     fn done_with_long_elapsed_has_no_warning() {
         let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Done };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
         assert!(!render(&rows, 30, 10_000).contains('⚠'));
+    }
+
+    #[test]
+    fn bell_renders_marker() {
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: true, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(render(&rows, 24, 0).contains('⚑'));
+    }
+
+    #[test]
+    fn no_bell_no_marker() {
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
+        assert!(!render(&rows, 24, 0).contains('⚑'));
     }
 }

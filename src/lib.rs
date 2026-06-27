@@ -36,6 +36,7 @@ struct TabLite {
     position: usize,
     name: String,
     active: bool,
+    has_bell: bool,
 }
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
@@ -67,6 +68,7 @@ impl State {
                 number: t.position as u32 + 1,
                 name: t.name.clone(),
                 active: t.active,
+                has_bell: t.has_bell,
                 agg: model::aggregate(panes, &self.store),
             });
         }
@@ -139,6 +141,7 @@ impl ZellijPlugin for State {
                         position: t.position,
                         name: t.name,
                         active: t.active,
+                        has_bell: t.has_bell_notification,
                     })
                     .collect();
                 true
@@ -220,6 +223,7 @@ mod tests {
                 position: pos,
                 name: name.to_string(),
                 active,
+                has_bell: false,
             })
             .collect();
         State {
