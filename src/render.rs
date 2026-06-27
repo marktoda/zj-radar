@@ -112,6 +112,36 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<usize>, usize)
     (kept, folded)
 }
 
+/// The rail's resting "hello / how it works" face — shown on cold start or
+/// before permission is granted. Not a permission interceptor.
+pub fn onboarding(opts: &RenderOpts) -> String {
+    let mut out = String::new();
+    let accent = Role::Accent.ansi();
+    let muted = Role::Muted.ansi();
+    let g = opts.glyphs;
+    out.push_str(&format!("{} AGENTS{}\n", accent, RESET));
+    out.push_str(&format!("{}{}{}\n", accent, "═".repeat(opts.width), RESET));
+    out.push_str(&format!("{} watching your tabs for{}\n", muted, RESET));
+    out.push_str(&format!("{} AI agent activity.{}\n", muted, RESET));
+    out.push('\n');
+    let legend = [
+        (Status::Pending, "needs you"),
+        (Status::Running, "working"),
+        (Status::Done, "done"),
+        (Status::Error, "error"),
+        (Status::Idle, "idle"),
+    ];
+    for (st, label) in legend {
+        out.push_str(&format!(
+            " {}{}{} {}{}{}\n",
+            st.role().ansi(), st.glyph_for(g), RESET, muted, label, RESET
+        ));
+    }
+    out.push('\n');
+    out.push_str(&format!("{} click a row to jump{}\n", muted, RESET));
+    out
+}
+
 pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let mut out = String::new();
     if rows.is_empty() {
@@ -585,6 +615,15 @@ mod tests {
         let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain });
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
+    }
+
+    #[test]
+    fn onboarding_shows_legend_and_click_hint() {
+        let s = onboarding(&ro(28, 0));
+        assert!(s.contains("AGENTS"));
+        assert!(s.contains('◆')); // legend includes the waiting glyph (plain set)
+        assert!(s.to_lowercase().contains("needs you"));
+        assert!(s.to_lowercase().contains("click"));
     }
 
     #[test]

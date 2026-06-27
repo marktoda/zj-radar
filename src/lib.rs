@@ -252,7 +252,11 @@ impl ZellijPlugin for State {
             now_tick: self.tick,
             glyphs: render::GlyphSet::Nerd,
         };
-        print!("{}", render::render(&tabrows, &opts));
+        if tabrows.is_empty() {
+            print!("{}", render::onboarding(&opts));
+        } else {
+            print!("{}", render::render(&tabrows, &opts));
+        }
     }
 }
 
