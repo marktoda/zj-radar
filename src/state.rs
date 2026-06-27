@@ -22,10 +22,6 @@ pub struct StateStore {
 }
 
 impl StateStore {
-    pub fn new() -> Self {
-        StateStore::default()
-    }
-
     /// Apply an incoming payload. Drops out-of-order updates (seq <= stored seq).
     pub fn apply(&mut self, p: StatusPayload, tick: u64) {
         if let (Some(existing), Some(incoming)) = (self.map.get(&p.pane_id).and_then(|s| s.seq), p.seq) {
@@ -101,7 +97,7 @@ mod tests {
 
     #[test]
     fn apply_sets_last_change_tick_only_on_status_change() {
-        let mut s = StateStore::new();
+        let mut s = StateStore::default();
         s.apply(payload(1, Status::Running, None), 5);
         assert_eq!(s.get(1).unwrap().last_change_tick, 5);
         s.apply(payload(1, Status::Running, None), 9); // same status
@@ -116,7 +112,7 @@ mod tests {
 
     #[test]
     fn out_of_order_seq_is_dropped() {
-        let mut s = StateStore::new();
+        let mut s = StateStore::default();
         s.apply(payload(1, Status::Running, Some(10)), 1);
         s.apply(payload(1, Status::Done, Some(5)), 2); // stale
         assert_eq!(s.get(1).unwrap().status, Status::Running);
@@ -126,7 +122,7 @@ mod tests {
 
     #[test]
     fn on_focus_applies_once_then_clears() {
-        let mut s = StateStore::new();
+        let mut s = StateStore::default();
         let mut p = payload(1, Status::Done, None);
         p.on_focus = Some(Status::Idle);
         s.apply(p, 1);
@@ -140,7 +136,7 @@ mod tests {
 
     #[test]
     fn prune_removes_dead_panes() {
-        let mut s = StateStore::new();
+        let mut s = StateStore::default();
         s.apply(payload(1, Status::Running, None), 1);
         s.apply(payload(2, Status::Done, None), 1);
         let live: HashSet<u32> = [2].into_iter().collect();
@@ -151,7 +147,7 @@ mod tests {
 
     #[test]
     fn ever_active_sticks_after_returning_to_idle() {
-        let mut s = StateStore::new();
+        let mut s = StateStore::default();
         s.apply(payload(1, Status::Running, None), 1);
         s.apply(payload(1, Status::Idle, None), 2);
         assert!(s.get(1).unwrap().ever_active);

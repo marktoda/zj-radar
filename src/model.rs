@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn empty_tab_is_idle() {
-        let store = StateStore::new();
+        let store = StateStore::default();
         let agg = aggregate(&[1, 2], &store);
         assert_eq!(agg.status, Status::Idle);
         assert_eq!(agg.total, 0);
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn highest_severity_wins_for_status_and_detail() {
-        let mut store = StateStore::new();
+        let mut store = StateStore::default();
         put(&mut store, 1, Status::Done, 1, "done-repo");
         put(&mut store, 2, Status::Pending, 2, "pending-repo");
         put(&mut store, 3, Status::Running, 3, "running-repo");
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn counts_done_over_total_ever_active() {
-        let mut store = StateStore::new();
+        let mut store = StateStore::default();
         put(&mut store, 1, Status::Done, 1, "a");
         put(&mut store, 2, Status::Done, 1, "b");
         put(&mut store, 3, Status::Running, 1, "c");
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn severity_tie_breaks_on_most_recent_change() {
-        let mut store = StateStore::new();
+        let mut store = StateStore::default();
         put(&mut store, 1, Status::Running, 5, "older");
         put(&mut store, 2, Status::Running, 9, "newer");
         let agg = aggregate(&[1, 2], &store);
