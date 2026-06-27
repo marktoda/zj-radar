@@ -96,7 +96,7 @@ pub fn header_lines(rows: &[TabRow]) -> usize {
 /// Decide which rows render in full and how many idle tabs fold, given the
 /// vertical budget (height minus the 2-line header). Non-idle rows are always
 /// kept; idle rows fold into a strip when space is tight.
-fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<usize>, usize) {
+pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<usize>, usize) {
     let total: usize = rows.iter().map(|r| row_lines(&r.agg)).sum();
     if total <= body_budget {
         return ((0..rows.len()).collect(), 0); // everything, no fold

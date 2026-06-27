@@ -57,6 +57,8 @@ pub struct State {
     timer_armed: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     applied_names: HashMap<usize, String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    last_render_height: usize,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -82,31 +84,39 @@ impl State {
         rows
     }
 
-    /// Map a clicked line back to a tab position by replaying render()'s line
-    /// counting: 1 line for plain tabs, 2 for tabs with agent detail.
+    /// Map a clicked line back to a tab position by replaying render()'s fold
+    /// plan. Both render() and this function call plan_overflow with the same
+    /// body_budget, guaranteeing that "line N → tab X" is consistent with what
+    /// the user actually sees on screen.
     fn tab_position_at_line(&self, line: isize) -> Option<usize> {
         if line < 0 {
             return None;
         }
         let target = line as usize;
         let rows = self.build_rows();
-        let mut cursor = render::header_lines(&rows); // header occupies the first line(s)
+        if rows.is_empty() {
+            return None;
+        }
+        let mut cursor = render::header_lines(&rows);
         if target < cursor {
             return None; // click landed on the header → no tab
         }
-        let mut sorted = self.tabs.clone();
-        sorted.sort_by_key(|t| t.position);
-        for t in &sorted {
-            let empty = Vec::new();
-            let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
-            let ids: Vec<u32> = panes.iter().map(|p| p.id).collect();
-            let agg = model::aggregate(&ids, &self.store);
-            let span = render::row_lines(&agg);
+        // Replay render()'s fold plan. Height 0 means "not yet rendered" →
+        // treat as unbounded so no folding is assumed.
+        let body_budget = if self.last_render_height == 0 {
+            usize::MAX
+        } else {
+            self.last_render_height.saturating_sub(render::header_lines(&rows))
+        };
+        let (kept, _folded) = render::plan_overflow(&rows, body_budget);
+        for &i in &kept {
+            let span = render::row_lines(&rows[i].agg);
             if target >= cursor && target < cursor + span {
-                return Some(t.position);
+                return Some((rows[i].number - 1) as usize);
             }
             cursor += span;
         }
+        // Any line at/after the folded idle strip maps to no tab.
         None
     }
 }
@@ -234,6 +244,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.last_render_height = rows;
         let tabrows = self.build_rows();
         let opts = render::RenderOpts {
             width: cols.max(1),
@@ -426,6 +437,34 @@ mod tests {
         let state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         assert_eq!(state.tab_position_at_line(0), None); // header
         assert_eq!(state.tab_position_at_line(1), None); // header
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+    }
+
+    #[test]
+    fn click_mapping_is_fold_aware_when_overflowing() {
+        // 6 idle tabs + one pending (urgent) tab at the end; tiny height forces folding.
+        let mut state = make_state_with_tabs(&[
+            (0, "a", false), (1, "b", false), (2, "c", false),
+            (3, "d", false), (4, "e", false), (5, "pinky", false),
+        ]);
+        state.tab_panes.insert(5, vec![pane(50)]);
+        apply_payload(&mut state, 50, Status::Pending, 1); // pending → non-idle, kept
+        state.last_render_height = 6; // body_budget = 4
+
+        // header = lines 0,1. Idle rows fold; only the pending tab (position 5) is kept.
+        // It renders right after the header.
+        assert_eq!(state.tab_position_at_line(0), None); // header
+        assert_eq!(state.tab_position_at_line(1), None); // header
+        assert_eq!(state.tab_position_at_line(2), Some(5)); // the kept non-idle tab
+    }
+
+    #[test]
+    fn click_mapping_unchanged_when_not_overflowing() {
+        // Large height → no folding → same as plain position order (offset by 2-line header).
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        state.last_render_height = 100;
+        assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
     }
