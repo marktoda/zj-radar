@@ -6,6 +6,10 @@ use crate::status::Status;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
+/// A `running` agent whose elapsed time reaches this (seconds ≈ ticks) is
+/// flagged as long-running / possibly stuck.
+const STUCK_SECS: u64 = 600;
+
 pub struct TabRow {
     pub number: u32,
     pub name: String,
@@ -41,7 +45,14 @@ fn detail_tag(agg: &TabAgg, now_tick: u64) -> String {
     let elapsed = now_tick.saturating_sub(d.since_tick);
     match d.status {
         Status::Done => format!("done {}", format_elapsed(elapsed)),
-        Status::Running => format_elapsed(elapsed),
+        Status::Running => {
+            let e = format_elapsed(elapsed);
+            if elapsed >= STUCK_SECS {
+                format!("{} ⚠", e)
+            } else {
+                e
+            }
+        }
         Status::Pending => "needs you".to_string(),
         Status::Error => "error".to_string(),
         Status::Idle => String::new(),
@@ -273,5 +284,26 @@ mod tests {
                 visible_len(line)
             );
         }
+    }
+
+    #[test]
+    fn running_under_threshold_has_no_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        assert!(!render(&rows, 30, 599).contains('⚠'));
+    }
+
+    #[test]
+    fn running_at_threshold_shows_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        assert!(render(&rows, 30, 600).contains('⚠'));
+    }
+
+    #[test]
+    fn done_with_long_elapsed_has_no_warning() {
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Done };
+        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
+        assert!(!render(&rows, 30, 10_000).contains('⚠'));
     }
 }
