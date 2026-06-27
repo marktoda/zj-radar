@@ -16,6 +16,16 @@ pub struct Detail {
     pub kind: Kind,
 }
 
+/// One ever-active pane's per-pane state, the unit the multi-pane adaptive tree
+/// renders as a child line. Built in `aggregate()` for every ever-active pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneEntry {
+    pub pane_id: u32,
+    pub kind: Kind,
+    pub status: Status,
+    pub msg: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabAgg {
     pub status: Status,
@@ -23,9 +33,10 @@ pub struct TabAgg {
     pub total: usize,
     pub pending: usize,
     pub detail: Option<Detail>,
-    /// Status of each ever-active pane in the tab, in pane-id iteration order.
-    /// Empty for single-agent or plain (non-multi) tabs.
-    pub roster: Vec<Status>,
+    /// Per-pane entries for each ever-active pane in the tab, in pane-id
+    /// iteration order. Empty for single-agent or plain (non-multi) tabs.
+    /// `panes.len() > 1` is the "multi-pane" condition for the tree.
+    pub panes: Vec<PaneEntry>,
 }
 
 /// Highest-severity pane wins (tie → most recent last_change_tick). `total`
@@ -38,13 +49,18 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore, commands: &command::Comma
     let mut done = 0usize;
     let mut total = 0usize;
     let mut pending = 0usize;
-    let mut roster: Vec<Status> = Vec::new();
+    let mut panes: Vec<PaneEntry> = Vec::new();
 
     for &id in pane_ids {
         let Some(s) = store.get(id).or_else(|| commands.get(id)) else { continue };
         if s.ever_active {
             total += 1;
-            roster.push(s.status);
+            panes.push(PaneEntry {
+                pane_id: id,
+                kind: Kind::from_source(&s.source),
+                status: s.status,
+                msg: s.msg.clone(),
+            });
             if s.status == Status::Done {
                 done += 1;
             }
@@ -74,7 +90,7 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore, commands: &command::Comma
         total,
         pending,
         detail: best,
-        roster,
+        panes,
     }
 }
 
@@ -150,22 +166,31 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_populates_roster_per_ever_active_pane() {
-        // Three ever-active panes → roster has 3 entries with their statuses.
+    fn aggregate_populates_panes_per_ever_active_pane() {
+        // Three ever-active panes → `panes` has 3 entries carrying pane_id,
+        // kind, status and msg, in pane-id iteration order.
         let mut store = StateStore::default();
         put(&mut store, 1, Status::Running, 1, "a");
         put(&mut store, 2, Status::Done, 2, "b");
         put(&mut store, 3, Status::Pending, 3, "c");
         let agg = aggregate(&[1, 2, 3], &store, &command::CommandStore::default());
-        assert_eq!(agg.roster.len(), 3);
-        assert!(agg.roster.contains(&Status::Running));
-        assert!(agg.roster.contains(&Status::Done));
-        assert!(agg.roster.contains(&Status::Pending));
+        assert_eq!(agg.panes.len(), 3);
+        // Iteration order is pane-id order.
+        assert_eq!(agg.panes[0].pane_id, 1);
+        assert_eq!(agg.panes[0].status, Status::Running);
+        assert_eq!(agg.panes[1].pane_id, 2);
+        assert_eq!(agg.panes[1].status, Status::Done);
+        assert_eq!(agg.panes[2].pane_id, 3);
+        assert_eq!(agg.panes[2].status, Status::Pending);
+        // Each entry carries the source-agnostic kind ("claude" from put()).
+        assert_eq!(agg.panes[0].kind, Kind::Claude);
+        // The msg is carried per-pane.
+        assert_eq!(agg.panes[0].msg, "m");
 
-        // A single idle pane (never active) → empty roster.
+        // A single idle pane (never active) → empty panes.
         let store2 = StateStore::default();
         let agg2 = aggregate(&[10], &store2, &command::CommandStore::default());
-        assert!(agg2.roster.is_empty());
+        assert!(agg2.panes.is_empty());
     }
 
     #[test]
@@ -184,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn command_only_pane_contributes_to_roster_and_total() {
+    fn command_only_pane_contributes_to_panes_and_total() {
         // Pane 1 is only in CommandStore (Running); pane 2 is only in StateStore (Done).
         // Both must appear in the aggregation.
         let mut store = StateStore::default();
@@ -197,9 +222,9 @@ mod tests {
         let agg = aggregate(&[1, 2], &store, &commands);
         assert_eq!(agg.total, 2, "both agent-done and command-running count toward total");
         assert_eq!(agg.done, 1, "only the agent-done pane is Done");
-        assert_eq!(agg.roster.len(), 2);
-        assert!(agg.roster.contains(&Status::Running));
-        assert!(agg.roster.contains(&Status::Done));
+        assert_eq!(agg.panes.len(), 2);
+        assert!(agg.panes.iter().any(|p| p.status == Status::Running));
+        assert!(agg.panes.iter().any(|p| p.status == Status::Done));
         // Running wins over Done in severity → detail comes from command pane
         assert_eq!(agg.detail.unwrap().repo, "cmd");
     }
