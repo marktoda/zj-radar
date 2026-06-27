@@ -28,6 +28,17 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
 
+# Defense-in-depth: if a Claude version fires Notification without a matcher
+# and produces a generic idle phrase (or no message), skip broadcasting pending
+# — it isn't a real "needs you" event.
+if [[ "$status" == "pending" ]]; then
+    case "$msg" in
+        ""|"Claude needs attention"|"Claude Code needs your attention")
+            exit 0
+            ;;
+    esac
+fi
+
 repo="$(basename "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$cwd")")"
 branch="$(git -C "$cwd" branch --show-current 2>/dev/null || true)"
 
