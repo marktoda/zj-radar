@@ -447,8 +447,23 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
             parts.push(tok.as_str());
             vis_used += needed;
         }
-        if !parts.is_empty() {
-            out.push_str(&format!("{}{}\n", indent, parts.join(" ")));
+        // Always emit the roster physical line when it is within budget, even
+        // at very narrow widths where no glyphs fit (parts.is_empty()). This
+        // keeps the emitted line count in lockstep with row_lines(), which
+        // counts the roster unconditionally. Without this, render() emits one
+        // fewer line than tab_position_at_line() budgets, causing all rows
+        // below a narrow-width multi-agent active row to map one line too high.
+        //
+        // Do NOT run the ANSI-colored `joined` string through `truncate()`:
+        // the glyph-fitting loop above already guarantees `vis_used <= max_vis
+        // = width - indent_width`, so the content fits. We only need to
+        // width-clamp the plain-text indent (at extreme narrow widths where
+        // even the 3-space indent overflows).
+        let safe_indent = &indent[..indent.len().min(width)];
+        if parts.is_empty() {
+            out.push_str(&format!("{}\n", safe_indent));
+        } else {
+            out.push_str(&format!("{}{}\n", safe_indent, parts.join(" ")));
         }
     }
 }
@@ -1114,6 +1129,62 @@ mod tests {
                 assert!(visible_len(line) <= width,
                     "roster line exceeds width {} at width {}: {:?} (visible {})",
                     width, width, line, visible_len(line));
+            }
+        }
+    }
+
+    /// Regression: at width ≤ 3 the 3-col indent leaves no room for any glyph
+    /// so `parts` is empty, but the roster line must still be physically emitted
+    /// to keep the emitted line count in lockstep with `row_lines()`.
+    #[test]
+    fn roster_line_emitted_even_when_too_narrow_for_glyphs() {
+        use crate::status::Status::*;
+        let detail = crate::model::Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "working".into(),
+            since_tick: 0,
+            status: Running,
+        };
+        // Multi-agent running tab with a roster; total=3, status=Running.
+        // row_lines() = 2 (running+detail) + 1 (roster) = 3 lines.
+        let mut a = agg(Running, 1, 3, Some(detail));
+        a.roster = vec![Running, Done, Pending];
+        let expected_lines = row_lines(&a);
+
+        for &width in &[1usize, 2, 3, 4] {
+            let row = TabRow {
+                number: 1,
+                name: "a".into(),
+                active: false,
+                has_bell: false,
+                agg: a.clone(),
+            };
+            // Use header:false to isolate the row count to just this row's lines.
+            let opts = RenderOpts {
+                width,
+                height: 100,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: false,
+            };
+            let s = render(&[row], &opts);
+            let emitted = s.matches('\n').count();
+            assert_eq!(
+                emitted, expected_lines,
+                "at width={}: emitted {} lines but row_lines()={} (output: {:?})",
+                width, emitted, expected_lines, s
+            );
+            // The roster line itself (the last line emitted) must not exceed `width`.
+            // (Other lines may be wider at extreme narrow widths, but the roster
+            // line is the one this test focuses on.)
+            let lines: Vec<&str> = s.lines().collect();
+            if let Some(last) = lines.last() {
+                assert!(
+                    visible_len(last) <= width,
+                    "at width={}: roster line exceeds width: {:?} (visible {})",
+                    width, last, visible_len(last)
+                );
             }
         }
     }

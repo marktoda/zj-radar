@@ -568,4 +568,35 @@ mod tests {
         // Nothing beyond.
         assert_eq!(state.tab_position_at_line(7), None);
     }
+
+    /// Regression: a multi-agent active tab at very narrow width (≤ 3) must
+    /// consume exactly `row_lines()` lines in the click-mapping, so that a
+    /// plain tab appearing immediately after it maps to the correct line.
+    ///
+    /// Before the fix, `render_row` suppressed the roster line when `parts`
+    /// was empty (width ≤ 3), emitting one fewer line than `row_lines()`
+    /// budgets. That shifted every following row up by one, causing clicks to
+    /// route to the wrong tab.
+    #[test]
+    fn narrow_multi_agent_roster_line_click_mapping_correct() {
+        use crate::status::Status;
+        // Set up: a 2-pane (multi-agent) running tab followed by a plain tab.
+        let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
+        state.tab_panes.insert(0, vec![pane(10), pane(11)]);
+        apply_payload(&mut state, 10, Status::Running, 1);
+        apply_payload(&mut state, 11, Status::Running, 1);
+        // Use a large height so no compression occurs.
+        state.last_render_height = 100;
+        // config.header is true (default), so header = 2 lines.
+        // Multi-agent running tab: row_lines = 2 (running+detail) + 1 (roster) = 3 lines.
+        // Lines 0-1: header. Lines 2-4: multi-agent tab. Line 5: plain tab.
+        assert_eq!(state.tab_position_at_line(0), None, "header line 0");
+        assert_eq!(state.tab_position_at_line(1), None, "header line 1");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "multi-agent tab line 1");
+        assert_eq!(state.tab_position_at_line(3), Some(0), "multi-agent tab line 2");
+        assert_eq!(state.tab_position_at_line(4), Some(0), "multi-agent tab line 3 (roster)");
+        // The plain tab must start at line 5, not 4.
+        assert_eq!(state.tab_position_at_line(5), Some(1), "plain tab — must follow roster line");
+        assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
+    }
 }
