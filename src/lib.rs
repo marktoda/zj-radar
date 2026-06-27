@@ -21,6 +21,8 @@ mod config;
 // everything in it appears dead. Its own unit tests exercise it on the host.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod command;
 
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -84,6 +86,8 @@ pub struct State {
     // panes' reported default_bg/default_fg; only used by the wasm render path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     theme: theme::DerivedColors,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    command: command::CommandStore,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -103,7 +107,7 @@ impl State {
                 name: t.name.clone(),
                 active: t.active,
                 has_bell: t.has_bell,
-                agg: model::aggregate(&ids, &self.store),
+                agg: model::aggregate(&ids, &self.store, &self.command),
             });
         }
         rows
@@ -160,7 +164,7 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 impl State {
     fn arm_timer_if_needed(&mut self) {
-        if !self.timer_armed && self.store.any_active() {
+        if !self.timer_armed && (self.store.any_active() || self.command.has_pending_or_active()) {
             set_timeout(1.0);
             self.timer_armed = true;
         }
@@ -204,6 +208,7 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::PaneUpdate,
             EventType::CwdChanged,
+            EventType::CommandChanged,
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
@@ -262,6 +267,9 @@ impl ZellijPlugin for State {
                         if p.is_focused {
                             focused_terminal = Some(p.id);
                         }
+                        if p.exited {
+                            self.command.on_exit(p.id, p.exit_status, self.tick);
+                        }
                     }
                 }
                 if let Some((bg, fg)) = focused_colors.or(any_colors) {
@@ -269,9 +277,11 @@ impl ZellijPlugin for State {
                 }
                 self.tab_panes = tab_panes;
                 self.store.prune(&live);
+                self.command.prune(&live);
                 self.pane_cwd.retain(|id, _| live.contains(id));
                 if let Some(id) = focused_terminal {
                     self.store.on_pane_focused(id, self.tick);
+                    self.command.on_pane_focused(id, self.tick);
                 }
                 self.apply_renames();
                 true
@@ -279,8 +289,9 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 self.timer_armed = false;
                 self.tick += 1;
+                self.command.on_timer(self.tick);
                 self.arm_timer_if_needed();
-                self.store.any_active()
+                self.store.any_active() || self.command.has_pending_or_active()
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
                 if self.permission_granted {
@@ -300,6 +311,14 @@ impl ZellijPlugin for State {
                 if let PaneId::Terminal(id) = pane_id {
                     self.pane_cwd.insert(id, path.to_string_lossy().to_string());
                     self.apply_renames();
+                }
+                true
+            }
+            Event::CommandChanged(pane_id, command, is_foreground, _clients) => {
+                if let PaneId::Terminal(id) = pane_id {
+                    let cwd = self.pane_cwd.get(&id).map(|s| s.as_str());
+                    self.command.on_command_changed(id, &command, is_foreground, cwd, self.tick);
+                    self.arm_timer_if_needed();
                 }
                 true
             }
