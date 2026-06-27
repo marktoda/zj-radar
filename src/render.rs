@@ -505,6 +505,59 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     }
 }
 
+/// Measure visible (display) width of a string that may contain ANSI SGR escapes.
+fn visible_width(s: &str) -> usize {
+    let mut width = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                for inner in chars.by_ref() {
+                    if inner == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            width += UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+    }
+    width
+}
+
+/// Paint a single content line with an ANSI-16 bright-black background band
+/// (theme-portable `\x1b[100m`).
+///
+/// Steps:
+/// 1. Replace every `RESET` (`\x1b[0m`) in the line with `RESET + "\x1b[100m"`
+///    so that colored tokens re-arm the background after they reset.
+/// 2. Strip the trailing newline (if present), measure, pad to `width`, restore.
+/// 3. Wrap: `"\x1b[100m" + transformed_line + pad + "\x1b[49m\x1b[0m"`.
+///
+/// The returned string ends with `\n`.
+fn paint_card_line(line: &str, width: usize) -> String {
+    const CARD_BG: &str = "\x1b[100m";
+    const BG_RESET: &str = "\x1b[49m";
+
+    // Strip trailing newline; we'll add it back at the end.
+    let bare = line.strip_suffix('\n').unwrap_or(line);
+
+    // Re-arm bg after every reset token inside the line.
+    let rearmed = bare.replace(RESET, &format!("{}{}", RESET, CARD_BG));
+
+    // Measure visible width of the re-armed content.
+    let vis = visible_width(&rearmed);
+
+    // Pad to fill the band up to `width`.
+    let pad = if vis < width {
+        " ".repeat(width - vis)
+    } else {
+        String::new()
+    };
+
+    format!("{}{}{}{}{}\n", CARD_BG, rearmed, pad, BG_RESET, RESET)
+}
+
 pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let mut out = String::new();
     if rows.is_empty() {
@@ -538,9 +591,21 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
     }
 
+    let use_card_bg = opts.density == Density::Cards;
     for &(i, max_lines) in &plan {
-        render_row(&mut out, &rows[i], opts, max_lines.max(1));
+        if use_card_bg {
+            // Render the tab into a temporary buffer, then paint each content
+            // line with the bright-black background band.
+            let mut tab_buf = String::new();
+            render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
+            for line in tab_buf.split_inclusive('\n') {
+                out.push_str(&paint_card_line(line, width));
+            }
+        } else {
+            render_row(&mut out, &rows[i], opts, max_lines.max(1));
+        }
         // Emit blank gap line(s) after each tab's content block when density > Compact.
+        // Gap lines stay rail-background (NOT painted).
         for _ in 0..gap_used {
             out.push('\n');
         }
@@ -1415,8 +1480,8 @@ mod tests {
     }
 
     #[test]
-    fn cards_renders_like_comfortable() {
-        // Cards should produce the same output as Comfortable for now.
+    fn cards_content_lines_differ_from_comfortable() {
+        // Cards now adds a background band on content lines — output differs from Comfortable.
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let comfortable = render(&rows, &RenderOpts {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
@@ -1426,7 +1491,7 @@ mod tests {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
             header: true, density: crate::config::Density::Cards,
         });
-        assert_eq!(comfortable, cards, "Cards should render identically to Comfortable");
+        assert_ne!(comfortable, cards, "Cards should differ from Comfortable (has bg bands)");
     }
 
     #[test]
@@ -1478,4 +1543,162 @@ mod tests {
         let (_, _, gap_used) = plan_layout(&rows, 10, crate::config::Density::Comfortable);
         assert_eq!(gap_used, 1, "Comfortable with room should use gaps");
     }
+
+    // ── Cards density background band tests ──
+
+    fn ro_cards(width: usize, height: usize) -> RenderOpts {
+        RenderOpts {
+            width,
+            height,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Cards,
+        }
+    }
+
+    #[test]
+    fn cards_paint_content_lines_with_bg() {
+        // Render an idle tab and an active working tab at normal width with Cards.
+        // Content lines must contain \x1b[100m; gap lines and header must NOT.
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+        ];
+        let s = render(&rows, &ro_cards(30, 100));
+        let lines: Vec<&str> = s.lines().collect();
+
+        // lines[0] and lines[1] are the header (AGENTS + rule) — must NOT have bg
+        assert!(!lines[0].contains("\x1b[100m"),
+            "header title line must NOT have card bg: {:?}", lines[0]);
+        assert!(!lines[1].contains("\x1b[100m"),
+            "header rule line must NOT have card bg: {:?}", lines[1]);
+
+        // lines[2] is the idle tab content line — MUST have bg
+        assert!(lines[2].contains("\x1b[100m"),
+            "idle content line must have card bg: {:?}", lines[2]);
+
+        // lines[3] is a blank gap line — must NOT have bg
+        assert!(!lines[3].contains("\x1b[100m"),
+            "gap line must NOT have card bg: {:?}", lines[3]);
+
+        // lines[4] is the working tab line 1 — MUST have bg
+        assert!(lines[4].contains("\x1b[100m"),
+            "working tab line 1 must have card bg: {:?}", lines[4]);
+
+        // lines[5] is the working tab detail line — MUST have bg
+        assert!(lines[5].contains("\x1b[100m"),
+            "working tab detail line must have card bg: {:?}", lines[5]);
+
+        // Each content line must end with bg reset (\x1b[49m) before \x1b[0m
+        assert!(lines[2].contains("\x1b[49m"),
+            "content line must contain bg reset: {:?}", lines[2]);
+        assert!(lines[4].contains("\x1b[49m"),
+            "content line must contain bg reset: {:?}", lines[4]);
+        assert!(lines[5].contains("\x1b[49m"),
+            "detail line must contain bg reset: {:?}", lines[5]);
+    }
+
+    #[test]
+    fn cards_band_fills_full_width() {
+        // Short-name idle tab at width 24, Cards: visible width of painted line == 24.
+        let rows = vec![
+            TabRow { number: 1, name: "x".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+        ];
+        let width = 24usize;
+        let s = render(&rows, &ro_cards(width, 100));
+        // Skip 2 header lines; first body line is the painted content line.
+        let body: Vec<&str> = s.lines().skip(2).collect();
+        let content_line = body[0];
+        assert!(content_line.contains("\x1b[100m"),
+            "content line must have card bg: {:?}", content_line);
+        // Visible width must equal exactly `width`.
+        let vw = visible_len(content_line);
+        assert_eq!(vw, width,
+            "painted content line visible width must equal {} (full band), got {}: {:?}",
+            width, vw, content_line);
+    }
+
+    #[test]
+    fn cards_rearm_bg_after_resets() {
+        // Active working tab (line has multiple role-colored tokens with \x1b[0m resets)
+        // under Cards: assert \x1b[0m\x1b[100m appears (reset immediately followed by bg re-arm).
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "pinky".into(), branch: "fix/x".into(), msg: "some work".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1, name: "agent".into(), active: true, has_bell: false,
+            agg: agg(Status::Running, 0, 1, Some(detail)),
+        }];
+        let s = render(&rows, &ro_cards(30, 100));
+        // The re-arm sequence is RESET followed immediately by CARD_BG.
+        assert!(s.contains("\x1b[0m\x1b[100m"),
+            "reset immediately followed by bg re-arm must appear in Cards output: {:?}", s);
+    }
+
+    #[test]
+    fn comfortable_and_compact_emit_no_bg() {
+        // Same tabs with Comfortable and Compact must contain NO \x1b[100m.
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "r".into(), branch: "b".into(), msg: "working".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+        ];
+        for density in [crate::config::Density::Comfortable, crate::config::Density::Compact] {
+            let s = render(&rows, &RenderOpts {
+                width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
+                header: true, density,
+            });
+            assert!(!s.contains("\x1b[100m"),
+                "density {:?} must NOT emit card bg \x1b[100m: {:?}", density, s);
+        }
+    }
+
+    #[test]
+    fn no_emitted_line_exceeds_width_cards() {
+        // The no_emitted_line_exceeds_width invariant holds for Cards density too.
+        let width = 20usize;
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "abcdefghijklmnopqrstuvwxyz".into(),
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 2,
+            name: "a-very-long-tab-name-indeed".into(),
+            active: true,
+            has_bell: false,
+            agg: agg(Status::Running, 2, 4, Some(detail)),
+        }];
+        let s = render(&rows, &ro_cards(width, 100));
+        for line in s.lines() {
+            assert!(
+                visible_len(line) <= width,
+                "Cards: line exceeds width {}: {:?} (visible {})",
+                width,
+                line,
+                visible_len(line)
+            );
+        }
+    }
+
 }
