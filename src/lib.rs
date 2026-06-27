@@ -364,18 +364,20 @@ mod tests {
 
     #[test]
     fn plain_tabs_each_occupy_one_line() {
-        // 3 plain tabs at positions 0, 1, 2 → lines 0, 1, 2
+        // 3 plain tabs at positions 0, 1, 2 → 2-line header, then lines 2, 3, 4
         let state = make_state_with_tabs(&[(0, "a", false), (1, "b", false), (2, "c", false)]);
-        assert_eq!(state.tab_position_at_line(0), Some(0));
-        assert_eq!(state.tab_position_at_line(1), Some(1));
-        assert_eq!(state.tab_position_at_line(2), Some(2));
+        assert_eq!(state.tab_position_at_line(0), None); // header
+        assert_eq!(state.tab_position_at_line(1), None); // header
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
+        assert_eq!(state.tab_position_at_line(4), Some(2));
     }
 
     #[test]
     fn click_beyond_last_tab_returns_none() {
         let state = make_state_with_tabs(&[(0, "a", false)]);
-        // 1 plain tab → only line 0 is valid
-        assert!(state.tab_position_at_line(1).is_none());
+        // 1 plain tab → header (lines 0,1) + tab (line 2); line 3 is beyond
+        assert!(state.tab_position_at_line(3).is_none());
     }
 
     #[test]
@@ -449,11 +451,12 @@ mod tests {
     fn switch_tab_to_index_is_position_plus_one() {
         // Confirm that tab_position_at_line returns the 0-based position,
         // so the caller must add 1 before calling switch_tab_to.
+        // With the always-on header, tabs start at line 2.
         let state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
         // Position 0 → switch_tab_to(0 + 1 = 1)
-        assert_eq!(state.tab_position_at_line(0), Some(0));
+        assert_eq!(state.tab_position_at_line(2), Some(0));
         // Position 1 → switch_tab_to(1 + 1 = 2)
-        assert_eq!(state.tab_position_at_line(1), Some(1));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
     }
 
     #[test]
@@ -470,10 +473,13 @@ mod tests {
     }
 
     #[test]
-    fn no_header_when_idle_click_mapping_unchanged() {
-        // All-idle tabs → no header → line 0 maps to position 0.
+    fn idle_rail_still_has_header_click_offset_by_two() {
+        // All-idle tabs still render the always-on header (2 lines), so the
+        // first tab maps to line 2, not line 0.
         let state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
-        assert_eq!(state.tab_position_at_line(0), Some(0));
-        assert_eq!(state.tab_position_at_line(1), Some(1));
+        assert_eq!(state.tab_position_at_line(0), None); // header
+        assert_eq!(state.tab_position_at_line(1), None); // header
+        assert_eq!(state.tab_position_at_line(2), Some(0));
+        assert_eq!(state.tab_position_at_line(3), Some(1));
     }
 }

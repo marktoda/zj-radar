@@ -82,13 +82,14 @@ pub fn row_lines(agg: &TabAgg) -> usize {
 }
 
 /// The rail's identity header is two lines (title + rule) whenever any rows
-/// with active (non-idle) status exist. Single source of truth for the
-/// header's vertical span (consumed by click mapping in lib.rs).
+/// exist (always-on identity). Single source of truth for the header's
+/// vertical span (consumed by click mapping in lib.rs). Only the truly-empty
+/// case (no rows at all) is headerless.
 pub fn header_lines(rows: &[TabRow]) -> usize {
-    if rows.iter().any(|r| r.agg.status.is_active()) {
-        2
-    } else {
+    if rows.is_empty() {
         0
+    } else {
+        2
     }
 }
 
@@ -101,21 +102,19 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let now_tick = opts.now_tick;
     let accent = Role::Accent.ansi();
 
-    // Only emit the header block when at least one row is active (non-idle).
-    if rows.iter().any(|r| r.agg.status.is_active()) {
-        // Header line 1: " AGENTS" + right-aligned "·N" tab count.
-        let title = " AGENTS";
-        let count = format!("·{}", rows.len());
-        let gap = width
-            .saturating_sub(title.chars().count() + count.chars().count())
-            .max(1);
-        out.push_str(&format!(
-            "{}{}{}{}{}\n",
-            accent, title, " ".repeat(gap), count, RESET
-        ));
-        // Header line 2: rule across the full width.
-        out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
-    }
+    // Always emit the header block for non-empty rows (always-on rail identity).
+    // Header line 1: " AGENTS" + right-aligned "·N" tab count.
+    let title = " AGENTS";
+    let count = format!("·{}", rows.len());
+    let gap = width
+        .saturating_sub(title.chars().count() + count.chars().count())
+        .max(1);
+    out.push_str(&format!(
+        "{}{}{}{}{}\n",
+        accent, title, " ".repeat(gap), count, RESET
+    ));
+    // Header line 2: rule across the full width.
+    out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
 
     for row in rows {
         let dot = format!("{}{}{}", row.agg.status.ansi(), row.agg.status.glyph(), RESET);
@@ -217,7 +216,7 @@ mod tests {
         }];
         let s = render(&rows, &ro(24, 0));
         assert!(s.contains("notes"));
-        assert_eq!(s.matches('\n').count(), 1); // no header (idle), just tab row
+        assert_eq!(s.matches('\n').count(), 3); // always-on header (2) + tab row (1)
         assert!(s.contains(Status::Idle.glyph()));
     }
 
