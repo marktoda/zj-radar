@@ -48,12 +48,15 @@ pub struct State {
     store: StateStore,
     tabs: Vec<TabLite>,
     tab_panes: HashMap<usize, Vec<PaneLite>>, // tab position -> terminal panes
-    // `tick`/`timer_armed` are read only by the wasm glue; on any host build
-    // (including tests, which construct State but never read them) they are dead.
+    // `tick`/`timer_armed`/`applied_names` are read only by the wasm glue; on
+    // any host build (including tests, which construct State but never read
+    // them) they are dead.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     tick: u64,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     timer_armed: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    applied_names: HashMap<usize, String>,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -121,6 +124,20 @@ impl State {
             self.timer_armed = true;
         }
     }
+
+    fn apply_renames(&mut self) {
+        let tabs: Vec<(usize, String)> = self
+            .tabs
+            .iter()
+            .map(|t| (t.position, t.name.clone()))
+            .collect();
+        let changes =
+            naming::compute_renames(&tabs, &self.tab_panes, &self.store, &self.applied_names);
+        for (pos, name) in changes {
+            rename_tab(pos as u32 + 1, &name);
+            self.applied_names.insert(pos, name);
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -180,6 +197,7 @@ impl ZellijPlugin for State {
                 if let Some(id) = focused_terminal {
                     self.store.on_pane_focused(id, self.tick);
                 }
+                self.apply_renames();
                 true
             }
             Event::Timer(_) => {
@@ -206,6 +224,7 @@ impl ZellijPlugin for State {
             if let Some(raw) = &message.payload {
                 if let Some(p) = payload::parse(raw) {
                     self.store.apply(p, self.tick);
+                    self.apply_renames();
                     self.arm_timer_if_needed();
                     return true;
                 }
