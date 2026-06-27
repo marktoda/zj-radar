@@ -96,14 +96,14 @@ pub enum GlyphSet {
 }
 
 impl Default for GlyphSet {
-    fn default() -> Self { GlyphSet::Nerd }
+    fn default() -> Self { GlyphSet::Plain }
 }
 
 impl GlyphSet {
     pub fn from_config(s: &str) -> GlyphSet {
         match s {
-            "plain" => GlyphSet::Plain,
-            _ => GlyphSet::Nerd,
+            "nerd" => GlyphSet::Nerd,
+            _ => GlyphSet::Plain,
         }
     }
 }
@@ -199,10 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn glyph_set_from_config_defaults_to_nerd() {
-        assert_eq!(GlyphSet::from_config("plain"), GlyphSet::Plain);
+    fn glyph_set_from_config_defaults_to_plain() {
         assert_eq!(GlyphSet::from_config("nerd"), GlyphSet::Nerd);
-        assert_eq!(GlyphSet::from_config("anything-else"), GlyphSet::Nerd);
+        assert_eq!(GlyphSet::from_config("plain"), GlyphSet::Plain);
+        assert_eq!(GlyphSet::from_config("anything-else"), GlyphSet::Plain);
     }
 
     #[test]

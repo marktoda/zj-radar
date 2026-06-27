@@ -486,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn state_defaults_glyphs_to_nerd_and_ungranted() {
+    fn state_defaults_glyphs_to_plain_and_ungranted() {
         let s = State::default();
-        assert_eq!(s.glyphs, crate::status::GlyphSet::Nerd);
+        assert_eq!(s.glyphs, crate::status::GlyphSet::Plain);
         assert!(!s.permission_granted);
     }
 }
