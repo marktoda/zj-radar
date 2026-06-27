@@ -13,6 +13,8 @@ mod state;
 mod model;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod naming;
 
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
@@ -20,6 +22,7 @@ mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
 use render::TabRow;
 use state::StateStore;
+use naming::PaneLite;
 use std::collections::HashMap;
 
 #[cfg(target_arch = "wasm32")]
@@ -44,7 +47,7 @@ struct TabLite {
 pub struct State {
     store: StateStore,
     tabs: Vec<TabLite>,
-    tab_panes: HashMap<usize, Vec<u32>>, // tab position -> terminal pane ids
+    tab_panes: HashMap<usize, Vec<PaneLite>>, // tab position -> terminal panes
     // `tick`/`timer_armed` are read only by the wasm glue; on any host build
     // (including tests, which construct State but never read them) they are dead.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -64,12 +67,13 @@ impl State {
         for t in &sorted {
             let empty = Vec::new();
             let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
+            let ids: Vec<u32> = panes.iter().map(|p| p.id).collect();
             rows.push(TabRow {
                 number: t.position as u32 + 1,
                 name: t.name.clone(),
                 active: t.active,
                 has_bell: t.has_bell,
-                agg: model::aggregate(panes, &self.store),
+                agg: model::aggregate(&ids, &self.store),
             });
         }
         rows
@@ -92,7 +96,8 @@ impl State {
         for t in &sorted {
             let empty = Vec::new();
             let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
-            let agg = model::aggregate(panes, &self.store);
+            let ids: Vec<u32> = panes.iter().map(|p| p.id).collect();
+            let agg = model::aggregate(&ids, &self.store);
             let span = render::row_lines(&agg);
             if target >= cursor && target < cursor + span {
                 return Some(t.position);
@@ -151,7 +156,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PaneUpdate(manifest) => {
-                let mut tab_panes: HashMap<usize, Vec<u32>> = HashMap::new();
+                let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
                 let mut live: HashSet<u32> = HashSet::new();
                 let mut focused_terminal: Option<u32> = None;
                 for (tab_pos, panes) in manifest.panes {
@@ -159,7 +164,11 @@ impl ZellijPlugin for State {
                         if p.is_plugin {
                             continue;
                         }
-                        tab_panes.entry(tab_pos).or_default().push(p.id);
+                        tab_panes.entry(tab_pos).or_default().push(PaneLite {
+                            id: p.id,
+                            title: payload::sanitize(&p.title, 40),
+                            is_focused: p.is_focused,
+                        });
                         live.insert(p.id);
                         if p.is_focused {
                             focused_terminal = Some(p.id);
@@ -218,6 +227,10 @@ mod tests {
     use super::*;
     use crate::payload::StatusPayload;
     use crate::status::Status;
+
+    fn pane(id: u32) -> PaneLite {
+        PaneLite { id, ..Default::default() }
+    }
 
     fn make_state_with_tabs(tab_specs: &[(usize, &str, bool)]) -> State {
         // tab_specs: (position, name, active)
@@ -300,7 +313,7 @@ mod tests {
     fn build_rows_agg_reflects_pane_status() {
         let mut state = make_state_with_tabs(&[(0, "agent-tab", false)]);
         // Assign pane 42 to tab position 0
-        state.tab_panes.insert(0, vec![42]);
+        state.tab_panes.insert(0, vec![pane(42)]);
         apply_payload(&mut state, 42, Status::Running, 1);
         let rows = state.build_rows();
         assert_eq!(rows[0].agg.status, Status::Running);
@@ -344,7 +357,7 @@ mod tests {
     fn agent_tab_with_msg_occupies_three_lines() {
         // Tab at position 0 has a Running pane with a non-empty msg → 3 lines
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![10]);
+        state.tab_panes.insert(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // msg="msg" (non-empty)
 
         // Line 0 = header (no tab)
@@ -363,7 +376,7 @@ mod tests {
     fn agent_tab_with_empty_msg_occupies_two_lines() {
         // Tab at position 0 has a Running pane with an empty msg → 2 lines
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![10]);
+        state.tab_panes.insert(0, vec![pane(10)]);
         apply_payload_with_msg(&mut state, 10, Status::Running, 1, "  "); // whitespace-only
 
         // Line 0 = header (no tab)
@@ -383,8 +396,8 @@ mod tests {
         // position 2: Running with msg (3 lines)
         let mut state =
             make_state_with_tabs(&[(0, "a0", false), (1, "a1", false), (2, "a2", false)]);
-        state.tab_panes.insert(0, vec![1]);
-        state.tab_panes.insert(2, vec![2]);
+        state.tab_panes.insert(0, vec![pane(1)]);
+        state.tab_panes.insert(2, vec![pane(2)]);
         apply_payload(&mut state, 1, Status::Running, 1); // msg="msg" non-empty → 3 lines
         apply_payload(&mut state, 2, Status::Running, 2); // msg="msg" non-empty → 3 lines
 
@@ -420,7 +433,7 @@ mod tests {
         // One active agent tab (→ header present) at position 0 with msg (3 lines),
         // a plain tab at position 1.
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![10]);
+        state.tab_panes.insert(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // active → header line at row 0
         // row 0 = header (no tab)
         assert_eq!(state.tab_position_at_line(0), None);
