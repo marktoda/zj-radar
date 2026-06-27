@@ -35,6 +35,67 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
 
+# For running events (PreToolUse/PostToolUse), derive a live activity string
+# from the tool being used — same rules as tool_activity() in notify.rs.
+if [[ "$status" == "running" ]]; then
+    hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
+    if [[ "$hook_event" == "PreToolUse" || "$hook_event" == "PostToolUse" ]]; then
+        tool_name="$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null || true)"
+        tool_activity=""
+        case "$tool_name" in
+            Edit|Write|MultiEdit)
+                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
+                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
+                ;;
+            NotebookEdit)
+                fp="$(jq -r '.tool_input.notebook_path // empty' <<<"$input" 2>/dev/null || true)"
+                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
+                ;;
+            Read)
+                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
+                [[ -n "$fp" ]] && tool_activity="reading ${fp##*/}"
+                ;;
+            Grep|Glob)
+                tool_activity="searching"
+                ;;
+            WebFetch|WebSearch)
+                tool_activity="searching web"
+                ;;
+            Task)
+                tool_activity="delegating"
+                ;;
+            TodoWrite)
+                tool_activity="planning"
+                ;;
+            Bash)
+                cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
+                cmd_lower="${cmd,,}"  # bash 4+ lowercase
+                if [[ -n "${cmd// }" ]]; then
+                    if [[ "$cmd_lower" == *"git push"* ]]; then
+                        tool_activity="pushing"
+                    elif [[ "$cmd_lower" == *"git commit"* ]]; then
+                        tool_activity="committing"
+                    elif [[ "$cmd_lower" == *"git pull"* || "$cmd_lower" == *"git fetch"* ]]; then
+                        tool_activity="syncing"
+                    elif [[ "$cmd_lower" == *"test"* ]]; then
+                        tool_activity="running tests"
+                    elif [[ "$cmd_lower" == *"build"* || "$cmd_lower" == *"compile"* ]]; then
+                        tool_activity="building"
+                    elif [[ "$cmd_lower" == *"install"* ]]; then
+                        tool_activity="installing"
+                    else
+                        # first token, basename only
+                        read -r first_token _ <<<"$cmd"
+                        first_base="${first_token##*/}"
+                        [[ -n "$first_base" ]] && tool_activity="running $first_base"
+                    fi
+                fi
+                ;;
+        esac
+        [[ -n "$tool_activity" ]] && msg="$tool_activity"
+    fi
+fi
+
 # Defense-in-depth: if a Claude version fires Notification without a matcher
 # and produces a generic idle phrase (or no message), skip broadcasting pending
 # — it isn't a real "needs you" event.
