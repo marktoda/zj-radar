@@ -15,7 +15,7 @@ pub struct RenderOpts {
     pub height: usize,
     pub now_tick: u64,
     pub glyphs: GlyphSet,
-    /// Whether to render the " RADAR" identity header block.
+    /// Whether to render the " AGENTS" identity header block.
     pub header: bool,
     /// Vertical density between tabs.
     pub density: Density,
@@ -276,7 +276,7 @@ pub fn onboarding(opts: &RenderOpts) -> String {
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
     let g = opts.glyphs;
-    out.push_str(&format!("{} RADAR{}\n", accent, RESET));
+    out.push_str(&format!("{} AGENTS{}\n", accent, RESET));
     out.push_str(&format!("{}{}{}\n", accent, "═".repeat(opts.width), RESET));
     out.push_str(&format!("{} watching your tabs for{}\n", muted, RESET));
     out.push_str(&format!("{} AI agent activity.{}\n", muted, RESET));
@@ -525,25 +525,46 @@ fn visible_width(s: &str) -> usize {
     width
 }
 
-/// Paint a single content line with an ANSI-16 bright-black background band
-/// (theme-portable `\x1b[100m`).
+// 256-color surface tints for the card ramp. Backgrounds are the one place the
+// renderer steps outside ANSI-16 — the *foreground* stays theme-mapped role
+// colors (§14.10), but a 3-level surface ladder (idle < agent < active) is
+// impossible with ANSI-16's single off-rail background. The 256-color grayscale
+// indices 236/238/240 map onto a surface0/1/2-style ramp, so cards read as
+// progressively brighter objects on dark themes. Light-theme users pick
+// `density = comfortable|compact` (the design's escape hatch) instead.
+const CARD_BG_IDLE: &str = "\x1b[48;5;236m";
+const CARD_BG_AGENT: &str = "\x1b[48;5;238m";
+const CARD_BG_ACTIVE: &str = "\x1b[48;5;240m";
+
+/// The surface tint for a card, by class: the focused tab is brightest, agent
+/// rows (active status) are mid, idle/plain panes are the dimmest surface.
+fn card_tint(row: &TabRow) -> &'static str {
+    if row.active {
+        CARD_BG_ACTIVE
+    } else if row.agg.status.is_active() {
+        CARD_BG_AGENT
+    } else {
+        CARD_BG_IDLE
+    }
+}
+
+/// Paint a single content line with a 256-color surface background band (`bg`).
 ///
 /// Steps:
-/// 1. Replace every `RESET` (`\x1b[0m`) in the line with `RESET + "\x1b[100m"`
-///    so that colored tokens re-arm the background after they reset.
+/// 1. Replace every `RESET` (`\x1b[0m`) in the line with `RESET + bg` so that
+///    colored tokens re-arm the background after they reset.
 /// 2. Strip the trailing newline (if present), measure, pad to `width`, restore.
-/// 3. Wrap: `"\x1b[100m" + transformed_line + pad + "\x1b[49m\x1b[0m"`.
+/// 3. Wrap: `bg + transformed_line + pad + "\x1b[49m\x1b[0m"`.
 ///
 /// The returned string ends with `\n`.
-fn paint_card_line(line: &str, width: usize) -> String {
-    const CARD_BG: &str = "\x1b[100m";
+fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
     const BG_RESET: &str = "\x1b[49m";
 
     // Strip trailing newline; we'll add it back at the end.
     let bare = line.strip_suffix('\n').unwrap_or(line);
 
     // Re-arm bg after every reset token inside the line.
-    let rearmed = bare.replace(RESET, &format!("{}{}", RESET, CARD_BG));
+    let rearmed = bare.replace(RESET, &format!("{}{}", RESET, bg));
 
     // Measure visible width of the re-armed content.
     let vis = visible_width(&rearmed);
@@ -555,7 +576,7 @@ fn paint_card_line(line: &str, width: usize) -> String {
         String::new()
     };
 
-    format!("{}{}{}{}{}\n", CARD_BG, rearmed, pad, BG_RESET, RESET)
+    format!("{}{}{}{}{}\n", bg, rearmed, pad, BG_RESET, RESET)
 }
 
 pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
@@ -570,36 +591,50 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     let (plan, strip_folded, gap_used) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
+    // Right-aligned count: total tabs (·N, or "N ▲" when overflowing), plus a
+    // "·P!" urgent marker in the attention role when any tab needs you.
     let count = if overflow {
         format!("{} ▲", rows.len())
     } else {
         format!("·{}", rows.len())
     };
+    let pending = rows.iter().filter(|r| r.agg.status == Status::Pending).count();
+    let urgent = if pending > 0 { format!(" ·{}!", pending) } else { String::new() };
 
     // Emit the identity header block only when configured on (and rows exist).
-    // Header line 1: " RADAR" + right-aligned count.
+    // Header line 1: " AGENTS" + right-aligned count (+ urgent marker).
     if opts.header {
-        let title = " RADAR";
+        let title = " AGENTS";
+        let right_w = UnicodeWidthStr::width(count.as_str()) + UnicodeWidthStr::width(urgent.as_str());
         let gap = width
-            .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(count.as_str()))
+            .saturating_sub(UnicodeWidthStr::width(title) + right_w)
             .max(1);
+        // Title in accent; total count muted (accent when overflowing, so the
+        // ▲ marker stays loud); urgent marker in the attention role.
+        let count_color = if overflow { accent } else { Role::Muted.ansi() };
         out.push_str(&format!(
-            "{}{}{}{}{}\n",
-            accent, title, " ".repeat(gap), count, RESET
+            "{}{}{}{}{}{}{}",
+            accent, title, RESET, " ".repeat(gap), count_color, count, RESET
         ));
+        if pending > 0 {
+            out.push_str(&format!("{}{}{}", Role::Attention.ansi(), urgent, RESET));
+        }
+        out.push('\n');
         // Header line 2: rule across the full width.
         out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
     }
 
     let use_card_bg = opts.density == Density::Cards;
     for &(i, max_lines) in &plan {
+        // Every tab is a card: render it into a temporary buffer, then paint
+        // each content line with its class's surface tint (idle < agent <
+        // active). Gaps between cards stay on the bare rail.
         if use_card_bg {
-            // Render the tab into a temporary buffer, then paint each content
-            // line with the bright-black background band.
+            let bg = card_tint(&rows[i]);
             let mut tab_buf = String::new();
             render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
             for line in tab_buf.split_inclusive('\n') {
-                out.push_str(&paint_card_line(line, width));
+                out.push_str(&paint_card_line(line, width, bg));
             }
         } else {
             render_row(&mut out, &rows[i], opts, max_lines.max(1));
@@ -659,7 +694,7 @@ mod tests {
         let mut lines = s.lines();
         let title = lines.next().unwrap();
         let rule = lines.next().unwrap();
-        assert!(title.contains("RADAR"));
+        assert!(title.contains("AGENTS"));
         assert!(title.contains("·1")); // one tab
         assert!(rule.contains('═'));
     }
@@ -1120,7 +1155,7 @@ mod tests {
     #[test]
     fn onboarding_shows_legend_and_click_hint() {
         let s = onboarding(&ro(28, 0));
-        assert!(s.contains("RADAR"));
+        assert!(s.contains("AGENTS"));
         assert!(s.contains('◆')); // legend includes the waiting glyph (plain set)
         assert!(s.to_lowercase().contains("needs you"));
         assert!(s.to_lowercase().contains("click"));
@@ -1181,8 +1216,8 @@ mod tests {
         assert_eq!(header_lines(&rows, false), 0);
         let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact };
         let s = render(&rows, &opts);
-        // No identity header: rows start at line 0, so no "RADAR"/"═" line.
-        assert!(!s.contains("RADAR"));
+        // No identity header: rows start at line 0, so no "AGENTS"/"═" line.
+        assert!(!s.contains("AGENTS"));
         assert!(!s.contains('═'));
         // The single tab row is still rendered.
         assert!(s.contains('a') || s.matches('\n').count() >= 1);
@@ -1481,8 +1516,19 @@ mod tests {
 
     #[test]
     fn cards_content_lines_differ_from_comfortable() {
-        // Cards now adds a background band on content lines — output differs from Comfortable.
-        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        // Cards paints a background band on AGENT rows — so a session with at
+        // least one agent differs from Comfortable. (An all-idle session would
+        // now render identically, since idle rows are bare in the hybrid.)
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "r".into(), branch: "b".into(), msg: "working".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "work".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            idle_row(2),
+        ];
         let comfortable = render(&rows, &RenderOpts {
             width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
             header: true, density: crate::config::Density::Comfortable,
@@ -1560,7 +1606,7 @@ mod tests {
     #[test]
     fn cards_paint_content_lines_with_bg() {
         // Render an idle tab and an active working tab at normal width with Cards.
-        // Content lines must contain \x1b[100m; gap lines and header must NOT.
+        // Every content line carries a 256-color band; gap lines and header must NOT.
         use crate::model::Detail;
         let detail = Detail {
             repo: "repo".into(), branch: "main".into(), msg: "working".into(),
@@ -1575,50 +1621,54 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
 
-        // lines[0] and lines[1] are the header (RADAR + rule) — must NOT have bg
-        assert!(!lines[0].contains("\x1b[100m"),
+        // lines[0] and lines[1] are the header (AGENTS + rule) — must NOT have bg
+        assert!(!lines[0].contains("\x1b[48;5;"),
             "header title line must NOT have card bg: {:?}", lines[0]);
-        assert!(!lines[1].contains("\x1b[100m"),
+        assert!(!lines[1].contains("\x1b[48;5;"),
             "header rule line must NOT have card bg: {:?}", lines[1]);
 
-        // lines[2] is the idle tab content line — MUST have bg
-        assert!(lines[2].contains("\x1b[100m"),
-            "idle content line must have card bg: {:?}", lines[2]);
+        // lines[2] is the idle tab content line — every tab is a card now.
+        assert!(lines[2].contains("\x1b[48;5;"),
+            "idle content line must carry a card band: {:?}", lines[2]);
 
         // lines[3] is a blank gap line — must NOT have bg
-        assert!(!lines[3].contains("\x1b[100m"),
+        assert!(!lines[3].contains("\x1b[48;5;"),
             "gap line must NOT have card bg: {:?}", lines[3]);
 
         // lines[4] is the working tab line 1 — MUST have bg
-        assert!(lines[4].contains("\x1b[100m"),
+        assert!(lines[4].contains("\x1b[48;5;"),
             "working tab line 1 must have card bg: {:?}", lines[4]);
 
         // lines[5] is the working tab detail line — MUST have bg
-        assert!(lines[5].contains("\x1b[100m"),
+        assert!(lines[5].contains("\x1b[48;5;"),
             "working tab detail line must have card bg: {:?}", lines[5]);
 
-        // Each content line must end with bg reset (\x1b[49m) before \x1b[0m
-        assert!(lines[2].contains("\x1b[49m"),
-            "content line must contain bg reset: {:?}", lines[2]);
-        assert!(lines[4].contains("\x1b[49m"),
-            "content line must contain bg reset: {:?}", lines[4]);
-        assert!(lines[5].contains("\x1b[49m"),
-            "detail line must contain bg reset: {:?}", lines[5]);
+        // Each carded content line must end with bg reset (\x1b[49m).
+        for &i in &[2usize, 4, 5] {
+            assert!(lines[i].contains("\x1b[49m"),
+                "carded line {} must contain bg reset: {:?}", i, lines[i]);
+        }
     }
 
     #[test]
     fn cards_band_fills_full_width() {
-        // Short-name idle tab at width 24, Cards: visible width of painted line == 24.
+        // Short-name agent (done) tab at width 24, Cards: the painted band fills
+        // the full width.
+        use crate::model::Detail;
+        let done = Detail {
+            repo: "r".into(), branch: "".into(), msg: "".into(),
+            since_tick: 0, status: Status::Done,
+        };
         let rows = vec![
             TabRow { number: 1, name: "x".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
+                     agg: agg(Status::Done, 1, 1, Some(done)) },
         ];
         let width = 24usize;
         let s = render(&rows, &ro_cards(width, 100));
         // Skip 2 header lines; first body line is the painted content line.
         let body: Vec<&str> = s.lines().skip(2).collect();
         let content_line = body[0];
-        assert!(content_line.contains("\x1b[100m"),
+        assert!(content_line.contains("\x1b[48;5;"),
             "content line must have card bg: {:?}", content_line);
         // Visible width must equal exactly `width`.
         let vw = visible_len(content_line);
@@ -1629,8 +1679,9 @@ mod tests {
 
     #[test]
     fn cards_rearm_bg_after_resets() {
-        // Active working tab (line has multiple role-colored tokens with \x1b[0m resets)
-        // under Cards: assert \x1b[0m\x1b[100m appears (reset immediately followed by bg re-arm).
+        // Active working tab (line has multiple role-colored tokens with \x1b[0m
+        // resets) under Cards: the active tint must re-arm after every reset, so
+        // \x1b[0m\x1b[48;5;240m (reset immediately followed by the band) appears.
         use crate::model::Detail;
         let detail = Detail {
             repo: "pinky".into(), branch: "fix/x".into(), msg: "some work".into(),
@@ -1641,14 +1692,35 @@ mod tests {
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        // The re-arm sequence is RESET followed immediately by CARD_BG.
-        assert!(s.contains("\x1b[0m\x1b[100m"),
+        assert!(s.contains("\x1b[0m\x1b[48;5;240m"),
             "reset immediately followed by bg re-arm must appear in Cards output: {:?}", s);
     }
 
     #[test]
+    fn cards_use_256color_not_truecolor() {
+        // Card surfaces step outside ANSI-16 via 256-color (48;5;), but must
+        // never use truecolor (48;2;/38;2;) or raw hex.
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "r".into(), branch: "b".into(), msg: "work".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+        ];
+        let s = render(&rows, &ro_cards(30, 100));
+        assert!(s.contains("\x1b[48;5;"), "cards must use a 256-color surface: {:?}", s);
+        assert!(!s.contains("48;2;"), "cards must not use truecolor bg: {:?}", s);
+        assert!(!s.contains("38;2;"), "cards must not use truecolor fg: {:?}", s);
+        assert!(!s.contains('#'), "cards must not emit raw hex: {:?}", s);
+    }
+
+    #[test]
     fn comfortable_and_compact_emit_no_bg() {
-        // Same tabs with Comfortable and Compact must contain NO \x1b[100m.
+        // Same tabs with Comfortable and Compact must contain NO card band.
         use crate::model::Detail;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "working".into(),
@@ -1665,8 +1737,8 @@ mod tests {
                 width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
                 header: true, density,
             });
-            assert!(!s.contains("\x1b[100m"),
-                "density {:?} must NOT emit card bg \x1b[100m: {:?}", density, s);
+            assert!(!s.contains("\x1b[48;5;"),
+                "density {:?} must NOT emit a card band: {:?}", density, s);
         }
     }
 
@@ -1701,4 +1773,135 @@ mod tests {
         }
     }
 
+    // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
+
+    /// Classify each rendered line for a tint-map snapshot by which 256-color
+    /// surface band it carries: "active" (240) / "agent" (238) / "idle" (236),
+    /// "gap" = blank separator, "bare" = no band (e.g. the header).
+    fn tint_map(s: &str) -> String {
+        s.lines()
+            .map(|line| {
+                if line.is_empty() {
+                    "gap"
+                } else if line.contains("\x1b[48;5;240m") {
+                    "active"
+                } else if line.contains("\x1b[48;5;238m") {
+                    "agent"
+                } else if line.contains("\x1b[48;5;236m") {
+                    "idle"
+                } else {
+                    "bare"
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn cards_tint_per_row_class() {
+        // Every tab is a card; the surface tint encodes its class:
+        //   focused (active) row → brightest (240),
+        //   agent row (active status, not focused) → mid (238),
+        //   idle/plain row → dimmest (236).
+        use crate::model::Detail;
+        let detail = Detail {
+            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
+            since_tick: 0, status: Status::Running,
+        };
+        let rows = vec![
+            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 2, name: "agent".into(), active: false, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
+            TabRow { number: 3, name: "focus".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+        ];
+        let s = render(&rows, &ro_cards(30, 100));
+        let lines: Vec<&str> = s.lines().collect();
+        // line 2 = idle content → dim tint (236)
+        assert!(lines[2].contains("\x1b[48;5;236m"),
+            "idle row must carry the dim card tint (236): {:?}", lines[2]);
+        // line 4 = agent line 1 → mid tint (238)
+        assert!(lines[4].contains("\x1b[48;5;238m"),
+            "agent row must carry the mid card tint (238): {:?}", lines[4]);
+        // line 7 = focused agent line 1 → active tint (240)
+        assert!(lines[7].contains("\x1b[48;5;240m"),
+            "focused row must carry the active card tint (240): {:?}", lines[7]);
+    }
+
+    #[test]
+    fn cards_3tint_layout_snapshot() {
+        // Golden tint-map for the canonical sidebar.dc.html "cards" session:
+        // active running agent, pending agent, done agent, then two idle panes.
+        // Every tab is a card; one gap row after each; tints encode the class.
+        use crate::model::Detail;
+        let running = Detail { repo: "web".into(), branch: "".into(),
+            msg: "building…".into(), since_tick: 0, status: Status::Running };
+        let pending = Detail { repo: "api".into(), branch: "fix".into(),
+            msg: "".into(), since_tick: 0, status: Status::Pending };
+        let done = Detail { repo: "worker".into(), branch: "".into(),
+            msg: "".into(), since_tick: 0, status: Status::Done };
+        let rows = vec![
+            TabRow { number: 1, name: "Claude".into(), active: true, has_bell: false,
+                     agg: agg(Status::Running, 0, 1, Some(running)) },
+            TabRow { number: 2, name: "api".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
+            TabRow { number: 3, name: "worker".into(), active: false, has_bell: false,
+                     agg: agg(Status::Done, 1, 1, Some(done)) },
+            TabRow { number: 4, name: "Pane #1".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow { number: 5, name: "Pane #1".into(), active: false, has_bell: false,
+                     agg: agg(Status::Idle, 0, 0, None) },
+        ];
+        let s = render(&rows, &ro_cards(24, 100));
+        let expected = "\
+bare\n\
+bare\n\
+active\n\
+active\n\
+gap\n\
+agent\n\
+agent\n\
+gap\n\
+agent\n\
+gap\n\
+idle\n\
+gap\n\
+idle\n\
+gap";
+        assert_eq!(tint_map(&s), expected,
+            "3-tint card map drifted from the design:\n{:?}", s);
+    }
+
+    #[test]
+    fn header_shows_agents_and_urgent_count() {
+        // Header reads " AGENTS" (not "RADAR") and, when any tab is pending,
+        // appends a "·N!" urgent marker in the attention role.
+        use crate::model::Detail;
+        let pending = Detail { repo: "p".into(), branch: "x".into(),
+            msg: "approve?".into(), since_tick: 0, status: Status::Pending };
+        let rows = vec![
+            TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
+                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
+            idle_row(2),
+            idle_row(3),
+        ];
+        let s = render(&rows, &ro(30, 0));
+        let header = s.lines().next().unwrap();
+        assert!(header.contains("AGENTS"), "header must read AGENTS: {:?}", header);
+        assert!(!header.contains("RADAR"), "header must not say RADAR: {:?}", header);
+        assert!(header.contains("·3"), "header must show total count ·3: {:?}", header);
+        assert!(header.contains("·1!"), "header must show urgent count ·1!: {:?}", header);
+        assert!(header.contains(Role::Attention.ansi()),
+            "urgent marker must use the attention role: {:?}", header);
+    }
+
+    #[test]
+    fn header_no_urgent_marker_when_nothing_pending() {
+        let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
+        let s = render(&rows, &ro(30, 0));
+        let header = s.lines().next().unwrap();
+        assert!(header.contains("·3"), "header shows total: {:?}", header);
+        assert!(!header.contains('!'), "no urgent marker when nothing pending: {:?}", header);
+    }
 }

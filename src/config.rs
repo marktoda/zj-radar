@@ -19,15 +19,19 @@ pub enum NamingMode {
 ///
 /// - `Compact`: flush rail — no blank lines between tabs (original behaviour).
 /// - `Comfortable`: one blank separator line after each tab's content block.
-/// - `Cards`: each tab is a background band (ANSI-16 bright-black surface); active card adds the mauve spine + bold.
+/// - `Cards` (default): every tab is a card — a 256-color surface band keyed to
+///   its class (idle dim / agent mid / focused-active bright), one blank rail
+///   row between cards. The active tab keeps the mauve spine + bold name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Density {
     /// No blank lines between tabs.
     Compact,
     /// One blank separator line after each tab's content block.
-    #[default]
     Comfortable,
-    /// Each tab is a background band (ANSI-16 bright-black surface); active card adds the mauve spine + bold.
+    /// Default. Every tab is a card: a 256-color surface band keyed to its
+    /// class (idle dim / agent mid / focused-active bright), one blank rail row
+    /// between cards. The active tab keeps the mauve spine + bold name.
+    #[default]
     Cards,
 }
 
@@ -35,8 +39,9 @@ impl Density {
     pub fn from_config(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "compact" => Density::Compact,
-            "cards" => Density::Cards,
-            _ => Density::Comfortable,
+            "comfortable" => Density::Comfortable,
+            // Unknown/invalid values fall back to the field default (Cards).
+            _ => Density::Cards,
         }
     }
 }
@@ -153,10 +158,10 @@ mod tests {
     }
 
     #[test]
-    fn density_default_is_comfortable() {
-        assert_eq!(Config::default().density, Density::Comfortable);
-        // absent → Comfortable
-        assert_eq!(Config::from_map(&map(&[])).density, Density::Comfortable);
+    fn density_default_is_cards() {
+        assert_eq!(Config::default().density, Density::Cards);
+        // absent → Cards
+        assert_eq!(Config::from_map(&map(&[])).density, Density::Cards);
     }
 
     #[test]
@@ -167,9 +172,9 @@ mod tests {
     }
 
     #[test]
-    fn density_unknown_value_falls_back_to_comfortable() {
-        assert_eq!(Config::from_map(&map(&[("density", "super-dense")])).density, Density::Comfortable);
-        assert_eq!(Config::from_map(&map(&[("density", "")])).density, Density::Comfortable);
+    fn density_unknown_value_falls_back_to_cards() {
+        assert_eq!(Config::from_map(&map(&[("density", "super-dense")])).density, Density::Cards);
+        assert_eq!(Config::from_map(&map(&[("density", "")])).density, Density::Cards);
     }
 
     #[test]
