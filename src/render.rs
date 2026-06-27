@@ -104,17 +104,21 @@ pub fn card_block_lines(agg: &TabAgg, spacing: CardSpacing) -> usize {
 }
 
 /// Single source of truth for how many lines a tab row occupies.
+///
+/// New line-2 rule (chunk 1): idle/done → 1 line; any other active single-pane
+/// state with a non-empty msg → 2 lines (line 1 = status, line 2 = mark + activity).
+/// A non-empty detail without a msg → 1 line (line 2 suppressed).
+/// The old 3-line Pending case (branch · needs-you + quoted msg) is gone — the
+/// question IS the line-2 activity now.
 pub fn row_lines(agg: &TabAgg) -> usize {
     let base = match agg.status {
         Status::Idle | Status::Done => 1,
-        Status::Running | Status::Error => {
-            if agg.detail.is_some() { 2 } else { 1 }
+        Status::Running | Status::Error | Status::Pending => {
+            match &agg.detail {
+                Some(d) if !d.msg.trim().is_empty() => 2,
+                _ => 1,
+            }
         }
-        Status::Pending => match &agg.detail {
-            Some(d) if !d.msg.trim().is_empty() => 3,
-            Some(_) => 2,
-            None => 1,
-        },
     };
     // Add one extra line for the per-member roster when the tab has >1 agent,
     // the overall status is active (not Idle), and the roster is non-empty.
@@ -473,82 +477,47 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     }
     let mut emitted = 1usize;
 
-    // Theme-derived detail text colors: dim_strong for location/branch lines,
-    // dim_weak for quoted message lines. Both are truecolor foreground escapes
-    // derived from the bg/fg palette blend so they adapt to any Zellij theme.
+    // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
+    // dim_weak for the identity mark glyph (neutral/muted vendor color).
+    // Both are truecolor foreground escapes derived from the bg/fg palette blend.
     let dim_strong = tc_fg(opts.theme.dim_strong);
-    let dim_weak = tc_fg(opts.theme.dim_weak);
+    let idle_color = tc_fg(opts.theme.idle_text);
 
-    // Determine per-status detail line order.
-    // For Pending: priority 1 = "branch · needs you"; priority 2 = "msg"; priority 3 = roster.
-    // For Error: priority 1 = "loc · msg"; priority 2 = roster (no separate msg line).
-    // For Running: priority 1 = "loc ⠋ msg"; priority 2 = roster.
-    // For Done/Idle: no detail lines.
+    // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
+    // Only emitted when the status is active, a detail with a non-empty msg exists,
+    // and there is remaining budget. For Running, the braille spinner is appended.
+    // For Pending (the question), activity is colored in attention (loud). Others dim_strong.
     if let Some(d) = &row.agg.detail {
-        match st {
-            Status::Running => {
-                // Detail line (priority 1 after line 1).
-                if emitted < max_lines {
-                    let spin = crate::status::msg_spin(now_tick as usize);
-                    let avail = width.saturating_sub(3);
-                    let full = {
-                        let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
-                        format!("{} {} {}", loc, spin, d.msg)
-                    };
-                    let body = if UnicodeWidthStr::width(full.as_str()) <= avail {
-                        full
+        if emitted < max_lines && !d.msg.trim().is_empty() {
+            match st {
+                Status::Idle | Status::Done => {}
+                Status::Running | Status::Error | Status::Pending => {
+                    // mark glyph in neutral idle_text color (vendor-neutral)
+                    let mark = d.kind.mark();
+                    let mark_width = UnicodeWidthChar::width(mark).unwrap_or(1);
+                    // "   ‹mark› " prefix: 3-space indent + mark + space
+                    let prefix_vis = 3 + mark_width + 1;
+                    let avail = width.saturating_sub(prefix_vis);
+                    // Build activity string: for Running append braille spinner
+                    let activity = if st == Status::Running {
+                        let spin = crate::status::msg_spin(now_tick as usize);
+                        format!("{} {}", d.msg, spin)
                     } else {
-                        // drop branch
-                        let no_branch = format!("{} {} {}", d.repo, spin, d.msg);
-                        if UnicodeWidthStr::width(no_branch.as_str()) <= avail {
-                            no_branch
-                        } else {
-                            // drop message, keep repo + spinner
-                            truncate(&format!("{} {}", d.repo, spin), avail)
-                        }
+                        d.msg.clone()
                     };
-                    out.push_str(&format!("   {}{}{}\n", dim_strong, truncate(&body, avail), RESET));
+                    let activity_str = truncate(&activity, avail);
+                    let activity_color = if st == Status::Pending {
+                        hue(Role::Attention)
+                    } else {
+                        dim_strong.clone()
+                    };
+                    out.push_str(&format!(
+                        "   {}{}{} {}{}{}\n",
+                        idle_color, mark, RESET, activity_color, activity_str, RESET
+                    ));
                     emitted += 1;
                 }
             }
-            Status::Error => {
-                // Detail line (priority 1 after line 1).
-                if emitted < max_lines {
-                    let loc = if d.branch.is_empty() { d.repo.clone() } else { format!("{}/{}", d.repo, d.branch) };
-                    let body = if d.msg.trim().is_empty() { loc } else { format!("{} · {}", loc, d.msg) };
-                    out.push_str(&format!("   {}{}{}\n", dim_strong, truncate(&body, width.saturating_sub(3)), RESET));
-                    emitted += 1;
-                }
-            }
-            Status::Pending => {
-                // Priority 1: "branch · needs you" line.
-                if emitted < max_lines {
-                    let loc = if d.branch.is_empty() { d.repo.clone() } else { d.branch.clone() };
-                    let needs_phrase = if row.agg.pending > 1 {
-                        format!("{} needs you", row.agg.pending)
-                    } else {
-                        "needs you".to_string()
-                    };
-                    let phrase_len = UnicodeWidthStr::width(needs_phrase.as_str());
-                    let loc_budget = width.saturating_sub(3 + 3 + phrase_len);
-                    let loc_str = truncate(&loc, loc_budget);
-                    let visible_content = format!("   {} · {}", loc_str, needs_phrase);
-                    let visible_len = UnicodeWidthStr::width(visible_content.as_str());
-                    if visible_len <= width {
-                        out.push_str(&format!("   {}{} · {}{}{}\n", dim_strong, loc_str, hue(Role::Attention), needs_phrase, RESET));
-                    } else {
-                        let clamped = truncate(&visible_content, width);
-                        out.push_str(&format!("{}{}{}\n", dim_strong, clamped, RESET));
-                    }
-                    emitted += 1;
-                }
-                // Priority 2: quoted msg line (only if non-empty).
-                if emitted < max_lines && !d.msg.trim().is_empty() {
-                    out.push_str(&format!("   {}\"{}\"{}\n", dim_weak, truncate(&d.msg, width.saturating_sub(5)), RESET));
-                    emitted += 1;
-                }
-            }
-            Status::Done | Status::Idle => {}
         }
     }
 
@@ -799,6 +768,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kind::Kind;
     use crate::model::Detail;
 
     fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
@@ -860,13 +830,17 @@ mod tests {
 
         let detail = |status, msg: &str| Some(Detail {
             repo: "r".into(), branch: "b".into(), msg: msg.into(),
-            since_tick: 0, status,
+            kind: Kind::Claude, since_tick: 0, status,
         });
         assert_eq!(row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, ""))), 1);
         assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "x"))), 2);
         assert_eq!(row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x"))), 2);
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, ""))), 2);
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?"))), 3);
+        // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
+        // Old 3-line case (branch · needs you + quoted msg) is gone.
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, ""))), 1);
+        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?"))), 2);
+        // Running with no msg: only 1 line
+        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, ""))), 1);
     }
 
     #[test]
@@ -887,7 +861,7 @@ mod tests {
     #[test]
     fn active_and_waiting_row_bar_is_attention_not_accent() {
         let detail = Detail { repo: "p".into(), branch: "fix".into(), msg: "".into(),
-                              since_tick: 0, status: Status::Pending };
+                              kind: Kind::Claude, since_tick: 0, status: Status::Pending };
         let rows = vec![TabRow {
             number: 3, name: "pinky".into(), active: true, has_bell: false,
             agg: agg(Status::Pending, 0, 0, Some(detail)),
@@ -903,7 +877,7 @@ mod tests {
     fn right_slot_per_state() {
         let mk = |status, done, total| {
             let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                             since_tick: 0, status };
+                             kind: Kind::Claude, since_tick: 0, status };
             TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
                      agg: agg(status, done, total, Some(d)) }
         };
@@ -921,7 +895,7 @@ mod tests {
     fn working_slot_is_dim_not_role_colored() {
         // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
         let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                         since_tick: 0, status: Status::Running };
+                         kind: Kind::Claude, since_tick: 0, status: Status::Running };
         let rows = vec![TabRow { number: 1, name: "n".into(), active: false,
                                  has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
         let opts = ro(30, 14);
@@ -937,7 +911,7 @@ mod tests {
     #[test]
     fn working_glyph_spins_with_tick() {
         let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                         since_tick: 0, status: Status::Running };
+                         kind: Kind::Claude, since_tick: 0, status: Status::Running };
         let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
                                agg: agg(Status::Running, 0, 1, Some(d.clone())) };
         let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
@@ -1000,6 +974,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -1031,6 +1006,7 @@ mod tests {
             branch: "feature/some-long-branch".into(),
             msg: "should we proceed with this long question".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
         let rows = vec![TabRow {
@@ -1048,14 +1024,14 @@ mod tests {
 
     #[test]
     fn running_has_no_warning_glyph() {
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Running };
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
         assert!(!render(&rows, &ro(30, 599)).contains('⚠'));
     }
 
     #[test]
     fn done_has_no_warning_glyph() {
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), since_tick: 0, status: Status::Done };
+        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Done };
         let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
         assert!(!render(&rows, &ro(30, 10_000)).contains('⚠'));
     }
@@ -1075,7 +1051,7 @@ mod tests {
     #[test]
     fn error_word_narrows_when_tight() {
         let d = Detail { repo: "infra".into(), branch: "".into(), msg: "".into(),
-                         since_tick: 0, status: Status::Error };
+                         kind: Kind::Claude, since_tick: 0, status: Status::Error };
         let rows = vec![TabRow { number: 5, name: "infra".into(), active: false,
                                  has_bell: false, agg: agg(Status::Error, 0, 1, Some(d)) }];
         // wide: "failed"; narrow: "err"
@@ -1088,7 +1064,7 @@ mod tests {
     #[test]
     fn working_detail_drops_branch_before_message_when_narrow() {
         let d = Detail { repo: "web".into(), branch: "main".into(),
-                         msg: "running tests".into(), since_tick: 0, status: Status::Running };
+                         msg: "running tests".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
         let rows = vec![TabRow { number: 1, name: "api".into(), active: false,
                                  has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
         let narrow = render(&rows, &ro(16, 5));
@@ -1121,12 +1097,13 @@ mod tests {
         let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
         // an urgent waiting tab at the very end (high position)
         let d = Detail { repo: "p".into(), branch: "x".into(), msg: "approve?".into(),
-                         since_tick: 0, status: Status::Pending };
+                         kind: Kind::Claude, since_tick: 0, status: Status::Pending };
         rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
                            has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
         let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
-        assert!(s.contains("pinky"));     // urgent row never folded
-        assert!(s.contains("needs you")); // its detail survives
+        assert!(s.contains("pinky"));        // urgent row never folded
+        assert!(s.contains("approve?"));     // activity (msg) survives on line 2
+        assert!(s.contains('✳'));            // Claude identity mark on line 2
     }
 
     #[test]
@@ -1150,6 +1127,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "some message".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status,
         };
 
@@ -1199,13 +1177,17 @@ mod tests {
     }
 
     #[test]
-    fn multi_agent_pending_shows_count() {
-        // Multi-pending: agg.pending == 2 → detail line shows "2 needs you"
-        let detail = Detail {
+    fn pending_line2_shows_mark_and_activity() {
+        // New design: line 2 = ‹mark› ‹activity› in attention color, NOT "needs you".
+        // With msg → 2 lines; without msg → 1 line (line 2 suppressed).
+
+        // Case 1: pending with msg — 2 lines, mark + activity in attention color.
+        let detail_with_msg = Detail {
             repo: "proj".into(),
             branch: "fix".into(),
-            msg: "".into(),
+            msg: "approve the push?".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
         let rows = vec![TabRow {
@@ -1213,38 +1195,45 @@ mod tests {
             name: "agents".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail_with_msg), roster: vec![] },
         }];
         let s = render(&rows, &ro(30, 0));
-        assert!(s.contains("2 needs you"), "expected '2 needs you' in output: {:?}", s);
-        assert!(!s.contains("1 needs you"), "unexpected '1 needs you' in output: {:?}", s);
+        // line 2 must show the mark and the activity text
+        assert!(s.contains('✳'), "pending line 2 must contain the Claude mark: {:?}", s);
+        assert!(s.contains("approve the push?"), "pending line 2 must show the activity msg: {:?}", s);
+        // Activity is in the attention role (the question is loud)
+        assert!(s.contains(Role::Attention.ansi()), "pending activity must use attention color: {:?}", s);
+        // No old "needs you" text
+        assert!(!s.contains("needs you"), "old 'needs you' text must not appear: {:?}", s);
+        // row_lines = 2 (mark+activity line present)
+        assert_eq!(row_lines(&rows[0].agg), 2);
 
-        // Single-pending: agg.pending == 1 → detail line shows "needs you" (no count)
-        let detail2 = Detail {
+        // Case 2: pending without msg → 1 line only, no line 2.
+        let detail_no_msg = Detail {
             repo: "proj".into(),
             branch: "fix".into(),
             msg: "".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
-        let rows2 = vec![TabRow {
+        let rows2 = [TabRow {
             number: 2,
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail2), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail_no_msg), roster: vec![] },
         }];
-        let s2 = render(&rows2, &ro(30, 0));
-        assert!(s2.contains("needs you"), "expected 'needs you' in single-pending output: {:?}", s2);
-        // Must NOT have a leading digit before "needs you" for the single case
-        assert!(!s2.contains("1 needs you"), "single-pending must not show count: {:?}", s2);
+        // row_lines = 1 (no msg → no line 2)
+        assert_eq!(row_lines(&rows2[0].agg), 1);
 
-        // Width constraint: multi-pending detail must not exceed width
-        let detail3 = Detail {
+        // Width constraint: pending detail line must not exceed width
+        let detail_long = Detail {
             repo: "averylongreponame".into(),
             branch: "feature/some-very-long-branch".into(),
-            msg: "".into(),
+            msg: "a very long question that should be truncated appropriately here".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
         let rows3 = vec![TabRow {
@@ -1252,17 +1241,15 @@ mod tests {
             name: "multi".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail3), roster: vec![] },
+            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail_long), roster: vec![] },
         }];
-        // Width constraint check: use widths where the slot ("0/5 ⏵ 0:00" = 11 cols)
-        // plus row chrome can actually fit on the first line (>=20).
         for width in [20usize, 24, 30] {
             let s3 = render(&rows3, &ro(width, 0));
-            assert!(s3.contains("3 needs you"), "expected '3 needs you' at width {}", width);
+            assert!(s3.contains('✳'), "mark must appear at width {}: {:?}", width, s3);
             for line in s3.lines() {
                 assert!(
                     visible_len(line) <= width,
-                    "multi-pending detail line exceeds width {}: {:?} (visible {})",
+                    "pending detail line exceeds width {}: {:?} (visible {})",
                     width, line, visible_len(line)
                 );
             }
@@ -1271,20 +1258,16 @@ mod tests {
 
     #[test]
     fn multi_pending_detail_never_exceeds_width() {
-        // Regression: at sub-17 widths the "N needs you" phrase is longer than
-        // the available space after indent (3) + sep (3), so loc_budget saturates
-        // to 0 and the raw phrase still overflows. This test must pass after the
-        // width-clamp fix.
-        //
-        // Use total=1 so the first-row right-slot is compact ("⏵ 0:00", 6 cols)
-        // and the first row fits at all tested widths — the focus is the detail
-        // line (line 2), where "3 needs you" (11 cols) + indent (3) + sep (3) = 17
-        // overflows at width ≤ 16 without the clamp.
+        // Width constraint for pending rows at narrow widths.
+        // With msg:"" → no line 2, so only line 1 (the status line) is rendered.
+        // This tests the width-safety of the first line at narrow widths.
+        // (Kept as a regression guard; previously tested "N needs you" overflow.)
         let detail = Detail {
             repo: "averylongreponame".into(),
             branch: "feature/some-very-long-branch-name".into(),
             msg: "".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
         let rows = vec![TabRow {
@@ -1338,6 +1321,7 @@ mod tests {
             branch: "main".into(),
             msg: "🚀 deploying now".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Pending,
         };
         let rows = vec![TabRow {
@@ -1383,7 +1367,7 @@ mod tests {
         // Build a multi-agent running tab with a 4-member roster.
         let detail = Detail {
             repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            since_tick: 0, status: Running,
+            kind: Kind::Claude, since_tick: 0, status: Running,
         };
         let mut a = agg(Running, 2, 4, Some(detail));
         a.roster = vec![Running, Done, Done, Pending];
@@ -1411,7 +1395,7 @@ mod tests {
         for &width in &[16usize, 20, 24] {
             let detail = Detail {
                 repo: "r".into(), branch: "b".into(), msg: "m".into(),
-                since_tick: 0, status: Running,
+                kind: Kind::Claude, since_tick: 0, status: Running,
             };
             // 10-member roster
             let mut a = agg(Running, 0, 10, Some(detail));
@@ -1439,6 +1423,7 @@ mod tests {
             branch: "b".into(),
             msg: "working".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Running,
         };
         // Multi-agent running tab with a roster; total=3, status=Running.
@@ -1491,13 +1476,14 @@ mod tests {
         use crate::status::Status::*;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "approve?".into(),
-            since_tick: 0, status: Pending,
+            kind: Kind::Claude, since_tick: 0, status: Pending,
         };
         // Single-agent: roster is empty, total == 1.
         let a = agg(Pending, 0, 1, Some(detail));
-        // row_lines should be 3 (pending + msg) — NOT 4.
+        // row_lines should be 2 (mark + activity line) — old 3-line case (branch·needs-you + quoted
+        // msg) is gone; the question IS the activity on line 2 now.
         let base = row_lines(&a);
-        assert_eq!(base, 3, "single-agent pending+msg should be 3 lines");
+        assert_eq!(base, 2, "single-agent pending+msg should be 2 lines");
         // Roster vec is empty so no extra line.
         assert!(a.roster.is_empty());
     }
@@ -1509,7 +1495,7 @@ mod tests {
         // Running with detail = base 2 lines; empty roster => still 2, not 3.
         let detail = crate::model::Detail {
             repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            since_tick: 0, status: Running,
+            kind: Kind::Claude, since_tick: 0, status: Running,
         };
         let a = agg(Running, 1, 3, Some(detail));
         assert!(a.roster.is_empty(), "agg() helper always creates empty roster");
@@ -1523,24 +1509,19 @@ mod tests {
     /// (Pending) lose their detail lines.
     #[test]
     fn overflow_compresses_calm_before_urgent() {
-        // 3 Running rows (each 2 lines) + 1 Pending-with-msg (3 lines) = 9 lines.
+        // 3 Running rows (each 2 lines) + 1 Pending-with-msg (now 2 lines) = 8 lines.
         // header = 2. body_budget = height - 2.
         // We pick height = 7 → body_budget = 5.
         // Compression: Running rows compressed to 1 line each (3 lines saved);
-        // total becomes 3×1 + 3 = 6, still > 5 → one more Running line → 3×1+3 = 6?
-        // Actually: 3×1 + 3 = 6 > 5, so one more calm row: but all calm are already at 1.
-        // Wait: calm rows each go from 2 to 1 (saving 1 line each). After all 3:
-        //   3×1 + 3 = 6 > 5. Then compress Pending: 3→2 (drop msg). 3×1 + 2 = 5 ≤ 5. Done.
-        // So Pending still has 2 lines (the "branch · needs you" line survives).
-        // Pending loses ONLY the msg line; its detail line stays.
+        //   3×1 + 2 = 5 ≤ 5. Done. Pending keeps its activity line (2 lines total).
         let detail_running = |n: u8| Detail {
             repo: format!("repo{}", n), branch: "main".into(), msg: "working".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let detail_pending = Detail {
             repo: "urgent-proj".into(), branch: "fix/thing".into(),
             msg: "please review".into(),
-            since_tick: 0, status: Status::Pending,
+            kind: Kind::Claude, since_tick: 0, status: Status::Pending,
         };
 
         let rows = vec![
@@ -1554,11 +1535,11 @@ mod tests {
                      agg: agg(Status::Pending, 0, 1, Some(detail_pending)) },
         ];
 
-        // Verify uncompressed sizes.
+        // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
         assert_eq!(row_lines(&rows[0].agg), 2);
         assert_eq!(row_lines(&rows[1].agg), 2);
         assert_eq!(row_lines(&rows[2].agg), 2);
-        assert_eq!(row_lines(&rows[3].agg), 3); // pending + msg
+        assert_eq!(row_lines(&rows[3].agg), 2); // pending + msg = 2 (mark + activity)
 
         // body_budget = 5 (height 7, header 2)
         let body_budget = 5usize;
@@ -1571,21 +1552,20 @@ mod tests {
         assert_eq!(plan[1].1, 1, "Running row 1 compressed to 1 line");
         assert_eq!(plan[2].1, 1, "Running row 2 compressed to 1 line");
 
-        // Pending row: 3 lines initially, should still keep its detail (≥ 2 lines).
-        // After calm compression: 3 + 3 = 6 > 5; one step of urgent compression:
-        // pending → 2 → total = 3 + 2 = 5 ≤ 5. Done.
-        assert!(plan[3].1 >= 2,
-            "Pending row should retain detail (≥2 lines), got {}", plan[3].1);
+        // Pending row: 2 lines (mark + activity), fits without further compression.
+        // After calm compression: 3×1 + 2 = 5 ≤ 5. Pending keeps its activity line.
+        assert_eq!(plan[3].1, 2, "Pending row keeps activity line (2 lines)");
 
         // Total body lines must be ≤ budget.
         let total_body: usize = plan.iter().map(|(_, l)| l).sum();
         assert!(total_body <= body_budget,
             "total body lines {} exceeds budget {}", total_body, body_budget);
 
-        // Render and verify: Running rows have no detail line; urgent keeps "needs you".
+        // Render and verify: Running rows have no detail line; urgent shows activity.
         let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
         let s = render(&rows, &opts);
-        assert!(s.contains("needs you"), "urgent row detail must survive");
+        assert!(s.contains("please review"), "urgent row activity must survive");
+        assert!(s.contains('✳'), "urgent row must show the Claude identity mark");
         // Total line count ≤ height
         assert!(s.lines().count() <= 7,
             "rendered lines {} exceed height 7", s.lines().count());
@@ -1597,7 +1577,7 @@ mod tests {
     fn overflow_all_one_line_when_extreme() {
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "msg".into(),
-            since_tick: 0, status: Status::Pending,
+            kind: Kind::Claude, since_tick: 0, status: Status::Pending,
         };
         let rows = vec![
             TabRow { number: 1, name: "pending".into(), active: false, has_bell: false,
@@ -1678,7 +1658,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![
             TabRow { number: 1, name: "work".into(), active: false, has_bell: false,
@@ -1768,7 +1748,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![
             TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
@@ -1819,7 +1799,7 @@ mod tests {
         use crate::model::Detail;
         let done = Detail {
             repo: "r".into(), branch: "".into(), msg: "".into(),
-            since_tick: 0, status: Status::Done,
+            kind: Kind::Claude, since_tick: 0, status: Status::Done,
         };
         let rows = vec![
             TabRow { number: 1, name: "x".into(), active: false, has_bell: false,
@@ -1847,7 +1827,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "pinky".into(), branch: "fix/x".into(), msg: "some work".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![TabRow {
             number: 1, name: "agent".into(), active: true, has_bell: false,
@@ -1866,7 +1846,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "work".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![
             TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
@@ -1890,7 +1870,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![
             TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
@@ -1918,6 +1898,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(),
             since_tick: 0,
+            kind: Kind::Claude,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -2048,7 +2029,7 @@ mod tests {
         use crate::model::Detail;
         let detail = Detail {
             repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            since_tick: 0, status: Status::Running,
+            kind: Kind::Claude, since_tick: 0, status: Status::Running,
         };
         let rows = vec![
             TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
@@ -2095,11 +2076,11 @@ mod tests {
         // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
         use crate::model::Detail;
         let running = Detail { repo: "web".into(), branch: "".into(),
-            msg: "building…".into(), since_tick: 0, status: Status::Running };
+            msg: "building…".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
         let pending = Detail { repo: "api".into(), branch: "fix".into(),
-            msg: "".into(), since_tick: 0, status: Status::Pending };
+            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
         let done = Detail { repo: "worker".into(), branch: "".into(),
-            msg: "".into(), since_tick: 0, status: Status::Done };
+            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Done };
         let rows = vec![
             TabRow { number: 1, name: "Claude".into(), active: true, has_bell: false,
                      agg: agg(Status::Running, 0, 1, Some(running)) },
@@ -2118,7 +2099,7 @@ mod tests {
         // trailing gap row (rail_bg — the panel shows through between cards).
         // Per card:
         //   Claude (active, 2 content) → 2 content + 1 gap = "active","active","rail"
-        //   api    (agent, 2 content)  → 2 content + 1 gap = "agent","agent","rail"
+        //   api    (agent, 1 content)  → pending+empty-msg → 1 content + 1 gap = "agent","rail"
         //   worker (agent, 1 content)  → 1 content + 1 gap = "agent","rail"
         //   Pane#1 (idle, 1 content)   → 1 content + 1 gap = "idle","rail"
         //   Pane#2 (idle, 1 content)   → 1 content + 1 gap = "idle","rail"
@@ -2127,7 +2108,6 @@ rail\n\
 active\n\
 active\n\
 rail\n\
-agent\n\
 agent\n\
 rail\n\
 agent\n\
@@ -2150,9 +2130,9 @@ rail";
         //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
         use crate::model::Detail;
         let pending = Detail { repo: "pinky".into(), branch: "fix".into(),
-            msg: "".into(), since_tick: 0, status: Status::Pending };
+            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
         let err = Detail { repo: "infra".into(), branch: "".into(),
-            msg: "boom".into(), since_tick: 0, status: Status::Error };
+            msg: "boom".into(), kind: Kind::Claude, since_tick: 0, status: Status::Error };
         let rows = vec![
             TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
                      agg: agg(Status::Pending, 0, 1, Some(pending)) },
@@ -2190,7 +2170,7 @@ rail";
         // urgent marker in the attention role.
         use crate::model::Detail;
         let pending = Detail { repo: "p".into(), branch: "x".into(),
-            msg: "approve?".into(), since_tick: 0, status: Status::Pending };
+            msg: "approve?".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
         let rows = vec![
             TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
                      agg: agg(Status::Pending, 0, 1, Some(pending)) },
