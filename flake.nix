@@ -80,6 +80,10 @@
           cli-test = craneLib.cargoTest (cliArgs // {
             cargoArtifacts = cargoArtifactsCli;
           });
+          cli-clippy = craneLib.cargoClippy (cliArgs // {
+            cargoArtifacts = cargoArtifactsCli;
+            cargoClippyExtraArgs = "--all-targets --features cli -- -D warnings";
+          });
         };
 
         devShells.default = pkgs.mkShell {

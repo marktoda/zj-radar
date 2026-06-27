@@ -51,9 +51,7 @@ pub fn derive_codex(event_type: &str, last_message: &str) -> Option<Update> {
 /// Terminal pane id from `$ZELLIJ_PANE_ID` (strip a `terminal_` prefix), or None
 /// when not running under Zellij or the id is non-numeric.
 fn pane_id_from_env() -> Option<u32> {
-    if std::env::var_os("ZELLIJ").is_none() {
-        return None;
-    }
+    std::env::var_os("ZELLIJ")?; // not under Zellij → no-op
     let raw = std::env::var("ZELLIJ_PANE_ID").ok()?;
     raw.strip_prefix("terminal_").unwrap_or(&raw).parse::<u32>().ok()
 }
