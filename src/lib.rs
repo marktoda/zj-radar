@@ -21,6 +21,8 @@ mod config;
 // everything in it appears dead. Its own unit tests exercise it on the host.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod command;
 
 #[cfg(feature = "cli")]
 pub mod cli;
