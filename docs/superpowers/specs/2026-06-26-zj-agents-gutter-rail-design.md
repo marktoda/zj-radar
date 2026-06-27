@@ -27,7 +27,7 @@ contract (`zj_radar.status.v1`), per-pane→per-tab aggregation, naming, and hos
 |---|---|---|
 | 1 | Row sort order | **Keep tab-position order.** The aligned gutter does the scanning; tab N stays at row ~N (muscle memory). No priority re-sort. |
 | 2 | Color strategy | **ANSI-16 role mapping** — named ANSI colors mapped to roles, so the user's terminal theme styles them. No fixed hex. |
-| 3 | Glyph set | **Nerd Font default, config toggle** `glyphs = nerd \| plain`. Plain fallback `○ ◐ ◆ ● ✗`. |
+| 3 | Glyph set | **Plain default; Nerd opt-in** via `glyphs = "nerd"`. Plain glyphs: `○ ◐ ◆ ● ✗`. |
 | 4 | Scope — in | Core rail, **overflow folding**, **onboarding/empty-state panel**, **light-theme legibility**. |
 | 5 | Scope — out | Collapsed/keybind mode; the per-agent **roster line** in multi-agent tabs (show aggregate only, opt-in later). |
 
@@ -53,10 +53,13 @@ Notes:
 - `accent` and `attention` are distinct hues (magenta vs red), so the active bar's
   normal→urgent tint is visible.
 
-## 4. Glyph set (`GlyphSet`: Nerd | Plain)
+## 4. Glyph set (`GlyphSet`: Plain | Nerd)
 
-Selected once in `load()` from config (`glyphs`), default **Nerd**. A small lookup, not a
-new module — extend `status.rs`.
+Selected once in `load()` from config (`glyphs`), default **Plain** (Nerd opt-in via
+`glyphs = "nerd"`). A small lookup, not a new module — extend `status.rs`.
+
+> **Rationale:** Nerd Font presence cannot be detected at runtime. Defaulting to Nerd would
+> show broken box characters on non-Nerd terminals, so Plain is the safe default.
 
 | State | Nerd | Plain |
 |---|---|---|
@@ -180,7 +183,7 @@ truecolor `38;2;` sequences).
 ## 12. Config surface
 
 `load()` already receives `BTreeMap<String,String>`. New keys (all optional, safe defaults):
-- `glyphs` = `nerd` (default) | `plain`.
+- `glyphs` = `plain` (default) | `nerd`.
 - `width` — optional render-width hint (else use the pane `cols`).
 
 No new permissions; no new host calls.
