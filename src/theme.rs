@@ -69,9 +69,9 @@ impl DerivedColors {
             rail_bg,
             // A ladder UP from the dark panel toward the terminal bg, so cards
             // are dark/subtle steps. Only `surface_active` rises above bg.
-            surface_idle: blend(rail_bg, bg, 0.12),
-            surface_agent: blend(rail_bg, bg, 0.50),
-            surface_active: blend(bg, fg, 0.10),
+            surface_idle: blend(rail_bg, bg, 0.30),
+            surface_agent: blend(rail_bg, bg, 0.72),
+            surface_active: blend(bg, fg, 0.18),
             dim_strong: blend(fg, bg, 0.28),
             dim_weak: blend(fg, bg, 0.55),
             idle_text: blend(fg, bg, 0.45),

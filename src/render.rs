@@ -253,8 +253,9 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
 ///   - `gap_used`: 0 (no blank lines) or 1 (one blank line after each kept tab).
 ///
 /// Gap rule:
-///   - If `density == Compact`, `gap_used` is always 0.
-///   - Otherwise, gaps are included only when ALL of them still fit within
+///   - Compact and Cards → `gap_used` is always 0 (Cards uses background tints
+///     to visually separate adjacent cards; Compact uses flush spacing).
+///   - Comfortable → gaps are included only when ALL of them still fit within
 ///     `body_budget` (after accounting for content lines and the strip line).
 ///     If even one gap would overflow, `gap_used` falls back to 0 (flush
 ///     spacing), letting T3+ overflow compression handle the rest.
@@ -264,13 +265,13 @@ pub fn plan_layout(
     density: Density,
 ) -> (Vec<(usize, usize)>, usize, usize) {
     let (plan, strip_folded) = plan_overflow(rows, body_budget);
-    let gap_used = if density == Density::Compact {
+    let gap_used = if density == Density::Compact || density == Density::Cards {
         0
     } else {
+        // Comfortable only: include gaps only when they all fit.
         let content_total: usize = plan.iter().map(|(_, l)| l).sum();
         let kept_count = plan.len();
         let strip_line = if strip_folded > 0 { 1 } else { 0 };
-        // Include gaps only when content + one-gap-per-tab + strip all fit.
         if content_total + kept_count + strip_line <= body_budget {
             1
         } else {
@@ -1726,15 +1727,11 @@ mod tests {
         assert!(lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
             "idle content line must carry a card surface band, not rail: {:?}", lines[1]);
 
-        // line 2 = the gap → painted with rail_bg (the panel base).
-        assert!(lines[2].contains(RAIL),
-            "gap line must carry the rail panel band: {:?}", lines[2]);
-
-        // line 3 = working tab line 1, line 4 = working detail → card surface.
+        // Cards has no inter-card gap: line 2 = working tab line 1, line 3 = working detail.
+        assert!(lines[2].contains("\x1b[48;2;") && !lines[2].contains(RAIL),
+            "working tab line 1 must carry a card surface band: {:?}", lines[2]);
         assert!(lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
-            "working tab line 1 must carry a card surface band: {:?}", lines[3]);
-        assert!(lines[4].contains("\x1b[48;2;") && !lines[4].contains(RAIL),
-            "working tab detail line must carry a card surface band: {:?}", lines[4]);
+            "working tab detail line must carry a card surface band: {:?}", lines[3]);
 
         // Every painted line must end with bg reset (\x1b[49m).
         for (i, line) in lines.iter().enumerate() {
@@ -1758,8 +1755,8 @@ mod tests {
         ];
         let width = 24usize;
         let s = render(&rows, &ro_cards(width, 100));
-        // Skip 2 header lines; first body line is the painted content line.
-        let body: Vec<&str> = s.lines().skip(2).collect();
+        // Cards has a 1-line header (no rule); first body line is the painted content line.
+        let body: Vec<&str> = s.lines().skip(1).collect();
         let content_line = body[0];
         assert!(content_line.contains("\x1b[48;2;"),
             "content line must have truecolor card bg: {:?}", content_line);
@@ -1785,8 +1782,8 @@ mod tests {
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        // The neutral-dark fallback active surface from the dark-panel ladder is (43,45,56).
-        assert!(s.contains("\x1b[0m\x1b[48;2;43;45;56m"),
+        // The neutral-dark fallback active surface from the dark-panel ladder is (56,59,71).
+        assert!(s.contains("\x1b[0m\x1b[48;2;56;59;71m"),
             "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}", s);
     }
 
@@ -1874,9 +1871,9 @@ mod tests {
 
     /// Classify each rendered line for a tint-map snapshot by which truecolor
     /// surface band it carries (using the neutral-dark fallback's dark-panel ladder):
-    ///   "active" = surface_active (43,45,56)  — brighter than bg, gently pops
-    ///   "agent"  = surface_agent  (22,23,33)  — mid step up from rail
-    ///   "idle"   = surface_idle   (19,20,28)  — barely above the panel
+    ///   "active" = surface_active (56,59,71)  — brighter than bg, gently pops
+    ///   "agent"  = surface_agent  (24,25,35)  — mid step up from rail
+    ///   "idle"   = surface_idle   (20,21,30)  — barely above the panel
     ///   "rail"   = rail_bg        (18,19,27)  — the dark panel base (gaps/header)
     ///   "bare"   = no band at all.
     /// Note: in Cards every emitted line is painted, so blank gaps now carry the
@@ -1884,11 +1881,11 @@ mod tests {
     fn tint_map(s: &str) -> String {
         s.lines()
             .map(|line| {
-                if line.contains("\x1b[48;2;43;45;56m") {
+                if line.contains("\x1b[48;2;56;59;71m") {
                     "active"
-                } else if line.contains("\x1b[48;2;22;23;33m") {
+                } else if line.contains("\x1b[48;2;24;25;35m") {
                     "agent"
-                } else if line.contains("\x1b[48;2;19;20;28m") {
+                } else if line.contains("\x1b[48;2;20;21;30m") {
                     "idle"
                 } else if line.contains("\x1b[48;2;18;19;27m") {
                     "rail"
@@ -1924,15 +1921,16 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
         // Cards header is now 1 line (no rule), so content starts at line 1.
-        // line 1 = idle content → barely-above-panel idle surface (19,20,28)
-        assert!(lines[1].contains("\x1b[48;2;19;20;28m"),
-            "idle row must carry the dim truecolor card tint (19;20;28): {:?}", lines[1]);
-        // gap at line 2 (rail), agent line 1 at line 3 → mid surface (22,23,33)
-        assert!(lines[3].contains("\x1b[48;2;22;23;33m"),
-            "agent row must carry the mid truecolor card tint (22;23;33): {:?}", lines[3]);
-        // gap at line 5 (rail), focused agent line 1 at line 6 → active surface (43,45,56)
-        assert!(lines[6].contains("\x1b[48;2;43;45;56m"),
-            "focused row must carry the active truecolor card tint (43;45;56): {:?}", lines[6]);
+        // Cards has no inter-card gaps; tabs are adjacent.
+        // line 1 = idle content → barely-above-panel idle surface (20,21,30)
+        assert!(lines[1].contains("\x1b[48;2;20;21;30m"),
+            "idle row must carry the dim truecolor card tint (20;21;30): {:?}", lines[1]);
+        // agent line 1 at line 2 (no gap) → mid surface (24,25,35)
+        assert!(lines[2].contains("\x1b[48;2;24;25;35m"),
+            "agent row must carry the mid truecolor card tint (24;25;35): {:?}", lines[2]);
+        // focused agent line 1 at line 4 (after agent detail at line 3) → active surface (56,59,71)
+        assert!(lines[4].contains("\x1b[48;2;56;59;71m"),
+            "focused row must carry the active truecolor card tint (56;59;71): {:?}", lines[4]);
     }
 
     #[test]
@@ -1960,22 +1958,18 @@ mod tests {
                      agg: agg(Status::Idle, 0, 0, None) },
         ];
         let s = render(&rows, &ro_cards(24, 100));
-        // Cards is now a cohesive dark panel: the 1-line header (no rule) and
-        // every gap are painted with rail_bg; card content carries its surface.
+        // Cards is now a cohesive dark panel: the 1-line header (no rule) is
+        // painted with rail_bg; card content carries its surface. No inter-card
+        // gap rows — adjacent cards are visually separated by background tints.
         let expected = "\
 rail\n\
 active\n\
 active\n\
-rail\n\
 agent\n\
 agent\n\
-rail\n\
 agent\n\
-rail\n\
 idle\n\
-rail\n\
-idle\n\
-rail";
+idle";
         assert_eq!(tint_map(&s), expected,
             "3-tint card map drifted from the design:\n{:?}", s);
     }

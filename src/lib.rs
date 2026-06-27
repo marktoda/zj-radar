@@ -735,16 +735,15 @@ mod tests {
     }
 
     #[test]
-    fn click_mapping_cards_one_line_header_and_gaps() {
+    fn click_mapping_cards_one_line_header() {
         // Cards density: the carded hero is a single " RADAR …" title line (no
-        // rule), so the header occupies ONE line, not two. Each tab content line
-        // is followed by one rail gap line (like Comfortable). The click mapping
-        // must stay in lockstep with render():
+        // rule), so the header occupies ONE line, not two. Cards has no inter-card
+        // gaps (background tints visually separate adjacent cards). The click
+        // mapping must stay in lockstep with render():
         //   line 0       → header (1 line, no rule)
         //   line 1       → tab 0 content
-        //   line 2       → tab 0 gap  (maps to tab 0's block)
-        //   line 3       → tab 1 content
-        //   line 4       → tab 1 gap  (maps to tab 1's block)
+        //   line 2       → tab 1 content
+        //   line 3       → None (beyond last tab)
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.last_render_height = 100;
         state.config = config::Config {
@@ -754,9 +753,7 @@ mod tests {
 
         assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
         assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
-        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 gap maps to tab 0");
-        assert_eq!(state.tab_position_at_line(3), Some(1), "tab 1 content");
-        assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 gap maps to tab 1");
-        assert_eq!(state.tab_position_at_line(5), None, "beyond last tab");
+        assert_eq!(state.tab_position_at_line(2), Some(1), "tab 1 content (no gap)");
+        assert_eq!(state.tab_position_at_line(3), None, "beyond last tab");
     }
 }
