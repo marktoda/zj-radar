@@ -942,4 +942,123 @@ mod tests {
             "moving 'left' (2→1) leaves pane 2 Done"
         );
     }
+
+    // ── Event-sequence walk: shell→idle, fg command→pending→Running, exit→Done, focus→Idle ──
+
+    #[test]
+    fn command_pane_walks_idle_running_done_idle() {
+        use crate::command::DEBOUNCE_TICKS;
+
+        let mut state = make_state_with_tabs(&[(0, "t", true)]);
+        state.runtime.tab_panes.insert(0, vec![pane(5)]);
+
+        // Tick counter managed locally, matching what PluginRuntime.tick would be.
+        let mut tick: u64 = 0;
+
+        // 1) shell prompt only → idle (zsh is in IGNORE_NAMES, no resolved state)
+        state.runtime.command.on_command_changed(
+            5,
+            &["zsh".to_string()],
+            true,
+            Some("/home/u/repo"),
+            tick,
+        );
+        tick += 1;
+        state.runtime.command.on_timer(tick);
+        assert!(
+            state.runtime.command.get(5).is_none(),
+            "shell prompt must leave pane idle"
+        );
+
+        // 2) real fg command → pending (not yet Running); after DEBOUNCE_TICKS timer → Running
+        // DEBOUNCE_TICKS = 1: pending since_tick = tick; next tick satisfies
+        // (tick + 1) - tick = 1 >= DEBOUNCE_TICKS.
+        let since = tick;
+        state.runtime.command.on_command_changed(
+            5,
+            &["cargo".to_string(), "test".to_string()],
+            true,
+            Some("/home/u/repo"),
+            tick,
+        );
+        // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
+        tick += DEBOUNCE_TICKS;
+        state.runtime.command.on_timer(tick);
+        assert_eq!(
+            state.runtime.command.get(5).map(|s| s.status),
+            Some(Status::Running),
+            "must promote to Running after debounce (since={}, tick={})", since, tick
+        );
+
+        // 3) pane exits with code 0 → Done
+        tick += 1;
+        state.runtime.command.on_exit(5, Some(0), tick);
+        assert_eq!(
+            state.runtime.command.get(5).map(|s| s.status),
+            Some(Status::Done),
+            "exit 0 must set Done"
+        );
+
+        // 4) pane gains focus → clear-on-focus → Idle
+        tick += 1;
+        state.runtime.command.on_pane_focused(5, tick);
+        let st = state.runtime.command.get(5).map(|s| s.status);
+        assert!(
+            st == Some(Status::Idle) || st.is_none(),
+            "Done must clear to Idle on focus, got {:?}", st
+        );
+    }
+
+    // ── Click round-trip proptest ──
+
+    proptest::proptest! {
+        #[test]
+        fn click_round_trip_hits_drawn_target(
+            n_tabs in 1usize..6,
+            active_idx in 0usize..6,
+            statuses in proptest::collection::vec(0u8..5, 1..6),
+        ) {
+            // Build a state with n_tabs, each tab one pane with a status.
+            let specs: Vec<(usize, &str, bool)> = (0..n_tabs)
+                .map(|i| (i, "t", i == active_idx % n_tabs))
+                .collect();
+            let mut state = make_state_with_tabs(&specs);
+            state.runtime.last_render_height = 200;
+            for (i, &s) in statuses.iter().take(n_tabs).enumerate() {
+                let st = match s {
+                    0 => Status::Idle,
+                    1 => Status::Done,
+                    2 => Status::Running,
+                    3 => Status::Pending,
+                    _ => Status::Error,
+                };
+                // one pane per tab; pane id = tab index
+                apply_payload(&mut state, i as u32, st, 1);
+                state.runtime.tab_panes.insert(i, vec![pane(i as u32)]);
+            }
+            // For every drawn line, target_at_line must resolve to a real tab.
+            let rows = state.build_rows();
+            let total_body: usize = rows
+                .iter()
+                .map(|r| crate::render::row_lines(&r.agg, r.active))
+                .sum();
+            // +2 probes past the body to cover header offset / trailing lines,
+            // which correctly resolve to None — not a bug.
+            let mut resolved = 0usize;
+            for line in 0..(total_body as isize + 2) {
+                if let Some((tab, _pane)) = state.target_at_line(line) {
+                    proptest::prop_assert!(
+                        tab < n_tabs,
+                        "resolved tab {} out of range {}", tab, n_tabs
+                    );
+                    resolved += 1;
+                }
+            }
+            proptest::prop_assert!(
+                resolved >= 1,
+                "test resolved no targets at all — setup may be broken (n_tabs={}, total_body={})",
+                n_tabs, total_body
+            );
+        }
+    }
 }
