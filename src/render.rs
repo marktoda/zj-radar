@@ -10,23 +10,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
-/// Controls whether the renderer emits SGR color escapes.
-///
-/// `Truecolor` (the default) emits 24-bit truecolor bg/fg escapes for card
-/// surfaces and dim text, plus ANSI-16 role codes for status glyphs and the
-/// spine. `None` suppresses ALL color escapes — no `48;2;`, no `38;2;`, and
-/// no ANSI-16 role codes — while keeping text and layout byte-identical.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ColorMode {
-    /// Emit all truecolor (24-bit) and ANSI-16 color escapes (default).
-    #[default]
-    Truecolor,
-    /// Suppress color SGR escapes (ANSI-16 role codes and 24-bit truecolor);
-    /// reset/default escapes like `\x1b[0m`/`\x1b[49m` may still appear.
-    /// Text and layout are otherwise unchanged.
-    None,
-}
-
 #[derive(Clone)]
 pub struct RenderOpts {
     pub width: usize,
@@ -41,10 +24,6 @@ pub struct RenderOpts {
     /// are the only truecolor values (status hues are ANSI-16). Defaults to a
     /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
-    /// Color output mode. `Truecolor` emits all SGR escapes; `None` suppresses
-    /// every color escape (truecolor bg/fg and ANSI-16 role codes) while
-    /// keeping text and layout unchanged. Default: `Truecolor`.
-    pub color: ColorMode,
 }
 
 #[derive(Debug)]
@@ -519,9 +498,8 @@ pub fn plan_layout(
 /// before permission is granted. Not a permission interceptor.
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     let mut out = String::new();
-    let color_mode = opts.color;
-    let accent = if color_mode == ColorMode::None { "" } else { Role::Accent.ansi() };
-    let muted = if color_mode == ColorMode::None { "" } else { Role::Muted.ansi() };
+    let accent = Role::Accent.ansi();
+    let muted = Role::Muted.ansi();
     let g = opts.glyphs;
     out.push_str(&format!("{} RADAR{}\n", accent, RESET));
     out.push_str(&format!("{}{}{}\n", accent, "═".repeat(opts.width), RESET));
@@ -536,7 +514,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
         (Status::Idle, "idle"),
     ];
     for (st, label) in legend {
-        let role_code = if color_mode == ColorMode::None { "" } else { st.role().ansi() };
+        let role_code = st.role().ansi();
         out.push_str(&format!(
             " {}{}{} {}{}{}\n",
             role_code,
@@ -584,12 +562,7 @@ fn render_row<F>(
     // stays distinct from the error row via shape + bold (◆ + bold vs ✗), not
     // hue. Only the dark panel surfaces + dim greys are truecolor (terminal-bg/fg
     // derived), so those match the terminal's theme too.
-    // In ColorMode::None ALL color is suppressed — ANSI-16 role codes and
-    // truecolor escapes alike — leaving only text and whitespace.
-    let color_mode = opts.color;
-    let hue = |r: Role| -> String {
-        if color_mode == ColorMode::None { String::new() } else { r.ansi().to_string() }
-    };
+    let hue = |r: Role| -> String { r.ansi().to_string() };
 
     // col 0: active spine — accent (mauve) normally, attention (peach) when the
     // active row is also waiting/error.
@@ -620,7 +593,7 @@ fn render_row<F>(
     // also bold (it's the alarm). Active is shown by the spine + brighter card,
     // NOT bold, so the two cues stay independent.
     let label_color = if st == Status::Idle {
-        tc_fg_mode(opts.theme.idle_text, color_mode)
+        tc_fg(opts.theme.idle_text)
     } else {
         hue(st.role())
     };
@@ -664,7 +637,7 @@ fn render_row<F>(
     let slot_styled = if slot.is_empty() {
         String::new()
     } else if st == Status::Running {
-        format!("{}{}{}", tc_fg_mode(opts.theme.idle_text, color_mode), slot, RESET)
+        format!("{}{}{}", tc_fg(opts.theme.idle_text), slot, RESET)
     } else {
         format!("{}{}{}", hue(st.role()), slot, RESET)
     };
@@ -703,9 +676,8 @@ fn render_row<F>(
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
     // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
     // Both are truecolor foreground escapes derived from the bg/fg palette blend.
-    // In ColorMode::None these return empty strings so no color bytes appear.
-    let dim_strong = tc_fg_mode(opts.theme.dim_strong, color_mode);
-    let idle_color = tc_fg_mode(opts.theme.idle_text, color_mode);
+    let dim_strong = tc_fg(opts.theme.dim_strong);
+    let idle_color = tc_fg(opts.theme.idle_text);
 
     // ── Multi-pane adaptive tree (chunk 2) ─────────────────────────────────
     // A tab with >1 reporting pane renders as: header (line 1, above) + one
@@ -822,10 +794,7 @@ fn emit_child_line(
     let prefix_vis = 2 + tree_w + glyph_w + 1 + mark_w + 1;
     let avail = width.saturating_sub(prefix_vis);
     let activity_str = truncate(&pane.msg, avail);
-    let color_mode = opts.color;
-    let role_ansi = |r: Role| -> &'static str {
-        if color_mode == ColorMode::None { "" } else { r.ansi() }
-    };
+    let role_ansi = |r: Role| -> &'static str { r.ansi() };
     let activity_color = if pane.status == Status::Pending {
         role_ansi(Role::Attention).to_string()
     } else {
@@ -869,25 +838,11 @@ fn visible_width(s: &str) -> usize {
 }
 
 /// Emit an ANSI truecolor background escape for a given (r, g, b) triple.
-/// In `ColorMode::None`, returns an empty string so no color bytes appear.
-fn tc_bg_mode(c: (u8, u8, u8), mode: ColorMode) -> String {
-    if mode == ColorMode::None {
-        return String::new();
-    }
+fn tc_bg(c: (u8, u8, u8)) -> String {
     format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
 }
 
 /// Emit an ANSI truecolor foreground escape for a given (r, g, b) triple.
-/// In `ColorMode::None`, returns an empty string so no color bytes appear.
-fn tc_fg_mode(c: (u8, u8, u8), mode: ColorMode) -> String {
-    if mode == ColorMode::None {
-        return String::new();
-    }
-    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
-}
-
-/// Emit an ANSI truecolor foreground escape for a given (r, g, b) triple.
-#[allow(dead_code)]
 fn tc_fg(c: (u8, u8, u8)) -> String {
     format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
@@ -895,8 +850,7 @@ fn tc_fg(c: (u8, u8, u8)) -> String {
 /// The truecolor surface tint for a card, by class: the focused tab is
 /// brightest, agent rows (active status) are mid, idle/plain panes are
 /// the dimmest surface. Returns an owned ANSI escape string.
-/// In `ColorMode::None`, returns an empty string.
-fn card_tint(row: &TabRow, theme: &DerivedColors, mode: ColorMode) -> String {
+fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
     let rgb = if row.active {
         theme.surface_active
     } else if row.agg.status.is_active() {
@@ -904,7 +858,7 @@ fn card_tint(row: &TabRow, theme: &DerivedColors, mode: ColorMode) -> String {
     } else {
         theme.surface_idle
     };
-    tc_bg_mode(rgb, mode)
+    tc_bg(rgb)
 }
 
 /// Paint a single content line with a 256-color surface background band (`bg`).
@@ -966,13 +920,12 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         return RenderedRail { ansi: out, targets };
     }
     let width = opts.width;
-    let color_mode = opts.color;
-    let accent = if color_mode == ColorMode::None { "" } else { Role::Accent.ansi() };
+    let accent = Role::Accent.ansi();
     let cards = opts.density == Density::Cards;
     // In Cards density the whole sidebar is a cohesive dark panel: the header,
     // gaps and idle strip all sit on `rail_bg`; only card content lines carry
     // their (subtle, ladder-derived) surface tint.
-    let rail = tc_bg_mode(opts.theme.rail_bg, color_mode);
+    let rail = tc_bg(opts.theme.rail_bg);
 
     let body_budget = opts
         .height
@@ -1011,9 +964,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
         // Title in accent; total count muted (accent when overflowing, so the
         // ▲ marker stays loud); urgent marker in the attention role.
-        let count_color = if color_mode == ColorMode::None {
-            ""
-        } else if overflow {
+        let count_color = if overflow {
             accent
         } else {
             Role::Muted.ansi()
@@ -1039,7 +990,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
             RESET
         ));
         if pending > 0 && !urgent_clamped.is_empty() {
-            let attn = if color_mode == ColorMode::None { "" } else { Role::Attention.ansi() };
+            let attn = Role::Attention.ansi();
             title_line.push_str(&format!("{}{}{}", attn, urgent_clamped, RESET));
         }
         title_line.push('\n');
@@ -1063,8 +1014,8 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         // each content line with its class's surface tint (idle < agent <
         // active) — a subtle step up from the dark panel.
         if cards {
-            let bg = card_tint(&rows[i], &opts.theme, color_mode);
-            let active_child_bg = tc_bg_mode(opts.theme.surface_agent, color_mode);
+            let bg = card_tint(&rows[i], &opts.theme);
+            let active_child_bg = tc_bg(opts.theme.surface_agent);
             // pad_y rows: blank, painted with THIS card's own surface bg —
             // card-colored internal TOP padding (breathing room) that belongs
             // to this tab's click span.
@@ -1129,7 +1080,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         let plain = format!("{}{}", dots, suffix);
         // Guard the extreme-narrow case where even the suffix overflows.
         let clamped = truncate(&plain, width);
-        let strip_accent = if color_mode == ColorMode::None { "" } else { Role::Accent.ansi() };
+        let strip_accent = Role::Accent.ansi();
         let strip_line = format!("{}{}{}\n", strip_accent, clamped, RESET);
         // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
         if cards {
@@ -1173,7 +1124,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         }
     }
 
@@ -1512,7 +1462,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         let f1 = render(
@@ -1525,7 +1474,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         assert!(f0.contains('◐'));
@@ -1782,7 +1730,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         assert!(s.contains("idle")); // "+N idle ▾" footer
@@ -1821,7 +1768,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         assert!(s.contains("pinky")); // urgent row never folded
@@ -1842,7 +1788,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         assert!(!s.contains("idle ▾"));
@@ -1917,7 +1862,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         };
         let s = render(&rows, &opts);
 
@@ -2148,7 +2092,6 @@ mod tests {
                     header: true,
                     density: crate::config::Density::Compact,
                     theme: crate::theme::DerivedColors::default(),
-                    color: ColorMode::Truecolor,
                 },
             );
             // folding must have happened
@@ -2223,7 +2166,6 @@ mod tests {
             header: false,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         };
         let s = render(&rows, &opts);
         // No identity header: rows start at line 0, so no "RADAR"/"═" line.
@@ -2662,7 +2604,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         };
         let s = render(&rows, &opts);
         assert!(
@@ -2718,7 +2659,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         };
         let s = render(&rows, &opts);
         let line_count = s.lines().count();
@@ -2746,7 +2686,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Comfortable,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         }
     }
 
@@ -2799,7 +2738,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         };
         let s = render(&rows, &opts);
         assert_eq!(
@@ -2853,7 +2791,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Comfortable,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         let cards = render(
@@ -2866,7 +2803,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Cards,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         assert_ne!(
@@ -2908,7 +2844,6 @@ mod tests {
                 header: true,
                 density: crate::config::Density::Comfortable,
                 theme: crate::theme::DerivedColors::default(),
-                color: ColorMode::Truecolor,
             },
         );
         let line_count = s.lines().count();
@@ -2955,7 +2890,6 @@ mod tests {
             header: true,
             density: crate::config::Density::Cards,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         }
     }
 
@@ -3320,7 +3254,6 @@ mod tests {
                     header: true,
                     density,
                     theme: crate::theme::DerivedColors::default(),
-                    color: ColorMode::Truecolor,
                 },
             );
             assert!(
@@ -3901,7 +3834,7 @@ rail";
         );
     }
 
-    // ── ColorMode::None sanity guard ──────────────────────────────────────────
+    // ── Color additivity guard ────────────────────────────────────────────────
 
     /// Strip `\x1b[...m` SGR escape sequences from a string.
     fn strip_sgr(s: &str) -> String {
@@ -3925,70 +3858,28 @@ rail";
     }
 
     #[test]
-    fn no_color_mode_emits_no_sgr_color_but_same_text() {
-        // A scenario with a Pending tab (triggers attention ANSI-16) and a
-        // Running tab (triggers working ANSI-16 + truecolor dim fg for elapsed).
-        let d = crate::model::Detail {
-            repo: "repo".into(),
-            branch: "main".into(),
-            msg: "approve this".into(),
-            kind: crate::kind::Kind::Claude,
-            since_tick: 0,
-            status: Status::Pending,
-        };
+    fn color_is_purely_additive_over_a_fixed_layout() {
         let rows = vec![
             TabRow {
-                number: 1,
-                name: "work".into(),
-                active: true,
-                has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(d)),
+                number: 1, name: "agent".into(), active: true, has_bell: false,
+                agg: agg(Status::Pending, 0, 1, None),
             },
             TabRow {
-                number: 2,
-                name: "idle".into(),
-                active: false,
-                has_bell: false,
+                number: 2, name: "idle".into(), active: false, has_bell: false,
                 agg: agg(Status::Idle, 0, 0, None),
             },
         ];
-        let base_opts = ro(30, 0);
-        let tc_out = render(&rows, &base_opts);
-        let no_color_opts = RenderOpts { color: ColorMode::None, ..base_opts };
-        let nc_out = render(&rows, &no_color_opts);
-
-        // No 24-bit truecolor escapes in None mode.
-        assert!(
-            !nc_out.contains("\x1b[48;2;"),
-            "None mode must not emit truecolor bg: {:?}",
-            nc_out
-        );
-        assert!(
-            !nc_out.contains("\x1b[38;2;"),
-            "None mode must not emit truecolor fg: {:?}",
-            nc_out
-        );
-        // No ANSI-16 color codes (3x, 4x, 9x families) in None mode.
-        // We check for the role codes actually used: \x1b[31m, \x1b[32m, \x1b[33m,
-        // \x1b[35m, \x1b[91m (all the .ansi() values for roles used by render).
-        let ansi16_codes = [
-            "\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[35m", "\x1b[91m",
-            "\x1b[2m", "\x1b[90m",
-        ];
-        for code in ansi16_codes {
-            assert!(
-                !nc_out.contains(code),
-                "None mode must not emit ANSI-16 code {}: {:?}",
-                code,
-                nc_out
-            );
+        let out = render(&rows, &ro(30, 0));
+        // Stripping all SGR leaves a clean character grid (no escape residue),
+        // i.e. color sits *on top of* layout and never alters the cell content.
+        let stripped = strip_sgr(&out);
+        assert!(!stripped.contains('\x1b'), "no escape residue after strip: {stripped:?}");
+        assert!(stripped.contains("agent"));
+        assert!(stripped.contains("idle"));
+        // Visible width per line is unchanged by color (color adds zero columns).
+        for line in stripped.lines() {
+            assert!(visible_width(line) <= 30, "line exceeds width: {line:?}");
         }
-        // Stripped text must be identical in both modes.
-        assert_eq!(
-            strip_sgr(&tc_out),
-            strip_sgr(&nc_out),
-            "None mode must produce identical visible text to Truecolor"
-        );
     }
 
     // ── Stage 3b: snapshot / proptest / overflow / color-glyph-axis tests ──────
@@ -4090,7 +3981,6 @@ rail";
             header: true,
             density,
             theme: crate::theme::DerivedColors::default(),
-            color: ColorMode::Truecolor,
         }
     }
 
