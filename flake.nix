@@ -99,7 +99,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ toolchain pkgs.zellij ];
+          packages = [ toolchain pkgs.jq pkgs.zellij ];
           shellHook = ''
             echo "zj-radar dev shell: $(rustc --version)"
             echo "dev:    ./dev/run.sh"
