@@ -325,8 +325,10 @@ replacement is push-only and tiered:
   Zellij loads plugins as WASI command modules (it calls `_start`, which
   `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
   `_start` and won't load. See the comment block in `src/main.rs`.
-- **Dev loop:** `cargo build` + a dev layout pane running
-  `zellij action start-or-reload-plugin file:…/debug/zj-radar.wasm` for hot reload.
+- **Dev loop:** `./dev/build.sh` builds the debug wasm and `./dev/start.sh`
+  starts a fresh layout-backed dev session. Zellij 0.44 does not safely
+  hot-reload layout-created plugin panes; `start-or-reload-plugin` opens a
+  second pane instead.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
   release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
   reference via a `@zjRadar@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
@@ -367,7 +369,7 @@ zellij pipe --name zj_radar.status.v1 -- \
 
 | Phase | Deliverable |
 |---|---|
-| 0 | Scaffold: cargo + zellij-tile + permissions + hot-reload layout; renders a static sidebar |
+| 0 | Scaffold: cargo + zellij-tile + permissions + dev layout; renders a static sidebar |
 | 1 | Real tab list from `TabUpdate` (names, **display numbers = position+1**, active highlight, click→`switch_tab_to(position+1)`). Replaces compact-bar. **No agent state yet.** |
 | 2 | Consume `zj_radar.status.v1` broadcast (start with the **fake shell adapter** above to isolate plugin bugs from hook bugs); per-pane store + per-tab aggregation + pruning; state-color dots. Then extend Claude adapter payload; add Codex (`done`-only) adapter. |
 | 3 | Rich second line: repo/branch, elapsed (one-shot Timer), truncated last message. **Sanitization/truncation lives in the renderer**, not the adapter. |

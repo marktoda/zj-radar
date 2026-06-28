@@ -352,16 +352,19 @@ zellij pipe --name zj_radar.status.v1 -- \
 ```sh
 nix develop                              # host Rust + wasm32-wasip1 std + zellij
 cargo test                               # host tests, no wasm needed
-nix develop -c cargo build --target wasm32-wasip1
-zellij -n dev/dev.kdl                     # dev session — run from the repo root (relative wasm path)
-./dev/reload.sh                           # rebuild the debug wasm used by the dev layout
+./dev/build.sh                            # builds target/wasm32-wasip1/debug/zj_radar.wasm
+./dev/start.sh                            # starts a fresh zj-radar dev session
 ```
 
 `dev/dev.kdl` loads the **debug** wasm by a path relative to Zellij's cwd, so
-launch it from the repo root. `./dev/reload.sh` rebuilds the wasm and then
-refuses the unsafe hot-reload path when it detects the pinned layout sidebar:
+launch it from the repo root. `./dev/start.sh` builds first, then starts a named
+`zj-radar-dev` session from a normal terminal. It refuses to run inside an
+existing Zellij session and refuses to delete an existing dev session; attach to
+or delete that session explicitly before starting a fresh one.
+
 Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins that were
-created by a layout. Restart the dev layout/session to pick up a rebuilt sidebar.
+created by a layout. `./dev/reload.sh` is kept as a compatibility wrapper around
+`./dev/build.sh`; it does not call `start-or-reload-plugin`.
 
 The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
 `naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency

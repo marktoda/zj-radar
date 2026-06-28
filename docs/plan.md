@@ -40,7 +40,7 @@ zj-radar/
 │   ├── model.rs     # TabAgg + aggregate(pane_ids, store)                      (pure)
 │   └── render.rs    # TabRow + format_elapsed + render(rows, width, tick)      (pure)
 ├── dev/
-│   └── dev.kdl                     # hot-reload dev layout
+│   └── dev.kdl                     # dogfood dev layout
 └── docs/{design.md, plan.md}
 ```
 
@@ -1208,7 +1208,7 @@ layout {
 
 - [ ] **Step 2: Launch a dev session**
 
-Run: `cargo build --target wasm32-wasip1 && zellij --layout dev/dev.kdl`
+Run: `./dev/build.sh && ./dev/start.sh`
 Expected: a left sidebar lists `1 one`, `2 two`, `3 three`; grant the permission prompt.
 
 - [ ] **Step 3: Acceptance checks (Phase 1) — record results in the commit message**
