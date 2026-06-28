@@ -100,13 +100,19 @@ runtime.
                             ▼
 ┌ zj-radar plugin (Rust → wasm32-wasip1) ────────────────────────────────┐
 │  lib.rs: Zellij adapter                                                │
-│    raw Event/PaneInfo/TabInfo/filesystem ⇄ repo-owned inputs/effects   │
+│    raw Event/PaneInfo/TabInfo ⇄ repo-owned inputs/effects; owns        │
+│    SessionFiles and applies returned effects                           │
 │                                                                        │
 │  runtime.rs: PluginRuntime                                             │
-│    owns lifecycle state, permissions, timers, snapshots, naming,       │
-│    focus transitions, command activity, config pipes, and mouse intent │
+│    owns lifecycle state, permissions, timers, snapshot decisions,      │
+│    naming, focus transitions, command activity, config pipes, and      │
+│    mouse intent                                                        │
 │    input: TabLite/PaneUpdate/PermissionProbe/status/config/timer/mouse │
 │    output: Outcome { render, effects: Vec<Effect> }                    │
+│                                                                        │
+│  session_files.rs: SessionFiles                                        │
+│    owns per-session filesystem coordination across sidebar instances:  │
+│    snapshot durability, permission marker/lock, root fallback, pruning │
 │                                                                        │
 │  state.rs/model.rs/command.rs/naming.rs: pure state and tab model      │
 │    StateStore + CommandStore + aggregate(tab) + compute_renames        │
@@ -116,15 +122,15 @@ runtime.
 │    owns layout, overflow, ANSI, and click-target materialization       │
 └────────────────────────────────────────────────────────────────────────┘
         │ Effects: switch_tab_to(position + 1), show_pane_with_id, rename_tab,
-        │ request_permission, set_timeout, set_selectable, persist snapshot
+        │ request_permission, set_timeout, set_selectable, persist session state
         ▼  (desktop notifications stay in the shell adapters, NOT the plugin)
 ```
 
 **Design principle:** keep host-coupled code thin; push lifecycle decisions into
-`PluginRuntime` and layout/click decisions into `RenderedRail` so the core is unit-testable
-with `cargo test`. The adapter should not contain behavior beyond translating host data and
-performing returned effects. The real external seam remains the **pipe payload schema**
-(versioned).
+`PluginRuntime`, filesystem coordination into `SessionFiles`, and layout/click decisions into
+`RenderedRail` so the core is unit-testable with `cargo test`. The adapter should not contain
+behavior beyond translating host data, owning the session-files module, and performing returned
+effects. The real external seam remains the **pipe payload schema** (versioned).
 
 ### 4.1 Lifecycle state machine
 
@@ -162,17 +168,21 @@ Broadcast by name `zj_radar.status.v1` (namespaced + versioned). Each sidebar in
 filters on the name and keeps its own copy of the state map (same pattern as the built-in
 tab-bar; cheap for a handful of tabs).
 
-**Newcomer rehydration (`/cache` snapshot).** Because the plugin lives in the tab template,
+**Newcomer rehydration (session snapshot).** Because the plugin lives in the tab template,
 Zellij runs *one instance per tab*, and a broadcast only reaches instances alive when it is
 sent — it is never replayed. So a tab opened after agents were already running would spawn a
 blank instance and render every tab idle. Fix: each instance mirrors its `StateStore` into a
-snapshot at `/cache/zj-radar.<zellij_pid>.json` on every store mutation, and seeds itself from
-it in `load()`. `/cache` is the one plugin folder shared across all instances (keyed by plugin
-URL, not by `<plugin_id>-<client_id>` like `/data`), needs no extra permission, and is
-session-scoped by the Zellij server pid (stale per-session files are pruned by age on load).
+snapshot on every store mutation, and seeds itself from it in `load()`. `SessionFiles` chooses
+the persistence root: `/cache` first, because Zellij 0.44 mounts it as the plugin-URL-scoped
+folder shared across all instances, then `/tmp/zj-radar`, then disabled persistence if neither
+root is writable. `/data` is not used because it is scoped by `<plugin_id>-<client_id>` and is
+removed on plugin unload. Snapshot names are session-scoped by the Zellij server pid; temp files
+also include `plugin_id` so concurrent writers never clobber each other's in-progress write.
 Writes are temp-file + atomic rename, so a concurrent newcomer never reads a torn file; since
 every live instance writes identical content after a given broadcast, the races are benign and
-any stale seed self-heals on the next broadcast. The producer (hooks) is unaffected.
+any stale seed self-heals on the next broadcast. If persistence is disabled, the plugin still
+runs; late-spawned sidebars start empty until the next broadcast. The producer (hooks) is
+unaffected.
 
 ```json
 { "v": 1,
@@ -206,10 +216,11 @@ any stale seed self-heals on the next broadcast. The producer (hooks) is unaffec
   permission prompt is reachable; then call `set_selectable(false)` so the pane never steals focus
   from pane keybinds.
   - **Per-tab prompt coordination:** the sidebar is instantiated once per tab. On an uncached
-    first run, a session-scoped `/cache` lock elects one instance to call `request_permission()`;
-    peer instances stay passive, poll a `/cache` marker, then request after Zellij has cached the
-    answer for this plugin URL. This avoids one y/n prompt per tab while preserving Zellij's
-    explicit permission UI.
+    first run, `SessionFiles` uses a session-scoped lock to elect one instance to call
+    `request_permission()`; peer instances stay passive, poll a marker, then request after Zellij
+    has cached the answer for this plugin URL. This avoids one y/n prompt per tab while preserving
+    Zellij's explicit permission UI. If session files are unavailable, coordination degrades to
+    the old behavior rather than blocking startup.
 - **Subscriptions:** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`, `Timer`,
   `Mouse`, `PermissionRequestResult`.
 - **Tab index footgun:** `TabInfo.position` is **0-indexed**; `switch_tab_to(idx)` is
@@ -386,11 +397,12 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 4. **`zellij-tile` API churn** — pin to 0.44.x; read `PaneInfo`/`TabInfo` field ordering and the
    `PaneId` enum against the 0.44.3 tag.
 5. **Per-tab plugin instances** (N timers + N state copies) — the only-tick-while-active
-   optimization bounds the timers, and the state copies are reconciled via the shared `/cache`
-   snapshot (see §5 "Newcomer rehydration"). The trap here, learned the hard way: a broadcast is
-   *not* replayed to instances spawned later, so a new tab's instance starts blank — hence the
-   snapshot seed. Note `/data` is per-instance (`…/<plugin_id>-<client_id>/`) despite the docs
-   calling it "shared"; `/cache` (`…/plugin_cache/`) is the genuinely shared one.
+   optimization bounds the timers, and the state copies are reconciled through `SessionFiles`
+   (see §5 "Newcomer rehydration"). The trap here, learned the hard way: a broadcast is *not*
+   replayed to instances spawned later, so a new tab's instance starts blank — hence the snapshot
+   seed. Note `/data` is per-instance (`…/<plugin_id>-<client_id>/`) despite the docs calling it
+   "shared"; `/cache` (`…/plugin_cache/`) is the genuinely shared one in Zellij 0.44, with
+   `/tmp/zj-radar` as a degraded fallback.
 6. **Repeating the smart-tabs meltdown** (`smart-tabs-postmortem.md`) — bounded *by design*:
    zj-radar is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
    blocking `get_pane_*` queries, so high-output panes cost it nothing and there is no poll loop

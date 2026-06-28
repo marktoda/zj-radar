@@ -165,10 +165,13 @@ width? Change `size`.
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
 press `y` to grant. Because the sidebar exists once per tab, only one instance
-owns the first-run prompt; the others wait for Zellij's cached answer and then
-continue without asking again. The sidebar stays focusable only for that prompt,
-then goes back to passive sidebar behavior. It never runs commands;
-notifications stay in the producer.
+owns the first-run prompt when session files are writable; the others wait for
+Zellij's cached answer and then continue without asking again. Session files use
+Zellij's shared plugin cache when available and fall back to `/tmp/zj-radar`; if
+neither is writable, the sidebar still runs, but late-spawned sidebars may start
+empty until the next broadcast and first-run prompt coordination may be noisier.
+The sidebar stays focusable only for that prompt, then goes back to passive
+sidebar behavior. It never runs commands; notifications stay in the producer.
 
 For a roomier first-run prompt, approve the same stable plugin URL once in a
 floating pane before using the sidebar layout:
@@ -362,10 +365,10 @@ the layout's `plugin { … }` config (here `naming "force"`) or Zellij spawns a 
 pane instead of reloading — the script handles this (and reads `<loc>` back from
 the running layout, so nothing hardcodes a path).
 
-The pure modules (`status`, `payload`, `state`, `model`, `render`, `naming`,
-`config`, `theme`) carry no `zellij-tile` dependency and are fully unit-tested
-on the host target. Only `lib.rs`/`main.rs` touch the Zellij host API and are
-gated behind `#[cfg(target_arch = "wasm32")]`. See
+The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
+`naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency
+and are covered on the host target. Only `lib.rs`/`main.rs` touch the Zellij host
+API and are gated behind `#[cfg(target_arch = "wasm32")]`. See
 [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
 
 ## Status & roadmap

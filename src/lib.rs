@@ -18,6 +18,8 @@ mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod runtime;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod session_files;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
@@ -38,9 +40,12 @@ use naming::PaneLite;
 #[cfg(test)]
 use render::TabRow;
 use runtime::PluginRuntime;
+use session_files::SessionFiles;
 
 #[cfg(target_arch = "wasm32")]
-use runtime::{Effect, PermissionMarker, PermissionProbe};
+use runtime::Effect;
+#[cfg(target_arch = "wasm32")]
+use session_files::SessionFileIds;
 #[cfg(target_arch = "wasm32")]
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(target_arch = "wasm32")]
@@ -55,24 +60,8 @@ const CONFIG_PIPE: &str = "zj_radar.config.v1";
 #[derive(Default)]
 pub struct State {
     runtime: PluginRuntime,
-    // The shared `/cache` snapshot this instance reads on load and writes on
-    // every store mutation. zj-radar runs one instance PER TAB (it lives in the
-    // tab template), and a CLI-pipe broadcast only reaches instances alive at
-    // send time — it is never replayed. So a tab opened later spawns a blank
-    // instance that missed every prior broadcast and would show all tabs idle.
-    // `/cache` is the one plugin folder shared across all instances (keyed by
-    // plugin URL, not by instance), so it is where a newcomer rehydrates from.
-    // `cache_path` is `/cache/zj-radar.<zellij_pid>.json` (session-scoped by the
-    // Zellij server pid); `cache_tmp` is the per-instance temp file we write then
-    // atomically rename, so concurrent writers never expose a torn snapshot.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    cache_path: Option<String>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    cache_tmp: Option<String>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_ready_path: Option<String>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_lock_path: Option<String>,
+    session_files: SessionFiles,
 }
 
 // ── Pure helper wrappers (no host calls) — compiled only for host tests ──
@@ -138,135 +127,7 @@ impl State {
 // the `ZellijPlugin` impl + host-fn helpers it drives.
 
 #[cfg(target_arch = "wasm32")]
-const CACHE_DIR: &str = "/cache";
-#[cfg(target_arch = "wasm32")]
-const SNAPSHOT_PREFIX: &str = "zj-radar.";
-#[cfg(target_arch = "wasm32")]
-const SNAPSHOT_MAX_AGE_SECS: u64 = 24 * 60 * 60;
-#[cfg(target_arch = "wasm32")]
-const PERMISSION_GRANTED_MARKER: &str = "granted";
-#[cfg(target_arch = "wasm32")]
-const PERMISSION_DENIED_MARKER: &str = "denied";
-
-#[cfg(target_arch = "wasm32")]
 impl State {
-    /// Resolve the shared snapshot paths from the Zellij server pid, seed this
-    /// instance's store from any existing snapshot, and best-effort prune stale
-    /// ones. Called once from `load()`. All filesystem work is best-effort: a
-    /// failure just means this instance starts empty and the next broadcast
-    /// repopulates it — the plugin must never break the host over a cache miss.
-    fn init_cache(&mut self) -> Option<String> {
-        let ids = get_plugin_ids();
-        let path = format!("{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.json", ids.zellij_pid);
-        let permission_ready = format!(
-            "{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.permissions",
-            ids.zellij_pid
-        );
-        let permission_lock = format!("{permission_ready}.lock");
-        // Temp file is per-instance (plugin_id) so two tabs writing at once never
-        // clobber each other's in-progress write before the atomic rename.
-        let tmp = format!("{path}.{}.tmp", ids.plugin_id);
-        let snapshot = std::fs::read_to_string(&path).ok();
-        self.prune_stale_snapshots(&path);
-        self.cache_path = Some(path);
-        self.cache_tmp = Some(tmp);
-        self.permission_ready_path = Some(permission_ready);
-        self.permission_lock_path = Some(permission_lock);
-        snapshot
-    }
-
-    fn permission_probe(&self) -> PermissionProbe {
-        let marker = self.permission_marker();
-        let lock_acquired = marker.is_none() && self.become_permission_request_owner();
-        PermissionProbe {
-            marker,
-            lock_acquired,
-        }
-    }
-
-    fn permission_marker(&self) -> Option<PermissionMarker> {
-        let path = self.permission_ready_path.as_ref()?;
-        let raw = std::fs::read_to_string(path).ok()?;
-        match raw.trim() {
-            PERMISSION_GRANTED_MARKER => Some(PermissionMarker::Granted),
-            PERMISSION_DENIED_MARKER => Some(PermissionMarker::Denied),
-            _ => None,
-        }
-    }
-
-    fn become_permission_request_owner(&self) -> bool {
-        let Some(path) = &self.permission_lock_path else {
-            return true;
-        };
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(_) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-            // If coordination itself fails, prefer one reachable prompt over a
-            // session where every instance waits forever.
-            Err(_) => true,
-        }
-    }
-
-    fn mark_permission_flow_complete(&self, marker: PermissionMarker) {
-        if let Some(path) = &self.permission_ready_path {
-            let raw = match marker {
-                PermissionMarker::Granted => PERMISSION_GRANTED_MARKER,
-                PermissionMarker::Denied => PERMISSION_DENIED_MARKER,
-            };
-            let _ = std::fs::write(path, raw.as_bytes());
-        }
-    }
-
-    /// Mirror the current store into the shared snapshot. Every live instance
-    /// writes identical content after a given broadcast, so concurrent writes
-    /// converge; the temp-file + atomic rename guarantees a reader (a newly
-    /// loading instance) never sees a half-written file. Best-effort: errors are
-    /// swallowed, since the live broadcast is the source of truth for everyone
-    /// already running — the snapshot only seeds future newcomers.
-    fn persist_snapshot(&self, json: &str) {
-        let (Some(path), Some(tmp)) = (&self.cache_path, &self.cache_tmp) else {
-            return;
-        };
-        if std::fs::write(tmp, json.as_bytes()).is_ok() {
-            let _ = std::fs::rename(tmp, path);
-        }
-    }
-
-    /// Remove this plugin's snapshots from dead sessions. `/cache` is shared and
-    /// persists across sessions, so without this a small file would accumulate
-    /// per past session. Age-based (mtime) so it never deletes a concurrently
-    /// running session's file (that one keeps a fresh mtime) nor our own.
-    fn prune_stale_snapshots(&self, own_path: &str) {
-        let Ok(entries) = std::fs::read_dir(CACHE_DIR) else {
-            return;
-        };
-        let now = std::time::SystemTime::now();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with(SNAPSHOT_PREFIX) || !name.ends_with(".json") {
-                continue;
-            }
-            let path = entry.path();
-            if path.to_string_lossy() == own_path {
-                continue;
-            }
-            let stale = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| now.duration_since(t).ok())
-                .is_some_and(|age| age.as_secs() > SNAPSHOT_MAX_AGE_SECS);
-            if stale {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-
     fn handle_outcome(&mut self, outcome: runtime::Outcome) -> bool {
         let render = outcome.render;
         self.handle_effects(outcome.effects);
@@ -283,9 +144,9 @@ impl State {
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout => set_timeout(1.0),
-                Effect::PersistSnapshot(json) => self.persist_snapshot(&json),
+                Effect::PersistSnapshot(json) => self.session_files.persist_snapshot(&json),
                 Effect::PersistPermissionMarker(marker) => {
-                    self.mark_permission_flow_complete(marker)
+                    self.session_files.persist_permission_marker(marker)
                 }
                 Effect::RenameTab { position, name } => rename_tab(position as u32 + 1, &name),
                 Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
@@ -311,12 +172,16 @@ impl ZellijPlugin for State {
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
-        let snapshot = self.init_cache();
-        let permission = self.permission_probe();
+        let ids = get_plugin_ids();
+        let session = SessionFiles::open(SessionFileIds {
+            plugin_id: ids.plugin_id,
+            zellij_pid: ids.zellij_pid,
+        });
+        self.session_files = session.files;
         let outcome = self.runtime.load(
             config::Config::from_map(&config),
-            snapshot.as_deref(),
-            permission,
+            session.snapshot.as_deref(),
+            session.permission,
         );
         self.handle_outcome(outcome);
     }
@@ -393,7 +258,7 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::Timer(_) => {
-                let marker = self.permission_marker();
+                let marker = self.session_files.permission_marker();
                 let outcome = self.runtime.timer(marker);
                 self.handle_outcome(outcome)
             }

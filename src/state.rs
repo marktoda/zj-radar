@@ -25,8 +25,8 @@ pub struct PaneSnapshot {
 }
 
 /// The whole `StateStore` plus the owning instance's `tick`, as written to the
-/// shared `/cache` snapshot. `tick` is carried so a freshly-seeded instance
-/// keeps `last_change_tick` values meaningful (elapsed-time display) instead of
+/// shared session snapshot. `tick` is carried so a freshly-seeded instance keeps
+/// `last_change_tick` values meaningful (elapsed-time display) instead of
 /// resetting its clock to 0 underneath them.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Snapshot {
@@ -136,9 +136,10 @@ impl StateStore {
     }
 
     /// Serialize the whole store (+ the owning instance's `tick`) to the shared
-    /// snapshot JSON. Written to `/cache` so a newly-spawned per-tab instance can
-    /// seed itself with state it never received over the broadcast pipe. Pane
-    /// iteration order is unspecified (a `HashMap`); the consumer keys by id.
+    /// snapshot JSON. `session_files` persists this opaque text so a newly-spawned
+    /// per-tab instance can seed itself with state it never received over the
+    /// broadcast pipe. Pane iteration order is unspecified (a `HashMap`); the
+    /// consumer keys by id.
     pub fn to_json(&self, tick: u64) -> String {
         let panes = self
             .map
@@ -271,7 +272,7 @@ mod tests {
         assert!(!s.any_active());
     }
 
-    // ── snapshot round-trip (the /cache rehydration seam) ──
+    // ── snapshot round-trip (the session rehydration seam) ──
 
     #[test]
     fn snapshot_round_trip_preserves_all_panes_and_tick() {

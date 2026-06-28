@@ -34,5 +34,6 @@ nix develop -c cargo build --target wasm32-wasip1
 zellij --layout dev/dev.kdl
 ```
 
-`cargo test` does not need the dev shell — the pure modules are
-`zellij-tile`-free and run on the host target.
+`cargo test` does not need the dev shell — the pure modules and the
+host-testable session filesystem module are `zellij-tile`-free and run on the
+host target.
