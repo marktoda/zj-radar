@@ -56,14 +56,53 @@ fn pane_id_from_env() -> Option<u32> {
     raw.strip_prefix("terminal_").unwrap_or(&raw).parse::<u32>().ok()
 }
 
+/// Derive the repository NAME from a git "common dir" path — the output of
+/// `git rev-parse --git-common-dir` made absolute. The common dir always points
+/// at the MAIN repo's git dir, even from inside a linked worktree, so this yields
+/// the repo name (e.g. `pinky`) rather than the worktree's own directory name
+/// (e.g. `reply-register`, which is what `--show-toplevel` returns in a worktree).
+///
+///   /Users/m/dev/pinky/.git        → "pinky"      (normal checkout or any worktree of it)
+///   /Users/m/dev/pinky/.git/       → "pinky"
+///   /Users/m/dev/acme.git          → "acme"       (bare repo)
+///   .git                           → None         (relative — caller falls back)
+fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
+    let trimmed = common_dir.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if base == ".git" {
+        // Repo root is the parent of the ".git" dir.
+        let parent = trimmed[..trimmed.len() - base.len()].trim_end_matches('/');
+        parent.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
+    } else if let Some(stripped) = base.strip_suffix(".git") {
+        // Bare repo "name.git".
+        (!stripped.is_empty()).then(|| stripped.to_string())
+    } else {
+        // Unusual: a common dir not ending in .git — use its basename.
+        Some(base.to_string())
+    }
+}
+
 fn git_repo_branch(cwd: &str) -> (String, String) {
-    let top = Command::new("git").args(["-C", cwd, "rev-parse", "--show-toplevel"]).output().ok();
-    let repo = top
+    // Resolve the repo name from the COMMON git dir so worktrees report the main
+    // repo, not the worktree directory. Fall back to `--show-toplevel`'s basename
+    // for git versions without `--path-format` (added in 2.31).
+    let common = Command::new("git")
+        .args(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output().ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-        .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
-        .unwrap_or_default();
+        .and_then(|d| repo_name_from_common_dir(&d));
+    let repo = common.or_else(|| {
+        Command::new("git").args(["-C", cwd, "rev-parse", "--show-toplevel"]).output().ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
+    }).unwrap_or_default();
     let branch = Command::new("git").args(["-C", cwd, "branch", "--show-current"]).output().ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -338,5 +377,35 @@ mod tests {
     #[test]
     fn tool_edit_missing_file_path_returns_none() {
         assert!(tool_activity("Edit", &json("{}")).is_none());
+    }
+
+    // --- repo_name_from_common_dir tests ---
+
+    #[test]
+    fn common_dir_normal_checkout_is_repo_name() {
+        // A normal checkout's common dir is "<repo>/.git" → repo basename.
+        assert_eq!(repo_name_from_common_dir("/Users/m/dev/pinky/.git"), Some("pinky".into()));
+    }
+
+    #[test]
+    fn common_dir_worktree_resolves_to_main_repo() {
+        // A worktree of "pinky" still reports the MAIN repo's common dir, so the
+        // name is "pinky" — NOT the worktree dir "reply-register".
+        assert_eq!(repo_name_from_common_dir("/Users/m/dev/pinky/.git"), Some("pinky".into()));
+        // Trailing slash is tolerated.
+        assert_eq!(repo_name_from_common_dir("/Users/m/dev/pinky/.git/"), Some("pinky".into()));
+    }
+
+    #[test]
+    fn common_dir_bare_repo_strips_dot_git() {
+        assert_eq!(repo_name_from_common_dir("/srv/git/acme.git"), Some("acme".into()));
+    }
+
+    #[test]
+    fn common_dir_relative_or_empty_is_none() {
+        // Relative ".git" has no resolvable parent → None (caller falls back).
+        assert_eq!(repo_name_from_common_dir(".git"), None);
+        assert_eq!(repo_name_from_common_dir(""), None);
+        assert_eq!(repo_name_from_common_dir("   "), None);
     }
 }

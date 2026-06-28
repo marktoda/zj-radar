@@ -109,7 +109,18 @@ if [[ "$status" == "pending" ]]; then
     esac
 fi
 
-repo="$(basename "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$cwd")")"
+# Resolve the repo name from the COMMON git dir so worktrees report the main
+# repo (e.g. "pinky"), not the worktree directory (e.g. "reply-register", which
+# is what --show-toplevel returns inside a worktree). Fall back to --show-toplevel
+# for git < 2.31 (no --path-format), then to the cwd basename.
+common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+common="${common%/}"
+case "$common" in
+    */.git) repo="$(basename "$(dirname "$common")")" ;;   # .../pinky/.git → pinky
+    *.git)  repo="$(basename "${common%.git}")" ;;          # bare repo acme.git → acme
+    ?*)     repo="$(basename "$common")" ;;                  # unusual: use basename
+    *)      repo="$(basename "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$cwd")")" ;;
+esac
 branch="$(git -C "$cwd" branch --show-current 2>/dev/null || true)"
 
 # done clears itself when you focus the tab
