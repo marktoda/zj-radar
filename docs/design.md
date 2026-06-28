@@ -186,7 +186,9 @@ any stale seed self-heals on the next broadcast. The producer (hooks) is unaffec
 
 - **Permissions:** `ReadApplicationState` (tab/pane state), `ReadCliPipes` (broadcast),
   `ChangeApplicationState` (`switch_tab_to`). **No `RunCommands`** — notifications stay in the
-  adapters. `set_selectable(false)` so the pane never steals focus from pane keybinds.
+  adapters. Keep the pane selectable only until `PermissionRequestResult` arrives so the first-run
+  permission prompt is reachable; then call `set_selectable(false)` so the pane never steals focus
+  from pane keybinds.
 - **Subscriptions:** `TabUpdate`, `PaneUpdate`, `Timer`, `Mouse`, `PermissionRequestResult`.
 - **Tab index footgun:** `TabInfo.position` is **0-indexed**; `switch_tab_to(idx)` is
   **1-indexed** (0 treated as 1). Define `display_tab_number = position + 1` and use it for
@@ -374,5 +376,8 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
   mouse-click only) into an *interactive panel* — `Key` handling, dismiss (Esc/Enter), selection
   state — roughly doubling its surface area and reintroducing the focus-grab failure class. If
   ever revisited, it should be a separate, opt-in render/interaction mode, not the default seam.
+  A focused first-run/help overlay could be useful for explaining the status lifecycle and any
+  future keybinds, but it should not be the permission-grant mechanism; the visible sidebar must
+  remain selectable until Zellij's own permission result arrives.
 - **Horizontal/compact bar mode** (top-level pane like zjstatus, no nesting, no #3247) — would
   need a from-scratch compact renderer; `render.rs` is vertical/card-per-tab today.

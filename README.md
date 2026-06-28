@@ -134,7 +134,9 @@ node composes; the layout is yours.
 
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
-press `y` to grant. It never runs commands; notifications stay in the producer.
+press `y` to grant. The sidebar stays focusable only for that prompt, then goes
+back to passive sidebar behavior. It never runs commands; notifications stay in
+the producer.
 
 #### Loading straight from a release URL (caveat)
 

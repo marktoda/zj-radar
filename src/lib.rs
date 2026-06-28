@@ -84,6 +84,8 @@ pub struct State {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     config: config::Config,
     permission_granted: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_response_received: bool,
     // Terminal-derived surface + dim colors; updated on PaneUpdate from the
     // panes' reported default_bg/default_fg; only used by the wasm render path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -158,6 +160,19 @@ impl State {
             self.command.on_pane_focused(id, tick);
         }
         true
+    }
+
+    /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
+    /// this pane. Keep it selectable only while that first prompt is awaiting a
+    /// y/n answer; after either result, the rail returns to passive status-bar
+    /// behavior.
+    fn sidebar_should_be_selectable(&self) -> bool {
+        !self.permission_response_received
+    }
+
+    fn record_permission_result(&mut self, granted: bool) {
+        self.permission_granted = granted;
+        self.permission_response_received = true;
     }
 
     /// Map a clicked line back to a tab position by replaying render()'s fold
@@ -375,7 +390,7 @@ impl ZellijPlugin for State {
             EventType::Mouse,
             EventType::PermissionRequestResult,
         ]);
-        set_selectable(false);
+        set_selectable(self.sidebar_should_be_selectable());
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
         self.init_cache();
@@ -482,7 +497,8 @@ impl ZellijPlugin for State {
                 false
             }
             Event::PermissionRequestResult(status) => {
-                self.permission_granted = status == PermissionStatus::Granted;
+                self.record_permission_result(status == PermissionStatus::Granted);
+                set_selectable(self.sidebar_should_be_selectable());
                 true
             }
             Event::CwdChanged(pane_id, path, _clients) => {
@@ -810,10 +826,17 @@ mod tests {
             "first-run permission prompt must remain focusable"
         );
 
-        s.permission_granted = true;
+        s.record_permission_result(true);
         assert!(
             !s.sidebar_should_be_selectable(),
             "after permissions are granted the sidebar returns to passive mode"
+        );
+
+        let mut s = State::default();
+        s.record_permission_result(false);
+        assert!(
+            !s.sidebar_should_be_selectable(),
+            "after permissions are denied the prompt is gone, so the rail is passive"
         );
     }
 
