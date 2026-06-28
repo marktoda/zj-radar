@@ -5,10 +5,13 @@
 // Then:
 //   zellij --layout dev/dev.kdl
 //
-// NOTE: the plugin `location` below is an absolute path to THIS checkout's
-// debug artifact. Zellij resolves plugin paths relative to its own cwd, not the
-// layout file, so a relative path is unreliable here. If you cloned elsewhere,
-// update the path to <your-checkout>/target/wasm32-wasip1/debug/zj_radar.wasm.
+// NOTE: the plugin `location` below is RELATIVE to Zellij's working directory
+// (Zellij resolves plugin paths against its own cwd, not the layout file), so it
+// carries no absolute/usernamed prefix. Launch from the repo root and it just
+// works:
+//   cd <your-checkout> && zellij -n dev/dev.kdl   (or: ./dev/reload.sh to rebuild+reload)
+// If you start Zellij from elsewhere the relative path won't resolve — cd to the
+// repo root first, or use an absolute path.
 //
 // The sidebar is a pinned, borderless left column inside default_tab_template,
 // OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The
@@ -18,7 +21,7 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
-                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
+                plugin location="file:target/wasm32-wasip1/debug/zj_radar.wasm" {
                     // Opt-in: rename tabs even when they have an explicit name.
                     naming "force"
                 }
@@ -38,7 +41,7 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
-                plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
+                plugin location="file:target/wasm32-wasip1/debug/zj_radar.wasm" {
                     naming "force"
                 }
             }

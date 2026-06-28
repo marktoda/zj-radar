@@ -284,8 +284,17 @@ zellij pipe --name zj_radar.status.v1 -- \
 nix develop                              # host Rust + wasm32-wasip1 std + zellij
 cargo test                               # 135 pure-logic tests, no wasm needed
 nix develop -c cargo build --target wasm32-wasip1
-zellij --layout dev/dev.kdl              # hot-reload dev session (edit the path inside first)
+zellij -n dev/dev.kdl                     # dev session — run from the repo root (relative wasm path)
+./dev/reload.sh                           # rebuild + hot-reload the sidebar IN PLACE, no restart
 ```
+
+`dev/dev.kdl` loads the **debug** wasm by a path relative to Zellij's cwd, so
+launch it from the repo root. To iterate without restarting Zellij, run
+`./dev/reload.sh` from any pane in the session: it rebuilds and issues
+`zellij action start-or-reload-plugin -c naming=force <loc>`. The `-c` must match
+the layout's `plugin { … }` config (here `naming "force"`) or Zellij spawns a new
+pane instead of reloading — the script handles this (and reads `<loc>` back from
+the running layout, so nothing hardcodes a path).
 
 The pure modules (`status`, `payload`, `state`, `model`, `render`, `naming`,
 `config`, `theme`) carry no `zellij-tile` dependency and are fully unit-tested
