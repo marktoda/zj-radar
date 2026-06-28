@@ -124,11 +124,13 @@ new_tab_template {
 > *top-level* `children`, like the stock compact layout, materializes fine —
 > only the nested-in-a-split case is affected.
 
-A complete, runnable starting point lives in
-[`examples/radar-sidebar.kdl`](examples/radar-sidebar.kdl) — copy it to
-`~/.config/zellij/layouts/` and tweak. Want the column on the **right**? Put
-`children` (and the runtime `pane`) *before* the radar pane in the split. Want a
-different width? Change `size`. The node composes; the layout is yours.
+Prefer not to hand-roll it? [`examples/radar-sidebar.kdl`](examples/radar-sidebar.kdl)
+is those same two templates assembled into a complete, runnable layout — and it's
+**self-contained** (it inlines the `file:` path, so you can skip the alias step
+above). Copy it to `~/.config/zellij/layouts/` and run `zellij --layout
+radar-sidebar`. Want the column on the **right**? Put `children` (and the runtime
+`pane`) *before* the radar pane in the split. Different width? Change `size`. The
+node composes; the layout is yours.
 
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —

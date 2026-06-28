@@ -125,10 +125,12 @@ form.)
 
 Installing the *sidebar* itself still needs: the `.wasm` at a **stable path**
 (not a per-rebuild Nix store path, so the permission grant sticks), the layout
-edit (`default_tab_template`), and the first-run **permission grant**
-(selectable-until-granted in-code + optional `permissions.kdl` pre-seed). A
-`zj-radar init` could: copy the wasm to `~/.config/zellij/plugins/`, print the
-`default_tab_template` snippet to paste (or patch a layout), and pre-seed the
+edit (a `radar` plugin **alias** in `config.kdl` plus matching
+`default_tab_template` **and** `new_tab_template` — see the README "Wire it into
+your layout"), and the first-run **permission grant** (selectable-until-granted
+in-code + optional `permissions.kdl` pre-seed). A `zj-radar init` could: copy the
+wasm to `~/.config/zellij/plugins/`, add the `radar` alias to `config.kdl`, print
+**both** template snippets to paste (or patch a layout), and pre-seed the
 permission. Document the one-time grant for the manual path.
 
 ## 5. Recommended rollout

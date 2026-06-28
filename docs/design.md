@@ -277,7 +277,7 @@ replacement is push-only and tiered:
   `zellij action start-or-reload-plugin file:…/debug/zj-radar.wasm` for hot reload.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
   release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
-  reference via a `@zjAgents@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
+  reference via a `@zjRadar@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
   substitution and its `fetchurl` are **removed** (smart-tabs is gone).
 
 ## 9. Testing
