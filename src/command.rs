@@ -194,8 +194,7 @@ impl CommandStore {
     /// True if any pane is Running or has a pending fg command.
     /// Used by the wasm glue to keep the timer armed.
     pub fn has_pending_or_active(&self) -> bool {
-        !self.pending.is_empty()
-            || self.resolved.values().any(|s| s.status == Status::Running)
+        !self.pending.is_empty() || self.resolved.values().any(|s| s.status == Status::Running)
     }
 }
 
@@ -212,7 +211,10 @@ mod tests {
 
         // t=1: fg command arrives → pending, not yet Running
         store.on_command_changed(1, &cmd, true, Some("/home/user/myrepo"), 1);
-        assert!(store.get(1).is_none(), "must not be Running yet — still pending");
+        assert!(
+            store.get(1).is_none(),
+            "must not be Running yet — still pending"
+        );
         assert!(store.pending.contains_key(&1), "must be in pending");
 
         // t=1: timer fires at same tick → not past debounce (0 < 1)
@@ -225,7 +227,10 @@ mod tests {
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.msg, "sleep 5");
         assert_eq!(s.repo, "myrepo");
-        assert!(!store.pending.contains_key(&1), "pending cleared after promotion");
+        assert!(
+            !store.pending.contains_key(&1),
+            "pending cleared after promotion"
+        );
     }
 
     // ── Test 2: fg blip filtered (real command then is_foreground=false before timer)
@@ -241,7 +246,10 @@ mod tests {
 
         // t=1: is_foreground=false (e.g. zellij reports bg) → clear pending
         store.on_command_changed(1, &[], false, None, 1);
-        assert!(!store.pending.contains_key(&1), "pending cleared on return-to-shell");
+        assert!(
+            !store.pending.contains_key(&1),
+            "pending cleared on return-to-shell"
+        );
 
         // t=5: timer fires — nothing to promote
         store.on_timer(5);
@@ -256,7 +264,10 @@ mod tests {
         let cmd = vec!["starship".to_string()];
 
         store.on_command_changed(1, &cmd, true, None, 1);
-        assert!(!store.pending.contains_key(&1), "starship must not enter pending");
+        assert!(
+            !store.pending.contains_key(&1),
+            "starship must not enter pending"
+        );
         assert!(store.get(1).is_none(), "no resolved state expected");
     }
 
@@ -303,7 +314,10 @@ mod tests {
         // Repeated identical exit → no-op (on_focus unchanged, tick unchanged)
         store.on_exit(1, Some(0), 10);
         let s = store.get(1).unwrap();
-        assert_eq!(s.last_change_tick, 5, "repeated identical exit must be a no-op");
+        assert_eq!(
+            s.last_change_tick, 5,
+            "repeated identical exit must be a no-op"
+        );
 
         // Pane 2: nonzero exit → Error
         store.on_exit(2, Some(3), 6);
@@ -313,7 +327,11 @@ mod tests {
 
         // Repeated identical exit for pane 2 → no-op
         store.on_exit(2, Some(3), 99);
-        assert_eq!(store.get(2).unwrap().last_change_tick, 6, "repeated identical exit must be a no-op");
+        assert_eq!(
+            store.get(2).unwrap().last_change_tick,
+            6,
+            "repeated identical exit must be a no-op"
+        );
     }
 
     // ── Test 6: basename of an absolute argv[0] path
@@ -353,10 +371,16 @@ mod tests {
         store.prune(&live);
 
         assert!(store.get(1).is_none(), "pane 1 resolved must be pruned");
-        assert!(!store.pending.contains_key(&1), "pane 1 pending must be pruned");
+        assert!(
+            !store.pending.contains_key(&1),
+            "pane 1 pending must be pruned"
+        );
         assert!(store.get(2).is_some(), "pane 2 must survive");
         assert!(store.get(3).is_none(), "pane 3 resolved must be pruned");
-        assert!(!store.exited.contains_key(&3), "pane 3 exited must be pruned");
+        assert!(
+            !store.exited.contains_key(&3),
+            "pane 3 exited must be pruned"
+        );
     }
 
     // ── Test 8: has_pending_or_active
@@ -376,7 +400,10 @@ mod tests {
 
         // Return to shell → Done
         store.on_command_changed(1, &[], false, None, 3);
-        assert!(!store.has_pending_or_active(), "false once Done (no pending, no Running)");
+        assert!(
+            !store.has_pending_or_active(),
+            "false once Done (no pending, no Running)"
+        );
 
         // Focus to clear to Idle
         store.on_pane_focused(1, 4);
@@ -392,7 +419,10 @@ mod tests {
 
         // Pane is idle (no resolved entry yet); return-to-shell arrives
         store.on_command_changed(1, &[], false, None, 1);
-        assert!(store.get(1).is_none(), "idle + return-to-shell must not create Done");
+        assert!(
+            store.get(1).is_none(),
+            "idle + return-to-shell must not create Done"
+        );
     }
 
     #[test]
@@ -409,7 +439,11 @@ mod tests {
                 "{} must not enter pending",
                 shell
             );
-            assert!(store.get(1).is_none(), "{} must leave no resolved state", shell);
+            assert!(
+                store.get(1).is_none(),
+                "{} must leave no resolved state",
+                shell
+            );
         }
     }
 
@@ -422,20 +456,35 @@ mod tests {
         // A pane that exited without a recorded code (e.g. killed by signal)
         // → Done (not Error), with on_focus=Some(Idle) so it clears when focused.
         store.on_exit(1, None, 5);
-        let s = store.get(1).expect("must have a resolved entry after on_exit(None)");
+        let s = store
+            .get(1)
+            .expect("must have a resolved entry after on_exit(None)");
         assert_eq!(s.status, Status::Done, "None exit_status must yield Done");
-        assert_eq!(s.on_focus, Some(Status::Idle), "on_focus must be set to Idle");
+        assert_eq!(
+            s.on_focus,
+            Some(Status::Idle),
+            "on_focus must be set to Idle"
+        );
         // A fast `zellij run -- false` that never reached Running must still
         // render as active (✗), so ever_active must be true even for a pane
         // with no prior resolved entry.
-        assert!(s.ever_active, "ever_active must be true for a pane with no prior resolved entry");
+        assert!(
+            s.ever_active,
+            "ever_active must be true for a pane with no prior resolved entry"
+        );
     }
 
     #[test]
     fn on_exit_preserves_existing_repo_and_msg() {
         let mut store = CommandStore::default();
         // Set up Running state
-        store.on_command_changed(1, &["cargo".to_string(), "test".to_string()], true, Some("/work/pinky"), 1);
+        store.on_command_changed(
+            1,
+            &["cargo".to_string(), "test".to_string()],
+            true,
+            Some("/work/pinky"),
+            1,
+        );
         store.on_timer(2);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().repo, "pinky");

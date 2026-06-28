@@ -157,8 +157,8 @@ mod tests {
 
     #[test]
     fn glyphs_and_roles_distinct_per_variant() {
-        use Status::*;
         use GlyphSet::Plain;
+        use Status::*;
         let all = [Idle, Done, Running, Pending, Error];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {

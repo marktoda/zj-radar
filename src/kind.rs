@@ -95,7 +95,9 @@ mod tests {
                     a.mark(),
                     b.mark(),
                     "{:?} and {:?} share the same mark '{}'",
-                    a, b, a.mark()
+                    a,
+                    b,
+                    a.mark()
                 );
             }
         }

@@ -94,7 +94,10 @@ impl Config {
             .get("naming")
             .map(|s| NamingMode::from_config(s))
             .unwrap_or(d.naming);
-        let header = cfg.get("header").and_then(|s| parse_bool(s)).unwrap_or(d.header);
+        let header = cfg
+            .get("header")
+            .and_then(|s| parse_bool(s))
+            .unwrap_or(d.header);
         let glyphs = cfg
             .get("glyphs")
             .map(|s| crate::status::GlyphSet::from_config(s))
@@ -103,7 +106,12 @@ impl Config {
             .get("density")
             .map(|s| Density::from_config(s))
             .unwrap_or_default();
-        Config { naming, header, glyphs, density }
+        Config {
+            naming,
+            header,
+            glyphs,
+            density,
+        }
     }
 
     /// Apply runtime overrides from a flat string→string map (e.g. parsed from
@@ -132,7 +140,10 @@ mod tests {
     use super::*;
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -146,7 +157,11 @@ mod tests {
 
     #[test]
     fn parses_all_keys() {
-        let c = Config::from_map(&map(&[("naming", "force"), ("header", "false"), ("glyphs", "nerd")]));
+        let c = Config::from_map(&map(&[
+            ("naming", "force"),
+            ("header", "false"),
+            ("glyphs", "nerd"),
+        ]));
         assert_eq!(c.naming, NamingMode::Force);
         assert!(!c.header);
         assert_eq!(c.glyphs, crate::status::GlyphSet::Nerd);
@@ -159,15 +174,27 @@ mod tests {
             crate::status::GlyphSet::Nerd
         );
         // absent → default (Plain)
-        assert_eq!(Config::from_map(&map(&[])).glyphs, crate::status::GlyphSet::Plain);
+        assert_eq!(
+            Config::from_map(&map(&[])).glyphs,
+            crate::status::GlyphSet::Plain
+        );
     }
 
     #[test]
     fn naming_is_case_insensitive_and_falls_back() {
-        assert_eq!(Config::from_map(&map(&[("naming", "OFF")])).naming, NamingMode::Off);
-        assert_eq!(Config::from_map(&map(&[("naming", "Force")])).naming, NamingMode::Force);
+        assert_eq!(
+            Config::from_map(&map(&[("naming", "OFF")])).naming,
+            NamingMode::Off
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("naming", "Force")])).naming,
+            NamingMode::Force
+        );
         // unknown value → default
-        assert_eq!(Config::from_map(&map(&[("naming", "wat")])).naming, NamingMode::Managed);
+        assert_eq!(
+            Config::from_map(&map(&[("naming", "wat")])).naming,
+            NamingMode::Managed
+        );
     }
 
     #[test]
@@ -198,21 +225,42 @@ mod tests {
 
     #[test]
     fn density_parses_all_variants() {
-        assert_eq!(Config::from_map(&map(&[("density", "compact")])).density, Density::Compact);
-        assert_eq!(Config::from_map(&map(&[("density", "comfortable")])).density, Density::Comfortable);
-        assert_eq!(Config::from_map(&map(&[("density", "cards")])).density, Density::Cards);
+        assert_eq!(
+            Config::from_map(&map(&[("density", "compact")])).density,
+            Density::Compact
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("density", "comfortable")])).density,
+            Density::Comfortable
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("density", "cards")])).density,
+            Density::Cards
+        );
     }
 
     #[test]
     fn density_unknown_value_falls_back_to_cards() {
-        assert_eq!(Config::from_map(&map(&[("density", "super-dense")])).density, Density::Cards);
-        assert_eq!(Config::from_map(&map(&[("density", "")])).density, Density::Cards);
+        assert_eq!(
+            Config::from_map(&map(&[("density", "super-dense")])).density,
+            Density::Cards
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("density", "")])).density,
+            Density::Cards
+        );
     }
 
     #[test]
     fn density_is_case_insensitive() {
-        assert_eq!(Config::from_map(&map(&[("density", "COMPACT")])).density, Density::Compact);
-        assert_eq!(Config::from_map(&map(&[("density", "Cards")])).density, Density::Cards);
+        assert_eq!(
+            Config::from_map(&map(&[("density", "COMPACT")])).density,
+            Density::Compact
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("density", "Cards")])).density,
+            Density::Cards
+        );
     }
 
     #[test]

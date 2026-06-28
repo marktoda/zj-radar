@@ -52,7 +52,9 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore, commands: &command::Comma
     let mut panes: Vec<PaneEntry> = Vec::new();
 
     for &id in pane_ids {
-        let Some(s) = store.get(id).or_else(|| commands.get(id)) else { continue };
+        let Some(s) = store.get(id).or_else(|| commands.get(id)) else {
+            continue;
+        };
         if s.ever_active {
             total += 1;
             panes.push(PaneEntry {
@@ -70,7 +72,9 @@ pub fn aggregate(pane_ids: &[u32], store: &StateStore, commands: &command::Comma
         }
         let better = s.status.severity() > best_status.severity()
             || (s.status.severity() == best_status.severity()
-                && best.as_ref().is_none_or(|d| s.last_change_tick >= d.since_tick));
+                && best
+                    .as_ref()
+                    .is_none_or(|d| s.last_change_tick >= d.since_tick));
         if s.status.is_active() && better {
             best_status = s.status;
             best = Some(Detail {
@@ -201,11 +205,21 @@ mod tests {
         put(&mut store, 1, Status::Running, 1, "agent");
 
         let mut commands = command::CommandStore::default();
-        commands.on_command_changed(1, &["cargo".to_string(), "build".to_string()], true, Some("/work/cmd"), 1);
+        commands.on_command_changed(
+            1,
+            &["cargo".to_string(), "build".to_string()],
+            true,
+            Some("/work/cmd"),
+            1,
+        );
         commands.on_timer(2); // promote to Running with repo "cmd"
 
         let agg = aggregate(&[1], &store, &commands);
-        assert_eq!(agg.detail.unwrap().repo, "agent", "agent state must win over command state");
+        assert_eq!(
+            agg.detail.unwrap().repo,
+            "agent",
+            "agent state must win over command state"
+        );
     }
 
     #[test]
@@ -220,7 +234,10 @@ mod tests {
         commands.on_timer(2); // promote to Running with repo "cmd"
 
         let agg = aggregate(&[1, 2], &store, &commands);
-        assert_eq!(agg.total, 2, "both agent-done and command-running count toward total");
+        assert_eq!(
+            agg.total, 2,
+            "both agent-done and command-running count toward total"
+        );
         assert_eq!(agg.done, 1, "only the agent-done pane is Done");
         assert_eq!(agg.panes.len(), 2);
         assert!(agg.panes.iter().any(|p| p.status == Status::Running));

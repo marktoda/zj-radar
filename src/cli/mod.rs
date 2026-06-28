@@ -7,7 +7,11 @@ mod notify;
 mod setup;
 
 #[derive(Parser)]
-#[command(name = "zj-radar", version, about = "Broadcast agent status to the zj-radar Zellij sidebar, and wire agents up.")]
+#[command(
+    name = "zj-radar",
+    version,
+    about = "Broadcast agent status to the zj-radar Zellij sidebar, and wire agents up."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -51,10 +55,21 @@ enum Command {
 pub fn run() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Notify { agent, input, status, dry_run } => {
+        Command::Notify {
+            agent,
+            input,
+            status,
+            dry_run,
+        } => {
             notify::run(&agent, input.as_deref(), status.as_deref(), dry_run);
         }
-        Command::Setup { agents, uninstall, dry_run, yes, force } => {
+        Command::Setup {
+            agents,
+            uninstall,
+            dry_run,
+            yes,
+            force,
+        } => {
             setup::run(&agents, uninstall, dry_run, yes, force);
         }
     }

@@ -17,7 +17,9 @@ pub enum Outcome {
 /// True iff `notify` exists and equals our exact marker array.
 pub fn notify_is_ours(item: Option<&Item>) -> bool {
     item.and_then(|i| i.as_array())
-        .map(|a| a.len() == MARKER.len() && a.iter().zip(MARKER).all(|(v, m)| v.as_str() == Some(m)))
+        .map(|a| {
+            a.len() == MARKER.len() && a.iter().zip(MARKER).all(|(v, m)| v.as_str() == Some(m))
+        })
         .unwrap_or(false)
 }
 
@@ -53,7 +55,10 @@ pub fn edit_codex(existing: &str, install: bool, force: bool) -> Result<Outcome,
         // Absent: prepend at byte 0 so the key stays top-level (a key appended
         // after an existing [table] would bind to that table). Preserves the
         // rest verbatim.
-        let line = format!("notify = [\"{}\", \"{}\", \"{}\"]\n", MARKER[0], MARKER[1], MARKER[2]);
+        let line = format!(
+            "notify = [\"{}\", \"{}\", \"{}\"]\n",
+            MARKER[0], MARKER[1], MARKER[2]
+        );
         return Ok(Outcome::Changed(format!("{line}{existing}")));
     }
 
@@ -72,7 +77,9 @@ fn codex_config_path() -> PathBuf {
     if let Some(home) = std::env::var_os("CODEX_HOME") {
         return PathBuf::from(home).join("config.toml");
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     home.join(".codex").join("config.toml")
 }
 
@@ -138,7 +145,11 @@ fn setup_codex(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
                 eprintln!("codex: write failed — {e}");
                 return;
             }
-            println!("codex: {} ({})", if uninstall { "removed" } else { "installed" }, path.display());
+            println!(
+                "codex: {} ({})",
+                if uninstall { "removed" } else { "installed" },
+                path.display()
+            );
         }
     }
 }
@@ -171,13 +182,19 @@ mod tests {
 
     fn assert_top_level_notify_is_ours(toml: &str) {
         let doc = toml.parse::<toml_edit::DocumentMut>().expect("valid toml");
-        assert!(notify_is_ours(doc.get("notify")), "notify must be top-level and ours:\n{toml}");
+        assert!(
+            notify_is_ours(doc.get("notify")),
+            "notify must be top-level and ours:\n{toml}"
+        );
     }
 
     #[test]
     fn fresh_file_installs_our_notify() {
         let out = edit_codex("", true, false).unwrap();
-        match out { Outcome::Changed(s) => assert_top_level_notify_is_ours(&s), o => panic!("{o:?}") }
+        match out {
+            Outcome::Changed(s) => assert_top_level_notify_is_ours(&s),
+            o => panic!("{o:?}"),
+        }
     }
 
     #[test]
@@ -187,7 +204,10 @@ mod tests {
         match out {
             Outcome::Changed(s) => {
                 assert_top_level_notify_is_ours(&s);
-                assert!(s.contains("[marketplaces.x]"), "must preserve the user's table");
+                assert!(
+                    s.contains("[marketplaces.x]"),
+                    "must preserve the user's table"
+                );
             }
             o => panic!("{o:?}"),
         }
@@ -196,13 +216,19 @@ mod tests {
     #[test]
     fn idempotent_when_already_ours() {
         let existing = "notify = [\"zj-radar\", \"notify\", \"codex\"]\n";
-        assert!(matches!(edit_codex(existing, true, false).unwrap(), Outcome::Unchanged));
+        assert!(matches!(
+            edit_codex(existing, true, false).unwrap(),
+            Outcome::Unchanged
+        ));
     }
 
     #[test]
     fn foreign_notify_refuses_without_force() {
         let existing = "notify = [\"/some/other/notifier\", \"turn-ended\"]\n";
-        assert!(matches!(edit_codex(existing, true, false).unwrap(), Outcome::Conflict));
+        assert!(matches!(
+            edit_codex(existing, true, false).unwrap(),
+            Outcome::Conflict
+        ));
     }
 
     #[test]
@@ -211,7 +237,10 @@ mod tests {
         match edit_codex(existing, true, true).unwrap() {
             Outcome::Changed(s) => {
                 assert_top_level_notify_is_ours(&s);
-                assert!(s.contains("model = \"gpt-5.5\""), "must preserve other keys");
+                assert!(
+                    s.contains("model = \"gpt-5.5\""),
+                    "must preserve other keys"
+                );
                 assert!(!s.contains("/other"), "foreign notifier must be gone");
             }
             o => panic!("{o:?}"),
@@ -222,11 +251,17 @@ mod tests {
     fn uninstall_removes_only_ours() {
         let ours = "notify = [\"zj-radar\", \"notify\", \"codex\"]\nmodel = \"x\"\n";
         match edit_codex(ours, false, false).unwrap() {
-            Outcome::Changed(s) => { assert!(!s.contains("notify")); assert!(s.contains("model = \"x\"")); }
+            Outcome::Changed(s) => {
+                assert!(!s.contains("notify"));
+                assert!(s.contains("model = \"x\""));
+            }
             o => panic!("{o:?}"),
         }
         let foreign = "notify = [\"/other\", \"turn-ended\"]\n";
-        assert!(matches!(edit_codex(foreign, false, false).unwrap(), Outcome::Unchanged));
+        assert!(matches!(
+            edit_codex(foreign, false, false).unwrap(),
+            Outcome::Unchanged
+        ));
     }
 
     #[test]

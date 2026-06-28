@@ -201,7 +201,10 @@ mod tests {
     fn rejects_non_terminal_and_garbage_and_oversize() {
         assert!(p(r#"{"pane":{"type":"plugin","id":1},"status":"done"}"#).is_none());
         assert!(p("not json").is_none());
-        let big = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","msg":"{}"}}"#, "x".repeat(MAX_PAYLOAD_BYTES));
+        let big = format!(
+            r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","msg":"{}"}}"#,
+            "x".repeat(MAX_PAYLOAD_BYTES)
+        );
         assert!(p(&big).is_none());
     }
 
@@ -257,7 +260,15 @@ mod tests {
     #[test]
     fn to_wire_round_trips_through_parse() {
         use crate::status::Status;
-        let json = to_wire(12, Status::Running, "pinky", "fix/x", "running tests", Some(Status::Idle), "claude");
+        let json = to_wire(
+            12,
+            Status::Running,
+            "pinky",
+            "fix/x",
+            "running tests",
+            Some(Status::Idle),
+            "claude",
+        );
         let got = parse(&json).expect("to_wire output must parse");
         assert_eq!(got.pane_id, 12);
         assert_eq!(got.status, Status::Running);
@@ -279,7 +290,13 @@ mod tests {
     #[test]
     fn as_wire_round_trips_for_all_statuses() {
         use crate::status::Status;
-        for s in [Status::Idle, Status::Running, Status::Pending, Status::Done, Status::Error] {
+        for s in [
+            Status::Idle,
+            Status::Running,
+            Status::Pending,
+            Status::Done,
+            Status::Error,
+        ] {
             assert_eq!(Status::from_wire(s.as_wire()), s);
         }
     }

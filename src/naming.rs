@@ -158,12 +158,18 @@ mod tests {
 
     #[test]
     fn cwd_basename_normal_path() {
-        assert_eq!(cwd_basename("/Users/m/dev/zj-radar"), Some("zj-radar".into()));
+        assert_eq!(
+            cwd_basename("/Users/m/dev/zj-radar"),
+            Some("zj-radar".into())
+        );
     }
 
     #[test]
     fn cwd_basename_trailing_slash() {
-        assert_eq!(cwd_basename("/Users/m/dev/zj-radar/"), Some("zj-radar".into()));
+        assert_eq!(
+            cwd_basename("/Users/m/dev/zj-radar/"),
+            Some("zj-radar".into())
+        );
     }
 
     #[test]
@@ -202,41 +208,74 @@ mod tests {
     #[test]
     fn computed_name_prefers_agent_repo() {
         let store = store_with(7, "pinky");
-        let panes = vec![PaneLite { id: 7, title: "nvim".into(), is_focused: true }];
-        assert_eq!(computed_name(&panes, &store, &no_cwd()), Some("pinky".into()));
+        let panes = vec![PaneLite {
+            id: 7,
+            title: "nvim".into(),
+            is_focused: true,
+        }];
+        assert_eq!(
+            computed_name(&panes, &store, &no_cwd()),
+            Some("pinky".into())
+        );
     }
 
     #[test]
     fn computed_name_falls_back_to_focused_title() {
         let store = StateStore::default();
         let panes = vec![
-            PaneLite { id: 1, title: "bash".into(), is_focused: false },
-            PaneLite { id: 2, title: "nvim".into(), is_focused: true },
+            PaneLite {
+                id: 1,
+                title: "bash".into(),
+                is_focused: false,
+            },
+            PaneLite {
+                id: 2,
+                title: "nvim".into(),
+                is_focused: true,
+            },
         ];
-        assert_eq!(computed_name(&panes, &store, &no_cwd()), Some("nvim".into()));
+        assert_eq!(
+            computed_name(&panes, &store, &no_cwd()),
+            Some("nvim".into())
+        );
     }
 
     #[test]
     fn computed_name_none_when_no_signal() {
         let store = StateStore::default();
-        let panes = vec![PaneLite { id: 1, title: "".into(), is_focused: false }];
+        let panes = vec![PaneLite {
+            id: 1,
+            title: "".into(),
+            is_focused: false,
+        }];
         assert_eq!(computed_name(&panes, &store, &no_cwd()), None);
     }
 
     #[test]
     fn computed_name_cwd_beats_title() {
         let store = StateStore::default();
-        let panes = vec![PaneLite { id: 1, title: "bash".into(), is_focused: true }];
+        let panes = vec![PaneLite {
+            id: 1,
+            title: "bash".into(),
+            is_focused: true,
+        }];
         let mut cwd = HashMap::new();
         cwd.insert(1u32, "/Users/m/dev/myproject".to_string());
         // cwd basename "myproject" should win over title "bash"
-        assert_eq!(computed_name(&panes, &store, &cwd), Some("myproject".into()));
+        assert_eq!(
+            computed_name(&panes, &store, &cwd),
+            Some("myproject".into())
+        );
     }
 
     #[test]
     fn computed_name_agent_repo_beats_cwd() {
         let store = store_with(7, "pinky");
-        let panes = vec![PaneLite { id: 7, title: "nvim".into(), is_focused: true }];
+        let panes = vec![PaneLite {
+            id: 7,
+            title: "nvim".into(),
+            is_focused: true,
+        }];
         let mut cwd = HashMap::new();
         cwd.insert(7u32, "/Users/m/dev/some-other-dir".to_string());
         // agent repo "pinky" should win over cwd
@@ -247,14 +286,25 @@ mod tests {
     fn computed_name_focused_cwd_wins_over_nonfocused() {
         let store = StateStore::default();
         let panes = vec![
-            PaneLite { id: 1, title: "".into(), is_focused: false },
-            PaneLite { id: 2, title: "".into(), is_focused: true },
+            PaneLite {
+                id: 1,
+                title: "".into(),
+                is_focused: false,
+            },
+            PaneLite {
+                id: 2,
+                title: "".into(),
+                is_focused: true,
+            },
         ];
         let mut cwd = HashMap::new();
         cwd.insert(1u32, "/Users/m/dev/non-focused-dir".to_string());
         cwd.insert(2u32, "/Users/m/dev/focused-dir".to_string());
         // focused pane's cwd should win
-        assert_eq!(computed_name(&panes, &store, &cwd), Some("focused-dir".into()));
+        assert_eq!(
+            computed_name(&panes, &store, &cwd),
+            Some("focused-dir".into())
+        );
     }
 
     // ── compute_renames tests ──
@@ -263,9 +313,30 @@ mod tests {
     fn compute_renames_renames_default_skips_manual_and_equal() {
         let store = store_with(7, "pinky");
         let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
-        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]); // default name → rename
-        tab_panes.insert(1, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]); // manual name → skip
-        tab_panes.insert(2, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]); // already == desired → skip
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        ); // default name → rename
+        tab_panes.insert(
+            1,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        ); // manual name → skip
+        tab_panes.insert(
+            2,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        ); // already == desired → skip
         let tabs = vec![
             (0, "Tab #1".to_string()),
             (1, "my-manual-name".to_string()),
@@ -281,7 +352,14 @@ mod tests {
         // tab currently shows our last auto-applied name, but the desired name changed.
         let store = store_with(7, "newrepo");
         let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
-        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]);
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        );
         let tabs = vec![(0, "oldrepo".to_string())];
         let mut applied = HashMap::new();
         applied.insert(0usize, "oldrepo".to_string()); // we set "oldrepo" before
@@ -294,7 +372,14 @@ mod tests {
         // force=true bypasses the clobber guard: a user-chosen name is renamed.
         let store = store_with(7, "pinky");
         let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
-        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]);
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        );
         let tabs = vec![(0, "my-manual-name".to_string())];
         let applied = HashMap::new();
         // default behavior leaves the manual name alone...
@@ -311,7 +396,14 @@ mod tests {
         // change/loop guard holds even under force (desired == current → no-op).
         let store = store_with(7, "pinky");
         let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
-        tab_panes.insert(0, vec![PaneLite { id: 7, title: "x".into(), is_focused: true }]);
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 7,
+                title: "x".into(),
+                is_focused: true,
+            }],
+        );
         let tabs = vec![(0, "pinky".to_string())];
         let applied = HashMap::new();
         assert!(compute_renames(&tabs, &tab_panes, &store, &applied, true, &no_cwd()).is_empty());
@@ -323,7 +415,14 @@ mod tests {
         // should be renamed to the cwd's basename.
         let store = StateStore::default();
         let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
-        tab_panes.insert(0, vec![PaneLite { id: 5, title: "".into(), is_focused: true }]);
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 5,
+                title: "".into(),
+                is_focused: true,
+            }],
+        );
         let tabs = vec![(0, "Tab #1".to_string())];
         let applied = HashMap::new();
         let mut cwd = HashMap::new();

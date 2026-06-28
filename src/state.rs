@@ -77,7 +77,9 @@ pub struct StateStore {
 impl StateStore {
     /// Apply an incoming payload. Drops out-of-order updates (seq <= stored seq).
     pub fn apply(&mut self, p: StatusPayload, tick: u64) {
-        if let (Some(existing), Some(incoming)) = (self.map.get(&p.pane_id).and_then(|s| s.seq), p.seq) {
+        if let (Some(existing), Some(incoming)) =
+            (self.map.get(&p.pane_id).and_then(|s| s.seq), p.seq)
+        {
             if incoming <= existing {
                 return;
             }
@@ -87,10 +89,17 @@ impl StateStore {
         let last_change_tick = if status_changed {
             tick
         } else {
-            self.map.get(&p.pane_id).map(|s| s.last_change_tick).unwrap_or(tick)
+            self.map
+                .get(&p.pane_id)
+                .map(|s| s.last_change_tick)
+                .unwrap_or(tick)
         };
         let ever_active = p.status.is_active()
-            || self.map.get(&p.pane_id).map(|s| s.ever_active).unwrap_or(false);
+            || self
+                .map
+                .get(&p.pane_id)
+                .map(|s| s.ever_active)
+                .unwrap_or(false);
         self.map.insert(
             p.pane_id,
             AgentState {
@@ -147,7 +156,11 @@ impl StateStore {
                 ever_active: s.ever_active,
             })
             .collect();
-        let snap = Snapshot { v: SNAPSHOT_V, tick, panes };
+        let snap = Snapshot {
+            v: SNAPSHOT_V,
+            tick,
+            panes,
+        };
         serde_json::to_string(&snap).unwrap_or_default()
     }
 
@@ -293,7 +306,11 @@ mod tests {
         assert_eq!(b.branch, "fix/x");
         assert_eq!(b.msg, "shipped it");
         assert_eq!(b.source, "codex");
-        assert_eq!(b.on_focus, Some(Status::Idle), "clear-on-focus intent survives");
+        assert_eq!(
+            b.on_focus,
+            Some(Status::Idle),
+            "clear-on-focus intent survives"
+        );
         assert_eq!(b.seq, Some(9));
     }
 

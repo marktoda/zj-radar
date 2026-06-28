@@ -2,9 +2,9 @@
 
 use crate::config::Density;
 use crate::model::{PaneEntry, TabAgg};
+pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
 use crate::theme::DerivedColors;
-pub use crate::status::GlyphSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const RESET: &str = "\x1b[0m";
@@ -89,9 +89,21 @@ pub struct CardSpacing {
 /// sidebar's vertical/horizontal rhythm.
 pub fn card_spacing(d: Density) -> CardSpacing {
     match d {
-        Density::Compact => CardSpacing { pad_x: 0, pad_y: 0, gap: 0 },
-        Density::Comfortable => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
-        Density::Cards => CardSpacing { pad_x: 0, pad_y: 0, gap: 1 },
+        Density::Compact => CardSpacing {
+            pad_x: 0,
+            pad_y: 0,
+            gap: 0,
+        },
+        Density::Comfortable => CardSpacing {
+            pad_x: 0,
+            pad_y: 0,
+            gap: 1,
+        },
+        Density::Cards => CardSpacing {
+            pad_x: 0,
+            pad_y: 0,
+            gap: 1,
+        },
     }
 }
 
@@ -169,12 +181,10 @@ pub fn row_lines(agg: &TabAgg, active: bool) -> usize {
     }
     match agg.status {
         Status::Idle | Status::Done => 1,
-        Status::Running | Status::Error | Status::Pending => {
-            match &agg.detail {
-                Some(d) if !d.msg.trim().is_empty() => 2,
-                _ => 1,
-            }
-        }
+        Status::Running | Status::Error | Status::Pending => match &agg.detail {
+            Some(d) if !d.msg.trim().is_empty() => 2,
+            _ => 1,
+        },
     }
 }
 
@@ -195,7 +205,13 @@ fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
         Status::Running => format!("{}{}", count, elapsed),
         Status::Pending => format!("{}⏵ {}", count, elapsed),
         Status::Done => "done".to_string(),
-        Status::Error => if width < 16 { "err".to_string() } else { "failed".to_string() },
+        Status::Error => {
+            if width < 16 {
+                "err".to_string()
+            } else {
+                "failed".to_string()
+            }
+        }
     }
 }
 
@@ -244,7 +260,9 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
     let total: usize = rows.iter().map(|r| row_lines(&r.agg, r.active)).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
-        let plan = rows.iter().enumerate()
+        let plan = rows
+            .iter()
+            .enumerate()
             .map(|(i, r)| (i, row_lines(&r.agg, r.active)))
             .collect();
         return (plan, 0);
@@ -284,7 +302,9 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
     // Step 3: compress calm rows (Done/Running) to 1 line, lowest-idx first.
     for entry in planned.iter_mut() {
         let (idx, ref mut lines) = *entry;
-        if *lines <= 1 { continue; }
+        if *lines <= 1 {
+            continue;
+        }
         if is_calm(rows[idx].agg.status) {
             used -= *lines - 1; // account for the lines we're dropping
             *lines = 1;
@@ -306,7 +326,9 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
         }
         for entry in planned.iter_mut() {
             let (idx, ref mut lines) = *entry;
-            if *lines <= 1 { continue; }
+            if *lines <= 1 {
+                continue;
+            }
             if !is_calm(rows[idx].agg.status) {
                 used -= 1;
                 *lines -= 1;
@@ -360,9 +382,16 @@ pub fn plan_layout(
     // Fast path: if every row's FULL block (pad_y + content + gap) fits, render
     // everything at full fidelity with full spacing. `card_block_lines` is the
     // single footprint source shared with the budgeting below.
-    let full_footprint: usize = rows.iter().map(|r| card_block_lines(&r.agg, r.active, base)).sum();
+    let full_footprint: usize = rows
+        .iter()
+        .map(|r| card_block_lines(&r.agg, r.active, base))
+        .sum();
     if full_footprint <= body_budget {
-        let plan = rows.iter().enumerate().map(|(i, r)| (i, row_lines(&r.agg, r.active))).collect();
+        let plan = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i, row_lines(&r.agg, r.active)))
+            .collect();
         return (plan, 0, base);
     }
 
@@ -371,7 +400,11 @@ pub fn plan_layout(
     let candidates = [
         base,
         CardSpacing { gap: 0, ..base },
-        CardSpacing { gap: 0, pad_y: 0, ..base },
+        CardSpacing {
+            gap: 0,
+            pad_y: 0,
+            ..base
+        },
     ];
 
     for spacing in candidates {
@@ -389,7 +422,11 @@ pub fn plan_layout(
 
     // Even the leanest spacing (no pad_y, no gap) overflows: let plan_overflow
     // compress content against the raw budget and apply no luxury rows.
-    let lean = CardSpacing { gap: 0, pad_y: 0, ..base };
+    let lean = CardSpacing {
+        gap: 0,
+        pad_y: 0,
+        ..base
+    };
     let (plan, strip_folded) = plan_overflow(rows, body_budget);
     (plan, strip_folded, lean)
 }
@@ -416,7 +453,12 @@ pub fn onboarding(opts: &RenderOpts) -> String {
     for (st, label) in legend {
         out.push_str(&format!(
             " {}{}{} {}{}{}\n",
-            st.role().ansi(), st.glyph_for(g), RESET, muted, label, RESET
+            st.role().ansi(),
+            st.glyph_for(g),
+            RESET,
+            muted,
+            label,
+            RESET
         ));
     }
     out.push('\n');
@@ -522,7 +564,17 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     let gap = width.saturating_sub(used).max(1);
     out.push_str(&format!(
         "{}{}{}{}{} {} {}{}{}{}{}\n",
-        bar, pad, label_color, label_bold, glyph_char, num, name, RESET, " ".repeat(gap), bell, slot_styled
+        bar,
+        pad,
+        label_color,
+        label_bold,
+        glyph_char,
+        num,
+        name,
+        RESET,
+        " ".repeat(gap),
+        bell,
+        slot_styled
     ));
 
     // Line 1 done. Emit child/detail lines only within the remaining budget.
@@ -652,10 +704,18 @@ fn emit_child_line(
     };
     out.push_str(&format!(
         "  {}{}{}{}{}{} {}{}{} {}{}{}\n",
-        idle_color, tree, RESET,                 // tree char (muted)
-        pane.status.role().ansi(), glyph, RESET, // status glyph in role color (aligned column)
-        idle_color, mark, RESET,                 // identity mark (neutral vendor color)
-        activity_color, activity_str, RESET,     // activity
+        idle_color,
+        tree,
+        RESET, // tree char (muted)
+        pane.status.role().ansi(),
+        glyph,
+        RESET, // status glyph in role color (aligned column)
+        idle_color,
+        mark,
+        RESET, // identity mark (neutral vendor color)
+        activity_color,
+        activity_str,
+        RESET, // activity
     ));
 }
 
@@ -748,7 +808,9 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     // their (subtle, ladder-derived) surface tint.
     let rail = tc_bg(opts.theme.rail_bg);
 
-    let body_budget = opts.height.saturating_sub(header_lines(rows, opts.header, opts.density));
+    let body_budget = opts
+        .height
+        .saturating_sub(header_lines(rows, opts.header, opts.density));
     let (plan, strip_folded, spacing) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
@@ -759,14 +821,22 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     } else {
         format!("·{}", rows.len())
     };
-    let pending = rows.iter().filter(|r| r.agg.status == Status::Pending).count();
-    let urgent = if pending > 0 { format!(" ·{}!", pending) } else { String::new() };
+    let pending = rows
+        .iter()
+        .filter(|r| r.agg.status == Status::Pending)
+        .count();
+    let urgent = if pending > 0 {
+        format!(" ·{}!", pending)
+    } else {
+        String::new()
+    };
 
     // Emit the identity header block only when configured on (and rows exist).
     // Header line 1: " RADAR" + right-aligned count (+ urgent marker).
     if opts.header {
         let title = " RADAR";
-        let right_w = UnicodeWidthStr::width(count.as_str()) + UnicodeWidthStr::width(urgent.as_str());
+        let right_w =
+            UnicodeWidthStr::width(count.as_str()) + UnicodeWidthStr::width(urgent.as_str());
         let gap = width
             .saturating_sub(UnicodeWidthStr::width(title) + right_w)
             .max(1);
@@ -776,7 +846,13 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         let mut title_line = String::new();
         title_line.push_str(&format!(
             "{}{}{}{}{}{}{}",
-            accent, title, RESET, " ".repeat(gap), count_color, count, RESET
+            accent,
+            title,
+            RESET,
+            " ".repeat(gap),
+            count_color,
+            count,
+            RESET
         ));
         if pending > 0 {
             title_line.push_str(&format!("{}{}{}", Role::Attention.ansi(), urgent, RESET));
@@ -859,11 +935,26 @@ mod tests {
     use crate::model::Detail;
 
     fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
-        TabAgg { status, done, total, pending: if status == Status::Pending { 1 } else { 0 }, detail, panes: vec![] }
+        TabAgg {
+            status,
+            done,
+            total,
+            pending: if status == Status::Pending { 1 } else { 0 },
+            detail,
+            panes: vec![],
+        }
     }
 
     fn ro(width: usize, now_tick: u64) -> RenderOpts {
-        RenderOpts { width, height: 100, now_tick, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() }
+        RenderOpts {
+            width,
+            height: 100,
+            now_tick,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
+        }
     }
 
     #[test]
@@ -876,10 +967,16 @@ mod tests {
     #[test]
     fn header_is_title_then_rule_two_lines() {
         let rows = vec![TabRow {
-            number: 1, name: "a".into(), active: false, has_bell: false,
+            number: 1,
+            name: "a".into(),
+            active: false,
+            has_bell: false,
             agg: agg(Status::Running, 0, 0, None),
         }];
-        assert_eq!(header_lines(&rows, true, crate::config::Density::Compact), 2);
+        assert_eq!(
+            header_lines(&rows, true, crate::config::Density::Compact),
+            2
+        );
         let s = render(&rows, &ro(24, 0));
         let mut lines = s.lines();
         let title = lines.next().unwrap();
@@ -892,7 +989,10 @@ mod tests {
     #[test]
     fn header_absent_for_empty_rows() {
         let rows: Vec<TabRow> = vec![];
-        assert_eq!(header_lines(&rows, true, crate::config::Density::Compact), 0);
+        assert_eq!(
+            header_lines(&rows, true, crate::config::Density::Compact),
+            0
+        );
         assert!(render(&rows, &ro(24, 0)).is_empty());
     }
 
@@ -915,42 +1015,97 @@ mod tests {
     fn row_lines_by_state() {
         assert_eq!(row_lines(&agg(Status::Idle, 0, 0, None), false), 1);
 
-        let detail = |status, msg: &str| Some(Detail {
-            repo: "r".into(), branch: "b".into(), msg: msg.into(),
-            kind: Kind::Claude, since_tick: 0, status,
-        });
-        assert_eq!(row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, "")), false), 1);
-        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "x")), false), 2);
-        assert_eq!(row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x")), false), 2);
+        let detail = |status, msg: &str| {
+            Some(Detail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: msg.into(),
+                kind: Kind::Claude,
+                since_tick: 0,
+                status,
+            })
+        };
+        assert_eq!(
+            row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, "")), false),
+            1
+        );
+        assert_eq!(
+            row_lines(
+                &agg(Status::Running, 1, 1, detail(Status::Running, "x")),
+                false
+            ),
+            2
+        );
+        assert_eq!(
+            row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x")), false),
+            2
+        );
         // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
         // Old 3-line case (branch · needs you + quoted msg) is gone.
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "")), false), 1);
-        assert_eq!(row_lines(&agg(Status::Pending, 1, 1, detail(Status::Pending, "go?")), false), 2);
+        assert_eq!(
+            row_lines(
+                &agg(Status::Pending, 1, 1, detail(Status::Pending, "")),
+                false
+            ),
+            1
+        );
+        assert_eq!(
+            row_lines(
+                &agg(Status::Pending, 1, 1, detail(Status::Pending, "go?")),
+                false
+            ),
+            2
+        );
         // Running with no msg: only 1 line
-        assert_eq!(row_lines(&agg(Status::Running, 1, 1, detail(Status::Running, "")), false), 1);
+        assert_eq!(
+            row_lines(
+                &agg(Status::Running, 1, 1, detail(Status::Running, "")),
+                false
+            ),
+            1
+        );
     }
 
     #[test]
     fn active_row_has_accent_bar_idle_does_not() {
         let rows = vec![
-            TabRow { number: 1, name: "a".into(), active: true, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "b".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow {
+                number: 1,
+                name: "a".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "b".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
         ];
         let s = render(&rows, &ro(24, 0));
         let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
-        assert!(body[0].contains('▌'));         // active row → bar
+        assert!(body[0].contains('▌')); // active row → bar
         assert!(body[0].contains(Role::Accent.ansi())); // accent-colored bar
-        assert!(!body[1].contains('▌'));        // idle non-active → no bar
+        assert!(!body[1].contains('▌')); // idle non-active → no bar
     }
 
     #[test]
     fn active_and_waiting_row_bar_is_attention_not_accent() {
-        let detail = Detail { repo: "p".into(), branch: "fix".into(), msg: "".into(),
-                              kind: Kind::Claude, since_tick: 0, status: Status::Pending };
+        let detail = Detail {
+            repo: "p".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
         let rows = vec![TabRow {
-            number: 3, name: "pinky".into(), active: true, has_bell: false,
+            number: 3,
+            name: "pinky".into(),
+            active: true,
+            has_bell: false,
             agg: agg(Status::Pending, 0, 0, Some(detail)),
         }];
         let s = render(&rows, &ro(30, 5));
@@ -963,10 +1118,21 @@ mod tests {
     #[test]
     fn right_slot_per_state() {
         let mk = |status, done, total| {
-            let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                             kind: Kind::Claude, since_tick: 0, status };
-            TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
-                     agg: agg(status, done, total, Some(d)) }
+            let d = Detail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: "".into(),
+                kind: Kind::Claude,
+                since_tick: 0,
+                status,
+            };
+            TabRow {
+                number: 1,
+                name: "n".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(status, done, total, Some(d)),
+            }
         };
         assert!(render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
         assert!(render(&[mk(Status::Error, 0, 1)], &ro(30, 0)).contains("failed"));
@@ -981,28 +1147,78 @@ mod tests {
     #[test]
     fn working_slot_is_dim_not_role_colored() {
         // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
-        let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                         kind: Kind::Claude, since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "n".into(), active: false,
-                                 has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
+        let d = Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "n".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Running, 0, 1, Some(d)),
+        }];
         let opts = ro(30, 14);
         let s = render(&rows, &opts);
         // elapsed is wrapped in the theme idle_text (dim) color…
-        assert!(s.contains(&format!("{}0:14", tc_fg(opts.theme.idle_text))),
-            "working elapsed should be dim idle_text: {:?}", s);
+        assert!(
+            s.contains(&format!("{}0:14", tc_fg(opts.theme.idle_text))),
+            "working elapsed should be dim idle_text: {:?}",
+            s
+        );
         // …NOT the working role color.
-        assert!(!s.contains(&format!("{}0:14", Role::Working.ansi())),
-            "working elapsed must not be work-yellow: {:?}", s);
+        assert!(
+            !s.contains(&format!("{}0:14", Role::Working.ansi())),
+            "working elapsed must not be work-yellow: {:?}",
+            s
+        );
     }
 
     #[test]
     fn working_glyph_spins_with_tick() {
-        let d = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(),
-                         kind: Kind::Claude, since_tick: 0, status: Status::Running };
-        let row = |_t| TabRow { number: 1, name: "n".into(), active: false, has_bell: false,
-                               agg: agg(Status::Running, 0, 1, Some(d.clone())) };
-        let f0 = render(&[row(0)], &RenderOpts { width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
-        let f1 = render(&[row(1)], &RenderOpts { width: 30, height: 100, now_tick: 1, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
+        let d = Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let row = |_t| TabRow {
+            number: 1,
+            name: "n".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Running, 0, 1, Some(d.clone())),
+        };
+        let f0 = render(
+            &[row(0)],
+            &RenderOpts {
+                width: 30,
+                height: 100,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
+        let f1 = render(
+            &[row(1)],
+            &RenderOpts {
+                width: 30,
+                height: 100,
+                now_tick: 1,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
         assert!(f0.contains('◐'));
         assert!(f1.contains('◓'));
     }
@@ -1010,7 +1226,10 @@ mod tests {
     #[test]
     fn idle_row_is_single_line_with_no_right_slot_text() {
         let rows = vec![TabRow {
-            number: 7, name: "logs".into(), active: false, has_bell: false,
+            number: 7,
+            name: "logs".into(),
+            active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro(24, 0));
@@ -1097,50 +1316,107 @@ mod tests {
             status: Status::Pending,
         };
         let rows = vec![TabRow {
-            number: 3, name: "a-long-tab-name".into(), active: true, has_bell: false,
+            number: 3,
+            name: "a-long-tab-name".into(),
+            active: true,
+            has_bell: false,
             agg: agg(Status::Pending, 0, 1, Some(detail)),
         }];
         for width in [16usize, 20, 24, 30] {
             let s = render(&rows, &ro(width, 5));
             for line in s.lines() {
-                assert!(visible_len(line) <= width,
-                    "pending line exceeds width {}: {:?} (visible {})", width, line, visible_len(line));
+                assert!(
+                    visible_len(line) <= width,
+                    "pending line exceeds width {}: {:?} (visible {})",
+                    width,
+                    line,
+                    visible_len(line)
+                );
             }
         }
     }
 
     #[test]
     fn running_has_no_warning_glyph() {
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Running, 1, 1, Some(detail)) }];
+        let detail = Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "t".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Running, 1, 1, Some(detail)),
+        }];
         assert!(!render(&rows, &ro(30, 599)).contains('⚠'));
     }
 
     #[test]
     fn done_has_no_warning_glyph() {
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Done };
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Done, 1, 1, Some(detail)) }];
+        let detail = Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Done,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "t".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Done, 1, 1, Some(detail)),
+        }];
         assert!(!render(&rows, &ro(30, 10_000)).contains('⚠'));
     }
 
     #[test]
     fn bell_renders_marker() {
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: true, agg: agg(Status::Idle, 0, 0, None) }];
+        let rows = vec![TabRow {
+            number: 1,
+            name: "t".into(),
+            active: false,
+            has_bell: true,
+            agg: agg(Status::Idle, 0, 0, None),
+        }];
         assert!(render(&rows, &ro(24, 0)).contains('⚑'));
     }
 
     #[test]
     fn no_bell_no_marker() {
-        let rows = vec![TabRow { number: 1, name: "t".into(), active: false, has_bell: false, agg: agg(Status::Idle, 0, 0, None) }];
+        let rows = vec![TabRow {
+            number: 1,
+            name: "t".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Idle, 0, 0, None),
+        }];
         assert!(!render(&rows, &ro(24, 0)).contains('⚑'));
     }
 
     #[test]
     fn error_word_narrows_when_tight() {
-        let d = Detail { repo: "infra".into(), branch: "".into(), msg: "".into(),
-                         kind: Kind::Claude, since_tick: 0, status: Status::Error };
-        let rows = vec![TabRow { number: 5, name: "infra".into(), active: false,
-                                 has_bell: false, agg: agg(Status::Error, 0, 1, Some(d)) }];
+        let d = Detail {
+            repo: "infra".into(),
+            branch: "".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Error,
+        };
+        let rows = vec![TabRow {
+            number: 5,
+            name: "infra".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Error, 0, 1, Some(d)),
+        }];
         // wide: "failed"; narrow: "err"
         assert!(render(&rows, &ro(30, 0)).contains("failed"));
         let narrow = render(&rows, &ro(14, 0));
@@ -1150,10 +1426,21 @@ mod tests {
 
     #[test]
     fn working_detail_drops_branch_before_message_when_narrow() {
-        let d = Detail { repo: "web".into(), branch: "main".into(),
-                         msg: "running tests".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
-        let rows = vec![TabRow { number: 1, name: "api".into(), active: false,
-                                 has_bell: false, agg: agg(Status::Running, 0, 1, Some(d)) }];
+        let d = Detail {
+            repo: "web".into(),
+            branch: "main".into(),
+            msg: "running tests".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "api".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Running, 0, 1, Some(d)),
+        }];
         let narrow = render(&rows, &ro(16, 5));
         for line in narrow.lines() {
             assert!(visible_len(line) <= 16);
@@ -1163,19 +1450,35 @@ mod tests {
     }
 
     fn idle_row(n: u32) -> TabRow {
-        TabRow { number: n, name: format!("t{}", n), active: false, has_bell: false,
-                 agg: agg(Status::Idle, 0, 0, None) }
+        TabRow {
+            number: n,
+            name: format!("t{}", n),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Idle, 0, 0, None),
+        }
     }
 
     #[test]
     fn overflow_folds_idle_into_strip_and_marks_header() {
         // 20 idle tabs, height only fits a few → fold.
         let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
-        assert!(s.contains("idle"));   // "+N idle ▾" footer
+        let s = render(
+            &rows,
+            &RenderOpts {
+                width: 24,
+                height: 6,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
+        assert!(s.contains("idle")); // "+N idle ▾" footer
         assert!(s.contains('▾'));
         assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
-        // total emitted lines fit the height budget
+                                                          // total emitted lines fit the height budget
         assert!(s.lines().count() <= 6);
     }
 
@@ -1183,20 +1486,53 @@ mod tests {
     fn overflow_keeps_non_idle_rows_visible() {
         let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
         // an urgent waiting tab at the very end (high position)
-        let d = Detail { repo: "p".into(), branch: "x".into(), msg: "approve?".into(),
-                         kind: Kind::Claude, since_tick: 0, status: Status::Pending };
-        rows.push(TabRow { number: 19, name: "pinky".into(), active: false,
-                           has_bell: false, agg: agg(Status::Pending, 0, 1, Some(d)) });
-        let s = render(&rows, &RenderOpts { width: 30, height: 8, now_tick: 2, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
-        assert!(s.contains("pinky"));        // urgent row never folded
-        assert!(s.contains("approve?"));     // activity (msg) survives on line 2
-        assert!(s.contains('✳'));            // Claude identity mark on line 2
+        let d = Detail {
+            repo: "p".into(),
+            branch: "x".into(),
+            msg: "approve?".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        rows.push(TabRow {
+            number: 19,
+            name: "pinky".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Pending, 0, 1, Some(d)),
+        });
+        let s = render(
+            &rows,
+            &RenderOpts {
+                width: 30,
+                height: 8,
+                now_tick: 2,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
+        assert!(s.contains("pinky")); // urgent row never folded
+        assert!(s.contains("approve?")); // activity (msg) survives on line 2
+        assert!(s.contains('✳')); // Claude identity mark on line 2
     }
 
     #[test]
     fn no_overflow_when_everything_fits() {
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-        let s = render(&rows, &RenderOpts { width: 24, height: 40, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
+        let s = render(
+            &rows,
+            &RenderOpts {
+                width: 24,
+                height: 40,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Compact,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
         assert!(!s.contains("idle ▾"));
         assert!(!s.lines().next().unwrap().contains('▲'));
     }
@@ -1220,47 +1556,94 @@ mod tests {
 
         let rows = vec![
             // idle — one line, no detail
-            TabRow { number: 1, name: "idle-tab".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow {
+                number: 1,
+                name: "idle-tab".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
             // running — two lines, with detail
-            TabRow { number: 2, name: "run-tab".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 1, 2, Some(mk_detail(Status::Running))) },
+            TabRow {
+                number: 2,
+                name: "run-tab".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
+            },
             // pending with msg — three lines
-            TabRow { number: 3, name: "pend-tab".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))) },
+            TabRow {
+                number: 3,
+                name: "pend-tab".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
+            },
             // done — one line
-            TabRow { number: 4, name: "done-tab".into(), active: false, has_bell: false,
-                     agg: agg(Status::Done, 1, 1, Some(mk_detail(Status::Done))) },
+            TabRow {
+                number: 4,
+                name: "done-tab".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
+            },
             // error — two lines
-            TabRow { number: 5, name: "err-tab".into(), active: false, has_bell: false,
-                     agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))) },
+            TabRow {
+                number: 5,
+                name: "err-tab".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))),
+            },
         ];
 
-        let opts = RenderOpts { width: 30, height: 100, now_tick: 7, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
+        let opts = RenderOpts {
+            width: 30,
+            height: 100,
+            now_tick: 7,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
+        };
         let s = render(&rows, &opts);
 
         // Compact density must NOT have card background bands.
-        assert!(!s.contains("48;2;"),
-            "Compact must not emit truecolor bg bands");
+        assert!(
+            !s.contains("48;2;"),
+            "Compact must not emit truecolor bg bands"
+        );
         // Must NOT contain raw hex color literals
-        assert!(!s.contains('#'),
-            "'#' hex color literal found in render output");
+        assert!(
+            !s.contains('#'),
+            "'#' hex color literal found in render output"
+        );
         // Glyph/status indicators must use ANSI-16 role codes.
         // Accent role: header title bar + active-row bar (\x1b[35m)
-        assert!(s.contains(Role::Accent.ansi()),
-            "expected accent role ANSI code not found");
+        assert!(
+            s.contains(Role::Accent.ansi()),
+            "expected accent role ANSI code not found"
+        );
         // Attention role: pending row glyph and "needs you" label (\x1b[91m)
-        assert!(s.contains(Role::Attention.ansi()),
-            "expected attention role ANSI code not found");
+        assert!(
+            s.contains(Role::Attention.ansi()),
+            "expected attention role ANSI code not found"
+        );
         // Working role: running row glyph (\x1b[33m)
-        assert!(s.contains(Role::Working.ansi()),
-            "expected working role ANSI code not found");
+        assert!(
+            s.contains(Role::Working.ansi()),
+            "expected working role ANSI code not found"
+        );
         // Error role: error row glyph (\x1b[31m)
-        assert!(s.contains(Role::Error.ansi()),
-            "expected error role ANSI code not found");
+        assert!(
+            s.contains(Role::Error.ansi()),
+            "expected error role ANSI code not found"
+        );
         // Detail lines use truecolor foreground for readable dims.
-        assert!(s.contains("38;2;"),
-            "detail lines must use theme-derived truecolor foreground for readable dims");
+        assert!(
+            s.contains("38;2;"),
+            "detail lines must use theme-derived truecolor foreground for readable dims"
+        );
     }
 
     #[test]
@@ -1282,16 +1665,39 @@ mod tests {
             name: "agents".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 3, pending: 2, detail: Some(detail_with_msg), panes: vec![] },
+            agg: TabAgg {
+                status: Status::Pending,
+                done: 0,
+                total: 3,
+                pending: 2,
+                detail: Some(detail_with_msg),
+                panes: vec![],
+            },
         }];
         let s = render(&rows, &ro(30, 0));
         // line 2 must show the mark and the activity text
-        assert!(s.contains('✳'), "pending line 2 must contain the Claude mark: {:?}", s);
-        assert!(s.contains("approve the push?"), "pending line 2 must show the activity msg: {:?}", s);
+        assert!(
+            s.contains('✳'),
+            "pending line 2 must contain the Claude mark: {:?}",
+            s
+        );
+        assert!(
+            s.contains("approve the push?"),
+            "pending line 2 must show the activity msg: {:?}",
+            s
+        );
         // Activity is in the attention role (the question is loud)
-        assert!(s.contains(Role::Attention.ansi()), "pending activity must use attention color: {:?}", s);
+        assert!(
+            s.contains(Role::Attention.ansi()),
+            "pending activity must use attention color: {:?}",
+            s
+        );
         // No old "needs you" text
-        assert!(!s.contains("needs you"), "old 'needs you' text must not appear: {:?}", s);
+        assert!(
+            !s.contains("needs you"),
+            "old 'needs you' text must not appear: {:?}",
+            s
+        );
         // row_lines = 2 (mark+activity line present)
         assert_eq!(row_lines(&rows[0].agg, false), 2);
 
@@ -1309,7 +1715,14 @@ mod tests {
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 1, detail: Some(detail_no_msg), panes: vec![] },
+            agg: TabAgg {
+                status: Status::Pending,
+                done: 0,
+                total: 1,
+                pending: 1,
+                detail: Some(detail_no_msg),
+                panes: vec![],
+            },
         }];
         // row_lines = 1 (no msg → no line 2)
         assert_eq!(row_lines(&rows2[0].agg, false), 1);
@@ -1328,16 +1741,30 @@ mod tests {
             name: "multi".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 5, pending: 3, detail: Some(detail_long), panes: vec![] },
+            agg: TabAgg {
+                status: Status::Pending,
+                done: 0,
+                total: 5,
+                pending: 3,
+                detail: Some(detail_long),
+                panes: vec![],
+            },
         }];
         for width in [20usize, 24, 30] {
             let s3 = render(&rows3, &ro(width, 0));
-            assert!(s3.contains('✳'), "mark must appear at width {}: {:?}", width, s3);
+            assert!(
+                s3.contains('✳'),
+                "mark must appear at width {}: {:?}",
+                width,
+                s3
+            );
             for line in s3.lines() {
                 assert!(
                     visible_len(line) <= width,
                     "pending detail line exceeds width {}: {:?} (visible {})",
-                    width, line, visible_len(line)
+                    width,
+                    line,
+                    visible_len(line)
                 );
             }
         }
@@ -1362,7 +1789,14 @@ mod tests {
             name: "m".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg { status: Status::Pending, done: 0, total: 1, pending: 3, detail: Some(detail), panes: vec![] },
+            agg: TabAgg {
+                status: Status::Pending,
+                done: 0,
+                total: 1,
+                pending: 3,
+                detail: Some(detail),
+                panes: vec![],
+            },
         }];
         for width in [14usize, 16, 17, 20, 24] {
             let s = render(&rows, &ro(width, 0));
@@ -1370,7 +1804,9 @@ mod tests {
                 assert!(
                     visible_len(line) <= width,
                     "multi-pending detail exceeds width {}: {:?} (visible {})",
-                    width, line, visible_len(line)
+                    width,
+                    line,
+                    visible_len(line)
                 );
             }
         }
@@ -1389,12 +1825,32 @@ mod tests {
     fn idle_strip_never_exceeds_width() {
         let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
         for width in [18usize, 24, 30] {
-            let s = render(&rows, &RenderOpts { width, height: 6, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() });
+            let s = render(
+                &rows,
+                &RenderOpts {
+                    width,
+                    height: 6,
+                    now_tick: 0,
+                    glyphs: GlyphSet::Plain,
+                    header: true,
+                    density: crate::config::Density::Compact,
+                    theme: crate::theme::DerivedColors::default(),
+                },
+            );
             // folding must have happened
-            assert!(s.contains("idle ▾"), "expected idle strip at width {}", width);
+            assert!(
+                s.contains("idle ▾"),
+                "expected idle strip at width {}",
+                width
+            );
             for line in s.lines() {
-                assert!(visible_len(line) <= width,
-                    "idle strip/line exceeds width {}: {:?} (visible {})", width, line, visible_len(line));
+                assert!(
+                    visible_len(line) <= width,
+                    "idle strip/line exceeds width {}: {:?} (visible {})",
+                    width,
+                    line,
+                    visible_len(line)
+                );
             }
         }
     }
@@ -1435,11 +1891,25 @@ mod tests {
     #[test]
     fn header_false_emits_no_header_lines() {
         let rows = vec![TabRow {
-            number: 1, name: "a".into(), active: false, has_bell: false,
+            number: 1,
+            name: "a".into(),
+            active: false,
+            has_bell: false,
             agg: agg(Status::Running, 0, 0, None),
         }];
-        assert_eq!(header_lines(&rows, false, crate::config::Density::Compact), 0);
-        let opts = RenderOpts { width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain, header: false, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
+        assert_eq!(
+            header_lines(&rows, false, crate::config::Density::Compact),
+            0
+        );
+        let opts = RenderOpts {
+            width: 24,
+            height: 100,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: false,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
+        };
         let s = render(&rows, &opts);
         // No identity header: rows start at line 0, so no "RADAR"/"═" line.
         assert!(!s.contains("RADAR"));
@@ -1454,22 +1924,41 @@ mod tests {
 
     /// Build a PaneEntry for tree tests.
     fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneEntry {
-        PaneEntry { pane_id: id, kind, status, msg: msg.into() }
+        PaneEntry {
+            pane_id: id,
+            kind,
+            status,
+            msg: msg.into(),
+        }
     }
 
     /// Build a multi-pane TabAgg from per-pane entries. The header status is the
     /// most-urgent (highest-severity) member; done/total derive from the entries.
     fn agg_multi(panes: Vec<PaneEntry>) -> TabAgg {
-        let status = panes.iter().map(|p| p.status)
-            .max_by_key(|s| s.severity()).unwrap_or(Status::Idle);
+        let status = panes
+            .iter()
+            .map(|p| p.status)
+            .max_by_key(|s| s.severity())
+            .unwrap_or(Status::Idle);
         let total = panes.len();
         let done = panes.iter().filter(|p| p.status == Status::Done).count();
         let pending = panes.iter().filter(|p| p.status == Status::Pending).count();
         let detail = panes.iter().find(|p| p.status == status).map(|p| Detail {
-            repo: "r".into(), branch: "b".into(), msg: p.msg.clone(),
-            kind: p.kind, since_tick: 0, status: p.status,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: p.msg.clone(),
+            kind: p.kind,
+            since_tick: 0,
+            status: p.status,
         });
-        TabAgg { status, done, total, pending, detail, panes }
+        TabAgg {
+            status,
+            done,
+            total,
+            pending,
+            detail,
+            panes,
+        }
     }
 
     #[test]
@@ -1527,7 +2016,11 @@ mod tests {
         ]);
         assert_eq!(row_lines(&a, false), 3, "header + 1 expanded + collapse");
         // Active → all 4 expand: 1 header + 4 children, no collapse = 5.
-        assert_eq!(row_lines(&a, true), 5, "active expands all, no collapse line");
+        assert_eq!(
+            row_lines(&a, true),
+            5,
+            "active expands all, no collapse line"
+        );
     }
 
     #[test]
@@ -1539,21 +2032,59 @@ mod tests {
             pe(3, Kind::Claude, Status::Running, "y"),
             pe(4, Kind::Claude, Status::Running, "z"),
         ]);
-        let row = TabRow { number: 7, name: "monorepo".into(), active: false, has_bell: false, agg: a };
+        let row = TabRow {
+            number: 7,
+            name: "monorepo".into(),
+            active: false,
+            has_bell: false,
+            agg: a,
+        };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
-        // Header line shows the done/total count (0/4) and the most-urgent pending glyph.
-        assert!(body[0].contains("0/4"), "header must show done/total: {:?}", body[0]);
-        assert!(body[0].contains('◆'), "header glyph is the most-urgent (pending): {:?}", body[0]);
+                                                           // Header line shows the done/total count (0/4) and the most-urgent pending glyph.
+        assert!(
+            body[0].contains("0/4"),
+            "header must show done/total: {:?}",
+            body[0]
+        );
+        assert!(
+            body[0].contains('◆'),
+            "header glyph is the most-urgent (pending): {:?}",
+            body[0]
+        );
         // Expanded pending child: tree char `└ ` (it is last expanded, collapse line follows
         // so it uses ├ ), mark ✳, pending glyph ◆, activity.
-        assert!(body[1].contains('├') || body[1].contains('└'), "child has a tree char: {:?}", body[1]);
-        assert!(body[1].contains('✳'), "child shows the kind mark: {:?}", body[1]);
-        assert!(body[1].contains("run migration?"), "child shows activity: {:?}", body[1]);
-        assert!(body[1].contains(Role::Attention.ansi()), "pending child activity in attention: {:?}", body[1]);
+        assert!(
+            body[1].contains('├') || body[1].contains('└'),
+            "child has a tree char: {:?}",
+            body[1]
+        );
+        assert!(
+            body[1].contains('✳'),
+            "child shows the kind mark: {:?}",
+            body[1]
+        );
+        assert!(
+            body[1].contains("run migration?"),
+            "child shows activity: {:?}",
+            body[1]
+        );
+        assert!(
+            body[1].contains(Role::Attention.ansi()),
+            "pending child activity in attention: {:?}",
+            body[1]
+        );
         // Collapse line: `└ 3 more working`.
-        assert!(body[2].contains("└"), "collapse line uses corner char: {:?}", body[2]);
-        assert!(body[2].contains("3 more working"), "collapse line counts calm panes: {:?}", body[2]);
+        assert!(
+            body[2].contains("└"),
+            "collapse line uses corner char: {:?}",
+            body[2]
+        );
+        assert!(
+            body[2].contains("3 more working"),
+            "collapse line counts calm panes: {:?}",
+            body[2]
+        );
         // Exactly 3 body lines (header + 1 child + collapse).
         assert_eq!(body.len(), 3, "header + 1 child + collapse: {:?}", s);
     }
@@ -1564,12 +2095,22 @@ mod tests {
             pe(1, Kind::Claude, Status::Running, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
         ]);
-        let row = TabRow { number: 1, name: "team".into(), active: true, has_bell: false, agg: a };
+        let row = TabRow {
+            number: 1,
+            name: "team".into(),
+            active: true,
+            has_bell: false,
+            agg: a,
+        };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
         // header + 2 children, no collapse line.
         assert_eq!(body.len(), 3, "active: header + 2 children: {:?}", s);
-        assert!(!s.contains("more working"), "no collapse line when all expand: {:?}", s);
+        assert!(
+            !s.contains("more working"),
+            "no collapse line when all expand: {:?}",
+            s
+        );
         // First child ├, last child └.
         assert!(body[1].contains('├'), "first child uses ├: {:?}", body[1]);
         assert!(body[2].contains('└'), "last child uses └: {:?}", body[2]);
@@ -1583,19 +2124,34 @@ mod tests {
         // Use an inactive tab so a collapse line accompanies an expanded child.
         for &width in &[16usize, 20, 24, 30] {
             let a = agg_multi(vec![
-                pe(1, Kind::Claude, Status::Pending, "a very long question that must be truncated to fit"),
+                pe(
+                    1,
+                    Kind::Claude,
+                    Status::Pending,
+                    "a very long question that must be truncated to fit",
+                ),
                 pe(2, Kind::Claude, Status::Running, "x"),
                 pe(3, Kind::Claude, Status::Running, "y"),
             ]);
-            let row = TabRow { number: 1, name: "tab".into(), active: false, has_bell: false, agg: a };
+            let row = TabRow {
+                number: 1,
+                name: "tab".into(),
+                active: false,
+                has_bell: false,
+                agg: a,
+            };
             let s = render(&[row], &ro(width, 5));
             let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
-            // body = [card header line, expanded child, collapse line]; check the
-            // tree's own child (idx 1) and collapse (idx 2) lines.
+                                                               // body = [card header line, expanded child, collapse line]; check the
+                                                               // tree's own child (idx 1) and collapse (idx 2) lines.
             for line in &body[1..] {
-                assert!(visible_len(line) <= width,
+                assert!(
+                    visible_len(line) <= width,
                     "tree child/collapse line exceeds width {}: {:?} (visible {})",
-                    width, line, visible_len(line));
+                    width,
+                    line,
+                    visible_len(line)
+                );
             }
         }
     }
@@ -1605,14 +2161,32 @@ mod tests {
         // A single ever-active pane is NOT multi-pane → keeps chunk-1 line 2.
         let a = agg_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
         assert!(!is_multi_pane(&a), "one pane is not multi-pane");
-        assert_eq!(row_lines(&a, false), 2, "single-pane pending+msg = 2 lines (chunk-1)");
-        let row = TabRow { number: 1, name: "solo".into(), active: false, has_bell: false, agg: a };
+        assert_eq!(
+            row_lines(&a, false),
+            2,
+            "single-pane pending+msg = 2 lines (chunk-1)"
+        );
+        let row = TabRow {
+            number: 1,
+            name: "solo".into(),
+            active: false,
+            has_bell: false,
+            agg: a,
+        };
         let s = render(&[row], &ro(30, 0));
         // No tree chars, no collapse line.
-        assert!(!s.contains("more working") && !s.contains("more done"), "no collapse line: {:?}", s);
+        assert!(
+            !s.contains("more working") && !s.contains("more done"),
+            "no collapse line: {:?}",
+            s
+        );
         assert!(!s.contains('├'), "no tree branch char: {:?}", s);
         // Chunk-1 line 2 present: mark + activity.
-        assert!(s.contains('✳') && s.contains("approve?"), "chunk-1 line 2 present: {:?}", s);
+        assert!(
+            s.contains('✳') && s.contains("approve?"),
+            "chunk-1 line 2 present: {:?}",
+            s
+        );
     }
 
     /// Calm rows (Running/Done) are compressed to 1 line before urgent rows
@@ -1625,24 +2199,51 @@ mod tests {
         // Compression: Running rows compressed to 1 line each (3 lines saved);
         //   3×1 + 2 = 5 ≤ 5. Done. Pending keeps its activity line (2 lines total).
         let detail_running = |n: u8| Detail {
-            repo: format!("repo{}", n), branch: "main".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: format!("repo{}", n),
+            branch: "main".into(),
+            msg: "working".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let detail_pending = Detail {
-            repo: "urgent-proj".into(), branch: "fix/thing".into(),
+            repo: "urgent-proj".into(),
+            branch: "fix/thing".into(),
             msg: "please review".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Pending,
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
         };
 
         let rows = vec![
-            TabRow { number: 1, name: "r1".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail_running(1))) },
-            TabRow { number: 2, name: "r2".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail_running(2))) },
-            TabRow { number: 3, name: "r3".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail_running(3))) },
-            TabRow { number: 4, name: "urgent".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(detail_pending)) },
+            TabRow {
+                number: 1,
+                name: "r1".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail_running(1))),
+            },
+            TabRow {
+                number: 2,
+                name: "r2".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail_running(2))),
+            },
+            TabRow {
+                number: 3,
+                name: "r3".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail_running(3))),
+            },
+            TabRow {
+                number: 4,
+                name: "urgent".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(detail_pending)),
+            },
         ];
 
         // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
@@ -1668,17 +2269,38 @@ mod tests {
 
         // Total body lines must be ≤ budget.
         let total_body: usize = plan.iter().map(|(_, l)| l).sum();
-        assert!(total_body <= body_budget,
-            "total body lines {} exceeds budget {}", total_body, body_budget);
+        assert!(
+            total_body <= body_budget,
+            "total body lines {} exceeds budget {}",
+            total_body,
+            body_budget
+        );
 
         // Render and verify: Running rows have no detail line; urgent shows activity.
-        let opts = RenderOpts { width: 30, height: 7, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
+        let opts = RenderOpts {
+            width: 30,
+            height: 7,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
+        };
         let s = render(&rows, &opts);
-        assert!(s.contains("please review"), "urgent row activity must survive");
-        assert!(s.contains('✳'), "urgent row must show the Claude identity mark");
+        assert!(
+            s.contains("please review"),
+            "urgent row activity must survive"
+        );
+        assert!(
+            s.contains('✳'),
+            "urgent row must show the Claude identity mark"
+        );
         // Total line count ≤ height
-        assert!(s.lines().count() <= 7,
-            "rendered lines {} exceed height 7", s.lines().count());
+        assert!(
+            s.lines().count() <= 7,
+            "rendered lines {} exceed height 7",
+            s.lines().count()
+        );
     }
 
     /// When height is extremely small, every kept row is compressed to exactly
@@ -1686,21 +2308,46 @@ mod tests {
     #[test]
     fn overflow_all_one_line_when_extreme() {
         let detail = Detail {
-            repo: "r".into(), branch: "b".into(), msg: "msg".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Pending,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "msg".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
         };
         let rows = vec![
-            TabRow { number: 1, name: "pending".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(detail.clone())) },
-            TabRow { number: 2, name: "run".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
+            TabRow {
+                number: 1,
+                name: "pending".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(detail.clone())),
+            },
+            TabRow {
+                number: 2,
+                name: "run".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail.clone())),
+            },
         ];
         // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
-        let opts = RenderOpts { width: 24, height: 3, now_tick: 0, glyphs: GlyphSet::Plain, header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default() };
+        let opts = RenderOpts {
+            width: 24,
+            height: 3,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
+        };
         let s = render(&rows, &opts);
         let line_count = s.lines().count();
-        assert!(line_count <= 3,
-            "rendered {} lines but height is 3", line_count);
+        assert!(
+            line_count <= 3,
+            "rendered {} lines but height is 3",
+            line_count
+        );
         // No panic means the test passes. Also verify each body row is ≥ 1 line.
         let (plan, _) = plan_overflow(&rows, 1);
         for (_, lines) in &plan {
@@ -1731,15 +2378,32 @@ mod tests {
         let s = render(&rows, &ro_comfortable(24, 100));
         // body lines: each idle row = 1 content + 1 gap = 2 lines each. Total body = 6.
         // Plus 2 header = 8 \n chars.
-        assert_eq!(s.matches('\n').count(), 8,
-            "comfortable: expected 2 header + 3×(1 content + 1 gap) = 8 newlines, got {}:\n{:?}", s.matches('\n').count(), s);
+        assert_eq!(
+            s.matches('\n').count(),
+            8,
+            "comfortable: expected 2 header + 3×(1 content + 1 gap) = 8 newlines, got {}:\n{:?}",
+            s.matches('\n').count(),
+            s
+        );
         // Check that there is a blank line between tabs (an empty line between non-empty lines).
         let body_lines: Vec<&str> = s.lines().skip(2).collect();
         assert_eq!(body_lines.len(), 6);
         // Odd-indexed body lines (0-based: 1, 3, 5) should be blank gap lines.
-        assert!(body_lines[1].is_empty(), "body line 1 should be blank gap: {:?}", body_lines[1]);
-        assert!(body_lines[3].is_empty(), "body line 3 should be blank gap: {:?}", body_lines[3]);
-        assert!(body_lines[5].is_empty(), "body line 5 should be blank gap: {:?}", body_lines[5]);
+        assert!(
+            body_lines[1].is_empty(),
+            "body line 1 should be blank gap: {:?}",
+            body_lines[1]
+        );
+        assert!(
+            body_lines[3].is_empty(),
+            "body line 3 should be blank gap: {:?}",
+            body_lines[3]
+        );
+        assert!(
+            body_lines[5].is_empty(),
+            "body line 5 should be blank gap: {:?}",
+            body_lines[5]
+        );
     }
 
     #[test]
@@ -1748,15 +2412,29 @@ mod tests {
         // Total lines = 2 header + 3 content = 5 \n chars.
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let opts = RenderOpts {
-            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Compact, theme: crate::theme::DerivedColors::default(),
+            width: 24,
+            height: 100,
+            now_tick: 0,
+            glyphs: GlyphSet::Plain,
+            header: true,
+            density: crate::config::Density::Compact,
+            theme: crate::theme::DerivedColors::default(),
         };
         let s = render(&rows, &opts);
-        assert_eq!(s.matches('\n').count(), 5,
-            "compact: expected 2 header + 3 content = 5 newlines, got {}:\n{:?}", s.matches('\n').count(), s);
+        assert_eq!(
+            s.matches('\n').count(),
+            5,
+            "compact: expected 2 header + 3 content = 5 newlines, got {}:\n{:?}",
+            s.matches('\n').count(),
+            s
+        );
         // No empty lines in the body.
         for line in s.lines().skip(2) {
-            assert!(!line.is_empty(), "compact should have no blank lines, found one: {:?}", line);
+            assert!(
+                !line.is_empty(),
+                "compact should have no blank lines, found one: {:?}",
+                line
+            );
         }
     }
 
@@ -1767,23 +2445,51 @@ mod tests {
         // now render identically, since idle rows are bare in the hybrid.)
         use crate::model::Detail;
         let detail = Detail {
-            repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "working".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![
-            TabRow { number: 1, name: "work".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "work".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
             idle_row(2),
         ];
-        let comfortable = render(&rows, &RenderOpts {
-            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Comfortable, theme: crate::theme::DerivedColors::default(),
-        });
-        let cards = render(&rows, &RenderOpts {
-            width: 24, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Cards, theme: crate::theme::DerivedColors::default(),
-        });
-        assert_ne!(comfortable, cards, "Cards should differ from Comfortable (has bg bands)");
+        let comfortable = render(
+            &rows,
+            &RenderOpts {
+                width: 24,
+                height: 100,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Comfortable,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
+        let cards = render(
+            &rows,
+            &RenderOpts {
+                width: 24,
+                height: 100,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Cards,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
+        assert_ne!(
+            comfortable, cards,
+            "Cards should differ from Comfortable (has bg bands)"
+        );
     }
 
     #[test]
@@ -1800,7 +2506,8 @@ mod tests {
         // Without gaps: 3 content fits in 4. With gaps: 3+3=6 > 4. → gap_used = 0.
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let height = 6; // body_budget = 4
-        let (plan, strip, spacing) = plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
+        let (plan, strip, spacing) =
+            plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
         let gap_used = spacing.gap;
         // All 3 idle rows fit at 1 line each (total=3 ≤ body_budget=4).
         assert_eq!(plan.len(), 3, "all 3 rows should be kept");
@@ -1808,16 +2515,32 @@ mod tests {
         // 3 content + 3 gaps = 6 > 4 (body_budget) → gaps dropped.
         assert_eq!(gap_used, 0, "gaps should be dropped when they don't fit");
         // Render and verify: no blank lines in output.
-        let s = render(&rows, &RenderOpts {
-            width: 24, height, now_tick: 0, glyphs: GlyphSet::Plain,
-            header: true, density: crate::config::Density::Comfortable, theme: crate::theme::DerivedColors::default(),
-        });
+        let s = render(
+            &rows,
+            &RenderOpts {
+                width: 24,
+                height,
+                now_tick: 0,
+                glyphs: GlyphSet::Plain,
+                header: true,
+                density: crate::config::Density::Comfortable,
+                theme: crate::theme::DerivedColors::default(),
+            },
+        );
         let line_count = s.lines().count();
-        assert!(line_count <= height,
-            "rendered {} lines but height is {}", line_count, height);
+        assert!(
+            line_count <= height,
+            "rendered {} lines but height is {}",
+            line_count,
+            height
+        );
         // When gaps are dropped, no blank body lines.
         for line in s.lines().skip(2) {
-            assert!(!line.is_empty(), "gaps dropped — no blank body lines expected: {:?}", line);
+            assert!(
+                !line.is_empty(),
+                "gaps dropped — no blank body lines expected: {:?}",
+                line
+            );
         }
     }
 
@@ -1857,14 +2580,28 @@ mod tests {
         // Every content line carries a truecolor band; gap lines and header must NOT.
         use crate::model::Detail;
         let detail = Detail {
-            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "working".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![
-            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "work".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
@@ -1876,29 +2613,51 @@ mod tests {
         const RAIL: &str = "\x1b[48;2;18;19;27m";
 
         // line 0 = header title (no rule in Cards) → painted with rail_bg.
-        assert!(lines[0].contains(RAIL),
-            "header title line must carry the rail panel band: {:?}", lines[0]);
-        assert!(lines[0].contains("RADAR"),
-            "header title must read RADAR: {:?}", lines[0]);
+        assert!(
+            lines[0].contains(RAIL),
+            "header title line must carry the rail panel band: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("RADAR"),
+            "header title must read RADAR: {:?}",
+            lines[0]
+        );
 
         // line 1 = idle tab content → a card surface (NOT the rail base).
-        assert!(lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
-            "idle content line must carry a card surface band, not rail: {:?}", lines[1]);
+        assert!(
+            lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
+            "idle content line must carry a card surface band, not rail: {:?}",
+            lines[1]
+        );
 
         // line 2 = idle card gap → painted with rail_bg (panel shows through).
-        assert!(lines[2].contains(RAIL),
-            "idle card gap row must carry the rail panel band: {:?}", lines[2]);
+        assert!(
+            lines[2].contains(RAIL),
+            "idle card gap row must carry the rail panel band: {:?}",
+            lines[2]
+        );
 
         // line 3 = working tab line 1, line 4 = working detail.
-        assert!(lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
-            "working tab line 1 must carry a card surface band: {:?}", lines[3]);
-        assert!(lines[4].contains("\x1b[48;2;") && !lines[4].contains(RAIL),
-            "working tab detail line must carry a card surface band: {:?}", lines[4]);
+        assert!(
+            lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
+            "working tab line 1 must carry a card surface band: {:?}",
+            lines[3]
+        );
+        assert!(
+            lines[4].contains("\x1b[48;2;") && !lines[4].contains(RAIL),
+            "working tab detail line must carry a card surface band: {:?}",
+            lines[4]
+        );
 
         // Every painted line must end with bg reset (\x1b[49m).
         for (i, line) in lines.iter().enumerate() {
-            assert!(line.contains("\x1b[49m"),
-                "panel line {} must contain bg reset: {:?}", i, line);
+            assert!(
+                line.contains("\x1b[49m"),
+                "panel line {} must contain bg reset: {:?}",
+                i,
+                line
+            );
         }
     }
 
@@ -1908,25 +2667,37 @@ mod tests {
         // the full width.
         use crate::model::Detail;
         let done = Detail {
-            repo: "r".into(), branch: "".into(), msg: "".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Done,
+            repo: "r".into(),
+            branch: "".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Done,
         };
-        let rows = vec![
-            TabRow { number: 1, name: "x".into(), active: false, has_bell: false,
-                     agg: agg(Status::Done, 1, 1, Some(done)) },
-        ];
+        let rows = vec![TabRow {
+            number: 1,
+            name: "x".into(),
+            active: false,
+            has_bell: false,
+            agg: agg(Status::Done, 1, 1, Some(done)),
+        }];
         let width = 24usize;
         let s = render(&rows, &ro_cards(width, 100));
         // Cards has a 1-line header (no rule); first body line is the painted content line.
         let body: Vec<&str> = s.lines().skip(1).collect();
         let content_line = body[0];
-        assert!(content_line.contains("\x1b[48;2;"),
-            "content line must have truecolor card bg: {:?}", content_line);
+        assert!(
+            content_line.contains("\x1b[48;2;"),
+            "content line must have truecolor card bg: {:?}",
+            content_line
+        );
         // Visible width must equal exactly `width`.
         let vw = visible_len(content_line);
-        assert_eq!(vw, width,
+        assert_eq!(
+            vw, width,
             "painted content line visible width must equal {} (full band), got {}: {:?}",
-            width, vw, content_line);
+            width, vw, content_line
+        );
     }
 
     #[test]
@@ -1936,17 +2707,27 @@ mod tests {
         // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
         use crate::model::Detail;
         let detail = Detail {
-            repo: "pinky".into(), branch: "fix/x".into(), msg: "some work".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "some work".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![TabRow {
-            number: 1, name: "agent".into(), active: true, has_bell: false,
+            number: 1,
+            name: "agent".into(),
+            active: true,
+            has_bell: false,
             agg: agg(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
         // The neutral-dark fallback active surface from the dark-panel ladder is (56,59,71).
-        assert!(s.contains("\x1b[0m\x1b[48;2;56;59;71m"),
-            "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}", s);
+        assert!(
+            s.contains("\x1b[0m\x1b[48;2;56;59;71m"),
+            "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}",
+            s
+        );
     }
 
     #[test]
@@ -1955,20 +2736,42 @@ mod tests {
         // indices, not truecolor foreground (38;2;), and not raw hex literals.
         use crate::model::Detail;
         let detail = Detail {
-            repo: "r".into(), branch: "b".into(), msg: "work".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "work".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![
-            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "work".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
         ];
         let s = render(&rows, &ro_cards(30, 100));
         // Card surfaces must emit truecolor backgrounds.
-        assert!(s.contains("\x1b[48;2;"), "cards must use a truecolor surface (48;2;): {:?}", s);
+        assert!(
+            s.contains("\x1b[48;2;"),
+            "cards must use a truecolor surface (48;2;): {:?}",
+            s
+        );
         // Must NOT use legacy 256-color indices for the surface band.
-        assert!(!s.contains("\x1b[48;5;"), "cards must not use 256-color surface (48;5;): {:?}", s);
+        assert!(
+            !s.contains("\x1b[48;5;"),
+            "cards must not use 256-color surface (48;5;): {:?}",
+            s
+        );
         // Must NOT contain raw hex color literals.
         assert!(!s.contains('#'), "cards must not emit raw hex: {:?}", s);
         // Note: 38;2; truecolor foreground IS expected (detail lines use theme-derived dim foreground).
@@ -1984,9 +2787,15 @@ mod tests {
         while let Some(c) = chars.next() {
             if c == '\x1b' {
                 if chars.peek() == Some(&'[') {
-                    for i in chars.by_ref() { if i == 'm' { break; } }
+                    for i in chars.by_ref() {
+                        if i == 'm' {
+                            break;
+                        }
+                    }
                 }
-            } else { out.push(c); }
+            } else {
+                out.push(c);
+            }
         }
         out
     }
@@ -1994,13 +2803,29 @@ mod tests {
     #[test]
     fn cards_left_chrome_is_single_column() {
         use crate::model::Detail;
-        let detail = Detail { repo: "r".into(), branch: "b".into(), msg: "x".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running };
+        let detail = Detail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "x".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
         let rows = vec![
-            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "work".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<String> = s.lines().map(strip_ansi_local).collect();
@@ -2009,10 +2834,18 @@ mod tests {
         let idle = lines.iter().find(|l| l.contains("idle")).unwrap();
         let active = lines.iter().find(|l| l.contains("work")).unwrap();
         // Idle: one leading space (the blank bar column), then the glyph at col 1.
-        assert!(idle.starts_with(" ○"), "idle row must be ' ○…' (1-col inset): {:?}", idle);
+        assert!(
+            idle.starts_with(" ○"),
+            "idle row must be ' ○…' (1-col inset): {:?}",
+            idle
+        );
         // Active: the spine in col 0 immediately followed by the glyph at col 1 —
         // no second pad column.
-        assert!(active.starts_with("▌◐"), "active row must be '▌◐…' (spine+glyph, no pad): {:?}", active);
+        assert!(
+            active.starts_with("▌◐"),
+            "active row must be '▌◐…' (spine+glyph, no pad): {:?}",
+            active
+        );
     }
 
     #[test]
@@ -2025,17 +2858,39 @@ mod tests {
             pe(1, Kind::Claude, Status::Running, "searching web"),
             pe(2, Kind::Claude, Status::Done, "done thing"),
         ]);
-        let row = TabRow { number: 1, name: "t".into(), active: true, has_bell: false, agg: a };
+        let row = TabRow {
+            number: 1,
+            name: "t".into(),
+            active: true,
+            has_bell: false,
+            agg: a,
+        };
         let s = render(&[row], &ro_cards(30, 100));
-        let child = s.lines().map(strip_ansi_local).find(|l| l.contains('├')).expect("child line");
+        let child = s
+            .lines()
+            .map(strip_ansi_local)
+            .find(|l| l.contains('├'))
+            .expect("child line");
         let mark_idx = child.find('✳').expect("identity mark present");
         // A space immediately precedes and follows the mark.
-        assert!(child[..mark_idx].ends_with(' '), "mark must be preceded by a space: {:?}", child);
-        assert_eq!(child[mark_idx..].chars().nth(1), Some(' '), "mark must be followed by a space: {:?}", child);
+        assert!(
+            child[..mark_idx].ends_with(' '),
+            "mark must be preceded by a space: {:?}",
+            child
+        );
+        assert_eq!(
+            child[mark_idx..].chars().nth(1),
+            Some(' '),
+            "mark must be followed by a space: {:?}",
+            child
+        );
         // The status glyph (working spinner at tick 0) comes before the mark.
         let spin = crate::status::working_spin(0);
-        assert!(child.find(spin).is_some_and(|i| i < mark_idx),
-            "status glyph must precede the identity mark: {:?}", child);
+        assert!(
+            child.find(spin).is_some_and(|i| i < mark_idx),
+            "status glyph must precede the identity mark: {:?}",
+            child
+        );
     }
 
     #[test]
@@ -2043,22 +2898,51 @@ mod tests {
         // Same tabs with Comfortable and Compact must contain NO card band.
         use crate::model::Detail;
         let detail = Detail {
-            repo: "r".into(), branch: "b".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "working".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![
-            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "work".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "work".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
         ];
-        for density in [crate::config::Density::Comfortable, crate::config::Density::Compact] {
-            let s = render(&rows, &RenderOpts {
-                width: 30, height: 100, now_tick: 0, glyphs: GlyphSet::Plain,
-                header: true, density, theme: crate::theme::DerivedColors::default(),
-            });
-            assert!(!s.contains("\x1b[48;2;"),
-                "density {:?} must NOT emit a truecolor card band: {:?}", density, s);
+        for density in [
+            crate::config::Density::Comfortable,
+            crate::config::Density::Compact,
+        ] {
+            let s = render(
+                &rows,
+                &RenderOpts {
+                    width: 30,
+                    height: 100,
+                    now_tick: 0,
+                    glyphs: GlyphSet::Plain,
+                    header: true,
+                    density,
+                    theme: crate::theme::DerivedColors::default(),
+                },
+            );
+            assert!(
+                !s.contains("\x1b[48;2;"),
+                "density {:?} must NOT emit a truecolor card band: {:?}",
+                density,
+                s
+            );
         }
     }
 
@@ -2098,9 +2982,30 @@ mod tests {
     fn card_spacing_per_density() {
         // The ONE source of truth for spacing knobs, by density.
         use crate::config::Density::*;
-        assert_eq!(card_spacing(Compact), CardSpacing { pad_x: 0, pad_y: 0, gap: 0 });
-        assert_eq!(card_spacing(Comfortable), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
-        assert_eq!(card_spacing(Cards), CardSpacing { pad_x: 0, pad_y: 0, gap: 1 });
+        assert_eq!(
+            card_spacing(Compact),
+            CardSpacing {
+                pad_x: 0,
+                pad_y: 0,
+                gap: 0
+            }
+        );
+        assert_eq!(
+            card_spacing(Comfortable),
+            CardSpacing {
+                pad_x: 0,
+                pad_y: 0,
+                gap: 1
+            }
+        );
+        assert_eq!(
+            card_spacing(Cards),
+            CardSpacing {
+                pad_x: 0,
+                pad_y: 0,
+                gap: 1
+            }
+        );
     }
 
     #[test]
@@ -2109,11 +3014,24 @@ mod tests {
         let idle = agg(Status::Idle, 0, 0, None);
         assert_eq!(row_lines(&idle, false), 1);
         // Cards: 0 pad_y + 1 content + 1 gap = 2.
-        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Cards)), 2);
+        assert_eq!(
+            card_block_lines(&idle, false, card_spacing(crate::config::Density::Cards)),
+            2
+        );
         // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
-        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Comfortable)), 2);
+        assert_eq!(
+            card_block_lines(
+                &idle,
+                false,
+                card_spacing(crate::config::Density::Comfortable)
+            ),
+            2
+        );
         // Compact: 0 + 1 + 0 = 1.
-        assert_eq!(card_block_lines(&idle, false, card_spacing(crate::config::Density::Compact)), 1);
+        assert_eq!(
+            card_block_lines(&idle, false, card_spacing(crate::config::Density::Compact)),
+            1
+        );
     }
 
     #[test]
@@ -2121,7 +3039,10 @@ mod tests {
         // A cards-rendered tab emits a TRAILING gap row painted with the dark
         // rail panel base (rail_bg), and that row is blank once ANSI is stripped.
         let rows = vec![TabRow {
-            number: 1, name: "idle".into(), active: false, has_bell: false,
+            number: 1,
+            name: "idle".into(),
+            active: false,
+            has_bell: false,
             agg: agg(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro_cards(24, 100));
@@ -2129,18 +3050,33 @@ mod tests {
         // line 0 = header (rail). line 1 = idle card content. line 2 = trailing gap row.
         let content_row = lines[1];
         // Content row carries the idle card surface tint (NOT rail_bg).
-        assert!(content_row.contains("\x1b[48;2;20;21;30m"),
-            "content row must carry the card's own idle surface tint: {:?}", content_row);
-        assert!(!content_row.contains("\x1b[48;2;18;19;27m"),
-            "content row must NOT be the rail panel base: {:?}", content_row);
-        assert!(content_row.contains("idle"),
-            "content row must contain the tab name: {:?}", content_row);
+        assert!(
+            content_row.contains("\x1b[48;2;20;21;30m"),
+            "content row must carry the card's own idle surface tint: {:?}",
+            content_row
+        );
+        assert!(
+            !content_row.contains("\x1b[48;2;18;19;27m"),
+            "content row must NOT be the rail panel base: {:?}",
+            content_row
+        );
+        assert!(
+            content_row.contains("idle"),
+            "content row must contain the tab name: {:?}",
+            content_row
+        );
         // The trailing gap row (line 2) carries the rail panel base.
         let gap_row = lines[2];
-        assert!(gap_row.contains("\x1b[48;2;18;19;27m"),
-            "gap row must carry the rail panel base: {:?}", gap_row);
-        assert!(!gap_row.contains("\x1b[48;2;20;21;30m"),
-            "gap row must NOT be the card surface tint: {:?}", gap_row);
+        assert!(
+            gap_row.contains("\x1b[48;2;18;19;27m"),
+            "gap row must carry the rail panel base: {:?}",
+            gap_row
+        );
+        assert!(
+            !gap_row.contains("\x1b[48;2;20;21;30m"),
+            "gap row must NOT be the card surface tint: {:?}",
+            gap_row
+        );
         // ANSI-stripped, the gap row is blank (only spaces / no glyphs or text).
         fn strip_ansi(line: &str) -> String {
             let mut out = String::new();
@@ -2149,7 +3085,9 @@ mod tests {
                 if c == '\x1b' {
                     if chars.peek() == Some(&'[') {
                         for inner in chars.by_ref() {
-                            if inner == 'm' { break; }
+                            if inner == 'm' {
+                                break;
+                            }
                         }
                     }
                 } else {
@@ -2158,8 +3096,11 @@ mod tests {
             }
             out
         }
-        assert!(strip_ansi(gap_row).trim().is_empty(),
-            "gap row must be visually blank (no content): {:?}", gap_row);
+        assert!(
+            strip_ansi(gap_row).trim().is_empty(),
+            "gap row must be visually blank (no content): {:?}",
+            gap_row
+        );
     }
 
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
@@ -2202,16 +3143,35 @@ mod tests {
         //   idle/plain row → dimmest (236).
         use crate::model::Detail;
         let detail = Detail {
-            repo: "repo".into(), branch: "main".into(), msg: "working".into(),
-            kind: Kind::Claude, since_tick: 0, status: Status::Running,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "working".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
         };
         let rows = vec![
-            TabRow { number: 1, name: "idle".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 2, name: "agent".into(), active: false, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail.clone())) },
-            TabRow { number: 3, name: "focus".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(detail)) },
+            TabRow {
+                number: 1,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 2,
+                name: "agent".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail.clone())),
+            },
+            TabRow {
+                number: 3,
+                name: "focus".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(detail)),
+            },
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
@@ -2227,20 +3187,41 @@ mod tests {
         //   line 7  focus detail             → active (56,59,71)
         //   line 8  focus gap                → rail (18,19,27)
         let rail = "\x1b[48;2;18;19;27m";
-        assert!(lines[1].contains("\x1b[48;2;20;21;30m"),
-            "idle content must carry the dim card tint (20;21;30): {:?}", lines[1]);
-        assert!(lines[2].contains(rail) && !lines[2].contains("\x1b[48;2;20;21;30m"),
-            "idle gap row must carry the rail panel base: {:?}", lines[2]);
-        assert!(lines[3].contains("\x1b[48;2;24;25;35m"),
-            "agent content must carry the mid card tint (24;25;35): {:?}", lines[3]);
-        assert!(lines[4].contains("\x1b[48;2;24;25;35m"),
-            "agent detail must carry the mid card tint (24;25;35): {:?}", lines[4]);
-        assert!(lines[5].contains(rail) && !lines[5].contains("\x1b[48;2;24;25;35m"),
-            "agent gap row must carry the rail panel base: {:?}", lines[5]);
-        assert!(lines[6].contains("\x1b[48;2;56;59;71m"),
-            "focused content must carry the active card tint (56;59;71): {:?}", lines[6]);
-        assert!(lines[7].contains("\x1b[48;2;56;59;71m"),
-            "focused detail must carry the active card tint (56;59;71): {:?}", lines[7]);
+        assert!(
+            lines[1].contains("\x1b[48;2;20;21;30m"),
+            "idle content must carry the dim card tint (20;21;30): {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains(rail) && !lines[2].contains("\x1b[48;2;20;21;30m"),
+            "idle gap row must carry the rail panel base: {:?}",
+            lines[2]
+        );
+        assert!(
+            lines[3].contains("\x1b[48;2;24;25;35m"),
+            "agent content must carry the mid card tint (24;25;35): {:?}",
+            lines[3]
+        );
+        assert!(
+            lines[4].contains("\x1b[48;2;24;25;35m"),
+            "agent detail must carry the mid card tint (24;25;35): {:?}",
+            lines[4]
+        );
+        assert!(
+            lines[5].contains(rail) && !lines[5].contains("\x1b[48;2;24;25;35m"),
+            "agent gap row must carry the rail panel base: {:?}",
+            lines[5]
+        );
+        assert!(
+            lines[6].contains("\x1b[48;2;56;59;71m"),
+            "focused content must carry the active card tint (56;59;71): {:?}",
+            lines[6]
+        );
+        assert!(
+            lines[7].contains("\x1b[48;2;56;59;71m"),
+            "focused detail must carry the active card tint (56;59;71): {:?}",
+            lines[7]
+        );
     }
 
     #[test]
@@ -2249,23 +3230,66 @@ mod tests {
         // active running agent, pending agent, done agent, then two idle panes.
         // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
         use crate::model::Detail;
-        let running = Detail { repo: "web".into(), branch: "".into(),
-            msg: "building…".into(), kind: Kind::Claude, since_tick: 0, status: Status::Running };
-        let pending = Detail { repo: "api".into(), branch: "fix".into(),
-            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
-        let done = Detail { repo: "worker".into(), branch: "".into(),
-            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Done };
+        let running = Detail {
+            repo: "web".into(),
+            branch: "".into(),
+            msg: "building…".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let pending = Detail {
+            repo: "api".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let done = Detail {
+            repo: "worker".into(),
+            branch: "".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Done,
+        };
         let rows = vec![
-            TabRow { number: 1, name: "Claude".into(), active: true, has_bell: false,
-                     agg: agg(Status::Running, 0, 1, Some(running)) },
-            TabRow { number: 2, name: "api".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
-            TabRow { number: 3, name: "worker".into(), active: false, has_bell: false,
-                     agg: agg(Status::Done, 1, 1, Some(done)) },
-            TabRow { number: 4, name: "Pane #1".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
-            TabRow { number: 5, name: "Pane #1".into(), active: false, has_bell: false,
-                     agg: agg(Status::Idle, 0, 0, None) },
+            TabRow {
+                number: 1,
+                name: "Claude".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(running)),
+            },
+            TabRow {
+                number: 2,
+                name: "api".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(pending)),
+            },
+            TabRow {
+                number: 3,
+                name: "worker".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Done, 1, 1, Some(done)),
+            },
+            TabRow {
+                number: 4,
+                name: "Pane #1".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+            TabRow {
+                number: 5,
+                name: "Pane #1".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
         ];
         let s = render(&rows, &ro_cards(24, 100));
         // Cards is now a cohesive dark panel: the 1-line header (no rule) is
@@ -2290,8 +3314,12 @@ idle\n\
 rail\n\
 idle\n\
 rail";
-        assert_eq!(tint_map(&s), expected,
-            "3-tint card map drifted from the design:\n{:?}", s);
+        assert_eq!(
+            tint_map(&s),
+            expected,
+            "3-tint card map drifted from the design:\n{:?}",
+            s
+        );
     }
 
     #[test]
@@ -2303,39 +3331,88 @@ rail";
         //   waiting → `\x1b[91m` (bright red) + ◆ glyph + bold
         //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
         use crate::model::Detail;
-        let pending = Detail { repo: "pinky".into(), branch: "fix".into(),
-            msg: "".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
-        let err = Detail { repo: "infra".into(), branch: "".into(),
-            msg: "boom".into(), kind: Kind::Claude, since_tick: 0, status: Status::Error };
+        let pending = Detail {
+            repo: "pinky".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let err = Detail {
+            repo: "infra".into(),
+            branch: "".into(),
+            msg: "boom".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Error,
+        };
         let rows = vec![
-            TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
-            TabRow { number: 2, name: "infra".into(), active: false, has_bell: false,
-                     agg: agg(Status::Error, 0, 1, Some(err)) },
+            TabRow {
+                number: 1,
+                name: "pinky".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(pending)),
+            },
+            TabRow {
+                number: 2,
+                name: "infra".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Error, 0, 1, Some(err)),
+            },
         ];
         let s = render(&rows, &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
         // Cards header is 1 line; line 1 = waiting row, then its detail, then the
         // error row. Find the waiting first-line and the error first-line.
-        let waiting_line = lines.iter().find(|l| l.contains("pinky")).expect("waiting row");
-        let error_line = lines.iter().find(|l| l.contains("infra")).expect("error row");
+        let waiting_line = lines
+            .iter()
+            .find(|l| l.contains("pinky"))
+            .expect("waiting row");
+        let error_line = lines
+            .iter()
+            .find(|l| l.contains("infra"))
+            .expect("error row");
         // Waiting: bright-red ANSI + ◆ glyph + bold.
-        assert!(waiting_line.contains(Role::Attention.ansi()),
-            "waiting row must use the ANSI-16 attention code (\\x1b[91m): {:?}", waiting_line);
-        assert!(waiting_line.contains('◆'),
-            "waiting row must use the ◆ glyph: {:?}", waiting_line);
-        assert!(waiting_line.contains(BOLD),
-            "waiting row must be bold: {:?}", waiting_line);
+        assert!(
+            waiting_line.contains(Role::Attention.ansi()),
+            "waiting row must use the ANSI-16 attention code (\\x1b[91m): {:?}",
+            waiting_line
+        );
+        assert!(
+            waiting_line.contains('◆'),
+            "waiting row must use the ◆ glyph: {:?}",
+            waiting_line
+        );
+        assert!(
+            waiting_line.contains(BOLD),
+            "waiting row must be bold: {:?}",
+            waiting_line
+        );
         // Error: red ANSI + ✗ glyph, NOT bold.
-        assert!(error_line.contains(Role::Error.ansi()),
-            "error row must use the ANSI-16 error code (\\x1b[31m): {:?}", error_line);
-        assert!(error_line.contains('✗'),
-            "error row must use the ✗ glyph: {:?}", error_line);
-        assert!(!error_line.contains(BOLD),
-            "error row must not be bold: {:?}", error_line);
+        assert!(
+            error_line.contains(Role::Error.ansi()),
+            "error row must use the ANSI-16 error code (\\x1b[31m): {:?}",
+            error_line
+        );
+        assert!(
+            error_line.contains('✗'),
+            "error row must use the ✗ glyph: {:?}",
+            error_line
+        );
+        assert!(
+            !error_line.contains(BOLD),
+            "error row must not be bold: {:?}",
+            error_line
+        );
         // The two ANSI codes are distinct.
-        assert_ne!(Role::Attention.ansi(), Role::Error.ansi(),
-            "attention (bright-red) and error (red) ANSI codes must differ");
+        assert_ne!(
+            Role::Attention.ansi(),
+            Role::Error.ansi(),
+            "attention (bright-red) and error (red) ANSI codes must differ"
+        );
     }
 
     #[test]
@@ -2343,22 +3420,52 @@ rail";
         // Header reads " RADAR" and, when any tab is pending, appends a "·N!"
         // urgent marker in the attention role.
         use crate::model::Detail;
-        let pending = Detail { repo: "p".into(), branch: "x".into(),
-            msg: "approve?".into(), kind: Kind::Claude, since_tick: 0, status: Status::Pending };
+        let pending = Detail {
+            repo: "p".into(),
+            branch: "x".into(),
+            msg: "approve?".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
         let rows = vec![
-            TabRow { number: 1, name: "pinky".into(), active: false, has_bell: false,
-                     agg: agg(Status::Pending, 0, 1, Some(pending)) },
+            TabRow {
+                number: 1,
+                name: "pinky".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(pending)),
+            },
             idle_row(2),
             idle_row(3),
         ];
         let s = render(&rows, &ro(30, 0));
         let header = s.lines().next().unwrap();
-        assert!(header.contains("RADAR"), "header must read RADAR: {:?}", header);
-        assert!(!header.contains("AGENTS"), "header must not say AGENTS: {:?}", header);
-        assert!(header.contains("·3"), "header must show total count ·3: {:?}", header);
-        assert!(header.contains("·1!"), "header must show urgent count ·1!: {:?}", header);
-        assert!(header.contains(Role::Attention.ansi()),
-            "urgent marker must use the attention role: {:?}", header);
+        assert!(
+            header.contains("RADAR"),
+            "header must read RADAR: {:?}",
+            header
+        );
+        assert!(
+            !header.contains("AGENTS"),
+            "header must not say AGENTS: {:?}",
+            header
+        );
+        assert!(
+            header.contains("·3"),
+            "header must show total count ·3: {:?}",
+            header
+        );
+        assert!(
+            header.contains("·1!"),
+            "header must show urgent count ·1!: {:?}",
+            header
+        );
+        assert!(
+            header.contains(Role::Attention.ansi()),
+            "urgent marker must use the attention role: {:?}",
+            header
+        );
     }
 
     #[test]
@@ -2367,6 +3474,10 @@ rail";
         let s = render(&rows, &ro(30, 0));
         let header = s.lines().next().unwrap();
         assert!(header.contains("·3"), "header shows total: {:?}", header);
-        assert!(!header.contains('!'), "no urgent marker when nothing pending: {:?}", header);
+        assert!(
+            !header.contains('!'),
+            "no urgent marker when nothing pending: {:?}",
+            header
+        );
     }
 }

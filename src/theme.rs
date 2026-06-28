@@ -28,7 +28,11 @@ pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
 
 /// Linear per-channel blend: t=0 → a, t=1 → b.
 pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
-    let ch = |ac: u8, bc: u8| (ac as f32 + (bc as f32 - ac as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let ch = |ac: u8, bc: u8| {
+        (ac as f32 + (bc as f32 - ac as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     (ch(a.0, b.0), ch(a.1, b.1), ch(a.2, b.2))
 }
 
@@ -136,10 +140,10 @@ mod tests {
     #[test]
     fn parse_hex_bad_input_is_none() {
         assert_eq!(parse_hex(""), None);
-        assert_eq!(parse_hex("#fff"), None);          // too short
-        assert_eq!(parse_hex("#1a1b2"), None);        // 5 digits
-        assert_eq!(parse_hex("#1a1b266"), None);      // 7 digits
-        assert_eq!(parse_hex("#gggggg"), None);       // non-hex
+        assert_eq!(parse_hex("#fff"), None); // too short
+        assert_eq!(parse_hex("#1a1b2"), None); // 5 digits
+        assert_eq!(parse_hex("#1a1b266"), None); // 7 digits
+        assert_eq!(parse_hex("#gggggg"), None); // non-hex
         assert_eq!(parse_hex("rgb(1,2,3)"), None);
     }
 
@@ -151,8 +155,12 @@ mod tests {
     fn rail_bg_is_darker_than_terminal_bg() {
         // The panel base is a "crust" one step darker than the terminal bg.
         let d = DerivedColors::from_bg_fg(FALLBACK_BG, FALLBACK_FG);
-        assert!(lum(d.rail_bg) < lum(FALLBACK_BG),
-            "rail_bg {:?} must be darker than bg {:?}", d.rail_bg, FALLBACK_BG);
+        assert!(
+            lum(d.rail_bg) < lum(FALLBACK_BG),
+            "rail_bg {:?} must be darker than bg {:?}",
+            d.rail_bg,
+            FALLBACK_BG
+        );
     }
 
     #[test]
@@ -160,12 +168,24 @@ mod tests {
         // Cards are subtle steps UP from the dark panel: rail_bg ≤ idle < agent,
         // and the active card is the only one brighter than the terminal bg.
         let d = DerivedColors::from_bg_fg(FALLBACK_BG, FALLBACK_FG);
-        assert!(lum(d.rail_bg) <= lum(d.surface_idle),
-            "idle {:?} must sit at or above rail_bg {:?}", d.surface_idle, d.rail_bg);
-        assert!(lum(d.surface_idle) < lum(d.surface_agent),
-            "agent {:?} must be brighter than idle {:?}", d.surface_agent, d.surface_idle);
-        assert!(lum(d.surface_active) > lum(FALLBACK_BG),
-            "active {:?} must be brighter than terminal bg {:?}", d.surface_active, FALLBACK_BG);
+        assert!(
+            lum(d.rail_bg) <= lum(d.surface_idle),
+            "idle {:?} must sit at or above rail_bg {:?}",
+            d.surface_idle,
+            d.rail_bg
+        );
+        assert!(
+            lum(d.surface_idle) < lum(d.surface_agent),
+            "agent {:?} must be brighter than idle {:?}",
+            d.surface_agent,
+            d.surface_idle
+        );
+        assert!(
+            lum(d.surface_active) > lum(FALLBACK_BG),
+            "active {:?} must be brighter than terminal bg {:?}",
+            d.surface_active,
+            FALLBACK_BG
+        );
     }
 
     #[test]

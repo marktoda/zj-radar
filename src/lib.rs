@@ -4,27 +4,27 @@
 // under `cargo test` via their own tests; this scoped allow covers only the
 // non-test host build and leaves the module sources untouched.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod status;
+mod config;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod kind;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod payload;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod state;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod model;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod naming;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod config;
+mod payload;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod render;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod state;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod status;
 // `theme` is only consumed by the wasm glue; on a non-wasm non-test host build
 // everything in it appears dead. Its own unit tests exercise it on the host.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod theme;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod command;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod theme;
 
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -32,16 +32,16 @@ pub mod cli;
 // `render::TabRow` and `state::StateStore` are referenced by the pure helpers
 // and the wasm glue; the helpers themselves are only consumed by tests on the
 // host target, so these imports look dead to a non-test host build.
+use naming::PaneLite;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
 use render::TabRow;
 use state::StateStore;
-use naming::PaneLite;
 use std::collections::HashMap;
 
 #[cfg(target_arch = "wasm32")]
-use zellij_tile::prelude::*;
-#[cfg(target_arch = "wasm32")]
 use std::collections::{BTreeMap, HashSet};
+#[cfg(target_arch = "wasm32")]
+use zellij_tile::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 const PIPE_NAME: &str = "zj_radar.status.v1";
@@ -199,10 +199,14 @@ impl State {
         let body_budget = if self.last_render_height == 0 {
             usize::MAX
         } else {
-            self.last_render_height
-                .saturating_sub(render::header_lines(&rows, self.config.header, self.config.density))
+            self.last_render_height.saturating_sub(render::header_lines(
+                &rows,
+                self.config.header,
+                self.config.density,
+            ))
         };
-        let (plan, _strip_folded, spacing) = render::plan_layout(&rows, body_budget, self.config.density);
+        let (plan, _strip_folded, spacing) =
+            render::plan_layout(&rows, body_budget, self.config.density);
         for &(i, planned_lines) in &plan {
             // owned = pad_y + content rows belonging to this tab; trailing gap
             // rows are external separation and do not belong to any tab.
@@ -281,7 +285,9 @@ impl State {
     /// swallowed, since the live broadcast is the source of truth for everyone
     /// already running — the snapshot only seeds future newcomers.
     fn persist(&self) {
-        let (Some(path), Some(tmp)) = (&self.cache_path, &self.cache_tmp) else { return };
+        let (Some(path), Some(tmp)) = (&self.cache_path, &self.cache_tmp) else {
+            return;
+        };
         let json = self.store.to_json(self.tick);
         if std::fs::write(tmp, json.as_bytes()).is_ok() {
             let _ = std::fs::rename(tmp, path);
@@ -293,7 +299,9 @@ impl State {
     /// per past session. Age-based (mtime) so it never deletes a concurrently
     /// running session's file (that one keeps a fresh mtime) nor our own.
     fn prune_stale_snapshots(&self, own_path: &str) {
-        let Ok(entries) = std::fs::read_dir(CACHE_DIR) else { return };
+        let Ok(entries) = std::fs::read_dir(CACHE_DIR) else {
+            return;
+        };
         let now = std::time::SystemTime::now();
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -487,7 +495,8 @@ impl ZellijPlugin for State {
             Event::CommandChanged(pane_id, command, is_foreground, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
                     let cwd = self.pane_cwd.get(&id).map(|s| s.as_str());
-                    self.command.on_command_changed(id, &command, is_foreground, cwd, self.tick);
+                    self.command
+                        .on_command_changed(id, &command, is_foreground, cwd, self.tick);
                     self.arm_timer_if_needed();
                 }
                 true
@@ -568,7 +577,10 @@ mod tests {
     use crate::status::Status;
 
     fn pane(id: u32) -> PaneLite {
-        PaneLite { id, ..Default::default() }
+        PaneLite {
+            id,
+            ..Default::default()
+        }
     }
 
     fn make_state_with_tabs(tab_specs: &[(usize, &str, bool)]) -> State {
@@ -586,7 +598,10 @@ mod tests {
             .collect();
         State {
             tabs,
-            config: config::Config { density: config::Density::Compact, ..config::Config::default() },
+            config: config::Config {
+                density: config::Density::Compact,
+                ..config::Config::default()
+            },
             ..Default::default()
         }
     }
@@ -702,7 +717,7 @@ mod tests {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // running → 2 lines
-        // rows 0,1 = header
+                                                           // rows 0,1 = header
         assert_eq!(state.tab_position_at_line(1), None);
         // rows 2,3 = running agent tab (position 0)
         assert_eq!(state.tab_position_at_line(2), Some(0));
@@ -718,10 +733,10 @@ mod tests {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
         state.tab_panes.insert(0, vec![pane(10)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 2
-        assert_eq!(state.tab_position_at_line(1), None);       // header
-        assert_eq!(state.tab_position_at_line(2), Some(0));    // line 1
-        assert_eq!(state.tab_position_at_line(3), Some(0));    // line 2 (mark + activity)
-        assert_eq!(state.tab_position_at_line(4), Some(1));    // plain tab (was line 5 before)
+        assert_eq!(state.tab_position_at_line(1), None); // header
+        assert_eq!(state.tab_position_at_line(2), Some(0)); // line 1
+        assert_eq!(state.tab_position_at_line(3), Some(0)); // line 2 (mark + activity)
+        assert_eq!(state.tab_position_at_line(4), Some(1)); // plain tab (was line 5 before)
         assert!(state.tab_position_at_line(5).is_none());
     }
 
@@ -752,8 +767,12 @@ mod tests {
     fn click_mapping_is_fold_aware_when_overflowing() {
         // 6 idle tabs + one pending (urgent) tab at the end; tiny height forces folding.
         let mut state = make_state_with_tabs(&[
-            (0, "a", false), (1, "b", false), (2, "c", false),
-            (3, "d", false), (4, "e", false), (5, "pinky", false),
+            (0, "a", false),
+            (1, "b", false),
+            (2, "c", false),
+            (3, "d", false),
+            (4, "e", false),
+            (5, "pinky", false),
         ]);
         state.tab_panes.insert(5, vec![pane(50)]);
         apply_payload(&mut state, 50, Status::Pending, 1); // pending → non-idle, kept
@@ -825,17 +844,31 @@ mod tests {
         // 3-pane tab: pane 10 Pending (expands), 11 + 12 Running (collapse).
         // Tree: header + 1 expanded child (pane 10) + collapse line = 3 lines.
         let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10), pane(11), pane(12)]);
+        state
+            .tab_panes
+            .insert(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "run migration?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         state.last_render_height = 100;
         // header = lines 0,1
-        assert_eq!(state.target_at_line(2), Some((0, None)), "header → tab only");
+        assert_eq!(
+            state.target_at_line(2),
+            Some((0, None)),
+            "header → tab only"
+        );
         // child line → pane 10 (the expanded Pending pane)
-        assert_eq!(state.target_at_line(3), Some((0, Some(10))), "child line → pane 10");
+        assert_eq!(
+            state.target_at_line(3),
+            Some((0, Some(10))),
+            "child line → pane 10"
+        );
         // collapse line → tab only
-        assert_eq!(state.target_at_line(4), Some((0, None)), "collapse line → tab only");
+        assert_eq!(
+            state.target_at_line(4),
+            Some((0, None)),
+            "collapse line → tab only"
+        );
         // plain tab follows at line 5
         assert_eq!(state.tab_position_at_line(5), Some(1));
         assert!(state.tab_position_at_line(6).is_none());
@@ -851,8 +884,16 @@ mod tests {
         state.last_render_height = 100;
         // header(2) + 2 children, no collapse.
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
-        assert_eq!(state.target_at_line(3), Some((0, Some(20))), "child 0 → pane 20");
-        assert_eq!(state.target_at_line(4), Some((0, Some(21))), "child 1 → pane 21");
+        assert_eq!(
+            state.target_at_line(3),
+            Some((0, Some(20))),
+            "child 0 → pane 20"
+        );
+        assert_eq!(
+            state.target_at_line(4),
+            Some((0, Some(21))),
+            "child 1 → pane 21"
+        );
         assert!(state.tab_position_at_line(5).is_none());
     }
 
@@ -911,14 +952,20 @@ mod tests {
         // 3-pane tab (1 Pending expands, 2 Running collapse) → header + 1 child
         // + collapse = 3 content lines. Followed by a plain tab.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10), pane(11), pane(12)]);
+        state
+            .tab_panes
+            .insert(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         state.last_render_height = 100;
         // Confirm row_lines agrees: header(1) + 1 expanded + collapse(1) = 3.
         let rows = state.build_rows();
-        assert_eq!(render::row_lines(&rows[0].agg, rows[0].active), 3, "tree is 3 content lines");
+        assert_eq!(
+            render::row_lines(&rows[0].agg, rows[0].active),
+            3,
+            "tree is 3 content lines"
+        );
         // header = lines 0,1. Tree at position 0: lines 2,3,4. Plain tab: line 5.
         assert_eq!(state.tab_position_at_line(0), None, "header line 0");
         assert_eq!(state.tab_position_at_line(1), None, "header line 1");
@@ -926,7 +973,11 @@ mod tests {
         assert_eq!(state.tab_position_at_line(3), Some(0), "tree child line");
         assert_eq!(state.tab_position_at_line(4), Some(0), "tree collapse line");
         // The plain tab must start at line 5, not earlier.
-        assert_eq!(state.tab_position_at_line(5), Some(1), "plain tab follows the tree");
+        assert_eq!(
+            state.tab_position_at_line(5),
+            Some(1),
+            "plain tab follows the tree"
+        );
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
 
@@ -954,11 +1005,19 @@ mod tests {
         // tab 0 content line
         assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line");
         // tab 0 gap line — external separation, maps to None
-        assert_eq!(state.tab_position_at_line(3), None, "tab 0 gap line maps to None");
+        assert_eq!(
+            state.tab_position_at_line(3),
+            None,
+            "tab 0 gap line maps to None"
+        );
         // tab 1 content line starts at 4
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content line");
         // tab 1 gap line — external separation, maps to None
-        assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap line maps to None");
+        assert_eq!(
+            state.tab_position_at_line(5),
+            None,
+            "tab 1 gap line maps to None"
+        );
         // beyond
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
@@ -1002,7 +1061,11 @@ mod tests {
             ..config::Config::default()
         };
 
-        assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
+        assert_eq!(
+            state.tab_position_at_line(0),
+            None,
+            "1-line header in Cards"
+        );
         assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
         assert_eq!(state.tab_position_at_line(2), None, "tab 0 gap row → None");
         assert_eq!(state.tab_position_at_line(3), Some(1), "tab 1 content");
@@ -1030,11 +1093,23 @@ mod tests {
 
         // Confirm tab 0 really is 2 content lines.
         let rows = state.build_rows();
-        assert_eq!(render::row_lines(&rows[0].agg, rows[0].active), 2, "tab 0 should be 2 content lines");
+        assert_eq!(
+            render::row_lines(&rows[0].agg, rows[0].active),
+            2,
+            "tab 0 should be 2 content lines"
+        );
 
         assert_eq!(state.tab_position_at_line(0), None, "header");
-        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content line 1");
-        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line 2");
+        assert_eq!(
+            state.tab_position_at_line(1),
+            Some(0),
+            "tab 0 content line 1"
+        );
+        assert_eq!(
+            state.tab_position_at_line(2),
+            Some(0),
+            "tab 0 content line 2"
+        );
         assert_eq!(state.tab_position_at_line(3), None, "tab 0 gap row → None");
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content");
         assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap row → None");
@@ -1053,17 +1128,29 @@ mod tests {
         state.last_focused = Some(10);
         // A subsequent PaneUpdate with the SAME focused pane is not a transition
         // → must NOT clear it (stays lit while you sit on it).
-        assert!(!state.apply_focus_transition(Some(10), 2), "no transition when focus unchanged");
-        assert_eq!(state.command.get(10).unwrap().status, Status::Done,
-            "Done pane stays lit while focus remains on it");
+        assert!(
+            !state.apply_focus_transition(Some(10), 2),
+            "no transition when focus unchanged"
+        );
+        assert_eq!(
+            state.command.get(10).unwrap().status,
+            Status::Done,
+            "Done pane stays lit while focus remains on it"
+        );
         // Leaving to pane 11 is a transition, but must not touch the pane we left.
         assert!(state.apply_focus_transition(Some(11), 3));
-        assert_eq!(state.command.get(10).unwrap().status, Status::Done,
-            "leaving does not change the pane you left");
+        assert_eq!(
+            state.command.get(10).unwrap().status,
+            Status::Done,
+            "leaving does not change the pane you left"
+        );
         // Re-entering pane 10 is a transition → NOW it clears to Idle ("visited").
         assert!(state.apply_focus_transition(Some(10), 4));
-        assert_eq!(state.command.get(10).unwrap().status, Status::Idle,
-            "re-entering a Done pane clears it to Idle");
+        assert_eq!(
+            state.command.get(10).unwrap().status,
+            Status::Idle,
+            "re-entering a Done pane clears it to Idle"
+        );
     }
 
     #[test]
@@ -1073,7 +1160,8 @@ mod tests {
         // lower-numbered pane. Before the fix, a redraw update while still
         // focused could clear it to Idle, so the result depended on timing.
         let run = |dest: u32| {
-            let mut state = make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
+            let mut state =
+                make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
             state.tab_panes.insert(0, vec![pane(1)]);
             state.tab_panes.insert(1, vec![pane(2)]);
             state.tab_panes.insert(2, vec![pane(3)]);
@@ -1086,7 +1174,15 @@ mod tests {
             state.apply_focus_transition(Some(dest), 3);
             state.command.get(2).unwrap().status
         };
-        assert_eq!(run(3), Status::Done, "moving 'right' (2→3) leaves pane 2 Done");
-        assert_eq!(run(1), Status::Done, "moving 'left' (2→1) leaves pane 2 Done");
+        assert_eq!(
+            run(3),
+            Status::Done,
+            "moving 'right' (2→3) leaves pane 2 Done"
+        );
+        assert_eq!(
+            run(1),
+            Status::Done,
+            "moving 'left' (2→1) leaves pane 2 Done"
+        );
     }
 }
