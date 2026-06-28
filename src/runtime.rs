@@ -271,7 +271,7 @@ impl PluginRuntime {
             color: render::ColorMode::Truecolor,
         };
         let rail = if !self.permission_granted || tabrows.is_empty() {
-            RenderedRail::from_ansi_without_targets(render::onboarding(&opts))
+            render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &opts)
         };

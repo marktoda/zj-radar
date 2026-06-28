@@ -147,7 +147,7 @@ impl RenderedRail {
         Self::default()
     }
 
-    pub fn from_ansi_without_targets(ansi: String) -> Self {
+    fn from_ansi_without_targets(ansi: String) -> Self {
         let targets = ansi.lines().map(|_| None).collect();
         RenderedRail { ansi, targets }
     }
@@ -517,7 +517,7 @@ pub fn plan_layout(
 
 /// The rail's resting "hello / how it works" face — shown on cold start or
 /// before permission is granted. Not a permission interceptor.
-pub fn onboarding(opts: &RenderOpts) -> String {
+pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     let mut out = String::new();
     let color_mode = opts.color;
     let accent = if color_mode == ColorMode::None { "" } else { Role::Accent.ansi() };
@@ -549,7 +549,7 @@ pub fn onboarding(opts: &RenderOpts) -> String {
     }
     out.push('\n');
     out.push_str(&format!("{} click a row to jump{}\n", muted, RESET));
-    out
+    RenderedRail::from_ansi_without_targets(out)
 }
 
 /// Emit one row's body into `out`, respecting `max_lines`.
@@ -2128,10 +2128,10 @@ mod tests {
     #[test]
     fn onboarding_shows_legend_and_click_hint() {
         let s = onboarding(&ro(28, 0));
-        assert!(s.contains("RADAR"));
-        assert!(s.contains('◆')); // legend includes the waiting glyph (plain set)
-        assert!(s.to_lowercase().contains("needs you"));
-        assert!(s.to_lowercase().contains("click"));
+        assert!(s.ansi.contains("RADAR"));
+        assert!(s.ansi.contains('◆')); // legend includes the waiting glyph (plain set)
+        assert!(s.ansi.to_lowercase().contains("needs you"));
+        assert!(s.ansi.to_lowercase().contains("click"));
     }
 
     #[test]
@@ -4444,5 +4444,17 @@ rail";
         assert_eq!(rail.line_count(), 0);
         assert_eq!(rail.ansi, "");
         assert_eq!(rail.target_at_line(0), None);
+    }
+
+    #[test]
+    fn onboarding_returns_rail_with_no_targets_but_matching_line_count() {
+        let opts = ro(24, 0);
+        let rail = onboarding(&opts);
+        assert!(rail.line_count() > 0, "onboarding paints a panel");
+        assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+        for line in 0..rail.line_count() {
+            assert_eq!(rail.target_at_line(line as isize), None,
+                "onboarding has no clickable rows");
+        }
     }
 }
