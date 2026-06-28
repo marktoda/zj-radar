@@ -176,6 +176,8 @@ pub struct PaneTreePlan {
     pub collapsed_verb: &'static str,
 }
 
+const ACTIVE_CALM_CHILD_LIMIT: usize = 2;
+
 /// Compute the expand/collapse split for a multi-pane tab. Callers should only
 /// invoke this when `is_multi_pane(agg)` is true; for a single-pane tab it would
 /// return all panes collapsed (which is not how single-pane tabs render).
@@ -183,9 +185,21 @@ pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
     let needs_you = |s: Status| matches!(s, Status::Pending | Status::Error);
     let mut expanded: Vec<PaneEntry> = Vec::new();
     let mut collapsed: Vec<&PaneEntry> = Vec::new();
+    let mut active_calm_seen: Vec<(crate::kind::Kind, Status, String)> = Vec::new();
+    let mut active_calm_expanded = 0usize;
     for p in &agg.panes {
-        if active || needs_you(p.status) {
+        if needs_you(p.status) {
             expanded.push(p.clone());
+        } else if active {
+            let key = (p.kind, p.status, p.msg.clone());
+            let duplicate = active_calm_seen.iter().any(|seen| seen == &key);
+            if !duplicate && active_calm_expanded < ACTIVE_CALM_CHILD_LIMIT {
+                active_calm_seen.push(key);
+                active_calm_expanded += 1;
+                expanded.push(p.clone());
+            } else {
+                collapsed.push(p);
+            }
         } else {
             collapsed.push(p);
         }
@@ -662,8 +676,9 @@ fn render_row<F>(
         }
 
         if has_collapse && emitted < max_lines {
-            // Collapse line: `  └ N more working` (or "done").
-            let text = format!("└ {} more {}", plan.collapsed_count, plan.collapsed_verb);
+            // Collapse summary: `  +N working` (or "done"). This deliberately
+            // avoids tree chrome so it reads as a summary, not another pane.
+            let text = format!("+{} {}", plan.collapsed_count, plan.collapsed_verb);
             let clamped = truncate(&text, width.saturating_sub(2));
             out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
             record_target(Some(tab_target));
@@ -952,6 +967,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         // active) — a subtle step up from the dark panel.
         if cards {
             let bg = card_tint(&rows[i], &opts.theme);
+            let active_child_bg = tc_bg(opts.theme.surface_agent);
             // pad_y rows: blank, painted with THIS card's own surface bg —
             // card-colored internal TOP padding (breathing room) that belongs
             // to this tab's click span.
@@ -961,7 +977,12 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
             }
             let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
             for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
-                out.push_str(&paint_card_line(line, width, &bg));
+                let line_bg = if rows[i].active && is_multi_pane(&rows[i].agg) && line_idx > 0 {
+                    &active_child_bg
+                } else {
+                    &bg
+                };
+                out.push_str(&paint_card_line(line, width, line_bg));
                 targets.push(
                     row_targets
                         .get(line_idx)
@@ -2167,15 +2188,36 @@ mod tests {
     }
 
     #[test]
-    fn pane_tree_plan_active_expands_all() {
+    fn pane_tree_plan_active_expands_representative_calm_children() {
         let a = agg_multi(vec![
             pe(1, Kind::Claude, Status::Running, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
             pe(3, Kind::Claude, Status::Idle, "c"),
         ]);
         let plan = pane_tree_plan(&a, true);
-        assert_eq!(plan.expanded.len(), 3, "active tab expands ALL panes");
-        assert_eq!(plan.collapsed_count, 0);
+        assert_eq!(
+            plan.expanded.len(),
+            2,
+            "active tab expands representative calm panes"
+        );
+        assert_eq!(plan.collapsed_count, 1);
+        assert_eq!(plan.collapsed_verb, "done");
+    }
+
+    #[test]
+    fn pane_tree_plan_active_collapses_duplicate_calm_children() {
+        let a = agg_multi(vec![
+            pe(1, Kind::Codex, Status::Running, "codex"),
+            pe(2, Kind::Codex, Status::Running, "codex"),
+            pe(3, Kind::Codex, Status::Running, "codex"),
+            pe(4, Kind::Test, Status::Running, "cargo test"),
+        ]);
+        let plan = pane_tree_plan(&a, true);
+        assert_eq!(plan.expanded.len(), 2, "codex + tests are representative");
+        assert_eq!(plan.expanded[0].pane_id, 1);
+        assert_eq!(plan.expanded[1].pane_id, 4);
+        assert_eq!(plan.collapsed_count, 2, "duplicate codex panes collapse");
+        assert_eq!(plan.collapsed_verb, "working");
     }
 
     #[test]
@@ -2202,11 +2244,11 @@ mod tests {
             pe(4, Kind::Claude, Status::Running, "z"),
         ]);
         assert_eq!(row_lines(&a, false), 3, "header + 1 expanded + collapse");
-        // Active → all 4 expand: 1 header + 4 children, no collapse = 5.
+        // Active → urgent + two representative calm children + collapse = 5.
         assert_eq!(
             row_lines(&a, true),
             5,
-            "active expands all, no collapse line"
+            "active expands representative children and summarizes the rest"
         );
     }
 
@@ -2261,14 +2303,14 @@ mod tests {
             "pending child activity in attention: {:?}",
             body[1]
         );
-        // Collapse line: `└ 3 more working`.
+        // Collapse summary: `+3 working`.
         assert!(
-            body[2].contains("└"),
-            "collapse line uses corner char: {:?}",
+            !body[2].contains("└"),
+            "collapse summary must not read like a pane row: {:?}",
             body[2]
         );
         assert!(
-            body[2].contains("3 more working"),
+            body[2].contains("+3 working"),
             "collapse line counts calm panes: {:?}",
             body[2]
         );
@@ -3409,6 +3451,40 @@ mod tests {
             "focused detail must carry the active card tint (56;59;71): {:?}",
             lines[7]
         );
+    }
+
+    #[test]
+    fn cards_active_multi_pane_children_use_subordinate_tint() {
+        // Active multi-pane tabs should not paint every child row as selected:
+        // the parent header owns the active tint; child rows step down to the
+        // normal agent tint so the hierarchy remains legible.
+        let row = TabRow {
+            number: 1,
+            name: "team".into(),
+            active: true,
+            has_bell: false,
+            agg: agg_multi(vec![
+                pe(1, Kind::Codex, Status::Running, "codex"),
+                pe(2, Kind::Test, Status::Running, "cargo test"),
+            ]),
+        };
+        let s = render(&[row], &ro_cards(30, 100));
+        let lines: Vec<&str> = s.lines().collect();
+        let active = "\x1b[48;2;56;59;71m";
+        let agent = "\x1b[48;2;24;25;35m";
+        // line 0 = header/rail, line 1 = tab parent, lines 2-3 = child panes.
+        assert!(
+            lines[1].contains(active),
+            "parent row must carry active tint: {:?}",
+            lines[1]
+        );
+        for line in &lines[2..=3] {
+            assert!(
+                line.contains(agent) && !line.contains(active),
+                "child row must carry subordinate agent tint: {:?}",
+                line
+            );
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship"]
 struct Pending {
     command: String,
     cwd: String,
+    source: String,
     since_tick: u64,
 }
 
@@ -39,6 +40,185 @@ pub struct CommandStore {
 /// non-empty segment; empty string if input is empty).
 fn basename(s: &str) -> &str {
     s.rsplit('/').find(|seg| !seg.is_empty()).unwrap_or("")
+}
+
+fn is_option_arg(s: &str) -> bool {
+    s.starts_with('-') && s != "-"
+}
+
+fn first_non_option(args: &[String], start: usize) -> Option<(usize, &str)> {
+    args.iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(idx, arg)| (!is_option_arg(arg)).then_some((idx, arg.as_str())))
+}
+
+fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'a str)> {
+    args.iter().enumerate().find_map(|(idx, arg)| {
+        (!is_option_arg(arg) && known.contains(&arg.as_str())).then_some((idx, arg.as_str()))
+    })
+}
+
+fn target_after(args: &[String], start: usize) -> Option<&str> {
+    first_non_option(args, start).map(|(_, arg)| arg)
+}
+
+fn raw_display(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Compact foreground argv into a rail-friendly activity string. Keep useful
+/// verbs/subcommands (`cargo test`, `npm run build`) while dropping noisy flags
+/// (`--dangerously-bypass-...`, `--features`, `--watch`) that make the sidebar
+/// read like shell history instead of intent.
+fn display_command(command: &[String]) -> String {
+    let Some(first) = command.first() else {
+        return String::new();
+    };
+    let exe = basename(first);
+    let args = &command[1..];
+    let raw = match exe {
+        "cargo" => {
+            const SUBS: &[&str] = &[
+                "test", "build", "check", "clippy", "fmt", "run", "bench", "doc", "clean",
+                "install", "publish", "update", "nextest",
+            ];
+            if let Some((idx, sub)) = known_subcommand(args, SUBS) {
+                if sub == "nextest" {
+                    if let Some(next) = target_after(args, idx + 1) {
+                        raw_display(&[exe, sub, next])
+                    } else {
+                        raw_display(&[exe, sub])
+                    }
+                } else if matches!(sub, "test" | "bench" | "run")
+                    && target_after(args, idx + 1).is_some_and(|target| !target.starts_with('-'))
+                {
+                    raw_display(&[exe, sub, target_after(args, idx + 1).unwrap()])
+                } else {
+                    raw_display(&[exe, sub])
+                }
+            } else {
+                exe.to_string()
+            }
+        }
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            if let Some((idx, first)) = first_non_option(args, 0) {
+                if first == "run" {
+                    if let Some(script) = target_after(args, idx + 1) {
+                        raw_display(&[exe, "run", script])
+                    } else {
+                        raw_display(&[exe, "run"])
+                    }
+                } else {
+                    raw_display(&[exe, first])
+                }
+            } else {
+                exe.to_string()
+            }
+        }
+        "python" | "python3" => {
+            if let Some(idx) = args.iter().position(|arg| arg == "-m") {
+                if let Some(module) = args.get(idx + 1).map(String::as_str) {
+                    if module == "pytest" {
+                        if let Some(target) = target_after(args, idx + 2) {
+                            raw_display(&[exe, "-m", module, target])
+                        } else {
+                            raw_display(&[exe, "-m", module])
+                        }
+                    } else {
+                        raw_display(&[exe, "-m", module])
+                    }
+                } else {
+                    exe.to_string()
+                }
+            } else if let Some((_, script)) = first_non_option(args, 0) {
+                raw_display(&[exe, basename(script)])
+            } else {
+                exe.to_string()
+            }
+        }
+        "go" => {
+            const SUBS: &[&str] = &["test", "build", "run", "fmt", "vet", "mod"];
+            if let Some((idx, sub)) = known_subcommand(args, SUBS) {
+                if matches!(sub, "test" | "run") {
+                    if let Some(target) = target_after(args, idx + 1) {
+                        raw_display(&[exe, sub, target])
+                    } else {
+                        raw_display(&[exe, sub])
+                    }
+                } else {
+                    raw_display(&[exe, sub])
+                }
+            } else {
+                exe.to_string()
+            }
+        }
+        "pytest" | "ruff" | "make" | "just" => {
+            if let Some((_, target)) = first_non_option(args, 0) {
+                raw_display(&[exe, target])
+            } else {
+                exe.to_string()
+            }
+        }
+        "codex" | "claude" | "gemini" => exe.to_string(),
+        _ => {
+            if let Some((_, target)) = first_non_option(args, 0) {
+                raw_display(&[exe, target])
+            } else {
+                exe.to_string()
+            }
+        }
+    };
+    sanitize(&raw, MAX_MSG_CHARS)
+}
+
+fn command_source(command: &[String], display: &str) -> &'static str {
+    let exe = command.first().map(|s| basename(s)).unwrap_or("");
+    match exe {
+        "claude" => "claude",
+        "codex" => "codex",
+        "gemini" => "gemini",
+        "pytest" => "test",
+        "cargo" if display.starts_with("cargo test") || display.starts_with("cargo nextest") => {
+            "test"
+        }
+        "cargo" if display.starts_with("cargo build") || display.starts_with("cargo check") => {
+            "build"
+        }
+        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" test") => "test",
+        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" build") => "build",
+        "npm" | "pnpm" | "yarn" | "bun"
+            if display.contains(" dev")
+                || display.contains(" start")
+                || display.contains(" serve") =>
+        {
+            "server"
+        }
+        "go" if display.starts_with("go test") => "test",
+        "go" if display.starts_with("go build") => "build",
+        "make" | "just" | "ruff" => {
+            if display.contains("test") {
+                "test"
+            } else if display.contains("build") {
+                "build"
+            } else if display.contains("deploy") || display.contains("push") {
+                "deploy"
+            } else if display.contains("serve")
+                || display.contains("server")
+                || display.contains("dev")
+            {
+                "server"
+            } else {
+                "command"
+            }
+        }
+        _ => "command",
+    }
 }
 
 impl CommandStore {
@@ -71,18 +251,8 @@ impl CommandStore {
             }
         } else {
             // Real foreground command: build the cleaned command string.
-            let cmd_string = if command.is_empty() {
-                String::new()
-            } else {
-                let base = basename(&command[0]);
-                let rest = command[1..].join(" ");
-                let raw = if rest.is_empty() {
-                    base.to_string()
-                } else {
-                    format!("{} {}", base, rest)
-                };
-                sanitize(&raw, MAX_MSG_CHARS)
-            };
+            let cmd_string = display_command(command);
+            let source = command_source(command, &cmd_string).to_string();
 
             let cwd_str = cwd.unwrap_or("").to_string();
             self.pending.insert(
@@ -90,6 +260,7 @@ impl CommandStore {
                 Pending {
                     command: cmd_string,
                     cwd: cwd_str,
+                    source,
                     since_tick: tick,
                 },
             );
@@ -120,7 +291,7 @@ impl CommandStore {
                         seq: None,
                         on_focus: None,
                         ever_active: true,
-                        source: "command".into(),
+                        source: p.source,
                     },
                 );
             }
@@ -202,6 +373,61 @@ impl CommandStore {
 mod tests {
     use super::*;
 
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| part.to_string()).collect()
+    }
+
+    #[test]
+    fn display_command_keeps_useful_subcommands_and_drops_flags() {
+        assert_eq!(
+            display_command(&argv(&[
+                "cargo",
+                "test",
+                "render::tests",
+                "--features",
+                "cli",
+                "--",
+                "--nocapture"
+            ])),
+            "cargo test render::tests"
+        );
+        assert_eq!(
+            display_command(&argv(&[
+                "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--model",
+                "gpt-5"
+            ])),
+            "codex"
+        );
+        assert_eq!(
+            display_command(&argv(&["npm", "run", "build", "--", "--watch"])),
+            "npm run build"
+        );
+        assert_eq!(
+            display_command(&argv(&["python", "-m", "pytest", "-q", "tests/render.rs"])),
+            "python -m pytest tests/render.rs"
+        );
+        assert_eq!(display_command(&argv(&["sleep", "5"])), "sleep 5");
+    }
+
+    #[test]
+    fn command_source_classifies_common_work_types() {
+        assert_eq!(
+            command_source(&argv(&["cargo", "test", "--features", "cli"]), "cargo test"),
+            "test"
+        );
+        assert_eq!(
+            command_source(&argv(&["npm", "run", "build"]), "npm run build"),
+            "build"
+        );
+        assert_eq!(
+            command_source(&argv(&["codex", "--dangerously-bypass-sandbox"]), "codex"),
+            "codex"
+        );
+        assert_eq!(command_source(&argv(&["sleep", "5"]), "sleep 5"), "command");
+    }
+
     // ── Test 1: fg real command → pending, NOT Running until on_timer past DEBOUNCE_TICKS
 
     #[test]
@@ -226,6 +452,7 @@ mod tests {
         let s = store.get(1).expect("must be Running after debounce");
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.msg, "sleep 5");
+        assert_eq!(s.source, "command");
         assert_eq!(s.repo, "myrepo");
         assert!(
             !store.pending.contains_key(&1),
@@ -349,6 +576,7 @@ mod tests {
         store.on_timer(2);
         let s = store.get(1).expect("must be Running");
         assert_eq!(s.msg, "cargo build", "basename of nix path must be used");
+        assert_eq!(s.source, "build");
         assert_eq!(s.repo, "myproject", "repo must be basename of cwd");
     }
 
@@ -489,6 +717,7 @@ mod tests {
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().repo, "pinky");
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
+        assert_eq!(store.get(1).unwrap().source, "test");
 
         // Exit 0 → Done, but repo and msg preserved
         store.on_exit(1, Some(0), 3);

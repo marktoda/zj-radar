@@ -9,6 +9,7 @@ pub enum Kind {
     Claude,
     Codex,
     Gemini,
+    Command,
     Other,
     Test,
     Build,
@@ -23,6 +24,7 @@ impl Kind {
             "claude" => Kind::Claude,
             "codex" => Kind::Codex,
             "gemini" => Kind::Gemini,
+            "command" => Kind::Command,
             "test" => Kind::Test,
             "build" => Kind::Build,
             "deploy" => Kind::Deploy,
@@ -37,6 +39,7 @@ impl Kind {
             Kind::Claude => '✳',
             Kind::Codex => '❉',
             Kind::Gemini => '✦',
+            Kind::Command => '$',
             Kind::Other => '⦿',
             Kind::Test => '⚗',
             Kind::Build => '⚙',
@@ -55,6 +58,7 @@ mod tests {
         assert_eq!(Kind::from_source("claude"), Kind::Claude);
         assert_eq!(Kind::from_source("codex"), Kind::Codex);
         assert_eq!(Kind::from_source("gemini"), Kind::Gemini);
+        assert_eq!(Kind::from_source("command"), Kind::Command);
     }
 
     #[test]
@@ -78,6 +82,7 @@ mod tests {
         assert_eq!(Kind::Claude.mark(), '✳');
         assert_eq!(Kind::Codex.mark(), '❉');
         assert_eq!(Kind::Gemini.mark(), '✦');
+        assert_eq!(Kind::Command.mark(), '$');
         assert_eq!(Kind::Other.mark(), '⦿');
         assert_eq!(Kind::Test.mark(), '⚗');
         assert_eq!(Kind::Build.mark(), '⚙');
@@ -88,7 +93,9 @@ mod tests {
     #[test]
     fn all_marks_distinct() {
         use Kind::*;
-        let all = [Claude, Codex, Gemini, Other, Test, Build, Deploy, Server];
+        let all = [
+            Claude, Codex, Gemini, Command, Other, Test, Build, Deploy, Server,
+        ];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
                 assert_ne!(
