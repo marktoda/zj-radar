@@ -214,9 +214,11 @@ any stale seed self-heals on the next broadcast. The producer (hooks) is unaffec
   mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
   native place Zellij pins a pane into every tab (its own bars live there too) — so radar
   integrates exactly like [zjstatus](https://github.com/dj95/zjstatus): the user adds a pane to
-  their templates. We ship a **plugin alias** (`plugins { radar location=… }` in `config.kdl`) so
-  layouts reference the bare name `radar`, keeping the per-layout snippet path-free and letting
-  users compose the node into *their* layout (L/R, any width) rather than adopting ours.
+  their templates. `zj-radar setup zellij --wasm <path>` installs the wasm at
+  `~/.config/zellij/plugins/zj_radar.wasm` and manages a **plugin alias**
+  (`plugins { radar location=… }` in `config.kdl`) so layouts reference the bare name `radar`,
+  keeping the per-layout snippet path-free and letting users compose the node into *their* layout
+  (L/R, any width) rather than adopting ours.
   ```kdl
   default_tab_template {                       // layout-defined tabs fill `children`
       pane split_direction="vertical" {

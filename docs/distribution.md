@@ -26,7 +26,8 @@ There are **two install surfaces**, and they have *different* best answers:
    `cmux hooks setup`.
 
 Plus a third, separate surface: **the Zellij plugin itself** (the wasm + its
-permission grant + the layout). That's its own install path (see §4).
+permission grant + the layout). That's now handled by `zj-radar setup zellij`
+plus an explicit layout snippet (see §4).
 
 ---
 
@@ -123,25 +124,35 @@ form.)
 
 ## 4. The Zellij-plugin side of install (separate but needed)
 
-Installing the *sidebar* itself still needs: the `.wasm` at a **stable path**
-(not a per-rebuild Nix store path, so the permission grant sticks), the layout
-edit (a `radar` plugin **alias** in `config.kdl` plus matching
-`default_tab_template` **and** `new_tab_template` — see the README "Wire it into
-your layout"), and the first-run **permission grant** (selectable-until-granted
-in-code + optional `permissions.kdl` pre-seed). A `zj-radar init` could: copy the
-wasm to `~/.config/zellij/plugins/`, add the `radar` alias to `config.kdl`, print
-**both** template snippets to paste (or patch a layout), and pre-seed the
-permission. Document the one-time grant for the manual path.
+Installing the *sidebar* itself needs three things:
+
+1. the `.wasm` at a **stable path** (`~/.config/zellij/plugins/zj_radar.wasm`)
+   so Zellij's permission grant sticks,
+2. a `radar` plugin **alias** in `~/.config/zellij/config.kdl`, and
+3. matching `default_tab_template` **and** `new_tab_template` blocks in the
+   user's layout.
+
+`zj-radar setup zellij --wasm <path>` now owns the first two: it copies the wasm,
+adds or updates a marker-managed alias in `config.kdl`, and prints the layout
+snippet. It deliberately leaves layouts user-owned because real Zellij layouts
+vary too much to patch blindly. A future layout patcher can build on the same
+snippet, but it should be opt-in and previewable.
+
+The first-run **permission grant** remains a Zellij prompt. The plugin stays
+selectable only while the prompt is pending; because the sidebar is instantiated
+once per tab, per-tab prompt coordination elects one instance to request the
+uncached grant and peers reuse Zellij's cached answer.
 
 ## 5. Recommended rollout
 
 1. **Phase 1 (biggest bang, least work):** package the Claude hooks as a **Claude
    Code plugin** (§1). Most users are on Claude Code; this delivers the
    "no-config install" they asked for immediately, reusing our notify logic.
-2. **Phase 2:** the **`zj-radar` CLI** with the universal `notify` + the
-   `setup`/`--uninstall` installer for Codex/Gemini/Aider (§2–3).
-3. **Phase 3:** `zj-radar init` for the sidebar wasm + layout + permission (§4),
-   and a README documenting all of it.
+2. **Phase 2:** the **`zj-radar` CLI** with the universal `notify`, Codex setup,
+   and `setup zellij --wasm` for the sidebar alias (§2–4).
+3. **Phase 3:** add more agents and, if still useful, a previewable layout
+   patcher. The current setup command should keep printing the snippet rather
+   than silently rewriting layouts.
 
 Net new-user story we're aiming for:
 ```
@@ -150,7 +161,8 @@ Net new-user story we're aiming for:
 # Other agents:
 zj-radar setup            # detects installed agents, wires them up idempotently
 # The sidebar:
-zj-radar init             # installs the wasm + layout snippet + permission
+zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
+# then paste examples/radar-template-snippet.kdl into a layout
 ```
 
 ---

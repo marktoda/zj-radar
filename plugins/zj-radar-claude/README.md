@@ -4,6 +4,9 @@ A Claude Code **plugin** that broadcasts agent status (working / waiting / done)
 to the [zj-radar](../../) Zellij sidebar — with **no `settings.json` editing**.
 Installing the plugin auto-registers the hooks; uninstalling removes them cleanly.
 
+This plugin only sends status. Install the Zellij sidebar first with the
+[main install guide](../../README.md#install), then add this producer.
+
 ## Install
 
 One-time (from the zj-radar marketplace repo):
@@ -34,7 +37,7 @@ Each fires a `zellij pipe --name zj_radar.status.v1` broadcast. It is a **no-op
 outside Zellij**, so it's safe to leave enabled everywhere.
 
 The bundled `notify.sh` requires `jq` and `git` on PATH (to parse the payload and
-derive repo/branch). If the native [`zj-radar`](../../README.md#optional-the-zj-radar-cli)
+derive repo/branch). If the native [`zj-radar`](../../README.md#codex-and-the-native-cli)
 CLI is installed, the script automatically prefers it (`exec zj-radar notify
 claude`), which needs neither `jq` nor `bash` — the `jq`+`bash` path is only the
 fallback when the binary isn't on PATH.
