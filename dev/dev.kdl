@@ -5,7 +5,7 @@
 //
 // `dev/run.sh` builds the wasm and writes target/dev/dev.kdl with an absolute
 // plugin path. From a normal terminal it restarts `zj-radar-dev`; from inside
-// Zellij it switches to a fresh disposable dev session.
+// Zellij the default command leaves the current session unchanged.
 // Keeping this source layout relative makes it readable while avoiding hardcoded
 // home paths.
 //

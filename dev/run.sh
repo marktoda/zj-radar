@@ -18,12 +18,13 @@ usage() {
     cat <<'EOF'
 usage: ./dev/run.sh [--build-only|--dry-run|--fresh-session]
 
-Builds the debug wasm and opens the Zellij dev session.
+Builds the debug wasm and prepares the Zellij dev layout.
 
 From a normal terminal, this starts/restarts the disposable dev session. From
-inside Zellij, it switches the current client to a fresh disposable dev session.
+inside Zellij, the default command leaves the current session unchanged.
 
---fresh-session is kept as an explicit spelling of the inside-Zellij behavior.
+Use --fresh-session from inside Zellij to switch to a fresh disposable dev
+session explicitly.
 EOF
 }
 
@@ -119,9 +120,12 @@ switch_from_zellij() {
     zellij action switch-session --layout "$layout_gen" --cwd "$root" "$target_session"
 }
 
-open_or_switch_session() {
+open_or_prepare_session() {
     if [[ -n "${ZELLIJ:-}" ]]; then
-        switch_from_zellij
+        cat >&2 <<EOF
+dev: inside Zellij; leaving current session unchanged
+dev: use './dev/run.sh --fresh-session' to switch to a disposable dev session
+EOF
     else
         restart_from_terminal
     fi
@@ -166,9 +170,7 @@ case "$mode" in
     dry-run)
         generate_layout
         if [[ -n "${ZELLIJ:-}" ]]; then
-            current_session="$(current_zellij_session_name)"
-            target_session="$(switch_target_session "$current_session")"
-            echo "dev: dry run; would switch current Zellij client to fresh session '$target_session'"
+            echo "dev: dry run; would leave current Zellij session unchanged"
         else
             echo "dev: dry run; would restart Zellij session '$session'"
         fi
@@ -177,7 +179,7 @@ case "$mode" in
         build_wasm
         echo "built: $artifact_rel"
         generate_layout
-        open_or_switch_session
+        open_or_prepare_session
         ;;
     fresh-session)
         build_wasm
