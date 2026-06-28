@@ -36,6 +36,31 @@ pub fn cwd_basename(path: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn title_name(title: &str) -> Option<String> {
+    let trimmed = title.trim_start();
+    let stable = strip_activity_prefix(trimmed).trim();
+    if stable.is_empty() {
+        None
+    } else {
+        Some(stable.to_string())
+    }
+}
+
+fn strip_activity_prefix(title: &str) -> &str {
+    let Some(first) = title.chars().next() else {
+        return title;
+    };
+    if !('\u{2800}'..='\u{28ff}').contains(&first) {
+        return title;
+    }
+    let rest = &title[first.len_utf8()..];
+    if rest.chars().next().is_some_and(char::is_whitespace) {
+        rest
+    } else {
+        title
+    }
+}
+
 /// Desired display name for one tab, or None if no push signal is available.
 /// Precedence:
 ///   (a) agent **repo** from `store` (focused pane first, then any)
@@ -81,13 +106,13 @@ pub fn computed_name(
     }
     // (c) pane title
     if let Some(p) = focused {
-        if !p.title.is_empty() {
-            return Some(p.title.clone());
+        if let Some(name) = title_name(&p.title) {
+            return Some(name);
         }
     }
     if let Some(p) = panes.first() {
-        if !p.title.is_empty() {
-            return Some(p.title.clone());
+        if let Some(name) = title_name(&p.title) {
+            return Some(name);
         }
     }
     None
@@ -238,6 +263,31 @@ mod tests {
             computed_name(&panes, &store, &no_cwd()),
             Some("nvim".into())
         );
+    }
+
+    #[test]
+    fn computed_name_strips_activity_spinner_from_title() {
+        let store = StateStore::default();
+        let panes = vec![PaneLite {
+            id: 1,
+            title: "⠋ af".into(),
+            is_focused: true,
+        }];
+        assert_eq!(
+            computed_name(&panes, &store, &no_cwd()),
+            Some("af".into())
+        );
+    }
+
+    #[test]
+    fn computed_name_ignores_spinner_only_title() {
+        let store = StateStore::default();
+        let panes = vec![PaneLite {
+            id: 1,
+            title: "⠋ ".into(),
+            is_focused: true,
+        }];
+        assert_eq!(computed_name(&panes, &store, &no_cwd()), None);
     }
 
     #[test]
@@ -405,6 +455,23 @@ mod tests {
             }],
         );
         let tabs = vec![(0, "pinky".to_string())];
+        let applied = HashMap::new();
+        assert!(compute_renames(&tabs, &tab_panes, &store, &applied, true, &no_cwd()).is_empty());
+    }
+
+    #[test]
+    fn compute_renames_does_not_chase_spinner_title_variants() {
+        let store = StateStore::default();
+        let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
+        tab_panes.insert(
+            0,
+            vec![PaneLite {
+                id: 7,
+                title: "⠙ af".into(),
+                is_focused: true,
+            }],
+        );
+        let tabs = vec![(0, "af".to_string())];
         let applied = HashMap::new();
         assert!(compute_renames(&tabs, &tab_panes, &store, &applied, true, &no_cwd()).is_empty());
     }
