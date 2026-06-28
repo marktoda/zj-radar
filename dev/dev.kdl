@@ -5,13 +5,13 @@
 //
 // `dev/run.sh` builds the wasm and writes target/dev/dev.kdl with an absolute
 // plugin path. From a normal terminal it restarts `zj-radar-dev`; from inside
-// Zellij it reloads existing zj-radar sidebar panes in the current session.
+// Zellij it switches to a fresh disposable dev session.
 // Keeping this source layout relative makes it readable while avoiding hardcoded
 // home paths.
 //
-// Note: Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins
-// created by a layout, so the dev loop replaces the existing sidebar plugin
-// panes in place instead.
+// Note: Zellij 0.44's plugin reload actions can open an extra tiled plugin pane
+// when the target plugin was created by a layout and is non-selectable, so the
+// dev loop avoids in-place sidebar reloads.
 //
 // The sidebar is a pinned, borderless left column inside default_tab_template,
 // OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The

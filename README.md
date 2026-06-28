@@ -351,22 +351,22 @@ zellij pipe --name zj_radar.status.v1 -- \
 
 ```sh
 cargo test                                # host tests, no wasm needed
-./dev/run.sh                              # build + reload/open the dev session
+./dev/run.sh                              # build + open the dev session
 ```
 
 Run `./dev/run.sh` from either a normal terminal or inside Zellij. It builds
 `target/wasm32-wasip1/debug/zj_radar.wasm`, generates `target/dev/dev.kdl` with
 an absolute plugin path, and refreshes the dev surface. Outside Zellij it
-restarts the disposable `zj-radar-dev` session; inside Zellij it reloads the
-existing zj-radar sidebar panes in the current session in place. If
-the current Rust toolchain is missing `wasm32-wasip1`, the script uses the
-repo's Nix flake automatically.
+restarts the disposable `zj-radar-dev` session; inside Zellij it switches the
+current client to a fresh disposable dev session, alternating between
+`zj-radar-dev` and `zj-radar-dev-next` so it never replaces the session you are
+currently attached to. If the current Rust toolchain is missing `wasm32-wasip1`,
+the script uses the repo's Nix flake automatically.
 
-Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins that were
-created by a layout, so the in-session dev loop replaces the existing sidebar
-plugin panes with `launch-plugin --in-place --close-replaced-pane` instead. Use
-`./dev/run.sh --fresh-session` when you explicitly want a clean disposable dev
-session from inside Zellij.
+Zellij 0.44's plugin reload actions can open an extra tiled plugin pane when the
+target plugin was created by a layout and has made itself non-selectable (as the
+radar sidebar does after permissions). The dev loop avoids that path and uses a
+fresh disposable session instead.
 
 The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
 `naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency

@@ -18,13 +18,12 @@ usage() {
     cat <<'EOF'
 usage: ./dev/run.sh [--build-only|--dry-run|--fresh-session]
 
-Builds the debug wasm and opens or reloads the Zellij dev session.
+Builds the debug wasm and opens the Zellij dev session.
 
 From a normal terminal, this starts/restarts the disposable dev session. From
-inside Zellij, it reloads existing zj-radar sidebar panes in the current session.
+inside Zellij, it switches the current client to a fresh disposable dev session.
 
-Use --fresh-session from inside Zellij to switch to a fresh disposable dev
-session instead of reloading the current session.
+--fresh-session is kept as an explicit spelling of the inside-Zellij behavior.
 EOF
 }
 
@@ -60,60 +59,6 @@ generate_layout() {
 
 session_exists() {
     zellij list-sessions --short --no-formatting 2>/dev/null | grep -Fxq "$1"
-}
-
-require_jq() {
-    if ! command -v jq >/dev/null 2>&1; then
-        cat >&2 <<'EOF'
-dev: jq is required to reload the current Zellij session
-dev: enter `nix develop`, or install jq on PATH
-EOF
-        exit 2
-    fi
-}
-
-current_tab_id() {
-    zellij action current-tab-info | awk '
-        $1 == "id:" { print $2; found = 1; exit }
-        END { if (!found) exit 1 }
-    '
-}
-
-current_focus_pane() {
-    local panes_json="$1"
-    local tab_id="$2"
-
-    jq -r --argjson tab_id "$tab_id" '
-        [
-            .[]
-            | select(.tab_id == $tab_id and .is_focused == true and .is_selectable == true)
-        ]
-        | first
-        | if . == null then
-            ""
-          elif .is_plugin then
-            "plugin_" + (.id | tostring)
-          else
-            "terminal_" + (.id | tostring)
-          end
-    ' <<<"$panes_json"
-}
-
-radar_panes() {
-    local panes_json="$1"
-    local radar_url_abs="file:$artifact_abs"
-    local radar_url_rel="file:$artifact_rel"
-
-    jq -r --arg abs "$radar_url_abs" --arg rel "$radar_url_rel" '
-        .[]
-        | select(
-            .is_plugin == true
-            and .is_floating == false
-            and (.plugin_url == $abs or .plugin_url == $rel)
-        )
-        | [.tab_id, ("plugin_" + (.id | tostring)), .tab_name]
-        | @tsv
-    ' <<<"$panes_json"
 }
 
 delete_session_if_exists() {
@@ -174,90 +119,9 @@ switch_from_zellij() {
     zellij action switch-session --layout "$layout_gen" --cwd "$root" "$target_session"
 }
 
-restore_focus() {
-    local tab_id="${1:-}"
-    local pane_id="${2:-}"
-
-    if [[ -n "$tab_id" ]]; then
-        zellij action go-to-tab-by-id "$tab_id" >/dev/null 2>&1 || true
-    fi
-    if [[ -n "$pane_id" ]]; then
-        zellij action focus-pane-id "$pane_id" >/dev/null 2>&1 || true
-    fi
-}
-
-reload_current_session() {
-    local panes_json
-    local original_tab_id
-    local original_pane_id
-    local rows
-    local row
-    local tab_id
-    local pane_id
-    local tab_name
-    local radar_url_abs="file:$artifact_abs"
-
-    require_jq
-    panes_json="$(zellij action list-panes --json --all --geometry --state --tab)"
-    original_tab_id="$(current_tab_id)"
-    original_pane_id="$(current_focus_pane "$panes_json" "$original_tab_id")"
-    mapfile -t rows < <(radar_panes "$panes_json")
-
-    if ((${#rows[@]} == 0)); then
-        cat >&2 <<EOF
-dev: no zj-radar sidebar panes found in the current Zellij session
-dev: run ./dev/run.sh --fresh-session to open a disposable dev session
-EOF
-        exit 2
-    fi
-
-    trap 'restore_focus "$original_tab_id" "$original_pane_id"' RETURN
-
-    for row in "${rows[@]}"; do
-        IFS=$'\t' read -r tab_id pane_id tab_name <<<"$row"
-        echo "dev: reloading $pane_id in tab '$tab_name'" >&2
-        zellij action go-to-tab-by-id "$tab_id"
-        zellij action focus-pane-id "$pane_id"
-        zellij action launch-plugin \
-            --in-place \
-            --close-replaced-pane \
-            --skip-plugin-cache \
-            --configuration naming=force \
-            "$radar_url_abs" >/dev/null
-    done
-
-    trap - RETURN
-    restore_focus "$original_tab_id" "$original_pane_id"
-    echo "dev: reloaded ${#rows[@]} zj-radar sidebar pane(s)" >&2
-}
-
-dry_run_current_session_reload() {
-    local panes_json
-    local rows
-    local row
-    local tab_id
-    local pane_id
-    local tab_name
-
-    require_jq
-    panes_json="$(zellij action list-panes --json --all --geometry --state --tab)"
-    mapfile -t rows < <(radar_panes "$panes_json")
-
-    if ((${#rows[@]} == 0)); then
-        echo "dev: dry run; found no zj-radar sidebar panes in the current Zellij session"
-        return
-    fi
-
-    echo "dev: dry run; would reload ${#rows[@]} zj-radar sidebar pane(s):"
-    for row in "${rows[@]}"; do
-        IFS=$'\t' read -r tab_id pane_id tab_name <<<"$row"
-        echo "dev:   tab '$tab_name' ($tab_id): $pane_id"
-    done
-}
-
-open_or_reload_session() {
+open_or_switch_session() {
     if [[ -n "${ZELLIJ:-}" ]]; then
-        reload_current_session
+        switch_from_zellij
     else
         restart_from_terminal
     fi
@@ -302,7 +166,9 @@ case "$mode" in
     dry-run)
         generate_layout
         if [[ -n "${ZELLIJ:-}" ]]; then
-            dry_run_current_session_reload
+            current_session="$(current_zellij_session_name)"
+            target_session="$(switch_target_session "$current_session")"
+            echo "dev: dry run; would switch current Zellij client to fresh session '$target_session'"
         else
             echo "dev: dry run; would restart Zellij session '$session'"
         fi
@@ -311,7 +177,7 @@ case "$mode" in
         build_wasm
         echo "built: $artifact_rel"
         generate_layout
-        open_or_reload_session
+        open_or_switch_session
         ;;
     fresh-session)
         build_wasm
