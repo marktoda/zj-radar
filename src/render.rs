@@ -188,13 +188,15 @@ pub fn is_multi_pane(agg: &TabAgg) -> bool {
 ///   - Panes that NEED YOU (Pending or Error) ALWAYS expand.
 ///   - If the tab is the ACTIVE (focused) tab, ALL its panes expand.
 ///   - The remaining calm panes (Running/Done/Idle) collapse into a single
-///     count line. `collapsed_verb` is "working" if any collapsed pane is
-///     Running, else "done".
+///     summary line. The summary count matches its label: Running panes render
+///     as "working", else Done panes render as "done", else Idle panes render
+///     as "idle".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneTreePlan {
     pub expanded: Vec<PaneEntry>,
+    /// Number displayed in the collapse summary for `collapsed_verb`.
     pub collapsed_count: usize,
-    /// The dominant calm verb for the collapse line ("working" or "done").
+    /// The status label for the collapse line ("working", "done", or "idle").
     pub collapsed_verb: &'static str,
 }
 
@@ -226,11 +228,22 @@ pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
             collapsed.push(p);
         }
     }
-    let any_running = collapsed.iter().any(|p| p.status == Status::Running);
-    let collapsed_verb = if any_running { "working" } else { "done" };
+    let running = collapsed
+        .iter()
+        .filter(|p| p.status == Status::Running)
+        .count();
+    let done = collapsed.iter().filter(|p| p.status == Status::Done).count();
+    let idle = collapsed.iter().filter(|p| p.status == Status::Idle).count();
+    let (collapsed_count, collapsed_verb) = if running > 0 {
+        (running, "working")
+    } else if done > 0 {
+        (done, "done")
+    } else {
+        (idle, "idle")
+    };
     PaneTreePlan {
         expanded,
-        collapsed_count: collapsed.len(),
+        collapsed_count,
         collapsed_verb,
     }
 }
@@ -2295,7 +2308,7 @@ mod tests {
             "active tab expands representative calm panes"
         );
         assert_eq!(plan.collapsed_count, 1);
-        assert_eq!(plan.collapsed_verb, "done");
+        assert_eq!(plan.collapsed_verb, "idle");
     }
 
     #[test]
@@ -2316,7 +2329,8 @@ mod tests {
 
     #[test]
     fn pane_tree_plan_calm_collapse_verb_done_when_no_running() {
-        // No needs-you panes, inactive: all collapse. No running → verb "done".
+        // No needs-you panes, inactive: all collapse. The summary counts only
+        // panes that match its label, so the idle pane is not counted as done.
         let a = agg_multi(vec![
             pe(1, Kind::Claude, Status::Done, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
@@ -2324,8 +2338,20 @@ mod tests {
         ]);
         let plan = pane_tree_plan(&a, false);
         assert_eq!(plan.expanded.len(), 0);
-        assert_eq!(plan.collapsed_count, 3);
+        assert_eq!(plan.collapsed_count, 2);
         assert_eq!(plan.collapsed_verb, "done");
+    }
+
+    #[test]
+    fn pane_tree_plan_all_idle_collapse_verb_idle() {
+        let a = agg_multi(vec![
+            pe(1, Kind::Command, Status::Idle, "direnv export"),
+            pe(2, Kind::Command, Status::Idle, "shell"),
+        ]);
+        let plan = pane_tree_plan(&a, false);
+        assert_eq!(plan.expanded.len(), 0);
+        assert_eq!(plan.collapsed_count, 2);
+        assert_eq!(plan.collapsed_verb, "idle");
     }
 
     #[test]
@@ -2410,6 +2436,34 @@ mod tests {
         );
         // Exactly 3 body lines (header + 1 child + collapse).
         assert_eq!(body.len(), 3, "header + 1 child + collapse: {:?}", s);
+    }
+
+    #[test]
+    fn multi_pane_mixed_calm_collapse_counts_only_working_panes() {
+        let a = agg_multi(vec![
+            pe(1, Kind::Codex, Status::Running, "codex"),
+            pe(2, Kind::Command, Status::Idle, "direnv export"),
+        ]);
+        let row = TabRow {
+            number: 2,
+            name: "af".into(),
+            active: false,
+            has_bell: false,
+            agg: a,
+        };
+
+        let s = render(&[row], &ro(30, 16));
+
+        assert!(
+            s.contains("+1 working"),
+            "collapse line must count only actually-working panes: {:?}",
+            s
+        );
+        assert!(
+            !s.contains("+2 working"),
+            "idle/done panes must not be counted as working: {:?}",
+            s
+        );
     }
 
     #[test]
@@ -4191,12 +4245,14 @@ rail";
         // Needs-you panes (Error, Pending) are always expanded.
         assert!(plan.expanded.iter().any(|p| p.status == Status::Error));
         assert!(plan.expanded.iter().any(|p| p.status == Status::Pending));
-        // Running/Done/Idle (3 calm panes) collapse when the tab is inactive.
+        // Running/Done/Idle calm panes collapse when the tab is inactive; the
+        // displayed summary counts only the status it names.
         assert_eq!(
             plan.collapsed_count,
-            3,
-            "Running/Done/Idle collapse when inactive"
+            1,
+            "only the one running pane should be counted as working"
         );
+        assert_eq!(plan.collapsed_verb, "working");
     }
 
     // ── Color/glyph axis tests ──
