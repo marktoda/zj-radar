@@ -326,8 +326,10 @@ replacement is push-only and tiered:
   `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
   `_start` and won't load. See the comment block in `src/main.rs`.
 - **Dev loop:** `./dev/run.sh` builds the debug wasm, generates a layout with an
-  absolute plugin path, and restarts the disposable `zj-radar-dev` session.
-  Zellij 0.44 does not safely hot-reload layout-created plugin panes;
+  absolute plugin path, and opens a fresh disposable dev session. From a normal
+  terminal it restarts `zj-radar-dev`; from inside Zellij it switches the
+  current client to a fresh `zj-radar-dev`/`zj-radar-dev-next` session. Zellij
+  0.44 does not safely hot-reload layout-created plugin panes;
   `start-or-reload-plugin` opens a second pane instead.
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
   release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then

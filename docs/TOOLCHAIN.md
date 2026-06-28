@@ -33,13 +33,16 @@ For the dogfood dev layout (`dev/dev.kdl`) use the single dev entrypoint:
 ./dev/run.sh
 ```
 
-The script uses the ambient Rust toolchain when it has `wasm32-wasip1`, and
-falls back to the repo's Nix flake when it does not.
+The command works from either a normal terminal or inside Zellij. It uses the
+ambient Rust toolchain when it has `wasm32-wasip1`, and falls back to the repo's
+Nix flake when it does not.
 
 Zellij 0.44 does not safely hot-reload plugins that were created by a layout:
 `start-or-reload-plugin` opens a second pane instead. `./dev/run.sh` builds the
 debug wasm, writes a generated layout with an absolute plugin path, and restarts
-the disposable `zj-radar-dev` session.
+or switches to a fresh disposable dev session. Inside Zellij, it alternates
+between `zj-radar-dev` and `zj-radar-dev-next` so it never has to delete the
+session currently running the script.
 
 `cargo test` does not need the dev shell — the pure modules and the
 host-testable session filesystem module are `zellij-tile`-free and run on the

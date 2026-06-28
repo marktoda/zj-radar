@@ -350,19 +350,21 @@ zellij pipe --name zj_radar.status.v1 -- \
 ## Develop
 
 ```sh
-cargo test                               # host tests, no wasm needed
-./dev/run.sh                              # build + restart the disposable dev session
+cargo test                                # host tests, no wasm needed
+./dev/run.sh                              # build + open a fresh disposable dev session
 ```
 
-Run `./dev/run.sh` from a normal terminal. It builds
+Run `./dev/run.sh` from either a normal terminal or inside Zellij. It builds
 `target/wasm32-wasip1/debug/zj_radar.wasm`, generates `target/dev/dev.kdl` with
-an absolute plugin path, and restarts the disposable `zj-radar-dev` session. If
+an absolute plugin path, and opens a fresh disposable dev session. Outside
+Zellij it restarts `zj-radar-dev`; inside Zellij it switches the current client
+to a fresh `zj-radar-dev`/`zj-radar-dev-next` session instead. If
 the current Rust toolchain is missing `wasm32-wasip1`, the script uses the
 repo's Nix flake automatically.
 
 Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins that were
-created by a layout, so the dev loop restarts the disposable session instead of
-attempting in-place hot reload.
+created by a layout, so the dev loop replaces a disposable session instead of
+attempting same-session hot reload.
 
 The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
 `naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency

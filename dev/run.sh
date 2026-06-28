@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single dev entrypoint: build the debug wasm and restart the disposable dev session.
+# Single dev entrypoint: build the debug wasm and open a fresh disposable dev session.
 set -euo pipefail
 
 root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -11,14 +11,17 @@ artifact_abs="$root/$artifact_rel"
 layout_src="$root/dev/dev.kdl"
 layout_gen="$root/target/dev/dev.kdl"
 session="${ZJ_RADAR_DEV_SESSION:-zj-radar-dev}"
+next_session="${session}-next"
 mode="${1:-start}"
 
 usage() {
     cat <<'EOF'
 usage: ./dev/run.sh [--build-only|--dry-run]
 
-Builds the debug wasm and starts a fresh disposable Zellij dev session.
-Run with no arguments for the normal dev loop.
+Builds the debug wasm and opens a fresh disposable Zellij dev session.
+
+From a normal terminal, this starts/restarts the dev session. From inside
+Zellij, it switches the current client to a fresh dev session instead.
 EOF
 }
 
@@ -52,24 +55,74 @@ generate_layout() {
     echo "layout: $layout_gen"
 }
 
-ensure_outside_zellij() {
-    if [[ -n "${ZELLIJ:-}" ]]; then
-        cat >&2 <<EOF
-dev: refusing to restart '$session' from inside Zellij
-dev: run ./dev/run.sh from a normal terminal
-EOF
-        exit 2
+session_exists() {
+    zellij list-sessions --short --no-formatting 2>/dev/null | grep -Fxq "$1"
+}
+
+delete_session_if_exists() {
+    local target_session="$1"
+
+    if session_exists "$target_session"; then
+        echo "dev: deleting existing Zellij session '$target_session'" >&2
+        zellij delete-session "$target_session" --force
     fi
 }
 
-restart_session() {
-    if zellij list-sessions --short --no-formatting 2>/dev/null | grep -Fxq "$session"; then
-        echo "dev: restarting existing Zellij session '$session'" >&2
-        zellij delete-session "$session" --force
-    fi
+restart_from_terminal() {
+    delete_session_if_exists "$session"
 
     echo "dev: starting Zellij session '$session'" >&2
     exec zellij --session "$session" --new-session-with-layout "$layout_gen"
+}
+
+current_zellij_session_name() {
+    if [[ -z "${ZELLIJ_SESSION_NAME:-}" ]]; then
+        cat >&2 <<'EOF'
+dev: ZELLIJ is set but ZELLIJ_SESSION_NAME is missing
+dev: cannot safely choose a disposable target session from inside Zellij
+EOF
+        exit 2
+    fi
+
+    printf '%s\n' "$ZELLIJ_SESSION_NAME"
+}
+
+switch_target_session() {
+    local current_session="$1"
+
+    case "$current_session" in
+        "$session")
+            printf '%s\n' "$next_session"
+            ;;
+        *)
+            printf '%s\n' "$session"
+            ;;
+    esac
+}
+
+switch_from_zellij() {
+    local current_session
+    local target_session
+
+    current_session="$(current_zellij_session_name)"
+    target_session="$(switch_target_session "$current_session")"
+    if [[ "$target_session" == "$current_session" ]]; then
+        echo "dev: refusing to replace the current Zellij session '$target_session'" >&2
+        exit 2
+    fi
+
+    delete_session_if_exists "$target_session"
+
+    echo "dev: switching current Zellij client to fresh session '$target_session'" >&2
+    zellij action switch-session --layout "$layout_gen" --cwd "$root" "$target_session"
+}
+
+open_session() {
+    if [[ -n "${ZELLIJ:-}" ]]; then
+        switch_from_zellij
+    else
+        restart_from_terminal
+    fi
 }
 
 case "$mode" in
@@ -99,13 +152,17 @@ case "$mode" in
         ;;
     dry-run)
         generate_layout
-        echo "dev: dry run; not starting Zellij"
+        if [[ -n "${ZELLIJ:-}" ]]; then
+            current_session="$(current_zellij_session_name)"
+            echo "dev: dry run; would switch current Zellij client from '$current_session' to fresh session '$(switch_target_session "$current_session")'"
+        else
+            echo "dev: dry run; would restart Zellij session '$session'"
+        fi
         ;;
     start)
-        ensure_outside_zellij
         build_wasm
         echo "built: $artifact_rel"
         generate_layout
-        restart_session
+        open_session
         ;;
 esac

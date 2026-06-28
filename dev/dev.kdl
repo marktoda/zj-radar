@@ -3,13 +3,15 @@
 // Normal path:
 //   ./dev/run.sh
 //
-// `dev/run.sh` builds the wasm, writes target/dev/dev.kdl with an absolute
-// plugin path, and restarts the disposable `zj-radar-dev` session. Keeping this
-// source layout relative makes it readable while avoiding hardcoded home paths.
+// `dev/run.sh` builds the wasm and writes target/dev/dev.kdl with an absolute
+// plugin path. From a normal terminal it restarts `zj-radar-dev`; from inside
+// Zellij it switches the current client to a fresh disposable dev session.
+// Keeping this source layout relative makes it readable while avoiding hardcoded
+// home paths.
 //
 // Note: Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins
-// created by a layout, so the dev loop restarts the disposable session instead
-// of attempting in-place hot reload.
+// created by a layout, so the dev loop replaces a disposable session instead of
+// attempting same-session hot reload.
 //
 // The sidebar is a pinned, borderless left column inside default_tab_template,
 // OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The
