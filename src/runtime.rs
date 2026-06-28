@@ -268,6 +268,7 @@ impl PluginRuntime {
             header: self.config.header,
             density: self.config.density,
             theme: self.theme.clone(),
+            color: render::ColorMode::Truecolor,
         };
         let rail = if !self.permission_granted || tabrows.is_empty() {
             RenderedRail::from_ansi_without_targets(render::onboarding(&opts))
@@ -340,6 +341,7 @@ impl PluginRuntime {
             header: self.config.header,
             density: self.config.density,
             theme: self.theme.clone(),
+            color: render::ColorMode::Truecolor,
         };
         render::render_rail(&rows, &opts).target_at_line(line)
     }
