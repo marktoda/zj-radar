@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,11 +13,51 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      # Cache /nix between runs via the GitHub Actions cache (no external service),
-      # keyed on the lockfiles so it invalidates when dependencies change.
+      - name: clippy + shellcheck
+        run: |
+          # NOTE: no `cargo fmt --check` — this project does NOT use rustfmt.
+          # The codebase is intentionally hand-formatted (aligned one-line
+          # multi-field structs etc.) and does not match default rustfmt.
+          # Running `cargo fmt` would reformat the entire codebase. Do not add
+          # a fmt gate, and never run `cargo fmt --all` in any task.
+          nix develop -c cargo clippy --all-features -- -D warnings
+          nix develop -c shellcheck plugins/zj-radar-claude/scripts/notify.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CI: "1"
+      INSTA_UPDATE: "no"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
       - uses: nix-community/cache-nix-action@v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      - name: nix flake check
+      - name: deterministic suite (L1-L4)
+        run: nix develop -c cargo test --all-features
+      - name: bash hook tests (L3)
+        run: nix develop -c just test-bash
+
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - name: nix flake check (wasm build + crane tests)
         run: nix flake check -L

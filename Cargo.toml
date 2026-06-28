@@ -29,11 +29,28 @@ toml_edit = { version = "0.22", optional = true }
 
 [features]
 cli = ["dep:clap", "dep:toml_edit"]
+# Live end-to-end tests that drive a real Zellij in a PTY. Off by default so
+# `cargo test` stays fast and hermetic. Requires `zellij` on PATH.
+e2e = []
+
+[dev-dependencies]
+insta = { version = "1", features = ["filters"] }
+proptest = "1"
+vt100 = "0.15"
+assert_cmd = "2"
+assertables = "9"
+tempfile = "3"
+portable-pty = "0.8"
 
 [[bin]]
 name = "zj-radar"
 path = "src/bin/cli.rs"
 required-features = ["cli"]
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["e2e"]
 
 # Size-optimize the wasm artifact Zellij loads. A Zellij plugin is read from
 # disk and instantiated on every session/layout load, so a smaller module loads
