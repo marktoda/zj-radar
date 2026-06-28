@@ -105,19 +105,37 @@ impl State {
         self.runtime.record_permission_result(granted);
     }
 
+    /// Render at an explicit width so `last_rendered` is populated.
+    /// Click tests historically asserted the width-80 layout; keep that explicit.
+    /// When no height has been set yet (last_render_height == 0), use a large
+    /// height so folding/overflow never discards rows unexpectedly.
+    #[cfg(test)]
+    fn render_at(&mut self, width: usize) {
+        self.runtime.permission_granted = true;
+        let height = if self.runtime.last_render_height == 0 {
+            usize::MAX / 2
+        } else {
+            self.runtime.last_render_height
+        };
+        let _ = self.runtime.render(height, width);
+    }
+
     /// Map a clicked line back to a tab position through the renderer-owned
     /// target map. Thin wrapper over `target_at_line` that drops the pane id;
     /// used by host unit tests that only assert tab membership.
     #[cfg(test)]
-    fn tab_position_at_line(&self, line: isize) -> Option<usize> {
-        self.runtime.tab_position_at_line_for_current_rows(line)
+    fn tab_position_at_line(&mut self, line: isize) -> Option<usize> {
+        self.render_at(80);
+        self.runtime.tab_position_at_line(line)
     }
 
     /// Map a clicked line to `(tab_position, Option<pane_id>)` through the
     /// render module's `RenderedRail` target map. Runtime tests use this helper
     /// to exercise the same render-owned targeting seam as the wasm mouse path.
-    fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
-        self.runtime.target_at_line_for_current_rows(line)
+    #[cfg(test)]
+    fn target_at_line(&mut self, line: isize) -> Option<(usize, Option<u32>)> {
+        self.render_at(80);
+        self.runtime.target_at_line(line)
     }
 }
 
@@ -432,14 +450,14 @@ mod tests {
 
     #[test]
     fn click_negative_line_returns_none() {
-        let state = make_state_with_tabs(&[(0, "t0", false)]);
+        let mut state = make_state_with_tabs(&[(0, "t0", false)]);
         assert!(state.tab_position_at_line(-1).is_none());
     }
 
     #[test]
     fn plain_tabs_each_occupy_one_line() {
         // 3 plain tabs at positions 0, 1, 2 → 2-line header, then lines 2, 3, 4
-        let state = make_state_with_tabs(&[(0, "a", false), (1, "b", false), (2, "c", false)]);
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false), (2, "c", false)]);
         assert_eq!(state.tab_position_at_line(0), None); // header
         assert_eq!(state.tab_position_at_line(1), None); // header
         assert_eq!(state.tab_position_at_line(2), Some(0));
@@ -449,7 +467,7 @@ mod tests {
 
     #[test]
     fn click_beyond_last_tab_returns_none() {
-        let state = make_state_with_tabs(&[(0, "a", false)]);
+        let mut state = make_state_with_tabs(&[(0, "a", false)]);
         // 1 plain tab → header (lines 0,1) + tab (line 2); line 3 is beyond
         assert!(state.tab_position_at_line(3).is_none());
     }
@@ -487,7 +505,7 @@ mod tests {
         // Confirm that tab_position_at_line returns the 0-based position,
         // so the caller must add 1 before calling switch_tab_to.
         // With the always-on header, tabs start at line 2.
-        let state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
+        let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
         // Position 0 → switch_tab_to(0 + 1 = 1)
         assert_eq!(state.tab_position_at_line(2), Some(0));
         // Position 1 → switch_tab_to(1 + 1 = 2)
@@ -498,7 +516,7 @@ mod tests {
     fn idle_rail_still_has_header_click_offset_by_two() {
         // All-idle tabs still render the always-on header (2 lines), so the
         // first tab maps to line 2, not line 0.
-        let state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
+        let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         assert_eq!(state.tab_position_at_line(0), None); // header
         assert_eq!(state.tab_position_at_line(1), None); // header
         assert_eq!(state.tab_position_at_line(2), Some(0));
@@ -994,6 +1012,29 @@ mod tests {
         );
     }
 
+    // ── mouse_click → Effect end-to-end tests ──
+
+    #[test]
+    fn mouse_click_on_tab_row_emits_switch_tab_effect() {
+        use runtime::Effect;
+        // 2 idle tabs, permission granted, render at width 80.
+        // header=2 lines (Compact), tab 0 at line 2.
+        let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
+        state.runtime.permission_granted = true;
+        let _ = state.runtime.render(100, 80);
+        // line 2 is the first tab content row (lines 0-1 are the header)
+        let outcome = state.runtime.mouse_click(2);
+        assert_eq!(outcome.effects, vec![Effect::SwitchTab { position: 0 }]);
+    }
+
+    #[test]
+    fn mouse_click_without_permission_is_inert() {
+        let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
+        state.runtime.permission_granted = false;
+        let _ = state.runtime.render(100, 80);
+        assert!(state.runtime.mouse_click(2).effects.is_empty());
+    }
+
     // ── Click round-trip proptest ──
 
     proptest::proptest! {
@@ -1002,13 +1043,13 @@ mod tests {
             n_tabs in 1usize..6,
             active_idx in 0usize..6,
             statuses in proptest::collection::vec(0u8..5, 1..6),
+            width in proptest::sample::select(vec![24usize, 40, 80]),
         ) {
             // Build a state with n_tabs, each tab one pane with a status.
             let specs: Vec<(usize, &str, bool)> = (0..n_tabs)
                 .map(|i| (i, "t", i == active_idx % n_tabs))
                 .collect();
             let mut state = make_state_with_tabs(&specs);
-            state.runtime.last_render_height = 200;
             for (i, &s) in statuses.iter().take(n_tabs).enumerate() {
                 let st = match s {
                     0 => Status::Idle,
@@ -1021,34 +1062,26 @@ mod tests {
                 apply_payload(&mut state, i as u32, st, 1);
                 state.runtime.tab_panes.insert(i, vec![pane(i as u32)]);
             }
-            // For every drawn line, target_at_line must resolve to a real tab.
-            let rows = state.build_rows();
-            let opts = render::RenderOpts {
-                width: 80,
-                height: 200,
-                now_tick: 0,
-                glyphs: state.runtime.config.glyphs,
-                header: state.runtime.config.header,
-                density: state.runtime.config.density,
-                theme: state.runtime.theme.clone(),
-            };
-            let rail_lines = render::render_rail(&rows, &opts).line_count();
-            // +2 probes past the rendered rail to cover trailing lines,
-            // which correctly resolve to None — not a bug.
+            // Render through the production path at the given width; this populates last_rendered.
+            state.runtime.permission_granted = true;
+            let ansi = state.runtime.render(200, width);
+            let rail_lines = ansi.matches('\n').count();
+            // For every drawn line, target_at_line must resolve to a real tab or None.
+            // A resolved tab must be in-range.
             let mut resolved = 0usize;
             for line in 0..(rail_lines as isize + 2) {
-                if let Some((tab, _pane)) = state.target_at_line(line) {
+                if let Some((tab, _pane)) = state.runtime.target_at_line(line) {
                     proptest::prop_assert!(
                         tab < n_tabs,
-                        "resolved tab {} out of range {}", tab, n_tabs
+                        "resolved tab {} out of range {} (width={}, line={})", tab, n_tabs, width, line
                     );
                     resolved += 1;
                 }
             }
             proptest::prop_assert!(
                 resolved >= 1,
-                "test resolved no targets at all — setup may be broken (n_tabs={}, rail_lines={})",
-                n_tabs, rail_lines
+                "test resolved no targets at all — setup may be broken (n_tabs={}, rail_lines={}, width={})",
+                n_tabs, rail_lines, width
             );
         }
     }

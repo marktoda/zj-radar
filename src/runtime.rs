@@ -6,8 +6,6 @@ use crate::config;
 use crate::model;
 use crate::naming::{self, PaneLite};
 use crate::payload;
-#[cfg(test)]
-use crate::render::RailTarget;
 use crate::render::{self, RenderedRail, TabRow};
 use crate::state::StateStore;
 use crate::theme;
@@ -307,41 +305,14 @@ impl PluginRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn target_at_line_for_current_rows(
-        &self,
-        line: isize,
-    ) -> Option<(usize, Option<u32>)> {
-        let target = self.rendered_target_for_current_rows(line)?;
-        Some((target.tab_position, target.pane_id))
+    pub(crate) fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
+        let t = self.last_rendered.target_at_line(line)?;
+        Some((t.tab_position, t.pane_id))
     }
 
     #[cfg(test)]
-    pub(crate) fn tab_position_at_line_for_current_rows(&self, line: isize) -> Option<usize> {
-        self.target_at_line_for_current_rows(line)
-            .map(|(pos, _pane)| pos)
-    }
-
-    #[cfg(test)]
-    fn rendered_target_for_current_rows(&self, line: isize) -> Option<RailTarget> {
-        let rows = self.build_rows();
-        if rows.is_empty() {
-            return None;
-        }
-        let height = if self.last_render_height == 0 {
-            usize::MAX
-        } else {
-            self.last_render_height
-        };
-        let opts = render::RenderOpts {
-            width: 80,
-            height,
-            now_tick: self.tick,
-            glyphs: self.config.glyphs,
-            header: self.config.header,
-            density: self.config.density,
-            theme: self.theme.clone(),
-        };
-        render::render_rail(&rows, &opts).target_at_line(line)
+    pub(crate) fn tab_position_at_line(&self, line: isize) -> Option<usize> {
+        self.target_at_line(line).map(|(pos, _)| pos)
     }
 
     fn begin_permission_flow(&mut self, permission: PermissionProbe) -> Outcome {
