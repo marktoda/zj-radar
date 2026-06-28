@@ -107,10 +107,46 @@ pub fn card_spacing(d: Density) -> CardSpacing {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RailTarget {
+    pub tab_position: usize,
+    pub pane_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderedRail {
+    pub ansi: String,
+    targets: Vec<Option<RailTarget>>,
+}
+
+impl RenderedRail {
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn from_ansi_without_targets(ansi: String) -> Self {
+        let targets = ansi.lines().map(|_| None).collect();
+        RenderedRail { ansi, targets }
+    }
+
+    pub fn target_at_line(&self, line: isize) -> Option<RailTarget> {
+        if line < 0 {
+            return None;
+        }
+        self.targets.get(line as usize).copied().flatten()
+    }
+
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    pub fn line_count(&self) -> usize {
+        self.targets.len()
+    }
+}
+
 /// Single source of truth for a card's full vertical footprint (top→bottom:
 /// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
-/// external-separation rows). Both `render()` and `tab_position_at_line()` (via
-/// `plan_layout`) MUST budget in terms of this so click-mapping stays exact.
+/// external-separation rows). `render_rail()` budgets in terms of this so the
+/// emitted ANSI lines and line targets stay exact.
 pub fn card_block_lines(agg: &TabAgg, active: bool, spacing: CardSpacing) -> usize {
     spacing.pad_y + row_lines(agg, active) + spacing.gap
 }
@@ -123,8 +159,8 @@ pub fn is_multi_pane(agg: &TabAgg) -> bool {
 }
 
 /// The expand/collapse split for a multi-pane tab's adaptive tree. The SINGLE
-/// SOURCE OF TRUTH consulted by `row_lines`, `render`, and (via lib.rs)
-/// `tab_position_at_line`, so line counts and click targets stay in lockstep.
+/// SOURCE OF TRUTH consulted by `row_lines`, `render_rail`, and target mapping,
+/// so line counts and click targets stay in lockstep.
 ///
 /// Rules:
 ///   - Panes that NEED YOU (Pending or Error) ALWAYS expand.
@@ -171,8 +207,8 @@ pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
 ///
 /// Multi-pane tabs (chunk-2 adaptive tree): 1 header line + one child line per
 /// expanded pane + one collapse line when any calm pane is collapsed. The split
-/// is computed by `pane_tree_plan(agg, active)` so render and click-mapping stay
-/// in lockstep.
+/// is computed by `pane_tree_plan(agg, active)` so rendered lines and their
+/// click targets stay in lockstep.
 pub fn row_lines(agg: &TabAgg, active: bool) -> usize {
     if is_multi_pane(agg) {
         let plan = pane_tree_plan(agg, active);
@@ -216,14 +252,13 @@ fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
-/// span (consumed by click mapping in lib.rs). Only the truly-empty case (no
-/// rows at all) is headerless; when `header` is false the identity block is
-/// suppressed and rows start at line 0.
+/// span. Only the truly-empty case (no rows at all) is headerless; when `header`
+/// is false the identity block is suppressed and rows start at line 0.
 ///
 /// In Cards density the carded hero is just the " RADAR …" title (1 line) — the
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
-/// Comfortable keep the two-line title+rule header. `render()` and the click
-/// mapping both consult this function, so the count stays in lockstep.
+/// Comfortable keep the two-line title+rule header. `render_rail()` uses the
+/// same emitted header lines for ANSI and targets, so the count stays in lockstep.
 pub fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
     if rows.is_empty() || !header {
         0
@@ -360,8 +395,8 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
     (trimmed, strip_folded)
 }
 
-/// Single source of truth for the layout plan consumed by BOTH `render()` and
-/// `tab_position_at_line()`. Returns:
+/// Single source of truth for the layout plan consumed by `render_rail()`.
+/// Returns:
 ///   - the per-row planned content-line counts (same as `plan_overflow`),
 ///   - the number of idle rows folded into the strip (`strip_folded`), and
 ///   - the EFFECTIVE `CardSpacing` actually applied (luxury rows may be shed
@@ -477,10 +512,19 @@ pub fn onboarding(opts: &RenderOpts) -> String {
 ///   roster is dropped before the detail line.
 ///
 /// Caller guarantees `max_lines >= 1`.
-fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usize) {
+fn render_row<F>(
+    out: &mut String,
+    row: &TabRow,
+    opts: &RenderOpts,
+    max_lines: usize,
+    mut record_target: F,
+) where
+    F: FnMut(Option<RailTarget>),
+{
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.agg.status;
+    let tab_target = target_for_row(row);
 
     // Status HUES are always ANSI-16 role codes so the terminal renders them in
     // its OWN theme (any theme, zero config): attention `\x1b[91m` (waiting),
@@ -576,6 +620,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
         bell,
         slot_styled
     ));
+    record_target(Some(tab_target));
 
     // Line 1 done. Emit child/detail lines only within the remaining budget.
     if max_lines <= 1 {
@@ -594,7 +639,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
     // child line per EXPANDED pane (needs-you always; all panes when active) +
     // one collapse line for the calm remainder. The expand/collapse split comes
     // from `pane_tree_plan`, the SINGLE source of truth shared with `row_lines`
-    // and the click mapping, so emitted lines stay in lockstep.
+    // and this function's target recorder, so emitted lines stay in lockstep.
     if is_multi_pane(&row.agg) {
         let plan = pane_tree_plan(&row.agg, row.active);
         let has_collapse = plan.collapsed_count > 0;
@@ -609,6 +654,10 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
             let is_last = !has_collapse && idx + 1 == total_children;
             let tree = if is_last { "└ " } else { "├ " };
             emit_child_line(out, tree, pane, opts, &idle_color, &dim_strong);
+            record_target(Some(RailTarget {
+                tab_position: tab_target.tab_position,
+                pane_id: Some(pane.pane_id),
+            }));
             emitted += 1;
         }
 
@@ -617,6 +666,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
             let text = format!("└ {} more {}", plan.collapsed_count, plan.collapsed_verb);
             let clamped = truncate(&text, width.saturating_sub(2));
             out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
+            record_target(Some(tab_target));
         }
         return;
     }
@@ -656,6 +706,7 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
                         "  {}{}{} {}{}{}\n",
                         idle_color, mark, RESET, activity_color, activity_str, RESET
                     ));
+                    record_target(Some(tab_target));
                 }
             }
         }
@@ -795,10 +846,32 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
     format!("{}{}{}{}{}\n", bg, rearmed, pad, BG_RESET, RESET)
 }
 
-pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
+fn target_for_row(row: &TabRow) -> RailTarget {
+    RailTarget {
+        tab_position: row.number.saturating_sub(1) as usize,
+        pane_id: None,
+    }
+}
+
+fn render_row_buffer(
+    row: &TabRow,
+    opts: &RenderOpts,
+    max_lines: usize,
+) -> (String, Vec<Option<RailTarget>>) {
+    let mut tab_buf = String::new();
+    let mut row_targets = Vec::new();
+    render_row(&mut tab_buf, row, opts, max_lines.max(1), |target| {
+        row_targets.push(target);
+    });
+    debug_assert_eq!(row_targets.len(), tab_buf.matches('\n').count());
+    (tab_buf, row_targets)
+}
+
+pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     let mut out = String::new();
+    let mut targets: Vec<Option<RailTarget>> = Vec::new();
     if rows.is_empty() {
-        return out;
+        return RenderedRail { ansi: out, targets };
     }
     let width = opts.width;
     let accent = Role::Accent.ansi();
@@ -862,14 +935,18 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
             // Carded hero: just the " RADAR …" title on the dark panel — no
             // rule line (header_lines() returns 1 for Cards to match).
             out.push_str(&paint_card_line(&title_line, width, &rail));
+            targets.push(None);
         } else {
             out.push_str(&title_line);
+            targets.push(None);
             // Header line 2: rule across the full width.
             out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
+            targets.push(None);
         }
     }
 
     for &(i, max_lines) in &plan {
+        let row_target = target_for_row(&rows[i]);
         // Every tab is a card: render it into a temporary buffer, then paint
         // each content line with its class's surface tint (idle < agent <
         // active) — a subtle step up from the dark panel.
@@ -880,18 +957,34 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
             // to this tab's click span.
             for _ in 0..spacing.pad_y {
                 out.push_str(&paint_card_line("\n", width, &bg));
+                targets.push(Some(row_target));
             }
-            let mut tab_buf = String::new();
-            render_row(&mut tab_buf, &rows[i], opts, max_lines.max(1));
-            for line in tab_buf.split_inclusive('\n') {
+            let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
+            for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
                 out.push_str(&paint_card_line(line, width, &bg));
+                targets.push(
+                    row_targets
+                        .get(line_idx)
+                        .copied()
+                        .unwrap_or(Some(row_target)),
+                );
             }
         } else {
             // Non-card densities: pad_y is 0, so emit content directly.
             for _ in 0..spacing.pad_y {
                 out.push('\n');
+                targets.push(Some(row_target));
             }
-            render_row(&mut out, &rows[i], opts, max_lines.max(1));
+            let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
+            for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
+                out.push_str(line);
+                targets.push(
+                    row_targets
+                        .get(line_idx)
+                        .copied()
+                        .unwrap_or(Some(row_target)),
+                );
+            }
         }
         // Emit blank gap line(s) after each tab's content block (external
         // separation). In Cards the gap is painted with the dark panel base (so
@@ -902,6 +995,7 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
             } else {
                 out.push('\n');
             }
+            targets.push(None);
         }
     }
 
@@ -924,8 +1018,14 @@ pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
         } else {
             out.push_str(&strip_line);
         }
+        targets.push(None);
     }
-    out
+    RenderedRail { ansi: out, targets }
+}
+
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
+    render_rail(rows, opts).ansi
 }
 
 #[cfg(test)]
@@ -994,6 +1094,93 @@ mod tests {
             0
         );
         assert!(render(&rows, &ro(24, 0)).is_empty());
+    }
+
+    #[test]
+    fn rendered_rail_tracks_targets_for_each_emitted_line() {
+        assert_eq!(RenderedRail::empty().line_count(), 0);
+        let untargeted = RenderedRail::from_ansi_without_targets("a\nb\n".to_string());
+        assert_eq!(untargeted.line_count(), 2);
+        assert_eq!(untargeted.target_at_line(0), None);
+
+        let detail = Detail {
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "approve".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let rows = vec![
+            TabRow {
+                number: 1,
+                name: "team".into(),
+                active: false,
+                has_bell: false,
+                agg: TabAgg {
+                    status: Status::Pending,
+                    done: 0,
+                    total: 2,
+                    pending: 1,
+                    detail: Some(detail),
+                    panes: vec![
+                        PaneEntry {
+                            pane_id: 10,
+                            kind: Kind::Claude,
+                            status: Status::Pending,
+                            msg: "approve".into(),
+                        },
+                        PaneEntry {
+                            pane_id: 11,
+                            kind: Kind::Claude,
+                            status: Status::Running,
+                            msg: "tests".into(),
+                        },
+                    ],
+                },
+            },
+            TabRow {
+                number: 2,
+                name: "plain".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+        ];
+
+        let rail = render_rail(&rows, &ro(40, 0));
+        assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+        assert_eq!(rail.target_at_line(-1), None);
+        assert_eq!(rail.target_at_line(0), None);
+        assert_eq!(rail.target_at_line(1), None);
+        assert_eq!(
+            rail.target_at_line(2),
+            Some(RailTarget {
+                tab_position: 0,
+                pane_id: None,
+            })
+        );
+        assert_eq!(
+            rail.target_at_line(3),
+            Some(RailTarget {
+                tab_position: 0,
+                pane_id: Some(10),
+            })
+        );
+        assert_eq!(
+            rail.target_at_line(4),
+            Some(RailTarget {
+                tab_position: 0,
+                pane_id: None,
+            })
+        );
+        assert_eq!(
+            rail.target_at_line(5),
+            Some(RailTarget {
+                tab_position: 1,
+                pane_id: None,
+            })
+        );
     }
 
     #[test]

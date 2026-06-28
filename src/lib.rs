@@ -16,6 +16,8 @@ mod payload;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod runtime;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
@@ -29,17 +31,18 @@ mod theme;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-// `render::TabRow` and `state::StateStore` are referenced by the pure helpers
-// and the wasm glue; the helpers themselves are only consumed by tests on the
-// host target, so these imports look dead to a non-test host build.
-use naming::PaneLite;
+// `PaneLite` is referenced by host tests and wasm glue; the helper imports are
+// only consumed by tests on the host target.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
+use naming::PaneLite;
+#[cfg(test)]
 use render::TabRow;
-use state::StateStore;
-use std::collections::HashMap;
+use runtime::PluginRuntime;
 
 #[cfg(target_arch = "wasm32")]
-use std::collections::{BTreeMap, HashSet};
+use runtime::{Effect, PermissionMarker, PermissionProbe};
+#[cfg(target_arch = "wasm32")]
+use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
 
@@ -49,63 +52,9 @@ const PIPE_NAME: &str = "zj_radar.status.v1";
 const CONFIG_PIPE: &str = "zj_radar.config.v1";
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-#[derive(Clone)]
-struct TabLite {
-    position: usize,
-    name: String,
-    active: bool,
-    has_bell: bool,
-}
-
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Default)]
 pub struct State {
-    store: StateStore,
-    tabs: Vec<TabLite>,
-    tab_panes: HashMap<usize, Vec<PaneLite>>, // tab position -> terminal panes
-    // `pane_cwd` maps terminal pane id → last-seen cwd string. Updated on
-    // CwdChanged; pruned in sync with tab_panes on PaneUpdate.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pane_cwd: HashMap<u32, String>,
-    // `tick`/`timer_armed`/`applied_names` are read only by the wasm glue; on
-    // any host build (including tests, which construct State but never read
-    // them) they are dead.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    tick: u64,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    timer_armed: bool,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    applied_names: HashMap<usize, String>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    last_render_height: usize,
-    // `permission_granted` is read by both the wasm glue and the host tests,
-    // so no dead_code gate is needed. `config` carries the parsed plugin
-    // config (naming/header/glyphs) and is read by the wasm glue.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    config: config::Config,
-    permission_granted: bool,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_response_received: bool,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_request_started: bool,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_waiting_for_peer: bool,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_ready_path: Option<String>,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    permission_lock_path: Option<String>,
-    // Terminal-derived surface + dim colors; updated on PaneUpdate from the
-    // panes' reported default_bg/default_fg; only used by the wasm render path.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    theme: theme::DerivedColors,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    command: command::CommandStore,
-    // The terminal pane focused as of the last PaneUpdate. Clear-on-focus fires
-    // only when this CHANGES (a focus transition into a pane), so a pane that
-    // becomes Done while already focused stays lit until you leave and return —
-    // the design's "stays lit until visited" rule. None until the first focus.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    last_focused: Option<u32>,
+    runtime: PluginRuntime,
     // The shared `/cache` snapshot this instance reads on load and writes on
     // every store mutation. zj-radar runs one instance PER TAB (it lives in the
     // tab template), and a CLI-pipe broadcast only reaches instances alive at
@@ -120,29 +69,18 @@ pub struct State {
     cache_path: Option<String>,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     cache_tmp: Option<String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_ready_path: Option<String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_lock_path: Option<String>,
 }
 
-// ── Pure helpers (no host calls) — compiled and tested on the host target ──
+// ── Pure helper wrappers (no host calls) — compiled only for host tests ──
 
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+#[cfg(test)]
 impl State {
     fn build_rows(&self) -> Vec<TabRow> {
-        let mut rows = Vec::new();
-        let mut sorted = self.tabs.clone();
-        sorted.sort_by_key(|t| t.position);
-        for t in &sorted {
-            let empty = Vec::new();
-            let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
-            let ids: Vec<u32> = panes.iter().map(|p| p.id).collect();
-            rows.push(TabRow {
-                number: t.position as u32 + 1,
-                name: t.name.clone(),
-                active: t.active,
-                has_bell: t.has_bell,
-                agg: model::aggregate(&ids, &self.store, &self.command),
-            });
-        }
-        rows
+        self.runtime.build_rows()
     }
 
     /// Apply clear-on-focus only on a focus TRANSITION — when focus enters a
@@ -159,15 +97,7 @@ impl State {
     ///
     /// Returns true when a transition was applied (focus actually changed).
     fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        if focused == self.last_focused {
-            return false;
-        }
-        self.last_focused = focused;
-        if let Some(id) = focused {
-            self.store.on_pane_focused(id, tick);
-            self.command.on_pane_focused(id, tick);
-        }
-        true
+        self.runtime.apply_focus_transition(focused, tick)
     }
 
     /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
@@ -175,99 +105,30 @@ impl State {
     /// while a y/n answer is pending; peer sidebar instances stay passive while
     /// they wait for the first grant to populate Zellij's permission cache.
     fn sidebar_should_be_selectable(&self) -> bool {
-        self.permission_request_started && !self.permission_response_received
+        self.runtime.sidebar_should_be_selectable()
     }
 
     fn record_permission_request_started(&mut self) {
-        self.permission_request_started = true;
+        self.runtime.record_permission_request_started();
     }
 
     fn record_permission_result(&mut self, granted: bool) {
-        self.permission_granted = granted;
-        self.permission_response_received = true;
-        self.permission_request_started = false;
-        self.permission_waiting_for_peer = false;
+        self.runtime.record_permission_result(granted);
     }
 
-    /// Map a clicked line back to a tab position by replaying render()'s fold
-    /// plan. Thin wrapper over `target_at_line` that drops the pane id; used by
-    /// host unit tests that only assert tab membership (the wasm click handler
-    /// calls `target_at_line` directly to also resolve the pane target).
+    /// Map a clicked line back to a tab position through the renderer-owned
+    /// target map. Thin wrapper over `target_at_line` that drops the pane id;
+    /// used by host unit tests that only assert tab membership.
     #[cfg(test)]
     fn tab_position_at_line(&self, line: isize) -> Option<usize> {
-        self.target_at_line(line).map(|(pos, _pane)| pos)
+        self.runtime.tab_position_at_line_for_current_rows(line)
     }
 
-    /// Map a clicked line to `(tab_position, Option<pane_id>)`. Both render()
-    /// and this function consult the SAME `plan_layout` + `pane_tree_plan`, so
-    /// "line N → tab X (pane P)" is exactly what the user sees on screen.
-    ///
-    /// Each tab's visual block is `pad_y + content + gap` (the cohesive
-    /// CardSpacing footprint). The `pad_y` rows and content rows belong to that
-    /// tab; the trailing `gap` rows are external separation and map to None.
-    ///
-    /// For a MULTI-PANE tab the content rows are: header (line 0, tab-only) +
-    /// one child line per expanded pane (each maps to its pane id) + a collapse
-    /// line (tab-only). Clicking an expanded child line targets THAT pane via
-    /// `show_pane_with_id`; everything else targets the tab.
+    /// Map a clicked line to `(tab_position, Option<pane_id>)` through the
+    /// render module's `RenderedRail` target map. Runtime tests use this helper
+    /// to exercise the same render-owned targeting seam as the wasm mouse path.
     fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
-        if line < 0 {
-            return None;
-        }
-        let target = line as usize;
-        let rows = self.build_rows();
-        if rows.is_empty() {
-            return None;
-        }
-        let mut cursor = render::header_lines(&rows, self.config.header, self.config.density);
-        if target < cursor {
-            return None; // click landed on the header → no tab
-        }
-        // Replay render()'s layout plan. Height 0 means "not yet rendered" →
-        // treat as unbounded so no folding/gap-dropping is assumed.
-        let body_budget = if self.last_render_height == 0 {
-            usize::MAX
-        } else {
-            self.last_render_height.saturating_sub(render::header_lines(
-                &rows,
-                self.config.header,
-                self.config.density,
-            ))
-        };
-        let (plan, _strip_folded, spacing) =
-            render::plan_layout(&rows, body_budget, self.config.density);
-        for &(i, planned_lines) in &plan {
-            // owned = pad_y + content rows belonging to this tab; trailing gap
-            // rows are external separation and do not belong to any tab.
-            let content = planned_lines.max(1);
-            let owned = spacing.pad_y + content;
-            if target >= cursor && target < cursor + owned {
-                let tab_pos = (rows[i].number - 1) as usize;
-                // Offset of the clicked line within this tab's CONTENT rows
-                // (after pad_y). 0 = header line; 1.. = child/collapse lines.
-                let content_off = (target - cursor).saturating_sub(spacing.pad_y);
-                let pane = self.pane_at_content_offset(&rows[i], content_off);
-                return Some((tab_pos, pane));
-            }
-            cursor += owned + spacing.gap;
-        }
-        // Any line at/after the folded idle strip maps to no tab.
-        None
-    }
-
-    /// Resolve which pane (if any) a content-row offset within a tab targets.
-    /// Offset 0 is the header (tab-only → None). For a multi-pane tab, offsets
-    /// 1.. index the expanded child lines from `pane_tree_plan`; the collapse
-    /// line (past the expanded children) is tab-only. Single-pane tabs have no
-    /// per-pane child target (their line 2 is tab-only).
-    fn pane_at_content_offset(&self, row: &TabRow, content_off: usize) -> Option<u32> {
-        if content_off == 0 || !render::is_multi_pane(&row.agg) {
-            return None;
-        }
-        let plan = render::pane_tree_plan(&row.agg, row.active);
-        // child index k = content_off - 1; expanded children come first.
-        let k = content_off - 1;
-        plan.expanded.get(k).map(|p| p.pane_id)
+        self.runtime.target_at_line_for_current_rows(line)
     }
 }
 
@@ -294,7 +155,7 @@ impl State {
     /// ones. Called once from `load()`. All filesystem work is best-effort: a
     /// failure just means this instance starts empty and the next broadcast
     /// repopulates it — the plugin must never break the host over a cache miss.
-    fn init_cache(&mut self) {
+    fn init_cache(&mut self) -> Option<String> {
         let ids = get_plugin_ids();
         let path = format!("{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.json", ids.zellij_pid);
         let permission_ready = format!(
@@ -305,56 +166,30 @@ impl State {
         // Temp file is per-instance (plugin_id) so two tabs writing at once never
         // clobber each other's in-progress write before the atomic rename.
         let tmp = format!("{path}.{}.tmp", ids.plugin_id);
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Some((store, tick)) = StateStore::from_json(&raw) {
-                self.store = store;
-                self.tick = tick;
-            }
-        }
+        let snapshot = std::fs::read_to_string(&path).ok();
         self.prune_stale_snapshots(&path);
         self.cache_path = Some(path);
         self.cache_tmp = Some(tmp);
         self.permission_ready_path = Some(permission_ready);
         self.permission_lock_path = Some(permission_lock);
+        snapshot
     }
 
-    fn request_zellij_permissions(&mut self) {
-        self.record_permission_request_started();
-        request_permission(&[
-            PermissionType::ReadApplicationState,
-            PermissionType::ReadCliPipes,
-            PermissionType::ChangeApplicationState,
-        ]);
-    }
-
-    /// Avoid N simultaneous first-run prompts when the sidebar is instantiated
-    /// once per tab. One instance owns the visible prompt; peers wait for the
-    /// session-scoped marker, then call `request_permission` after Zellij has
-    /// cached the user's answer for this plugin URL.
-    fn begin_permission_flow(&mut self) {
-        match self.permission_marker() {
-            Some(PERMISSION_GRANTED_MARKER) => {
-                self.request_zellij_permissions();
-            }
-            Some(PERMISSION_DENIED_MARKER) => {
-                self.record_permission_result(false);
-            }
-            _ if self.become_permission_request_owner() => {
-                self.request_zellij_permissions();
-            }
-            _ => {
-                self.permission_waiting_for_peer = true;
-                self.arm_timer_if_needed();
-            }
+    fn permission_probe(&self) -> PermissionProbe {
+        let marker = self.permission_marker();
+        let lock_acquired = marker.is_none() && self.become_permission_request_owner();
+        PermissionProbe {
+            marker,
+            lock_acquired,
         }
     }
 
-    fn permission_marker(&self) -> Option<&'static str> {
+    fn permission_marker(&self) -> Option<PermissionMarker> {
         let path = self.permission_ready_path.as_ref()?;
         let raw = std::fs::read_to_string(path).ok()?;
         match raw.trim() {
-            PERMISSION_GRANTED_MARKER => Some(PERMISSION_GRANTED_MARKER),
-            PERMISSION_DENIED_MARKER => Some(PERMISSION_DENIED_MARKER),
+            PERMISSION_GRANTED_MARKER => Some(PermissionMarker::Granted),
+            PERMISSION_DENIED_MARKER => Some(PermissionMarker::Denied),
             _ => None,
         }
     }
@@ -376,34 +211,13 @@ impl State {
         }
     }
 
-    fn mark_permission_flow_complete(&self, granted: bool) {
+    fn mark_permission_flow_complete(&self, marker: PermissionMarker) {
         if let Some(path) = &self.permission_ready_path {
-            let marker = if granted {
-                PERMISSION_GRANTED_MARKER
-            } else {
-                PERMISSION_DENIED_MARKER
+            let raw = match marker {
+                PermissionMarker::Granted => PERMISSION_GRANTED_MARKER,
+                PermissionMarker::Denied => PERMISSION_DENIED_MARKER,
             };
-            let _ = std::fs::write(path, marker.as_bytes());
-        }
-    }
-
-    fn check_deferred_permission_request(&mut self) -> bool {
-        if !self.permission_waiting_for_peer {
-            return false;
-        }
-        match self.permission_marker() {
-            Some(PERMISSION_GRANTED_MARKER) => {
-                self.permission_waiting_for_peer = false;
-                self.request_zellij_permissions();
-                set_selectable(self.sidebar_should_be_selectable());
-                true
-            }
-            Some(PERMISSION_DENIED_MARKER) => {
-                self.record_permission_result(false);
-                set_selectable(self.sidebar_should_be_selectable());
-                true
-            }
-            _ => false,
+            let _ = std::fs::write(path, raw.as_bytes());
         }
     }
 
@@ -413,11 +227,10 @@ impl State {
     /// loading instance) never sees a half-written file. Best-effort: errors are
     /// swallowed, since the live broadcast is the source of truth for everyone
     /// already running — the snapshot only seeds future newcomers.
-    fn persist(&self) {
+    fn persist_snapshot(&self, json: &str) {
         let (Some(path), Some(tmp)) = (&self.cache_path, &self.cache_tmp) else {
             return;
         };
-        let json = self.store.to_json(self.tick);
         if std::fs::write(tmp, json.as_bytes()).is_ok() {
             let _ = std::fs::rename(tmp, path);
         }
@@ -454,38 +267,32 @@ impl State {
         }
     }
 
-    fn arm_timer_if_needed(&mut self) {
-        if !self.timer_armed
-            && (self.permission_waiting_for_peer
-                || self.store.any_active()
-                || self.command.has_pending_or_active())
-        {
-            set_timeout(1.0);
-            self.timer_armed = true;
-        }
+    fn handle_outcome(&mut self, outcome: runtime::Outcome) -> bool {
+        let render = outcome.render;
+        self.handle_effects(outcome.effects);
+        render
     }
 
-    fn apply_renames(&mut self) {
-        if self.config.naming == config::NamingMode::Off {
-            return;
-        }
-        let force = self.config.naming == config::NamingMode::Force;
-        let tabs: Vec<(usize, String)> = self
-            .tabs
-            .iter()
-            .map(|t| (t.position, t.name.clone()))
-            .collect();
-        let changes = naming::compute_renames(
-            &tabs,
-            &self.tab_panes,
-            &self.store,
-            &self.applied_names,
-            force,
-            &self.pane_cwd,
-        );
-        for (pos, name) in changes {
-            rename_tab(pos as u32 + 1, &name);
-            self.applied_names.insert(pos, name);
+    fn handle_effects(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::RequestPermission => request_permission(&[
+                    PermissionType::ReadApplicationState,
+                    PermissionType::ReadCliPipes,
+                    PermissionType::ChangeApplicationState,
+                ]),
+                Effect::SetSelectable(selectable) => set_selectable(selectable),
+                Effect::SetTimeout => set_timeout(1.0),
+                Effect::PersistSnapshot(json) => self.persist_snapshot(&json),
+                Effect::PersistPermissionMarker(marker) => {
+                    self.mark_permission_flow_complete(marker)
+                }
+                Effect::RenameTab { position, name } => rename_tab(position as u32 + 1, &name),
+                Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
+                Effect::ShowPane { pane_id } => {
+                    show_pane_with_id(PaneId::Terminal(pane_id), false, true);
+                }
+            }
         }
     }
 }
@@ -493,7 +300,6 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
     fn load(&mut self, config: BTreeMap<String, String>) {
-        self.config = config::Config::from_map(&config);
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
@@ -505,29 +311,36 @@ impl ZellijPlugin for State {
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
-        self.init_cache();
-        self.begin_permission_flow();
-        set_selectable(self.sidebar_should_be_selectable());
+        let snapshot = self.init_cache();
+        let permission = self.permission_probe();
+        let outcome = self.runtime.load(
+            config::Config::from_map(&config),
+            snapshot.as_deref(),
+            permission,
+        );
+        self.handle_outcome(outcome);
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::TabUpdate(tabs) => {
-                self.tabs = tabs
+                let tabs = tabs
                     .into_iter()
-                    .map(|t| TabLite {
+                    .map(|t| runtime::TabLite {
                         position: t.position,
                         name: t.name,
                         active: t.active,
                         has_bell: t.has_bell_notification,
                     })
                     .collect();
-                true
+                let outcome = self.runtime.tabs_changed(tabs);
+                self.handle_outcome(outcome)
             }
             Event::PaneUpdate(manifest) => {
                 let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
                 let mut live: HashSet<u32> = HashSet::new();
                 let mut focused_terminal: Option<u32> = None;
+                let mut exits: Vec<(u32, Option<i32>)> = Vec::new();
                 // Capture the terminal's reported default bg/fg so we can derive
                 // the dark-panel surfaces in the terminal's own theme. Prefer the
                 // focused pane; otherwise accept the first terminal pane that
@@ -562,77 +375,50 @@ impl ZellijPlugin for State {
                             focused_terminal = Some(p.id);
                         }
                         if p.exited {
-                            self.command.on_exit(p.id, p.exit_status, self.tick);
+                            exits.push((p.id, p.exit_status));
                         }
                     }
                 }
-                if let Some((bg, fg)) = focused_colors.or(any_colors) {
-                    self.theme = theme::DerivedColors::from_bg_fg(bg, fg);
-                }
-                self.tab_panes = tab_panes;
-                self.store.prune(&live);
-                self.command.prune(&live);
-                self.pane_cwd.retain(|id, _| live.contains(id));
-                // Clear-on-focus fires only on a focus TRANSITION (focus enters
-                // a new pane), not on every update while a pane stays focused —
-                // otherwise a pane that finishes while already focused is
-                // auto-cleared to Idle by the next update (a timing race that
-                // showed up as direction-dependent Done↔Idle flicker).
-                self.apply_focus_transition(focused_terminal, self.tick);
-                self.apply_renames();
-                // Prune (closed panes) and the focus-clear both mutate the store,
-                // so refresh the shared snapshot newcomers seed from.
-                self.persist();
-                true
+                let theme = focused_colors
+                    .or(any_colors)
+                    .map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
+                let update = runtime::PaneUpdate {
+                    tab_panes,
+                    live,
+                    focused_terminal,
+                    theme,
+                    exits,
+                };
+                let outcome = self.runtime.panes_changed(update);
+                self.handle_outcome(outcome)
             }
             Event::Timer(_) => {
-                self.timer_armed = false;
-                let permission_changed = self.check_deferred_permission_request();
-                self.tick += 1;
-                self.command.on_timer(self.tick);
-                self.arm_timer_if_needed();
-                permission_changed
-                    || self.store.any_active()
-                    || self.command.has_pending_or_active()
+                let marker = self.permission_marker();
+                let outcome = self.runtime.timer(marker);
+                self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
-                if self.permission_granted {
-                    if let Some((pos, pane)) = self.target_at_line(line) {
-                        match pane {
-                            // A child pane line → focus THAT pane (and switch to
-                            // its tab). show_pane_with_id unsuppresses + focuses
-                            // the pane by id and switches to its tab in one call.
-                            Some(id) => {
-                                show_pane_with_id(PaneId::Terminal(id), false, true);
-                            }
-                            // Header / collapse / single-pane lines → switch tab.
-                            // switch_tab_to is 1-based; `pos` is 0-based, so +1.
-                            None => switch_tab_to(pos as u32 + 1),
-                        }
-                    }
-                }
-                false
+                let outcome = self.runtime.mouse_click(line);
+                self.handle_outcome(outcome)
             }
             Event::PermissionRequestResult(status) => {
                 let granted = status == PermissionStatus::Granted;
-                self.record_permission_result(granted);
-                self.mark_permission_flow_complete(granted);
-                set_selectable(self.sidebar_should_be_selectable());
-                true
+                let outcome = self.runtime.permission_result(granted);
+                self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
-                    self.pane_cwd.insert(id, path.to_string_lossy().to_string());
-                    self.apply_renames();
+                    let outcome = self
+                        .runtime
+                        .cwd_changed(id, path.to_string_lossy().to_string());
+                    return self.handle_outcome(outcome);
                 }
                 true
             }
             Event::CommandChanged(pane_id, command, is_foreground, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
-                    let cwd = self.pane_cwd.get(&id).map(|s| s.as_str());
-                    self.command
-                        .on_command_changed(id, &command, is_foreground, cwd, self.tick);
-                    self.arm_timer_if_needed();
+                    let outcome = self.runtime.command_changed(id, &command, is_foreground);
+                    return self.handle_outcome(outcome);
                 }
                 true
             }
@@ -643,63 +429,20 @@ impl ZellijPlugin for State {
     fn pipe(&mut self, message: PipeMessage) -> bool {
         if message.name == PIPE_NAME {
             if let Some(raw) = &message.payload {
-                if let Some(p) = payload::parse(raw) {
-                    self.store.apply(p, self.tick);
-                    self.apply_renames();
-                    self.arm_timer_if_needed();
-                    // Mirror the new status to the shared snapshot so the next
-                    // tab to open seeds from it instead of starting blank.
-                    self.persist();
-                    return true;
-                }
+                let outcome = self.runtime.status_pipe(raw);
+                return self.handle_outcome(outcome);
             }
         } else if message.name == CONFIG_PIPE {
             if let Some(raw) = &message.payload {
-                // Parse as a flat JSON object; scalar values (bool/number) are
-                // stringified so callers may omit quotes for simple values.
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
-                    if let Some(obj) = val.as_object() {
-                        let kv: std::collections::BTreeMap<String, String> = obj
-                            .iter()
-                            .filter_map(|(k, v)| {
-                                let s = match v {
-                                    serde_json::Value::String(s) => Some(s.clone()),
-                                    serde_json::Value::Bool(b) => {
-                                        Some(if *b { "true" } else { "false" }.to_string())
-                                    }
-                                    serde_json::Value::Number(n) => Some(n.to_string()),
-                                    _ => None,
-                                };
-                                s.map(|s| (k.clone(), s))
-                            })
-                            .collect();
-                        self.config.apply_overrides(&kv);
-                        self.apply_renames();
-                        return true;
-                    }
-                }
+                let outcome = self.runtime.config_pipe(raw);
+                return self.handle_outcome(outcome);
             }
         }
         false
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        self.last_render_height = rows;
-        let tabrows = self.build_rows();
-        let opts = render::RenderOpts {
-            width: cols.max(1),
-            height: rows,
-            now_tick: self.tick,
-            glyphs: self.config.glyphs,
-            header: self.config.header,
-            density: self.config.density,
-            theme: self.theme.clone(),
-        };
-        if !self.permission_granted || tabrows.is_empty() {
-            print!("{}", render::onboarding(&opts));
-        } else {
-            print!("{}", render::render(&tabrows, &opts));
-        }
+        print!("{}", self.runtime.render(rows, cols));
     }
 }
 
@@ -724,21 +467,20 @@ mod tests {
         // line numbers assuming no gap lines) continue to pass unchanged.
         let tabs = tab_specs
             .iter()
-            .map(|&(pos, name, active)| TabLite {
+            .map(|&(pos, name, active)| runtime::TabLite {
                 position: pos,
                 name: name.to_string(),
                 active,
                 has_bell: false,
             })
             .collect();
-        State {
-            tabs,
-            config: config::Config {
-                density: config::Density::Compact,
-                ..config::Config::default()
-            },
-            ..Default::default()
-        }
+        let mut state = State::default();
+        state.runtime.tabs = tabs;
+        state.runtime.config = config::Config {
+            density: config::Density::Compact,
+            ..config::Config::default()
+        };
+        state
     }
 
     fn apply_payload(state: &mut State, pane_id: u32, status: Status, tick: u64) {
@@ -752,7 +494,7 @@ mod tests {
         tick: u64,
         msg: &str,
     ) {
-        state.store.apply(
+        state.runtime.store.apply(
             StatusPayload {
                 pane_id,
                 status,
@@ -805,7 +547,7 @@ mod tests {
     fn build_rows_agg_reflects_pane_status() {
         let mut state = make_state_with_tabs(&[(0, "agent-tab", false)]);
         // Assign pane 42 to tab position 0
-        state.tab_panes.insert(0, vec![pane(42)]);
+        state.runtime.tab_panes.insert(0, vec![pane(42)]);
         apply_payload(&mut state, 42, Status::Running, 1);
         let rows = state.build_rows();
         assert_eq!(rows[0].agg.status, Status::Running);
@@ -850,7 +592,7 @@ mod tests {
     #[test]
     fn agent_tab_running_occupies_two_lines() {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // running → 2 lines
                                                            // rows 0,1 = header
         assert_eq!(state.tab_position_at_line(1), None);
@@ -866,7 +608,7 @@ mod tests {
     fn agent_tab_pending_with_msg_occupies_two_lines() {
         // New line-2 rule: pending + msg → 2 lines (mark + activity). Old 3-line case gone.
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 2
         assert_eq!(state.tab_position_at_line(1), None); // header
         assert_eq!(state.tab_position_at_line(2), Some(0)); // line 1
@@ -909,9 +651,9 @@ mod tests {
             (4, "e", false),
             (5, "pinky", false),
         ]);
-        state.tab_panes.insert(5, vec![pane(50)]);
+        state.runtime.tab_panes.insert(5, vec![pane(50)]);
         apply_payload(&mut state, 50, Status::Pending, 1); // pending → non-idle, kept
-        state.last_render_height = 6; // body_budget = 4
+        state.runtime.last_render_height = 6; // body_budget = 4
 
         // header = lines 0,1. Idle rows fold; only the pending tab (position 5) is kept.
         // It renders right after the header.
@@ -924,7 +666,7 @@ mod tests {
     fn click_mapping_unchanged_when_not_overflowing() {
         // Large height → no folding → same as plain position order (offset by 2-line header).
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
-        state.last_render_height = 100;
+        state.runtime.last_render_height = 100;
         assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(1));
@@ -933,8 +675,8 @@ mod tests {
     #[test]
     fn state_defaults_glyphs_to_plain_and_ungranted() {
         let s = State::default();
-        assert_eq!(s.config.glyphs, crate::status::GlyphSet::Plain);
-        assert!(!s.permission_granted);
+        assert_eq!(s.runtime.config.glyphs, crate::status::GlyphSet::Plain);
+        assert!(!s.runtime.permission_granted);
     }
 
     #[test]
@@ -970,7 +712,7 @@ mod tests {
         // A tab with 2 panes both running, NOT active → multi-pane tree: both
         // calm panes collapse, so row_lines = 1 header + 1 collapse = 2 lines.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state.tab_panes.insert(0, vec![pane(10), pane(11)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10), pane(11)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         // header = lines 0,1
@@ -993,12 +735,13 @@ mod tests {
         // Tree: header + 1 expanded child (pane 10) + collapse line = 3 lines.
         let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
         state
+            .runtime
             .tab_panes
             .insert(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "run migration?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
-        state.last_render_height = 100;
+        state.runtime.last_render_height = 100;
         // header = lines 0,1
         assert_eq!(
             state.target_at_line(2),
@@ -1026,10 +769,10 @@ mod tests {
     fn multi_pane_active_all_children_clickable() {
         // Active tab → ALL panes expand; each child line targets its pane.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
-        state.tab_panes.insert(0, vec![pane(20), pane(21)]);
+        state.runtime.tab_panes.insert(0, vec![pane(20), pane(21)]);
         apply_payload(&mut state, 20, Status::Running, 1);
         apply_payload(&mut state, 21, Status::Done, 1);
-        state.last_render_height = 100;
+        state.runtime.last_render_height = 100;
         // header(2) + 2 children, no collapse.
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
         assert_eq!(
@@ -1066,15 +809,15 @@ mod tests {
             (2, "r2", false),
             (3, "urgent", false),
         ]);
-        state.tab_panes.insert(0, vec![pane(10)]);
-        state.tab_panes.insert(1, vec![pane(11)]);
-        state.tab_panes.insert(2, vec![pane(12)]);
-        state.tab_panes.insert(3, vec![pane(13)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10)]);
+        state.runtime.tab_panes.insert(1, vec![pane(11)]);
+        state.runtime.tab_panes.insert(2, vec![pane(12)]);
+        state.runtime.tab_panes.insert(3, vec![pane(13)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         apply_payload_with_msg(&mut state, 13, Status::Pending, 1, "please approve");
-        state.last_render_height = 7; // body_budget = 5
+        state.runtime.last_render_height = 7; // body_budget = 5
 
         // Header lines
         assert_eq!(state.tab_position_at_line(0), None);
@@ -1101,12 +844,13 @@ mod tests {
         // + collapse = 3 content lines. Followed by a plain tab.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
         state
+            .runtime
             .tab_panes
             .insert(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
-        state.last_render_height = 100;
+        state.runtime.last_render_height = 100;
         // Confirm row_lines agrees: header(1) + 1 expanded + collapse(1) = 3.
         let rows = state.build_rows();
         assert_eq!(
@@ -1141,8 +885,8 @@ mod tests {
         // The gap is EXTERNAL separation, so the gap line (3) maps to None — only
         // the owned pad_y + content rows belong to a tab. Tab 1 starts at line 4.
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
-        state.last_render_height = 100; // large → no overflow
-        state.config = config::Config {
+        state.runtime.last_render_height = 100; // large → no overflow
+        state.runtime.config = config::Config {
             density: config::Density::Comfortable,
             ..config::Config::default()
         };
@@ -1176,8 +920,8 @@ mod tests {
         // 2 idle tabs, header=2 lines.
         // Lines: 0,1 header | 2 tab0 | 3 tab1
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
-        state.last_render_height = 100;
-        state.config = config::Config {
+        state.runtime.last_render_height = 100;
+        state.runtime.config = config::Config {
             density: config::Density::Compact,
             ..config::Config::default()
         };
@@ -1203,8 +947,8 @@ mod tests {
         //   line 4  → tab 1 gap (rail)         → None
         //   line 5  → None (beyond last tab)
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
-        state.last_render_height = 100;
-        state.config = config::Config {
+        state.runtime.last_render_height = 100;
+        state.runtime.config = config::Config {
             density: config::Density::Cards,
             ..config::Config::default()
         };
@@ -1231,10 +975,10 @@ mod tests {
         // tab 0 is a Running tab WITH detail → 2 content lines.
         let mut state = make_state_with_tabs(&[(0, "work", false), (1, "b", false)]);
         // Make tab 0 a running agent with a detail line (2 content lines).
-        state.tab_panes.insert(0, vec![pane(10)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1);
-        state.last_render_height = 100;
-        state.config = config::Config {
+        state.runtime.last_render_height = 100;
+        state.runtime.config = config::Config {
             density: config::Density::Cards,
             ..config::Config::default()
         };
@@ -1269,11 +1013,11 @@ mod tests {
     #[test]
     fn focus_transition_clears_only_on_entry_not_while_focused() {
         let mut state = make_state_with_tabs(&[(0, "a", true), (1, "b", false)]);
-        state.tab_panes.insert(0, vec![pane(10)]);
-        state.tab_panes.insert(1, vec![pane(11)]);
+        state.runtime.tab_panes.insert(0, vec![pane(10)]);
+        state.runtime.tab_panes.insert(1, vec![pane(11)]);
         // Pane 10 finished a command WHILE focused → Done with on_focus=Idle.
-        state.command.on_exit(10, Some(0), 1);
-        state.last_focused = Some(10);
+        state.runtime.command.on_exit(10, Some(0), 1);
+        state.runtime.last_focused = Some(10);
         // A subsequent PaneUpdate with the SAME focused pane is not a transition
         // → must NOT clear it (stays lit while you sit on it).
         assert!(
@@ -1281,21 +1025,21 @@ mod tests {
             "no transition when focus unchanged"
         );
         assert_eq!(
-            state.command.get(10).unwrap().status,
+            state.runtime.command.get(10).unwrap().status,
             Status::Done,
             "Done pane stays lit while focus remains on it"
         );
         // Leaving to pane 11 is a transition, but must not touch the pane we left.
         assert!(state.apply_focus_transition(Some(11), 3));
         assert_eq!(
-            state.command.get(10).unwrap().status,
+            state.runtime.command.get(10).unwrap().status,
             Status::Done,
             "leaving does not change the pane you left"
         );
         // Re-entering pane 10 is a transition → NOW it clears to Idle ("visited").
         assert!(state.apply_focus_transition(Some(10), 4));
         assert_eq!(
-            state.command.get(10).unwrap().status,
+            state.runtime.command.get(10).unwrap().status,
             Status::Idle,
             "re-entering a Done pane clears it to Idle"
         );
@@ -1310,17 +1054,17 @@ mod tests {
         let run = |dest: u32| {
             let mut state =
                 make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
-            state.tab_panes.insert(0, vec![pane(1)]);
-            state.tab_panes.insert(1, vec![pane(2)]);
-            state.tab_panes.insert(2, vec![pane(3)]);
+            state.runtime.tab_panes.insert(0, vec![pane(1)]);
+            state.runtime.tab_panes.insert(1, vec![pane(2)]);
+            state.runtime.tab_panes.insert(2, vec![pane(3)]);
             // Focus is on pane 2; its command finishes → Done while focused.
-            state.last_focused = Some(2);
-            state.command.on_exit(2, Some(0), 1);
+            state.runtime.last_focused = Some(2);
+            state.runtime.command.on_exit(2, Some(0), 1);
             // A redraw update arrives while still focused (must not clear).
             state.apply_focus_transition(Some(2), 2);
             // Now move focus to the destination pane.
             state.apply_focus_transition(Some(dest), 3);
-            state.command.get(2).unwrap().status
+            state.runtime.command.get(2).unwrap().status
         };
         assert_eq!(
             run(3),

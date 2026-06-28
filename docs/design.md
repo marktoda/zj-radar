@@ -83,8 +83,11 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
 
 ## 4. Architecture
 
-Thin Zellij-host glue around three pure-logic modules + a per-agent adapter layer that
-lives *outside* the plugin (shell scripts / agent config).
+Thin Zellij-host glue around a deep, pure runtime module + pure stores/models/rendering.
+The per-agent adapter layer still lives *outside* the plugin (shell scripts / agent
+config). The plugin runtime has no `zellij-tile` dependency: `lib.rs` translates raw
+Zellij events into repo-owned inputs and applies ordered host effects returned by the
+runtime.
 
 ```
 ┌ Agent adapters (per-agent, outside the wasm) ─────────────┐
@@ -95,23 +98,33 @@ lives *outside* the plugin (shell scripts / agent config).
    (BROADCAST by name — not --plugin: see §6)
                             │
                             ▼
-┌ zj-radar plugin (Rust → wasm32-wasip1) ──────────────────┐
-│  ① StateStore   PaneId → AgentState                        │  ← pipe()
-│       { status, repo, branch, msg, last_change_tick, seq } │
-│  ② TabModel     tab→panes (PaneUpdate), names/active       │  ← TabUpdate/PaneUpdate
-│       (TabUpdate); aggregate(tab) = highest-severity pane  │
-│       + done/total count; prunes closed panes              │
-│  ③ Renderer     render(tabs, states, width) -> ANSI/ribbon │  ← pure; snapshot-tested;
-│       sanitizes + truncates defensively                    │     owns truncation/sanitize
-│  host glue: load/update/render/pipe + Timer + Mouse        │
-└────────────────────────────────────────────────────────────┘
-        │ switch_tab_to(position + 1)  on Mouse click
+┌ zj-radar plugin (Rust → wasm32-wasip1) ────────────────────────────────┐
+│  lib.rs: Zellij adapter                                                │
+│    raw Event/PaneInfo/TabInfo/filesystem ⇄ repo-owned inputs/effects   │
+│                                                                        │
+│  runtime.rs: PluginRuntime                                             │
+│    owns lifecycle state, permissions, timers, snapshots, naming,       │
+│    focus transitions, command activity, config pipes, and mouse intent │
+│    input: TabLite/PaneUpdate/PermissionProbe/status/config/timer/mouse │
+│    output: Outcome { render, effects: Vec<Effect> }                    │
+│                                                                        │
+│  state.rs/model.rs/command.rs/naming.rs: pure state and tab model      │
+│    StateStore + CommandStore + aggregate(tab) + compute_renames        │
+│                                                                        │
+│  render.rs: pure rail renderer                                         │
+│    render_rail(rows, opts) -> RenderedRail { ansi, line_targets }      │
+│    owns layout, overflow, ANSI, and click-target materialization       │
+└────────────────────────────────────────────────────────────────────────┘
+        │ Effects: switch_tab_to(position + 1), show_pane_with_id, rename_tab,
+        │ request_permission, set_timeout, set_selectable, persist snapshot
         ▼  (desktop notifications stay in the shell adapters, NOT the plugin)
 ```
 
-**Design principle:** keep host-coupled code thin; push all logic into pure functions so the
-core is unit-testable with `cargo test`. The real interface seam is the **pipe payload
-schema** (versioned).
+**Design principle:** keep host-coupled code thin; push lifecycle decisions into
+`PluginRuntime` and layout/click decisions into `RenderedRail` so the core is unit-testable
+with `cargo test`. The adapter should not contain behavior beyond translating host data and
+performing returned effects. The real external seam remains the **pipe payload schema**
+(versioned).
 
 ### 4.1 Lifecycle state machine
 
@@ -194,10 +207,16 @@ any stale seed self-heals on the next broadcast. The producer (hooks) is unaffec
     peer instances stay passive, poll a `/cache` marker, then request after Zellij has cached the
     answer for this plugin URL. This avoids one y/n prompt per tab while preserving Zellij's
     explicit permission UI.
-- **Subscriptions:** `TabUpdate`, `PaneUpdate`, `Timer`, `Mouse`, `PermissionRequestResult`.
+- **Subscriptions:** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`, `Timer`,
+  `Mouse`, `PermissionRequestResult`.
 - **Tab index footgun:** `TabInfo.position` is **0-indexed**; `switch_tab_to(idx)` is
   **1-indexed** (0 treated as 1). Define `display_tab_number = position + 1` and use it for
   *both* rendering and click → `switch_tab_to(position + 1)`.
+- **Click targeting:** `render_rail()` emits both ANSI and a same-height target map. Header,
+  folded-idle strip, and external gap rows map to nothing; tab header/collapse/single-pane rows
+  map to a tab; expanded multi-pane child rows map to that pane. The runtime stores the latest
+  `RenderedRail` and returns `SwitchTab` or `ShowPane` effects on mouse clicks instead of
+  replaying layout math in the host glue.
 - **Why broadcast, not `--plugin`:** broadcasting by name means adapters never create UI
   panes, never need to know the plugin's URL/config identity, and naturally reach every
   already-running sidebar instance. (A `--plugin` destination can also load the plugin if not
@@ -303,7 +322,8 @@ replacement is push-only and tiered:
 
 ## 9. Testing
 
-Pure-function `cargo test` (renderer/store/aggregation are pure):
+Pure-function `cargo test` (runtime/renderer/store/aggregation are pure and warning-free on
+the host target):
 
 1. **Tab index:** `TabInfo.position = 0` renders as tab `1`; click calls `switch_tab_to(1)`.
 2. **Pane-close pruning:** state for a removed `PaneId` disappears on the next `PaneUpdate`.
@@ -317,7 +337,13 @@ Pure-function `cargo test` (renderer/store/aggregation are pure):
 9. **Idle rendering:** a tab whose agent went idle does not look like an active agent tab.
 10. **Broadcast filtering:** unrelated pipe names are ignored.
 11. **Timer rearm:** elapsed increments across repeated one-shot timers.
-12. **Snapshot renders:** no agents, mixed states, narrow-width truncation, many tabs, multi-agent tab.
+12. **Runtime effects:** permission ownership/peer waiting, config/status pipes, snapshot writes,
+    command debounce, tab renames, and click-to-tab/click-to-pane effects are asserted as ordered
+    `Outcome` values.
+13. **Renderer target map:** `RenderedRail` line count matches emitted ANSI lines, and headers,
+    gaps, tab rows, expanded pane rows, and collapsed rows resolve to the intended target.
+14. **Snapshot renders:** no agents, mixed states, narrow-width truncation, many tabs,
+    multi-agent tab.
 
 Manual integration (Phase 2, a "fake agent" before real hooks):
 ```sh
@@ -375,7 +401,7 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 - Floating cross-session **dashboard** overlay (`MOD+a`).
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
-- Moving notification logic into the plugin (stays in shell adapters for now).
+- Moving notification logic into the plugin (it belongs in shell adapters by design).
 - **Launchable floating mode** (`LaunchOrFocusPlugin` keybind, zero layout change) — *deliberate
   non-goal.* It's a different product: an on-demand *peek* (current tab only), not the always-on
   ambient column radar exists to be, and it overlaps `room`/session-manager. It would also force

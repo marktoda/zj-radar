@@ -40,7 +40,7 @@ by polling every pane on every output event; see
 
 | Path | What it is |
 |------|------------|
-| `src/` | The Zellij sidebar plugin (Rust → `wasm32-wasip1`). Pure logic modules + thin host glue. |
+| `src/` | The Zellij sidebar plugin (Rust → `wasm32-wasip1`). Thin Zellij adapter, pure runtime, stores, model, and renderer. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
 | `dev/dev.kdl` | A dev layout for hot-reloading the plugin while building. |
