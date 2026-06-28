@@ -17,7 +17,7 @@
 layout {
     default_tab_template {
         pane split_direction="vertical" {
-            pane size=24 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
                     // Opt-in: rename tabs even when they have an explicit name.
                     naming "force"
@@ -37,7 +37,7 @@ layout {
     // open a new tab"). Full rationale: README → "Why two templates?".
     new_tab_template {
         pane split_direction="vertical" {
-            pane size=24 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm" {
                     naming "force"
                 }
