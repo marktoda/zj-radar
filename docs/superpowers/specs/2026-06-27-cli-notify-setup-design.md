@@ -1,11 +1,12 @@
 # zj-radar CLI (notify + setup) — revised design
 
-**Status:** implemented (shipped on `main`)
+**Status:** implemented, with Codex setup superseded by the 2026-06-28
+hook-first integration.
 **Date:** 2026-06-27
 **Author:** Mark Toda (with Claude)
-**History:** this is the authoritative CLI design. It narrows an earlier broader
-draft to Claude+Codex, drops the Claude `settings.json` editor / double-fire guard
-/ Aider / `serde_yaml`, and makes Codex `setup` conflict-aware.
+**History:** this was the authoritative CLI design for the original notify-based
+Codex path. Codex now uses `~/.codex/hooks.json` by default; legacy
+`config.toml` `notify` setup remains available behind `--legacy-notify`.
 
 ## Goal
 
@@ -24,12 +25,12 @@ notifier.
 
 - **Claude** and **Codex** are installed and on PATH. Aider/Gemini/opencode/amp
   are absent.
-- **Codex's `notify` is a single program**, and the slot is already occupied by
+- **Codex's legacy `notify` is a single program**, and the slot is already occupied by
   the "Codex Computer Use" notifier (`~/.codex/computer-use/…/SkyComputerUseClient`,
-  arg `turn-ended`). Codex cannot natively hold two notifiers → `setup codex` must
-  never clobber it.
-- Codex's `notify` only fires on turn completion → the CLI can emit only `done`
-  for Codex (no `running`/`pending`).
+  arg `turn-ended`). The hook-first setup avoids this slot entirely.
+- Codex lifecycle hooks can report turn start, tool use, permission requests,
+  subagent activity, and turn stop. The legacy `notify` fallback still reports
+  only turn completion.
 
 ## Architecture — one crate, `cli` feature, two bins
 

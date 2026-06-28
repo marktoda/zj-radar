@@ -23,7 +23,12 @@
         ];
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
-        src = craneLib.cleanCargoSource ./.;
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            (craneLib.filterCargoSources path type)
+            || (pkgs.lib.hasSuffix "/examples/radar-template-snippet.kdl" path);
+        };
         commonArgs = {
           inherit src;
           strictDeps = true;

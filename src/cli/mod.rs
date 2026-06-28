@@ -4,6 +4,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod codex;
+mod events;
 mod notify;
 mod setup;
 
@@ -49,7 +51,13 @@ enum Command {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
-        /// Overwrite a foreign notify entry (codex).
+        /// Check setup status without writing files.
+        #[arg(long)]
+        check: bool,
+        /// Use Codex's legacy single-slot notify config instead of hooks.json.
+        #[arg(long)]
+        legacy_notify: bool,
+        /// Overwrite conflicting entries where supported.
         #[arg(long)]
         force: bool,
     },
@@ -73,9 +81,20 @@ pub fn run() {
             uninstall,
             dry_run,
             yes,
+            check,
+            legacy_notify,
             force,
         } => {
-            setup::run(&targets, wasm.as_deref(), uninstall, dry_run, yes, force);
+            setup::run(setup::SetupOptions {
+                targets: &targets,
+                wasm: wasm.as_deref(),
+                uninstall,
+                dry_run,
+                yes,
+                check,
+                legacy_notify,
+                force,
+            });
         }
     }
 }
