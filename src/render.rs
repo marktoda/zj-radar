@@ -611,10 +611,17 @@ fn render_row(out: &mut String, row: &TabRow, opts: &RenderOpts, max_lines: usiz
 }
 
 /// Emit one expanded-pane child line of the adaptive tree:
-/// `  ‹tree›‹mark›‹status-glyph› ‹activity›` — 2-space indent, then the tree char
-/// (muted/idle_text), the pane's `kind.mark()` in the neutral vendor color
-/// (idle_text), the pane's status glyph in its status role color, then the
-/// activity (`msg`), width-truncated (attention color when Pending, else dim).
+/// `  ‹tree›‹status-glyph› ‹mark› ‹activity›` — 2-space indent, then the tree char
+/// (muted/idle_text), the pane's status glyph in its status role color, a space,
+/// the pane's `kind.mark()` in the neutral vendor color (idle_text), a space,
+/// then the activity (`msg`), width-truncated (attention color when Pending,
+/// else dim).
+///
+/// The STATUS glyph comes first (right after the tree connector) so it sits in a
+/// fixed column that a variable-width identity mark can't shift — keeping the
+/// status icons in a clean vertical line down the tree. The space between the
+/// status glyph and the identity mark keeps the two glyphs from cramping (they
+/// were previously rendered flush, e.g. `✳◐`, which read as one illegible blob).
 fn emit_child_line(
     out: &mut String,
     tree: &str,
@@ -633,9 +640,9 @@ fn emit_child_line(
         pane.status.glyph_for(opts.glyphs)
     };
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
-    // Visible prefix: 2 indent + tree(2) + mark + glyph + 1 space before activity.
+    // Visible prefix: 2 indent + tree(2) + glyph + 1 space + mark + 1 space.
     let tree_w = UnicodeWidthStr::width(tree);
-    let prefix_vis = 2 + tree_w + mark_w + glyph_w + 1;
+    let prefix_vis = 2 + tree_w + glyph_w + 1 + mark_w + 1;
     let avail = width.saturating_sub(prefix_vis);
     let activity_str = truncate(&pane.msg, avail);
     let activity_color = if pane.status == Status::Pending {
@@ -644,10 +651,10 @@ fn emit_child_line(
         dim_strong.to_string()
     };
     out.push_str(&format!(
-        "  {}{}{}{}{}{}{}{} {}{}{}\n",
-        idle_color, tree, RESET,        // tree char (muted)
-        idle_color, mark,               // mark (neutral vendor color)
-        pane.status.role().ansi(), glyph, RESET, // status glyph in role color
+        "  {}{}{}{}{}{} {}{}{} {}{}{}\n",
+        idle_color, tree, RESET,                 // tree char (muted)
+        pane.status.role().ansi(), glyph, RESET, // status glyph in role color (aligned column)
+        idle_color, mark, RESET,                 // identity mark (neutral vendor color)
         activity_color, activity_str, RESET,     // activity
     ));
 }
@@ -2006,6 +2013,29 @@ mod tests {
         // Active: the spine in col 0 immediately followed by the glyph at col 1 —
         // no second pad column.
         assert!(active.starts_with("▌◐"), "active row must be '▌◐…' (spine+glyph, no pad): {:?}", active);
+    }
+
+    #[test]
+    fn child_line_status_glyph_precedes_spaced_mark() {
+        // Child lines render as `‹tree›‹status› ‹mark› ‹activity›`: the status
+        // glyph comes FIRST (fixed/aligned column), then a space, then the
+        // identity mark, then a space — so the status icons line up down the
+        // tree and the mark isn't cramped against the status glyph.
+        let a = agg_multi(vec![
+            pe(1, Kind::Claude, Status::Running, "searching web"),
+            pe(2, Kind::Claude, Status::Done, "done thing"),
+        ]);
+        let row = TabRow { number: 1, name: "t".into(), active: true, has_bell: false, agg: a };
+        let s = render(&[row], &ro_cards(30, 100));
+        let child = s.lines().map(strip_ansi_local).find(|l| l.contains('├')).expect("child line");
+        let mark_idx = child.find('✳').expect("identity mark present");
+        // A space immediately precedes and follows the mark.
+        assert!(child[..mark_idx].ends_with(' '), "mark must be preceded by a space: {:?}", child);
+        assert_eq!(child[mark_idx..].chars().nth(1), Some(' '), "mark must be followed by a space: {:?}", child);
+        // The status glyph (working spinner at tick 0) comes before the mark.
+        let spin = crate::status::working_spin(0);
+        assert!(child.find(spin).is_some_and(|i| i < mark_idx),
+            "status glyph must precede the identity mark: {:?}", child);
     }
 
     #[test]
