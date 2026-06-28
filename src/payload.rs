@@ -103,18 +103,26 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
             // Other C0 control chars and DEL: drop
             i += 1;
         } else {
-            // Normal byte — reconstruct as char (handle multi-byte UTF-8)
-            // Find the char boundary and push the whole char
-            let ch_len = {
-                let remaining = &s[i..];
-                remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1)
-            };
-            // Safety: we know `s` is valid UTF-8 and `i` is a char boundary
-            // (we only advance by 1 for single ASCII bytes or by ch_len here)
-            if let Some(c) = s[i..].chars().next() {
-                cleaned.push(c);
+            // Normal byte — reconstruct as char (handle multi-byte UTF-8).
+            // Use `get` instead of direct indexing: ESC-sequence scanners advance
+            // byte-by-byte and can leave `i` on a UTF-8 continuation byte (e.g.
+            // "\x1b" + lead-byte of a 2-byte char consumed as "ESC + one byte").
+            // If `i` is not on a char boundary we skip the stray continuation byte.
+            // Also drop Unicode C1 control chars (U+0080–U+009F) whose lead byte
+            // (0xC2) passes the ASCII-range check above but are still control chars.
+            match s.get(i..) {
+                Some(remaining) => {
+                    match remaining.chars().next() {
+                        Some(c) if !c.is_control() => {
+                            cleaned.push(c);
+                            i += c.len_utf8();
+                        }
+                        Some(c) => { i += c.len_utf8(); }
+                        None => { i += 1; }
+                    }
+                }
+                None => { i += 1; }
             }
-            i += ch_len;
         }
     }
     cleaned.chars().take(max_chars).collect()
@@ -173,6 +181,7 @@ pub fn to_wire(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn p(s: &str) -> Option<StatusPayload> {
         parse(s)
@@ -299,6 +308,63 @@ mod tests {
             Status::Error,
         ] {
             assert_eq!(Status::from_wire(s.as_wire()), s);
+        }
+    }
+
+    // ── defense-in-depth tests (ported from harness branch) ──
+
+    #[test]
+    fn rejects_oversized_payload() {
+        let big = format!(r#"{{"v":1,"pane":{{"type":"terminal","id":1}},"status":"running","msg":"{}"}}"#,
+            "x".repeat(MAX_PAYLOAD_BYTES));
+        assert!(parse(&big).is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        assert!(parse("{not json").is_none());
+        assert!(parse("").is_none());
+        assert!(parse("null").is_none());
+    }
+
+    #[test]
+    fn sanitize_strips_control_and_truncates() {
+        let dirty = "\x1b[31mred\x07\nbeep\ttab";
+        let clean = sanitize(dirty, MAX_MSG_CHARS);
+        assert!(!clean.contains('\x1b'));
+        assert!(!clean.contains('\x07'));
+        assert!(!clean.contains('\n'));
+        assert!(!clean.contains('\t'), "tab should be folded to space");
+        assert!(clean.chars().count() <= MAX_MSG_CHARS);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn sanitize_never_emits_control_or_overlong(input in ".{0,500}", max in 1usize..120) {
+            let out = sanitize(&input, max);
+            prop_assert!(out.chars().count() <= max, "len {} > max {}", out.chars().count(), max);
+            for ch in out.chars() {
+                prop_assert!(ch != '\x1b', "ESC leaked");
+                prop_assert!(!ch.is_control(), "control char leaked: {:?}", ch);
+            }
+        }
+
+        #[test]
+        fn parse_to_wire_round_trip(
+            pane in 0u32..1000,
+            repo in "[a-z]{0,15}",
+            branch in "[a-z/]{0,15}",
+            msg in "[a-zA-Z0-9 ]{0,40}",
+        ) {
+            // to_wire and parse must be inverses: a round-trip through the wire format
+            // must preserve all fields that parse surfaces. Only printable ASCII is
+            // generated so sanitize does not alter any field.
+            let wire = to_wire(pane, Status::Running, &repo, &branch, &msg, None, "test");
+            let got = parse(&wire).expect("our own wire output must parse");
+            prop_assert_eq!(got.pane_id, pane);
+            prop_assert_eq!(got.status, Status::Running);
+            prop_assert_eq!(got.repo, repo);
+            prop_assert_eq!(got.branch, branch);
         }
     }
 }

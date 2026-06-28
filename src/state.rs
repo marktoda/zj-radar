@@ -199,6 +199,7 @@ impl StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn payload(pane_id: u32, status: Status, seq: Option<u64>) -> StatusPayload {
         StatusPayload {
@@ -348,5 +349,36 @@ mod tests {
         let (restored, tick) = StateStore::from_json(&s.to_json(0)).unwrap();
         assert_eq!(tick, 0);
         assert!(!restored.any_active());
+    }
+
+    // ── proptest properties (ported from harness branch) ──
+
+    proptest! {
+        #[test]
+        fn apply_order_independent_with_seq(seqs in proptest::collection::vec(0u64..20, 1..12)) {
+            // Same payloads applied in arbitrary order vs sorted-by-seq must converge
+            // to the same final status. The seq dedup filter (drop if incoming <= stored)
+            // guarantees that the highest-seq payload always wins regardless of order.
+            let mk = |seq: u64| StatusPayload {
+                pane_id: 1, status: if seq % 2 == 0 { Status::Running } else { Status::Done },
+                repo: "r".into(), branch: "".into(), msg: "".into(),
+                on_focus: None, seq: Some(seq), source: "t".into(),
+            };
+            let mut a = StateStore::default();
+            for &s in &seqs { a.apply(mk(s), s); }
+
+            let mut sorted = seqs.clone(); sorted.sort_unstable();
+            let mut b = StateStore::default();
+            for &s in &sorted { b.apply(mk(s), s); }
+
+            prop_assert_eq!(a.get(1).map(|x| x.status), b.get(1).map(|x| x.status));
+
+            // Pin the dedup contract: the surviving status must be the one carried
+            // by the MAX-seq payload (highest seq wins, not just "both agree").
+            let max_seq = seqs.iter().max().unwrap();
+            let expected_status = if max_seq % 2 == 0 { Status::Running } else { Status::Done };
+            prop_assert_eq!(a.get(1).map(|x| x.status), Some(expected_status));
+            prop_assert_eq!(b.get(1).map(|x| x.status), Some(expected_status));
+        }
     }
 }
