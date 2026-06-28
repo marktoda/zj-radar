@@ -1,0 +1,57 @@
+// zj-radar — a runnable example layout with the sidebar as a pinned left column.
+//
+//   cp examples/radar-sidebar.kdl ~/.config/zellij/layouts/
+//   zellij --layout radar-sidebar
+//
+// This file is self-contained: it uses the explicit `file:` path so it runs
+// without any config.kdl changes. If you've aliased the plugin in config.kdl
+//
+//     plugins { radar location="file:~/.config/zellij/plugins/zj_radar.wasm" { naming "managed" } }
+//
+// then replace every `plugin location="file:~/.config/.../zj_radar.wasm" { ... }`
+// block below with the one-liner `plugin location="radar"`.
+//
+// The sidebar is a borderless left column INSIDE a vertical split, OUTSIDE
+// `children`, so it survives swap-layout cycling. Two templates are required —
+// see the "Why two templates?" note in the README (upstream zellij#3247): a
+// `children` nested in a split is dropped when Zellij derives new_tab_template,
+// so runtime tabs (Ctrl+t n) need a concrete focused `pane` instead.
+layout {
+    // Tabs defined in this file get their panes via `children`.
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=24 borderless=true {
+                plugin location="file:~/.config/zellij/plugins/zj_radar.wasm" {
+                    // off | managed | force — see the README "Configuration" table.
+                    naming "managed"
+                }
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    // Tabs created at runtime (Ctrl+t n) get a CONCRETE focused pane, NOT
+    // `children` — otherwise the new tab has no focusable terminal and you
+    // "can't open a new tab". To put the column on the RIGHT instead, move the
+    // radar pane below `pane focus=true` (and below `children` above).
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size=24 borderless=true {
+                plugin location="file:~/.config/zellij/plugins/zj_radar.wasm" {
+                    naming "managed"
+                }
+            }
+            pane focus=true
+        }
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="shell" focus=true {
+        pane
+    }
+}

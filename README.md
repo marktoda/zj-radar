@@ -69,21 +69,66 @@ mkdir -p ~/.config/zellij/plugins
 cp target/wasm32-wasip1/release/zj_radar.wasm ~/.config/zellij/plugins/
 ```
 
-Add it as a pinned, borderless left column in your layout's
-`default_tab_template` — **outside** `children`, so swap-layout cycling never
-disturbs it:
+#### Wire it into your layout
+
+The sidebar is a pinned, borderless **left column** that lives in every tab.
+Zellij has no "pin a pane across all tabs" mechanism other than the tab
+templates — the same place its own tab-bar/status-bar live — so, like
+[zjstatus](https://github.com/dj95/zjstatus), radar integrates by adding a pane
+to your layout's templates. You compose the radar node into *your* layout
+(left or right, any width); we don't hand you a layout to adopt wholesale.
+
+**First, alias the plugin once** in `config.kdl` so the path + default config
+live in one place and every layout just refers to the name `radar`:
 
 ```kdl
+// ~/.config/zellij/config.kdl
+plugins {
+    radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
+        naming "managed"
+    }
+}
+```
+
+**Then reference `radar` in two tab templates.** A left column forces `children`
+to be *nested inside a vertical split*, and that needs **both** templates:
+
+```kdl
+// Tabs defined in the layout file get their panes via `children`.
 default_tab_template {
     pane split_direction="vertical" {
-        pane size=24 borderless=true {
-            plugin location="file:~/.config/zellij/plugins/zj_radar.wasm"
-        }
+        pane size=24 borderless=true { plugin location="radar" }   // ← alias
         children
     }
     pane size=2 borderless=true { plugin location="zellij:status-bar" }
 }
+
+// Tabs created at runtime (Ctrl+t n) get a CONCRETE focused pane, not `children`.
+new_tab_template {
+    pane split_direction="vertical" {
+        pane size=24 borderless=true { plugin location="radar" }
+        pane focus=true
+    }
+    pane size=2 borderless=true { plugin location="zellij:status-bar" }
+}
 ```
+
+> **Why two templates?** When you don't supply a `new_tab_template`, Zellij
+> *derives* one from `default_tab_template` — and that derivation **drops a
+> `children` placeholder nested inside a split** (upstream
+> [zellij-org/zellij#3247](https://github.com/zellij-org/zellij/issues/3247),
+> still open). New tabs then contain only the borderless sidebar + status-bar —
+> no focusable pane — so keystrokes have nowhere to land and you "can't open a
+> new tab." Declaring `new_tab_template` explicitly with a concrete
+> `pane focus=true` (instead of `children`) sidesteps the derivation. A
+> *top-level* `children`, like the stock compact layout, materializes fine —
+> only the nested-in-a-split case is affected.
+
+A complete, runnable starting point lives in
+[`examples/radar-sidebar.kdl`](examples/radar-sidebar.kdl) — copy it to
+`~/.config/zellij/layouts/` and tweak. Want the column on the **right**? Put
+`children` (and the runtime `pane`) *before* the radar pane in the split. Want a
+different width? Change `size`. The node composes; the layout is yours.
 
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —

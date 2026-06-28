@@ -190,20 +190,40 @@ tab-bar; cheap for a handful of tabs).
   ```
   Optimization: only keep re-arming while ≥1 visible non-idle agent exists; otherwise stop the
   loop until the next pipe/PaneUpdate.
-- **Layout** (`default_tab_template`) — sidebar as a pinned, borderless left column, *outside*
-  `children`, so `swap_tiled_layout` cycling never disturbs it (same mechanism as the existing
-  bars; 0.44.3 has the pop-out fix):
+- **Layout — the integration seam.** The sidebar is a pinned, borderless left column *inside* a
+  vertical split, *outside* `children`, so `swap_tiled_layout` cycling never disturbs it (same
+  mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
+  native place Zellij pins a pane into every tab (its own bars live there too) — so radar
+  integrates exactly like [zjstatus](https://github.com/dj95/zjstatus): the user adds a pane to
+  their templates. We ship a **plugin alias** (`plugins { radar location=… }` in `config.kdl`) so
+  layouts reference the bare name `radar`, keeping the per-layout snippet path-free and letting
+  users compose the node into *their* layout (L/R, any width) rather than adopting ours.
   ```kdl
-  default_tab_template {
+  default_tab_template {                       // layout-defined tabs fill `children`
       pane split_direction="vertical" {
-          pane size=24 borderless=true { plugin location="file:@zjAgents@" }
+          pane size=24 borderless=true { plugin location="radar" }
           children
       }
       pane size=2 borderless=true { plugin location="zellij:status-bar" }
   }
+  new_tab_template {                           // runtime tabs (Ctrl+t n) need a CONCRETE pane
+      pane split_direction="vertical" {
+          pane size=24 borderless=true { plugin location="radar" }
+          pane focus=true
+      }
+      pane size=2 borderless=true { plugin location="zellij:status-bar" }
+  }
   ```
-  The top `compact-bar` line is removed (the sidebar replaces it). The bottom `status-bar`
-  (mode/keybind hints) is kept. A future `MOD+a` `MessagePlugin` keybind can toggle collapse.
+  - **`new_tab_template` is mandatory, not optional.** A left column forces `children` to nest
+    inside a split. When no `new_tab_template` is given, Zellij *derives* one from
+    `default_tab_template` and **drops the nested `children`** (upstream
+    [zellij#3247](https://github.com/zellij-org/zellij/issues/3247), open) — the new tab then has
+    only borderless plugin panes, no focusable terminal, and keystrokes fall through ("can't open
+    a new tab"). The explicit `new_tab_template` with a concrete `pane focus=true` sidesteps the
+    derivation. A *top-level* `children` (stock compact layout) materializes fine; only the
+    nested-in-a-split case is affected.
+  - The top `compact-bar` line is removed (the sidebar replaces it); the bottom `status-bar`
+    (mode/keybind hints) is kept. A future `MOD+a` `MessagePlugin` keybind can toggle collapse.
 
 ### 6.1 Tab naming (zj-radar owns it — smart-tabs is gone)
 
@@ -331,3 +351,12 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
 - Moving notification logic into the plugin (stays in shell adapters for now).
+- **Launchable floating mode** (`LaunchOrFocusPlugin` keybind, zero layout change) — *deliberate
+  non-goal.* It's a different product: an on-demand *peek* (current tab only), not the always-on
+  ambient column radar exists to be, and it overlaps `room`/session-manager. It would also force
+  the plugin from a pure passive renderer (`set_selectable(false)`, no `Key` subscription,
+  mouse-click only) into an *interactive panel* — `Key` handling, dismiss (Esc/Enter), selection
+  state — roughly doubling its surface area and reintroducing the focus-grab failure class. If
+  ever revisited, it should be a separate, opt-in render/interaction mode, not the default seam.
+- **Horizontal/compact bar mode** (top-level pane like zjstatus, no nesting, no #3247) — would
+  need a from-scratch compact renderer; `render.rs` is vertical/card-per-tab today.
