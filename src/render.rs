@@ -4413,4 +4413,36 @@ rail";
             }
         }
     }
+
+    proptest! {
+        /// Lockstep: the emitted ANSI and the click-target map stay in exact
+        /// 1:1 line correspondence, at every width the rail can be drawn at.
+        #[test]
+        fn render_rail_lockstep_lines_match_targets(
+            rows in arb_rows(),
+            width in 8usize..=120,
+            height in 1usize..=60,
+        ) {
+            let mut opts = ro(width, 0);
+            opts.height = height;
+            let rail = render_rail(&rows, &opts);
+            // 1:1 correspondence between physical lines and target slots.
+            prop_assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+            // Every in-range line resolves without panic; out-of-range is None.
+            for line in 0..rail.line_count() {
+                let _ = rail.target_at_line(line as isize);
+            }
+            prop_assert_eq!(rail.target_at_line(-1), None);
+            prop_assert_eq!(rail.target_at_line(rail.line_count() as isize), None);
+        }
+    }
+
+    #[test]
+    fn render_rail_empty_has_zero_lines_and_no_targets() {
+        let opts = ro(24, 0);
+        let rail = render_rail(&[], &opts);
+        assert_eq!(rail.line_count(), 0);
+        assert_eq!(rail.ansi, "");
+        assert_eq!(rail.target_at_line(0), None);
+    }
 }
