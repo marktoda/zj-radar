@@ -1,0 +1,12 @@
+---
+source: src/render.rs
+expression: "grid(&raw, 30)"
+---
+▌◐ 1 web                  0:00
+  ✳ building… ⠋
+
+ ◆ 2 api                ⏵ 0:00
+
+ ● 3 worker               done
+
+ ○ 4 notes

@@ -591,12 +591,9 @@ fn render_row<F>(
     };
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
-    // the glyph. Currently 0 for all densities — the col-0 bar/spine column
-    // already provides the design's 1-col card inset, so an extra pad column
-    // would double the left margin (and push content off the right at narrow
-    // widths). Retained as a knob.
-    let pad_len = card_spacing(opts.density).pad_x;
-    let pad = " ".repeat(pad_len);
+    // the glyph. At extreme-narrow widths clamp pad_x then num so the prefix
+    // never exceeds `width`.
+    let pad_x = card_spacing(opts.density).pad_x;
 
     // col 1: status glyph (working spins).
     let glyph_char = if st == Status::Running {
@@ -619,14 +616,7 @@ fn render_row<F>(
     // right slot (reserved width even when empty). Waiting/done/error color
     // their slot with the status role (it carries meaning); the *working*
     // elapsed is ambient info, not an alarm, so it's dimmed (design uses `id`).
-    let slot = right_slot(&row.agg, now_tick, width);
-    let slot_styled = if slot.is_empty() {
-        String::new()
-    } else if st == Status::Running {
-        format!("{}{}{}", tc_fg_mode(opts.theme.idle_text, color_mode), slot, RESET)
-    } else {
-        format!("{}{}{}", hue(st.role()), slot, RESET)
-    };
+    let slot_raw = right_slot(&row.agg, now_tick, width);
 
     // bell marker just before the slot.
     let bell = if row.has_bell {
@@ -637,26 +627,52 @@ fn render_row<F>(
 
     // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
     // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    let num = row.number.to_string();
-    let prefix_len = 1 + pad_len + 1 + 1 + UnicodeWidthStr::width(num.as_str()) + 1; // bar+pad+glyph+sp+num+sp
+    // Bare minimum: bar(1) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    let num_full = row.number.to_string();
+    let bare_min = 1usize + 1 + 1; // bar + glyph + sp (before num)
+    let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
+    let num_budget = width.saturating_sub(bare_min + pad_len);
+    let num = truncate(&num_full, num_budget);
+    let num_w = UnicodeWidthStr::width(num.as_str());
+    // Trailing sp after num only if it fits.
+    let has_trailing_sp = bare_min + pad_len + num_w < width;
+    let pad = " ".repeat(pad_len);
+    let prefix_len = bare_min + pad_len + num_w + if has_trailing_sp { 1 } else { 0 };
     let bell_len = if row.has_bell { 2 } else { 0 };
-    let slot_len = UnicodeWidthStr::width(slot.as_str());
-    let name_budget = width
-        .saturating_sub(prefix_len + bell_len + slot_len + 1) // +1 min gap
-        .max(1);
+    // At extreme-narrow widths the slot may not fit at all; clamp slot_len to
+    // what's available after the fixed prefix and bell so nothing overflows.
+    let raw_slot_len = UnicodeWidthStr::width(slot_raw.as_str());
+    let slot_len = raw_slot_len.min(width.saturating_sub(prefix_len + bell_len));
+    let slot = if slot_len < raw_slot_len {
+        truncate(&slot_raw, slot_len)
+    } else {
+        slot_raw
+    };
+    let slot_styled = if slot.is_empty() {
+        String::new()
+    } else if st == Status::Running {
+        format!("{}{}{}", tc_fg_mode(opts.theme.idle_text, color_mode), slot, RESET)
+    } else {
+        format!("{}{}{}", hue(st.role()), slot, RESET)
+    };
+    // At extreme-narrow widths name_budget saturates to 0 → name = ""; no
+    // .max(1) so we never force an extra `…` that would push past `width`.
+    let name_budget = width.saturating_sub(prefix_len + bell_len + slot_len);
     let name = truncate(&row.name, name_budget);
 
-    // pad so the slot sits flush right.
+    // gap can be 0 at extreme-narrow widths; saturating_sub prevents underflow.
     let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
-    let gap = width.saturating_sub(used).max(1);
+    let gap = width.saturating_sub(used);
+    let sp_after_num = if has_trailing_sp { " " } else { "" };
     out.push_str(&format!(
-        "{}{}{}{}{} {} {}{}{}{}{}\n",
+        "{}{}{}{}{} {}{}{}{}{}{}{}\n",
         bar,
         pad,
         label_color,
         label_bold,
         glyph_char,
         num,
+        sp_after_num,
         name,
         RESET,
         " ".repeat(gap),
@@ -972,11 +988,14 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     // Header line 1: " RADAR" + right-aligned count (+ urgent marker).
     if opts.header {
         let title = " RADAR";
-        let right_w =
-            UnicodeWidthStr::width(count.as_str()) + UnicodeWidthStr::width(urgent.as_str());
-        let gap = width
-            .saturating_sub(UnicodeWidthStr::width(title) + right_w)
-            .max(1);
+        // Clamp the right segment (count + urgent) to at most `width` so the
+        // assembled header line can never overflow even at extreme-narrow widths.
+        let count_w = UnicodeWidthStr::width(count.as_str());
+        let urgent_w = UnicodeWidthStr::width(urgent.as_str());
+        let right_w = (count_w + urgent_w).min(width);
+        // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
+        // assembled visible content never exceeds `width`.
+        let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
         // Title in accent; total count muted (accent when overflowing, so the
         // ▲ marker stays loud); urgent marker in the attention role.
         let count_color = if color_mode == ColorMode::None {
@@ -986,20 +1005,29 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         } else {
             Role::Muted.ansi()
         };
+        // Clamp visible portions to width before assembling the ANSI line.
+        let title_budget = width.saturating_sub(right_w + gap);
+        let title_clamped = truncate(title, title_budget);
+        // Fit count and urgent into the (already-clamped) right_w budget.
+        // When right_w < count_w + urgent_w we drop urgent first, then truncate count.
+        let count_clamped = truncate(&count, right_w);
+        let count_clamped_w = UnicodeWidthStr::width(count_clamped.as_str());
+        let urgent_budget = right_w.saturating_sub(count_clamped_w);
+        let urgent_clamped = truncate(&urgent, urgent_budget);
         let mut title_line = String::new();
         title_line.push_str(&format!(
             "{}{}{}{}{}{}{}",
             accent,
-            title,
+            title_clamped,
             RESET,
             " ".repeat(gap),
             count_color,
-            count,
+            count_clamped,
             RESET
         ));
-        if pending > 0 {
+        if pending > 0 && !urgent_clamped.is_empty() {
             let attn = if color_mode == ColorMode::None { "" } else { Role::Attention.ansi() };
-            title_line.push_str(&format!("{}{}{}", attn, urgent, RESET));
+            title_line.push_str(&format!("{}{}{}", attn, urgent_clamped, RESET));
         }
         title_line.push('\n');
         if cards {
@@ -3907,5 +3935,426 @@ rail";
             strip_sgr(&nc_out),
             "None mode must produce identical visible text to Truecolor"
         );
+    }
+
+    // ── Stage 3b: snapshot / proptest / overflow / color-glyph-axis tests ──────
+
+    /// Render raw output into the visible character grid (ANSI stripped via a real
+    /// VT parser), one line per terminal row — the human-readable snapshot.
+    fn grid(raw: &str, width: u16) -> String {
+        let height = raw.lines().count().max(1) as u16;
+        let mut parser = vt100::Parser::new(height, width, 0);
+        let joined = raw.replace('\n', "\r\n");
+        parser.process(joined.as_bytes());
+        let screen = parser.screen();
+        (0..height)
+            .map(|r| {
+                (0..width)
+                    .map(|c| {
+                        screen
+                            .cell(r, c)
+                            .map(|cell| cell.contents())
+                            .unwrap_or_default()
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A representative multi-state session used by several snapshot tests.
+    fn scenario_canonical() -> Vec<TabRow> {
+        let running = Detail {
+            repo: "web".into(),
+            branch: "".into(),
+            msg: "building\u{2026}".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let pending = Detail {
+            repo: "api".into(),
+            branch: "fix".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Pending,
+        };
+        let done = Detail {
+            repo: "worker".into(),
+            branch: "".into(),
+            msg: "".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Done,
+        };
+        vec![
+            TabRow {
+                number: 1,
+                name: "web".into(),
+                active: true,
+                has_bell: false,
+                agg: agg(Status::Running, 0, 1, Some(running)),
+            },
+            TabRow {
+                number: 2,
+                name: "api".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(pending)),
+            },
+            TabRow {
+                number: 3,
+                name: "worker".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Done, 1, 1, Some(done)),
+            },
+            TabRow {
+                number: 4,
+                name: "notes".into(),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            },
+        ]
+    }
+
+    fn ro_full(
+        width: usize,
+        height: usize,
+        density: crate::config::Density,
+        glyphs: GlyphSet,
+    ) -> RenderOpts {
+        RenderOpts {
+            width,
+            height,
+            now_tick: 0,
+            glyphs,
+            header: true,
+            density,
+            theme: crate::theme::DerivedColors::default(),
+            color: ColorMode::Truecolor,
+        }
+    }
+
+    // ── Snapshot tests ──
+
+    #[test]
+    fn snapshot_canonical_cards_grid() {
+        let rows = scenario_canonical();
+        let raw = render(
+            &rows,
+            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        insta::assert_snapshot!("canonical_cards_grid", grid(&raw, 30));
+    }
+
+    #[test]
+    fn snapshot_canonical_cards_raw() {
+        let rows = scenario_canonical();
+        let raw = render(
+            &rows,
+            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        let shown = raw.replace('\x1b', "\\e");
+        insta::assert_snapshot!("canonical_cards_raw", shown);
+    }
+
+    #[test]
+    fn snapshot_canonical_tint_map() {
+        let rows = scenario_canonical();
+        let raw = render(
+            &rows,
+            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        insta::assert_snapshot!("canonical_tint_map", tint_map(&raw));
+    }
+
+    // ── Overflow tests ──
+
+    #[test]
+    fn renders_at_extreme_small_width_without_panic_or_overflow() {
+        let rows = scenario_canonical();
+        let s = render(
+            &rows,
+            &ro_full(8, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        for line in s.lines() {
+            assert!(
+                visible_width(line) <= 8,
+                "line exceeds width 8: {:?}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn renders_at_extreme_small_height_clamps_lines() {
+        let rows = scenario_canonical();
+        let s = render(
+            &rows,
+            &ro_full(30, 3, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        assert!(
+            s.lines().count() <= 3,
+            "exceeded height budget: {}",
+            s.lines().count()
+        );
+    }
+
+    #[test]
+    fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
+        // 15 tabs: 5 idle (folded) + 10 pending (urgent marker " ·10!" = 5 cols).
+        // At width=8, height=6 overflow mode: count+urgent combined can exceed width.
+        // The renderer must clamp the assembled header line to width.
+        let mut rows: Vec<TabRow> = (1u32..=5)
+            .map(|n| TabRow {
+                number: n,
+                name: format!("t{}", n),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Idle, 0, 0, None),
+            })
+            .collect();
+        for n in 6u32..=15 {
+            let d = Detail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: "".into(),
+                kind: Kind::Claude,
+                since_tick: 0,
+                status: Status::Pending,
+            };
+            rows.push(TabRow {
+                number: n,
+                name: format!("t{}", n),
+                active: false,
+                has_bell: false,
+                agg: agg(Status::Pending, 0, 1, Some(d)),
+            });
+        }
+        let s = render(
+            &rows,
+            &ro_full(8, 6, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        for line in s.lines() {
+            assert!(
+                visible_width(line) <= 8,
+                "line exceeds width 8 at narrow render: {:?} (visible {})",
+                line,
+                visible_width(line)
+            );
+        }
+    }
+
+    #[test]
+    fn pane_tree_plan_handles_all_states_present() {
+        use crate::model::PaneEntry;
+        let panes = vec![
+            PaneEntry {
+                pane_id: 1,
+                kind: Kind::Claude,
+                status: Status::Error,
+                msg: "boom".into(),
+            },
+            PaneEntry {
+                pane_id: 2,
+                kind: Kind::Claude,
+                status: Status::Pending,
+                msg: "approve?".into(),
+            },
+            PaneEntry {
+                pane_id: 3,
+                kind: Kind::Claude,
+                status: Status::Running,
+                msg: "work".into(),
+            },
+            PaneEntry {
+                pane_id: 4,
+                kind: Kind::Claude,
+                status: Status::Done,
+                msg: "".into(),
+            },
+            PaneEntry {
+                pane_id: 5,
+                kind: Kind::Claude,
+                status: Status::Idle,
+                msg: "".into(),
+            },
+        ];
+        let mut a = agg(Status::Error, 1, 5, None);
+        a.panes = panes;
+        let plan = pane_tree_plan(&a, false);
+        // Needs-you panes (Error, Pending) are always expanded.
+        assert!(plan.expanded.iter().any(|p| p.status == Status::Error));
+        assert!(plan.expanded.iter().any(|p| p.status == Status::Pending));
+        // Running/Done/Idle (3 calm panes) collapse when the tab is inactive.
+        assert_eq!(
+            plan.collapsed_count,
+            3,
+            "Running/Done/Idle collapse when inactive"
+        );
+    }
+
+    // ── Color/glyph axis tests ──
+
+    #[test]
+    fn truecolor_mode_emits_24bit_sgr() {
+        let rows = scenario_canonical();
+        let s = render(
+            &rows,
+            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        assert!(s.contains("\x1b[48;2;"), "expected 24-bit background SGR");
+    }
+
+    #[test]
+    fn both_glyph_sets_keep_columns_within_width() {
+        for glyphs in [GlyphSet::Plain, GlyphSet::Nerd] {
+            let rows = scenario_canonical();
+            let width = 30u16;
+            let raw = render(
+                &rows,
+                &ro_full(
+                    width as usize,
+                    100,
+                    crate::config::Density::Cards,
+                    glyphs,
+                ),
+            );
+            let g = grid(&raw, width);
+            for line in g.lines() {
+                assert!(
+                    visible_width(line) <= width as usize,
+                    "glyphs={:?} line wider than {}: {:?}",
+                    glyphs,
+                    width,
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wide_and_combining_chars_do_not_break_alignment() {
+        let detail = Detail {
+            repo: "caf\u{00e9}".into(),
+            branch: "".into(),
+            msg: "测试 \u{1f680} e\u{0301}".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "测试caf\u{00e9}\u{1f680}".into(),
+            active: true,
+            has_bell: false,
+            agg: agg(Status::Running, 0, 1, Some(detail)),
+        }];
+        let width = 24u16;
+        let raw = render(
+            &rows,
+            &ro_full(
+                width as usize,
+                100,
+                crate::config::Density::Cards,
+                GlyphSet::Plain,
+            ),
+        );
+        for line in grid(&raw, width).lines() {
+            assert!(
+                visible_width(line) <= width as usize,
+                "alignment broke: {:?}",
+                line
+            );
+        }
+    }
+
+    // ── Property-based tests ──
+
+    use proptest::prelude::*;
+
+    prop_compose! {
+        fn arb_status()(n in 0u8..5) -> Status {
+            match n {
+                0 => Status::Idle,
+                1 => Status::Done,
+                2 => Status::Running,
+                3 => Status::Pending,
+                _ => Status::Error,
+            }
+        }
+    }
+
+    prop_compose! {
+        fn arb_row()(
+            status in arb_status(),
+            name in "[a-zA-Z0-9_-]{0,20}",
+            active in any::<bool>(),
+            total in 0usize..4,
+        ) -> TabRow {
+            let detail = if total > 0 {
+                Some(Detail {
+                    repo: "r".into(),
+                    branch: "".into(),
+                    msg: "m".into(),
+                    kind: Kind::Claude,
+                    since_tick: 0,
+                    status,
+                })
+            } else {
+                None
+            };
+            TabRow {
+                number: 1,
+                name,
+                active,
+                has_bell: false,
+                agg: agg(status, 0, total, detail),
+            }
+        }
+    }
+
+    pub fn arb_rows() -> impl Strategy<Value = Vec<TabRow>> {
+        proptest::collection::vec(arb_row(), 0..8).prop_map(|rows| {
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, mut r)| {
+                    r.number = (i as u32) + 1;
+                    r
+                })
+                .collect()
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn render_respects_width_height_and_never_panics(
+            rows in arb_rows(),
+            width in 4usize..120,
+            height in 1usize..60,
+        ) {
+            let opts = ro_full(width, height, crate::config::Density::Cards, GlyphSet::Plain);
+            let s = render(&rows, &opts);
+            prop_assert!(
+                s.lines().count() <= height,
+                "lines {} > height {}",
+                s.lines().count(),
+                height
+            );
+            for line in s.lines() {
+                prop_assert!(
+                    visible_width(line) <= width,
+                    "line width {} > {}: {:?}",
+                    visible_width(line),
+                    width,
+                    line
+                );
+            }
+        }
     }
 }
