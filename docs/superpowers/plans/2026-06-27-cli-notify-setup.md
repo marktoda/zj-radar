@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded note:** this historical plan describes the original Codex
+> `config.toml` `notify` integration. Current Codex setup is hook-first via
+> `~/.codex/hooks.json`; the notify path is now a `--legacy-notify` fallback.
+
 **Goal:** Ship a native `zj-radar` CLI with `notify` (jq-free Claude/Codex status broadcast) and `setup` (conflict-aware Codex config wiring), packaged via Nix, with the Claude plugin gracefully preferring it.
 
 **Architecture:** One crate, a `cli` feature gating `clap`+`toml_edit`, a second `[[bin]]` (`zj-radar`) with `required-features=["cli"]`. The CLI builds the same `zj_radar.status.v1` JSON the plugin parses via a shared `payload::to_wire`. Pure `derive()`/`edit_codex()` cores (unit-tested), thin IO wrappers (manual). The wasm plugin build must stay free of the CLI deps.

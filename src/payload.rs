@@ -145,7 +145,7 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
 /// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). `on_focus` is
 /// omitted entirely when `None`. Shared by the CLI producer and tested against
 /// `parse` so the two can never drift.
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+#[cfg(any(feature = "cli", test))]
 pub fn to_wire(
     pane_id: u32,
     status: Status,

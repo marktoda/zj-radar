@@ -91,8 +91,8 @@ runtime.
 
 ```
 ┌ Agent adapters (per-agent, outside the wasm) ─────────────┐
-│ Claude → claude-zellij-notify.sh   (running/pending/done) │  exists; extend payload
-│ Codex  → codex-zellij-notify.sh    (done only, v1)        │  ~15 lines, new
+│ Claude → plugin hook / native CLI  (running/pending/done) │
+│ Codex  → native CLI via hooks.json (running/pending/done) │
 └───────────────────────────┬───────────────────────────────┘
    zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus,seq}
    (BROADCAST by name — not --plugin: see §6)
@@ -133,7 +133,10 @@ performing returned effects. The real external seam remains the **pipe payload s
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running` |
 | Claude `Notification` (permission/idle/elicitation)      | `pending` |
 | Claude `Stop`                                 | `done` (with `on_focus:"idle"`) |
-| Codex `agent-turn-complete`                   | `done`    |
+| Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
+| Codex `PermissionRequest`                     | `pending` |
+| Codex `Stop`                                  | `done` (with `on_focus:"idle"`) |
+| Codex legacy `agent-turn-complete`            | `done`    |
 | Adapter parse/hook failure (optional)         | `error`   |
 | User focuses the exact pane with `on_focus` set | value of `on_focus` (e.g. `idle`) |
 
@@ -297,13 +300,11 @@ replacement is push-only and tiered:
   `zj_radar.status.v1` payload (it already computes repo/branch/msg/pane). Claude supports the
   full state set (`running` via UserPromptSubmit/Pre/PostToolUse, `pending` via Notification,
   `done` via Stop). Keep its desktop notification + click-to-focus behavior unchanged.
-- **Codex CLI — `done`-only in v1.** Codex's `notify` program currently runs only on
-  `agent-turn-complete` (JSON argv: `{type, cwd, last-assistant-message, …}`), so the adapter
-  can reliably emit `done` but **not** `running`/`pending`. Richer Codex lifecycle states need
-  a future wrapper or additional Codex event support. Wire via `~/.codex/config.toml`:
-  ```toml
-  notify = ["sh","-lc","codex-zellij-notify \"$1\"","_"]
-  ```
+- **Codex CLI** — `zj-radar setup codex` installs marker-owned command hooks in
+  `~/.codex/hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
+  maps lifecycle events to `running`/`pending`/`done`. The legacy single-slot
+  `config.toml` `notify` path remains available behind `--legacy-notify` for older
+  Codex installs and can only emit `done`.
 - **Aider** — parked (one-line `--notifications-command`, status-only) for a later phase.
 
 ## 8. Build & packaging (Nix)

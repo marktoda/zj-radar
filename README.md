@@ -215,8 +215,8 @@ plugins {
 }
 ```
 
-Once tagged releases exist, you can instead pin a prebuilt artifact without a
-Rust toolchain (mirrors the older `room`/`smart-tabs` vendoring this replaces):
+Tagged releases also publish a prebuilt wasm artifact that can be pinned without
+a Rust toolchain (mirrors the older `room`/`smart-tabs` vendoring this replaces):
 
 ```nix
 zjRadarWasm = pkgs.fetchurl {
@@ -249,6 +249,9 @@ everywhere.
 A native binary that drops the `jq`/`bash` dependency and wires non-plugin agents.
 
 ```sh
+# Release tarballs:
+#   zj-radar-linux-x86_64.tar.gz
+#   zj-radar-macos-aarch64.tar.gz
 # Nix:
 nix build github:mark-toda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
 # Cargo:
@@ -258,16 +261,22 @@ cargo install --git https://github.com/mark-toda/zj-radar --features cli
 - **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude
   plugin's hook script automatically prefers it when it's on `PATH` (jq-free);
   otherwise the plugin falls back to its bundled `bash`+`jq` script.
-- **`zj-radar setup [codex]`** — idempotently wires Codex's `~/.codex/config.toml`
-  `notify` to call `zj-radar notify codex`. It **never overwrites** an existing
-  `notify` program (e.g. a Computer Use notifier); pass `--force` to replace it,
-  `--dry-run` to preview, `--uninstall` to remove. (Claude needs no `setup` — use
-  the plugin in §2.)
+- **`zj-radar setup [codex]`** — idempotently wires Codex's
+  `~/.codex/hooks.json` to call `zj-radar notify codex`. This preserves any
+  existing Codex `notify` program (e.g. a Computer Use notifier), because hooks
+  are additive. Use `--dry-run` to preview, `--uninstall` to remove only
+  zj-radar's hooks, and `--check` to diagnose the current setup. After installing
+  or changing hooks, run `/hooks` inside Codex once to review and trust the
+  command hook. (Claude needs no `setup` — use the plugin in §2.)
+- **`zj-radar setup codex --legacy-notify`** — opt-in fallback for older Codex
+  setups that only support the single `notify` program. It refuses to replace a
+  foreign notifier unless `--force` is also passed.
 - **`zj-radar setup zellij --wasm <path>`** — copies the sidebar wasm to
   `~/.config/zellij/plugins/zj_radar.wasm`, manages the `radar` alias in
   `config.kdl`, and prints the layout snippet. It leaves layouts user-owned.
 
-Codex reports only turn-completion, so it shows as `done` only (no `working`).
+Codex hooks report turn start, tool use, permission requests, subagents, and
+turn stop. zj-radar maps those to `running`, `pending`, and `done`.
 
 ## Configuration
 

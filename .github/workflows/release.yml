@@ -9,7 +9,42 @@ permissions:
   contents: write # required to create the GitHub Release
 
 jobs:
+  build-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: zj-radar-linux-x86_64
+          - os: macos-14
+            artifact: zj-radar-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Build native CLI
+        run: nix build .#zj-radar-cli -L
+
+      - name: Stage CLI artifact
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C result/bin zj-radar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
   release:
+    needs: build-cli
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,9 +76,16 @@ jobs:
       - name: Stage artifact
         run: cp result/bin/zj_radar.wasm zj_radar.wasm
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: zj_radar.wasm
+          files: |
+            zj_radar.wasm
+            dist/*.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: true

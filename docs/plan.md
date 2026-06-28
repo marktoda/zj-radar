@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded note:** this historical sidebar plan predates the hook-first
+> Codex CLI integration. Current Codex wiring uses `zj-radar setup codex` to
+> manage `~/.codex/hooks.json`; legacy `config.toml` `notify` is opt-in via
+> `--legacy-notify`.
+
 **Goal:** Build a native Zellij left-sidebar plugin (Rust→WASM) that lists every tab and shows per-tab AI-agent status (working/waiting/done/error) with color, repo/branch, elapsed time, and last message, fed by per-agent hooks via `zellij pipe`; click a row to switch tabs.
 
 **Architecture:** A thin `zellij-tile` host-glue layer (`lib.rs`) translates Zellij events into calls on five **pure, `zellij-tile`-free** logic modules (`status`, `payload`, `state`, `model`, `render`) that are fully unit-testable on the host. Agent state arrives as a broadcast `zellij pipe` payload produced by tiny per-agent adapter scripts (Claude exists; Codex new). See `docs/design.md`.
