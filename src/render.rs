@@ -81,9 +81,9 @@ fn truncate(s: &str, max: usize) -> String {
 ///     Sheds first under overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CardSpacing {
-    pub pad_x: usize,
-    pub pad_y: usize,
-    pub gap: usize,
+    pad_x: usize,
+    pad_y: usize,
+    gap: usize,
 }
 
 /// Map a density to its spacing knobs. This is the single place to tune the
@@ -171,10 +171,10 @@ fn is_multi_pane(agg: &TabAgg) -> bool {
 ///     Running, else "done".
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PaneTreePlan {
-    pub expanded: Vec<PaneEntry>,
-    pub collapsed_count: usize,
+    expanded: Vec<PaneEntry>,
+    collapsed_count: usize,
     /// The dominant calm verb for the collapse line ("working" or "done").
-    pub collapsed_verb: &'static str,
+    collapsed_verb: &'static str,
 }
 
 const ACTIVE_CALM_CHILD_LIMIT: usize = 2;

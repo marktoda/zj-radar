@@ -109,6 +109,17 @@ impl State {
     /// Click tests historically asserted the width-80 layout; keep that explicit.
     /// When no height has been set yet (last_render_height == 0), use a large
     /// height so folding/overflow never discards rows unexpectedly.
+    ///
+    /// # Contract — LIVE, permission-granted rail only
+    ///
+    /// This helper unconditionally sets `permission_granted = true` so that
+    /// `runtime.render` produces a real tab rail rather than the onboarding
+    /// screen. It is intentionally a LIVE-RAIL fixture and MUST NOT be used
+    /// to test the no-permission / onboarding case. Onboarding tests must
+    /// drive `runtime.mouse_click` directly (as `mouse_click_without_permission_is_inert`
+    /// does) — they must never call `render_at`, `tab_position_at_line`, or
+    /// `target_at_line`, or they will silently force-grant permission and
+    /// produce misleading results.
     #[cfg(test)]
     fn render_at(&mut self, width: usize) {
         self.runtime.permission_granted = true;
