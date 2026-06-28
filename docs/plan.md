@@ -1208,7 +1208,7 @@ layout {
 
 - [ ] **Step 2: Launch a dev session**
 
-Run: `./dev/build.sh && ./dev/start.sh`
+Run: `./dev/run.sh`
 Expected: a left sidebar lists `1 one`, `2 two`, `3 three`; grant the permission prompt.
 
 - [ ] **Step 3: Acceptance checks (Phase 1) — record results in the commit message**

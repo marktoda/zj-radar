@@ -1,21 +1,15 @@
-// Dev layout for dogfooding the zj-radar sidebar plugin.
+// Dev layout template for dogfooding the zj-radar sidebar plugin.
 //
-// Build first (needs a wasm32-wasip1 toolchain — see docs/TOOLCHAIN.md):
-//   ./dev/build.sh
-// Then:
-//   ./dev/start.sh
+// Normal path:
+//   ./dev/run.sh
 //
-// NOTE: the plugin `location` below is RELATIVE to Zellij's working directory
-// (Zellij resolves plugin paths against its own cwd, not the layout file), so it
-// carries no absolute/usernamed prefix. Launch from the repo root and it just
-// works:
-//   cd <your-checkout> && ./dev/start.sh
-// If you start Zellij from elsewhere the relative path won't resolve — cd to the
-// repo root first, or use an absolute path.
+// `dev/run.sh` builds the wasm, writes target/dev/dev.kdl with an absolute
+// plugin path, and restarts the disposable `zj-radar-dev` session. Keeping this
+// source layout relative makes it readable while avoiding hardcoded home paths.
 //
 // Note: Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins
-// created by a layout. `./dev/reload.sh` is only a compatibility wrapper around
-// `./dev/build.sh`; restart the dev layout/session to pick up changes.
+// created by a layout, so the dev loop restarts the disposable session instead
+// of attempting in-place hot reload.
 //
 // The sidebar is a pinned, borderless left column inside default_tab_template,
 // OUTSIDE `children`, so swap_tiled_layout cycling never disturbs it. The

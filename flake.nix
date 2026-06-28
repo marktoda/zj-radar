@@ -16,9 +16,14 @@
       let
         pkgs = import nixpkgs { inherit system; };
         fx = fenix.packages.${system};
-        # Host toolchain + the wasm32-wasip1 std the Zellij plugin compiles against.
+        # Minimal host toolchain + the wasm32-wasip1 std the Zellij plugin
+        # compiles against. Avoid fx.stable.toolchain here: it pulls extra
+        # rust-docs/rust-src/rust-analyzer components into the dev hot path.
         toolchain = fx.combine [
-          fx.stable.toolchain
+          fx.stable.cargo
+          fx.stable.clippy
+          fx.stable.rustc
+          fx.stable.rustfmt
           fx.targets.wasm32-wasip1.stable.rust-std
         ];
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
@@ -97,7 +102,8 @@
           packages = [ toolchain pkgs.zellij ];
           shellHook = ''
             echo "zj-radar dev shell: $(rustc --version)"
-            echo "build:  cargo build --release --target wasm32-wasip1"
+            echo "dev:    ./dev/run.sh"
+            echo "build:  ./dev/run.sh --build-only"
             echo "test:   cargo test"
           '';
         };

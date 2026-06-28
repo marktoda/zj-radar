@@ -27,17 +27,19 @@ Or run a one-off without entering the shell:
 nix develop -c cargo build --release --target wasm32-wasip1
 ```
 
-For the dogfood dev layout (`dev/dev.kdl`) use the debug build:
+For the dogfood dev layout (`dev/dev.kdl`) use the single dev entrypoint:
 
 ```sh
-./dev/build.sh
-./dev/start.sh
+./dev/run.sh
 ```
 
+The script uses the ambient Rust toolchain when it has `wasm32-wasip1`, and
+falls back to the repo's Nix flake when it does not.
+
 Zellij 0.44 does not safely hot-reload plugins that were created by a layout:
-`start-or-reload-plugin` opens a second pane instead. `./dev/reload.sh` is kept
-as a compatibility wrapper around `./dev/build.sh`; restart the dev
-layout/session to pick up changes.
+`start-or-reload-plugin` opens a second pane instead. `./dev/run.sh` builds the
+debug wasm, writes a generated layout with an absolute plugin path, and restarts
+the disposable `zj-radar-dev` session.
 
 `cargo test` does not need the dev shell — the pure modules and the
 host-testable session filesystem module are `zellij-tile`-free and run on the
