@@ -27,12 +27,17 @@ Or run a one-off without entering the shell:
 nix develop -c cargo build --release --target wasm32-wasip1
 ```
 
-For the hot-reload dev layout (`dev/dev.kdl`) use the debug build:
+For the dogfood dev layout (`dev/dev.kdl`) use the debug build:
 
 ```sh
 nix develop -c cargo build --target wasm32-wasip1
 zellij --layout dev/dev.kdl
 ```
+
+Zellij 0.44 does not safely hot-reload plugins that were created by a layout:
+`start-or-reload-plugin` opens a second pane instead. `./dev/reload.sh` rebuilds
+the debug wasm and refuses that unsafe reload path when it detects the pinned
+layout sidebar; restart the dev layout/session to pick up changes.
 
 `cargo test` does not need the dev shell — the pure modules and the
 host-testable session filesystem module are `zellij-tile`-free and run on the

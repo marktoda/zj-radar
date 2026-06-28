@@ -43,7 +43,7 @@ by polling every pane on every output event; see
 | `src/` | The Zellij sidebar plugin (Rust → `wasm32-wasip1`). Thin Zellij adapter, pure runtime, stores, model, and renderer. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
-| `dev/dev.kdl` | A dev layout for hot-reloading the plugin while building. |
+| `dev/dev.kdl` | A dev layout for dogfooding the debug plugin while building. |
 
 There are two independent install surfaces: the **sidebar** (the wasm plugin you
 add to your Zellij layout) and the **producer** (whatever broadcasts status —
@@ -354,16 +354,14 @@ nix develop                              # host Rust + wasm32-wasip1 std + zelli
 cargo test                               # host tests, no wasm needed
 nix develop -c cargo build --target wasm32-wasip1
 zellij -n dev/dev.kdl                     # dev session — run from the repo root (relative wasm path)
-./dev/reload.sh                           # rebuild + hot-reload the sidebar IN PLACE, no restart
+./dev/reload.sh                           # rebuild the debug wasm used by the dev layout
 ```
 
 `dev/dev.kdl` loads the **debug** wasm by a path relative to Zellij's cwd, so
-launch it from the repo root. To iterate without restarting Zellij, run
-`./dev/reload.sh` from any pane in the session: it rebuilds and issues
-`zellij action start-or-reload-plugin -c naming=force <loc>`. The `-c` must match
-the layout's `plugin { … }` config (here `naming "force"`) or Zellij spawns a new
-pane instead of reloading — the script handles this (and reads `<loc>` back from
-the running layout, so nothing hardcodes a path).
+launch it from the repo root. `./dev/reload.sh` rebuilds the wasm and then
+refuses the unsafe hot-reload path when it detects the pinned layout sidebar:
+Zellij 0.44's `start-or-reload-plugin` opens a second pane for plugins that were
+created by a layout. Restart the dev layout/session to pick up a rebuilt sidebar.
 
 The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
 `naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency
