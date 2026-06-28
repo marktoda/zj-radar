@@ -52,20 +52,10 @@ layout {
         }
     }
 
-    // Tabs intentionally UNNAMED → Zellij gives them default "Tab #N" names so
-    // auto-naming is visible even without naming "force".
+    // Start with one plain terminal tab. New tabs still use new_tab_template
+    // above, so every tab opened while dogfooding keeps the sidebar + status-bar
+    // and gets a focusable terminal pane.
     tab focus=true {
-        pane
-    }
-
-    tab {
-        pane split_direction="vertical" {
-            pane
-            pane
-        }
-    }
-
-    tab {
         pane
     }
 }
