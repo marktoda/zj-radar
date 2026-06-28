@@ -36,7 +36,7 @@ pub struct TabRow {
 }
 
 /// "0:14" under a minute-ish, "2m", "1h3m".
-pub fn format_elapsed(secs: u64) -> String {
+fn format_elapsed(secs: u64) -> String {
     if secs < 60 {
         format!("0:{:02}", secs)
     } else if secs < 3600 {
@@ -80,7 +80,7 @@ fn truncate(s: &str, max: usize) -> String {
 ///     `rail_bg` in Cards (panel shows through), plain blank in Comfortable.
 ///     Sheds first under overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CardSpacing {
+struct CardSpacing {
     pub pad_x: usize,
     pub pad_y: usize,
     pub gap: usize,
@@ -88,7 +88,7 @@ pub struct CardSpacing {
 
 /// Map a density to its spacing knobs. This is the single place to tune the
 /// sidebar's vertical/horizontal rhythm.
-pub fn card_spacing(d: Density) -> CardSpacing {
+fn card_spacing(d: Density) -> CardSpacing {
     match d {
         Density::Compact => CardSpacing {
             pad_x: 0,
@@ -148,14 +148,14 @@ impl RenderedRail {
 /// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
 /// external-separation rows). `render_rail()` budgets in terms of this so the
 /// emitted ANSI lines and line targets stay exact.
-pub fn card_block_lines(agg: &TabAgg, active: bool, spacing: CardSpacing) -> usize {
+fn card_block_lines(agg: &TabAgg, active: bool, spacing: CardSpacing) -> usize {
     spacing.pad_y + row_lines(agg, active) + spacing.gap
 }
 
 /// A pane is "multi-pane" for tree purposes when it has more than one ever-active
 /// pane. Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the adaptive tree (`pane_tree_plan`).
-pub fn is_multi_pane(agg: &TabAgg) -> bool {
+fn is_multi_pane(agg: &TabAgg) -> bool {
     agg.panes.len() > 1
 }
 
@@ -170,7 +170,7 @@ pub fn is_multi_pane(agg: &TabAgg) -> bool {
 ///     count line. `collapsed_verb` is "working" if any collapsed pane is
 ///     Running, else "done".
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PaneTreePlan {
+struct PaneTreePlan {
     pub expanded: Vec<PaneEntry>,
     pub collapsed_count: usize,
     /// The dominant calm verb for the collapse line ("working" or "done").
@@ -182,7 +182,7 @@ const ACTIVE_CALM_CHILD_LIMIT: usize = 2;
 /// Compute the expand/collapse split for a multi-pane tab. Callers should only
 /// invoke this when `is_multi_pane(agg)` is true; for a single-pane tab it would
 /// return all panes collapsed (which is not how single-pane tabs render).
-pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
+fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
     let needs_you = |s: Status| matches!(s, Status::Pending | Status::Error);
     let mut expanded: Vec<PaneEntry> = Vec::new();
     let mut collapsed: Vec<&PaneEntry> = Vec::new();
@@ -224,7 +224,7 @@ pub fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
 /// expanded pane + one collapse line when any calm pane is collapsed. The split
 /// is computed by `pane_tree_plan(agg, active)` so rendered lines and their
 /// click targets stay in lockstep.
-pub fn row_lines(agg: &TabAgg, active: bool) -> usize {
+fn row_lines(agg: &TabAgg, active: bool) -> usize {
     if is_multi_pane(agg) {
         let plan = pane_tree_plan(agg, active);
         let collapse_line = if plan.collapsed_count > 0 { 1 } else { 0 };
@@ -274,7 +274,7 @@ fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
 /// Comfortable keep the two-line title+rule header. `render_rail()` uses the
 /// same emitted header lines for ANSI and targets, so the count stays in lockstep.
-pub fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
+fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
     if rows.is_empty() || !header {
         0
     } else if density == Density::Cards {
@@ -306,7 +306,7 @@ fn is_calm(status: Status) -> bool {
 ///
 /// `row_lines` remains the *uncompressed* line count; this function produces
 /// the *planned* per-row line count actually rendered.
-pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
+fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
     let total: usize = rows.iter().map(|r| row_lines(&r.agg, r.active)).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
@@ -422,7 +422,7 @@ pub fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)
 /// first — drop `gap`, then drop `pad_y` — before letting `plan_overflow`
 /// compress the content itself. We pick the richest spacing whose total block
 /// footprint (plus the strip line) still fits the budget.
-pub fn plan_layout(
+fn plan_layout(
     rows: &[TabRow],
     body_budget: usize,
     density: Density,
@@ -1080,8 +1080,8 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     RenderedRail { ansi: out, targets }
 }
 
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
-pub fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
+#[cfg(test)]
+fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
     render_rail(rows, opts).ansi
 }
 
@@ -4290,5 +4290,31 @@ rail";
             assert_eq!(rail.target_at_line(line as isize), None,
                 "onboarding has no clickable rows");
         }
+    }
+
+    // ── Layout-footprint facts (migrated from lib.rs click-mapping tests) ──
+
+    #[test]
+    fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
+        // 3-pane inactive tab: 1 Pending expands, 2 Running collapse.
+        // header(1) + 1 expanded child + collapse(1) = 3 content lines.
+        // Mirrors the row_lines assertion from lib.rs::multi_pane_tree_click_mapping_lockstep.
+        let a = agg_multi(vec![
+            pe(10, Kind::Claude, Status::Pending, "approve?"),
+            pe(11, Kind::Claude, Status::Running, "building"),
+            pe(12, Kind::Claude, Status::Running, "testing"),
+        ]);
+        assert_eq!(row_lines(&a, false), 3, "tree is 3 content lines");
+    }
+
+    #[test]
+    fn single_running_pane_with_detail_is_two_content_lines() {
+        // Single-pane Running tab with a non-empty detail msg → 2 content lines
+        // (name row + detail row). Mirrors the row_lines assertion from
+        // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
+        let a = agg_multi(vec![
+            pe(10, Kind::Claude, Status::Running, "msg"),
+        ]);
+        assert_eq!(row_lines(&a, false), 2, "tab 0 should be 2 content lines");
     }
 }

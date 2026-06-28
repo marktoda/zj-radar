@@ -716,13 +716,6 @@ mod tests {
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         state.runtime.last_render_height = 100;
-        // Confirm row_lines agrees: header(1) + 1 expanded + collapse(1) = 3.
-        let rows = state.build_rows();
-        assert_eq!(
-            render::row_lines(&rows[0].agg, rows[0].active),
-            3,
-            "tree is 3 content lines"
-        );
         // header = lines 0,1. Tree at position 0: lines 2,3,4. Plain tab: line 5.
         assert_eq!(state.tab_position_at_line(0), None, "header line 0");
         assert_eq!(state.tab_position_at_line(1), None, "header line 1");
@@ -847,14 +840,6 @@ mod tests {
             density: config::Density::Cards,
             ..config::Config::default()
         };
-
-        // Confirm tab 0 really is 2 content lines.
-        let rows = state.build_rows();
-        assert_eq!(
-            render::row_lines(&rows[0].agg, rows[0].active),
-            2,
-            "tab 0 should be 2 content lines"
-        );
 
         assert_eq!(state.tab_position_at_line(0), None, "header");
         assert_eq!(
@@ -1038,14 +1023,20 @@ mod tests {
             }
             // For every drawn line, target_at_line must resolve to a real tab.
             let rows = state.build_rows();
-            let total_body: usize = rows
-                .iter()
-                .map(|r| crate::render::row_lines(&r.agg, r.active))
-                .sum();
-            // +2 probes past the body to cover header offset / trailing lines,
+            let opts = render::RenderOpts {
+                width: 80,
+                height: 200,
+                now_tick: 0,
+                glyphs: state.runtime.config.glyphs,
+                header: state.runtime.config.header,
+                density: state.runtime.config.density,
+                theme: state.runtime.theme.clone(),
+            };
+            let rail_lines = render::render_rail(&rows, &opts).line_count();
+            // +2 probes past the rendered rail to cover trailing lines,
             // which correctly resolve to None — not a bug.
             let mut resolved = 0usize;
-            for line in 0..(total_body as isize + 2) {
+            for line in 0..(rail_lines as isize + 2) {
                 if let Some((tab, _pane)) = state.target_at_line(line) {
                     proptest::prop_assert!(
                         tab < n_tabs,
@@ -1056,8 +1047,8 @@ mod tests {
             }
             proptest::prop_assert!(
                 resolved >= 1,
-                "test resolved no targets at all — setup may be broken (n_tabs={}, total_body={})",
-                n_tabs, total_body
+                "test resolved no targets at all — setup may be broken (n_tabs={}, rail_lines={})",
+                n_tabs, rail_lines
             );
         }
     }
