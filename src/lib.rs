@@ -86,6 +86,14 @@ pub struct State {
     permission_granted: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     permission_response_received: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_request_started: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_waiting_for_peer: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_ready_path: Option<String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    permission_lock_path: Option<String>,
     // Terminal-derived surface + dim colors; updated on PaneUpdate from the
     // panes' reported default_bg/default_fg; only used by the wasm render path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -163,16 +171,22 @@ impl State {
     }
 
     /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
-    /// this pane. Keep it selectable only while that first prompt is awaiting a
-    /// y/n answer; after either result, the rail returns to passive status-bar
-    /// behavior.
+    /// the pane that called `request_permission`. Keep only that pane selectable
+    /// while a y/n answer is pending; peer sidebar instances stay passive while
+    /// they wait for the first grant to populate Zellij's permission cache.
     fn sidebar_should_be_selectable(&self) -> bool {
-        !self.permission_response_received
+        self.permission_request_started && !self.permission_response_received
+    }
+
+    fn record_permission_request_started(&mut self) {
+        self.permission_request_started = true;
     }
 
     fn record_permission_result(&mut self, granted: bool) {
         self.permission_granted = granted;
         self.permission_response_received = true;
+        self.permission_request_started = false;
+        self.permission_waiting_for_peer = false;
     }
 
     /// Map a clicked line back to a tab position by replaying render()'s fold
@@ -268,6 +282,10 @@ const CACHE_DIR: &str = "/cache";
 const SNAPSHOT_PREFIX: &str = "zj-radar.";
 #[cfg(target_arch = "wasm32")]
 const SNAPSHOT_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+#[cfg(target_arch = "wasm32")]
+const PERMISSION_GRANTED_MARKER: &str = "granted";
+#[cfg(target_arch = "wasm32")]
+const PERMISSION_DENIED_MARKER: &str = "denied";
 
 #[cfg(target_arch = "wasm32")]
 impl State {
@@ -279,6 +297,11 @@ impl State {
     fn init_cache(&mut self) {
         let ids = get_plugin_ids();
         let path = format!("{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.json", ids.zellij_pid);
+        let permission_ready = format!(
+            "{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.permissions",
+            ids.zellij_pid
+        );
+        let permission_lock = format!("{permission_ready}.lock");
         // Temp file is per-instance (plugin_id) so two tabs writing at once never
         // clobber each other's in-progress write before the atomic rename.
         let tmp = format!("{path}.{}.tmp", ids.plugin_id);
@@ -291,6 +314,97 @@ impl State {
         self.prune_stale_snapshots(&path);
         self.cache_path = Some(path);
         self.cache_tmp = Some(tmp);
+        self.permission_ready_path = Some(permission_ready);
+        self.permission_lock_path = Some(permission_lock);
+    }
+
+    fn request_zellij_permissions(&mut self) {
+        self.record_permission_request_started();
+        request_permission(&[
+            PermissionType::ReadApplicationState,
+            PermissionType::ReadCliPipes,
+            PermissionType::ChangeApplicationState,
+        ]);
+    }
+
+    /// Avoid N simultaneous first-run prompts when the sidebar is instantiated
+    /// once per tab. One instance owns the visible prompt; peers wait for the
+    /// session-scoped marker, then call `request_permission` after Zellij has
+    /// cached the user's answer for this plugin URL.
+    fn begin_permission_flow(&mut self) {
+        match self.permission_marker() {
+            Some(PERMISSION_GRANTED_MARKER) => {
+                self.request_zellij_permissions();
+            }
+            Some(PERMISSION_DENIED_MARKER) => {
+                self.record_permission_result(false);
+            }
+            _ if self.become_permission_request_owner() => {
+                self.request_zellij_permissions();
+            }
+            _ => {
+                self.permission_waiting_for_peer = true;
+                self.arm_timer_if_needed();
+            }
+        }
+    }
+
+    fn permission_marker(&self) -> Option<&'static str> {
+        let path = self.permission_ready_path.as_ref()?;
+        let raw = std::fs::read_to_string(path).ok()?;
+        match raw.trim() {
+            PERMISSION_GRANTED_MARKER => Some(PERMISSION_GRANTED_MARKER),
+            PERMISSION_DENIED_MARKER => Some(PERMISSION_DENIED_MARKER),
+            _ => None,
+        }
+    }
+
+    fn become_permission_request_owner(&self) -> bool {
+        let Some(path) = &self.permission_lock_path else {
+            return true;
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            // If coordination itself fails, prefer one reachable prompt over a
+            // session where every instance waits forever.
+            Err(_) => true,
+        }
+    }
+
+    fn mark_permission_flow_complete(&self, granted: bool) {
+        if let Some(path) = &self.permission_ready_path {
+            let marker = if granted {
+                PERMISSION_GRANTED_MARKER
+            } else {
+                PERMISSION_DENIED_MARKER
+            };
+            let _ = std::fs::write(path, marker.as_bytes());
+        }
+    }
+
+    fn check_deferred_permission_request(&mut self) -> bool {
+        if !self.permission_waiting_for_peer {
+            return false;
+        }
+        match self.permission_marker() {
+            Some(PERMISSION_GRANTED_MARKER) => {
+                self.permission_waiting_for_peer = false;
+                self.request_zellij_permissions();
+                set_selectable(self.sidebar_should_be_selectable());
+                true
+            }
+            Some(PERMISSION_DENIED_MARKER) => {
+                self.record_permission_result(false);
+                set_selectable(self.sidebar_should_be_selectable());
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Mirror the current store into the shared snapshot. Every live instance
@@ -341,7 +455,11 @@ impl State {
     }
 
     fn arm_timer_if_needed(&mut self) {
-        if !self.timer_armed && (self.store.any_active() || self.command.has_pending_or_active()) {
+        if !self.timer_armed
+            && (self.permission_waiting_for_peer
+                || self.store.any_active()
+                || self.command.has_pending_or_active())
+        {
             set_timeout(1.0);
             self.timer_armed = true;
         }
@@ -376,11 +494,6 @@ impl State {
 impl ZellijPlugin for State {
     fn load(&mut self, config: BTreeMap<String, String>) {
         self.config = config::Config::from_map(&config);
-        request_permission(&[
-            PermissionType::ReadApplicationState,
-            PermissionType::ReadCliPipes,
-            PermissionType::ChangeApplicationState,
-        ]);
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
@@ -390,10 +503,11 @@ impl ZellijPlugin for State {
             EventType::Mouse,
             EventType::PermissionRequestResult,
         ]);
-        set_selectable(self.sidebar_should_be_selectable());
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
         self.init_cache();
+        self.begin_permission_flow();
+        set_selectable(self.sidebar_should_be_selectable());
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -473,10 +587,13 @@ impl ZellijPlugin for State {
             }
             Event::Timer(_) => {
                 self.timer_armed = false;
+                let permission_changed = self.check_deferred_permission_request();
                 self.tick += 1;
                 self.command.on_timer(self.tick);
                 self.arm_timer_if_needed();
-                self.store.any_active() || self.command.has_pending_or_active()
+                permission_changed
+                    || self.store.any_active()
+                    || self.command.has_pending_or_active()
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
                 if self.permission_granted {
@@ -497,7 +614,9 @@ impl ZellijPlugin for State {
                 false
             }
             Event::PermissionRequestResult(status) => {
-                self.record_permission_result(status == PermissionStatus::Granted);
+                let granted = status == PermissionStatus::Granted;
+                self.record_permission_result(granted);
+                self.mark_permission_flow_complete(granted);
                 set_selectable(self.sidebar_should_be_selectable());
                 true
             }
@@ -822,8 +941,14 @@ mod tests {
     fn sidebar_stays_selectable_until_permissions_are_granted() {
         let mut s = State::default();
         assert!(
+            !s.sidebar_should_be_selectable(),
+            "peer sidebars that did not request permission stay passive"
+        );
+
+        s.record_permission_request_started();
+        assert!(
             s.sidebar_should_be_selectable(),
-            "first-run permission prompt must remain focusable"
+            "the sidebar that owns the first-run prompt must remain focusable"
         );
 
         s.record_permission_result(true);

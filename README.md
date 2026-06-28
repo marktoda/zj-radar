@@ -134,9 +134,21 @@ node composes; the layout is yours.
 
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
-press `y` to grant. The sidebar stays focusable only for that prompt, then goes
-back to passive sidebar behavior. It never runs commands; notifications stay in
-the producer.
+press `y` to grant. Because the sidebar exists once per tab, only one instance
+owns the first-run prompt; the others wait for Zellij's cached answer and then
+continue without asking again. The sidebar stays focusable only for that prompt,
+then goes back to passive sidebar behavior. It never runs commands;
+notifications stay in the producer.
+
+For a roomier first-run prompt, approve the same stable plugin URL once in a
+floating pane before using the sidebar layout:
+
+```sh
+zellij plugin --floating --width 80 --height 24 file:~/.config/zellij/plugins/zj_radar.wasm
+```
+
+After approval, close that floating pane and start your radar layout; the per-tab
+sidebars should use the cached grant.
 
 #### Loading straight from a release URL (caveat)
 

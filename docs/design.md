@@ -189,6 +189,11 @@ any stale seed self-heals on the next broadcast. The producer (hooks) is unaffec
   adapters. Keep the pane selectable only until `PermissionRequestResult` arrives so the first-run
   permission prompt is reachable; then call `set_selectable(false)` so the pane never steals focus
   from pane keybinds.
+  - **Per-tab prompt coordination:** the sidebar is instantiated once per tab. On an uncached
+    first run, a session-scoped `/cache` lock elects one instance to call `request_permission()`;
+    peer instances stay passive, poll a `/cache` marker, then request after Zellij has cached the
+    answer for this plugin URL. This avoids one y/n prompt per tab while preserving Zellij's
+    explicit permission UI.
 - **Subscriptions:** `TabUpdate`, `PaneUpdate`, `Timer`, `Mouse`, `PermissionRequestResult`.
 - **Tab index footgun:** `TabInfo.position` is **0-indexed**; `switch_tab_to(idx)` is
   **1-indexed** (0 treated as 1). Define `display_tab_number = position + 1` and use it for
@@ -377,7 +382,8 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
   state — roughly doubling its surface area and reintroducing the focus-grab failure class. If
   ever revisited, it should be a separate, opt-in render/interaction mode, not the default seam.
   A focused first-run/help overlay could be useful for explaining the status lifecycle and any
-  future keybinds, but it should not be the permission-grant mechanism; the visible sidebar must
-  remain selectable until Zellij's own permission result arrives.
+  future keybinds; the permission grant still has to flow through Zellij's own prompt. Today the
+  best install-time approximation is launching the same stable plugin URL once in a roomy floating
+  pane, approving it there, then starting the per-tab sidebar layout.
 - **Horizontal/compact bar mode** (top-level pane like zjstatus, no nesting, no #3247) — would
   need a from-scratch compact renderer; `render.rs` is vertical/card-per-tab today.
