@@ -2,7 +2,43 @@
 
 use crate::payload::StatusPayload;
 use crate::status::Status;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+/// One pane's persisted record. `status`/`on_focus` use the same wire vocabulary
+/// as the pipe payload (`Status::as_wire`) so the snapshot format never drifts
+/// from the broadcast format.
+#[derive(Serialize, Deserialize)]
+pub struct PaneSnapshot {
+    pub pane_id: u32,
+    pub status: String,
+    pub repo: String,
+    pub branch: String,
+    pub msg: String,
+    pub source: String,
+    pub last_change_tick: u64,
+    #[serde(default)]
+    pub seq: Option<u64>,
+    #[serde(default)]
+    pub on_focus: Option<String>,
+    pub ever_active: bool,
+}
+
+/// The whole `StateStore` plus the owning instance's `tick`, as written to the
+/// shared `/cache` snapshot. `tick` is carried so a freshly-seeded instance
+/// keeps `last_change_tick` values meaningful (elapsed-time display) instead of
+/// resetting its clock to 0 underneath them.
+#[derive(Serialize, Deserialize, Default)]
+pub struct Snapshot {
+    pub v: u32,
+    pub tick: u64,
+    pub panes: Vec<PaneSnapshot>,
+}
+
+/// Current snapshot schema version. Bumped only on an incompatible change; an
+/// unrecognized version is ignored on load (the instance just starts empty and
+/// the next broadcast repopulates it).
+pub const SNAPSHOT_V: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct AgentState {
@@ -89,6 +125,61 @@ impl StateStore {
     pub fn any_active(&self) -> bool {
         self.map.values().any(|s| s.status.is_active())
     }
+
+    /// Serialize the whole store (+ the owning instance's `tick`) to the shared
+    /// snapshot JSON. Written to `/cache` so a newly-spawned per-tab instance can
+    /// seed itself with state it never received over the broadcast pipe. Pane
+    /// iteration order is unspecified (a `HashMap`); the consumer keys by id.
+    pub fn to_json(&self, tick: u64) -> String {
+        let panes = self
+            .map
+            .iter()
+            .map(|(&pane_id, s)| PaneSnapshot {
+                pane_id,
+                status: s.status.as_wire().to_string(),
+                repo: s.repo.clone(),
+                branch: s.branch.clone(),
+                msg: s.msg.clone(),
+                source: s.source.clone(),
+                last_change_tick: s.last_change_tick,
+                seq: s.seq,
+                on_focus: s.on_focus.map(|f| f.as_wire().to_string()),
+                ever_active: s.ever_active,
+            })
+            .collect();
+        let snap = Snapshot { v: SNAPSHOT_V, tick, panes };
+        serde_json::to_string(&snap).unwrap_or_default()
+    }
+
+    /// Rebuild a store from a snapshot JSON, returning it alongside the persisted
+    /// `tick`. Returns `None` on invalid JSON or an unrecognized schema version —
+    /// callers treat that as "start empty" (the next broadcast repopulates).
+    /// `Status::from_wire` maps any unknown status to `Idle`, so a partially
+    /// understood snapshot never errors.
+    pub fn from_json(raw: &str) -> Option<(StateStore, u64)> {
+        let snap: Snapshot = serde_json::from_str(raw).ok()?;
+        if snap.v != SNAPSHOT_V {
+            return None;
+        }
+        let mut map = HashMap::with_capacity(snap.panes.len());
+        for p in snap.panes {
+            map.insert(
+                p.pane_id,
+                AgentState {
+                    status: Status::from_wire(&p.status),
+                    repo: p.repo,
+                    branch: p.branch,
+                    msg: p.msg,
+                    source: p.source,
+                    last_change_tick: p.last_change_tick,
+                    seq: p.seq,
+                    on_focus: p.on_focus.as_deref().map(Status::from_wire),
+                    ever_active: p.ever_active,
+                },
+            );
+        }
+        Some((StateStore { map }, snap.tick))
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +256,79 @@ mod tests {
         s.apply(payload(1, Status::Idle, None), 2);
         assert!(s.get(1).unwrap().ever_active);
         assert!(!s.any_active());
+    }
+
+    // ── snapshot round-trip (the /cache rehydration seam) ──
+
+    #[test]
+    fn snapshot_round_trip_preserves_all_panes_and_tick() {
+        let mut s = StateStore::default();
+        // A running agent, and a done-with-pending-on_focus pane.
+        s.apply(payload(1, Status::Running, Some(7)), 3);
+        let mut p2 = payload(2, Status::Done, Some(9));
+        p2.on_focus = Some(Status::Idle);
+        p2.repo = "pinky".into();
+        p2.branch = "fix/x".into();
+        p2.msg = "shipped it".into();
+        p2.source = "codex".into();
+        s.apply(p2, 5);
+        // Pane 2 went Running->Done at some point, so ever_active is set; make
+        // pane 1 return to idle to exercise the ever_active-sticks path too.
+        s.apply(payload(1, Status::Idle, Some(11)), 8);
+
+        let json = s.to_json(42);
+        let (restored, tick) = StateStore::from_json(&json).expect("valid snapshot");
+
+        assert_eq!(tick, 42, "owning instance tick is carried");
+        // Pane 1: idle now, but ever_active sticky, seq advanced.
+        let a = restored.get(1).expect("pane 1 present");
+        assert_eq!(a.status, Status::Idle);
+        assert!(a.ever_active, "ever_active survives the round trip");
+        assert_eq!(a.seq, Some(11));
+        assert_eq!(a.last_change_tick, 8);
+        // Pane 2: all string fields + on_focus survive verbatim.
+        let b = restored.get(2).expect("pane 2 present");
+        assert_eq!(b.status, Status::Done);
+        assert_eq!(b.repo, "pinky");
+        assert_eq!(b.branch, "fix/x");
+        assert_eq!(b.msg, "shipped it");
+        assert_eq!(b.source, "codex");
+        assert_eq!(b.on_focus, Some(Status::Idle), "clear-on-focus intent survives");
+        assert_eq!(b.seq, Some(9));
+    }
+
+    #[test]
+    fn snapshot_seeded_done_pane_still_clears_on_focus() {
+        // A new instance seeded from a snapshot must honor the queued clear-on-
+        // focus transition, exactly as if the payload had arrived live.
+        let mut s = StateStore::default();
+        let mut p = payload(5, Status::Done, None);
+        p.on_focus = Some(Status::Idle);
+        s.apply(p, 1);
+        let (mut restored, _) = StateStore::from_json(&s.to_json(2)).unwrap();
+        restored.on_pane_focused(5, 9);
+        assert_eq!(restored.get(5).unwrap().status, Status::Idle);
+        assert_eq!(restored.get(5).unwrap().on_focus, None);
+    }
+
+    #[test]
+    fn from_json_rejects_garbage_and_wrong_version() {
+        assert!(StateStore::from_json("not json").is_none());
+        // A structurally valid snapshot with an unknown version is ignored.
+        let wrong = r#"{"v":999,"tick":1,"panes":[]}"#;
+        assert!(StateStore::from_json(wrong).is_none());
+        // The right version with no panes is a valid (empty) snapshot.
+        let empty = format!(r#"{{"v":{SNAPSHOT_V},"tick":4,"panes":[]}}"#);
+        let (store, tick) = StateStore::from_json(&empty).expect("empty is valid");
+        assert_eq!(tick, 4);
+        assert!(store.get(1).is_none());
+    }
+
+    #[test]
+    fn empty_store_snapshot_round_trips() {
+        let s = StateStore::default();
+        let (restored, tick) = StateStore::from_json(&s.to_json(0)).unwrap();
+        assert_eq!(tick, 0);
+        assert!(!restored.any_active());
     }
 }

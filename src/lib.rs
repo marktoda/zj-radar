@@ -96,6 +96,20 @@ pub struct State {
     // the design's "stays lit until visited" rule. None until the first focus.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     last_focused: Option<u32>,
+    // The shared `/cache` snapshot this instance reads on load and writes on
+    // every store mutation. zj-radar runs one instance PER TAB (it lives in the
+    // tab template), and a CLI-pipe broadcast only reaches instances alive at
+    // send time — it is never replayed. So a tab opened later spawns a blank
+    // instance that missed every prior broadcast and would show all tabs idle.
+    // `/cache` is the one plugin folder shared across all instances (keyed by
+    // plugin URL, not by instance), so it is where a newcomer rehydrates from.
+    // `cache_path` is `/cache/zj-radar.<zellij_pid>.json` (session-scoped by the
+    // Zellij server pid); `cache_tmp` is the per-instance temp file we write then
+    // atomically rename, so concurrent writers never expose a torn snapshot.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    cache_path: Option<String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    cache_tmp: Option<String>,
 }
 
 // ── Pure helpers (no host calls) — compiled and tested on the host target ──
@@ -230,7 +244,79 @@ impl State {
 // the `ZellijPlugin` impl + host-fn helpers it drives.
 
 #[cfg(target_arch = "wasm32")]
+const CACHE_DIR: &str = "/cache";
+#[cfg(target_arch = "wasm32")]
+const SNAPSHOT_PREFIX: &str = "zj-radar.";
+#[cfg(target_arch = "wasm32")]
+const SNAPSHOT_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+
+#[cfg(target_arch = "wasm32")]
 impl State {
+    /// Resolve the shared snapshot paths from the Zellij server pid, seed this
+    /// instance's store from any existing snapshot, and best-effort prune stale
+    /// ones. Called once from `load()`. All filesystem work is best-effort: a
+    /// failure just means this instance starts empty and the next broadcast
+    /// repopulates it — the plugin must never break the host over a cache miss.
+    fn init_cache(&mut self) {
+        let ids = get_plugin_ids();
+        let path = format!("{CACHE_DIR}/{SNAPSHOT_PREFIX}{}.json", ids.zellij_pid);
+        // Temp file is per-instance (plugin_id) so two tabs writing at once never
+        // clobber each other's in-progress write before the atomic rename.
+        let tmp = format!("{path}.{}.tmp", ids.plugin_id);
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Some((store, tick)) = StateStore::from_json(&raw) {
+                self.store = store;
+                self.tick = tick;
+            }
+        }
+        self.prune_stale_snapshots(&path);
+        self.cache_path = Some(path);
+        self.cache_tmp = Some(tmp);
+    }
+
+    /// Mirror the current store into the shared snapshot. Every live instance
+    /// writes identical content after a given broadcast, so concurrent writes
+    /// converge; the temp-file + atomic rename guarantees a reader (a newly
+    /// loading instance) never sees a half-written file. Best-effort: errors are
+    /// swallowed, since the live broadcast is the source of truth for everyone
+    /// already running — the snapshot only seeds future newcomers.
+    fn persist(&self) {
+        let (Some(path), Some(tmp)) = (&self.cache_path, &self.cache_tmp) else { return };
+        let json = self.store.to_json(self.tick);
+        if std::fs::write(tmp, json.as_bytes()).is_ok() {
+            let _ = std::fs::rename(tmp, path);
+        }
+    }
+
+    /// Remove this plugin's snapshots from dead sessions. `/cache` is shared and
+    /// persists across sessions, so without this a small file would accumulate
+    /// per past session. Age-based (mtime) so it never deletes a concurrently
+    /// running session's file (that one keeps a fresh mtime) nor our own.
+    fn prune_stale_snapshots(&self, own_path: &str) {
+        let Ok(entries) = std::fs::read_dir(CACHE_DIR) else { return };
+        let now = std::time::SystemTime::now();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with(SNAPSHOT_PREFIX) || !name.ends_with(".json") {
+                continue;
+            }
+            let path = entry.path();
+            if path.to_string_lossy() == own_path {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age.as_secs() > SNAPSHOT_MAX_AGE_SECS);
+            if stale {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
     fn arm_timer_if_needed(&mut self) {
         if !self.timer_armed && (self.store.any_active() || self.command.has_pending_or_active()) {
             set_timeout(1.0);
@@ -282,6 +368,9 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
         ]);
         set_selectable(false);
+        // Seed from the shared snapshot so a tab opened after agents were already
+        // running shows their real status instead of a blank (all-idle) rail.
+        self.init_cache();
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -354,6 +443,9 @@ impl ZellijPlugin for State {
                 // showed up as direction-dependent Done↔Idle flicker).
                 self.apply_focus_transition(focused_terminal, self.tick);
                 self.apply_renames();
+                // Prune (closed panes) and the focus-clear both mutate the store,
+                // so refresh the shared snapshot newcomers seed from.
+                self.persist();
                 true
             }
             Event::Timer(_) => {
@@ -411,6 +503,9 @@ impl ZellijPlugin for State {
                     self.store.apply(p, self.tick);
                     self.apply_renames();
                     self.arm_timer_if_needed();
+                    // Mirror the new status to the shared snapshot so the next
+                    // tab to open seeds from it instead of starting blank.
+                    self.persist();
                     return true;
                 }
             }
@@ -686,6 +781,21 @@ mod tests {
         let s = State::default();
         assert_eq!(s.config.glyphs, crate::status::GlyphSet::Plain);
         assert!(!s.permission_granted);
+    }
+
+    #[test]
+    fn sidebar_stays_selectable_until_permissions_are_granted() {
+        let mut s = State::default();
+        assert!(
+            s.sidebar_should_be_selectable(),
+            "first-run permission prompt must remain focusable"
+        );
+
+        s.permission_granted = true;
+        assert!(
+            !s.sidebar_should_be_selectable(),
+            "after permissions are granted the sidebar returns to passive mode"
+        );
     }
 
     #[test]

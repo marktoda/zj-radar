@@ -146,6 +146,18 @@ Broadcast by name `zj_radar.status.v1` (namespaced + versioned). Each sidebar in
 filters on the name and keeps its own copy of the state map (same pattern as the built-in
 tab-bar; cheap for a handful of tabs).
 
+**Newcomer rehydration (`/cache` snapshot).** Because the plugin lives in the tab template,
+Zellij runs *one instance per tab*, and a broadcast only reaches instances alive when it is
+sent — it is never replayed. So a tab opened after agents were already running would spawn a
+blank instance and render every tab idle. Fix: each instance mirrors its `StateStore` into a
+snapshot at `/cache/zj-radar.<zellij_pid>.json` on every store mutation, and seeds itself from
+it in `load()`. `/cache` is the one plugin folder shared across all instances (keyed by plugin
+URL, not by `<plugin_id>-<client_id>` like `/data`), needs no extra permission, and is
+session-scoped by the Zellij server pid (stale per-session files are pruned by age on load).
+Writes are temp-file + atomic rename, so a concurrent newcomer never reads a torn file; since
+every live instance writes identical content after a given broadcast, the races are benign and
+any stale seed self-heals on the next broadcast. The producer (hooks) is unaffected.
+
 ```json
 { "v": 1,
   "source": "claude",                 // claude | codex | test — adapters differ; helps debugging
@@ -337,8 +349,12 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
    deliberately; collapse toggle (future) mitigates.
 4. **`zellij-tile` API churn** — pin to 0.44.x; read `PaneInfo`/`TabInfo` field ordering and the
    `PaneId` enum against the 0.44.3 tag.
-5. **Per-tab plugin instances** (N timers + N state copies) — minor; the only-tick-while-active
-   optimization bounds it; mirrors the built-in tab-bar.
+5. **Per-tab plugin instances** (N timers + N state copies) — the only-tick-while-active
+   optimization bounds the timers, and the state copies are reconciled via the shared `/cache`
+   snapshot (see §5 "Newcomer rehydration"). The trap here, learned the hard way: a broadcast is
+   *not* replayed to instances spawned later, so a new tab's instance starts blank — hence the
+   snapshot seed. Note `/data` is per-instance (`…/<plugin_id>-<client_id>/`) despite the docs
+   calling it "shared"; `/cache` (`…/plugin_cache/`) is the genuinely shared one.
 6. **Repeating the smart-tabs meltdown** (`smart-tabs-postmortem.md`) — bounded *by design*:
    zj-radar is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
    blocking `get_pane_*` queries, so high-output panes cost it nothing and there is no poll loop
