@@ -1,0 +1,29 @@
+// Paste these two templates into any Zellij layout after installing the
+// `radar` plugin alias in ~/.config/zellij/config.kdl.
+//
+// Left sidebar: radar pane first, then `children` / `pane focus=true`.
+// Right sidebar: put `children` / `pane focus=true` before the radar pane.
+
+default_tab_template {
+    pane split_direction="vertical" {
+        pane size=24 borderless=true {
+            plugin location="radar"
+        }
+        children
+    }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
+}
+
+new_tab_template {
+    pane split_direction="vertical" {
+        pane size=24 borderless=true {
+            plugin location="radar"
+        }
+        pane focus=true
+    }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
+}

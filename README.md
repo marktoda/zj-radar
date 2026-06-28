@@ -51,7 +51,15 @@ today, the Claude Code plugin).
 
 ## Install
 
-### 1. The sidebar plugin
+There are two jobs:
+
+1. **Show the sidebar in Zellij** — install the wasm at a stable path, define a
+   `radar` plugin alias in `config.kdl`, and add the sidebar templates to a
+   layout.
+2. **Send agent status to the sidebar** — install the Claude plugin or wire an
+   agent to call `zj-radar notify`.
+
+### 1. Show the sidebar in Zellij
 
 There is no pre-built release yet, so build the wasm from source:
 
@@ -60,26 +68,36 @@ There is no pre-built release yet, so build the wasm from source:
 nix develop -c cargo build --release --target wasm32-wasip1
 ```
 
-Copy it to a **stable path** (a fixed path matters: Zellij ties the plugin's
-permission grant to its location, so a per-build Nix store path would re-prompt
-every rebuild):
+#### Recommended: use the CLI
+
+Install the native CLI from this checkout, then let it copy the wasm and manage
+the Zellij plugin alias:
+
+```sh
+cargo install --path . --features cli
+zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
+```
+
+`setup zellij`:
+
+- copies the wasm to `~/.config/zellij/plugins/zj_radar.wasm`
+- adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
+- prints the layout snippet to paste
+
+It does **not** rewrite your layouts. Use `--dry-run` to preview, `--yes` for
+non-interactive runs, and `--force` only if you want to replace an existing
+unmanaged `radar` alias.
+
+#### Manual setup
+
+If you are not using the CLI, copy the wasm to the same stable path yourself:
 
 ```sh
 mkdir -p ~/.config/zellij/plugins
 cp target/wasm32-wasip1/release/zj_radar.wasm ~/.config/zellij/plugins/
 ```
 
-#### Wire it into your layout
-
-The sidebar is a pinned, borderless **left column** that lives in every tab.
-Zellij has no "pin a pane across all tabs" mechanism other than the tab
-templates — the same place its own tab-bar/status-bar live — so, like
-[zjstatus](https://github.com/dj95/zjstatus), radar integrates by adding a pane
-to your layout's templates. You compose the radar node into *your* layout
-(left or right, any width); we don't hand you a layout to adopt wholesale.
-
-**First, alias the plugin once** in `config.kdl` so the path + default config
-live in one place and every layout just refers to the name `radar`:
+Then define the alias once in `~/.config/zellij/config.kdl`:
 
 ```kdl
 // ~/.config/zellij/config.kdl
@@ -90,8 +108,19 @@ plugins {
 }
 ```
 
-**Then reference `radar` in two tab templates.** A left column forces `children`
-to be *nested inside a vertical split*, and that needs **both** templates:
+The fixed path matters: Zellij ties a plugin's permission grant to its location.
+If the location changes on every rebuild, Zellij asks again.
+
+#### Add the sidebar to a layout
+
+The sidebar is a pinned, borderless **left column** that lives in every tab.
+Zellij has no "pin a pane across all tabs" mechanism other than the tab
+templates — the same place its own tab-bar/status-bar live — so radar integrates
+like [zjstatus](https://github.com/dj95/zjstatus): add one pane to your
+templates, and keep the rest of your layout yours.
+
+Paste [`examples/radar-template-snippet.kdl`](examples/radar-template-snippet.kdl)
+into any layout:
 
 ```kdl
 // Tabs defined in the layout file get their panes via `children`.
@@ -124,13 +153,14 @@ new_tab_template {
 > *top-level* `children`, like the stock compact layout, materializes fine —
 > only the nested-in-a-split case is affected.
 
-Prefer not to hand-roll it? [`examples/radar-sidebar.kdl`](examples/radar-sidebar.kdl)
-is those same two templates assembled into a complete, runnable layout — and it's
-**self-contained** (it inlines the `file:` path, so you can skip the alias step
-above). Copy it to `~/.config/zellij/layouts/` and run `zellij --layout
-radar-sidebar`. Want the column on the **right**? Put `children` (and the runtime
-`pane`) *before* the radar pane in the split. Different width? Change `size`. The
-node composes; the layout is yours.
+Prefer a complete starting layout? Copy
+[`examples/radar-sidebar.kdl`](examples/radar-sidebar.kdl) to
+`~/.config/zellij/layouts/` and run `zellij --layout radar-sidebar`. It uses the
+same `plugin location="radar"` alias as the snippet.
+
+Want the column on the **right**? Put `children` (and the runtime
+`pane focus=true`) before the radar pane in each vertical split. Different
+width? Change `size`.
 
 On first load the sidebar shows an onboarding face and requests three
 permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
@@ -165,7 +195,7 @@ several tabs fetching the same remote plugin at once can corrupt the download.
 Prefer the `file:` path above or the Nix package below; use the URL form only
 for a quick single-tab try.
 
-#### Installing via Nix / home-manager
+#### Nix / home-manager
 
 This flake exposes the wasm as `packages.default`, so a flake-based config can
 consume the exact same artifact this repo builds. Add the repo as an input:
@@ -175,11 +205,14 @@ consume the exact same artifact this repo builds. Add the repo as an input:
 inputs.zj-radar.url = "github:mark-toda/zj-radar";
 ```
 
-Then reference the built wasm at a stable store path in your Zellij layout
-derivation (build-from-source, works today):
+Then reference the built wasm from your generated `config.kdl` alias:
 
-```nix
-plugin location="file:${inputs.zj-radar.packages.${system}.default}/bin/zj_radar.wasm"
+```kdl
+plugins {
+    radar location="file:${inputs.zj-radar.packages.${system}.default}/bin/zj_radar.wasm" {
+        naming "managed"
+    }
+}
 ```
 
 Once tagged releases exist, you can instead pin a prebuilt artifact without a
@@ -194,7 +227,9 @@ zjRadarWasm = pkgs.fetchurl {
 
 The old `@smartTabs@` substitution is fully retired — zj-radar owns the rail.
 
-### 2. The Claude Code producer
+### 2. Send agent status to the sidebar
+
+#### Claude Code
 
 Installing this plugin auto-registers the status hooks — **no `settings.json`
 editing**, clean uninstall.
@@ -209,7 +244,7 @@ repo/branch). See [`plugins/zj-radar-claude/README.md`](plugins/zj-radar-claude/
 for details. It's a no-op outside Zellij, so it's safe to leave enabled
 everywhere.
 
-### Optional: the `zj-radar` CLI
+#### Codex and the native CLI
 
 A native binary that drops the `jq`/`bash` dependency and wires non-plugin agents.
 
@@ -228,13 +263,28 @@ cargo install --git https://github.com/mark-toda/zj-radar --features cli
   `notify` program (e.g. a Computer Use notifier); pass `--force` to replace it,
   `--dry-run` to preview, `--uninstall` to remove. (Claude needs no `setup` — use
   the plugin in §2.)
+- **`zj-radar setup zellij --wasm <path>`** — copies the sidebar wasm to
+  `~/.config/zellij/plugins/zj_radar.wasm`, manages the `radar` alias in
+  `config.kdl`, and prints the layout snippet. It leaves layouts user-owned.
 
 Codex reports only turn-completion, so it shows as `done` only (no `working`).
 
 ## Configuration
 
-Pass options in the layout's `plugin { ... }` block. Unknown keys are ignored
-and invalid values fall back to the default (parsing never fails):
+With the recommended alias setup, defaults live in
+`~/.config/zellij/config.kdl`:
+
+```kdl
+plugins {
+    radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
+        density "comfortable"
+        naming "off"
+    }
+}
+```
+
+Layouts should continue to reference `plugin location="radar"`. Unknown keys are
+ignored and invalid values fall back to the default (parsing never fails):
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
@@ -242,13 +292,6 @@ and invalid values fall back to the default (parsing never fails):
 | `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
-
-```kdl
-plugin location="file:~/.config/zellij/plugins/zj_radar.wasm" {
-    density "comfortable"
-    naming "off"
-}
-```
 
 These can also be changed **at runtime** without editing the layout, by
 broadcasting a flat JSON object on the `zj_radar.config.v1` pipe:
@@ -296,7 +339,7 @@ zellij pipe --name zj_radar.status.v1 -- \
 
 ```sh
 nix develop                              # host Rust + wasm32-wasip1 std + zellij
-cargo test                               # 135 pure-logic tests, no wasm needed
+cargo test                               # host tests, no wasm needed
 nix develop -c cargo build --target wasm32-wasip1
 zellij -n dev/dev.kdl                     # dev session — run from the repo root (relative wasm path)
 ./dev/reload.sh                           # rebuild + hot-reload the sidebar IN PLACE, no restart
@@ -322,9 +365,9 @@ gated behind `#[cfg(target_arch = "wasm32")]`. See
   overflow folding, theme-derived card surfaces, runtime config.
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
 - ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
-  conflict-aware `setup`; see [Optional: the `zj-radar` CLI](#optional-the-zj-radar-cli).
+  conflict-aware `setup`; see [Codex and the native CLI](#codex-and-the-native-cli).
 - 📋 **Not yet built** — cross-platform prebuilt release binaries and a
-  `zj-radar init` sidebar installer. See [`docs/distribution.md`](docs/distribution.md).
+  fully automatic layout patcher. See [`docs/distribution.md`](docs/distribution.md).
 
 ## License
 

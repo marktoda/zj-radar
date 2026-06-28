@@ -1,15 +1,13 @@
 // zj-radar — a runnable example layout with the sidebar as a pinned left column.
 //
+//   zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 //   cp examples/radar-sidebar.kdl ~/.config/zellij/layouts/
 //   zellij --layout radar-sidebar
 //
-// This file is self-contained: it uses the explicit `file:` path so it runs
-// without any config.kdl changes. If you've aliased the plugin in config.kdl
+// This layout expects the `radar` plugin alias in ~/.config/zellij/config.kdl.
+// `zj-radar setup zellij --wasm ...` creates it, or you can add it manually:
 //
-//     plugins { radar location="file:~/.config/zellij/plugins/zj_radar.wasm" { naming "managed" } }
-//
-// then replace every `plugin location="file:~/.config/.../zj_radar.wasm" { ... }`
-// block below with the one-liner `plugin location="radar"`.
+//   plugins { radar location="file:~/.config/zellij/plugins/zj_radar.wasm" { naming "managed" } }
 //
 // The sidebar is a borderless left column INSIDE a vertical split, OUTSIDE
 // `children`, so it survives swap-layout cycling. Two templates are required —
@@ -21,10 +19,7 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
-                plugin location="file:~/.config/zellij/plugins/zj_radar.wasm" {
-                    // off | managed | force — see the README "Configuration" table.
-                    naming "managed"
-                }
+                plugin location="radar"
             }
             children
         }
@@ -40,9 +35,7 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size=24 borderless=true {
-                plugin location="file:~/.config/zellij/plugins/zj_radar.wasm" {
-                    naming "managed"
-                }
+                plugin location="radar"
             }
             pane focus=true
         }

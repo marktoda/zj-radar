@@ -2,6 +2,7 @@
 //! `cli` feature so the wasm plugin build never pulls clap/toml_edit.
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 mod notify;
 mod setup;
@@ -32,10 +33,13 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Idempotently wire installed agents' configs to call `zj-radar notify`.
+    /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
-        /// Agents to set up (default: all detected). v1: codex.
-        agents: Vec<String>,
+        /// Targets to set up (default: detected agents only). Supported: codex, zellij.
+        targets: Vec<String>,
+        /// Wasm artifact to install when setting up Zellij.
+        #[arg(long, value_name = "PATH")]
+        wasm: Option<PathBuf>,
         /// Remove our entries instead of adding them.
         #[arg(long)]
         uninstall: bool,
@@ -64,13 +68,14 @@ pub fn run() {
             notify::run(&agent, input.as_deref(), status.as_deref(), dry_run);
         }
         Command::Setup {
-            agents,
+            targets,
+            wasm,
             uninstall,
             dry_run,
             yes,
             force,
         } => {
-            setup::run(&agents, uninstall, dry_run, yes, force);
+            setup::run(&targets, wasm.as_deref(), uninstall, dry_run, yes, force);
         }
     }
 }

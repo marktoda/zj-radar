@@ -21,8 +21,11 @@ to slot into. **This pass covers BEHAVIOR knobs only; visual knobs
 
 A Zellij plugin is configured by the `plugin location="…" { key "value"; … }`
 block that launches it; those key/values arrive in `load(config:
-BTreeMap<String,String>)` as **strings**. There is no separate config file. So
-the whole surface is: parse that `BTreeMap` once in `load()`.
+BTreeMap<String,String>)` as **strings**. In the current install flow those keys
+usually live on the `radar` plugin alias in `~/.config/zellij/config.kdl`, and
+layouts reference `plugin location="radar"`. Inline layout plugin blocks still
+work, but the alias keeps path and defaults in one place. The runtime surface is
+unchanged: parse the `BTreeMap` once in `load()`.
 
 ## Module: `src/config.rs` (new, pure — no `zellij-tile` dep)
 
