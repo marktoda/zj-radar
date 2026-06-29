@@ -972,16 +972,11 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
 }
 
 pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
-    let mut out = String::new();
-    let mut targets: Vec<Option<RailTarget>> = Vec::new();
     if rows.is_empty() {
-        return RenderedRail { ansi: out, targets };
+        return RenderedRail::from_lines(vec![]);
     }
     let width = opts.width;
     let cards = opts.density == Density::Cards;
-    // In Cards density the whole sidebar is a cohesive dark panel: the header,
-    // gaps and idle strip all sit on `rail_bg`; only card content lines carry
-    // their (subtle, ladder-derived) surface tint.
     let rail = tc_bg(opts.theme.rail_bg);
 
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
@@ -992,80 +987,53 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         .height
         .saturating_sub(header_lines(rows, opts.header, opts.density));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
-    // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
-    // Emit the identity header block only when configured on (and rows exist).
-    for line in render_header(rows, opts, overflow) {
-        if cards {
-            out.push_str(&paint_card_line(&line.text, width, &rail));
-        } else {
-            out.push_str(&line.text);
-        }
-        targets.push(None);
+
+    let mut flat: Vec<Line> = Vec::new();
+
+    // Header.
+    for mut line in render_header(rows, opts, overflow) {
+        if cards { line.text = paint_card_line(&line.text, width, &rail); }
+        flat.push(line);
     }
 
-    for &(i, max_lines) in &plan {
+    // Body: one card block per kept row.
+    for &(i, budget) in &plan {
         let row_target = target_for_row(&rows[i]);
-        // Every tab is a card: render it into a temporary buffer, then paint
-        // each content line with its class's surface tint (idle < agent <
-        // active) — a subtle step up from the dark panel.
-        if cards {
-            let bg = card_tint(&rows[i], &opts.theme);
-            let active_child_bg = tc_bg(opts.theme.surface_agent);
-            // pad_y rows: blank, painted with THIS card's own surface bg —
-            // card-colored internal TOP padding (breathing room) that belongs
-            // to this tab's click span.
-            for _ in 0..spacing.pad_y {
-                out.push_str(&paint_card_line("\n", width, &bg));
-                targets.push(Some(row_target));
-            }
-            for (line_idx, line) in blocks[i].iter().cloned().take(max_lines).enumerate() {
-                let line_bg = match line.bg {
-                    LineBg::ActiveChild => &active_child_bg,
-                    _ => &bg,
-                };
-                out.push_str(&paint_card_line(&line.text, width, line_bg));
-                targets.push(line.target);
-                let _ = line_idx;
-            }
-        } else {
-            // Non-card densities: pad_y is 0, so emit content directly.
-            for _ in 0..spacing.pad_y {
-                out.push('\n');
-                targets.push(Some(row_target));
-            }
-            for line in blocks[i].iter().cloned().take(max_lines) {
-                out.push_str(&line.text);
-                targets.push(line.target);
-            }
+        let card_bg = card_tint(&rows[i], &opts.theme);
+        let active_child_bg = tc_bg(opts.theme.surface_agent);
+
+        // pad_y internal top padding — belongs to this card's click span.
+        for _ in 0..spacing.pad_y {
+            let text = if cards { paint_card_line("\n", width, &card_bg) } else { "\n".to_string() };
+            flat.push(Line { text, target: Some(row_target), bg: LineBg::None });
         }
-        // Emit blank gap line(s) after each tab's content block (external
-        // separation). In Cards the gap is painted with the dark panel base (so
-        // the whole column is one cohesive panel); otherwise it stays bare.
-        for _ in 0..spacing.gap {
-            if cards {
-                out.push_str(&paint_card_line("\n", width, &rail));
+
+        // content (truncated to the planned budget == today's compression).
+        for line in blocks[i].iter().cloned().take(budget) {
+            let text = if cards {
+                let bg = match line.bg { LineBg::ActiveChild => &active_child_bg, _ => &card_bg };
+                paint_card_line(&line.text, width, bg)
             } else {
-                out.push('\n');
-            }
-            targets.push(None);
+                line.text
+            };
+            flat.push(Line { text, target: line.target, bg: LineBg::None });
+        }
+
+        // gap external separation (dark panel base in Cards).
+        for _ in 0..spacing.gap {
+            let text = if cards { paint_card_line("\n", width, &rail) } else { "\n".to_string() };
+            flat.push(Line { text, target: None, bg: LineBg::None });
         }
     }
 
-    // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
-    for line in render_strip(strip_folded, opts) {
-        if cards {
-            out.push_str(&paint_card_line(&line.text, width, &rail));
-        } else {
-            out.push_str(&line.text);
-        }
-        targets.push(None);
+    // Idle strip.
+    for mut line in render_strip(strip_folded, opts) {
+        if cards { line.text = paint_card_line(&line.text, width, &rail); }
+        flat.push(line);
     }
-    // Strip trailing newline to prevent vt100 scroll in the test harness.
-    if out.ends_with('\n') {
-        out.pop();
-    }
-    RenderedRail { ansi: out, targets }
+
+    RenderedRail::from_lines(flat)
 }
 
 #[cfg(test)]
