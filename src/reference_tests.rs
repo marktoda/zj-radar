@@ -281,9 +281,11 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 panic!("reference DSL: unknown kind '{}' in scenario", kind_str);
             }
 
-            // Validate status token
-            let valid_statuses = ["running", "pending", "done", "error", "idle"];
-            if !valid_statuses.contains(&status_str) {
+            // Validate status token against the single source of truth (the
+            // `statuses!` table) so the DSL vocabulary can't drift from `Status`.
+            // Kept strict (panic on unknown) to catch scenario typos — unlike the
+            // lenient `from_wire` used to parse it below.
+            if !Status::ALL.iter().any(|s| s.as_wire() == status_str) {
                 panic!("reference DSL: unknown status '{}' in scenario", status_str);
             }
 

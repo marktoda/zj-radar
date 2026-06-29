@@ -503,6 +503,19 @@ fn plan_layout(
     (plan, strip_folded, lean)
 }
 
+/// The onboarding legend: every `Status` with its plain-English gloss, in a
+/// deliberate *display* order (loudest first), distinct from the `Status::ALL`
+/// severity order. Each variant must appear exactly once — pinned by
+/// `onboarding_legend_covers_every_status` so a new `statuses!` row can't be
+/// silently dropped from the onboarding screen.
+const ONBOARDING_LEGEND: [(Status, &str); Status::ALL.len()] = [
+    (Status::Pending, "needs you"),
+    (Status::Running, "working"),
+    (Status::Done, "done"),
+    (Status::Error, "error"),
+    (Status::Idle, "idle"),
+];
+
 /// The rail's resting "hello / how it works" face — shown on cold start or
 /// before permission is granted. Not a permission interceptor.
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
@@ -515,14 +528,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     out.push_str(&format!("{}\n", Seg::new(muted, " watching your tabs for")));
     out.push_str(&format!("{}\n", Seg::new(muted, " AI agent activity.")));
     out.push('\n');
-    let legend = [
-        (Status::Pending, "needs you"),
-        (Status::Running, "working"),
-        (Status::Done, "done"),
-        (Status::Error, "error"),
-        (Status::Idle, "idle"),
-    ];
-    for (st, label) in legend {
+    for (st, label) in ONBOARDING_LEGEND {
         let role_code = st.role().ansi();
         out.push_str(&format!(
             " {} {}\n",
@@ -2054,6 +2060,18 @@ mod tests {
         assert!(s.ansi.contains('◆')); // legend includes the waiting glyph (plain set)
         assert!(s.ansi.to_lowercase().contains("needs you"));
         assert!(s.ansi.to_lowercase().contains("click"));
+    }
+
+    #[test]
+    fn onboarding_legend_covers_every_status() {
+        // The const's length is already pinned to `Status::ALL.len()` at compile
+        // time; this guards the complementary property — every variant appears
+        // exactly once (no duplicate covering for a missing one). Adding a
+        // `statuses!` row therefore forces a matching legend entry.
+        for &want in Status::ALL {
+            let hits = ONBOARDING_LEGEND.iter().filter(|(st, _)| *st == want).count();
+            assert_eq!(hits, 1, "{want:?} must appear exactly once in the legend");
+        }
     }
 
     #[test]
@@ -4318,14 +4336,10 @@ rail";
     use proptest::prelude::*;
 
     prop_compose! {
-        fn arb_status()(n in 0u8..5) -> Status {
-            match n {
-                0 => Status::Idle,
-                1 => Status::Done,
-                2 => Status::Running,
-                3 => Status::Pending,
-                _ => Status::Error,
-            }
+        // Draw from the `statuses!` table so a new variant is exercised by every
+        // property test using `arb_status` automatically — no ladder to update.
+        fn arb_status()(s in proptest::sample::select(Status::ALL.to_vec())) -> Status {
+            s
         }
     }
 

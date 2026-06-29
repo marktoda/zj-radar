@@ -1,4 +1,10 @@
 //! Pure agent-status vocabulary. No zellij-tile dependency.
+//!
+//! `Status` and everything that varies per variant — wire token, color role,
+//! and both glyph sets — are generated from the `statuses!` table below, the
+//! single source of truth. Callers should reach for the generated `as_wire` /
+//! `from_wire` / `role` / `glyph_for` / `ALL` rather than re-deriving any of
+//! these by hand, so the vocabulary can never drift across the codebase.
 
 /// Define `Status` and everything that varies per variant from one table.
 ///

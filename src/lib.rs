@@ -1171,7 +1171,12 @@ mod tests {
         fn click_round_trip_hits_drawn_target(
             n_tabs in 1usize..6,
             active_idx in 0usize..6,
-            statuses in proptest::collection::vec(0u8..5, 1..6),
+            // Draw statuses straight from the `statuses!` table, so a new variant
+            // is covered by this proptest automatically — no ladder to update.
+            statuses in proptest::collection::vec(
+                proptest::sample::select(Status::ALL.to_vec()),
+                1..6,
+            ),
             width in proptest::sample::select(vec![24usize, 40, 80]),
         ) {
             // Build a state with n_tabs, each tab one pane with a status.
@@ -1179,14 +1184,7 @@ mod tests {
                 .map(|i| (i, "t", i == active_idx % n_tabs))
                 .collect();
             let mut state = make_state_with_tabs(&specs);
-            for (i, &s) in statuses.iter().take(n_tabs).enumerate() {
-                let st = match s {
-                    0 => Status::Idle,
-                    1 => Status::Done,
-                    2 => Status::Running,
-                    3 => Status::Pending,
-                    _ => Status::Error,
-                };
+            for (i, &st) in statuses.iter().take(n_tabs).enumerate() {
                 // one pane per tab; pane id = tab index
                 apply_payload(&mut state, i as u32, st, 1);
                 state.runtime.radar.set_tab_panes_for_position(i, vec![pane(i as u32)]);
