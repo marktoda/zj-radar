@@ -402,7 +402,6 @@ impl PluginRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::Command;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
     use crate::radar_state::{TabId, TerminalPane};

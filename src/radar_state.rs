@@ -247,16 +247,12 @@ impl RadarState {
     /// pure `cycle_attention` owns the ordering/wrap logic.
     pub(crate) fn next_attention_tab(&self, dir: Direction) -> Option<usize> {
         let active = self.tabs.iter().find(|t| t.active).map(|t| t.position);
-        let empty = Vec::new();
         // Order is irrelevant here: `cycle_attention` sorts the attention
         // members itself, so we gather `(position, status)` pairs as-is.
         let pairs: Vec<(usize, Status)> = self
             .tabs
             .iter()
-            .map(|t| {
-                let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
-                (t.position, self.tab_display(panes).status)
-            })
+            .map(|t| (t.position, self.tab_display_for(t.position).status))
             .collect();
         cycle_attention(&pairs, active, dir)
     }
@@ -266,14 +262,12 @@ impl RadarState {
         let mut sorted = self.tabs.clone();
         sorted.sort_by_key(|t| t.position);
         for t in &sorted {
-            let empty = Vec::new();
-            let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
             rows.push(TabRow {
                 number: t.position as u32 + 1,
                 name: t.name.clone(),
                 active: t.active,
                 has_bell: t.has_bell,
-                display: self.tab_display(panes),
+                display: self.tab_display_for(t.position),
             });
         }
         rows
@@ -576,6 +570,14 @@ impl RadarState {
         rollup::roll_up(panes, |id| {
             self.status.get(id).or_else(|| self.command.get(id))
         })
+    }
+
+    /// Roll a tab up by position, treating an absent pane list as no panes.
+    /// The per-position lookup is shared by `rows` and `next_attention_tab`.
+    fn tab_display_for(&self, position: usize) -> TabDisplay {
+        let empty = Vec::new();
+        let panes = self.tab_panes.get(&position).unwrap_or(&empty);
+        self.tab_display(panes)
     }
 }
 
