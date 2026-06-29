@@ -1,6 +1,8 @@
 //! Source-agnostic identity kind — agents and tasks as peers.
 //! No zellij-tile dependency.
 
+use crate::status::GlyphSet;
+
 /// What kind of process owns a pane. Agents (Claude, Codex, Gemini) and task
 /// types (Test, Build, Deploy, Server) are peers — only the mark glyph differs.
 /// The renderer and sorter treat all variants identically.
@@ -33,18 +35,34 @@ impl Kind {
         }
     }
 
-    /// Single-character identity mark shown on line 2 before the activity.
-    pub fn mark(self) -> char {
-        match self {
-            Kind::Claude => '✳',
-            Kind::Codex => '❉',
-            Kind::Gemini => '✦',
-            Kind::Command => '$',
-            Kind::Other => '⦿',
-            Kind::Test => '⚗',
-            Kind::Build => '⚙',
-            Kind::Deploy => '⇡',
-            Kind::Server => '❯',
+    /// Single-character identity mark shown before the activity. Glyph-set
+    /// aware: the Nerd set upgrades the three *agent* marks (which are thin
+    /// asterisk-family glyphs in Plain) to heavier font-native MDI icons; the
+    /// task marks (`⚙ ⚗ ⇡ ❯ $ ⦿`) already read well and are shared across sets.
+    pub fn mark(self, set: GlyphSet) -> char {
+        match set {
+            GlyphSet::Nerd => match self {
+                Kind::Claude => '\u{f06a9}', // nf-md-robot 󰚩
+                Kind::Codex => '\u{f167a}',  // nf-md-robot_outline
+                Kind::Gemini => '\u{f0eb9}', // nf-md-star_four_points (sparkle)
+                Kind::Command => '$',
+                Kind::Other => '⦿',
+                Kind::Test => '⚗',
+                Kind::Build => '⚙',
+                Kind::Deploy => '⇡',
+                Kind::Server => '❯',
+            },
+            GlyphSet::Plain => match self {
+                Kind::Claude => '✳',
+                Kind::Codex => '❉',
+                Kind::Gemini => '✦',
+                Kind::Command => '$',
+                Kind::Other => '⦿',
+                Kind::Test => '⚗',
+                Kind::Build => '⚙',
+                Kind::Deploy => '⇡',
+                Kind::Server => '❯',
+            },
         }
     }
 }
@@ -79,15 +97,28 @@ mod tests {
 
     #[test]
     fn mark_per_variant() {
-        assert_eq!(Kind::Claude.mark(), '✳');
-        assert_eq!(Kind::Codex.mark(), '❉');
-        assert_eq!(Kind::Gemini.mark(), '✦');
-        assert_eq!(Kind::Command.mark(), '$');
-        assert_eq!(Kind::Other.mark(), '⦿');
-        assert_eq!(Kind::Test.mark(), '⚗');
-        assert_eq!(Kind::Build.mark(), '⚙');
-        assert_eq!(Kind::Deploy.mark(), '⇡');
-        assert_eq!(Kind::Server.mark(), '❯');
+        use GlyphSet::Plain;
+        assert_eq!(Kind::Claude.mark(Plain), '✳');
+        assert_eq!(Kind::Codex.mark(Plain), '❉');
+        assert_eq!(Kind::Gemini.mark(Plain), '✦');
+        assert_eq!(Kind::Command.mark(Plain), '$');
+        assert_eq!(Kind::Other.mark(Plain), '⦿');
+        assert_eq!(Kind::Test.mark(Plain), '⚗');
+        assert_eq!(Kind::Build.mark(Plain), '⚙');
+        assert_eq!(Kind::Deploy.mark(Plain), '⇡');
+        assert_eq!(Kind::Server.mark(Plain), '❯');
+    }
+
+    #[test]
+    fn nerd_set_upgrades_agent_marks() {
+        use GlyphSet::Nerd;
+        // Agent marks become heavier font-native MDI glyphs in the Nerd set.
+        assert_eq!(Kind::Claude.mark(Nerd), '\u{f06a9}');
+        assert_eq!(Kind::Codex.mark(Nerd), '\u{f167a}');
+        assert_eq!(Kind::Gemini.mark(Nerd), '\u{f0eb9}');
+        // Task marks are shared across sets.
+        assert_eq!(Kind::Build.mark(Nerd), '⚙');
+        assert_eq!(Kind::Command.mark(Nerd), '$');
     }
 
     #[test]
@@ -96,16 +127,19 @@ mod tests {
         let all = [
             Claude, Codex, Gemini, Command, Other, Test, Build, Deploy, Server,
         ];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(
-                    a.mark(),
-                    b.mark(),
-                    "{:?} and {:?} share the same mark '{}'",
-                    a,
-                    b,
-                    a.mark()
-                );
+        for set in [GlyphSet::Plain, GlyphSet::Nerd] {
+            for (i, a) in all.iter().enumerate() {
+                for b in &all[i + 1..] {
+                    assert_ne!(
+                        a.mark(set),
+                        b.mark(set),
+                        "{:?} and {:?} share the same mark '{}' in {:?}",
+                        a,
+                        b,
+                        a.mark(set),
+                        set
+                    );
+                }
             }
         }
     }

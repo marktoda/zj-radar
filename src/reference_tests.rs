@@ -267,6 +267,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                                 branch: String::new(),
                                 msg: pane.msg.clone(),
                                 since_tick: pane.since_tick,
+                                outcome: None,
                                 status: pane.status,
                                 kind: pane.kind,
                             });
@@ -276,7 +277,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
                 let pane_displays: Vec<PaneDisplay> = spec.panes
                     .iter()
-                    .map(|p| PaneDisplay::tracked(p.pane_id, p.kind, p.status, p.msg.clone()))
+                    .map(|p| PaneDisplay::tracked(p.pane_id, p.kind, p.status, p.msg.clone(), None))
                     .collect();
 
                 TabDisplay {
