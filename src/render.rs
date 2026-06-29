@@ -200,6 +200,7 @@ pub struct RailTarget {
 
 /// Surface class a line sits on (Cards density only); resolved to a concrete
 /// bg escape during assembly using the owning row. `None` = never painted.
+#[allow(dead_code)] // variants consumed by Tasks 2-3
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineBg {
     None,
@@ -215,6 +216,7 @@ enum LineBg {
 struct Line {
     text: String,
     target: Option<RailTarget>,
+    #[allow(dead_code)]
     bg: LineBg,
 }
 
