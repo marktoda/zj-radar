@@ -181,12 +181,24 @@ mod tests {
     fn materialize_is_noop_on_matching_version() {
         let d = tempdir().unwrap();
         let dir = d.path().join("c");
+        // First call: write the real assets.
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
-        let mtime = std::fs::metadata(dir.join("config.kdl")).unwrap().modified().unwrap();
-        // second call with same version must not rewrite
-        materialize(&dir, "0.1.0", &test_assets()).unwrap();
-        let mtime2 = std::fs::metadata(dir.join("config.kdl")).unwrap().modified().unwrap();
-        assert_eq!(mtime, mtime2, "matching version must be a no-op");
+        let first_layout =
+            std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();
+        // Second call: same version, but with a sentinel layout that must NOT land on disk.
+        let sentinel_assets = Assets {
+            config_template: "SENTINEL-CONFIG-SHOULD-NOT-BE-WRITTEN\n",
+            layout: "SENTINEL-SHOULD-NOT-BE-WRITTEN\n",
+            wasm: b"SENTINEL-WASM",
+        };
+        materialize(&dir, "0.1.0", &sentinel_assets).unwrap();
+        let after_layout =
+            std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();
+        assert_eq!(after_layout, first_layout, "matching version must be a no-op");
+        assert!(
+            !after_layout.contains("SENTINEL"),
+            "sentinel must not appear in layout file"
+        );
     }
 
     #[test]
