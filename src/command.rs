@@ -14,6 +14,13 @@ pub const DEBOUNCE_TICKS: u64 = 1;
 /// foreground command.
 const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship"];
 
+/// Agent binaries. These are *push*-tracked via the `zj_radar.status.v1` pipe
+/// from their hooks, so the command observer must never apply its command
+/// lifecycle to them. Treating an agent's foreground process as an ordinary
+/// command flickers the row between Running and Done as the agent spawns and
+/// reaps tool subprocesses (each fg transition is a `CommandChanged` event).
+const AGENT_NAMES: &[&str] = &["claude", "codex", "gemini"];
+
 /// A pending foreground command awaiting debounce promotion.
 struct Pending {
     command: String,
@@ -31,6 +38,12 @@ pub struct CommandStore {
     resolved: HashMap<u32, TrackedObservation>,
     /// Pending fg commands awaiting debounce promotion.
     pending: HashMap<u32, Pending>,
+    /// Panes whose Running command has *left* the foreground, awaiting debounce
+    /// confirmation before flipping to Done. Value = tick first observed leaving.
+    /// This debounces the Running→Done edge symmetrically with promotion, so a
+    /// brief foreground drop (a wrapper spawning a short-lived child) doesn't
+    /// flash Done.
+    pending_done: HashMap<u32, u64>,
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
     /// identical exits.
     exited: HashMap<u32, Option<i32>>,
@@ -235,23 +248,36 @@ impl CommandStore {
         tick: u64,
     ) {
         let name = command.first().map(|s| basename(s)).unwrap_or("");
-        let in_ignore_set = IGNORE_NAMES.contains(&name);
+        // Shells and agents are both "not a real command we track here": shells
+        // mean back-to-the-prompt; agents are owned by the push pipe (see
+        // AGENT_NAMES). Either way we never open a command lifecycle for them.
+        let in_ignore_set = IGNORE_NAMES.contains(&name) || AGENT_NAMES.contains(&name);
 
         if !is_foreground || in_ignore_set {
-            // The foreground command (if any) has ended: clear pending and
-            // possibly transition Running → Done.
+            // The foreground command (if any) has ended: clear pending and, if a
+            // command was Running, mark it *tentatively* done. `on_timer`
+            // confirms the Done after the debounce window — so a momentary
+            // foreground drop (a child subprocess, a TUI handoff) doesn't flip
+            // the row to Done and straight back.
             self.pending.remove(&pane_id);
-            if let Some(s) = self.resolved.get_mut(&pane_id) {
-                if s.status == Status::Running {
-                    s.status = Status::Done;
-                    s.on_focus = Some(Status::Idle);
-                    s.last_change_tick = tick;
-                }
-                // Otherwise leave resolved unchanged (idle stays idle).
+            if self
+                .resolved
+                .get(&pane_id)
+                .is_some_and(|s| s.status == Status::Running)
+            {
+                self.pending_done.entry(pane_id).or_insert(tick);
             }
+            // Otherwise leave resolved unchanged (idle stays idle).
         } else {
-            // Real foreground command: build the cleaned command string.
+            // A real foreground command is running: it is no longer leaving, so
+            // cancel any tentative-done.
+            self.pending_done.remove(&pane_id);
+            // Build the cleaned command string.
             let cmd_string = display_command(command);
+            if cmd_string.is_empty() {
+                // Unknown/empty argv — never surface a blank Running row.
+                return;
+            }
             let source = command_source(command, &cmd_string).to_string();
 
             let cwd_str = cwd.unwrap_or("").to_string();
@@ -298,6 +324,26 @@ impl CommandStore {
                 );
             }
         }
+
+        // Confirm tentative-done transitions that survived the debounce window:
+        // a Running command that left the foreground and never came back flips
+        // to Done (symmetric debounce with promotion above).
+        let to_finish: Vec<u32> = self
+            .pending_done
+            .iter()
+            .filter(|(_, &since)| tick.saturating_sub(since) >= DEBOUNCE_TICKS)
+            .map(|(&id, _)| id)
+            .collect();
+        for pane_id in to_finish {
+            self.pending_done.remove(&pane_id);
+            if let Some(s) = self.resolved.get_mut(&pane_id) {
+                if s.status == Status::Running {
+                    s.status = Status::Done;
+                    s.on_focus = Some(Status::Idle);
+                    s.last_change_tick = tick;
+                }
+            }
+        }
     }
 
     /// Apply a pane's exit status. Deduped: a repeated identical
@@ -313,8 +359,10 @@ impl CommandStore {
             return;
         }
         self.exited.insert(pane_id, exit_status);
-        // Clear any pending entry for this pane.
+        // Clear any pending / tentative-done entry for this pane — the exit is
+        // authoritative.
         self.pending.remove(&pane_id);
+        self.pending_done.remove(&pane_id);
 
         let new_status = match exit_status {
             Some(0) => Status::Done,
@@ -359,6 +407,7 @@ impl CommandStore {
     pub fn prune(&mut self, live: &HashSet<u32>) {
         self.resolved.retain(|id, _| live.contains(id));
         self.pending.retain(|id, _| live.contains(id));
+        self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
     }
 
@@ -532,19 +581,22 @@ mod tests {
         store.on_timer(2);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
-        // t=3: return-to-shell (is_foreground=false) → Done with on_focus=Some(Idle)
+        // t=3: return-to-shell (is_foreground=false) → tentative, still Running
         store.on_command_changed(1, &[], false, None, 3);
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+        // t=4: timer past debounce → Done with on_focus=Some(Idle)
+        store.on_timer(4);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.on_focus, Some(Status::Idle));
-        assert_eq!(s.last_change_tick, 3);
+        assert_eq!(s.last_change_tick, 4);
 
-        // t=4: pane focused → Idle, on_focus cleared
-        store.on_pane_focused(1, 4);
+        // t=5: pane focused → Idle, on_focus cleared
+        store.on_pane_focused(1, 5);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Idle);
         assert_eq!(s.on_focus, None);
-        assert_eq!(s.last_change_tick, 4);
+        assert_eq!(s.last_change_tick, 5);
     }
 
     // ── Test 5: on_exit(Some(0)) → Done; on_exit(Some(3)) → Error; dedupe
@@ -647,15 +699,22 @@ mod tests {
         store.on_timer(2);
         assert!(store.has_pending_or_active(), "true while Running");
 
-        // Return to shell → Done
+        // Return to shell → tentative; still active (Running) until debounce.
         store.on_command_changed(1, &[], false, None, 3);
+        assert!(
+            store.has_pending_or_active(),
+            "still active until the debounce window flips it to Done"
+        );
+
+        // Timer past debounce → Done (no pending, no Running).
+        store.on_timer(4);
         assert!(
             !store.has_pending_or_active(),
             "false once Done (no pending, no Running)"
         );
 
         // Focus to clear to Idle
-        store.on_pane_focused(1, 4);
+        store.on_pane_focused(1, 5);
         assert!(!store.has_pending_or_active(), "false when Idle");
     }
 
@@ -746,6 +805,92 @@ mod tests {
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.repo, "pinky", "repo must be preserved");
         assert_eq!(s.msg, "cargo test", "msg must be preserved");
+    }
+
+    // ── A: agent binaries are push-tracked, never command-tracked ──
+
+    #[test]
+    fn agent_foreground_commands_are_not_tracked() {
+        // claude/codex/gemini report their status via the push pipe. Their
+        // foreground command must leave NO command-store trace — otherwise
+        // Zellij's CommandChanged churn (agent → tool subprocess → agent)
+        // flickers the row between Running and Done and rewrites its message.
+        for agent in &["claude", "codex", "gemini"] {
+            let mut store = CommandStore::default();
+            store.on_command_changed(1, &[agent.to_string()], true, Some("/work/repo"), 1);
+            assert!(
+                !store.pending.contains_key(&1),
+                "{agent} must not enter pending"
+            );
+            store.on_timer(2);
+            assert!(
+                store.get(1).is_none(),
+                "{agent} must leave no resolved command state"
+            );
+        }
+    }
+
+    // ── B: leaving the foreground is debounced before flipping to Done ──
+
+    #[test]
+    fn leaving_foreground_debounces_before_marking_done() {
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
+        store.on_timer(2);
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+
+        // Return-to-shell: tentative — must still read Running this instant.
+        store.on_command_changed(1, &[], false, None, 3);
+        assert_eq!(
+            store.get(1).unwrap().status,
+            Status::Running,
+            "leaving the foreground must not flip to Done instantly"
+        );
+
+        // Timer past the debounce window → now Done.
+        store.on_timer(4);
+        let s = store.get(1).unwrap();
+        assert_eq!(s.status, Status::Done);
+        assert_eq!(s.on_focus, Some(Status::Idle));
+        assert_eq!(s.last_change_tick, 4);
+    }
+
+    #[test]
+    fn brief_foreground_drop_replaced_by_command_never_shows_done() {
+        // A pane that briefly drops out of the foreground then immediately runs
+        // another real command (e.g. a wrapper spawning a child) must never show
+        // a spurious Done in between.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
+        store.on_timer(2);
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+
+        store.on_command_changed(1, &[], false, None, 3);
+        store.on_command_changed(1, &["rg".to_string(), "needle".to_string()], true, Some("/repo"), 3);
+
+        store.on_timer(4);
+        assert_eq!(
+            store.get(1).unwrap().status,
+            Status::Running,
+            "a brief fg drop replaced by a new command must never surface Done"
+        );
+    }
+
+    // ── C: an empty/unknown foreground command never becomes a blank row ──
+
+    #[test]
+    fn empty_foreground_command_is_never_promoted() {
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &[], true, Some("/repo"), 1);
+        assert!(
+            !store.pending.contains_key(&1),
+            "empty fg argv must not enter pending"
+        );
+        store.on_timer(2);
+        assert!(
+            store.get(1).is_none(),
+            "empty fg command must leave no resolved state (no blank Running row)"
+        );
     }
 
     #[test]
