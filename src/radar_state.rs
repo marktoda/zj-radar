@@ -454,67 +454,46 @@ impl RadarState {
         out
     }
 
-    /// Does any pane in this tab still justify `name`? True when `name` matches a
-    /// pane's repo, its worktree-resolved cwd, or its title — i.e. `name` is still
-    /// somewhere in [`Self::computed_name`]'s candidate space. Used to make an
-    /// applied name "sticky" so focus changes between panes don't churn it.
-    fn name_supported(&self, panes: &[TerminalPane], name: &str) -> bool {
-        panes.iter().any(|p| {
-            let repo = self
-                .status
-                .get(p.id)
-                .map(|s| s.repo.as_str())
-                .filter(|r| !r.is_empty());
-            if repo == Some(name) {
-                return true;
-            }
-            if let Some(cwd) = self.pane_cwd.get(&p.id) {
-                if worktree_repo_dir(cwd).as_deref() == Some(name) {
-                    return true;
-                }
-            }
-            title_name(&p.title).as_deref() == Some(name)
-        })
-    }
-
-    fn computed_name(&self, panes: &[TerminalPane]) -> Option<String> {
+    /// The ordered space of names this tab could take, highest priority first:
+    /// the focused pane's repo, then any pane's repo, then focused/any
+    /// worktree-resolved cwd, then focused/any pane title. `computed_name` takes
+    /// the first; `name_supported` asks whether a name sits anywhere in this
+    /// space. Deriving both from this one list is what keeps applied-name
+    /// stickiness (`name_supported`) in lockstep with what the renamer would
+    /// actually pick (`computed_name`) — they cannot disagree about the candidate
+    /// space because there is only one.
+    fn name_candidates(&self, panes: &[TerminalPane]) -> Vec<String> {
         let repo_of = |p: &TerminalPane| {
             self.status
                 .get(p.id)
                 .map(|s| s.repo.clone())
                 .filter(|r| !r.is_empty())
         };
+        let worktree_of =
+            |p: &TerminalPane| self.pane_cwd.get(&p.id).and_then(|cwd| worktree_repo_dir(cwd));
+        let title_of = |p: &TerminalPane| title_name(&p.title);
         let focused = panes.iter().find(|p| p.focused_in_tab);
-        if let Some(p) = focused {
-            if let Some(r) = repo_of(p) {
-                return Some(r);
-            }
-        }
-        for p in panes {
-            if let Some(r) = repo_of(p) {
-                return Some(r);
-            }
-        }
-        if let Some(p) = focused {
-            if let Some(cwd) = self.pane_cwd.get(&p.id) {
-                if let Some(name) = worktree_repo_dir(cwd) {
-                    return Some(name);
-                }
-            }
-        }
-        for p in panes {
-            if let Some(cwd) = self.pane_cwd.get(&p.id) {
-                if let Some(name) = worktree_repo_dir(cwd) {
-                    return Some(name);
-                }
-            }
-        }
-        if let Some(p) = focused {
-            if let Some(name) = title_name(&p.title) {
-                return Some(name);
-            }
-        }
-        panes.first().and_then(|p| title_name(&p.title))
+
+        let mut out = Vec::new();
+        out.extend(focused.and_then(&repo_of));
+        out.extend(panes.iter().filter_map(&repo_of));
+        out.extend(focused.and_then(&worktree_of));
+        out.extend(panes.iter().filter_map(&worktree_of));
+        out.extend(focused.and_then(&title_of));
+        out.extend(panes.iter().filter_map(&title_of));
+        out
+    }
+
+    /// The tab's preferred name: the top of [`Self::name_candidates`].
+    fn computed_name(&self, panes: &[TerminalPane]) -> Option<String> {
+        self.name_candidates(panes).into_iter().next()
+    }
+
+    /// Does any pane still justify `name`? True when `name` is anywhere in
+    /// [`Self::name_candidates`] — used to keep an applied name "sticky" so focus
+    /// changes between panes don't churn it.
+    fn name_supported(&self, panes: &[TerminalPane], name: &str) -> bool {
+        self.name_candidates(panes).iter().any(|c| c == name)
     }
 
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
@@ -825,6 +804,41 @@ mod tests {
         ];
         let radar = RadarState::default();
         assert_eq!(radar.computed_name(&panes), Some("spinner-title".into()));
+    }
+
+    #[test]
+    fn computed_name_falls_back_to_the_first_pane_that_has_a_title() {
+        // No repo, no cwd, nothing focused; the first pane has no usable title
+        // but a later one does. The name falls through to that pane's title
+        // rather than giving up — the title tier mirrors name_supported, which
+        // already accepts any pane's title.
+        let radar = RadarState::default();
+        let panes = vec![titled_pane(1, "   ", false), titled_pane(2, "scratch", false)];
+        assert_eq!(radar.computed_name(&panes), Some("scratch".into()));
+    }
+
+    #[test]
+    fn every_computed_name_is_supported() {
+        // computed_name and name_supported share one candidate space, so any
+        // name computed_name can yield must be "supported" (sticky) — and any
+        // pane attribute name_supported accepts must be computable. This pins
+        // the two against drift across repo / worktree / title tiers.
+        let mut radar = RadarState::default();
+        radar
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "repo-one"), 1);
+        radar.pane_cwd.insert(2, "/work/two".into());
+        let panes = vec![titled_pane(1, "t1", false), titled_pane(2, "t2", true)];
+        let name = radar
+            .computed_name(&panes)
+            .expect("a name should be computable here");
+        assert!(
+            radar.name_supported(&panes, &name),
+            "computed name {name:?} must be considered supported"
+        );
+        // A non-focused, non-first pane's title is both supported AND computable
+        // (the case that used to diverge).
+        assert!(radar.name_supported(&panes, "t1"));
     }
 
     #[test]
