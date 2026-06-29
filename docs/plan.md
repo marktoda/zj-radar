@@ -1191,7 +1191,7 @@ git commit -m "feat: zellij host glue wiring events to the pure core"
 layout {
     default_tab_template {
         pane split_direction="vertical" {
-            pane size=24 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="file:/Users/mark.toda/dev/zj-radar/target/wasm32-wasip1/debug/zj_radar.wasm"
             }
             children

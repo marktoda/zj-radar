@@ -32,7 +32,7 @@ constraints:
 - **Monospace grid.** Everything is fixed-width cells (one cell per character).
   No sub-pixel positioning, no arbitrary spacing — only whole columns/rows.
 - **Width is precious and fixed.** The sidebar is a vertical strip, currently
-  **~24 columns** wide, full terminal height. You can propose a different width
+  **~32 columns** wide, full terminal height. You can propose a different width
   (and an optional collapsed/expanded mode), but every column counts. Long names
   must truncate (we use `…`).
 - **Color = the terminal theme.** We can use the 16 ANSI colors, 256-color, or
@@ -156,7 +156,7 @@ Please mock these as a sequence of sidebar states (a few "frames" each):
 A bare functional render: per row, `<colored dot> <number> <name>`, the active
 tab's name bolded, agent tabs add `repo/branch · elapsed` and a quoted last
 message line. Glyphs today: `● ◐ ◑ ○ ✗`. No header, weak active treatment, no
-separators, ~24 cols. (Screenshot/recording available.) Everything here is
+separators, ~32 cols. (Screenshot/recording available.) Everything here is
 changeable — treat it as a wireframe, not a constraint.
 
 ---
@@ -190,7 +190,7 @@ glyph codepoints. We'll translate your mockups into the renderer.
   heavy per-frame animation).
 - **Don't redesign the agent-detection or notifications** — only the sidebar's
   look/layout/states/flows.
-- Width default ~24 cols, but propose what's right (with a collapsed option).
+- Width default ~32 cols, but propose what's right (with a collapsed option).
 
 ---
 

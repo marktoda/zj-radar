@@ -12,7 +12,7 @@ data model, pipe contract, aggregation, and wiring in `docs/design.md` are uncha
 ## 1. Goal
 
 Translate the finalized "gutter rail" mock into the renderer. The rail is a left,
-character-grid sidebar (~24 cols) that lists every tab and decorates agent tabs with
+character-grid sidebar (~32 cols) that lists every tab and decorates agent tabs with
 status. The mock's thesis: a fixed **2-column status gutter** (active/attention bar +
 status glyph) forms a vertical stripe so the eye finds "needs me" without reading words;
 rows stay calm at rest and earn extra detail lines only when working / waiting / errored.
