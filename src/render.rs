@@ -265,12 +265,22 @@ impl RenderedRail {
     }
 }
 
+/// Carries the planner's view of a row: status (for compression priority),
+/// active flag (reserved for future use), and the pre-rendered line count
+/// sourced directly from the block that will be emitted.
+struct RowMeta {
+    status: Status,
+    #[allow(dead_code)]
+    active: bool,
+    full_lines: usize,
+}
+
 /// Single source of truth for a card's full vertical footprint (top→bottom:
 /// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
 /// external-separation rows). `render_rail()` budgets in terms of this so the
 /// emitted ANSI lines and line targets stay exact.
-fn card_block_lines(display: &TabDisplay, active: bool, spacing: CardSpacing) -> usize {
-    spacing.pad_y + row_lines(display, active) + spacing.gap
+fn card_block_lines(full_lines: usize, spacing: CardSpacing) -> usize {
+    spacing.pad_y + full_lines + spacing.gap
 }
 
 /// A tab is "multi-pane" for tree purposes when it has more than one tracked pane.
@@ -278,32 +288,6 @@ fn card_block_lines(display: &TabDisplay, active: bool, spacing: CardSpacing) ->
 /// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
     display.panes.iter().filter(|p| p.is_tracked()).count() > 1
-}
-
-/// Single source of truth for how many lines a tab row occupies.
-///
-/// Single-pane tabs (chunk-1 line-2 rule): idle → 1 line; any other active
-/// state with a non-empty msg → 2 lines (line 1 = status, line 2 = mark +
-/// activity); a detail without a msg → 1 line (line 2 suppressed).
-///
-/// Multi-pane tabs (line-per-pane design): 1 header line + one line per tracked
-/// pane (up to MAX_PANE_LINES=6) + one `+N more` line if capped. The `active`
-/// parameter is unused since all panes show regardless of focus.
-fn row_lines(display: &TabDisplay, _active: bool) -> usize {
-    let tracked_count = display.panes.iter().filter(|p| p.is_tracked()).count();
-    if tracked_count > 1 {
-        const MAX_PANE_LINES: usize = 6;
-        let pane_lines = tracked_count.min(MAX_PANE_LINES);
-        let more_line = if tracked_count > MAX_PANE_LINES { 1 } else { 0 };
-        return 1 + pane_lines + more_line;
-    }
-    match display.status {
-        Status::Idle => 1,
-        Status::Done | Status::Running | Status::Error | Status::Pending => match &display.detail {
-            Some(d) if !d.msg.trim().is_empty() => 2,
-            _ => 1,
-        },
-    }
 }
 
 /// Right-aligned status slot text (no color). Always empty (removed for now).
@@ -349,16 +333,16 @@ fn is_calm(status: Status) -> bool {
 ///   5. If still over: include rows from the top as long as they fit; drop the
 ///      rest (never panics, never exceeds budget).
 ///
-/// `row_lines` remains the *uncompressed* line count; this function produces
-/// the *planned* per-row line count actually rendered.
-fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
-    let total: usize = rows.iter().map(|r| row_lines(&r.display, r.active)).sum();
+/// `full_lines` (from `RowMeta`) is the *uncompressed* line count; this function
+/// produces the *planned* per-row line count actually rendered.
+fn plan_overflow(rows: &[RowMeta], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
+    let total: usize = rows.iter().map(|r| r.full_lines).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
         let plan = rows
             .iter()
             .enumerate()
-            .map(|(i, r)| (i, row_lines(&r.display, r.active)))
+            .map(|(i, r)| (i, r.full_lines))
             .collect();
         return (plan, 0);
     }
@@ -367,18 +351,18 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
     let non_idle_idx: Vec<usize> = rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.display.status != Status::Idle)
+        .filter(|(_, r)| r.status != Status::Idle)
         .map(|(i, _)| i)
         .collect();
     let folded_count = rows
         .iter()
-        .filter(|r| r.display.status == Status::Idle)
+        .filter(|r| r.status == Status::Idle)
         .count();
 
     // Each kept row starts at its full (uncompressed) line count.
     let mut planned: Vec<(usize, usize)> = non_idle_idx
         .iter()
-        .map(|&i| (i, row_lines(&rows[i].display, rows[i].active)))
+        .map(|&i| (i, rows[i].full_lines))
         .collect();
 
     // Step 2: check if the strip line itself (1 extra line) would overflow.
@@ -403,7 +387,7 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
         if *lines <= 1 {
             continue;
         }
-        if is_calm(rows[idx].display.status) {
+        if is_calm(rows[idx].status) {
             used -= *lines - 1; // account for the lines we're dropping
             *lines = 1;
             if used + strip_used <= body_budget {
@@ -427,7 +411,7 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
             if *lines <= 1 {
                 continue;
             }
-            if !is_calm(rows[idx].display.status) {
+            if !is_calm(rows[idx].status) {
                 used -= 1;
                 *lines -= 1;
                 changed = true;
@@ -471,7 +455,7 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
 /// compress the content itself. We pick the richest spacing whose total block
 /// footprint (plus the strip line) still fits the budget.
 fn plan_layout(
-    rows: &[TabRow],
+    rows: &[RowMeta],
     body_budget: usize,
     density: Density,
 ) -> (Vec<(usize, usize)>, usize, CardSpacing) {
@@ -482,13 +466,13 @@ fn plan_layout(
     // single footprint source shared with the budgeting below.
     let full_footprint: usize = rows
         .iter()
-        .map(|r| card_block_lines(&r.display, r.active, base))
+        .map(|r| card_block_lines(r.full_lines, base))
         .sum();
     if full_footprint <= body_budget {
         let plan = rows
             .iter()
             .enumerate()
-            .map(|(i, r)| (i, row_lines(&r.display, r.active)))
+            .map(|(i, r)| (i, r.full_lines))
             .collect();
         return (plan, 0, base);
     }
@@ -1002,10 +986,14 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     // their (subtle, ladder-derived) surface tint.
     let rail = tc_bg(opts.theme.rail_bg);
 
+    let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
+    let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
+        .map(|(r, b)| RowMeta { status: r.display.status, active: r.active, full_lines: b.len() })
+        .collect();
     let body_budget = opts
         .height
         .saturating_sub(header_lines(rows, opts.header, opts.density));
-    let (plan, strip_folded, spacing) = plan_layout(rows, body_budget, opts.density);
+    let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
     // Emit the identity header block only when configured on (and rows exist).
@@ -1033,7 +1021,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
                 out.push_str(&paint_card_line("\n", width, &bg));
                 targets.push(Some(row_target));
             }
-            for (line_idx, line) in render_row(&rows[i], opts).into_iter().take(max_lines).enumerate() {
+            for (line_idx, line) in blocks[i].iter().cloned().take(max_lines).enumerate() {
                 let line_bg = match line.bg {
                     LineBg::ActiveChild => &active_child_bg,
                     _ => &bg,
@@ -1048,7 +1036,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
                 out.push('\n');
                 targets.push(Some(row_target));
             }
-            for line in render_row(&rows[i], opts).into_iter().take(max_lines) {
+            for line in blocks[i].iter().cloned().take(max_lines) {
                 out.push_str(&line.text);
                 targets.push(line.target);
             }
@@ -1250,7 +1238,17 @@ mod tests {
 
     #[test]
     fn row_lines_by_state() {
-        assert_eq!(row_lines(&display(Status::Idle, 0, 0, None), false), 1);
+        let opts = ro(40, 0);
+        let mk_row = |d: TabDisplay, active: bool| TabRow {
+            number: 1,
+            name: "t".into(),
+            active,
+            has_bell: false,
+            display: d,
+        };
+        let rl = |d: TabDisplay, active: bool| render_row(&mk_row(d, active), &opts).len();
+
+        assert_eq!(rl(display(Status::Idle, 0, 0, None), false), 1);
 
         let detail = |status, msg: &str| {
             Some(PrimaryDetail {
@@ -1263,48 +1261,30 @@ mod tests {
             })
         };
         assert_eq!(
-            row_lines(
-                &display(Status::Done, 1, 1, detail(Status::Done, "")),
-                false
-            ),
+            rl(display(Status::Done, 1, 1, detail(Status::Done, "")), false),
             1
         );
         assert_eq!(
-            row_lines(
-                &display(Status::Running, 1, 1, detail(Status::Running, "x")),
-                false
-            ),
+            rl(display(Status::Running, 1, 1, detail(Status::Running, "x")), false),
             2
         );
         assert_eq!(
-            row_lines(
-                &display(Status::Error, 1, 1, detail(Status::Error, "x")),
-                false
-            ),
+            rl(display(Status::Error, 1, 1, detail(Status::Error, "x")), false),
             2
         );
         // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
         // Old 3-line case (branch · needs you + quoted msg) is gone.
         assert_eq!(
-            row_lines(
-                &display(Status::Pending, 1, 1, detail(Status::Pending, "")),
-                false
-            ),
+            rl(display(Status::Pending, 1, 1, detail(Status::Pending, "")), false),
             1
         );
         assert_eq!(
-            row_lines(
-                &display(Status::Pending, 1, 1, detail(Status::Pending, "go?")),
-                false
-            ),
+            rl(display(Status::Pending, 1, 1, detail(Status::Pending, "go?")), false),
             2
         );
         // Running with no msg: only 1 line
         assert_eq!(
-            row_lines(
-                &display(Status::Running, 1, 1, detail(Status::Running, "")),
-                false
-            ),
+            rl(display(Status::Running, 1, 1, detail(Status::Running, "")), false),
             1
         );
     }
@@ -1933,8 +1913,8 @@ mod tests {
             "old 'needs you' text must not appear: {:?}",
             s
         );
-        // row_lines = 2 (mark+activity line present)
-        assert_eq!(row_lines(&rows[0].display, false), 2);
+        // full_lines = 2 (mark+activity line present)
+        assert_eq!(render_row(&rows[0], &ro(30, 0)).len(), 2);
 
         // Case 2: pending without msg → 1 line only, no line 2.
         let detail_no_msg = PrimaryDetail {
@@ -1961,8 +1941,8 @@ mod tests {
                 panes: vec![],
             },
         }];
-        // row_lines = 1 (no msg → no line 2)
-        assert_eq!(row_lines(&rows2[0].display, false), 1);
+        // full_lines = 1 (no msg → no line 2)
+        assert_eq!(render_row(&rows2[0], &ro(30, 0)).len(), 1);
 
         // Width constraint: pending detail line must not exceed width
         let detail_long = PrimaryDetail {
@@ -2214,14 +2194,17 @@ mod tests {
     #[test]
     fn row_lines_multi_pane_counts_header_children_collapse() {
         // New design: 4 tracked panes → 1 header + 4 pane lines = 5 (regardless of active).
+        let opts = ro(40, 0);
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "run migration?"),
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
             pe(4, Kind::Claude, Status::Running, "z"),
         ]);
-        assert_eq!(row_lines(&a, false), 5, "header + 4 pane lines");
-        assert_eq!(row_lines(&a, true), 5, "same regardless of active");
+        let row_inactive = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a.clone() };
+        let row_active = TabRow { number: 1, name: "t".into(), active: true, has_bell: false, display: a };
+        assert_eq!(render_row(&row_inactive, &opts).len(), 5, "header + 4 pane lines");
+        assert_eq!(render_row(&row_active, &opts).len(), 5, "same regardless of active");
     }
 
     #[test]
@@ -2445,8 +2428,10 @@ mod tests {
         // A single ever-active pane is NOT multi-pane → keeps chunk-1 line 2.
         let a = display_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
         assert!(!is_multi_pane(&a), "one pane is not multi-pane");
+        let opts = ro(30, 0);
+        let row_check = TabRow { number: 1, name: "solo".into(), active: false, has_bell: false, display: a.clone() };
         assert_eq!(
-            row_lines(&a, false),
+            render_row(&row_check, &opts).len(),
             2,
             "single-pane pending+msg = 2 lines (chunk-1)"
         );
@@ -2531,14 +2516,20 @@ mod tests {
         ];
 
         // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
-        assert_eq!(row_lines(&rows[0].display, false), 2);
-        assert_eq!(row_lines(&rows[1].display, false), 2);
-        assert_eq!(row_lines(&rows[2].display, false), 2);
-        assert_eq!(row_lines(&rows[3].display, false), 2); // pending + msg = 2 (mark + activity)
+        let opts_check = ro(30, 0);
+        assert_eq!(render_row(&rows[0], &opts_check).len(), 2);
+        assert_eq!(render_row(&rows[1], &opts_check).len(), 2);
+        assert_eq!(render_row(&rows[2], &opts_check).len(), 2);
+        assert_eq!(render_row(&rows[3], &opts_check).len(), 2); // pending + msg = 2 (mark + activity)
 
         // body_budget = 5 (height 7, header 2)
         let body_budget = 5usize;
-        let (plan, strip_folded) = plan_overflow(&rows, body_budget);
+        let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
+            status: r.display.status,
+            active: r.active,
+            full_lines: render_row(r, &opts_check).len(),
+        }).collect();
+        let (plan, strip_folded) = plan_overflow(&metas, body_budget);
         assert_eq!(strip_folded, 0, "no idle rows to strip");
         assert_eq!(plan.len(), 4, "all 4 rows kept");
 
@@ -2633,7 +2624,13 @@ mod tests {
             line_count
         );
         // No panic means the test passes. Also verify each body row is ≥ 1 line.
-        let (plan, _) = plan_overflow(&rows, 1);
+        let opts_check = ro(24, 0);
+        let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
+            status: r.display.status,
+            active: r.active,
+            full_lines: render_row(r, &opts_check).len(),
+        }).collect();
+        let (plan, _) = plan_overflow(&metas, 1);
         for (_, lines) in &plan {
             assert!(*lines >= 1, "every planned row must have at least 1 line");
         }
@@ -2792,8 +2789,14 @@ mod tests {
         // Without gaps: 3 content fits in 4. With gaps: 3+3=6 > 4. → gap_used = 0.
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let height = 6; // body_budget = 4
+        let opts_check = ro(24, 0);
+        let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
+            status: r.display.status,
+            active: r.active,
+            full_lines: render_row(r, &opts_check).len(),
+        }).collect();
         let (plan, strip, spacing) =
-            plan_layout(&rows, height - 2, crate::config::Density::Comfortable);
+            plan_layout(&metas, height - 2, crate::config::Density::Comfortable);
         let gap_used = spacing.gap;
         // All 3 idle rows fit at 1 line each (total=3 ≤ body_budget=4).
         assert_eq!(plan.len(), 3, "all 3 rows should be kept");
@@ -2833,8 +2836,14 @@ mod tests {
     #[test]
     fn plan_layout_compact_always_zero_gap() {
         let rows: Vec<TabRow> = (1..=5).map(idle_row).collect();
+        let opts_check = ro(24, 0);
+        let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
+            status: r.display.status,
+            active: r.active,
+            full_lines: render_row(r, &opts_check).len(),
+        }).collect();
         // Even with very large budget, compact never adds gaps.
-        let (_, _, spacing) = plan_layout(&rows, 100, crate::config::Density::Compact);
+        let (_, _, spacing) = plan_layout(&metas, 100, crate::config::Density::Compact);
         assert_eq!(spacing.gap, 0, "Compact density must never produce gaps");
     }
 
@@ -2842,7 +2851,13 @@ mod tests {
     fn plan_layout_comfortable_gap_when_space_available() {
         // 2 idle rows, body_budget=10: 2 content + 2 gaps = 4 ≤ 10 → gap_used = 1.
         let rows: Vec<TabRow> = (1..=2).map(idle_row).collect();
-        let (_, _, spacing) = plan_layout(&rows, 10, crate::config::Density::Comfortable);
+        let opts_check = ro(24, 0);
+        let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
+            status: r.display.status,
+            active: r.active,
+            full_lines: render_row(r, &opts_check).len(),
+        }).collect();
+        let (_, _, spacing) = plan_layout(&metas, 10, crate::config::Density::Comfortable);
         assert_eq!(spacing.gap, 1, "Comfortable with room should use gaps");
     }
 
@@ -3294,26 +3309,24 @@ mod tests {
 
     #[test]
     fn card_block_lines_is_pad_y_plus_content_plus_gap() {
-        // The single footprint source: pad_y + row_lines + gap.
-        let idle = display(Status::Idle, 0, 0, None);
-        assert_eq!(row_lines(&idle, false), 1);
+        // The single footprint source: pad_y + full_lines + gap.
+        let opts = ro(40, 0);
+        let idle_row_val = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: display(Status::Idle, 0, 0, None) };
+        let full_lines = render_row(&idle_row_val, &opts).len();
+        assert_eq!(full_lines, 1);
         // Cards: 0 pad_y + 1 content + 1 gap = 2.
         assert_eq!(
-            card_block_lines(&idle, false, card_spacing(crate::config::Density::Cards)),
+            card_block_lines(full_lines, card_spacing(crate::config::Density::Cards)),
             2
         );
         // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
         assert_eq!(
-            card_block_lines(
-                &idle,
-                false,
-                card_spacing(crate::config::Density::Comfortable)
-            ),
+            card_block_lines(full_lines, card_spacing(crate::config::Density::Comfortable)),
             2
         );
         // Compact: 0 + 1 + 0 = 1.
         assert_eq!(
-            card_block_lines(&idle, false, card_spacing(crate::config::Density::Compact)),
+            card_block_lines(full_lines, card_spacing(crate::config::Density::Compact)),
             1
         );
     }
@@ -4264,12 +4277,14 @@ rail";
     #[test]
     fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
         // New design: 3 tracked panes → 1 header + 3 pane lines = 4 content lines.
+        let opts = ro(40, 0);
         let a = display_multi(vec![
             pe(10, Kind::Claude, Status::Pending, "approve?"),
             pe(11, Kind::Claude, Status::Running, "building"),
             pe(12, Kind::Claude, Status::Running, "testing"),
         ]);
-        assert_eq!(row_lines(&a, false), 4, "header + 3 pane lines");
+        let row = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+        assert_eq!(render_row(&row, &opts).len(), 4, "header + 3 pane lines");
     }
 
     #[test]
@@ -4277,8 +4292,10 @@ rail";
         // Single-pane Running tab with a non-empty detail msg → 2 content lines
         // (name row + detail row). Mirrors the row_lines assertion from
         // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
+        let opts = ro(40, 0);
         let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
-        assert_eq!(row_lines(&a, false), 2, "tab 0 should be 2 content lines");
+        let row = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+        assert_eq!(render_row(&row, &opts).len(), 2, "tab 0 should be 2 content lines");
     }
 
     #[test]
