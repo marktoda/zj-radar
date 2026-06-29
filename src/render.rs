@@ -10,6 +10,42 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
+/// A colored (optionally bold) text run that terminates its own SGR with RESET.
+///
+/// Every colored token in the rail is built through `Seg`, so "colored ⇒
+/// RESET-terminated" is structural rather than reviewer-enforced —
+/// `paint_card_line` re-arms the card background after each RESET, and a run that
+/// forgot its RESET would bleed the foreground color across the rest of the band.
+/// `Display` emits `{color}{BOLD?}{text}{RESET}`; a run groups *all* text that
+/// shares one color (e.g. line 1's glyph+number+name) so the byte stream matches
+/// the hand-built `format!`s it replaces.
+struct Seg<'a> {
+    color: &'a str,
+    bold: bool,
+    text: std::borrow::Cow<'a, str>,
+}
+
+impl<'a> Seg<'a> {
+    fn new(color: &'a str, text: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        Self { color, bold: false, text: text.into() }
+    }
+
+    fn bold(color: &'a str, text: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        Self { color, bold: true, text: text.into() }
+    }
+}
+
+impl std::fmt::Display for Seg<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.color)?;
+        if self.bold {
+            f.write_str(BOLD)?;
+        }
+        f.write_str(&self.text)?;
+        f.write_str(RESET)
+    }
+}
+
 #[derive(Clone)]
 pub struct RenderOpts {
     pub width: usize,
@@ -474,10 +510,10 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
     let g = opts.glyphs;
-    out.push_str(&format!("{} RADAR{}\n", accent, RESET));
-    out.push_str(&format!("{}{}{}\n", accent, "═".repeat(opts.width), RESET));
-    out.push_str(&format!("{} watching your tabs for{}\n", muted, RESET));
-    out.push_str(&format!("{} AI agent activity.{}\n", muted, RESET));
+    out.push_str(&format!("{}\n", Seg::new(accent, " RADAR")));
+    out.push_str(&format!("{}\n", Seg::new(accent, "═".repeat(opts.width))));
+    out.push_str(&format!("{}\n", Seg::new(muted, " watching your tabs for")));
+    out.push_str(&format!("{}\n", Seg::new(muted, " AI agent activity.")));
     out.push('\n');
     let legend = [
         (Status::Pending, "needs you"),
@@ -489,17 +525,13 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     for (st, label) in legend {
         let role_code = st.role().ansi();
         out.push_str(&format!(
-            " {}{}{} {}{}{}\n",
-            role_code,
-            st.glyph_for(g),
-            RESET,
-            muted,
-            label,
-            RESET
+            " {} {}\n",
+            Seg::new(role_code, st.glyph_for(g).to_string()),
+            Seg::new(muted, label),
         ));
     }
     out.push('\n');
-    out.push_str(&format!("{} click a row to jump{}\n", muted, RESET));
+    out.push_str(&format!("{}\n", Seg::new(muted, " click a row to jump")));
     RenderedRail::from_ansi_without_targets(out)
 }
 
@@ -527,7 +559,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // col 0: active spine — accent (mauve) normally, attention (peach) when the
     // active row is also waiting/error.
     let bar = if row.active {
-        format!("{}▌{}", hue(spine_role(st)), RESET)
+        Seg::new(&hue(spine_role(st)), "▌").to_string()
     } else {
         String::new()
     };
@@ -556,11 +588,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // Bold encodes *activity*: every non-idle row's glyph+number+name is bold so
     // state reads at a glance. Idle stays light/recessed. (Focus is a separate
     // cue — the accent spine + brighter card — so the two stay independent.)
-    let label_bold = if st == Status::Idle { "" } else { BOLD };
+    let label_bold = st != Status::Idle;
 
     // bell marker just before the (removed) slot.
     let bell = if row.has_bell {
-        format!("{}⚑{} ", hue(Role::Working), RESET)
+        format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
     } else {
         String::new()
     };
@@ -589,21 +621,14 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len;
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
+    let label_text = format!("{glyph_char} {num}{sp_after_num}{name}");
+    let label = Seg {
+        color: &label_color,
+        bold: label_bold,
+        text: label_text.into(),
+    };
     lines.push(Line {
-        text: format!(
-            "{}{}{}{}{} {}{}{}{}{}{}\n",
-            bar,
-            pad,
-            label_color,
-            label_bold,
-            glyph_char,
-            num,
-            sp_after_num,
-            name,
-            RESET,
-            " ".repeat(gap),
-            bell
-        ),
+        text: format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
         target: Some(tab_target),
         bg: LineBg::Card,
     });
@@ -642,10 +667,13 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             // reserve those columns before clamping the text to avoid overflow.
             let clamped = truncate(&more_text, opts.width.saturating_sub(2));
             let text = if row.active {
-                format!("{}▌{} {}{}{}\n",
-                    hue(spine_role(st)), RESET, idle_color, clamped, RESET)
+                format!(
+                    "{} {}\n",
+                    Seg::new(&hue(spine_role(st)), "▌"),
+                    Seg::new(&idle_color, clamped.clone()),
+                )
             } else {
-                format!("  {}{}{}\n", idle_color, clamped, RESET)
+                format!("  {}\n", Seg::new(&idle_color, clamped.clone()))
             };
             lines.push(Line {
                 text,
@@ -684,8 +712,9 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                     let activity = compose_activity(&d.msg, d.outcome, avail, &cmd_color);
                     lines.push(Line {
                         text: format!(
-                            "  {}{}{}{} {}\n",
-                            dim_strong, BOLD, mark, RESET, activity
+                            "  {} {}\n",
+                            Seg::bold(&dim_strong, mark.to_string()),
+                            activity
                         ),
                         target: Some(tab_target),
                         bg: LineBg::Card,
@@ -706,7 +735,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 /// carries its own color escapes (each segment RESET-terminated).
 fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
     let Some(oc) = outcome else {
-        return format!("{}{}{}", cmd_color, truncate(cmd, avail), RESET);
+        return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
     let role = oc.role().ansi();
     let cmd = cmd.trim();
@@ -719,7 +748,7 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
         } else {
             truncate(oc.minimal(), avail)
         };
-        return format!("{}{}{}", role, tag, RESET);
+        return Seg::new(role, tag).to_string();
     }
     // Command + tag: prefer the full tag as long as ≥1 command column remains
     // (tag width + 1 separating space + ≥1 command col). The `+ 2` reserves the
@@ -731,33 +760,25 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
     if full_w + 2 <= avail {
         let cmd_budget = avail - full_w - 1;
         return format!(
-            "{}{}{} {}{}{}",
-            cmd_color,
-            truncate(cmd, cmd_budget),
-            RESET,
-            role,
-            full,
-            RESET
+            "{} {}",
+            Seg::new(cmd_color, truncate(cmd, cmd_budget)),
+            Seg::new(role, full),
         );
     }
     if min_w + 2 <= avail {
         let cmd_budget = avail - min_w - 1;
         return format!(
-            "{}{}{} {}{}{}",
-            cmd_color,
-            truncate(cmd, cmd_budget),
-            RESET,
-            role,
-            min,
-            RESET
+            "{} {}",
+            Seg::new(cmd_color, truncate(cmd, cmd_budget)),
+            Seg::new(role, min),
         );
     }
     // Too tight for any command: show the outcome glyph alone (clip if even that
     // overflows the extreme-narrow width).
     if min_w <= avail {
-        format!("{}{}{}", role, min, RESET)
+        Seg::new(role, min).to_string()
     } else {
-        format!("{}{}{}", role, truncate(min, avail), RESET)
+        Seg::new(role, truncate(min, avail)).to_string()
     }
 }
 
@@ -797,28 +818,30 @@ fn emit_pane_line(
     // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
     // (vendor-neutral, heavier than the faint idle_text).
     let glyph_color = role_ansi(status.role());
-    let glyph_bold = if status == Status::Idle { "" } else { BOLD };
     let cmd_color = if status == Status::Pending {
         role_ansi(Role::Attention).to_string()
     } else {
         dim_strong.to_string()
     };
     let activity = compose_activity(pane.msg(), pane.outcome(), avail, &cmd_color);
+    // The glyph carries the status color (bold on non-idle, matching line 1); the
+    // mark is the vendor-neutral stronger dim, always bold.
+    let glyph_seg = Seg {
+        color: glyph_color,
+        bold: status != Status::Idle,
+        text: glyph.to_string().into(),
+    };
+    let mark_seg = Seg::bold(dim_strong, mark.to_string());
     if tab_active {
         format!(
-            "{}▌{} {}{}{}{} {}{}{}{} {}\n",
-            role_ansi(spine_role(tab_status)), RESET,
-            glyph_color, glyph_bold, glyph, RESET,
-            dim_strong, BOLD, mark, RESET,
+            "{} {} {} {}\n",
+            Seg::new(role_ansi(spine_role(tab_status)), "▌"),
+            glyph_seg,
+            mark_seg,
             activity,
         )
     } else {
-        format!(
-            "  {}{}{}{} {}{}{}{} {}\n",
-            glyph_color, glyph_bold, glyph, RESET,
-            dim_strong, BOLD, mark, RESET,
-            activity,
-        )
+        format!("  {} {} {}\n", glyph_seg, mark_seg, activity)
     }
 }
 
@@ -934,16 +957,11 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line
     let count_clamped = truncate(&count, right_w);
     let mut title_line = String::new();
     title_line.push_str(&format!(
-        "{}{}{}{}{}{}{}",
-        accent,
-        title_clamped,
-        RESET,
+        "{}{}{}\n",
+        Seg::new(accent, title_clamped),
         " ".repeat(gap),
-        count_color,
-        count_clamped,
-        RESET
+        Seg::new(count_color, count_clamped),
     ));
-    title_line.push('\n');
 
     let mut lines = vec![Line {
         text: title_line,
@@ -953,7 +971,7 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
         lines.push(Line {
-            text: format!("{}{}{}\n", accent, "═".repeat(width), RESET),
+            text: format!("{}\n", Seg::new(accent, "═".repeat(width))),
             target: None,
             bg: LineBg::Rail,
         });
@@ -969,10 +987,11 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
     }
     vec![Line {
         text: format!(
-            "{}{}{}\n",
-            Role::Accent.ansi(),
-            truncate(&format!("+{} idle ▾", strip_folded), opts.width),
-            RESET
+            "{}\n",
+            Seg::new(
+                Role::Accent.ansi(),
+                truncate(&format!("+{} idle ▾", strip_folded), opts.width),
+            ),
         ),
         target: None,
         bg: LineBg::Rail,
@@ -4691,5 +4710,19 @@ rail";
             LineBg::ActiveChild.escape(&active_row, &theme, &rail),
             LineBg::Card.escape(&active_row, &theme, &rail),
         );
+    }
+
+    #[test]
+    fn seg_is_always_reset_terminated() {
+        // color + text + RESET; bold inserts BOLD after the color.
+        assert_eq!(Seg::new("\x1b[31m", "hi").to_string(), "\x1b[31mhi\x1b[0m");
+        assert_eq!(
+            Seg::bold("\x1b[31m", "hi").to_string(),
+            "\x1b[31m\x1b[1mhi\x1b[0m"
+        );
+        // The structural guarantee `paint_card_line`'s bg re-arm depends on: a
+        // colored run can never escape un-RESET, whatever the color or content.
+        assert!(Seg::new("\x1b[35m", "▌").to_string().ends_with("\x1b[0m"));
+        assert!(Seg::bold("\x1b[38;2;1;2;3m", "x y z").to_string().ends_with("\x1b[0m"));
     }
 }
