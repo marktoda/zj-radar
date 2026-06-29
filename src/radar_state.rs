@@ -1375,4 +1375,197 @@ mod tests {
         );
         assert_eq!(radar.applied_name(TabId::new(10)), Some("beta"));
     }
+
+    #[test]
+    fn mutating_events_request_a_render() {
+        // tabs_changed / command_changed / cwd_changed each carry render=true so
+        // the runtime repaints; without it the sidebar would silently go stale
+        // after a tab reshuffle, a new tracked command, or a cwd report.
+        let mut radar = RadarState::default();
+        assert!(
+            radar.tabs_changed(vec![tab(1, 0, "a", true)]).render,
+            "tabs_changed must request a render"
+        );
+        assert!(
+            radar
+                .command_changed(1, &["cargo".into(), "build".into()], true, 0)
+                .render,
+            "command_changed must request a render"
+        );
+        assert!(
+            radar
+                .cwd_changed(1, "/tmp".into(), config::NamingMode::Off)
+                .render,
+            "cwd_changed must request a render"
+        );
+    }
+
+    // ── Stateful property test ────────────────────────────────────────────────
+    //
+    // `RadarState` is an event aggregator: the host feeds it interleaved tab,
+    // pane, status-pipe, command, timer and cwd events, and a bug usually hides
+    // in some *ordering* of them rather than any single event. The example tests
+    // above cover specific sequences; this drives random sequences and asserts
+    // the structural invariants that must hold after ANY history.
+    use proptest::prelude::*;
+
+    fn arb_status() -> impl Strategy<Value = Status> {
+        prop_oneof![
+            Just(Status::Idle),
+            Just(Status::Done),
+            Just(Status::Running),
+            Just(Status::Pending),
+            Just(Status::Error),
+        ]
+    }
+
+    /// One host event. Pane ids and tab positions are drawn from small ranges so
+    /// they recur across events — exercising prune, pane recycling, and tab
+    /// reordering rather than a stream of never-seen ids.
+    #[derive(Clone, Debug)]
+    enum Op {
+        /// Replace the tab set with tabs at these positions (deduped; first active).
+        Tabs(Vec<usize>),
+        /// Set the live pane layout (position → pane ids) plus command exits.
+        Panes(Vec<(usize, Vec<u32>)>, Vec<(u32, Option<i32>)>),
+        /// Deliver a status-pipe payload for a pane.
+        Status(u32, Status),
+        /// Register a foreground/background command on a pane.
+        Command(u32, bool),
+        /// Fire the debounce/promotion timer.
+        Timer,
+        /// Report a pane's cwd.
+        Cwd(u32),
+    }
+
+    fn arb_op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            proptest::collection::vec(0usize..4, 0..4).prop_map(Op::Tabs),
+            (
+                proptest::collection::vec(
+                    (0usize..4, proptest::collection::vec(1u32..6, 0..3)),
+                    0..4
+                ),
+                proptest::collection::vec((1u32..6, proptest::option::of(any::<i32>())), 0..2),
+            )
+                .prop_map(|(layout, exits)| Op::Panes(layout, exits)),
+            (1u32..6, arb_status()).prop_map(|(p, s)| Op::Status(p, s)),
+            (1u32..6, any::<bool>()).prop_map(|(p, fg)| Op::Command(p, fg)),
+            Just(Op::Timer),
+            (1u32..6).prop_map(Op::Cwd),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn radar_state_invariants_hold_after_any_event_sequence(
+            ops in proptest::collection::vec(arb_op(), 0..40)
+        ) {
+            let mut st = RadarState::default();
+
+            for (i, op) in ops.iter().enumerate() {
+                let tick = i as u64;
+                match op {
+                    Op::Tabs(positions) => {
+                        let mut seen = HashSet::new();
+                        let tabs: Vec<RadarTab> = positions
+                            .iter()
+                            .filter(|p| seen.insert(**p))
+                            .enumerate()
+                            .map(|(idx, &p)| RadarTab {
+                                id: TabId::new(p + 1),
+                                position: p,
+                                name: format!("t{p}"),
+                                active: idx == 0,
+                                has_bell: false,
+                            })
+                            .collect();
+                        st.tabs_changed(tabs);
+                    }
+                    Op::Panes(layout, exits) => {
+                        let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
+                        for (pos, ids) in layout {
+                            let panes = ids
+                                .iter()
+                                .map(|&id| TerminalPane {
+                                    id,
+                                    title: format!("p{id}"),
+                                    focused_in_tab: false,
+                                })
+                                .collect();
+                            tab_panes.insert(*pos, panes);
+                        }
+                        let live: HashSet<u32> = tab_panes
+                            .values()
+                            .flat_map(|v| v.iter().map(|p| p.id))
+                            .collect();
+                        let update = PaneUpdate {
+                            tab_panes,
+                            live: live.clone(),
+                            theme: None,
+                            exits: exits.clone(),
+                        };
+                        st.panes_changed(update, tick, config::NamingMode::Off);
+
+                        // Prune contract: immediately after panes_changed every
+                        // stored observation belongs to a live pane.
+                        for (id, _) in st.status_store().observations() {
+                            prop_assert!(
+                                live.contains(&id),
+                                "status store kept observation for non-live pane {id}"
+                            );
+                        }
+                        for (id, _) in st.command_store().observations() {
+                            prop_assert!(
+                                live.contains(&id),
+                                "command store kept observation for non-live pane {id}"
+                            );
+                        }
+                    }
+                    Op::Status(pane, status) => {
+                        let raw = format!(
+                            r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane}}},"status":"{}","repo":"r","msg":"m"}}"#,
+                            status.as_wire()
+                        );
+                        let _ = st.status_pipe(&raw, tick, config::NamingMode::Off);
+                    }
+                    Op::Command(pane, fg) => {
+                        st.command_changed(
+                            *pane,
+                            &["cargo".to_string(), "build".to_string()],
+                            *fg,
+                            tick,
+                        );
+                    }
+                    Op::Timer => st.timer(tick),
+                    Op::Cwd(pane) => {
+                        st.cwd_changed(*pane, "/home/u/proj".into(), config::NamingMode::Off);
+                    }
+                }
+
+                // `rows()` is total (never panics) and well-formed after every op.
+                let rows = st.rows();
+                for w in rows.windows(2) {
+                    prop_assert!(
+                        w[0].number < w[1].number,
+                        "rows must be strictly ordered by tab position"
+                    );
+                }
+                for r in &rows {
+                    // 1:1 pane mapping and count sanity flow through the pipeline.
+                    prop_assert!(r.display.progress.done <= r.display.progress.total);
+                    prop_assert!(r.display.progress.total <= r.display.panes.len());
+                }
+            }
+
+            // Snapshot round-trip is identity: serialize → load → serialize again
+            // yields byte-identical JSON for the whole accumulated history.
+            const SNAPSHOT_TICK: u64 = 9999;
+            let s1 = st.snapshot_json(None, SNAPSHOT_TICK);
+            let mut reloaded = RadarState::default();
+            reloaded.load_snapshot(&s1);
+            let s2 = reloaded.snapshot_json(None, SNAPSHOT_TICK);
+            prop_assert_eq!(s1, s2, "snapshot round-trip must be identity");
+        }
+    }
 }

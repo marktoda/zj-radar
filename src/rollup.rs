@@ -368,4 +368,146 @@ mod tests {
         agent.origin = ObservationOrigin::StatusPipe;
         assert_eq!(pane_outcome(&agent), None);
     }
+
+    // ── Property tests ────────────────────────────────────────────────────────
+    //
+    // `roll_up` is a pure fold over a tab's panes. These properties pin the
+    // contracts the per-scenario tests only sample: count bounds, the 1:1 pane
+    // mapping, status == max-active, and order-independence of the aggregate.
+    use proptest::prelude::*;
+
+    /// One pane's optional observation: `None` = untracked. Tuple fields are
+    /// (origin, status, ever_active, last_change_tick, exit_code).
+    type Spec = Option<(ObservationOrigin, Status, bool, u64, Option<i32>)>;
+
+    fn arb_status() -> impl Strategy<Value = Status> {
+        prop_oneof![
+            Just(Status::Idle),
+            Just(Status::Done),
+            Just(Status::Running),
+            Just(Status::Pending),
+            Just(Status::Error),
+        ]
+    }
+
+    fn pane_specs() -> impl Strategy<Value = Vec<Spec>> {
+        let spec = proptest::option::of((
+            prop_oneof![Just(ObservationOrigin::StatusPipe), Just(ObservationOrigin::Command)],
+            arb_status(),
+            any::<bool>(),
+            0u64..50,
+            proptest::option::of(any::<i32>()),
+        ));
+        proptest::collection::vec(spec, 0..8)
+    }
+
+    /// Build the (panes, resolver-map) pair from specs. Pane ids are 1-based and
+    /// distinct (a tab never has two panes with the same id).
+    fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>) {
+        let mut panes = Vec::new();
+        let mut map = HashMap::new();
+        for (i, spec) in specs.iter().enumerate() {
+            let id = i as u32 + 1;
+            panes.push(pane(id, "t"));
+            if let &Some((origin, status, ever_active, tick, exit_code)) = spec {
+                map.insert(
+                    id,
+                    TrackedObservation {
+                        origin,
+                        status,
+                        repo: "r".into(),
+                        branch: String::new(),
+                        msg: "m".into(),
+                        source: "build".into(),
+                        last_change_tick: tick,
+                        seq: None,
+                        on_focus: None,
+                        ever_active,
+                        exit_code,
+                    },
+                );
+            }
+        }
+        (panes, map)
+    }
+
+    /// Deterministic Fisher–Yates shuffle (xorshift PRNG seeded by `seed`) — no
+    /// `rand`, fully reproducible for proptest shrinking.
+    fn shuffled<T: Clone>(items: &[T], mut seed: u64) -> Vec<T> {
+        seed |= 1; // avoid the zero fixed-point
+        let mut v = items.to_vec();
+        for i in (1..v.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let j = (seed % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+        v
+    }
+
+    proptest! {
+        /// Invariants that hold for ANY tab shape.
+        #[test]
+        fn roll_up_invariants(specs in pane_specs()) {
+            let (panes, map) = build(&specs);
+            let d = roll_up(&panes, |id| map.get(&id));
+
+            // Every input pane appears exactly once, in input order.
+            prop_assert_eq!(d.panes.len(), panes.len());
+            for (out, inp) in d.panes.iter().zip(&panes) {
+                prop_assert_eq!(out.pane_id(), inp.id);
+            }
+
+            // Count bounds: done ≤ total ≤ #panes, pending ≤ #panes.
+            prop_assert!(d.progress.done <= d.progress.total);
+            prop_assert!(d.progress.total <= panes.len());
+            prop_assert!(d.progress.pending <= panes.len());
+
+            // The tab status mirrors the detail (Idle when no active pane).
+            prop_assert_eq!(
+                d.status,
+                d.detail.as_ref().map_or(Status::Idle, |x| x.status)
+            );
+
+            // Status == the max active observation status (Status: Ord = severity).
+            let expected_status = panes
+                .iter()
+                .filter_map(|p| map.get(&p.id))
+                .map(|o| o.status)
+                .filter(|s| s.is_active())
+                .max()
+                .unwrap_or(Status::Idle);
+            prop_assert_eq!(d.status, expected_status);
+            // A detail exists iff some pane is active.
+            prop_assert_eq!(d.detail.is_some(), d.status.is_active());
+
+            // total/done count exactly the ever_active (and Done) panes.
+            let total = panes.iter().filter_map(|p| map.get(&p.id)).filter(|o| o.ever_active).count();
+            let done = panes.iter().filter_map(|p| map.get(&p.id))
+                .filter(|o| o.ever_active && o.status == Status::Done).count();
+            let pending = panes.iter().filter_map(|p| map.get(&p.id))
+                .filter(|o| o.status == Status::Pending).count();
+            prop_assert_eq!(d.progress.total, total);
+            prop_assert_eq!(d.progress.done, done);
+            prop_assert_eq!(d.progress.pending, pending);
+        }
+
+        /// Reordering a tab's panes never changes the aggregate status, the
+        /// progress counts, or the detail's status — only the tie-break identity
+        /// of `detail` may move, and only on an exact (status, tick) tie.
+        #[test]
+        fn roll_up_aggregate_is_order_independent(specs in pane_specs(), seed in any::<u64>()) {
+            let (panes, map) = build(&specs);
+            let d1 = roll_up(&panes, |id| map.get(&id));
+            let d2 = roll_up(&shuffled(&panes, seed), |id| map.get(&id));
+
+            prop_assert_eq!(d1.status, d2.status);
+            prop_assert_eq!(d1.progress, d2.progress);
+            prop_assert_eq!(
+                d1.detail.as_ref().map(|x| x.status),
+                d2.detail.as_ref().map(|x| x.status)
+            );
+        }
+    }
 }
