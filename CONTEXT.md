@@ -45,22 +45,27 @@ observations) with live pane topology, then produces `TabRow`s for the rail. It
 also composes `TabNamer` for tab naming — assembling the resolved facts that seam
 consumes, the same way it hands `roll_up` a `resolve` closure.
 
-Two focus paths govern when a finished pane stops showing in the rail, and
-`RadarState` owns both because it is the only place that knows both the
-completion and which pane is focused. **Visit-clear** (`apply_focus_transition`)
-fires on a focus *entry* and clears a pane's queued `on_focus` — the
-background-completion case: something finished while you weren't looking and stays
-lit until you focus into it (this clears even an error, once seen).
-**Recede-while-focused** (`settle_focused`, run from `panes_changed` and `timer`)
-clears the *currently focused* pane when it finishes — "if they were looking at it
-when it finished, don't flag it." It is `Done`-only: errors persist even when
-watched, and a `Pending` "needs you" is never auto-dismissed. It runs after the
-focus transition in `panes_changed` (so it reads this update's fresh focus — the
-command-exit path) and on the `timer` cadence (the watched-agent path). It is
-deliberately *not* run on the raw `status_pipe` edge: a pipe payload can arrive
-before the focus `PaneUpdate` that reflects the user leaving, so `last_focused`
-could be stale and receding there would drop a completion the user should still
-see. Recede is monotonic (Done→Idle once), so it cannot oscillate.
+A single operation, `reconcile_focus`, governs when a finished pane stops showing
+in the rail; `RadarState` owns it because it is the only place that knows both the
+completion and which pane is focused. It reconciles the focused pane against its
+queued `on_focus`, with two cases derived from whether focus actually moved:
+
+- **focus entry (a visit)** — clears the entered pane's queued state entirely,
+  `Done` *or* `Error`: entering acknowledges whatever it shows ("seen, even
+  errors"). This is the background-completion case (something finished while you
+  weren't looking, stays lit until you focus in).
+- **focus held** — recedes a fresh `Done` only ("if they were looking at it when
+  it finished, don't flag it"); an `Error` or a "needs you" `Pending` stays lit
+  even while watched.
+
+Callers pass whatever focus they can trust: `panes_changed` passes this update's
+fresh focus (the command-exit path), and `timer` passes the settled `last_focused`
+(the watched-agent path). `status_pipe` deliberately does *not* reconcile: a pipe
+payload can arrive before the focus `PaneUpdate` that reflects the user leaving, so
+its focus could be stale and receding there would drop a completion the user should
+still see — the timer carries that recede once focus has settled. Recede is
+monotonic (`Done → Idle` once), so reconciling on every update and tick cannot
+oscillate.
 
 The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and

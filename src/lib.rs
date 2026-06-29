@@ -86,26 +86,19 @@ impl State {
         self.runtime.build_rows()
     }
 
-    /// Apply the *visit*-clear only on a focus TRANSITION — when focus enters a
-    /// pane that wasn't focused on the previous PaneUpdate. This is the
-    /// background-completion path: a pane that finished while you weren't looking
-    /// stays lit until you focus INTO it, at which point its queued clear is
-    /// applied (this clears even an error — once seen, it's seen).
+    /// Test-only delegation to [`RadarState::reconcile_focus`]: reconcile a pane
+    /// gaining or holding focus against its queued completion. A focus *entry*
+    /// (change) visit-clears the entered pane — `Done` or `Error`, "seen, even
+    /// errors". Focus *held* on a pane recedes a fresh `Done` only (you watched it
+    /// finish); an `Error` or "needs you" `Pending` stays lit while watched.
     ///
-    /// The transition gate is load-bearing in two ways. (1) Without it,
-    /// `on_pane_focused` would run on EVERY PaneUpdate for the focused pane and
-    /// would wipe a focused *error* the instant the next update arrived —
-    /// errors must persist while watched. (2) It keeps this path off the
-    /// completed-while-focused case entirely, which is handled separately by
-    /// `RadarState::settle_focused` (run from `panes_changed` and `timer`): a
-    /// `Done` on the focused pane recedes Done-only and monotonically, so it never
-    /// produces the direction-dependent Done↔Idle flicker an earlier "clear on
-    /// every update" version did.
-    ///
-    /// Returns true when a transition was applied (focus actually changed).
+    /// Recede is monotonic (`Done → Idle` once), so reconciling on every update
+    /// and tick cannot oscillate — that is what keeps it free of the
+    /// direction-dependent Done↔Idle flicker an earlier "clear on every update"
+    /// version produced. Returns whether focus changed.
     #[cfg(test)]
-    fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        self.runtime.apply_focus_transition(focused, tick)
+    fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        self.runtime.reconcile_focus(focused, tick)
     }
 
     /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
@@ -1006,18 +999,13 @@ mod tests {
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
 
-    // ── The visit-clear primitive fires only on a focus TRANSITION ──
+    // ── reconcile_focus: held-focus recedes a Done; entry visit-clears anything ──
 
     #[test]
-    fn focus_transition_clears_only_on_entry() {
-        // Unit test of the `apply_focus_transition` *primitive* in isolation: it
-        // must clear a pane's queued completion only on ENTRY (a focus change),
-        // never merely because the pane is focused. We seed the Done directly
-        // (bypassing `panes_changed`/`settle_focused`) precisely to exercise the
-        // primitive alone — in the real flow a Done landing on the focused pane
-        // recedes at completion time via settle, not here. This gating is what
-        // lets a *background* completion persist until visited, and is why a
-        // focused *error* is not wiped on every update (settle skips errors).
+    fn reconcile_focus_recedes_held_done_persists_error_and_clears_on_entry() {
+        // Exercises both branches of the unified primitive at the State level. We
+        // seed completions directly to drive the branches in isolation; the real
+        // flow's wiring is covered in radar_state's tests.
         let mut state = make_state_with_tabs(&[(0, "a", true), (1, "b", false)]);
         state
             .runtime
@@ -1027,31 +1015,41 @@ mod tests {
             .runtime
             .radar
             .set_tab_panes_for_position(1, vec![pane(11)]);
+
+        // (1) A Done on the pane you are already sitting on (focus UNCHANGED)
+        //     recedes — you watched it finish.
         state.runtime.radar.command_mut().on_exit(10, Some(0), 1);
         state.runtime.radar.set_last_focused(Some(10));
-        // Same focused pane → not a transition → the primitive must not clear it.
-        assert!(
-            !state.apply_focus_transition(Some(10), 2),
-            "no transition when focus unchanged"
-        );
-        assert_eq!(
-            state.runtime.radar.command_store().get(10).unwrap().status,
-            Status::Done,
-            "the visit-clear never fires without a focus transition"
-        );
-        // Leaving to pane 11 is a transition, but must not touch the pane we left.
-        assert!(state.apply_focus_transition(Some(11), 3));
-        assert_eq!(
-            state.runtime.radar.command_store().get(10).unwrap().status,
-            Status::Done,
-            "leaving does not change the pane you left"
-        );
-        // Re-entering pane 10 is a transition → NOW it clears to Idle ("visited").
-        assert!(state.apply_focus_transition(Some(10), 4));
+        assert!(!state.reconcile_focus(Some(10), 2), "focus unchanged");
         assert_eq!(
             state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Idle,
-            "re-entering a finished pane clears it to Idle"
+            "a Done you are sitting on recedes (watched finish)"
+        );
+
+        // (2) An Error on the held pane must NOT recede — it persists while watched.
+        state.runtime.radar.command_mut().on_exit(11, Some(1), 3);
+        state.runtime.radar.set_last_focused(Some(11));
+        assert!(!state.reconcile_focus(Some(11), 4), "focus unchanged");
+        assert_eq!(
+            state.runtime.radar.command_store().get(11).unwrap().status,
+            Status::Error,
+            "an error persists even while watched"
+        );
+
+        // (3) Leaving (transition) must not touch the pane you left; re-entering
+        //     (transition) visit-clears it — even the error, once seen.
+        assert!(state.reconcile_focus(Some(10), 5), "transition away from 11");
+        assert_eq!(
+            state.runtime.radar.command_store().get(11).unwrap().status,
+            Status::Error,
+            "leaving does not change the pane you left"
+        );
+        assert!(state.reconcile_focus(Some(11), 6), "transition back into 11");
+        assert_eq!(
+            state.runtime.radar.command_store().get(11).unwrap().status,
+            Status::Idle,
+            "re-entering the errored pane clears it (seen)"
         );
     }
 

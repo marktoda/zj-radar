@@ -303,10 +303,10 @@ impl RadarState {
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
-        // Update focus FIRST (so `last_focused` reflects this update), then
-        // settle: a command that exited in the now-focused pane recedes here.
-        self.apply_focus_transition(self.focused_terminal_in_active_tab(), tick);
-        self.settle_focused(tick);
+        // Reconcile against this update's fresh focus: an entry visit-clears the
+        // entered pane, or — if focus stayed put — a command that just exited in
+        // it recedes. One call; see `reconcile_focus`.
+        self.reconcile_focus(self.focused_terminal_in_active_tab(), tick);
 
         RadarChange {
             render: true,
@@ -318,12 +318,13 @@ impl RadarState {
 
     pub(crate) fn timer(&mut self, tick: u64) {
         self.command.on_timer(tick);
-        // Settle on the cadence tick. This is the recede path for a *watched* agent
-        // turn (whose Done arrived on the pipe, which deliberately does not settle)
-        // as well as for a return-to-shell command confirmed Done this tick. By the
-        // time a tick fires, any focus `PaneUpdate` has been processed, so
-        // `last_focused` is settled — see `settle_focused` and `status_pipe`.
-        self.settle_focused(tick);
+        // Reconcile against the (unchanged) focus on the cadence tick. This is the
+        // recede path for a *watched* agent turn (whose Done arrived on the pipe,
+        // which deliberately does not reconcile) and for a return-to-shell command
+        // confirmed Done this tick. By the time a tick fires, any focus `PaneUpdate`
+        // has been processed, so `last_focused` is settled — passing it means
+        // `changed == false`, i.e. the recede branch. See `reconcile_focus`.
+        self.reconcile_focus(self.last_focused, tick);
     }
 
     pub(crate) fn cwd_changed(
@@ -372,7 +373,7 @@ impl RadarState {
         // see. Instead the recede rides the timer (armed by the runtime on this
         // event), which fires on a cadence by which point focus has settled — so a
         // genuinely-watched agent turn still recedes within a tick, while one you
-        // navigated away from stays lit. See `settle_focused`.
+        // navigated away from stays lit. See `reconcile_focus`.
         Some(RadarChange {
             render: true,
             persist_snapshot: true,
@@ -389,40 +390,41 @@ impl RadarState {
         self.rename_tabs(naming)
     }
 
-    pub(crate) fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        if focused == self.last_focused {
-            return false;
-        }
+    /// Reconcile a pane gaining or holding focus against its queued completion.
+    /// One operation, two cases derived from whether focus actually moved:
+    ///
+    /// - **focus CHANGED** (an entry / "visit") → clear the entered pane's queued
+    ///   state entirely, `Done` *or* `Error`: entering a pane acknowledges whatever
+    ///   it shows ("seen, even errors").
+    /// - **focus UNCHANGED** (you are sitting on it) → recede a *fresh `Done`* only:
+    ///   you watched it finish, so it should not light the rail; an `Error` or a
+    ///   "needs you" `Pending` stays lit even while watched (`recede_if_focused`
+    ///   skips them).
+    ///
+    /// Background panes are never touched here — their completion persists until a
+    /// later focus entry recurs through the CHANGED branch. Recede is monotonic
+    /// (`Done → Idle` once, `on_focus` then `None`), so calling this on every event
+    /// and timer tick cannot oscillate — that is what keeps it free of the
+    /// direction-dependent flicker an earlier "clear on every update" version had.
+    ///
+    /// Callers pass whatever focus they can trust: `panes_changed` passes this
+    /// update's fresh focus; `timer` passes the (settled) `last_focused`, which
+    /// makes `changed == false` → the recede branch. `status_pipe` deliberately
+    /// does NOT call this — its focus could be stale; see the note there. Returns
+    /// whether focus changed.
+    pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        let changed = focused != self.last_focused;
         self.last_focused = focused;
         if let Some(id) = focused {
-            self.status.on_pane_focused(id, tick);
-            self.command.on_pane_focused(id, tick);
+            if changed {
+                self.status.on_pane_focused(id, tick);
+                self.command.on_pane_focused(id, tick);
+            } else {
+                self.status.recede_if_focused(id, tick);
+                self.command.recede_if_focused(id, tick);
+            }
         }
-        true
-    }
-
-    /// Recede the focused pane's completion — the design's "if they were looking
-    /// at it when it finished, don't flag it." A `Done` on the currently-focused
-    /// pane clears to Idle so it never lights the rail. Done-only: errors persist
-    /// even when watched, and a `Pending` "needs you" is an active alarm — both
-    /// are skipped by `recede_on_focus`. Only the focused pane is touched;
-    /// background completions keep their queued clear and surface until the user
-    /// visits them (handled by `apply_focus_transition` on entry).
-    ///
-    /// Called from `panes_changed` (after the focus transition, so `last_focused`
-    /// is this update's fresh focus — the path for command exits) and from `timer`
-    /// (the cadence path that recedes a watched agent turn). It is deliberately
-    /// NOT called from `status_pipe`: that raw completion edge can carry a stale
-    /// `last_focused` and would drop a completion the user navigated away from —
-    /// see the note there. Recede is monotonic (Done→Idle once), so even though it
-    /// may run on many ticks it cannot oscillate — unlike the predecessor "clear on
-    /// every update" that produced the focus-move flicker described on
-    /// `State::apply_focus_transition` in `lib.rs`.
-    fn settle_focused(&mut self, tick: u64) {
-        if let Some(id) = self.last_focused {
-            self.status.recede_if_focused(id, tick);
-            self.command.recede_if_focused(id, tick);
-        }
+        changed
     }
 
     #[cfg(test)]
@@ -1172,7 +1174,7 @@ mod tests {
 
         let mut restored = RadarState::default();
         restored.load_snapshot(&json).unwrap();
-        restored.apply_focus_transition(Some(5), 9);
+        restored.reconcile_focus(Some(5), 9);
 
         assert_eq!(restored.status(5).unwrap().status, Status::Idle);
         assert_eq!(restored.status(5).unwrap().on_focus, None);
@@ -1279,11 +1281,11 @@ mod tests {
     // ── Recede-while-focused ───────────────────────────────────────────────────
     //
     // "If they were looking at it when it finished, don't flag it." A completion
-    // that lands on the FOCUSED pane recedes immediately; a background completion
-    // persists until visited; errors and pending never recede. `settle_focused`
-    // is wired into the three completion entry points — `panes_changed` (command
-    // exit), `status_pipe` (agent turn), and `timer` (return-to-shell confirm) —
-    // so these drive each one through the public API.
+    // that lands on the FOCUSED pane recedes; a background completion persists
+    // until visited; errors and pending never recede. `reconcile_focus` carries
+    // this from `panes_changed` (command exit, fresh focus) and `timer` (the
+    // cadence path for a watched agent turn). `status_pipe` deliberately defers
+    // to the timer rather than reconciling on its possibly-stale focus.
 
     fn focused_pane_update(
         active_pos: usize,
@@ -1342,7 +1344,7 @@ mod tests {
             Status::Done,
             "a background completion persists — you weren't looking"
         );
-        radar.apply_focus_transition(Some(5), 4);
+        radar.reconcile_focus(Some(5), 4);
         assert_eq!(
             radar.command(5).unwrap().status,
             Status::Idle,
@@ -1430,7 +1432,7 @@ mod tests {
         // With recede-at-completion the pane clears the instant it finishes (in
         // the exit's own update), so the outcome is deterministic — Idle —
         // whichever pane focus moves to next. Drives the real `panes_changed`
-        // flow so `settle_focused` actually runs.
+        // flow so `reconcile_focus` actually runs.
         let run = |next_focus: u32| {
             let mut radar = RadarState::default();
             radar.tabs_changed(vec![tab(10, 0, "work", true)]);

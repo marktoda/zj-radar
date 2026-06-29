@@ -299,8 +299,8 @@ impl PluginRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        self.radar.apply_focus_transition(focused, tick)
+    pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        self.radar.reconcile_focus(focused, tick)
     }
 
     #[cfg(test)]

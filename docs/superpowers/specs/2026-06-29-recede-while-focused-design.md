@@ -97,6 +97,20 @@ on the next update (`settle` skips errors; the ungated visit-clear would not).
 
 - The original rules' "long task → brief ✓ for ~3-5s then fade" refinement (this
   change recedes tasks immediately, same as agents). A fade would add a
-  deadline-tick to `settle` rather than clearing instantly.
+  deadline-tick to the recede rather than clearing instantly.
 - Suppressing badges for *manual* shell commands (`Kind::Command`) regardless of
   focus — a separate rule.
+
+## Update — consolidation into `reconcile_focus`
+
+The two `RadarState` focus methods this spec introduced as separate —
+`apply_focus_transition` (visit-clear) and `settle_focused` (recede) — were
+subsequently merged into one **`reconcile_focus(focused, tick)`**. It derives the
+visit-vs-recede choice from whether focus changed: a focus *entry* visit-clears the
+entered pane (Done or Error); focus *held* recedes a fresh Done only. This is
+behavior-identical to the two-method form but removes the `panes_changed`
+transition-then-settle overlap (review finding [1]) and centralizes the decision in
+one place — anticipating the fade follow-up above, which makes `on_focus`
+re-queueable and would otherwise activate that overlap. The store/observation
+forwarders (`on_pane_focused`/`recede_if_focused`, `apply_on_focus`/`recede_on_focus`)
+are unchanged.
