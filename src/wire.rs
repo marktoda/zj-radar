@@ -112,3 +112,80 @@ macro_rules! wire_enum {
     };
 }
 pub(crate) use wire_enum;
+
+#[cfg(test)]
+mod tests {
+    // Cover the model natively — independent of `Status` / `ObservationOrigin`,
+    // so the macros stay pinned even if both production types change. Throwaway
+    // enums exercise each policy end-to-end.
+
+    // ── strict policy, built end-to-end by `wire_enum!` ──────────────────────
+    wire_enum! {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Color {
+            Red => "red",
+            Green => "grn",
+        }
+    }
+
+    #[test]
+    fn wire_enum_generates_all_as_wire_and_inverse_from_wire() {
+        assert_eq!(Color::ALL, &[Color::Red, Color::Green]);
+        for &c in Color::ALL {
+            assert_eq!(Color::from_wire(c.as_wire()), Some(c)); // round-trip by construction
+        }
+        assert_eq!(Color::Green.as_wire(), "grn");
+        assert_eq!(Color::from_wire("nope"), None);
+    }
+
+    #[test]
+    fn strict_serializes_as_wire_token_and_round_trips_through_json() {
+        assert_eq!(serde_json::to_string(&Color::Green).unwrap(), r#""grn""#);
+        for &c in Color::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(serde_json::from_str::<Color>(&json).unwrap(), c);
+        }
+    }
+
+    #[test]
+    fn strict_deserialize_rejects_unknown_token_naming_the_type() {
+        let err = serde_json::from_str::<Color>(r#""violet""#).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Color"), "error names the type: {msg}");
+        assert!(msg.contains("violet"), "error quotes the bad token: {msg}");
+    }
+
+    // ── lenient policy, applied by `wire_serde!` to a hand-written enum ───────
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Mood {
+        Calm,
+        Loud,
+    }
+
+    impl Mood {
+        fn as_wire(self) -> &'static str {
+            match self {
+                Mood::Calm => "calm",
+                Mood::Loud => "loud",
+            }
+        }
+
+        // Lenient: anything unknown/absent folds into the `Calm` fallback.
+        fn from_wire(s: &str) -> Mood {
+            match s {
+                "loud" => Mood::Loud,
+                _ => Mood::Calm,
+            }
+        }
+    }
+
+    wire_serde!(lenient, Mood);
+
+    #[test]
+    fn lenient_round_trips_known_and_folds_unknown_into_fallback() {
+        assert_eq!(serde_json::to_string(&Mood::Loud).unwrap(), r#""loud""#);
+        assert_eq!(serde_json::from_str::<Mood>(r#""loud""#).unwrap(), Mood::Loud);
+        // Unknown token deserializes to the fallback instead of erroring.
+        assert_eq!(serde_json::from_str::<Mood>(r#""???""#).unwrap(), Mood::Calm);
+    }
+}

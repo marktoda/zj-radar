@@ -304,13 +304,7 @@ mod tests {
     #[test]
     fn as_wire_round_trips_for_all_statuses() {
         use crate::status::Status;
-        for s in [
-            Status::Idle,
-            Status::Running,
-            Status::Pending,
-            Status::Done,
-            Status::Error,
-        ] {
+        for &s in Status::ALL {
             assert_eq!(Status::from_wire(s.as_wire()), s);
         }
     }
