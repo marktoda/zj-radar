@@ -82,17 +82,21 @@ impl State {
         self.runtime.build_rows()
     }
 
-    /// Apply clear-on-focus only on a focus TRANSITION — when focus enters a
-    /// pane that wasn't focused on the previous PaneUpdate. The "visit" that
-    /// clears a Done/finished pane (per the design's "stays lit until visited")
-    /// is the act of focusing INTO it, not merely being focused: a pane that
-    /// finishes while already focused must stay lit until you leave and return.
+    /// Apply the *visit*-clear only on a focus TRANSITION — when focus enters a
+    /// pane that wasn't focused on the previous PaneUpdate. This is the
+    /// background-completion path: a pane that finished while you weren't looking
+    /// stays lit until you focus INTO it, at which point its queued clear is
+    /// applied (this clears even an error — once seen, it's seen).
     ///
-    /// Without this gate, `on_pane_focused` ran on EVERY PaneUpdate for the
-    /// focused pane, so a pane that became Done while focused was auto-cleared to
-    /// Idle by the next (frequent) update — and whether a focus-move "beat" that
-    /// clearing update was a timing race, surfacing as direction-dependent
-    /// Done↔Idle flicker. Gating on the transition makes it deterministic.
+    /// The transition gate is load-bearing in two ways. (1) Without it,
+    /// `on_pane_focused` would run on EVERY PaneUpdate for the focused pane and
+    /// would wipe a focused *error* the instant the next update arrived —
+    /// errors must persist while watched. (2) It keeps this path off the
+    /// completed-while-focused case entirely, which is handled separately by
+    /// `RadarState::settle_focused` (run from `panes_changed` and `timer`): a
+    /// `Done` on the focused pane recedes Done-only and monotonically, so it never
+    /// produces the direction-dependent Done↔Idle flicker an earlier "clear on
+    /// every update" version did.
     ///
     /// Returns true when a transition was applied (focus actually changed).
     #[cfg(test)]
@@ -993,10 +997,18 @@ mod tests {
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
 
-    // ── Clear-on-focus fires only on a focus TRANSITION ──
+    // ── The visit-clear primitive fires only on a focus TRANSITION ──
 
     #[test]
-    fn focus_transition_clears_only_on_entry_not_while_focused() {
+    fn focus_transition_clears_only_on_entry() {
+        // Unit test of the `apply_focus_transition` *primitive* in isolation: it
+        // must clear a pane's queued completion only on ENTRY (a focus change),
+        // never merely because the pane is focused. We seed the Done directly
+        // (bypassing `panes_changed`/`settle_focused`) precisely to exercise the
+        // primitive alone — in the real flow a Done landing on the focused pane
+        // recedes at completion time via settle, not here. This gating is what
+        // lets a *background* completion persist until visited, and is why a
+        // focused *error* is not wiped on every update (settle skips errors).
         let mut state = make_state_with_tabs(&[(0, "a", true), (1, "b", false)]);
         state
             .runtime
@@ -1006,11 +1018,9 @@ mod tests {
             .runtime
             .radar
             .set_tab_panes_for_position(1, vec![pane(11)]);
-        // Pane 10 finished a command WHILE focused → Done with on_focus=Idle.
         state.runtime.radar.command_mut().on_exit(10, Some(0), 1);
         state.runtime.radar.set_last_focused(Some(10));
-        // A subsequent PaneUpdate with the SAME focused pane is not a transition
-        // → must NOT clear it (stays lit while you sit on it).
+        // Same focused pane → not a transition → the primitive must not clear it.
         assert!(
             !state.apply_focus_transition(Some(10), 2),
             "no transition when focus unchanged"
@@ -1018,7 +1028,7 @@ mod tests {
         assert_eq!(
             state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Done,
-            "Done pane stays lit while focus remains on it"
+            "the visit-clear never fires without a focus transition"
         );
         // Leaving to pane 11 is a transition, but must not touch the pane we left.
         assert!(state.apply_focus_transition(Some(11), 3));
@@ -1032,49 +1042,7 @@ mod tests {
         assert_eq!(
             state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Idle,
-            "re-entering a Done pane clears it to Idle"
-        );
-    }
-
-    #[test]
-    fn done_pane_left_behind_is_direction_independent() {
-        // Reproduce the reported bug: a command pane that finished while focused
-        // must show the SAME state whether you then move to a higher- or
-        // lower-numbered pane. Before the fix, a redraw update while still
-        // focused could clear it to Idle, so the result depended on timing.
-        let run = |dest: u32| {
-            let mut state =
-                make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
-            state
-                .runtime
-                .radar
-                .set_tab_panes_for_position(0, vec![pane(1)]);
-            state
-                .runtime
-                .radar
-                .set_tab_panes_for_position(1, vec![pane(2)]);
-            state
-                .runtime
-                .radar
-                .set_tab_panes_for_position(2, vec![pane(3)]);
-            // Focus is on pane 2; its command finishes → Done while focused.
-            state.runtime.radar.set_last_focused(Some(2));
-            state.runtime.radar.command_mut().on_exit(2, Some(0), 1);
-            // A redraw update arrives while still focused (must not clear).
-            state.apply_focus_transition(Some(2), 2);
-            // Now move focus to the destination pane.
-            state.apply_focus_transition(Some(dest), 3);
-            state.runtime.radar.command_store().get(2).unwrap().status
-        };
-        assert_eq!(
-            run(3),
-            Status::Done,
-            "moving 'right' (2→3) leaves pane 2 Done"
-        );
-        assert_eq!(
-            run(1),
-            Status::Done,
-            "moving 'left' (2→1) leaves pane 2 Done"
+            "re-entering a finished pane clears it to Idle"
         );
     }
 

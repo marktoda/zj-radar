@@ -234,7 +234,10 @@ impl RadarState {
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
+        // Update focus FIRST (so `last_focused` reflects this update), then
+        // settle: a command that exited in the now-focused pane recedes here.
         self.apply_focus_transition(self.focused_terminal_in_active_tab(), tick);
+        self.settle_focused(tick);
 
         RadarChange {
             render: true,
@@ -246,6 +249,12 @@ impl RadarState {
 
     pub(crate) fn timer(&mut self, tick: u64) {
         self.command.on_timer(tick);
+        // Settle on the cadence tick. This is the recede path for a *watched* agent
+        // turn (whose Done arrived on the pipe, which deliberately does not settle)
+        // as well as for a return-to-shell command confirmed Done this tick. By the
+        // time a tick fires, any focus `PaneUpdate` has been processed, so
+        // `last_focused` is settled — see `settle_focused` and `status_pipe`.
+        self.settle_focused(tick);
     }
 
     pub(crate) fn cwd_changed(
@@ -286,6 +295,15 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         self.status.apply(p, tick);
+        // NOTE: we deliberately do NOT settle here. A status-pipe payload is a raw
+        // completion edge that can arrive in the gap between the user switching
+        // away from this pane and the focus `PaneUpdate` landing — so `last_focused`
+        // may still name this pane even though the user has already left. Receding
+        // on that stale focus would silently drop a completion the user *should*
+        // see. Instead the recede rides the timer (armed by the runtime on this
+        // event), which fires on a cadence by which point focus has settled — so a
+        // genuinely-watched agent turn still recedes within a tick, while one you
+        // navigated away from stays lit. See `settle_focused`.
         Some(RadarChange {
             render: true,
             persist_snapshot: true,
@@ -312,6 +330,30 @@ impl RadarState {
             self.command.on_pane_focused(id, tick);
         }
         true
+    }
+
+    /// Recede the focused pane's completion — the design's "if they were looking
+    /// at it when it finished, don't flag it." A `Done` on the currently-focused
+    /// pane clears to Idle so it never lights the rail. Done-only: errors persist
+    /// even when watched, and a `Pending` "needs you" is an active alarm — both
+    /// are skipped by `recede_on_focus`. Only the focused pane is touched;
+    /// background completions keep their queued clear and surface until the user
+    /// visits them (handled by `apply_focus_transition` on entry).
+    ///
+    /// Called from `panes_changed` (after the focus transition, so `last_focused`
+    /// is this update's fresh focus — the path for command exits) and from `timer`
+    /// (the cadence path that recedes a watched agent turn). It is deliberately
+    /// NOT called from `status_pipe`: that raw completion edge can carry a stale
+    /// `last_focused` and would drop a completion the user navigated away from —
+    /// see the note there. Recede is monotonic (Done→Idle once), so even though it
+    /// may run on many ticks it cannot oscillate — unlike the predecessor "clear on
+    /// every update" that produced the focus-move flicker described on
+    /// `State::apply_focus_transition` in `lib.rs`.
+    fn settle_focused(&mut self, tick: u64) {
+        if let Some(id) = self.last_focused {
+            self.status.recede_if_focused(id, tick);
+            self.command.recede_if_focused(id, tick);
+        }
     }
 
     #[cfg(test)]
@@ -1163,6 +1205,194 @@ mod tests {
                 .render,
             "cwd_changed must request a render"
         );
+    }
+
+    // ── Recede-while-focused ───────────────────────────────────────────────────
+    //
+    // "If they were looking at it when it finished, don't flag it." A completion
+    // that lands on the FOCUSED pane recedes immediately; a background completion
+    // persists until visited; errors and pending never recede. `settle_focused`
+    // is wired into the three completion entry points — `panes_changed` (command
+    // exit), `status_pipe` (agent turn), and `timer` (return-to-shell confirm) —
+    // so these drive each one through the public API.
+
+    fn focused_pane_update(
+        active_pos: usize,
+        pane_id: u32,
+        exits: Vec<(u32, Option<i32>)>,
+    ) -> PaneUpdate {
+        PaneUpdate {
+            tab_panes: HashMap::from([(active_pos, vec![focused_pane(pane_id)])]),
+            live: HashSet::from([pane_id]),
+            theme: None,
+            exits,
+        }
+    }
+
+    #[test]
+    fn command_done_while_focused_recedes_immediately() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+        // Establish focus on pane 5 FIRST, so the later exit update is not itself
+        // a focus transition — isolating settle from the visit-clear path.
+        radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
+        radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
+        radar.timer(3); // promote to Running
+        // Pane 5 exits 0 while still focused (focus unchanged this update).
+        radar.panes_changed(
+            focused_pane_update(0, 5, vec![(5, Some(0))]),
+            4,
+            config::NamingMode::Off,
+        );
+        assert_eq!(
+            radar.command(5).unwrap().status,
+            Status::Idle,
+            "a Done that lands on the focused pane recedes immediately"
+        );
+    }
+
+    #[test]
+    fn command_done_in_background_persists_then_clears_on_visit() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "active", true), tab(20, 1, "bg", false)]);
+        radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
+        radar.timer(2);
+        // Focus is on pane 2 (active tab); pane 5 exits in the background tab.
+        radar.panes_changed(
+            PaneUpdate {
+                tab_panes: HashMap::from([(0, vec![focused_pane(2)]), (1, vec![pane(5)])]),
+                live: HashSet::from([2, 5]),
+                theme: None,
+                exits: vec![(5, Some(0))],
+            },
+            3,
+            config::NamingMode::Off,
+        );
+        assert_eq!(
+            radar.command(5).unwrap().status,
+            Status::Done,
+            "a background completion persists — you weren't looking"
+        );
+        radar.apply_focus_transition(Some(5), 4);
+        assert_eq!(
+            radar.command(5).unwrap().status,
+            Status::Idle,
+            "visiting the pane clears the persisted Done"
+        );
+    }
+
+    #[test]
+    fn command_error_while_focused_persists() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+        // Focus established first, so the failing exit is not a focus transition:
+        // settle is what runs (and must skip the error), not the visit-clear.
+        radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
+        radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
+        radar.timer(3);
+        radar.panes_changed(
+            focused_pane_update(0, 5, vec![(5, Some(1))]),
+            4,
+            config::NamingMode::Off,
+        );
+        assert_eq!(
+            radar.command(5).unwrap().status,
+            Status::Error,
+            "errors persist even when you were watching"
+        );
+    }
+
+    #[test]
+    fn agent_done_while_focused_recedes_on_timer_not_on_the_pipe_edge() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "agent", true)]);
+        // Establish focus on the agent's pane 5.
+        radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
+        // Agent turn completes: Done with a queued clear-on-focus.
+        let raw = crate::payload::to_wire(
+            5,
+            Status::Done,
+            "repo",
+            "main",
+            "shipped",
+            Some(Status::Idle),
+            "claude",
+        );
+        radar.status_pipe(&raw, 2, config::NamingMode::Off);
+        // The raw pipe edge must NOT recede — `last_focused` could be stale there
+        // (focus-change PaneUpdate not yet processed), so receding now could drop a
+        // completion the user already navigated away from.
+        assert_eq!(
+            radar.status(5).unwrap().status,
+            Status::Done,
+            "the pipe edge defers the recede (focus may be stale)"
+        );
+        // The recede rides the next timer tick, by which point focus has settled.
+        radar.timer(3);
+        assert_eq!(
+            radar.status(5).unwrap().status,
+            Status::Idle,
+            "a watched agent turn recedes on the confirming timer tick"
+        );
+    }
+
+    #[test]
+    fn command_return_to_shell_while_focused_recedes_on_timer() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+        radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
+        radar.command_changed(5, &["make".into()], true, 1);
+        radar.timer(2); // promote to Running
+        assert_eq!(radar.command(5).unwrap().status, Status::Running);
+        // Command leaves the foreground; the confirming timer flips it to Done and
+        // settle recedes it because pane 5 is still focused.
+        radar.command_changed(5, &[], false, 3);
+        radar.timer(4);
+        assert_eq!(
+            radar.command(5).unwrap().status,
+            Status::Idle,
+            "a command finishing in the focused pane recedes on the confirming timer"
+        );
+    }
+
+    #[test]
+    fn done_finishing_while_focused_recedes_regardless_of_next_focus_direction() {
+        // The original reported bug was a direction-dependent Done↔Idle flicker.
+        // With recede-at-completion the pane clears the instant it finishes (in
+        // the exit's own update), so the outcome is deterministic — Idle —
+        // whichever pane focus moves to next. Drives the real `panes_changed`
+        // flow so `settle_focused` actually runs.
+        let run = |next_focus: u32| {
+            let mut radar = RadarState::default();
+            radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+            let update = |focused: u32, exits: Vec<(u32, Option<i32>)>| PaneUpdate {
+                tab_panes: HashMap::from([(
+                    0,
+                    [1u32, 2, 3]
+                        .into_iter()
+                        .map(|id| TerminalPane {
+                            id,
+                            focused_in_tab: id == focused,
+                            ..TerminalPane::default()
+                        })
+                        .collect(),
+                )]),
+                live: HashSet::from([1, 2, 3]),
+                theme: None,
+                exits,
+            };
+            // Focus pane 2 and promote a command there to Running.
+            radar.panes_changed(update(2, vec![]), 1, config::NamingMode::Off);
+            radar.command_changed(2, &["cargo".into(), "build".into()], true, 2);
+            radar.timer(3);
+            // Pane 2 exits 0 while focused → recedes via settle (same update).
+            radar.panes_changed(update(2, vec![(2, Some(0))]), 4, config::NamingMode::Off);
+            // Then focus moves to the next pane (higher or lower).
+            radar.panes_changed(update(next_focus, vec![]), 5, config::NamingMode::Off);
+            radar.command(2).map(|s| s.status)
+        };
+        assert_eq!(run(3), Some(Status::Idle), "moving 2→3 leaves pane 2 receded");
+        assert_eq!(run(1), Some(Status::Idle), "moving 2→1 leaves pane 2 receded");
     }
 
     // ── Stateful property test ────────────────────────────────────────────────

@@ -61,6 +61,17 @@ impl StatusStore {
         }
     }
 
+    /// Recede this pane's completion the instant it finishes under focus (Done
+    /// only — see `TrackedObservation::recede_on_focus`). Focus-agnostic: the
+    /// caller passes the focused pane id; the store just forwards. Distinct from
+    /// `on_pane_focused`, which clears any state on a *visit* — this one is "you
+    /// watched it finish".
+    pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
+        if let Some(s) = self.map.get_mut(&pane_id) {
+            s.recede_on_focus(tick);
+        }
+    }
+
     pub fn prune(&mut self, live: &HashSet<u32>) {
         self.map.retain(|id, _| live.contains(id));
     }
@@ -154,6 +165,25 @@ mod tests {
         // focusing again does nothing
         s.on_pane_focused(1, 9);
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
+    }
+
+    #[test]
+    fn recede_if_focused_clears_done_but_not_error() {
+        let mut s = StatusStore::default();
+        let mut done = payload(1, Status::Done, None);
+        done.on_focus = Some(Status::Idle);
+        s.apply(done, 1);
+        let mut err = payload(2, Status::Error, None);
+        err.on_focus = Some(Status::Idle);
+        s.apply(err, 1);
+
+        s.recede_if_focused(1, 5);
+        s.recede_if_focused(2, 5);
+
+        assert_eq!(s.get(1).unwrap().status, Status::Idle, "Done recedes");
+        assert_eq!(s.get(2).unwrap().status, Status::Error, "Error persists");
+        // An unknown pane id is a no-op (never panics).
+        s.recede_if_focused(999, 5);
     }
 
     #[test]
