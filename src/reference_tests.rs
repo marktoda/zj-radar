@@ -6,11 +6,12 @@
 //! docs/rail-reference.md. Editing a `rail-input`/`rail-expect` pair in the doc
 //! edits this test — the doc is the single source of truth for rail rendering.
 
-use crate::config::Density;
-use crate::kind::Kind;
-use crate::render::{GlyphSet, PaneDisplay, PrimaryDetail, ProgressCounts, RenderOpts, TabDisplay, TabRow};
+use crate::config::{Density, NamingMode};
+use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabId, TerminalPane};
+use crate::render::{GlyphSet, RenderOpts, TabRow};
 use crate::status::Status;
 use crate::theme::DerivedColors;
+use std::collections::{HashMap, HashSet};
 
 // ── Case type ───────────────────────────────────────────────────────────────
 
@@ -106,33 +107,44 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 
 // ── DSL builder ─────────────────────────────────────────────────────────────
 
-/// Parse a `rail-input` DSL block into `(Vec<TabRow>, RenderOpts)`.
+/// Parse a `rail-input` DSL block into `(Vec<TabRow>, RenderOpts)` by routing
+/// through the real `RadarState` aggregator.
 ///
-/// Defaults: width=32, height=usize::MAX/2, glyphs=Plain, density=Compact, header=true.
+/// DSL grammar (unchanged):
+///   width N
+///   height N
+///   glyphs plain|nerd
+///   tab <pos> "<name>" [active]
+///     <kind> <status> "<msg>"   ← indented; one line per pane
 ///
-/// For each tab, builds `TabDisplay` directly:
-///   - `total` = number of tracked panes; `done` = count Done; `pending` = count Pending.
-///   - `best_status` (the tab status): start Idle; for each pane where status.is_active(),
-///     if severity > best OR (== severity AND this pane's since_tick >= current best's
-///     since_tick), set best = this status and detail = Some(PrimaryDetail{...}).
-///   - since_tick for each pane = its 0-based index in the tab's pane list.
+/// For idle panes: Running is applied first (tick=0, same msg) to set
+/// `ever_active=true`, then Idle (tick=1, same msg). This preserves the
+/// idle-but-tracked behavior required by scenario J.
+///
+/// Panics on unknown `kind` or `status` tokens with a descriptive message.
 fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
+    use crate::kind::Kind;
+    use crate::payload::to_wire;
+
     let mut width: usize = 32;
     let mut height: usize = usize::MAX / 2;
     let mut glyphs = GlyphSet::Plain;
+    let mut density = Density::Compact;
 
     struct PaneSpec {
         pane_id: u32,
         kind: Kind,
         status: Status,
         msg: String,
-        since_tick: u64,
+        /// true = register pane but send NO status (→ PaneDisplay::Untracked)
+        untracked: bool,
     }
 
     struct TabSpec {
-        pos: usize,
+        pos: usize,   // 1-based DSL position (e.g. `tab 1 "shell"` -> pos=1)
         name: String,
         active: bool,
+        has_bell: bool,
         panes: Vec<PaneSpec>,
     }
 
@@ -141,7 +153,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     let mut next_pane_id: u32 = 1;
 
     for line in input.lines() {
-        // Width / height / glyphs options (non-indented)
+        // Width / height / glyphs / density options (non-indented)
         if let Some(rest) = line.strip_prefix("width ") {
             if let Ok(n) = rest.trim().parse::<usize>() {
                 width = n;
@@ -161,8 +173,17 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             };
             continue;
         }
+        if let Some(rest) = line.strip_prefix("density ") {
+            density = match rest.trim() {
+                "compact" => Density::Compact,
+                "comfortable" => Density::Comfortable,
+                "cards" => Density::Cards,
+                other => panic!("reference DSL: unknown density '{}' in scenario", other),
+            };
+            continue;
+        }
 
-        // Tab declaration: `tab <pos> "<name>" [active]`
+        // Tab declaration: `tab <pos> "<name>" [active] [bell]`
         if let Some(rest) = line.strip_prefix("tab ") {
             let rest = rest.trim();
             // Parse position
@@ -180,23 +201,47 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 (after_pos, "")
             };
             let active = after_name.contains("active");
+            let has_bell = after_name.contains("bell");
             let idx = tabs.len();
             tabs.push(TabSpec {
                 pos,
                 name: name.to_string(),
                 active,
+                has_bell,
                 panes: Vec::new(),
             });
             current_tab = Some(idx);
             continue;
         }
 
-        // Pane line: indented `  <kind> <status> "<msg>"`
+        // Pane line: indented `  <kind> <status> "<msg>"` OR `  untracked "<title>"`
         if (line.starts_with("  ") || line.starts_with('\t')) && current_tab.is_some() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
+
+            // Untracked pane form: `untracked "<title>"`
+            if let Some(rest) = trimmed.strip_prefix("untracked ") {
+                let title = if let Some(inner) = rest.trim().strip_prefix('"') {
+                    inner.strip_suffix('"').unwrap_or(inner)
+                } else {
+                    rest.trim()
+                };
+                let pane_id = next_pane_id;
+                next_pane_id += 1;
+                if let Some(idx) = current_tab {
+                    tabs[idx].panes.push(PaneSpec {
+                        pane_id,
+                        kind: Kind::Other,
+                        status: Status::Idle,
+                        msg: title.to_string(),
+                        untracked: true,
+                    });
+                }
+                continue;
+            }
+
             // Parse: kind status "msg"
             let mut parts = trimmed.splitn(3, ' ');
             let kind_str = parts.next().unwrap_or("other");
@@ -209,113 +254,158 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 msg_part
             };
 
+            // Validate kind token
+            let valid_kinds = [
+                "claude", "codex", "gemini", "command", "build",
+                "test", "deploy", "server", "other",
+            ];
+            if !valid_kinds.contains(&kind_str) {
+                panic!("reference DSL: unknown kind '{}' in scenario", kind_str);
+            }
+
+            // Validate status token
+            let valid_statuses = ["running", "pending", "done", "error", "idle"];
+            if !valid_statuses.contains(&status_str) {
+                panic!("reference DSL: unknown status '{}' in scenario", status_str);
+            }
+
             let kind = Kind::from_source(kind_str);
             let status = Status::from_wire(status_str);
             let pane_id = next_pane_id;
             next_pane_id += 1;
 
             if let Some(idx) = current_tab {
-                let since_tick = tabs[idx].panes.len() as u64;
                 tabs[idx].panes.push(PaneSpec {
                     pane_id,
                     kind,
                     status,
                     msg: msg.to_string(),
-                    since_tick,
+                    untracked: false,
                 });
             }
             continue;
         }
     }
 
-    // Build TabRow vec from collected specs
-    let theme = DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
-    let rows: Vec<TabRow> = tabs
-        .into_iter()
-        .map(|spec| {
-            let display = if spec.panes.is_empty() {
-                TabDisplay {
-                    status: Status::Idle,
-                    progress: ProgressCounts { done: 0, total: 0, pending: 0 },
-                    detail: None,
-                    panes: vec![],
-                }
-            } else {
-                // Compute aggregated status + detail from panes
-                let total = spec.panes.len();
-                let done = spec.panes.iter().filter(|p| p.status == Status::Done).count();
-                let pending = spec.panes.iter().filter(|p| p.status == Status::Pending).count();
+    // ── Build RadarState ──────────────────────────────────────────────────────
 
-                let mut best_status = Status::Idle;
-                let mut best_tick: u64 = 0;
-                let mut detail: Option<PrimaryDetail> = None;
+    let mut radar = RadarState::default();
 
-                for pane in &spec.panes {
-                    if pane.status.is_active() {
-                        let is_better = if pane.status.severity() > best_status.severity() {
-                            true
-                        } else if pane.status.severity() == best_status.severity() {
-                            pane.since_tick >= best_tick
-                        } else {
-                            false
-                        };
-                        if is_better {
-                            best_status = pane.status;
-                            best_tick = pane.since_tick;
-                            detail = Some(PrimaryDetail {
-                                repo: String::new(),
-                                branch: String::new(),
-                                msg: pane.msg.clone(),
-                                since_tick: pane.since_tick,
-                                outcome: None,
-                                status: pane.status,
-                                kind: pane.kind,
-                            });
-                        }
-                    }
-                }
+    // 1. tabs_changed: one RadarTab per DSL tab.
+    // DSL pos is 1-based (e.g. `tab 1 "shell"`); rows() returns number = position+1,
+    // so we store position = pos - 1 to get the right display number.
+    let radar_tabs: Vec<RadarTab> = tabs.iter().map(|spec| RadarTab {
+        id: TabId::new(spec.pos),
+        position: spec.pos.saturating_sub(1),
+        name: spec.name.clone(),
+        active: spec.active,
+        has_bell: spec.has_bell,
+    }).collect();
+    radar.tabs_changed(radar_tabs);
 
-                let pane_displays: Vec<PaneDisplay> = spec.panes
-                    .iter()
-                    .map(|p| PaneDisplay::tracked(p.pane_id, p.kind, p.status, p.msg.clone(), None))
-                    .collect();
+    // 2. panes_changed: register all panes as live terminal panes.
+    let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
+    let mut live: HashSet<u32> = HashSet::new();
 
-                TabDisplay {
-                    status: best_status,
-                    // NOTE: these counts assume every listed pane is ever_active
-                    // (tracked). The real `tab_display` gates done/total on
-                    // `ever_active`. That divergence is inert today because the
-                    // renderer reads no `progress` field (the right-slot was
-                    // dropped). If ⟦D1⟧ revives done/total in the slot, mirror
-                    // the `ever_active` gating here or the oracle could pass on
-                    // wrong counts.
-                    progress: ProgressCounts { done, total, pending },
-                    detail,
-                    panes: pane_displays,
-                }
+    for spec in &tabs {
+        let position = spec.pos.saturating_sub(1);
+        let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
+            live.insert(p.pane_id);
+            TerminalPane {
+                id: p.pane_id,
+                title: p.msg.clone(),
+                focused_in_tab: false,
+            }
+        }).collect();
+        if !terminal_panes.is_empty() {
+            tab_panes.insert(position, terminal_panes);
+        }
+    }
+
+    let update = PaneUpdate {
+        tab_panes,
+        live,
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, 0, NamingMode::Off);
+
+    // 3. status_pipe: apply status for each tracked pane.
+    // Untracked panes get NO status update — the real aggregator yields PaneDisplay::Untracked.
+    // For idle panes: first apply Running (tick=0) to set ever_active=true,
+    // then apply Idle (tick=1). This preserves scenario J's idle-but-tracked behavior.
+    for spec in &tabs {
+        for pane in &spec.panes {
+            // Untracked panes: registered in panes_changed but never receive a
+            // status update, so the aggregator yields PaneDisplay::Untracked.
+            if pane.untracked {
+                continue;
+            }
+
+            // kind -> wire source name
+            let source = match pane.kind {
+                Kind::Claude => "claude",
+                Kind::Codex => "codex",
+                Kind::Gemini => "gemini",
+                Kind::Command => "command",
+                Kind::Test => "test",
+                Kind::Build => "build",
+                Kind::Deploy => "deploy",
+                Kind::Server => "server",
+                Kind::Other => "other",
             };
 
-            TabRow {
-                number: spec.pos as u32,
-                name: spec.name,
-                active: spec.active,
-                has_bell: false,
-                display,
-            }
-        })
-        .collect();
+            if pane.status == Status::Idle {
+                // First prime ever_active with Running, then switch to Idle
+                let wire_running = to_wire(
+                    pane.pane_id,
+                    Status::Running,
+                    "",
+                    "",
+                    &pane.msg,
+                    None,
+                    source,
+                );
+                radar.status_pipe(&wire_running, 0, NamingMode::Off);
 
+                let wire_idle = to_wire(
+                    pane.pane_id,
+                    Status::Idle,
+                    "",
+                    "",
+                    &pane.msg,
+                    None,
+                    source,
+                );
+                radar.status_pipe(&wire_idle, 1, NamingMode::Off);
+            } else {
+                let wire = to_wire(
+                    pane.pane_id,
+                    pane.status,
+                    "",
+                    "",
+                    &pane.msg,
+                    None,
+                    source,
+                );
+                radar.status_pipe(&wire, 0, NamingMode::Off);
+            }
+        }
+    }
+
+    // 4. Build RenderOpts
+    let theme = DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
     let opts = RenderOpts {
         width,
         height,
         now_tick: 0,
         glyphs,
         header: true,
-        density: Density::Compact,
+        density,
         theme,
     };
 
-    (rows, opts)
+    (radar.rows(), opts)
 }
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────

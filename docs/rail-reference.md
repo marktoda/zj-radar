@@ -292,6 +292,213 @@ tab 2 "af" active
 > visible in the stripped grid). This is the core fix: focus changes decoration,
 > not which panes show.
 
+## N. Safety cap — exactly 6 panes (no overflow)
+
+**Author-from-intent.** Exactly at the cap: 6 tracked panes → 6 lines, NO `+N more`.
+
+```rail-input
+width 32
+tab 1 "swarm"
+  codex running "pane one"
+  codex running "pane two"
+  codex running "pane three"
+  codex running "pane four"
+  codex running "pane five"
+  codex running "pane six"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 swarm
+  ◐ ❉ pane one
+  ◐ ❉ pane two
+  ◐ ❉ pane three
+  ◐ ❉ pane four
+  ◐ ❉ pane five
+  ◐ ❉ pane six
+```
+
+> 6 panes = exactly the cap; the `+N more` line does not appear. ⟦D6: cap=6⟧
+
+## O. Safety cap — 8 panes (`+2 more`)
+
+**Author-from-intent.** Two over the cap: 8 tracked panes → 6 lines + `+2 more`.
+
+```rail-input
+width 32
+tab 1 "swarm"
+  codex running "pane one"
+  codex running "pane two"
+  codex running "pane three"
+  codex running "pane four"
+  codex running "pane five"
+  codex running "pane six"
+  codex running "pane seven"
+  codex running "pane eight"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 swarm
+  ◐ ❉ pane one
+  ◐ ❉ pane two
+  ◐ ❉ pane three
+  ◐ ❉ pane four
+  ◐ ❉ pane five
+  ◐ ❉ pane six
+  +2 more
+```
+
+> 8 panes, cap 6: `8 - 6 = 2` remainder → `+2 more`. ⟦D6⟧
+
+## P. Truncation at width 32
+
+**Author-from-intent.** Multi-pane tab: pane line prefix is `"  " + glyph(1) + " " + mark(1) + " "` = 6 visible cols; budget = 26; truncate at 25 chars + `…`. The 51-char msg is clipped to `this message is quite lon…`.
+
+```rail-input
+width 32
+tab 1 "work"
+  claude running "this message is quite long and will be truncated here"
+  build done "ok"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 work
+  ◐ ✳ this message is quite lon…
+  ● ⚙ ok
+```
+
+> Prefix = 6 cols; avail = 26; budget = 25 + `…`. Exercises `emit_pane_line` truncation. ⟦D8: width=32⟧
+
+## Q. CJK / wide-char message at width 32
+
+**Author-from-intent.** Multi-pane tab with a CJK message. CJK chars are 2 display cols each; prefix = 6 cols; avail = 26; budget = 25 display cols. "処理中のメッセージが長すぎるケース" (17 chars, 34 display cols) → first 12 chars (24 display cols) fit; 13th would exceed, so result = "処理中のメッセージが長す" + `…` (25 display cols). No rendered line exceeds width=32.
+
+```rail-input
+width 32
+tab 1 "cjk"
+  claude running "処理中のメッセージが長すぎるケース"
+  build done "ok"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 cjk
+  ◐ ✳ 処理中のメッセージが長す…
+  ● ⚙ ok
+```
+
+> CJK chars are width-2; unicode-width truncation keeps the line at ≤32 display cols.
+
+## R. Bell marker in tab line
+
+**Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=4, bell_len=2, name_budget=26, gap=32-4-6-2=20 → `○ 1 alerts` + 20 spaces + `⚑`.
+
+```rail-input
+width 32
+tab 1 "alerts" bell
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+○ 1 alerts                    ⚑
+```
+
+> Bell token on the `tab` line sets `has_bell=true`; the `⚑` glyph appears right-aligned. Tab-line trailing space after `⚑` is trimmed by the vt100 grid helper.
+
+## S. Bell with running agent
+
+**Author-from-intent.** Bell + single tracked pane — exercises bell on a non-idle tab. `◐ 1 pinky` + spaces + `⚑`, then the pane line (no bell on pane lines).
+
+```rail-input
+width 32
+tab 1 "pinky" bell
+  claude running "running tests"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 pinky                     ⚑
+  ✳ running tests
+```
+
+## T. Untracked-only tab (D4 prompt-exclusion)
+
+**Author-from-intent.** A tab whose only pane is untracked (never sent a status → `PaneDisplay::Untracked`). The aggregator produces zero tracked panes → the tab renders as idle with no pane line, just like a plain tab.
+
+```rail-input
+width 32
+tab 1 "shell"
+  untracked "zsh"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+○ 1 shell
+```
+
+> Untracked pane gets no line. Tab status = Idle (no tracked panes). ⟦D4 ✓⟧
+
+## U. Mixed tracked + untracked (one tab)
+
+**Author-from-intent.** One tracked pane (claude running) + one untracked pane (zsh). Only the tracked pane appears; untracked is suppressed. Single-pane path (1 tracked): shows `✳ exploring render` on line 2.
+
+```rail-input
+width 32
+tab 1 "af"
+  claude running "exploring render"
+  untracked "zsh"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◐ 1 af
+  ✳ exploring render
+```
+
+> Only tracked panes produce pane lines. Untracked (prompt programs, idle shell) are invisible. ⟦D4 ✓⟧
+
+## V. Cards density — single working agent
+
+**Render-derived.** A single tracked pane at `density cards`. Cards mode: no `═` rule (header_lines=1); the card body appears immediately under the title. Verified: card surface structure present (title → tab row → pane line), correct glyphs, ≤32 width.
+
+<!-- render-derived: grid captured from the real renderer, sanity-checked for card structure -->
+```rail-input
+width 32
+density cards
+tab 1 "pinky"
+  claude running "running tests"
+```
+```rail-expect
+ RADAR                        ·1
+◐ 1 pinky
+  ✳ running tests
+```
+
+> Cards density: header is title-only (no `═` rule). Content identical to compact; only the surface bg changes (not visible in the stripped grid).
+
+## W. Cards density — multi-pane `af` tab (active, exercises active-child bg path)
+
+**Render-derived.** Multi-pane tab at `density cards` with `active`. The focused tab gets the `▌` spine on all rows (identical content to M but in Cards density). Active child rows use the `surface_agent` bg tint (not visible in stripped grid). Sanity-checked: spine + glyphs + marks + msgs correct.
+
+<!-- render-derived: grid captured from the real renderer, sanity-checked -->
+```rail-input
+width 32
+density cards
+tab 1 "af" active
+  codex running "exploring render"
+  build done "cargo build"
+```
+```rail-expect
+ RADAR                        ·1
+▌◐ 1 af
+▌ ◐ ❉ exploring render
+▌ ● ⚙ cargo build
+```
+
+> Cards density + active: spine `▌` on all rows; active-child bg path exercised (not visible after ANSI strip). ⟦Cards density⟧
+
 ---
 
 ## Open decisions
@@ -299,7 +506,7 @@ tab 2 "af" active
 - **⟦D1⟧** right-slot: keep dropped, or re-add `done/total` for multi-pane?
 - **⟦D3⟧** idle-but-tracked panes (J) — drop their line after a while, or keep?
   Tied to the lingering-`done`/ghost-row question.
-- **⟦D8⟧** bump the layout `size=24` → `size=32` (and README).
+- **⟦D8 ✓ done⟧** layout `size=24`→`size=32` applied (README, examples, e2e harness, design.md).
 - **⟦D9⟧** placeholder name for an unnamed/first tab ("shell"? layout name? "—"?).
 - **⟦D-timer⟧** if/when elapsed returns, per-pane (on the pane line) not per-tab.
 
