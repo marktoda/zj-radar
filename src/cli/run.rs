@@ -62,6 +62,37 @@ pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
 }
 
+pub(crate) struct Assets {
+    pub config_template: &'static str,
+    pub layout: &'static str,
+    pub wasm: &'static [u8],
+}
+
+pub(crate) struct Materialized {
+    pub config_dir: PathBuf,
+    pub wasm_path: PathBuf,
+}
+
+pub(crate) fn materialize(dir: &Path, version: &str, assets: &Assets) -> std::io::Result<Materialized> {
+    let wasm_path = dir.join("plugins").join("zj_radar.wasm");
+    let marker = dir.join(".zj-radar-version");
+    let up_to_date = std::fs::read_to_string(&marker).map(|v| v == version).unwrap_or(false)
+        && wasm_path.exists()
+        && dir.join("config.kdl").exists()
+        && dir.join("layouts/radar.kdl").exists();
+    if up_to_date {
+        return Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path });
+    }
+    std::fs::create_dir_all(dir.join("plugins"))?;
+    std::fs::create_dir_all(dir.join("layouts"))?;
+    std::fs::write(&wasm_path, assets.wasm)?;
+    let config = assets.config_template.replace("@WASM@", &wasm_path.to_string_lossy());
+    std::fs::write(dir.join("config.kdl"), config)?;
+    std::fs::write(dir.join("layouts/radar.kdl"), assets.layout)?;
+    std::fs::write(&marker, version)?;
+    Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +150,51 @@ mod tests {
             permissions_path_in(cache, false),
             Path::new("/cache/zellij/permissions.kdl")
         );
+    }
+
+    use tempfile::tempdir;
+
+    fn test_assets() -> Assets {
+        Assets {
+            config_template: "plugins { radar location=\"file:@WASM@\" {} }\n",
+            layout: "layout { default_tab_template { children } tab { pane } }\n",
+            wasm: b"\0asm-dummy",
+        }
+    }
+
+    #[test]
+    fn materialize_writes_all_files_and_substitutes_wasm_path() {
+        let d = tempdir().unwrap();
+        let dir = d.path().join("zj-radar/zellij");
+        let m = materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        assert_eq!(m.config_dir, dir);
+        assert_eq!(m.wasm_path, dir.join("plugins/zj_radar.wasm"));
+        assert_eq!(std::fs::read(&m.wasm_path).unwrap(), b"\0asm-dummy");
+        let cfg = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
+        assert!(cfg.contains(&format!("file:{}", m.wasm_path.display())));
+        assert!(!cfg.contains("@WASM@"));
+        assert!(dir.join("layouts/radar.kdl").exists());
+        assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.1.0");
+    }
+
+    #[test]
+    fn materialize_is_noop_on_matching_version() {
+        let d = tempdir().unwrap();
+        let dir = d.path().join("c");
+        materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        let mtime = std::fs::metadata(dir.join("config.kdl")).unwrap().modified().unwrap();
+        // second call with same version must not rewrite
+        materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        let mtime2 = std::fs::metadata(dir.join("config.kdl")).unwrap().modified().unwrap();
+        assert_eq!(mtime, mtime2, "matching version must be a no-op");
+    }
+
+    #[test]
+    fn materialize_rewrites_on_version_change() {
+        let d = tempdir().unwrap();
+        let dir = d.path().join("c");
+        materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        materialize(&dir, "0.2.0", &test_assets()).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.2.0");
     }
 }
