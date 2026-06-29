@@ -1,5 +1,5 @@
 //! `zj-radar run` — turnkey: own a Zellij config dir and launch it.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Session name derived from the cwd basename (sanitized), or an explicit
 /// override. Zellij session names allow [A-Za-z0-9_-]; everything else folds to
@@ -40,6 +40,28 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
         .any(|l| l.starts_with(&needle) && l.contains('{'))
 }
 
+pub(crate) fn owned_config_dir_in(data_dir: &Path) -> PathBuf {
+    data_dir.join("zj-radar").join("zellij")
+}
+
+pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
+    if is_macos {
+        cache_dir
+            .join("org.Zellij-Contributors.Zellij")
+            .join("permissions.kdl")
+    } else {
+        cache_dir.join("zellij").join("permissions.kdl")
+    }
+}
+
+pub(crate) fn owned_config_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| owned_config_dir_in(&d))
+}
+
+pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
+    dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +100,24 @@ mod tests {
         assert!(wasm_is_granted(SAMPLE, p));
         assert!(!wasm_is_granted(SAMPLE, "/some/other/zj_radar.wasm"));
         assert!(!wasm_is_granted("", p));
+    }
+
+    #[test]
+    fn locators_compose_expected_paths() {
+        let data = Path::new("/data");
+        assert_eq!(owned_config_dir_in(data), Path::new("/data/zj-radar/zellij"));
+
+        let cache = Path::new("/cache");
+        // macOS: Zellij's cache folder is org.Zellij-Contributors.Zellij
+        assert_eq!(
+            permissions_path_in(cache, true),
+            Path::new("/cache/org.Zellij-Contributors.Zellij/permissions.kdl")
+        );
+        // Linux: cache_dir already points at .../zellij-style root; Zellij uses
+        // <cache>/zellij/permissions.kdl
+        assert_eq!(
+            permissions_path_in(cache, false),
+            Path::new("/cache/zellij/permissions.kdl")
+        );
     }
 }
