@@ -84,54 +84,58 @@ impl NamingMode {
     }
 }
 
-impl Config {
-    pub fn from_map(cfg: &BTreeMap<String, String>) -> Config {
-        let d = Config::default();
-        // Delegate per-field parsing to the same `from_config` helpers used by
-        // the runtime-override path, so the KDL-load and live-pipe paths can
-        // never disagree on how a value is interpreted.
-        let naming = cfg
-            .get("naming")
-            .map(|s| NamingMode::from_config(s))
-            .unwrap_or(d.naming);
-        let header = cfg
-            .get("header")
-            .and_then(|s| parse_bool(s))
-            .unwrap_or(d.header);
-        let glyphs = cfg
-            .get("glyphs")
-            .map(|s| crate::status::GlyphSet::from_config(s))
-            .unwrap_or_default();
-        let density = cfg
-            .get("density")
-            .map(|s| Density::from_config(s))
-            .unwrap_or_default();
-        Config {
-            naming,
-            header,
-            glyphs,
-            density,
-        }
-    }
+/// Generate `Config::from_map` and `Config::apply_overrides` from one field
+/// table, so the KDL-load path and the live-override path parse the same keys
+/// with the same parsers *by construction* — never by hand-kept agreement.
+/// `from_map` is exactly "start from defaults, then apply the map", so an absent
+/// key keeps the field default and the two paths can't interpret a value
+/// differently. Adding a configurable field is one new row.
+///
+/// Two parser contracts, one row group each:
+/// - `total` — `fn(&str) -> T`: the parser resolves unknown input itself (the
+///   enum `from_config`s fold to their default), so a *present* key always sets
+///   the field.
+/// - `opt` — `fn(&str) -> Option<T>`: a present-but-unparseable value is left
+///   untouched (keeps the default / current value); used by `parse_bool`.
+macro_rules! config_fields {
+    (
+        total { $( $tfield:ident : $tkey:literal => $tparser:path ),* $(,)? }
+        opt   { $( $ofield:ident : $okey:literal => $oparser:path ),* $(,)? }
+    ) => {
+        impl Config {
+            /// Build from the flat key→value map of the KDL `plugin { ... }`
+            /// block. Unlisted keys take the field default; unknown keys are
+            /// ignored (forward-compatible).
+            pub fn from_map(cfg: &BTreeMap<String, String>) -> Config {
+                let mut config = Config::default();
+                config.apply_overrides(cfg);
+                config
+            }
 
-    /// Apply runtime overrides from a flat string→string map (e.g. parsed from
-    /// a JSON pipe payload). Recognized keys: `"naming"`, `"density"`,
-    /// `"glyphs"`, `"header"`. Unknown keys are silently ignored.
-    pub fn apply_overrides(&mut self, kv: &BTreeMap<String, String>) {
-        if let Some(v) = kv.get("naming") {
-            self.naming = NamingMode::from_config(v);
-        }
-        if let Some(v) = kv.get("density") {
-            self.density = Density::from_config(v);
-        }
-        if let Some(v) = kv.get("glyphs") {
-            self.glyphs = crate::status::GlyphSet::from_config(v);
-        }
-        if let Some(v) = kv.get("header") {
-            if let Some(b) = parse_bool(v) {
-                self.header = b;
+            /// Apply runtime overrides from a flat key→value map (e.g. parsed
+            /// from a JSON pipe payload). Unknown keys are silently ignored.
+            pub fn apply_overrides(&mut self, kv: &BTreeMap<String, String>) {
+                $( if let Some(v) = kv.get($tkey) {
+                    self.$tfield = $tparser(v);
+                } )*
+                $( if let Some(v) = kv.get($okey) {
+                    if let Some(parsed) = $oparser(v) {
+                        self.$ofield = parsed;
+                    }
+                } )*
             }
         }
+    };
+}
+
+config_fields! {
+    total {
+        naming:  "naming"  => NamingMode::from_config,
+        density: "density" => Density::from_config,
+        glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
+    }
+    opt {
+        header: "header" => parse_bool,
     }
 }
 
@@ -316,5 +320,24 @@ mod tests {
         // case-insensitive
         assert_eq!(NamingMode::from_config("OFF"), NamingMode::Off);
         assert_eq!(NamingMode::from_config("Force"), NamingMode::Force);
+    }
+
+    #[test]
+    fn from_map_agrees_with_apply_overrides_on_every_key() {
+        // `from_map` is generated as "defaults, then apply_overrides", so both
+        // config paths interpret every key identically by construction. Pin it
+        // so a future hand-rewrite of either path can't silently let them drift
+        // (the property the single `config_fields!` table exists to guarantee).
+        let inputs = map(&[
+            ("naming", "force"),
+            ("density", "compact"),
+            ("glyphs", "nerd"),
+            ("header", "false"),
+            ("unknown_key", "ignored"),
+        ]);
+        let via_from_map = Config::from_map(&inputs);
+        let mut via_apply = Config::default();
+        via_apply.apply_overrides(&inputs);
+        assert_eq!(via_from_map, via_apply);
     }
 }
