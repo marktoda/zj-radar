@@ -255,14 +255,14 @@ unaffected.
   ```kdl
   default_tab_template {                       // layout-defined tabs fill `children`
       pane split_direction="vertical" {
-          pane size=24 borderless=true { plugin location="radar" }
+          pane size=32 borderless=true { plugin location="radar" }
           children
       }
       pane size=2 borderless=true { plugin location="zellij:status-bar" }
   }
   new_tab_template {                           // runtime tabs (Ctrl+t n) need a CONCRETE pane
       pane split_direction="vertical" {
-          pane size=24 borderless=true { plugin location="radar" }
+          pane size=32 borderless=true { plugin location="radar" }
           pane focus=true
       }
       pane size=2 borderless=true { plugin location="zellij:status-bar" }
@@ -397,7 +397,7 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
    fallback if clicks don't arrive.
 2. **Sidebar staying pinned across `swap_tiled_layout` cycling** — same mechanism as existing
    bars + 0.44.3 pop-out fix. Verify in Phase 1.
-3. **Left column eats width** from percentage-split swap layouts — width 24 chosen
+3. **Left column eats width** from percentage-split swap layouts — width 32 chosen
    deliberately; collapse toggle (future) mitigates.
 4. **`zellij-tile` API churn** — pin to 0.44.x; read `PaneInfo`/`TabInfo` field ordering and the
    `PaneId` enum against the 0.44.3 tag.

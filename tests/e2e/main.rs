@@ -13,7 +13,7 @@
 // Prerequisites:
 //   - `zellij` 0.44.x on PATH
 //   - The plugin wasm already built:
-//     `nix develop -c cargo build --release --target wasm32-wasip1`
+//     `cargo build --release --target wasm32-wasip1`
 
 #[cfg(feature = "e2e")]
 mod harness;
@@ -46,7 +46,7 @@ fn plugin_loads_and_renders_status() {
     let wasm = plugin_wasm_path();
     assert!(
         wasm.exists(),
-        "Plugin wasm not found at {:?}. Build it first:\n  nix develop -c cargo build --release --target wasm32-wasip1",
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
         wasm
     );
 
@@ -118,7 +118,7 @@ fn multi_agent_needs_you_is_visible() {
     let wasm = plugin_wasm_path();
     assert!(
         wasm.exists(),
-        "Plugin wasm not found at {:?}. Build it first:\n  nix develop -c cargo build --release --target wasm32-wasip1",
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
         wasm
     );
 
@@ -198,7 +198,7 @@ fn notify_sh_end_to_end_updates_sidebar() {
     let wasm = plugin_wasm_path();
     assert!(
         wasm.exists(),
-        "Plugin wasm not found at {:?}. Build it first:\n  nix develop -c cargo build --release --target wasm32-wasip1",
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
         wasm
     );
 
@@ -241,4 +241,111 @@ fn notify_sh_end_to_end_updates_sidebar() {
     );
 
     eprintln!("[e2e] PASS: notify.sh hook drove the sidebar render");
+}
+
+/// Line-per-pane structure test: two TRACKED panes in one tab must each render
+/// as a distinct line in the sidebar (the redesign's doc scenario H).
+///
+/// Pipes distinct status payloads to both terminal panes and asserts — using
+/// only the SIDEBAR REGION (left 32 columns of the vt100-parsed screen) — that
+/// each pane's identifier appears on its own line. This avoids the false-positive
+/// trap of checking `pty_text()`, which also contains the terminal panes'
+/// scrollback echoing the piped/typed text.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn multi_pane_renders_one_line_per_pane() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
+        wasm
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_lineper_{}", std::process::id());
+    let layout = sidebar_layout_two_terminal(&wasm);
+
+    eprintln!(
+        "[e2e] starting line-per-pane session '{}' with two-terminal layout",
+        session_name
+    );
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+    eprintln!("[e2e] plugin loaded");
+
+    // Discover the focused terminal pane (pane A).
+    let pane_a = session.discover_terminal_pane_id();
+    eprintln!("[e2e] pane_a={}", pane_a);
+
+    // Discover the sibling terminal pane (pane B).
+    let pane_b = session.discover_next_pane_id().unwrap_or_else(|| {
+        eprintln!("[e2e] warn: could not discover sibling pane; guessing pane_a+1");
+        pane_a + 1
+    });
+    eprintln!("[e2e] pane_b={}", pane_b);
+
+    // Pipe a RUNNING status to pane A with a short, distinct repo+msg pair.
+    // "alpha" / "taska" are kept to <=8 chars so they fit comfortably in 32 cols.
+    let payload_a = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_a}}},"status":"running","repo":"alpha","msg":"taska"}}"#
+    );
+    eprintln!("[e2e] piping pane A: {}", payload_a);
+    session.pipe_status(&payload_a);
+
+    // Pipe a RUNNING status to pane B with a different repo+msg.
+    let payload_b = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_b}}},"status":"running","repo":"beta","msg":"taskb"}}"#
+    );
+    eprintln!("[e2e] piping pane B: {}", payload_b);
+    session.pipe_status(&payload_b);
+
+    // Extra settle time so both renders complete before we snapshot.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+
+    // Parse the final PTY frame through vt100 and extract the left 32 columns.
+    let screen = session.screen();
+    let sidebar = sidebar_region(&screen, 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
+
+    // Each row of the sidebar is a separate line in `sidebar`.
+    // We look for: two different lines — one containing "alpha" or "taska",
+    // another containing "beta" or "taskb" — proving the line-per-pane layout.
+    let lines: Vec<&str> = sidebar.lines().collect();
+
+    let line_a = lines
+        .iter()
+        .position(|l| l.contains("alpha") || l.contains("taska"));
+    let line_b = lines
+        .iter()
+        .position(|l| l.contains("beta") || l.contains("taskb"));
+
+    eprintln!(
+        "[e2e] pane-A identifier on sidebar row: {:?}",
+        line_a
+    );
+    eprintln!(
+        "[e2e] pane-B identifier on sidebar row: {:?}",
+        line_b
+    );
+
+    assert!(
+        line_a.is_some(),
+        "pane A (repo='alpha', msg='taska') must appear in the sidebar region;\nsidebar:\n{}",
+        sidebar
+    );
+    assert!(
+        line_b.is_some(),
+        "pane B (repo='beta', msg='taskb') must appear in the sidebar region;\nsidebar:\n{}",
+        sidebar
+    );
+    assert_ne!(
+        line_a, line_b,
+        "pane A and pane B must appear on DIFFERENT sidebar lines (line-per-pane layout);\n\
+         line_a={:?}, line_b={:?}\nsidebar:\n{}",
+        line_a, line_b, sidebar
+    );
+
+    eprintln!(
+        "[e2e] PASS: two panes rendered on distinct sidebar lines (row {:?} vs row {:?})",
+        line_a, line_b
+    );
 }

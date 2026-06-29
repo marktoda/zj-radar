@@ -64,8 +64,8 @@ There are two jobs:
 There is no pre-built release yet, so build the wasm from source:
 
 ```sh
-# Needs a wasm32-wasip1 toolchain — `nix develop` provides one (see docs/TOOLCHAIN.md).
-nix develop -c cargo build --release --target wasm32-wasip1
+# Needs the wasm32-wasip1 target; rust-toolchain.toml requests it (rustup auto-installs it). See docs/TOOLCHAIN.md.
+cargo build --release --target wasm32-wasip1
 ```
 
 #### Recommended: use the CLI
@@ -126,7 +126,7 @@ into any layout:
 // Tabs defined in the layout file get their panes via `children`.
 default_tab_template {
     pane split_direction="vertical" {
-        pane size=24 borderless=true { plugin location="radar" }   // ← alias
+        pane size=32 borderless=true { plugin location="radar" }   // ← alias
         children
     }
     pane size=2 borderless=true { plugin location="zellij:status-bar" }
@@ -135,7 +135,7 @@ default_tab_template {
 // Tabs created at runtime (Ctrl+t n) get a CONCRETE focused pane, not `children`.
 new_tab_template {
     pane split_direction="vertical" {
-        pane size=24 borderless=true { plugin location="radar" }
+        pane size=32 borderless=true { plugin location="radar" }
         pane focus=true
     }
     pane size=2 borderless=true { plugin location="zellij:status-bar" }

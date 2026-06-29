@@ -18,7 +18,7 @@ layout {
     // Tabs defined in this file get their panes via `children`.
     default_tab_template {
         pane split_direction="vertical" {
-            pane size=24 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="radar"
             }
             children
@@ -34,7 +34,7 @@ layout {
     // radar pane below `pane focus=true` (and below `children` above).
     new_tab_template {
         pane split_direction="vertical" {
-            pane size=24 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="radar"
             }
             pane focus=true

@@ -505,7 +505,7 @@ fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
 // ── Public fixtures ─────────────────────────────────────────────────────────
 
 /// Absolute path to the built wasm plugin.
-/// The caller must build it first (via `nix develop -c cargo build --release --target wasm32-wasip1`).
+/// The caller must build it first (via `cargo build --release --target wasm32-wasip1`).
 #[cfg(feature = "e2e")]
 pub fn plugin_wasm_path() -> std::path::PathBuf {
     let root = env!("CARGO_MANIFEST_DIR");
@@ -573,7 +573,7 @@ fn zellij_cache_dir_for(home: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Build a KDL layout that pins the zj-radar plugin in a 24-column left sidebar.
+/// Build a KDL layout that pins the zj-radar plugin in a 32-column left sidebar.
 ///
 /// Uses `/tmp` as CWD so the shell starts without `direnv`/`devenv` overhead.
 /// The `DIRENV_DISABLE=1` env var is also set on the Zellij process.
@@ -586,7 +586,7 @@ pub fn sidebar_layout(plugin_wasm: &Path) -> String {
         r#"layout {{
     cwd "/tmp"
     pane split_direction="vertical" {{
-        pane size=24 borderless=true {{
+        pane size=32 borderless=true {{
             plugin location="file:{wasm}"
         }}
         pane
@@ -616,7 +616,7 @@ pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
         r#"layout {{
     cwd "/tmp"
     pane split_direction="vertical" {{
-        pane size=24 borderless=true {{
+        pane size=32 borderless=true {{
             plugin location="file:{wasm}"
         }}
         pane split_direction="horizontal" {{
@@ -639,6 +639,28 @@ pub fn screen_text(screen: &vt100::Screen) -> String {
     (0..rows)
         .map(|r| {
             (0..cols)
+                .map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract only the left `width` columns of the vt100 Screen — the sidebar region.
+///
+/// Returns one string per row joined by newlines. Because `screen()` processes
+/// all PTY frames through the vt100 parser, the result contains no ANSI escape
+/// sequences: every cell's `contents()` is plain Unicode text (or empty string).
+///
+/// Use this instead of `pty_text()` when asserting on sidebar content to avoid
+/// false positives from text echoed by terminal panes into the right-hand region.
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn sidebar_region(screen: &vt100::Screen, width: u16) -> String {
+    let rows = screen.size().0;
+    (0..rows)
+        .map(|r| {
+            (0..width)
                 .map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default())
                 .collect::<String>()
         })

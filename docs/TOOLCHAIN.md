@@ -1,16 +1,13 @@
 # Toolchain
 
-The host's Nix-provisioned Rust has no `wasm32-wasip1` standard library and no
-`rustup`, so the plugin cannot be built to WASM with the bare `cargo` on PATH.
-`cargo test` (host target) works fine for the pure-logic modules.
-
-## Building the WASM plugin
-
-Use the dev shell, which pins a Rust toolchain with the `wasm32-wasip1` target:
+Native `cargo` builds everything — both host tests and the WASM plugin. The
+`wasm32-wasip1` target is requested by `rust-toolchain.toml`, so a `rustup`-managed
+toolchain installs it automatically the first time you build. `cargo test` (host
+target) covers the pure-logic modules and needs nothing extra.
 
 ```sh
-nix develop          # enter the shell (first run fetches the toolchain)
-cargo build --release --target wasm32-wasip1
+cargo test                                          # host tests
+cargo build --release --target wasm32-wasip1        # the WASM plugin
 # → target/wasm32-wasip1/release/zj_radar.wasm
 ```
 
@@ -21,11 +18,19 @@ cargo install --path . --features cli
 zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 ```
 
-Or run a one-off without entering the shell:
+## If your `cargo` lacks the `wasm32-wasip1` target
+
+If you use a non-`rustup` Rust that doesn't pick up the target from
+`rust-toolchain.toml` (e.g. a bare Nix-profile toolchain), you'll see
+`can't find crate for std … wasm32-wasip1 may not be installed`. Either add the
+target to that toolchain, or use the repo's Nix dev shell, which pins a Rust with
+the target:
 
 ```sh
 nix develop -c cargo build --release --target wasm32-wasip1
 ```
+
+## Dev loop
 
 For the dogfood dev layout (`dev/dev.kdl`) use the single dev entrypoint:
 
@@ -45,7 +50,3 @@ Zellij, it finds the existing zj-radar sidebar panes in the current session and
 replaces each one with `launch-plugin --in-place`, closing replaced panes and
 skipping the plugin cache while preserving the rest of the session. Use
 `./dev/run.sh --fresh-session` when you want the older clean-session behavior.
-
-`cargo test` does not need the dev shell — the pure modules and the
-host-testable session filesystem module are `zellij-tile`-free and run on the
-host target.

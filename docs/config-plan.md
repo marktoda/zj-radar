@@ -11,7 +11,7 @@
 
 **Architecture:** A new pure `src/config.rs` (no `zellij-tile` dep) owns parsing (`Config::from_map`, never fails — defaults on bad input, ignores unknown keys). `render.rs` takes a `RenderOpts { stuck_secs, header }` instead of the `STUCK_SECS` const + always-on header. `lib.rs` parses config in `load()`, drives `apply_renames` by `NamingMode`, and passes `RenderOpts` to `render`. Folds the existing `force_rename` key into `naming`.
 
-**Tech Stack:** Rust, `zellij-tile = "0.44"`, target `wasm32-wasip1`. Build via `nix develop -c cargo build --target wasm32-wasip1`; test via `cargo test` (host).
+**Tech Stack:** Rust, `zellij-tile = "0.44"`, target `wasm32-wasip1`. Build via `cargo build --target wasm32-wasip1`; test via `cargo test` (host).
 
 ## Global Constraints
 
@@ -399,7 +399,7 @@ Expected: all pass (Task 1 config tests + render + naming + lib), 0 warnings.
 
 - [ ] **Step 8: Wasm build check**
 
-Run: `nix develop -c cargo build --target wasm32-wasip1`
+Run: `cargo build --target wasm32-wasip1`
 Expected: compiles, 0 warnings, produces `target/wasm32-wasip1/debug/zj_radar.wasm`.
 
 - [ ] **Step 9: Commit**
