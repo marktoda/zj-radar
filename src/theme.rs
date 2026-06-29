@@ -63,14 +63,23 @@ pub struct DerivedColors {
 }
 
 impl DerivedColors {
-    /// Derive the dark-panel ladder + dims from the terminal's bg/fg.
+    /// Derive the panel ladder + dims from the terminal's bg/fg.
+    ///
+    /// The panel base recedes by darkening the terminal bg. The *depth* is
+    /// polarity-aware: a deep crust on a dark terminal, but only a gentle step
+    /// on a light one — darkening a near-white bg by 30% slaps a muddy mid-grey
+    /// slab on the terminal and collapses the dims' contrast (which blend fg→bg).
+    /// A gentle step keeps a light terminal's panel light, so its dark dims stay
+    /// legible. The design requires "legible on light"; the dark path is
+    /// unchanged (`dim_text_keeps_contrast_against_its_surface_in_both_polarities`).
     pub fn from_bg_fg(bg: (u8, u8, u8), fg: (u8, u8, u8)) -> Self {
-        // The panel base: one step darker than the terminal bg.
-        let rail_bg = blend(bg, (0, 0, 0), 0.30);
+        let is_dark = luminance(bg) <= luminance(fg);
+        let recede = if is_dark { 0.30 } else { 0.08 };
+        let rail_bg = blend(bg, (0, 0, 0), recede);
         DerivedColors {
             rail_bg,
-            // A ladder UP from the dark panel toward the terminal bg, so cards
-            // are dark/subtle steps. Only `surface_active` rises above bg.
+            // A ladder from the panel toward the terminal bg, so cards are subtle
+            // steps. Only `surface_active` steps past bg (toward fg).
             surface_idle: blend(rail_bg, bg, 0.30),
             surface_agent: blend(rail_bg, bg, 0.72),
             surface_active: blend(bg, fg, 0.18),
@@ -78,6 +87,12 @@ impl DerivedColors {
             idle_text: blend(fg, bg, 0.45),
         }
     }
+}
+
+/// Channel-sum luminance — a cheap brightness proxy, enough to tell a dark
+/// terminal theme (bg darker than fg) from a light one.
+fn luminance((r, g, b): (u8, u8, u8)) -> u32 {
+    r as u32 + g as u32 + b as u32
 }
 
 /// Neutral-dark fallback used until the terminal reports its own colors. A
@@ -149,6 +164,30 @@ mod tests {
 
     fn lum(c: (u8, u8, u8)) -> u32 {
         c.0 as u32 + c.1 as u32 + c.2 as u32
+    }
+
+    #[test]
+    fn dim_text_keeps_contrast_against_its_surface_in_both_polarities() {
+        // The truecolor dims (idle row name / detail line) must stay legible
+        // against the card surface they sit on, whether the terminal is dark or
+        // light. The design requires "legible on light"; a fixed dark-panel
+        // derivation darkens a near-white terminal into a muddy mid-grey slab,
+        // collapsing the contrast. Channel-sum luminance distance is a coarse but
+        // stable proxy — the dark path clears this comfortably.
+        const MIN_DELTA: u32 = 250;
+        let check = |bg, fg, who: &str| {
+            let d = DerivedColors::from_bg_fg(bg, fg);
+            let delta = lum(d.surface_idle).abs_diff(lum(d.idle_text));
+            assert!(
+                delta >= MIN_DELTA,
+                "{who}: idle-name contrast {delta} < {MIN_DELTA} \
+                 (surface {:?}, text {:?})",
+                d.surface_idle,
+                d.idle_text
+            );
+        };
+        check((26, 27, 38), (192, 202, 220), "dark");
+        check((250, 250, 250), (40, 40, 40), "light");
     }
 
     #[test]
