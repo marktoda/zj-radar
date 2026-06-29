@@ -749,12 +749,8 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
                 }
                 return;
             }
-            if !yes && !confirm(&format!("Write {}?", path.display())) {
-                println!("codex: skipped (declined)");
-                return;
-            }
-            if let Err(e) = write_atomic(&path, &new) {
-                eprintln!("codex: write failed — {e}");
+            let prompt = format!("Write {}?", path.display());
+            if !confirm_and_write("codex", &path, &new, yes, &prompt, || Ok(())) {
                 return;
             }
             println!(
@@ -800,12 +796,8 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
                 println!("--- {} (dry-run) ---\n{new}", path.display());
                 return;
             }
-            if !yes && !confirm(&format!("Write {}?", path.display())) {
-                println!("codex: skipped (declined)");
-                return;
-            }
-            if let Err(e) = write_atomic(&path, &new) {
-                eprintln!("codex: write failed — {e}");
+            let prompt = format!("Write {}?", path.display());
+            if !confirm_and_write("codex", &path, &new, yes, &prompt, || Ok(())) {
                 return;
             }
             println!(
@@ -904,28 +896,21 @@ fn setup_zellij(wasm: Option<&Path>, uninstall: bool, dry_run: bool, yes: bool, 
                     config_path.display()
                 )
             };
-            if !yes && !confirm(&prompt) {
-                println!("zellij: skipped (declined)");
-                return;
-            }
-            if !uninstall {
+            // Pre-write side effect: stage the wasm (mkdir + copy) before the
+            // config write, only when installing.
+            let copy_wasm = || -> Result<(), String> {
+                if uninstall {
+                    return Ok(());
+                }
                 if let Some(parent) = wasm_dest.parent() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!("zellij: create plugin dir failed — {e}");
-                        return;
-                    }
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("create plugin dir failed — {e}"))?;
                 }
-                let Some(src) = wasm else {
-                    eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm>");
-                    return;
-                };
-                if let Err(e) = std::fs::copy(src, &wasm_dest) {
-                    eprintln!("zellij: wasm copy failed — {e}");
-                    return;
-                }
-            }
-            if let Err(e) = write_atomic(&config_path, &new) {
-                eprintln!("zellij: config write failed — {e}");
+                let src = wasm.ok_or("refused — pass --wasm <path-to-zj_radar.wasm>")?;
+                std::fs::copy(src, &wasm_dest).map_err(|e| format!("wasm copy failed — {e}"))?;
+                Ok(())
+            };
+            if !confirm_and_write("zellij", &config_path, &new, yes, &prompt, copy_wasm) {
                 return;
             }
             println!(
@@ -955,6 +940,36 @@ fn confirm(prompt: &str) -> bool {
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// The shared "commit an edit" tail for every `setup_*` step: prompt (unless
+/// `--yes`), run any `pre_write` side effects (e.g. copying the wasm), then write
+/// `new` to `path` atomically — emitting the standard `skipped`/`failed`
+/// diagnostics under `label`. Returns whether the file was written, so the caller
+/// can print its success epilogue. Callers keep `--dry-run` handling and prompt
+/// wording, which differ per target. A `pre_write` error is reported as
+/// `{label}: {e}`, so its message should read as a sentence without the prefix.
+fn confirm_and_write(
+    label: &str,
+    path: &Path,
+    new: &str,
+    yes: bool,
+    prompt: &str,
+    pre_write: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    if !yes && !confirm(prompt) {
+        println!("{label}: skipped (declined)");
+        return false;
+    }
+    if let Err(e) = pre_write() {
+        eprintln!("{label}: {e}");
+        return false;
+    }
+    if let Err(e) = write_atomic(path, new) {
+        eprintln!("{label}: write failed — {e}");
+        return false;
+    }
+    true
 }
 
 /// Back up the existing file, then write atomically (temp file + rename).
