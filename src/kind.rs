@@ -3,68 +3,77 @@
 
 use crate::status::GlyphSet;
 
-/// What kind of process owns a pane. Agents (Claude, Codex, Gemini) and task
-/// types (Test, Build, Deploy, Server) are peers — only the mark glyph differs.
-/// The renderer and sorter treat all variants identically.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind {
-    Claude,
-    Codex,
-    Gemini,
-    Command,
-    Other,
-    Test,
-    Build,
-    Deploy,
-    Server,
+/// Define `Kind` and everything that varies per variant from one table.
+///
+/// Each row is `Variant => "wire-source", plain_mark, nerd_mark`. The macro
+/// expands the table into the `Kind` enum plus `from_source` / `as_source` /
+/// `mark` / `ALL`, so the variant list, the wire vocabulary, and the two glyph
+/// sets are a *single source of truth* — they cannot drift, and adding an agent
+/// or task type is one new row. The generated `as_source` / `mark` use
+/// exhaustive `match self`, so a row that omits a variant fails to compile
+/// rather than silently falling back.
+macro_rules! kinds {
+    ( $( $variant:ident => $source:literal, $plain:literal, $nerd:literal );+ $(;)? ) => {
+        /// What kind of process owns a pane. Agents (Claude, Codex, Gemini) and
+        /// task types (Test, Build, Deploy, Server) are peers — only the mark
+        /// glyph differs; the renderer and sorter treat all variants identically.
+        ///
+        /// Generated from the `kinds!` table below — see it for each variant's
+        /// wire token and marks.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Kind {
+            $( $variant ),+
+        }
+
+        impl Kind {
+            /// Every `Kind`, in table order. Lets callers and exhaustiveness
+            /// tests iterate the variants without re-typing the list.
+            pub const ALL: &'static [Kind] = &[ $( Kind::$variant ),+ ];
+
+            /// Derive a `Kind` from the payload `source` field (lowercased wire
+            /// value); unknown or absent sources fall back to `Other`.
+            pub fn from_source(s: &str) -> Kind {
+                match s {
+                    $( $source => Kind::$variant, )+
+                    _ => Kind::Other,
+                }
+            }
+
+            /// The wire `source` token for this kind — the exact inverse of
+            /// `from_source` for every known variant
+            /// (`Kind::from_source(k.as_source()) == k`).
+            pub fn as_source(self) -> &'static str {
+                match self {
+                    $( Kind::$variant => $source, )+
+                }
+            }
+
+            /// Single-character identity mark shown before the activity. Glyph-set
+            /// aware: the Nerd set upgrades the three *agent* marks (thin
+            /// asterisk-family glyphs in Plain) to heavier font-native MDI icons;
+            /// task marks already read well, so most rows repeat one glyph.
+            pub fn mark(self, set: GlyphSet) -> char {
+                match self {
+                    $( Kind::$variant => match set {
+                        GlyphSet::Plain => $plain,
+                        GlyphSet::Nerd => $nerd,
+                    }, )+
+                }
+            }
+        }
+    };
 }
 
-impl Kind {
-    /// Derive a Kind from the payload `source` field (lowercased wire value).
-    pub fn from_source(s: &str) -> Kind {
-        match s {
-            "claude" => Kind::Claude,
-            "codex" => Kind::Codex,
-            "gemini" => Kind::Gemini,
-            "command" => Kind::Command,
-            "test" => Kind::Test,
-            "build" => Kind::Build,
-            "deploy" => Kind::Deploy,
-            "server" => Kind::Server,
-            _ => Kind::Other,
-        }
-    }
-
-    /// Single-character identity mark shown before the activity. Glyph-set
-    /// aware: the Nerd set upgrades the three *agent* marks (which are thin
-    /// asterisk-family glyphs in Plain) to heavier font-native MDI icons; the
-    /// task marks (`⚙ ⚗ ⇡ ❯ $ ⦿`) already read well and are shared across sets.
-    pub fn mark(self, set: GlyphSet) -> char {
-        match set {
-            GlyphSet::Nerd => match self {
-                Kind::Claude => '\u{f06a9}', // nf-md-robot 󰚩
-                Kind::Codex => '\u{f167a}',  // nf-md-robot_outline
-                Kind::Gemini => '\u{f0eb9}', // nf-md-star_four_points (sparkle)
-                Kind::Command => '$',
-                Kind::Other => '⦿',
-                Kind::Test => '⚗',
-                Kind::Build => '⚙',
-                Kind::Deploy => '⇡',
-                Kind::Server => '❯',
-            },
-            GlyphSet::Plain => match self {
-                Kind::Claude => '✳',
-                Kind::Codex => '❉',
-                Kind::Gemini => '✦',
-                Kind::Command => '$',
-                Kind::Other => '⦿',
-                Kind::Test => '⚗',
-                Kind::Build => '⚙',
-                Kind::Deploy => '⇡',
-                Kind::Server => '❯',
-            },
-        }
-    }
+kinds! {
+    Claude  => "claude",  '✳', '\u{f06a9}'; // nf-md-robot
+    Codex   => "codex",   '❉', '\u{f167a}'; // nf-md-robot-outline
+    Gemini  => "gemini",  '✦', '\u{f0eb9}'; // nf-md-star-four-points (sparkle)
+    Command => "command", '$', '$';
+    Other   => "other",   '⦿', '⦿';
+    Test    => "test",    '⚗', '⚗';
+    Build   => "build",   '⚙', '⚙';
+    Deploy  => "deploy",  '⇡', '⇡';
+    Server  => "server",  '❯', '❯';
 }
 
 #[cfg(test)]
@@ -122,14 +131,31 @@ mod tests {
     }
 
     #[test]
+    fn source_round_trips_for_every_kind() {
+        // The table generates `from_source`/`as_source` from one row each, so the
+        // inverse holds for every variant by construction — this guards it.
+        for &k in Kind::ALL {
+            assert_eq!(
+                Kind::from_source(k.as_source()),
+                k,
+                "{k:?} must survive a source round-trip",
+            );
+        }
+    }
+
+    #[test]
+    fn all_enumerates_every_variant() {
+        // `ALL` drives the exhaustiveness of the other tests; pin its size so a
+        // dropped table row is caught here instead of silently shrinking coverage.
+        assert_eq!(Kind::ALL.len(), 9);
+        assert_eq!(Kind::Other.as_source(), "other");
+    }
+
+    #[test]
     fn all_marks_distinct() {
-        use Kind::*;
-        let all = [
-            Claude, Codex, Gemini, Command, Other, Test, Build, Deploy, Server,
-        ];
         for set in [GlyphSet::Plain, GlyphSet::Nerd] {
-            for (i, a) in all.iter().enumerate() {
-                for b in &all[i + 1..] {
+            for (i, a) in Kind::ALL.iter().enumerate() {
+                for b in &Kind::ALL[i + 1..] {
                     assert_ne!(
                         a.mark(set),
                         b.mark(set),

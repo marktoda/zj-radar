@@ -595,7 +595,7 @@ fn strip_activity_prefix(title: &str) -> &str {
 fn snapshot_observation(pane_id: u32, observation: &TrackedObservation) -> SnapshotObservation {
     SnapshotObservation {
         pane_id,
-        origin: origin_to_wire(observation.origin).to_string(),
+        origin: observation.origin.as_wire().to_string(),
         status: observation.status.as_wire().to_string(),
         repo: observation.repo.clone(),
         branch: observation.branch.clone(),
@@ -624,7 +624,7 @@ fn parse_v2_snapshot(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObser
     let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
     let mut observations = Vec::with_capacity(snapshot.observations.len());
     for pane in snapshot.observations {
-        let origin = origin_from_wire(&pane.origin)?;
+        let origin = ObservationOrigin::from_wire(&pane.origin)?;
         observations.push((
             pane.pane_id,
             tracked_observation_from_snapshot(pane, origin),
@@ -678,21 +678,6 @@ fn tracked_observation_from_snapshot(
         on_focus: pane.on_focus.as_deref().map(Status::from_wire),
         ever_active: pane.ever_active,
         exit_code: pane.exit_code,
-    }
-}
-
-fn origin_to_wire(origin: ObservationOrigin) -> &'static str {
-    match origin {
-        ObservationOrigin::StatusPipe => "status_pipe",
-        ObservationOrigin::Command => "command",
-    }
-}
-
-fn origin_from_wire(raw: &str) -> Option<ObservationOrigin> {
-    match raw {
-        "status_pipe" => Some(ObservationOrigin::StatusPipe),
-        "command" => Some(ObservationOrigin::Command),
-        _ => None,
     }
 }
 

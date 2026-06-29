@@ -400,18 +400,8 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 continue; // untracked + command-exit panes handled separately
             }
 
-            // kind -> wire source name
-            let source = match pane.kind {
-                Kind::Claude => "claude",
-                Kind::Codex => "codex",
-                Kind::Gemini => "gemini",
-                Kind::Command => "command",
-                Kind::Test => "test",
-                Kind::Build => "build",
-                Kind::Deploy => "deploy",
-                Kind::Server => "server",
-                Kind::Other => "other",
-            };
+            // kind -> wire source name (inverse of the `from_source` the DSL used)
+            let source = pane.kind.as_source();
 
             if pane.status == Status::Idle {
                 // First prime ever_active with Running, then switch to Idle

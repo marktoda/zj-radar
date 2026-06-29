@@ -2,10 +2,33 @@
 
 use crate::status::Status;
 
+/// Which source produced an observation: the status pipe (agents) or a tracked
+/// shell command. Carries its own snapshot wire vocabulary, like `Status` —
+/// the persisted snapshot is the only place these tokens cross a boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ObservationOrigin {
     StatusPipe,
     Command,
+}
+
+impl ObservationOrigin {
+    /// The snapshot wire token for this origin.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            ObservationOrigin::StatusPipe => "status_pipe",
+            ObservationOrigin::Command => "command",
+        }
+    }
+
+    /// Parse a snapshot wire token; an unknown token yields `None` so the
+    /// caller drops the entry rather than guessing an origin.
+    pub fn from_wire(raw: &str) -> Option<ObservationOrigin> {
+        match raw {
+            "status_pipe" => Some(ObservationOrigin::StatusPipe),
+            "command" => Some(ObservationOrigin::Command),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,5 +63,19 @@ impl TrackedObservation {
             }
             self.status = next;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_wire_round_trips_and_rejects_unknown() {
+        for origin in [ObservationOrigin::StatusPipe, ObservationOrigin::Command] {
+            assert_eq!(ObservationOrigin::from_wire(origin.as_wire()), Some(origin));
+        }
+        assert_eq!(ObservationOrigin::from_wire("nonsense"), None);
+        assert_eq!(ObservationOrigin::from_wire(""), None);
     }
 }

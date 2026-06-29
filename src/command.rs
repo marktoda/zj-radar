@@ -1,6 +1,7 @@
 //! Per-pane command activity derived from Zellij's `CommandChanged` event.
 //! No `zellij-tile` dependency — pure logic, host-testable.
 
+use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload::{sanitize, MAX_MSG_CHARS};
 use crate::status::Status;
@@ -190,47 +191,52 @@ fn display_command(command: &[String]) -> String {
     sanitize(&raw, MAX_MSG_CHARS)
 }
 
-fn command_source(command: &[String], display: &str) -> &'static str {
+/// Classify a foreground command into the `Kind` that owns its pane. The
+/// resulting kind's `as_source()` token is what gets stored as the
+/// observation's `source` and later round-tripped back through
+/// `Kind::from_source` at roll-up — so classification flows through the `Kind`
+/// seam as a type, never a loose string.
+fn command_kind(command: &[String], display: &str) -> Kind {
     let exe = command.first().map(|s| basename(s)).unwrap_or("");
     match exe {
-        "claude" => "claude",
-        "codex" => "codex",
-        "gemini" => "gemini",
-        "pytest" => "test",
+        "claude" => Kind::Claude,
+        "codex" => Kind::Codex,
+        "gemini" => Kind::Gemini,
+        "pytest" => Kind::Test,
         "cargo" if display.starts_with("cargo test") || display.starts_with("cargo nextest") => {
-            "test"
+            Kind::Test
         }
         "cargo" if display.starts_with("cargo build") || display.starts_with("cargo check") => {
-            "build"
+            Kind::Build
         }
-        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" test") => "test",
-        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" build") => "build",
+        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" test") => Kind::Test,
+        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" build") => Kind::Build,
         "npm" | "pnpm" | "yarn" | "bun"
             if display.contains(" dev")
                 || display.contains(" start")
                 || display.contains(" serve") =>
         {
-            "server"
+            Kind::Server
         }
-        "go" if display.starts_with("go test") => "test",
-        "go" if display.starts_with("go build") => "build",
+        "go" if display.starts_with("go test") => Kind::Test,
+        "go" if display.starts_with("go build") => Kind::Build,
         "make" | "just" | "ruff" => {
             if display.contains("test") {
-                "test"
+                Kind::Test
             } else if display.contains("build") {
-                "build"
+                Kind::Build
             } else if display.contains("deploy") || display.contains("push") {
-                "deploy"
+                Kind::Deploy
             } else if display.contains("serve")
                 || display.contains("server")
                 || display.contains("dev")
             {
-                "server"
+                Kind::Server
             } else {
-                "command"
+                Kind::Command
             }
         }
-        _ => "command",
+        _ => Kind::Command,
     }
 }
 
@@ -278,7 +284,7 @@ impl CommandStore {
                 // Unknown/empty argv — never surface a blank Running row.
                 return;
             }
-            let source = command_source(command, &cmd_string).to_string();
+            let source = command_kind(command, &cmd_string).as_source().to_string();
 
             let cwd_str = cwd.unwrap_or("").to_string();
             self.pending.insert(
@@ -482,20 +488,47 @@ mod tests {
     }
 
     #[test]
-    fn command_source_classifies_common_work_types() {
+    fn command_kind_classifies_every_emitted_kind() {
+        use crate::kind::Kind;
+        // Agents, by basename.
+        assert_eq!(command_kind(&argv(&["claude"]), "claude"), Kind::Claude);
         assert_eq!(
-            command_source(&argv(&["cargo", "test", "--features", "cli"]), "cargo test"),
-            "test"
+            command_kind(&argv(&["codex", "--dangerously-bypass-sandbox"]), "codex"),
+            Kind::Codex
+        );
+        assert_eq!(command_kind(&argv(&["gemini"]), "gemini"), Kind::Gemini);
+        // Test runners across ecosystems.
+        assert_eq!(
+            command_kind(&argv(&["cargo", "test", "--features", "cli"]), "cargo test"),
+            Kind::Test
+        );
+        assert_eq!(command_kind(&argv(&["pytest"]), "pytest"), Kind::Test);
+        assert_eq!(
+            command_kind(&argv(&["go", "test", "./..."]), "go test ./..."),
+            Kind::Test
         );
         assert_eq!(
-            command_source(&argv(&["npm", "run", "build"]), "npm run build"),
-            "build"
+            command_kind(&argv(&["npm", "run", "test"]), "npm run test"),
+            Kind::Test
+        );
+        // Build.
+        assert_eq!(
+            command_kind(&argv(&["cargo", "build"]), "cargo build"),
+            Kind::Build
         );
         assert_eq!(
-            command_source(&argv(&["codex", "--dangerously-bypass-sandbox"]), "codex"),
-            "codex"
+            command_kind(&argv(&["npm", "run", "build"]), "npm run build"),
+            Kind::Build
         );
-        assert_eq!(command_source(&argv(&["sleep", "5"]), "sleep 5"), "command");
+        // Server and deploy (npm dev-server; make/just verb routing).
+        assert_eq!(
+            command_kind(&argv(&["npm", "run", "dev"]), "npm run dev"),
+            Kind::Server
+        );
+        assert_eq!(command_kind(&argv(&["just", "serve"]), "just serve"), Kind::Server);
+        assert_eq!(command_kind(&argv(&["make", "deploy"]), "make deploy"), Kind::Deploy);
+        // Anything unrecognized is a plain command.
+        assert_eq!(command_kind(&argv(&["sleep", "5"]), "sleep 5"), Kind::Command);
     }
 
     // ── Test 1: fg real command → pending, NOT Running until on_timer past DEBOUNCE_TICKS
