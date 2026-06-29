@@ -15,6 +15,8 @@ mod radar_state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod rollup;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod runtime;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod session_files;

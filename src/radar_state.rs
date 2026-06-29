@@ -3,10 +3,10 @@
 
 use crate::command::CommandStore;
 use crate::config;
-use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
-use crate::render::{Outcome, PaneDisplay, PrimaryDetail, ProgressCounts, TabDisplay, TabRow};
+use crate::render::TabRow;
+use crate::rollup::{self, TabDisplay};
 use crate::status::Status;
 use crate::status_store::StatusStore;
 use crate::theme;
@@ -521,86 +521,14 @@ impl RadarState {
         panes.first().and_then(|p| title_name(&p.title))
     }
 
+    /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
+    /// command" precedence across observation sources lives here, with the
+    /// stores; `rollup::roll_up` only sees "is there an observation for this
+    /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam.
     fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
-        let mut best_status = Status::Idle;
-        let mut best: Option<PrimaryDetail> = None;
-        let mut done = 0usize;
-        let mut total = 0usize;
-        let mut pending = 0usize;
-        let mut pane_displays = Vec::with_capacity(panes.len());
-
-        for pane in panes {
-            let tracked = self
-                .status
-                .get(pane.id)
-                .or_else(|| self.command.get(pane.id));
-            let Some(s) = tracked else {
-                pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
-                continue;
-            };
-
-            if s.ever_active {
-                total += 1;
-                if s.status == Status::Done {
-                    done += 1;
-                }
-                pane_displays.push(PaneDisplay::tracked(
-                    pane.id,
-                    Kind::from_source(&s.source),
-                    s.status,
-                    s.msg.clone(),
-                    pane_outcome(s),
-                ));
-            } else {
-                pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
-            }
-            if s.status == Status::Pending {
-                pending += 1;
-            }
-            let better = s.status.severity() > best_status.severity()
-                || (s.status.severity() == best_status.severity()
-                    && best
-                        .as_ref()
-                        .is_none_or(|d| s.last_change_tick >= d.since_tick));
-            if s.status.is_active() && better {
-                best_status = s.status;
-                best = Some(PrimaryDetail {
-                    repo: s.repo.clone(),
-                    branch: s.branch.clone(),
-                    msg: s.msg.clone(),
-                    since_tick: s.last_change_tick,
-                    status: s.status,
-                    kind: Kind::from_source(&s.source),
-                    outcome: pane_outcome(s),
-                });
-            }
-        }
-
-        TabDisplay {
-            status: best_status,
-            progress: ProgressCounts {
-                done,
-                total,
-                pending,
-            },
-            detail: best,
-            panes: pane_displays,
-        }
-    }
-}
-
-/// Derive the end-result outcome tag for a pane, scoped to *command-origin*
-/// panes — agents (status pipe) keep their hook msg with no tag. Done → `Ok`
-/// (`✓`); Error → `Failed(exit_code)` (`(exit N)`, or `✗` when the code is
-/// unknown). Returns `None` for active/idle panes and all agents.
-fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
-    if s.origin != ObservationOrigin::Command {
-        return None;
-    }
-    match s.status {
-        Status::Done => Some(Outcome::Ok),
-        Status::Error => Some(Outcome::Failed(s.exit_code)),
-        _ => None,
+        rollup::roll_up(panes, |id| {
+            self.status.get(id).or_else(|| self.command.get(id))
+        })
     }
 }
 
@@ -772,6 +700,7 @@ fn origin_from_wire(raw: &str) -> Option<ObservationOrigin> {
 mod tests {
     use super::*;
     use crate::payload::StatusPayload;
+    use crate::rollup::Outcome;
 
     fn tab(id: usize, position: usize, name: &str, active: bool) -> RadarTab {
         RadarTab {
@@ -1149,66 +1078,42 @@ mod tests {
         );
     }
 
+    // The pure roll-up behaviours — untracked panes shown-but-not-counted,
+    // severity precedence, tie-break, done/total/pending counts, and the
+    // command-only outcome mapping — are tested directly against `roll_up` in
+    // `rollup.rs`. The tests below cover what the roll-up seam can't see: the
+    // status>command resolution precedence and the full command-pipeline path.
+
     #[test]
-    fn live_untracked_panes_are_displayed_but_not_counted_as_work() {
+    fn same_pane_status_observation_wins_over_command() {
+        // The status>command precedence lives in `tab_display`'s resolve closure
+        // (`status.get().or_else(command.get())`) — `roll_up` only ever sees the
+        // one observation the closure returns, so this is the seam's own contract
+        // and is invisible to rollup's tests. A pane carrying BOTH a status-pipe
+        // and a command observation must resolve to the status one.
         let mut radar = RadarState::default();
         radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-        radar.set_tab_panes_for_position(
-            0,
-            vec![
-                titled_pane(1, "codex", false),
-                titled_pane(2, "shell", false),
-            ],
-        );
+        radar.set_tab_panes_for_position(0, vec![focused_pane(5)]);
+
+        // A command observation on pane 5 (foreground command, promoted to Running).
+        radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
+        radar.timer(2);
+        assert_eq!(radar.command(5).unwrap().status, Status::Running);
+
+        // A status-pipe observation on the SAME pane 5, with a distinct repo.
         radar
             .status_mut()
-            .apply(payload_for(1, Status::Running, "repo"), 1);
+            .apply(payload_for(5, Status::Running, "from-status"), 3);
 
         let row = radar.rows().remove(0);
-
-        assert_eq!(row.display.status, Status::Running);
-        assert_eq!(row.display.progress.total, 1);
-        assert_eq!(row.display.panes.len(), 2);
-        assert_eq!(row.display.panes[0].pane_id(), 1);
-        assert_eq!(row.display.panes[1].pane_id(), 2);
-    }
-
-    // ── End-result outcome ──
-
-    fn command_obs(status: Status, exit_code: Option<i32>) -> TrackedObservation {
-        TrackedObservation {
-            origin: ObservationOrigin::Command,
-            status,
-            repo: "repo".into(),
-            branch: String::new(),
-            msg: "cargo build".into(),
-            source: "build".into(),
-            last_change_tick: 1,
-            seq: None,
-            on_focus: None,
-            ever_active: true,
-            exit_code,
-        }
-    }
-
-    #[test]
-    fn pane_outcome_maps_finished_commands_only() {
-        assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(Outcome::Ok));
+        let detail = row.display.detail.as_ref().expect("active pane sets detail");
         assert_eq!(
-            pane_outcome(&command_obs(Status::Error, Some(2))),
-            Some(Outcome::Failed(Some(2)))
+            detail.repo, "from-status",
+            "status pipe wins over command for the same pane id"
         );
-        assert_eq!(
-            pane_outcome(&command_obs(Status::Error, None)),
-            Some(Outcome::Failed(None))
-        );
-        // Active commands get no tag.
-        assert_eq!(pane_outcome(&command_obs(Status::Running, None)), None);
-        // Agents (status pipe) never get a tag, even when Done.
-        let mut agent = command_obs(Status::Done, Some(0));
-        agent.origin = ObservationOrigin::StatusPipe;
-        assert_eq!(pane_outcome(&agent), None);
     }
+
+    // ── End-result outcome (full pipeline) ──
 
     #[test]
     fn finished_command_pane_carries_outcome_through_rows() {

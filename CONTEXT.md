@@ -74,3 +74,13 @@ oversized/out-of-order).
 The per-pane → per-tab roll-up: severity order `error > pending > running > done >
 idle`, with `done/total` counts and a highest-severity detail line. Tab status is
 never derived from tab names — a single tab can hold several agent panes.
+
+The **roll-up seam** is `rollup::roll_up(panes, resolve) -> TabDisplay`: a deep,
+pure module that owns its output vocabulary (`TabDisplay`, `PaneDisplay`,
+`PrimaryDetail`, `ProgressCounts`, `Outcome`) — the renderer *consumes* these, so
+presentation depends on the roll-up, not the reverse. `resolve(pane_id) ->
+Option<&TrackedObservation>` is the only thing crossing in: the "status pipe wins
+over command" precedence across observation sources stays in `RadarState`, so
+`roll_up` never learns there is more than one store. `Outcome`'s display methods
+(`full`/`minimal`/`role` — glyphs and width-driven forms) live in `render`; the
+enum here is pure semantics.

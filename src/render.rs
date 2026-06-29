@@ -1,7 +1,7 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
 
 use crate::config::Density;
-use crate::kind::Kind;
+use crate::rollup::{Outcome, PaneDisplay, TabDisplay};
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
 use crate::theme::DerivedColors;
@@ -35,20 +35,9 @@ pub struct TabRow {
     pub display: TabDisplay,
 }
 
-/// The end-result of a finished *command* pane, shown as a tag after the
-/// activity (`cargo build ✓`, `cargo build (exit 1)`). Built in
-/// `radar_state::tab_display`; agents never carry one. Kept structured (not
-/// baked into `msg`) so the renderer can reserve its width — the outcome
-/// survives truncation while the command absorbs the squeeze — and color it
-/// independently of the (dim) command text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Exit 0 / returned to the shell with no failure evidence.
-    Ok,
-    /// Nonzero exit; `Some(code)` when known, `None` for a signal/no-code exit.
-    Failed(Option<i32>),
-}
-
+/// Presentation for the roll-up's `Outcome` tag. The enum itself lives in
+/// `rollup` (pure semantics); these methods encode the glyphs and the
+/// width-driven roomy/tight forms, which are the renderer's concern.
 impl Outcome {
     /// The roomy form: `✓` / `(exit N)` (or `✗` when the code is unknown).
     fn full(self) -> String {
@@ -74,117 +63,6 @@ impl Outcome {
             Outcome::Failed(_) => Role::Error,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryDetail {
-    pub repo: String,
-    pub branch: String,
-    pub msg: String,
-    pub since_tick: u64,
-    pub status: Status,
-    pub kind: Kind,
-    /// End-result tag for a finished command pane (None for agents/active).
-    pub outcome: Option<Outcome>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PaneDisplay {
-    Tracked {
-        pane_id: u32,
-        kind: Kind,
-        status: Status,
-        msg: String,
-        outcome: Option<Outcome>,
-    },
-    Untracked {
-        pane_id: u32,
-        title: String,
-    },
-}
-
-impl PaneDisplay {
-    pub(crate) fn tracked(
-        pane_id: u32,
-        kind: Kind,
-        status: Status,
-        msg: String,
-        outcome: Option<Outcome>,
-    ) -> Self {
-        Self::Tracked {
-            pane_id,
-            kind,
-            status,
-            msg,
-            outcome,
-        }
-    }
-
-    pub(crate) fn untracked(pane_id: u32, title: &str) -> Self {
-        let title = if title.trim().is_empty() {
-            "terminal".to_string()
-        } else {
-            title.to_string()
-        };
-        Self::Untracked { pane_id, title }
-    }
-
-    fn is_tracked(&self) -> bool {
-        matches!(self, Self::Tracked { .. })
-    }
-
-    pub(crate) fn pane_id(&self) -> u32 {
-        match self {
-            Self::Tracked { pane_id, .. } | Self::Untracked { pane_id, .. } => *pane_id,
-        }
-    }
-
-    fn status(&self) -> Option<Status> {
-        match self {
-            Self::Tracked { status, .. } => Some(*status),
-            Self::Untracked { .. } => None,
-        }
-    }
-
-    fn render_status(&self) -> Status {
-        self.status().unwrap_or(Status::Idle)
-    }
-
-    fn kind(&self) -> Kind {
-        match self {
-            Self::Tracked { kind, .. } => *kind,
-            Self::Untracked { .. } => Kind::Other,
-        }
-    }
-
-    fn msg(&self) -> &str {
-        match self {
-            Self::Tracked { msg, .. } => msg,
-            Self::Untracked { title, .. } => title,
-        }
-    }
-
-    fn outcome(&self) -> Option<Outcome> {
-        match self {
-            Self::Tracked { outcome, .. } => *outcome,
-            Self::Untracked { .. } => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabDisplay {
-    pub status: Status,
-    pub progress: ProgressCounts,
-    pub detail: Option<PrimaryDetail>,
-    pub panes: Vec<PaneDisplay>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProgressCounts {
-    pub done: usize,
-    pub total: usize,
-    pub pending: usize,
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1159,6 +1037,7 @@ fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 mod tests {
     use super::*;
     use crate::kind::Kind;
+    use crate::rollup::{PrimaryDetail, ProgressCounts};
 
     fn display(
         status: Status,
