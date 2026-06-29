@@ -39,11 +39,20 @@ and `last_focused`; the stores stay focus-agnostic (handed a pane id, they forwa
 - `StatusStore::recede_if_focused(pane_id, tick)` / `CommandStore::recede_if_focused(pane_id, tick)`
   — thin passthroughs to the observation method.
 - `RadarState::settle_focused(tick)` — recedes `last_focused`'s completion. Wired
-  in after each completion-producing event:
-  - `status_pipe` — after `status.apply` (agent turn complete)
-  - `panes_changed` — after `apply_focus_transition` (command exit; uses
-    this-update-fresh focus)
-  - `timer` — after `command.on_timer` (return-to-shell, debounce-confirmed)
+  into the two events where focus is trustworthy:
+  - `panes_changed` — after `apply_focus_transition` (this update's fresh focus;
+    the command-exit path)
+  - `timer` — on the cadence tick (the watched-agent path, and return-to-shell
+    confirms)
+
+  It is **deliberately not** wired into `status_pipe`. A pipe payload is a raw
+  completion edge that can arrive in the gap between the user leaving the pane and
+  the focus `PaneUpdate` being processed, so `last_focused` may still name the pane
+  the user just left. Receding there would silently drop a completion the user
+  should see. The timer (armed by the runtime on the pipe event) carries the
+  recede instead, firing once focus has settled — so a genuinely-watched agent turn
+  still recedes within a tick, while one navigated-away-from stays lit. (Found in
+  self-review.)
 
 ### Behavior matrix (focused pane)
 
@@ -62,11 +71,13 @@ finish-while-focused raced a focus-move → direction-dependent `Done↔Idle` fl
 The fix then was to gate clearing on a focus *transition* (giving the "stays lit
 while focused" behavior this change reverses).
 
-Settling at **completion time** is monotonic: `Done → Idle` happens atomically with
-the finish event, so there is no later update to race. The transition-gate on
-`apply_focus_transition` stays — it still owns the background-visit clear, and is
-what prevents a focused *error* from being wiped on the next update (`settle`
-skips errors; the ungated visit-clear would not).
+Recede is **monotonic**: `Done → Idle` happens once and `on_focus` is then `None`,
+so however many times `settle_focused` runs (e.g. every timer tick) it cannot
+oscillate. That is the property that makes it safe regardless of update ordering —
+unlike the predecessor, which re-ran an ungated clear on every update and so raced
+focus-moves. The transition-gate on `apply_focus_transition` stays — it still owns
+the background-visit clear, and is what prevents a focused *error* from being wiped
+on the next update (`settle` skips errors; the ungated visit-clear would not).
 
 ## Tests
 

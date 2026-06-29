@@ -92,11 +92,11 @@ impl State {
     /// `on_pane_focused` would run on EVERY PaneUpdate for the focused pane and
     /// would wipe a focused *error* the instant the next update arrived —
     /// errors must persist while watched. (2) It keeps this path off the
-    /// completed-while-focused case entirely, which is now handled separately and
-    /// deterministically by `RadarState::settle_focused`: a `Done` that lands on
-    /// the focused pane recedes *at completion time* (atomically with the finish,
-    /// so no later update can race it — the bug that an earlier "clear on every
-    /// update" version produced as direction-dependent Done↔Idle flicker).
+    /// completed-while-focused case entirely, which is handled separately by
+    /// `RadarState::settle_focused` (run from `panes_changed` and `timer`): a
+    /// `Done` on the focused pane recedes Done-only and monotonically, so it never
+    /// produces the direction-dependent Done↔Idle flicker an earlier "clear on
+    /// every update" version did.
     ///
     /// Returns true when a transition was applied (focus actually changed).
     fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {

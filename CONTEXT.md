@@ -51,12 +51,16 @@ completion and which pane is focused. **Visit-clear** (`apply_focus_transition`)
 fires on a focus *entry* and clears a pane's queued `on_focus` — the
 background-completion case: something finished while you weren't looking and stays
 lit until you focus into it (this clears even an error, once seen).
-**Recede-while-focused** (`settle_focused`, run after every completion event —
-`panes_changed`, `status_pipe`, `timer`) clears the *currently focused* pane the
-instant it finishes — "if they were looking at it when it finished, don't flag
-it." It is `Done`-only: errors persist even when watched, and a `Pending` "needs
-you" is never auto-dismissed. Settling at completion time keeps the Done→Idle move
-atomic with the finish, so no later update can race it.
+**Recede-while-focused** (`settle_focused`, run from `panes_changed` and `timer`)
+clears the *currently focused* pane when it finishes — "if they were looking at it
+when it finished, don't flag it." It is `Done`-only: errors persist even when
+watched, and a `Pending` "needs you" is never auto-dismissed. It runs after the
+focus transition in `panes_changed` (so it reads this update's fresh focus — the
+command-exit path) and on the `timer` cadence (the watched-agent path). It is
+deliberately *not* run on the raw `status_pipe` edge: a pipe payload can arrive
+before the focus `PaneUpdate` that reflects the user leaving, so `last_focused`
+could be stale and receding there would drop a completion the user should still
+see. Recede is monotonic (Done→Idle once), so it cannot oscillate.
 
 The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and
