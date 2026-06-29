@@ -2215,6 +2215,21 @@ mod tests {
     // ── End-result outcome tag rendering ──
 
     #[test]
+    fn child_prefix_spine_when_active_two_spaces_when_not() {
+        // Inactive: exactly two plain columns, no escape, no spine.
+        assert_eq!(child_prefix(false, Status::Running), "  ");
+        assert_eq!(child_prefix(false, Status::Error), "  ");
+        // Active: an accent spine + trailing space, hue tracking the tab status
+        // (mauve accent normally, peach attention when waiting/error) — the same
+        // spine_role coupling as the line-1 bar.
+        let running = child_prefix(true, Status::Running);
+        assert!(running.starts_with(Role::Accent.ansi()), "accent spine: {running:?}");
+        assert!(running.contains('▌') && running.ends_with(' '), "spine + space: {running:?}");
+        assert!(child_prefix(true, Status::Error).starts_with(Role::Attention.ansi()));
+        assert!(child_prefix(true, Status::Pending).starts_with(Role::Attention.ansi()));
+    }
+
+    #[test]
     fn compose_activity_reserves_outcome_against_truncation() {
         let cmd_color = "\x1b[2m"; // stand-in; we assert on visible text + role
         // Wide: command and full tag both intact.

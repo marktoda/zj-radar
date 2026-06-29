@@ -527,6 +527,61 @@ mod tests {
         assert_eq!(display_command(&argv(&["sleep", "5"])), "sleep 5");
     }
 
+    /// Pin `display_command` output across every branch of the table-driven
+    /// model: each `ToolRule` shape (`subcommands: Some` known-sub lookup vs
+    /// `None` first-arg), in/out of `target_verbs`, the `FIRST_ARG_RULE`
+    /// fallback (proving the former pytest|ruff|make|just arm still resolves
+    /// natively), the `python -m` path, agents, and the unknown/bare-exe
+    /// collapse. One case per code path so the refactor's equivalence is
+    /// verifiable, not merely asserted.
+    #[test]
+    fn display_command_covers_every_tool_rule_path() {
+        let cases: &[(&[&str], &str)] = &[
+            // cargo: known-subcommand lookup; target appended only for target_verbs.
+            (&["cargo", "build"], "cargo build"),               // sub, not a target verb
+            (&["cargo", "clippy", "--fix"], "cargo clippy"),    // flags dropped
+            (&["cargo", "test", "auth::cases"], "cargo test auth::cases"), // target verb + target
+            (&["cargo", "run", "--release"], "cargo run"),      // target verb, target is an option → none
+            (&["cargo", "nextest", "run"], "cargo nextest run"),// nextest is a target verb
+            (&["cargo", "frobnicate"], "cargo"),                // unknown sub → bare exe
+            (&["cargo"], "cargo"),                              // no args → bare exe
+            // go: same family as cargo, narrower sub/target sets.
+            (&["go", "test", "./..."], "go test ./..."),        // target verb + target
+            (&["go", "build", "./cmd/app"], "go build"),        // sub, not a target verb
+            (&["go", "mod", "tidy"], "go mod"),                 // sub, not a target verb
+            // npm family: first-arg verb; only `run` takes a target.
+            (&["yarn", "run", "dev"], "yarn run dev"),          // run + script
+            (&["npm", "ci"], "npm ci"),                         // first-arg, not `run`
+            (&["pnpm", "install", "left-pad"], "pnpm install"), // first-arg keeps verb only
+            (&["bun"], "bun"),                                  // no args → bare exe
+            // FIRST_ARG_RULE fallback — the former pytest|ruff|make|just arm.
+            (&["make", "deploy"], "make deploy"),
+            (&["make"], "make"),
+            (&["just", "serve"], "just serve"),
+            (&["ruff", "check", "."], "ruff check"),            // target_verbs empty → no target
+            (&["pytest", "tests/unit.py"], "pytest tests/unit.py"),
+            (&["pytest", "-q"], "pytest"),                      // only options → bare exe
+            (&["tail", "-f", "app.log"], "tail app.log"),       // first NON-option is the verb
+            (&["htop"], "htop"),                                // truly unknown, no args
+            // Agents: bare name regardless of args (push-owned panes).
+            (&["claude", "--model", "opus"], "claude"),
+            (&["gemini", "chat"], "gemini"),
+            // python: dedicated `-m` shape with a pytest sub-target.
+            (&["python", "-m", "pytest", "-q", "t.py"], "python -m pytest t.py"),
+            (&["python", "-m", "http.server"], "python -m http.server"),
+            (&["python", "-m"], "python"),                      // `-m` with no module → bare exe
+            (&["python", "path/to/app.py", "--v"], "python app.py"), // script basename
+            (&["python3"], "python3"),                          // no args → bare exe
+            // Deliberate post-refactor behavior: the uniform target dash-guard
+            // drops a bare "-" target (old cargo nextest / go test kept it).
+            (&["go", "test", "-"], "go test"),
+            (&["cargo", "nextest", "-"], "cargo nextest"),
+        ];
+        for (args, want) in cases {
+            assert_eq!(&display_command(&argv(args)), want, "display for {args:?}");
+        }
+    }
+
     /// Representative `(argv, display, expected Kind)` covering every `Kind`
     /// that `command_kind` can emit. Shared by the classification test and the
     /// Kind-round-trip guard so both exercise exactly the same set.
