@@ -246,11 +246,12 @@ impl RadarState {
     /// `None` for a no-op. Reads the live active tab and per-tab rollup; the
     /// pure `cycle_attention` owns the ordering/wrap logic.
     pub(crate) fn next_attention_tab(&self, dir: Direction) -> Option<usize> {
-        let mut sorted = self.tabs.clone();
-        sorted.sort_by_key(|t| t.position);
         let active = self.tabs.iter().find(|t| t.active).map(|t| t.position);
         let empty = Vec::new();
-        let pairs: Vec<(usize, Status)> = sorted
+        // Order is irrelevant here: `cycle_attention` sorts the attention
+        // members itself, so we gather `(position, status)` pairs as-is.
+        let pairs: Vec<(usize, Status)> = self
+            .tabs
             .iter()
             .map(|t| {
                 let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
@@ -1263,6 +1264,7 @@ mod tests {
         st.set_tab_panes_for_position(0, vec![pane(10)]);
         st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
         assert_eq!(st.next_attention_tab(Direction::Next), None);
+        assert_eq!(st.next_attention_tab(Direction::Prev), None);
     }
 
     // ── cycle_attention unit tests ────────────────────────────────────────────
