@@ -1,51 +1,19 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
 use crate::status::Status;
+use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
 
-/// Which source produced an observation: the status pipe (agents) or a tracked
-/// shell command. Carries its own snapshot wire vocabulary, like `Status` —
-/// the persisted snapshot is the only place these tokens cross a boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ObservationOrigin {
-    StatusPipe,
-    Command,
-}
-
-impl ObservationOrigin {
-    /// The snapshot wire token for this origin.
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            ObservationOrigin::StatusPipe => "status_pipe",
-            ObservationOrigin::Command => "command",
-        }
-    }
-
-    /// Parse a snapshot wire token; an unknown token yields `None` so the
-    /// caller drops the entry rather than guessing an origin.
-    pub fn from_wire(raw: &str) -> Option<ObservationOrigin> {
-        match raw {
-            "status_pipe" => Some(ObservationOrigin::StatusPipe),
-            "command" => Some(ObservationOrigin::Command),
-            _ => None,
-        }
-    }
-}
-
-// Serde delegates to `as_wire`/`from_wire` (one source of truth). Unlike
-// `Status`, an unknown origin is an *error*: the snapshot loader turns that into
-// a dropped snapshot rather than silently guessing a source.
-impl Serialize for ObservationOrigin {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        ser.serialize_str(self.as_wire())
-    }
-}
-
-impl<'de> Deserialize<'de> for ObservationOrigin {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(de)?;
-        Self::from_wire(&raw)
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown observation origin: {raw:?}")))
+wire_enum! {
+    /// Which source produced an observation: the status pipe (agents) or a
+    /// tracked shell command. Carries its own snapshot wire vocabulary, like
+    /// `Status` — the persisted snapshot is the only place these tokens cross a
+    /// boundary. Strict: an unknown origin deserializes to an *error*, so the
+    /// snapshot loader drops a corrupt entry rather than guessing a source.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum ObservationOrigin {
+        StatusPipe => "status_pipe",
+        Command => "command",
     }
 }
 
@@ -118,7 +86,7 @@ mod tests {
 
     #[test]
     fn origin_wire_round_trips_and_rejects_unknown() {
-        for origin in [ObservationOrigin::StatusPipe, ObservationOrigin::Command] {
+        for &origin in ObservationOrigin::ALL {
             assert_eq!(ObservationOrigin::from_wire(origin.as_wire()), Some(origin));
         }
         assert_eq!(ObservationOrigin::from_wire("nonsense"), None);

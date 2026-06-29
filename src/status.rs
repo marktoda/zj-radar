@@ -10,10 +10,11 @@
 ///
 /// Each row is `Variant => "wire", Role, plain_glyph, nerd_glyph`. The macro
 /// expands the table into the `Status` enum plus `from_wire` / `as_wire` /
-/// `role` / `glyph_for` / `ALL`, so the variant list, the wire vocabulary, the
-/// role mapping, and the two glyph sets are a *single source of truth* — they
-/// cannot drift, and the generated `as_wire` / `role` / `glyph_for` use
-/// exhaustive `match self`, so a row that omits a variant fails to compile.
+/// `role` / `glyph_for` / `ALL` and the `serde` pair (via `wire_serde!`), so
+/// the variant list, the wire vocabulary, the role mapping, the two glyph sets,
+/// and the snapshot encoding are a *single source of truth* — they cannot
+/// drift, and the generated `as_wire` / `role` / `glyph_for` use exhaustive
+/// `match self`, so a row that omits a variant fails to compile.
 ///
 /// Two invariants ride on the table layout, both preserved by construction:
 /// - **Severity order.** Rows are listed in ascending-severity order so the
@@ -72,6 +73,11 @@ macro_rules! statuses {
                 }
             }
         }
+
+        // Snapshot/pipe encoding, generated from the same table. Lenient: an
+        // unknown/absent token deserializes to the `from_wire` fallback (Idle),
+        // matching how the pipe payload parses status.
+        $crate::wire::wire_serde!(lenient, Status);
     };
 }
 
@@ -83,22 +89,6 @@ statuses! {
     Running => "running", Role::Working,   '◐', '\u{f110}';
     Pending => "pending", Role::Attention, '◆', '\u{f0f3}';
     Error   => "error",   Role::Error,     '✗', '\u{f057}';
-}
-
-// Serde delegates to the existing wire vocabulary so the snapshot uses the same
-// tokens as the pipe payload — one source of truth (`as_wire`/`from_wire`), no
-// second representation to keep in sync. Deserialization is deliberately lenient
-// (unknown/absent → Idle), matching how the pipe payload parses status.
-impl serde::Serialize for Status {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        ser.serialize_str(self.as_wire())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Status {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        Ok(Status::from_wire(&<String as serde::Deserialize>::deserialize(de)?))
-    }
 }
 
 impl Status {

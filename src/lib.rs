@@ -22,6 +22,10 @@ mod runtime;
 mod session_files;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
+// Shared wire-enum macros (wire_serde! / wire_enum!) used by `status` and
+// `observation`. Path-imported (`use crate::wire::…`), so declaration order
+// among the modules doesn't matter.
+mod wire;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status_store;
 // `theme` is only consumed by the wasm glue; on a non-wasm non-test host build
