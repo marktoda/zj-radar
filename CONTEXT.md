@@ -13,13 +13,12 @@ as the not-yet-live sibling). Everything a caller needs to draw and to resolve a
 click crosses this one seam; layout planning (overflow folding, card spacing,
 multi-pane tree expansion) is implementation *behind* it, not interface.
 
-The rail's canonical *visual* design — the "gutter rail" (Direction C: 2-column
-status gutter, theme-adaptive color roles, glyph sets, overflow folding,
-onboarding panel) — is
-`docs/superpowers/specs/2026-06-26-zj-agents-gutter-rail-design.md`, which
-supersedes `docs/design.md §3`. Color is **purely additive**: stripping SGR from
-the rail yields the exact same visible character grid, so layout and color are
-orthogonal and testable apart.
+The rail's canonical *visual* design — the "gutter rail" (2-column status
+gutter, theme-adaptive color roles, glyph sets, overflow folding, onboarding
+panel) — is captured by [`docs/rail-reference.md`](docs/rail-reference.md) (the
+executable spec-by-example) and [`docs/design.md`](docs/design.md). Color is
+**purely additive**: stripping SGR from the rail yields the exact same visible
+character grid, so layout and color are orthogonal and testable apart.
 
 ## RenderedRail
 

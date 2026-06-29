@@ -200,7 +200,8 @@ glyph codepoints. We'll translate your mockups into the renderer.
   list + "needs attention" treatment is the closest inspiration. Note we are a
   *text* rail, not a GPU UI — borrow the information design, not the pixels.
 - This repo's `docs/design.md` (technical design — data model, states, the
-  per-pane→per-tab aggregation) and `docs/plan.md`.
+  per-pane→per-tab aggregation) and `docs/rail-reference.md` (the rendered rail,
+  spec by example).
 - Existing terminal status bars for tone: zjstatus, tmux status lines, lualine.
 
 Questions welcome — especially on which states matter most to surface and how far

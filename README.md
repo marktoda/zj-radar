@@ -388,6 +388,13 @@ API and are gated behind `#[cfg(target_arch = "wasm32")]`. See
 - 📋 **Not yet built** — cross-platform prebuilt release binaries and a
   fully automatic layout patcher. See [`docs/distribution.md`](docs/distribution.md).
 
+## Contributing
+
+Issues and PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for build/test
+layers, the no-`rustfmt` rule, and the two load-bearing invariants
+(push-driven, rail lockstep). [`CONTEXT.md`](CONTEXT.md) is the domain glossary —
+the fastest way to orient before touching the core.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
