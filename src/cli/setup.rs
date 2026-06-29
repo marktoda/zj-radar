@@ -2,7 +2,9 @@
 //! Claude is handled by the marketplace plugin; Zellij setup installs the wasm
 //! at a stable path and manages the `radar` plugin alias in `config.kdl`.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, DocumentMut, Item};
 
@@ -106,125 +108,72 @@ pub fn edit_codex(existing: &str, install: bool, force: bool) -> Result<Outcome,
 /// Pure editor for Codex `hooks.json`. It strips only marker-owned Radar
 /// command hooks, then re-adds the current hook set when installing.
 pub fn edit_codex_hooks(existing: &str, install: bool) -> Result<Outcome, String> {
-    let mut root = parse_hooks_json(existing)?;
-    strip_codex_hooks(&mut root)?;
+    let mut file = parse_hooks_file(existing)?;
+    strip_codex_hooks(&mut file);
 
     if install {
-        add_codex_hooks(&mut root)?;
+        add_codex_hooks(&mut file);
     }
 
-    let new = json_pretty(&root)?;
-    if normalized_json_text(existing) == new {
+    let new = json_pretty(&file)?;
+    if normalized_hooks_text(existing) == new {
         Ok(Outcome::Unchanged)
     } else {
         Ok(Outcome::Changed(new))
     }
 }
 
-fn parse_hooks_json(existing: &str) -> Result<Value, String> {
+/// Typed view of a Codex `hooks.json`. Deserialization *is* the shape check:
+/// the `hooks` map, its event arrays, and each group's optional handler array
+/// must have these types or `serde_json` rejects the file — so there is no
+/// separate hand-written validator. Foreign keys at every level are preserved
+/// verbatim through the flattened `rest`/`meta` maps, and `handlers` stay as raw
+/// `Value`s so unknown handler fields round-trip untouched.
+///
+/// `handlers` is `Option` (not a defaulted `Vec`) so an *absent* `hooks` key and
+/// an explicit empty `hooks: []` stay distinct across a round-trip — the strip
+/// logic and a preexisting-empty-group must tell them apart.
+#[derive(Default, Serialize, Deserialize)]
+struct HooksFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    hooks: BTreeMap<String, Vec<HookGroup>>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct HookGroup {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hooks: Option<Vec<Value>>,
+    #[serde(flatten)]
+    meta: Map<String, Value>,
+}
+
+fn parse_hooks_file(existing: &str) -> Result<HooksFile, String> {
     if existing.trim().is_empty() {
-        return Ok(Value::Object(Map::new()));
+        return Ok(HooksFile::default());
     }
-    let parsed: Value =
-        serde_json::from_str(existing).map_err(|e| format!("hooks.json is not valid JSON: {e}"))?;
-    if !parsed.is_object() {
-        return Err("hooks.json root must be an object".to_string());
-    }
-    validate_hooks_shape(&parsed)?;
-    Ok(parsed)
+    serde_json::from_str(existing).map_err(|e| format!("hooks.json is not valid JSON: {e}"))
 }
 
-fn validate_hooks_shape(root: &Value) -> Result<(), String> {
-    let Some(hooks) = root.get("hooks") else {
-        return Ok(());
-    };
-    let Some(events) = hooks.as_object() else {
-        return Err("hooks.json `hooks` must be an object".to_string());
-    };
-    for (event, groups) in events {
-        let Some(groups) = groups.as_array() else {
-            return Err(format!("hooks.json `hooks.{event}` must be an array"));
-        };
-        for group in groups {
-            let Some(group) = group.as_object() else {
-                return Err(format!(
-                    "hooks.json `hooks.{event}` entries must be objects"
-                ));
+/// Remove only Radar-owned handlers, then collapse any group/event we emptied.
+/// A group is dropped only when *we* emptied it (it held our handlers and now
+/// holds none) — a preexisting empty `hooks: []` or a group with no handler
+/// array is left untouched.
+fn strip_codex_hooks(file: &mut HooksFile) {
+    for groups in file.hooks.values_mut() {
+        groups.retain_mut(|group| {
+            let Some(handlers) = group.hooks.as_mut() else {
+                return true; // no handler array — not ours to touch
             };
-            if let Some(handlers) = group.get("hooks") {
-                if !handlers.is_array() {
-                    return Err(format!(
-                        "hooks.json `hooks.{event}[].hooks` must be an array"
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn strip_codex_hooks(root: &mut Value) -> Result<bool, String> {
-    let Some(hooks) = root.get_mut("hooks") else {
-        return Ok(false);
-    };
-    let Some(events) = hooks.as_object_mut() else {
-        return Err("hooks.json `hooks` must be an object".to_string());
-    };
-
-    let mut changed = false;
-    let event_names: Vec<String> = events.keys().cloned().collect();
-    for event in event_names {
-        let Some(groups) = events.get_mut(&event).and_then(Value::as_array_mut) else {
-            return Err(format!("hooks.json `hooks.{event}` must be an array"));
-        };
-        let mut emptied_by_us = Vec::new();
-        for group in groups.iter_mut() {
-            let Some(group_obj) = group.as_object_mut() else {
-                return Err(format!(
-                    "hooks.json `hooks.{event}` entries must be objects"
-                ));
-            };
-            let Some(handlers) = group_obj.get_mut("hooks") else {
-                emptied_by_us.push(false);
-                continue;
-            };
-            let Some(handlers) = handlers.as_array_mut() else {
-                return Err(format!(
-                    "hooks.json `hooks.{event}[].hooks` must be an array"
-                ));
-            };
-            let before_handlers = handlers.len();
+            let before = handlers.len();
             handlers.retain(|handler| !codex_hook_handler_is_ours(handler));
-            let group_changed = handlers.len() != before_handlers;
-            changed |= group_changed;
-            emptied_by_us.push(group_changed && handlers.is_empty());
-        }
-        let before_groups = groups.len();
-        let mut idx = 0;
-        groups.retain(|group| {
-            let remove = group
-                .get("hooks")
-                .and_then(Value::as_array)
-                .is_some_and(|handlers| handlers.is_empty())
-                && emptied_by_us.get(idx).copied().unwrap_or(false);
-            idx += 1;
-            !remove
+            // Drop the group only if removing our handlers emptied it.
+            !(handlers.len() != before && handlers.is_empty())
         });
-        changed |= groups.len() != before_groups;
-        if groups.is_empty() {
-            events.remove(&event);
-            changed = true;
-        }
     }
-
-    if events.is_empty() {
-        root.as_object_mut()
-            .expect("root validated as object")
-            .remove("hooks");
-        changed = true;
-    }
-
-    Ok(changed)
+    // Drop events whose groups are all gone; an empty `hooks` map serializes away.
+    file.hooks.retain(|_, groups| !groups.is_empty());
 }
 
 fn codex_hook_handler_is_ours(handler: &Value) -> bool {
@@ -238,49 +187,34 @@ fn codex_hook_handler_is_ours(handler: &Value) -> bool {
             .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
 }
 
-fn add_codex_hooks(root: &mut Value) -> Result<(), String> {
-    let root_obj = root
-        .as_object_mut()
-        .ok_or_else(|| "hooks.json root must be an object".to_string())?;
-    let hooks = root_obj
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let hooks = hooks
-        .as_object_mut()
-        .ok_or_else(|| "hooks.json `hooks` must be an object".to_string())?;
-
+fn add_codex_hooks(file: &mut HooksFile) {
     for event in CODEX_HOOK_EVENTS {
-        let groups = hooks
+        file.hooks
             .entry(event.to_string())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        let groups = groups
-            .as_array_mut()
-            .ok_or_else(|| format!("hooks.json `hooks.{event}` must be an array"))?;
-        groups.push(codex_hook_group());
+            .or_default()
+            .push(codex_hook_group());
     }
-    Ok(())
 }
 
-fn codex_hook_group() -> Value {
-    json!({
-        "hooks": [
-            {
-                "type": "command",
-                "command": CODEX_HOOK_COMMAND,
-                "commandWindows": CODEX_HOOK_COMMAND_WINDOWS,
-                "timeout": 5
-            }
-        ]
-    })
+fn codex_hook_group() -> HookGroup {
+    HookGroup {
+        hooks: Some(vec![json!({
+            "type": "command",
+            "command": CODEX_HOOK_COMMAND,
+            "commandWindows": CODEX_HOOK_COMMAND_WINDOWS,
+            "timeout": 5
+        })]),
+        meta: Map::new(),
+    }
 }
 
-fn normalized_json_text(existing: &str) -> String {
-    parse_hooks_json(existing)
-        .and_then(|v| json_pretty(&v))
+fn normalized_hooks_text(existing: &str) -> String {
+    parse_hooks_file(existing)
+        .and_then(|f| json_pretty(&f))
         .unwrap_or_else(|_| existing.to_string())
 }
 
-fn json_pretty(value: &Value) -> Result<String, String> {
+fn json_pretty<T: Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string_pretty(value)
         .map(|mut s| {
             s.push('\n');
@@ -745,23 +679,17 @@ fn check_legacy_notify(config: Option<&str>) -> CheckItem {
 }
 
 fn codex_owned_hook_event_count(existing: &str) -> Result<usize, String> {
-    let root = parse_hooks_json(existing)?;
-    let Some(hooks) = root.get("hooks").and_then(Value::as_object) else {
-        return Ok(0);
-    };
+    let file = parse_hooks_file(existing)?;
     Ok(CODEX_HOOK_EVENTS
         .iter()
         .filter(|event| {
-            hooks
-                .get(**event)
-                .and_then(Value::as_array)
-                .is_some_and(|groups| {
-                    groups
-                        .iter()
-                        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-                        .flat_map(|handlers| handlers.iter())
-                        .any(codex_hook_handler_is_ours)
-                })
+            file.hooks.get(**event).is_some_and(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|group| group.hooks.as_ref())
+                    .flatten()
+                    .any(codex_hook_handler_is_ours)
+            })
         })
         .count())
 }
@@ -1295,6 +1223,38 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
+    }
+
+    #[test]
+    fn codex_hooks_preserve_foreign_top_level_and_group_keys() {
+        // Foreign top-level keys and group-level metadata (e.g. `matcher`) must
+        // survive a round-trip — they flow through the flattened `rest`/`meta`.
+        let existing = r#"{
+          "model": "gpt-5",
+          "hooks": {
+            "Stop": [
+              {
+                "matcher": "Bash",
+                "hooks": [
+                  { "type": "command", "command": "echo foreign" }
+                ]
+              }
+            ]
+          }
+        }"#;
+        let s = match edit_codex_hooks(existing, true).unwrap() {
+            Outcome::Changed(s) => s,
+            o => panic!("{o:?}"),
+        };
+        let v = hooks_value(&s);
+        assert_eq!(v.pointer("/model").and_then(Value::as_str), Some("gpt-5"));
+        assert_eq!(
+            v.pointer("/hooks/Stop/0/matcher").and_then(Value::as_str),
+            Some("Bash"),
+            "foreign group metadata must be preserved:\n{s}"
+        );
+        assert!(s.contains("echo foreign"), "foreign handler must survive:\n{s}");
+        assert!(s.contains(CODEX_HOOK_MARKER), "our hook must be added:\n{s}");
     }
 
     #[test]
