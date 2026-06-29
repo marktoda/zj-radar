@@ -687,15 +687,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             // Both branches prepend a 2-col prefix (spine+space or 2 spaces), so
             // reserve those columns before clamping the text to avoid overflow.
             let clamped = truncate(&more_text, opts.width.saturating_sub(2));
-            let text = if row.active {
-                format!(
-                    "{} {}\n",
-                    Seg::new(&hue(spine_role(st)), "▌"),
-                    Seg::new(&idle_color, clamped.clone()),
-                )
-            } else {
-                format!("  {}\n", Seg::new(&idle_color, clamped.clone()))
-            };
+            let text = format!(
+                "{}{}\n",
+                child_prefix(row.active, st),
+                Seg::new(&idle_color, clamped),
+            );
             lines.push(Line {
                 text,
                 target: Some(tab_target),
@@ -771,32 +767,24 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
         };
         return Seg::new(role, tag).to_string();
     }
-    // Command + tag: prefer the full tag as long as ≥1 command column remains
-    // (tag width + 1 separating space + ≥1 command col). The `+ 2` reserves the
-    // space and that one command column.
+    // Command + tag: prefer the full tag, falling back to the minimal tag, as
+    // long as ≥1 command column remains (tag width + 1 separating space + ≥1
+    // command col). The `+ 2` reserves the space and that one command column.
     let full = oc.full();
-    let full_w = UnicodeWidthStr::width(full.as_str());
     let min = oc.minimal();
-    let min_w = UnicodeWidthStr::width(min);
-    if full_w + 2 <= avail {
-        let cmd_budget = avail - full_w - 1;
-        return format!(
-            "{} {}",
-            Seg::new(cmd_color, truncate(cmd, cmd_budget)),
-            Seg::new(role, full),
-        );
-    }
-    if min_w + 2 <= avail {
-        let cmd_budget = avail - min_w - 1;
-        return format!(
-            "{} {}",
-            Seg::new(cmd_color, truncate(cmd, cmd_budget)),
-            Seg::new(role, min),
-        );
+    for tag in [full.as_str(), min] {
+        let tag_w = UnicodeWidthStr::width(tag);
+        if tag_w + 2 <= avail {
+            return format!(
+                "{} {}",
+                Seg::new(cmd_color, truncate(cmd, avail - tag_w - 1)),
+                Seg::new(role, tag),
+            );
+        }
     }
     // Too tight for any command: show the outcome glyph alone (clip if even that
     // overflows the extreme-narrow width).
-    if min_w <= avail {
+    if UnicodeWidthStr::width(min) <= avail {
         Seg::new(role, min).to_string()
     } else {
         Seg::new(role, truncate(min, avail)).to_string()
@@ -853,16 +841,24 @@ fn emit_pane_line(
         text: glyph.to_string().into(),
     };
     let mark_seg = Seg::bold(dim_strong, mark.to_string());
-    if tab_active {
-        format!(
-            "{} {} {} {}\n",
-            Seg::new(role_ansi(spine_role(tab_status)), "▌"),
-            glyph_seg,
-            mark_seg,
-            activity,
-        )
+    format!(
+        "{}{} {} {}\n",
+        child_prefix(tab_active, tab_status),
+        glyph_seg,
+        mark_seg,
+        activity,
+    )
+}
+
+/// The 2-column left prefix shared by child / detail lines: an accent spine
+/// followed by a space when the tab is active, two plain spaces otherwise. The
+/// spine hue tracks the tab's status (peach when waiting/error, mauve accent
+/// otherwise), matching the line-1 spine in [`render_row`].
+fn child_prefix(active: bool, tab_status: Status) -> String {
+    if active {
+        format!("{} ", Seg::new(spine_role(tab_status).ansi(), "▌"))
     } else {
-        format!("  {} {} {}\n", glyph_seg, mark_seg, activity)
+        "  ".to_string()
     }
 }
 
