@@ -270,8 +270,6 @@ impl RenderedRail {
 /// sourced directly from the block that will be emitted.
 struct RowMeta {
     status: Status,
-    #[allow(dead_code)]
-    active: bool,
     full_lines: usize,
 }
 
@@ -988,7 +986,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
 
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
-        .map(|(r, b)| RowMeta { status: r.display.status, active: r.active, full_lines: b.len() })
+        .map(|(r, b)| RowMeta { status: r.display.status, full_lines: b.len() })
         .collect();
     let body_budget = opts
         .height
@@ -1237,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn row_lines_by_state() {
+    fn render_row_lines_by_state() {
         let opts = ro(40, 0);
         let mk_row = |d: TabDisplay, active: bool| TabRow {
             number: 1,
@@ -2192,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn row_lines_multi_pane_counts_header_children_collapse() {
+    fn multi_pane_render_row_counts_header_and_children() {
         // New design: 4 tracked panes → 1 header + 4 pane lines = 5 (regardless of active).
         let opts = ro(40, 0);
         let a = display_multi(vec![
@@ -2526,7 +2524,6 @@ mod tests {
         let body_budget = 5usize;
         let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
             status: r.display.status,
-            active: r.active,
             full_lines: render_row(r, &opts_check).len(),
         }).collect();
         let (plan, strip_folded) = plan_overflow(&metas, body_budget);
@@ -2627,7 +2624,6 @@ mod tests {
         let opts_check = ro(24, 0);
         let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
             status: r.display.status,
-            active: r.active,
             full_lines: render_row(r, &opts_check).len(),
         }).collect();
         let (plan, _) = plan_overflow(&metas, 1);
@@ -2792,7 +2788,6 @@ mod tests {
         let opts_check = ro(24, 0);
         let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
             status: r.display.status,
-            active: r.active,
             full_lines: render_row(r, &opts_check).len(),
         }).collect();
         let (plan, strip, spacing) =
@@ -2839,7 +2834,6 @@ mod tests {
         let opts_check = ro(24, 0);
         let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
             status: r.display.status,
-            active: r.active,
             full_lines: render_row(r, &opts_check).len(),
         }).collect();
         // Even with very large budget, compact never adds gaps.
@@ -2854,7 +2848,6 @@ mod tests {
         let opts_check = ro(24, 0);
         let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
             status: r.display.status,
-            active: r.active,
             full_lines: render_row(r, &opts_check).len(),
         }).collect();
         let (_, _, spacing) = plan_layout(&metas, 10, crate::config::Density::Comfortable);
