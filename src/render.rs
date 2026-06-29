@@ -735,7 +735,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             } else {
                 format!("  {}{}{}\n", idle_color, clamped, RESET)
             };
-            lines.push(Line { text, target: Some(tab_target), bg: LineBg::Card });
+            lines.push(Line {
+                text,
+                target: Some(tab_target),
+                bg: if row.active { LineBg::ActiveChild } else { LineBg::Card },
+            });
         }
         return lines;
     }
@@ -4273,5 +4277,59 @@ rail";
         let rr = RenderedRail::from_lines(vec![]);
         assert_eq!(rr.ansi, "");
         assert_eq!(rr.line_count(), 0);
+    }
+
+    /// Regression guard: the `+N more` summary line in an active multi-pane tab
+    /// (Cards density, >6 tracked panes) must carry the active-child surface
+    /// (`surface_agent` = `\x1b[48;2;24;25;35m`), NOT the card-tint (`surface_active`).
+    ///
+    /// Before the fix, `render_row` tagged this line `LineBg::Card`, which resolved
+    /// to `surface_active` (56,59,71) — a byte change vs the pre-refactor behaviour.
+    /// After the fix, it is tagged `LineBg::ActiveChild`, matching all other active
+    /// child pane lines.
+    #[test]
+    fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
+        // Build an active multi-pane tab with 8 tracked panes (>6 → emits +2 more).
+        let panes: Vec<PaneDisplay> = (1u32..=8)
+            .map(|id| pe(id, Kind::Claude, Status::Running, "working"))
+            .collect();
+        let row = TabRow {
+            number: 1,
+            name: "team".into(),
+            active: true,
+            has_bell: false,
+            display: display_multi(panes),
+        };
+        let s = render(&[row], &ro_cards(30, 100));
+
+        // surface_agent bg escape (neutral-dark fallback): the active-child tint.
+        // All pane child lines in an active multi-pane tab use this surface.
+        let agent_bg = "\x1b[48;2;24;25;35m";
+        // surface_active bg escape: the card-header tint (brighter; wrong for the +more line).
+        let active_bg = "\x1b[48;2;56;59;71m";
+
+        // Find the "+2 more" line.
+        let more_line = s.lines().find(|l| l.contains("more"))
+            .expect("'+N more' summary line must be emitted when >6 panes");
+
+        // The +more line must carry the active-child (agent) surface, not the card tint.
+        assert!(
+            more_line.contains(agent_bg),
+            "+more line must carry active-child surface ({agent_bg}): {:?}", more_line
+        );
+        assert!(
+            !more_line.contains(active_bg),
+            "+more line must NOT carry the card-header tint ({active_bg}): {:?}", more_line
+        );
+
+        // Confirm a regular pane child line also carries agent_bg,
+        // proving the +more line is consistent with its siblings.
+        let child_lines: Vec<&str> = s.lines()
+            .filter(|l| l.contains(agent_bg) && !l.contains("more"))
+            .collect();
+        assert!(
+            !child_lines.is_empty(),
+            "there must be at least one visible pane child line carrying agent_bg: {:?}", s
+        );
     }
 }
