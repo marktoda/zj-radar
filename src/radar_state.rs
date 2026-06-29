@@ -431,13 +431,20 @@ impl RadarState {
         for tab in tabs {
             let empty = Vec::new();
             let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
+            let ours = self.applied_names.get(&tab.id) == Some(&tab.name);
+            // Stickiness: a name we applied stays put as long as some pane still
+            // justifies it, so moving focus between panes in different repos does
+            // not flip the tab name. We only re-pick once no pane supports it
+            // (e.g. the pane that named the tab closed).
+            if ours && self.name_supported(panes, &tab.name) {
+                continue;
+            }
             let Some(desired) = self.computed_name(panes) else {
                 continue;
             };
             if desired == tab.name {
                 continue;
             }
-            let ours = self.applied_names.get(&tab.id) == Some(&tab.name);
             if force || is_default_name(&tab.name) || ours {
                 self.applied_names.insert(tab.id, desired.clone());
                 out.push(TabRename {
@@ -447,6 +454,29 @@ impl RadarState {
             }
         }
         out
+    }
+
+    /// Does any pane in this tab still justify `name`? True when `name` matches a
+    /// pane's repo, its worktree-resolved cwd, or its title — i.e. `name` is still
+    /// somewhere in [`Self::computed_name`]'s candidate space. Used to make an
+    /// applied name "sticky" so focus changes between panes don't churn it.
+    fn name_supported(&self, panes: &[TerminalPane], name: &str) -> bool {
+        panes.iter().any(|p| {
+            let repo = self
+                .status
+                .get(p.id)
+                .map(|s| s.repo.as_str())
+                .filter(|r| !r.is_empty());
+            if repo == Some(name) {
+                return true;
+            }
+            if let Some(cwd) = self.pane_cwd.get(&p.id) {
+                if worktree_repo_dir(cwd).as_deref() == Some(name) {
+                    return true;
+                }
+            }
+            title_name(&p.title).as_deref() == Some(name)
+        })
     }
 
     fn computed_name(&self, panes: &[TerminalPane]) -> Option<String> {
@@ -469,14 +499,14 @@ impl RadarState {
         }
         if let Some(p) = focused {
             if let Some(cwd) = self.pane_cwd.get(&p.id) {
-                if let Some(name) = cwd_basename(cwd) {
+                if let Some(name) = worktree_repo_dir(cwd) {
                     return Some(name);
                 }
             }
         }
         for p in panes {
             if let Some(cwd) = self.pane_cwd.get(&p.id) {
-                if let Some(name) = cwd_basename(cwd) {
+                if let Some(name) = worktree_repo_dir(cwd) {
                     return Some(name);
                 }
             }
@@ -579,6 +609,25 @@ fn cwd_basename(path: &str) -> Option<String> {
         .rsplit('/')
         .find(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// Path markers for agent-managed git worktrees created under the standard
+/// conventions: Claude (`<repo>/.claude/worktrees/<branch>`) and Codex
+/// (`<repo>/.Codex/worktrees/<branch>`). A cwd sitting inside such a worktree
+/// belongs, conceptually, to the parent repo — so naming should follow the repo,
+/// not the (per-branch) worktree directory. Mirrors the CLI's git-common-dir
+/// resolution (`cli::notify`) without needing a `git` process from inside wasm.
+const WORKTREE_MARKERS: [&str; 2] = ["/.claude/worktrees/", "/.Codex/worktrees/"];
+
+/// Resolve the directory NAME a tab should take from a pane's cwd. For a cwd
+/// under a [`WORKTREE_MARKERS`] segment, this is the parent repo's basename (so
+/// every worktree of `zj-radar` reads as `zj-radar` instead of flipping to each
+/// branch dir); otherwise it is the plain cwd basename.
+fn worktree_repo_dir(path: &str) -> Option<String> {
+    match WORKTREE_MARKERS.iter().filter_map(|m| path.find(m)).min() {
+        Some(idx) => cwd_basename(&path[..idx]),
+        None => cwd_basename(path),
+    }
 }
 
 fn strip_activity_prefix(title: &str) -> &str {
@@ -1239,5 +1288,122 @@ mod tests {
 
         assert_eq!(restored.status(5).unwrap().status, Status::Idle);
         assert_eq!(restored.status(5).unwrap().on_focus, None);
+    }
+
+    #[test]
+    fn worktree_repo_dir_resolves_claude_worktree_paths_to_parent_repo() {
+        // A worktree under the standard `<repo>/.claude/worktrees/<branch>` path
+        // resolves to the PARENT repo's basename, not the branch dir.
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x"),
+            Some("zj-radar".into())
+        );
+        // Deeper cwd inside the worktree still resolves to the repo.
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x/src/app"),
+            Some("zj-radar".into())
+        );
+        // Codex worktrees live under `<repo>/.Codex/worktrees/<branch>`.
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar/.Codex/worktrees/sidebar-ui-polish"),
+            Some("zj-radar".into())
+        );
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar/.Codex/worktrees/sidebar-ui-polish/src"),
+            Some("zj-radar".into())
+        );
+        // A normal (non-worktree) path keeps its plain basename.
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar"),
+            Some("zj-radar".into())
+        );
+        assert_eq!(
+            worktree_repo_dir("/Users/m/dev/zj-radar/src"),
+            Some("src".into())
+        );
+    }
+
+    #[test]
+    fn computed_name_resolves_worktree_cwd_to_parent_repo() {
+        let mut radar = RadarState::default();
+        radar
+            .pane_cwd
+            .insert(1, "/Users/m/dev/zj-radar/.claude/worktrees/feat-x".into());
+        let panes = vec![focused_pane(1)];
+        assert_eq!(radar.computed_name(&panes), Some("zj-radar".into()));
+    }
+
+    #[test]
+    fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1), pane(2)]);
+        radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
+        radar.cwd_changed(2, "/work/beta".into(), config::NamingMode::Managed);
+        // Focused pane 1 named the tab "alpha".
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("alpha"));
+        // Zellij echoes our rename back as a TabUpdate.
+        radar.tabs_changed(vec![tab(10, 0, "alpha", true)]);
+
+        // Focus shifts to pane 2 (a different repo). "alpha" is still justified by
+        // pane 1, so the tab name must NOT flip — no rename emitted.
+        let change = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![pane(1), focused_pane(2)])])),
+            2,
+            config::NamingMode::Managed,
+        );
+        assert!(change.renames.is_empty());
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("alpha"));
+    }
+
+    #[test]
+    fn manual_rename_is_preserved_through_focus_and_cwd_changes() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+        radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
+        // Zellij echoes our auto-name, then the user renames the tab by hand.
+        radar.tabs_changed(vec![tab(10, 0, "alpha", true)]);
+        radar.tabs_changed(vec![tab(10, 0, "my-thing", true)]);
+
+        // A focus change must not reclaim the manual name.
+        let focus = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(1), pane(2)])])),
+            2,
+            config::NamingMode::Managed,
+        );
+        assert!(focus.renames.is_empty());
+
+        // Neither may a later `cd` in the pane.
+        let cd = radar.cwd_changed(1, "/work/gamma".into(), config::NamingMode::Managed);
+        assert!(cd.renames.is_empty());
+    }
+
+    #[test]
+    fn applied_tab_name_repicks_when_the_naming_pane_closes() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1), pane(2)]);
+        radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
+        radar.cwd_changed(2, "/work/beta".into(), config::NamingMode::Managed);
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("alpha"));
+        // Zellij echoes our rename back as a TabUpdate.
+        radar.tabs_changed(vec![tab(10, 0, "alpha", true)]);
+
+        // Pane 1 (which justified "alpha") closes. "alpha" is no longer supported,
+        // so the tab re-picks from the surviving pane → "beta".
+        let change = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(2)])])),
+            2,
+            config::NamingMode::Managed,
+        );
+        assert_eq!(
+            change.renames,
+            vec![TabRename {
+                position: 0,
+                name: "beta".into(),
+            }]
+        );
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("beta"));
     }
 }
