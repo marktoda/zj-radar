@@ -94,6 +94,42 @@ fn raw_display(parts: &[&str]) -> String {
         .join(" ")
 }
 
+/// Launcher exes that prefix the *real* command (`sudo make`, `time cargo
+/// build`, `env FOO=1 pytest`). Classification should see through them.
+const WRAPPERS: &[&str] = &["sudo", "doas", "env", "time", "nice", "command", "exec"];
+
+/// Is `s` a leading `KEY=VAL` environment assignment (e.g. `RUST_LOG=debug`)?
+/// Requires a non-empty key of `[A-Za-z0-9_]` before the `=`, so flags like
+/// `--features=cli` (key contains `-`) and paths are not mistaken for one.
+fn is_env_assignment(s: &str) -> bool {
+    s.split_once('=').is_some_and(|(key, _)| {
+        !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
+}
+
+/// Strip leading `KEY=VAL` assignments and known wrapper exes so the rest of the
+/// pipeline classifies the real command: `RUST_LOG=debug cargo test` → `cargo
+/// test`, `sudo cargo build` → `cargo build`. Conservative: if peeling would
+/// land on an option (a wrapper with a value-taking flag we don't model, e.g.
+/// `sudo -u user make`) the original argv is returned unchanged — never worse
+/// than not peeling.
+fn effective_command(command: &[String]) -> &[String] {
+    let mut i = 0;
+    loop {
+        while command.get(i).is_some_and(|t| is_env_assignment(t)) {
+            i += 1;
+        }
+        match command.get(i) {
+            Some(tok) if WRAPPERS.contains(&basename(tok)) => i += 1,
+            _ => break,
+        }
+    }
+    match command.get(i) {
+        Some(tok) if i > 0 && !is_option_arg(tok) && !is_env_assignment(tok) => &command[i..],
+        _ => command,
+    }
+}
+
 /// Compact foreground argv into a rail-friendly activity string. Keep useful
 /// verbs/subcommands (`cargo test`, `npm run build`) while dropping noisy flags
 /// (`--dangerously-bypass-...`, `--features`, `--watch`) that make the sidebar
@@ -261,6 +297,9 @@ impl CommandStore {
         cwd: Option<&str>,
         tick: u64,
     ) {
+        // Peel env-prefixes/wrappers once at intake so the ignore check, the
+        // display string, and the Kind all classify the real command.
+        let command = effective_command(command);
         let name = command.first().map(|s| basename(s)).unwrap_or("");
         // Shells and agents are both "not a real command we track here": shells
         // mean back-to-the-prompt; agents are owned by the push pipe (see
@@ -483,6 +522,51 @@ mod tests {
             "python -m pytest tests/render.rs"
         );
         assert_eq!(display_command(&argv(&["sleep", "5"])), "sleep 5");
+    }
+
+    #[test]
+    fn wrappers_and_env_prefixes_are_peeled_before_classification() {
+        // Real Zellij argv routinely carries env assignments and launcher
+        // wrappers. The observer must classify the *wrapped* command, not the
+        // wrapper, for both the display string and the Kind.
+        let cases: &[(&[&str], &str, Kind)] = &[
+            (&["RUST_LOG=debug", "cargo", "test", "render"], "cargo test render", Kind::Test),
+            (&["sudo", "cargo", "build"], "cargo build", Kind::Build),
+            (&["env", "FOO=1", "BAR=2", "pytest"], "pytest", Kind::Test),
+            (&["time", "npm", "run", "build"], "npm run build", Kind::Build),
+        ];
+        for (args, want_msg, want_kind) in cases {
+            let mut store = CommandStore::default();
+            store.on_command_changed(1, &argv(args), true, Some("/work/repo"), 1);
+            store.on_timer(2);
+            let s = store
+                .get(1)
+                .unwrap_or_else(|| panic!("{args:?} should be tracked"));
+            assert_eq!(&s.msg, want_msg, "display for {args:?}");
+            assert_eq!(s.source, want_kind.as_source(), "kind for {args:?}");
+        }
+    }
+
+    #[test]
+    fn a_wrapped_agent_is_still_suppressed() {
+        // `sudo claude` is still claude — a push-owned agent — so it must not
+        // open a command lifecycle even behind a wrapper.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &argv(&["sudo", "claude"]), true, Some("/work/repo"), 1);
+        store.on_timer(2);
+        assert!(store.get(1).is_none(), "wrapped agent must stay suppressed");
+    }
+
+    #[test]
+    fn unknown_wrapper_options_are_left_alone() {
+        // `sudo -u user make` carries a value-taking option we don't model;
+        // rather than mis-parse it, peeling bails and leaves the command as-is
+        // (no regression vs. not peeling). It still tracks as a generic command.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &argv(&["sudo", "-u", "user", "make"]), true, Some("/r"), 1);
+        store.on_timer(2);
+        let s = store.get(1).expect("should still be tracked");
+        assert_eq!(s.source, Kind::Command.as_source());
     }
 
     #[test]
