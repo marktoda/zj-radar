@@ -1,51 +1,13 @@
-//! `zj-radar notify <agent>` — derive status, build payload, broadcast.
+//! `zj-radar notify <agent>` — the host shell: read the hook payload, derive an
+//! update behind the agent-intake seam, resolve repo/branch, broadcast.
+//! All agent-specific decisions live in `agents/`; this file is agent-agnostic
+//! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
-use super::codex;
-use super::events::{tool_activity, Update};
+use super::agents::{Agent, Intake};
 use crate::payload::to_wire;
 use crate::status::Status;
 use std::io::Read;
 use std::process::Command;
-
-const GENERIC_PENDING: [&str; 2] = ["Claude needs attention", "Claude Code needs your attention"];
-
-/// Map a Claude hook event name to a status (used when `--status` is absent).
-fn status_from_event(event: &str) -> Option<Status> {
-    match event {
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SubagentStop" => Some(Status::Running),
-        "Notification" => Some(Status::Pending),
-        "Stop" => Some(Status::Done),
-        _ => None,
-    }
-}
-
-/// Pure: decide Claude's status+msg. `status_arg` (from the matcher-driven
-/// hooks.json) wins; else derive from `hook_event`. Applies the pending backstop.
-pub fn derive_claude(
-    status_arg: Option<&str>,
-    hook_event: Option<&str>,
-    msg: &str,
-) -> Option<Update> {
-    let status = match status_arg {
-        Some(s) => Status::from_wire(s),
-        None => status_from_event(hook_event?)?,
-    };
-    if status == Status::Pending {
-        let m = msg.trim();
-        if m.is_empty() || GENERIC_PENDING.contains(&m) {
-            return None; // backstop: not a real "needs you"
-        }
-    }
-    // A running broadcast with no message would render as a blank active row.
-    // Give it a neutral baseline; run()'s tool-activity substitution refines it
-    // when a tool name/input is present.
-    let msg = if status == Status::Running && msg.trim().is_empty() {
-        "working".to_string()
-    } else {
-        msg.to_string()
-    };
-    Some(Update { status, msg })
-}
 
 /// Terminal pane id from `$ZELLIJ_PANE_ID` (strip a `terminal_` prefix), or None
 /// when not running under Zellij or the id is non-numeric.
@@ -77,10 +39,7 @@ fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
     if base == ".git" {
         // Repo root is the parent of the ".git" dir.
         let parent = trimmed[..trimmed.len() - base.len()].trim_end_matches('/');
-        parent
-            .rsplit('/')
-            .find(|s| !s.is_empty())
-            .map(str::to_string)
+        parent.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
     } else if let Some(stripped) = base.strip_suffix(".git") {
         // Bare repo "name.git".
         (!stripped.is_empty()).then(|| stripped.to_string())
@@ -136,56 +95,30 @@ fn read_stdin() -> String {
     s
 }
 
-/// Thin IO wrapper: parse the agent input, derive, then broadcast. Never panics;
-/// any failure is a silent no-op so the calling hook is never broken.
+/// Thin IO wrapper: source the payload, derive behind the agent seam, then
+/// broadcast. Never panics; any failure is a silent no-op so the calling hook is
+/// never broken.
 pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: bool) {
     let Some(pane_id) = pane_id_from_env() else {
         return;
     };
-
-    let (update, cwd) = match agent {
-        "claude" => {
-            let raw = read_stdin();
-            let v: serde_json::Value =
-                serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-            let event = v.get("hook_event_name").and_then(|x| x.as_str());
-            let msg = v
-                .get("message")
-                .and_then(|x| x.as_str())
-                .or_else(|| v.get("last_assistant_message").and_then(|x| x.as_str()))
-                .unwrap_or("");
-            let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
-            let mut derived = derive_claude(status_arg, event, msg);
-            // For PreToolUse/PostToolUse (running status), substitute the tool
-            // activity string when available so the sidebar shows live action.
-            if let Some(ref mut upd) = derived {
-                if upd.status == Status::Running
-                    && matches!(event, Some("PreToolUse") | Some("PostToolUse"))
-                {
-                    let tool_name = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
-                    let tool_input = v.get("tool_input").unwrap_or(&serde_json::Value::Null);
-                    if let Some(activity) = tool_activity(tool_name, tool_input) {
-                        upd.msg = activity;
-                    }
-                }
-            }
-            (derived, cwd)
-        }
-        "codex" => {
-            let raw = input.map(str::to_string).unwrap_or_else(read_stdin);
-            match codex::derive_update(&raw) {
-                Some((update, cwd)) => (Some(update), cwd),
-                None => (None, None),
-            }
-        }
-        _ => {
-            eprintln!("zj-radar: unknown agent '{agent}' (expected: claude | codex)");
-            return;
-        }
+    let Some(agent) = Agent::from_cli(agent) else {
+        eprintln!("zj-radar: unknown agent '{agent}' (expected: claude | codex)");
+        return;
     };
 
-    let Some(update) = update else { return };
-    let cwd = cwd
+    // Uniform input sourcing: argv `input` if present (Codex's legacy notify),
+    // else stdin (Claude and modern Codex hooks). The adapter parses it.
+    let raw = input.map(str::to_owned).unwrap_or_else(read_stdin);
+    let Some(update) = agent.derive(&Intake {
+        raw: &raw,
+        status_arg,
+    }) else {
+        return;
+    };
+
+    let cwd = update
+        .cwd
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
@@ -202,7 +135,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         &branch,
         &update.msg,
         on_focus,
-        agent,
+        agent.source(),
     );
 
     if dry_run {
@@ -217,70 +150,6 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::status::Status;
-
-    #[test]
-    fn claude_explicit_status_passes_through() {
-        let u = derive_claude(Some("running"), None, "anything").unwrap();
-        assert_eq!(u.status, Status::Running);
-    }
-
-    #[test]
-    fn claude_pending_with_real_message_is_kept() {
-        let u = derive_claude(Some("pending"), None, "approve this?").unwrap();
-        assert_eq!(u.status, Status::Pending);
-        assert_eq!(u.msg, "approve this?");
-    }
-
-    #[test]
-    fn claude_pending_backstop_drops_empty_and_generic() {
-        assert!(derive_claude(Some("pending"), None, "").is_none());
-        assert!(derive_claude(Some("pending"), None, "Claude needs attention").is_none());
-        assert!(derive_claude(Some("pending"), None, "Claude Code needs your attention").is_none());
-    }
-
-    #[test]
-    fn claude_running_with_empty_msg_falls_back_to_working() {
-        // A running broadcast with no activity text must not render as a blank
-        // active row (the bare `◐ ✳` line) — derive a neutral "working"
-        // baseline. run()'s tool-activity substitution still refines it when a
-        // tool name/input is present.
-        let u = derive_claude(Some("running"), None, "").unwrap();
-        assert_eq!(u.status, Status::Running);
-        assert_eq!(u.msg, "working");
-        // Whitespace-only is also empty.
-        assert_eq!(derive_claude(Some("running"), None, "   ").unwrap().msg, "working");
-        // Event-derived running (no explicit status) with no message too.
-        assert_eq!(
-            derive_claude(None, Some("UserPromptSubmit"), "").unwrap().msg,
-            "working"
-        );
-    }
-
-    #[test]
-    fn claude_running_with_real_msg_is_unchanged() {
-        let u = derive_claude(Some("running"), None, "compiling").unwrap();
-        assert_eq!(u.msg, "compiling");
-    }
-
-    #[test]
-    fn claude_derives_status_from_event_when_no_explicit_status() {
-        assert_eq!(
-            derive_claude(None, Some("UserPromptSubmit"), "")
-                .unwrap()
-                .status,
-            Status::Running
-        );
-        assert_eq!(
-            derive_claude(None, Some("PostToolUse"), "").unwrap().status,
-            Status::Running
-        );
-        assert_eq!(
-            derive_claude(None, Some("Stop"), "done").unwrap().status,
-            Status::Done
-        );
-        assert!(derive_claude(None, Some("SomethingElse"), "").is_none());
-    }
 
     // --- repo_name_from_common_dir tests ---
 

@@ -4,8 +4,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod codex;
-mod events;
+mod agents;
 mod notify;
 mod setup;
 

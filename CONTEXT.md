@@ -69,6 +69,29 @@ on_focus, seq}`). Producers (the Claude plugin, the Codex CLI) are adapters that
 broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
 oversized/out-of-order).
 
+## Information source
+
+Anything that produces a per-pane observation. Two modalities, both converging on
+a `Kind`-keyed `Status`:
+
+- **Pushed** — instrumented agents report rich status by broadcasting the *status
+  contract* through the host CLI (`zj-radar notify <agent>`). Each agent is a peer
+  adapter behind the **agent intake** seam — `Agent::derive(&Intake) ->
+  Option<AgentUpdate>` in `src/cli/agents/` — so `notify::run` is a thin,
+  agent-agnostic shell (read input → derive → broadcast). Adding an agent is a
+  compiler-guided `enum Agent` variant; its `source()` string is the single
+  vocabulary shared across the CLI argument, the wire `source`, and
+  `Kind::from_source`, pinned by the `source_round_trips_through_kind` guard test.
+- **Observed** — uninstrumented commands (e.g. `cargo test`) that Radar watches
+  from outside. The plugin classifies the observed argv via
+  `command.rs::command_source` and infers status from the process lifecycle. No
+  wire, no CLI. `cargo test` lives here, **not** in `agents/`.
+
+Both modalities emit a `source` string that must be a subset of `Kind`
+(`Kind::from_source`). The agent half is guarded today; the matching
+`command_source` ↔ `Kind` twin guard is a TODO to land with the observation-store
+deepening.
+
 ## Tab Roll-Up
 
 The per-pane → per-tab roll-up: severity order `error > pending > running > done >

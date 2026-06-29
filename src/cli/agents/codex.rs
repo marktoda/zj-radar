@@ -1,71 +1,58 @@
-//! Codex hook/notify JSON to Radar status updates.
+//! Codex hook/notify JSON → Radar status update.
 
-use super::events::{tool_activity, Update};
+use super::{tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
 use serde_json::Value;
 
-/// Parse either modern Codex hook JSON from stdin or legacy Codex `notify`
-/// argv JSON. Returns the Radar update and optional session cwd.
-pub fn derive_update(raw_json: &str) -> Option<(Update, Option<String>)> {
-    let v: Value = serde_json::from_str(raw_json).ok()?;
+/// Parse either modern Codex hook JSON or legacy Codex `notify` argv JSON.
+/// Codex ignores `status_arg` (it has no explicit-status override).
+pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
+    let v: Value = serde_json::from_str(intake.raw).ok()?;
     if v.get("hook_event_name").is_some() {
         return derive_hook_update(&v);
     }
     derive_legacy_notify_update(&v)
 }
 
-fn derive_hook_update(v: &Value) -> Option<(Update, Option<String>)> {
+fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
     let event = v.get("hook_event_name")?.as_str()?;
     let cwd = string_field(v, "cwd");
-    let update = match event {
-        "UserPromptSubmit" => running("working"),
+    let (status, msg) = match event {
+        "UserPromptSubmit" => (Status::Running, "working".to_string()),
         "PreToolUse" | "PostToolUse" => {
             let tool_name = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
             let tool_input = v.get("tool_input").unwrap_or(&Value::Null);
-            running(tool_activity(tool_name, tool_input).unwrap_or_else(|| "working".to_string()))
+            (
+                Status::Running,
+                tool_activity(tool_name, tool_input).unwrap_or_else(|| "working".to_string()),
+            )
         }
-        "PermissionRequest" => pending(permission_message(v)),
-        "SubagentStart" => running("delegating"),
-        "SubagentStop" => running(last_assistant_message(v).unwrap_or_else(|| "delegating".into())),
-        "Stop" => Update {
-            status: Status::Done,
-            msg: last_assistant_message(v).unwrap_or_default(),
-        },
+        "PermissionRequest" => (Status::Pending, permission_message(v)),
+        "SubagentStart" => (Status::Running, "delegating".to_string()),
+        "SubagentStop" => (
+            Status::Running,
+            last_assistant_message(v).unwrap_or_else(|| "delegating".into()),
+        ),
+        "Stop" => (Status::Done, last_assistant_message(v).unwrap_or_default()),
         _ => return None,
     };
-    Some((update, cwd))
+    Some(AgentUpdate { status, msg, cwd })
 }
 
-fn derive_legacy_notify_update(v: &Value) -> Option<(Update, Option<String>)> {
+fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
     let ty = v.get("type")?.as_str()?;
     if ty != "agent-turn-complete" {
         return None;
     }
-    Some((
-        Update {
-            status: Status::Done,
-            msg: v
-                .get("last-assistant-message")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-        },
-        string_field(v, "cwd"),
-    ))
-}
-
-fn running(msg: impl Into<String>) -> Update {
-    Update {
-        status: Status::Running,
-        msg: msg.into(),
-    }
-}
-
-fn pending(msg: impl Into<String>) -> Update {
-    Update {
-        status: Status::Pending,
-        msg: msg.into(),
-    }
+    Some(AgentUpdate {
+        status: Status::Done,
+        msg: v
+            .get("last-assistant-message")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        cwd: string_field(v, "cwd"),
+    })
 }
 
 fn permission_message(v: &Value) -> String {
@@ -95,13 +82,17 @@ fn string_field(v: &Value, field: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn update(raw: &str) -> (Update, Option<String>) {
-        derive_update(raw).unwrap()
+    fn update(raw: &str) -> AgentUpdate {
+        derive(&Intake {
+            raw,
+            status_arg: None,
+        })
+        .unwrap()
     }
 
     #[test]
     fn user_prompt_submit_is_running() {
-        let (u, cwd) = update(
+        let u = update(
             r#"{
               "hook_event_name": "UserPromptSubmit",
               "cwd": "/repo",
@@ -110,12 +101,12 @@ mod tests {
         );
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "working");
-        assert_eq!(cwd.as_deref(), Some("/repo"));
+        assert_eq!(u.cwd.as_deref(), Some("/repo"));
     }
 
     #[test]
     fn tool_hooks_use_tool_activity() {
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "PreToolUse",
               "tool_name": "Bash",
@@ -125,7 +116,7 @@ mod tests {
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "running tests");
 
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "PostToolUse",
               "tool_name": "apply_patch",
@@ -138,7 +129,7 @@ mod tests {
 
     #[test]
     fn permission_request_is_pending_with_description() {
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "PermissionRequest",
               "tool_name": "Bash",
@@ -154,7 +145,7 @@ mod tests {
 
     #[test]
     fn permission_request_has_generic_fallback() {
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "PermissionRequest",
               "tool_name": "Bash",
@@ -167,11 +158,11 @@ mod tests {
 
     #[test]
     fn subagent_events_stay_running() {
-        let (u, _) = update(r#"{"hook_event_name": "SubagentStart"}"#);
+        let u = update(r#"{"hook_event_name": "SubagentStart"}"#);
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "delegating");
 
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "SubagentStop",
               "last_assistant_message": "reviewed the tests"
@@ -183,7 +174,7 @@ mod tests {
 
     #[test]
     fn stop_is_done_with_last_message() {
-        let (u, _) = update(
+        let u = update(
             r#"{
               "hook_event_name": "Stop",
               "last_assistant_message": "implemented"
@@ -195,7 +186,7 @@ mod tests {
 
     #[test]
     fn legacy_notify_turn_complete_still_works() {
-        let (u, cwd) = update(
+        let u = update(
             r#"{
               "type": "agent-turn-complete",
               "last-assistant-message": "shipped it",
@@ -204,13 +195,30 @@ mod tests {
         );
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "shipped it");
-        assert_eq!(cwd.as_deref(), Some("/repo"));
+        assert_eq!(u.cwd.as_deref(), Some("/repo"));
     }
 
     #[test]
     fn unknown_or_bad_events_are_noops() {
-        assert!(derive_update("not json").is_none());
-        assert!(derive_update(r#"{"hook_event_name":"SessionStart"}"#).is_none());
-        assert!(derive_update(r#"{"type":"task-started"}"#).is_none());
+        let none = |raw: &str| {
+            derive(&Intake {
+                raw,
+                status_arg: None,
+            })
+        };
+        assert!(none("not json").is_none());
+        assert!(none(r#"{"hook_event_name":"SessionStart"}"#).is_none());
+        assert!(none(r#"{"type":"task-started"}"#).is_none());
+    }
+
+    #[test]
+    fn status_arg_is_ignored_by_codex() {
+        // Codex derives purely from the payload; an explicit status arg is a no-op.
+        let u = derive(&Intake {
+            raw: r#"{"hook_event_name":"UserPromptSubmit"}"#,
+            status_arg: Some("done"),
+        })
+        .unwrap();
+        assert_eq!(u.status, Status::Running);
     }
 }
