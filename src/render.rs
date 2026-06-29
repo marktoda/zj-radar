@@ -265,9 +265,8 @@ impl RenderedRail {
     }
 }
 
-/// Carries the planner's view of a row: status (for compression priority),
-/// active flag (reserved for future use), and the pre-rendered line count
-/// sourced directly from the block that will be emitted.
+/// Carries the planner's view of a row: status (for compression priority)
+/// and the pre-rendered line count sourced directly from the block that will be emitted.
 struct RowMeta {
     status: Status,
     full_lines: usize,
