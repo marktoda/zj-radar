@@ -154,6 +154,32 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
     })
 }
 
+/// Serialized form of the `zj_radar.status.v1` payload — the producer mirror of
+/// the `Raw` parse struct. `status` / `on_focus` serialize through `Status`'s
+/// own wire vocabulary (so the two directions share one token set), and
+/// `on_focus` is dropped entirely when `None` via `skip_serializing_if`.
+#[cfg(any(feature = "cli", test))]
+#[derive(serde::Serialize)]
+struct Wire<'a> {
+    v: u32,
+    source: &'a str,
+    pane: WirePane,
+    status: Status,
+    repo: &'a str,
+    branch: &'a str,
+    msg: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_focus: Option<Status>,
+}
+
+#[cfg(any(feature = "cli", test))]
+#[derive(serde::Serialize)]
+struct WirePane {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    id: u32,
+}
+
 /// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). `on_focus` is
 /// omitted entirely when `None`. Shared by the CLI producer and tested against
 /// `parse` so the two can never drift.
@@ -167,19 +193,20 @@ pub fn to_wire(
     on_focus: Option<Status>,
     source: &str,
 ) -> String {
-    let mut obj = serde_json::json!({
-        "v": 1,
-        "source": source,
-        "pane": { "type": "terminal", "id": pane_id },
-        "status": status.as_wire(),
-        "repo": repo,
-        "branch": branch,
-        "msg": msg,
-    });
-    if let Some(f) = on_focus {
-        obj["on_focus"] = serde_json::Value::String(f.as_wire().to_string());
-    }
-    obj.to_string()
+    serde_json::to_string(&Wire {
+        v: 1,
+        source,
+        pane: WirePane {
+            kind: "terminal",
+            id: pane_id,
+        },
+        status,
+        repo,
+        branch,
+        msg,
+        on_focus,
+    })
+    .expect("status payload of plain fields always serializes")
 }
 
 #[cfg(test)]
