@@ -113,9 +113,6 @@ impl PaneDisplay {
         }
     }
 
-    fn needs_you(&self) -> bool {
-        matches!(self.status(), Some(Status::Pending | Status::Error))
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,17 +128,6 @@ pub struct ProgressCounts {
     pub done: usize,
     pub total: usize,
     pub pending: usize,
-}
-
-/// "0:14" under a minute-ish, "2m", "1h3m".
-fn format_elapsed(secs: u64) -> String {
-    if secs < 60 {
-        format!("0:{:02}", secs)
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
-    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -255,58 +241,6 @@ fn card_block_lines(display: &TabDisplay, active: bool, spacing: CardSpacing) ->
 /// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
     display.panes.iter().filter(|p| p.is_tracked()).count() > 1
-}
-
-/// The expand/collapse split for a multi-pane tab's adaptive tree. The SINGLE
-/// SOURCE OF TRUTH consulted by `row_lines`, `render_rail`, and target mapping,
-/// so line counts and click targets stay in lockstep.
-///
-/// Rules:
-///   - Panes that NEED YOU (Pending or Error) ALWAYS expand.
-///   - If the tab is the ACTIVE (focused) tab, ALL its panes expand.
-///   - The remaining calm panes (Running/Done/Idle) collapse into a single
-///     count line. `collapsed_verb` is "working" if any collapsed pane is
-///     Running, else "done".
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PaneTreePlan {
-    expanded: Vec<PaneDisplay>,
-    collapsed_count: usize,
-    /// The dominant calm label for the collapse line ("working", "done", or "panes").
-    collapsed_verb: &'static str,
-    collapsed_is_remainder: bool,
-}
-
-/// Compute the expand/collapse split for a multi-pane tab. Callers should only
-/// invoke this when `is_multi_pane(display)` is true; for a single-pane tab it would
-/// return all panes collapsed (which is not how single-pane tabs render).
-fn pane_tree_plan(display: &TabDisplay, active: bool) -> PaneTreePlan {
-    let mut expanded: Vec<PaneDisplay> = Vec::new();
-    let mut collapsed: Vec<&PaneDisplay> = Vec::new();
-    for p in &display.panes {
-        if active || p.needs_you() {
-            expanded.push(p.clone());
-        } else {
-            collapsed.push(p);
-        }
-    }
-    let any_untracked = collapsed.iter().any(|p| !p.is_tracked());
-    let any_running = collapsed
-        .iter()
-        .any(|p| p.status() == Some(Status::Running));
-    let collapsed_verb = if any_untracked {
-        "panes"
-    } else if any_running {
-        "working"
-    } else {
-        "done"
-    };
-    let collapsed_is_remainder = !collapsed.is_empty() && !expanded.is_empty();
-    PaneTreePlan {
-        expanded,
-        collapsed_count: collapsed.len(),
-        collapsed_verb,
-        collapsed_is_remainder,
-    }
 }
 
 /// Single source of truth for how many lines a tab row occupies.
@@ -1157,13 +1091,6 @@ mod tests {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
         }
-    }
-
-    #[test]
-    fn format_elapsed_buckets() {
-        assert_eq!(format_elapsed(14), "0:14");
-        assert_eq!(format_elapsed(120), "2m");
-        assert_eq!(format_elapsed(3780), "1h3m");
     }
 
     #[test]
@@ -2253,67 +2180,6 @@ mod tests {
             detail,
             panes,
         }
-    }
-
-    #[test]
-    fn pane_tree_plan_needs_you_always_expands() {
-        // Inactive tab: only Pending/Error panes expand; calm panes collapse.
-        let a = display_multi(vec![
-            pe(1, Kind::Claude, Status::Pending, "approve?"),
-            pe(2, Kind::Claude, Status::Running, "building"),
-            pe(3, Kind::Claude, Status::Running, "testing"),
-            pe(4, Kind::Claude, Status::Error, "boom"),
-        ]);
-        let plan = pane_tree_plan(&a, false);
-        // Pending + Error expand; two Running collapse.
-        assert_eq!(plan.expanded.len(), 2);
-        assert_eq!(plan.expanded[0].pane_id(), 1);
-        assert_eq!(plan.expanded[1].pane_id(), 4);
-        assert_eq!(plan.collapsed_count, 2);
-        assert_eq!(plan.collapsed_verb, "working"); // any running → "working"
-    }
-
-    #[test]
-    fn pane_tree_plan_active_expands_all_calm_children() {
-        let a = display_multi(vec![
-            pe(1, Kind::Claude, Status::Running, "a"),
-            pe(2, Kind::Claude, Status::Done, "b"),
-            pe(3, Kind::Claude, Status::Idle, "c"),
-        ]);
-        let plan = pane_tree_plan(&a, true);
-        assert_eq!(plan.expanded.len(), 3, "active tab expands every calm pane");
-        assert_eq!(plan.collapsed_count, 0);
-    }
-
-    #[test]
-    fn pane_tree_plan_active_expands_duplicate_calm_children() {
-        let a = display_multi(vec![
-            pe(1, Kind::Codex, Status::Running, "codex"),
-            pe(2, Kind::Codex, Status::Running, "codex"),
-            pe(3, Kind::Codex, Status::Running, "codex"),
-            pe(4, Kind::Test, Status::Running, "cargo test"),
-        ]);
-        let plan = pane_tree_plan(&a, true);
-        assert_eq!(plan.expanded.len(), 4, "active tab expands every pane");
-        assert_eq!(plan.expanded[0].pane_id(), 1);
-        assert_eq!(plan.expanded[1].pane_id(), 2);
-        assert_eq!(plan.expanded[2].pane_id(), 3);
-        assert_eq!(plan.expanded[3].pane_id(), 4);
-        assert_eq!(plan.collapsed_count, 0);
-    }
-
-    #[test]
-    fn pane_tree_plan_calm_collapse_verb_done_when_no_running() {
-        // No needs-you panes, inactive: all collapse. No running → verb "done".
-        let a = display_multi(vec![
-            pe(1, Kind::Claude, Status::Done, "a"),
-            pe(2, Kind::Claude, Status::Done, "b"),
-            pe(3, Kind::Claude, Status::Idle, "c"),
-        ]);
-        let plan = pane_tree_plan(&a, false);
-        assert_eq!(plan.expanded.len(), 0);
-        assert_eq!(plan.collapsed_count, 3);
-        assert_eq!(plan.collapsed_verb, "done");
     }
 
     #[test]
@@ -4161,34 +4027,6 @@ rail";
                 visible_width(line)
             );
         }
-    }
-
-    #[test]
-    fn pane_tree_plan_handles_all_states_present() {
-        let panes = vec![
-            PaneDisplay::tracked(1, Kind::Claude, Status::Error, "boom".into()),
-            PaneDisplay::tracked(2, Kind::Claude, Status::Pending, "approve?".into()),
-            PaneDisplay::tracked(3, Kind::Claude, Status::Running, "work".into()),
-            PaneDisplay::tracked(4, Kind::Claude, Status::Done, "".into()),
-            PaneDisplay::tracked(5, Kind::Claude, Status::Idle, "".into()),
-        ];
-        let mut a = display(Status::Error, 1, 5, None);
-        a.panes = panes;
-        let plan = pane_tree_plan(&a, false);
-        // Needs-you panes (Error, Pending) are always expanded.
-        assert!(plan
-            .expanded
-            .iter()
-            .any(|p| p.status() == Some(Status::Error)));
-        assert!(plan
-            .expanded
-            .iter()
-            .any(|p| p.status() == Some(Status::Pending)));
-        // Running/Done/Idle (3 calm panes) collapse when the tab is inactive.
-        assert_eq!(
-            plan.collapsed_count, 3,
-            "Running/Done/Idle collapse when inactive"
-        );
     }
 
     // ── Color/glyph axis tests ──

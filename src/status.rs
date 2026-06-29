@@ -122,12 +122,6 @@ pub fn working_spin(frame: usize) -> char {
     FRAMES[frame % FRAMES.len()]
 }
 
-/// In-message braille spinner.
-pub fn msg_spin(frame: usize) -> char {
-    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    FRAMES[frame % FRAMES.len()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,9 +216,4 @@ mod tests {
         assert_eq!(working_spin(4), '◐'); // wraps
     }
 
-    #[test]
-    fn msg_spinner_cycles_braille() {
-        assert_eq!(msg_spin(0), '⠋');
-        assert_eq!(msg_spin(10), '⠋'); // wraps at 10
-    }
 }
