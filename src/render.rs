@@ -198,6 +198,26 @@ pub struct RailTarget {
     pub pane_id: Option<u32>,
 }
 
+/// Surface class a line sits on (Cards density only); resolved to a concrete
+/// bg escape during assembly using the owning row. `None` = never painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineBg {
+    None,
+    Rail,        // dark panel base (rail_bg): header, gaps, idle strip
+    Card,        // this row's card surface (card_tint of the owning row)
+    ActiveChild, // active multi-pane child line (surface_agent)
+}
+
+/// One physical rail line and the click target it resolves to. `text` always
+/// ends in exactly one '\n'. The unit of rendering: ansi, targets, and
+/// footprint all derive from a `Vec<Line>`, so they cannot drift.
+#[derive(Clone, Debug)]
+struct Line {
+    text: String,
+    target: Option<RailTarget>,
+    bg: LineBg,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RenderedRail {
     pub ansi: String,
@@ -208,6 +228,23 @@ impl RenderedRail {
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub fn empty() -> Self {
         Self::default()
+    }
+
+    /// The single derive point: `ansi` and `targets` come from one `Vec<Line>`,
+    /// so they are always in 1:1 correspondence. `text` is already final
+    /// (painted during assembly); `bg` is ignored here. The trailing newline of
+    /// the last line is popped to prevent vt100 scroll in the test harness.
+    fn from_lines(lines: Vec<Line>) -> RenderedRail {
+        let mut ansi = String::new();
+        let mut targets = Vec::with_capacity(lines.len());
+        for line in lines {
+            ansi.push_str(&line.text);
+            targets.push(line.target);
+        }
+        if ansi.ends_with('\n') {
+            ansi.pop();
+        }
+        RenderedRail { ansi, targets }
     }
 
     fn from_ansi_without_targets(ansi: String) -> Self {
@@ -4250,5 +4287,33 @@ rail";
         // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
         let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
         assert_eq!(row_lines(&a, false), 2, "tab 0 should be 2 content lines");
+    }
+
+    #[test]
+    fn from_lines_derives_ansi_and_targets_in_lockstep() {
+        let t = RailTarget { tab_position: 2, pane_id: None };
+        let lines = vec![
+            Line { text: "alpha\n".into(), target: Some(t), bg: LineBg::None },
+            Line { text: "beta\n".into(),  target: None,    bg: LineBg::None },
+            Line { text: "gamma\n".into(), target: Some(RailTarget { tab_position: 3, pane_id: Some(9) }), bg: LineBg::None },
+        ];
+        let rr = RenderedRail::from_lines(lines);
+        // ansi: joined, trailing newline popped.
+        assert_eq!(rr.ansi, "alpha\nbeta\ngamma");
+        // targets: 1:1 with lines, never off-by-one.
+        assert_eq!(rr.line_count(), 3);
+        assert_eq!(rr.target_at_line(0), Some(t));
+        assert_eq!(rr.target_at_line(1), None);
+        assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9) }));
+        assert_eq!(rr.target_at_line(3), None);
+        // Structural lockstep: every '\n'-terminated segment has a target slot.
+        assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
+    }
+
+    #[test]
+    fn from_lines_empty_is_empty() {
+        let rr = RenderedRail::from_lines(vec![]);
+        assert_eq!(rr.ansi, "");
+        assert_eq!(rr.line_count(), 0);
     }
 }
