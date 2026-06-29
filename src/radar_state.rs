@@ -14,6 +14,56 @@ use crate::theme;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Direction for attention-tab cycling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Next,
+    Prev,
+}
+
+/// Pick the next/previous tab position that needs attention, relative to the
+/// active tab, wrapping at the ends. Pure over `(position, status)` pairs so it
+/// is trivially testable and deterministic — every per-tab plugin instance that
+/// receives the same broadcast computes the identical target (idempotent switch).
+///
+/// Returns `None` when no tab needs attention, or when the only attention tab is
+/// already active (a no-op).
+fn cycle_attention(
+    tabs: &[(usize, Status)],
+    active: Option<usize>,
+    dir: Direction,
+) -> Option<usize> {
+    let mut members: Vec<usize> = tabs
+        .iter()
+        .filter(|(_, s)| s.needs_attention())
+        .map(|(p, _)| *p)
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    if members.is_empty() {
+        return None;
+    }
+    let target = match (dir, active) {
+        (Direction::Next, Some(a)) => members
+            .iter()
+            .copied()
+            .find(|&p| p > a)
+            .or_else(|| members.first().copied()),
+        (Direction::Next, None) => members.first().copied(),
+        (Direction::Prev, Some(a)) => members
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| p < a)
+            .or_else(|| members.last().copied()),
+        (Direction::Prev, None) => members.last().copied(),
+    };
+    match target {
+        Some(t) if Some(t) != active => Some(t),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct TabId(usize);
 
@@ -190,6 +240,25 @@ impl RadarState {
                 .collect(),
         };
         serde_json::to_string(&snapshot).unwrap_or_default()
+    }
+
+    /// Target tab position for an `attention-next`/`attention-prev` command, or
+    /// `None` for a no-op. Reads the live active tab and per-tab rollup; the
+    /// pure `cycle_attention` owns the ordering/wrap logic.
+    pub(crate) fn next_attention_tab(&self, dir: Direction) -> Option<usize> {
+        let active = self.tabs.iter().find(|t| t.active).map(|t| t.position);
+        let empty = Vec::new();
+        // Order is irrelevant here: `cycle_attention` sorts the attention
+        // members itself, so we gather `(position, status)` pairs as-is.
+        let pairs: Vec<(usize, Status)> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
+                (t.position, self.tab_display(panes).status)
+            })
+            .collect();
+        cycle_attention(&pairs, active, dir)
     }
 
     pub(crate) fn rows(&self) -> Vec<TabRow> {
@@ -1395,6 +1464,78 @@ mod tests {
         assert_eq!(run(1), Some(Status::Idle), "moving 2→1 leaves pane 2 receded");
     }
 
+    // ── next_attention_tab integration tests ─────────────────────────────────
+
+    #[test]
+    fn next_attention_tab_skips_running_and_idle() {
+        let mut st = RadarState::default();
+        // 3 tabs at positions 0,1,2; tab 0 active.
+        st.tabs_changed(vec![
+            RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true,  has_bell: false },
+            RadarTab { id: TabId::new(2), position: 1, name: "b".into(), active: false, has_bell: false },
+            RadarTab { id: TabId::new(3), position: 2, name: "c".into(), active: false, has_bell: false },
+        ]);
+        // tab 0: running (not attention); tab 1: pending (attention); tab 2: idle.
+        st.set_tab_panes_for_position(0, vec![pane(10)]);
+        st.set_tab_panes_for_position(1, vec![pane(11)]);
+        st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+        st.status_mut().apply(payload_for(11, Status::Pending, ""), 1);
+
+        assert_eq!(st.next_attention_tab(Direction::Next), Some(1));
+        assert_eq!(st.next_attention_tab(Direction::Prev), Some(1));
+    }
+
+    #[test]
+    fn next_attention_tab_none_when_no_attention() {
+        let mut st = RadarState::default();
+        st.tabs_changed(vec![
+            RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false },
+        ]);
+        st.set_tab_panes_for_position(0, vec![pane(10)]);
+        st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+        assert_eq!(st.next_attention_tab(Direction::Next), None);
+        assert_eq!(st.next_attention_tab(Direction::Prev), None);
+    }
+
+    // ── cycle_attention unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn cycle_attention_empty_set_is_none() {
+        let tabs = [(0usize, Status::Idle), (1, Status::Running)];
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Next), None);
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn cycle_attention_sole_member_equal_to_active_is_none() {
+        let tabs = [(0usize, Status::Pending), (1, Status::Running)];
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Next), None);
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn cycle_attention_next_and_prev_wrap_around() {
+        // attention at positions 2 and 5
+        let tabs = [(2usize, Status::Pending), (5, Status::Error)];
+        // active = 2 → next is 5, prev wraps to 5
+        assert_eq!(cycle_attention(&tabs, Some(2), Direction::Next), Some(5));
+        assert_eq!(cycle_attention(&tabs, Some(2), Direction::Prev), Some(5));
+        // active = 5 → next wraps to 2, prev is 2
+        assert_eq!(cycle_attention(&tabs, Some(5), Direction::Next), Some(2));
+        assert_eq!(cycle_attention(&tabs, Some(5), Direction::Prev), Some(2));
+    }
+
+    #[test]
+    fn cycle_attention_active_outside_set_enters_set() {
+        let tabs = [(2usize, Status::Pending), (5, Status::Done)];
+        // active = 3 (not an attention tab) → next 5, prev 2
+        assert_eq!(cycle_attention(&tabs, Some(3), Direction::Next), Some(5));
+        assert_eq!(cycle_attention(&tabs, Some(3), Direction::Prev), Some(2));
+        // active = None → next = smallest, prev = largest
+        assert_eq!(cycle_attention(&tabs, None, Direction::Next), Some(2));
+        assert_eq!(cycle_attention(&tabs, None, Direction::Prev), Some(5));
+    }
+
     // ── Stateful property test ────────────────────────────────────────────────
     //
     // `RadarState` is an event aggregator: the host feeds it interleaved tab,
@@ -1561,6 +1702,41 @@ mod tests {
             reloaded.load_snapshot(&s1);
             let s2 = reloaded.snapshot_json(None, SNAPSHOT_TICK);
             prop_assert_eq!(s1, s2, "snapshot round-trip must be identity");
+        }
+
+        #[test]
+        fn attention_next_visits_every_member_and_returns_to_start(
+            members in proptest::collection::btree_set(0usize..64, 1..8),
+            start_pick in 0usize..8,
+        ) {
+            let members: Vec<usize> = members.into_iter().collect();
+            let m = members.len();
+            let start = members[start_pick % m];
+            let tabs: Vec<(usize, Status)> =
+                members.iter().map(|&p| (p, Status::Pending)).collect();
+
+            let mut active = Some(start);
+            let mut visited = Vec::new();
+            for _ in 0..m {
+                match cycle_attention(&tabs, active, Direction::Next) {
+                    None => {
+                        // Only legal when the set has a single member equal to active.
+                        prop_assert_eq!(m, 1);
+                        visited.push(start);
+                    }
+                    Some(n) => {
+                        prop_assert_ne!(Some(n), active);
+                        visited.push(n);
+                        active = Some(n);
+                    }
+                }
+            }
+            // Returned to the origin after a full lap, having touched every member once.
+            prop_assert_eq!(active, Some(start));
+            let mut seen = visited.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            prop_assert_eq!(seen, members);
         }
     }
 }

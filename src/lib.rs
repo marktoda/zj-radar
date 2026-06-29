@@ -35,6 +35,8 @@ mod status_store;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod command;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod cmd;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
 
 #[cfg(test)]
@@ -65,6 +67,8 @@ use zellij_tile::prelude::*;
 const PIPE_NAME: &str = "zj_radar.status.v1";
 #[cfg(target_arch = "wasm32")]
 const CONFIG_PIPE: &str = "zj_radar.config.v1";
+#[cfg(target_arch = "wasm32")]
+const CMD_PIPE: &str = "zj_radar.cmd.v1";
 
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 #[derive(Default)]
@@ -365,6 +369,11 @@ impl ZellijPlugin for State {
         } else if message.name == CONFIG_PIPE {
             if let Some(raw) = &message.payload {
                 let outcome = self.runtime.config_pipe(raw);
+                return self.handle_outcome(outcome);
+            }
+        } else if message.name == CMD_PIPE {
+            if let Some(raw) = &message.payload {
+                let outcome = self.runtime.command_pipe(raw);
                 return self.handle_outcome(outcome);
             }
         }

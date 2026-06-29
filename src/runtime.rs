@@ -1,8 +1,9 @@
 //! Deep runtime module: repo-owned events in, ordered host effects out.
 //! No zellij-tile dependency.
 
+use crate::cmd::Command;
 use crate::config;
-use crate::radar_state::{PaneUpdate, RadarState, RadarTab};
+use crate::radar_state::{Direction, PaneUpdate, RadarState, RadarTab};
 use crate::render::{self, RenderedRail, TabRow};
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -157,6 +158,31 @@ impl PluginRuntime {
             },
         };
         Outcome::with_effects(false, vec![effect])
+    }
+
+    /// Run an imperative command verb. Read-only navigation today: resolves a
+    /// deterministic target tab and emits `SwitchTab`. Inert until permission is
+    /// granted, mirroring `mouse_click`.
+    pub(crate) fn command(&self, cmd: Command) -> Outcome {
+        if !self.permission_granted {
+            return Outcome::none();
+        }
+        let dir = match cmd {
+            Command::AttentionNext => Direction::Next,
+            Command::AttentionPrev => Direction::Prev,
+        };
+        match self.radar.next_attention_tab(dir) {
+            Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
+            None => Outcome::none(),
+        }
+    }
+
+    /// Parse a `cmd.v1` payload and dispatch it. Unknown verbs are a no-op.
+    pub(crate) fn command_pipe(&self, payload: &str) -> Outcome {
+        match crate::cmd::parse(payload) {
+            Some(cmd) => self.command(cmd),
+            None => Outcome::none(),
+        }
     }
 
     pub(crate) fn permission_result(&mut self, granted: bool) -> Outcome {
@@ -376,6 +402,7 @@ impl PluginRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::Command;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
     use crate::radar_state::{TabId, TerminalPane};
@@ -785,5 +812,55 @@ mod tests {
         runtime.render(100, 80);
 
         assert_eq!(runtime.mouse_click(2), Outcome::default());
+    }
+
+    #[test]
+    fn command_attention_next_emits_switch_tab() {
+        let mut runtime = PluginRuntime {
+            permission_granted: true,
+            config: config(),
+            ..Default::default()
+        };
+        // tab 0 active (running), tab 1 pending → attention.
+        runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
+        runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+        runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+
+        let out = runtime.command(Command::AttentionNext);
+        assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
+    }
+
+    #[test]
+    fn command_is_inert_without_permission() {
+        let mut runtime = PluginRuntime { config: config(), ..Default::default() };
+        runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
+        runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+
+        assert_eq!(runtime.command(Command::AttentionNext), Outcome::default());
+    }
+
+    #[test]
+    fn command_no_op_when_no_attention() {
+        let mut runtime = PluginRuntime {
+            permission_granted: true,
+            config: config(),
+            ..Default::default()
+        };
+        runtime.tabs_changed(vec![tab(0, "a", true)]);
+        assert_eq!(runtime.command(Command::AttentionNext), Outcome::default());
+    }
+
+    #[test]
+    fn command_pipe_unknown_verb_is_no_op() {
+        let runtime = PluginRuntime {
+            permission_granted: true,
+            config: config(),
+            ..Default::default()
+        };
+        assert_eq!(runtime.command_pipe("attention-top"), Outcome::default());
+        assert_eq!(runtime.command_pipe(""), Outcome::default());
     }
 }

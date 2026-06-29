@@ -95,6 +95,12 @@ impl Status {
     pub fn is_active(self) -> bool {
         self != Status::Idle
     }
+
+    /// Tabs in these states want the user's eyes (the radar's "attention set").
+    /// `Running`/`Idle` are excluded — they need no action.
+    pub fn needs_attention(self) -> bool {
+        matches!(self, Status::Pending | Status::Error | Status::Done)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -262,6 +268,15 @@ mod tests {
         assert_eq!(working_spin(1), '⠙');
         assert_eq!(working_spin(9), '⠏');
         assert_eq!(working_spin(10), '⠋'); // wraps
+    }
+
+    #[test]
+    fn needs_attention_covers_pending_error_done_only() {
+        assert!(Status::Pending.needs_attention());
+        assert!(Status::Error.needs_attention());
+        assert!(Status::Done.needs_attention());
+        assert!(!Status::Running.needs_attention());
+        assert!(!Status::Idle.needs_attention());
     }
 
 }
