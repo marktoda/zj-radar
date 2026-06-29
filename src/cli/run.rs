@@ -29,6 +29,17 @@ pub(crate) fn build_zellij_args(config_dir: &Path, session: &str) -> Vec<String>
     ]
 }
 
+/// True iff `permissions.kdl` contains a top-level grant block whose quoted key
+/// equals `wasm_abs_path`. Zellij keys grants by the literal path string, so an
+/// exact match is correct.
+pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> bool {
+    let needle = format!("\"{wasm_abs_path}\"");
+    permissions_kdl
+        .lines()
+        .map(str::trim_start)
+        .any(|l| l.starts_with(&needle) && l.contains('{'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +59,24 @@ mod tests {
             args,
             vec!["--config-dir", "/cfg", "--layout", "radar", "--session", "foo"]
         );
+    }
+
+    const SAMPLE: &str = r#"
+"/nix/store/abc-room.wasm" {
+    ReadApplicationState
+}
+"/Users/m/Library/Application Support/zj-radar/zellij/plugins/zj_radar.wasm" {
+    ReadApplicationState
+    ReadCliPipes
+    ChangeApplicationState
+}
+"#;
+
+    #[test]
+    fn grant_detection() {
+        let p = "/Users/m/Library/Application Support/zj-radar/zellij/plugins/zj_radar.wasm";
+        assert!(wasm_is_granted(SAMPLE, p));
+        assert!(!wasm_is_granted(SAMPLE, "/some/other/zj_radar.wasm"));
+        assert!(!wasm_is_granted("", p));
     }
 }
