@@ -14,6 +14,56 @@ use crate::theme;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Direction for attention-tab cycling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Next,
+    Prev,
+}
+
+/// Pick the next/previous tab position that needs attention, relative to the
+/// active tab, wrapping at the ends. Pure over `(position, status)` pairs so it
+/// is trivially testable and deterministic — every per-tab plugin instance that
+/// receives the same broadcast computes the identical target (idempotent switch).
+///
+/// Returns `None` when no tab needs attention, or when the only attention tab is
+/// already active (a no-op).
+fn cycle_attention(
+    tabs: &[(usize, Status)],
+    active: Option<usize>,
+    dir: Direction,
+) -> Option<usize> {
+    let mut members: Vec<usize> = tabs
+        .iter()
+        .filter(|(_, s)| s.needs_attention())
+        .map(|(p, _)| *p)
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    if members.is_empty() {
+        return None;
+    }
+    let target = match (dir, active) {
+        (Direction::Next, Some(a)) => members
+            .iter()
+            .copied()
+            .find(|&p| p > a)
+            .or_else(|| members.first().copied()),
+        (Direction::Next, None) => members.first().copied(),
+        (Direction::Prev, Some(a)) => members
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| p < a)
+            .or_else(|| members.last().copied()),
+        (Direction::Prev, None) => members.last().copied(),
+    };
+    match target {
+        Some(t) if Some(t) != active => Some(t),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct TabId(usize);
 
@@ -1165,6 +1215,45 @@ mod tests {
         );
     }
 
+    // ── cycle_attention unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn cycle_attention_empty_set_is_none() {
+        let tabs = [(0usize, Status::Idle), (1, Status::Running)];
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Next), None);
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn cycle_attention_sole_member_equal_to_active_is_none() {
+        let tabs = [(0usize, Status::Pending), (1, Status::Running)];
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Next), None);
+        assert_eq!(cycle_attention(&tabs, Some(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn cycle_attention_next_and_prev_wrap_around() {
+        // attention at positions 2 and 5
+        let tabs = [(2usize, Status::Pending), (5, Status::Error)];
+        // active = 2 → next is 5, prev wraps to 5
+        assert_eq!(cycle_attention(&tabs, Some(2), Direction::Next), Some(5));
+        assert_eq!(cycle_attention(&tabs, Some(2), Direction::Prev), Some(5));
+        // active = 5 → next wraps to 2, prev is 2
+        assert_eq!(cycle_attention(&tabs, Some(5), Direction::Next), Some(2));
+        assert_eq!(cycle_attention(&tabs, Some(5), Direction::Prev), Some(2));
+    }
+
+    #[test]
+    fn cycle_attention_active_outside_set_enters_set() {
+        let tabs = [(2usize, Status::Pending), (5, Status::Done)];
+        // active = 3 (not an attention tab) → next 5, prev 2
+        assert_eq!(cycle_attention(&tabs, Some(3), Direction::Next), Some(5));
+        assert_eq!(cycle_attention(&tabs, Some(3), Direction::Prev), Some(2));
+        // active = None → next = smallest, prev = largest
+        assert_eq!(cycle_attention(&tabs, None, Direction::Next), Some(2));
+        assert_eq!(cycle_attention(&tabs, None, Direction::Prev), Some(5));
+    }
+
     // ── Stateful property test ────────────────────────────────────────────────
     //
     // `RadarState` is an event aggregator: the host feeds it interleaved tab,
@@ -1331,6 +1420,41 @@ mod tests {
             reloaded.load_snapshot(&s1);
             let s2 = reloaded.snapshot_json(None, SNAPSHOT_TICK);
             prop_assert_eq!(s1, s2, "snapshot round-trip must be identity");
+        }
+
+        #[test]
+        fn attention_next_visits_every_member_and_returns_to_start(
+            members in proptest::collection::btree_set(0usize..64, 1..8),
+            start_pick in 0usize..8,
+        ) {
+            let members: Vec<usize> = members.into_iter().collect();
+            let m = members.len();
+            let start = members[start_pick % m];
+            let tabs: Vec<(usize, Status)> =
+                members.iter().map(|&p| (p, Status::Pending)).collect();
+
+            let mut active = Some(start);
+            let mut visited = Vec::new();
+            for _ in 0..m {
+                match cycle_attention(&tabs, active, Direction::Next) {
+                    None => {
+                        // Only legal when the set has a single member equal to active.
+                        prop_assert_eq!(m, 1);
+                        visited.push(start);
+                    }
+                    Some(n) => {
+                        prop_assert_ne!(Some(n), active);
+                        visited.push(n);
+                        active = Some(n);
+                    }
+                }
+            }
+            // Returned to the origin after a full lap, having touched every member once.
+            prop_assert_eq!(active, Some(start));
+            let mut seen = visited.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            prop_assert_eq!(seen, members);
         }
     }
 }
