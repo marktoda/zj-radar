@@ -130,6 +130,89 @@ fn effective_command(command: &[String]) -> &[String] {
     }
 }
 
+/// Declarative compaction rule for one family of tools. The per-exe special
+/// cases all reduce to two questions — *which token is the operative verb* and
+/// *which verbs carry a trailing target* — so adding a tool is a one-line table
+/// entry rather than another nested match arm.
+struct ToolRule {
+    /// Exe basenames this rule matches.
+    exes: &'static [&'static str],
+    /// Known subcommands. `Some` → only a matching arg is the operative verb
+    /// (`cargo`, `go`), and an unrecognized argv collapses to the bare exe.
+    /// `None` → the first non-option arg is the verb (`npm`, `make`, …).
+    subcommands: Option<&'static [&'static str]>,
+    /// Verbs after which the next non-option arg is appended as a target
+    /// (`cargo test <name>`, `npm run <script>`).
+    target_verbs: &'static [&'static str],
+}
+
+/// Tools with structured argv. Anything not listed (and not an agent or
+/// `python`) falls through to [`FIRST_ARG_RULE`], which keeps the first
+/// non-option arg — covering `pytest`, `ruff`, `make`, `just`, `sleep`, etc.
+const TOOL_RULES: &[ToolRule] = &[
+    ToolRule {
+        exes: &["cargo"],
+        subcommands: Some(&[
+            "test", "build", "check", "clippy", "fmt", "run", "bench", "doc", "clean", "install",
+            "publish", "update", "nextest",
+        ]),
+        target_verbs: &["test", "bench", "run", "nextest"],
+    },
+    ToolRule {
+        exes: &["go"],
+        subcommands: Some(&["test", "build", "run", "fmt", "vet", "mod"]),
+        target_verbs: &["test", "run"],
+    },
+    ToolRule {
+        exes: &["npm", "pnpm", "yarn", "bun"],
+        subcommands: None,
+        target_verbs: &["run"],
+    },
+];
+
+/// The fallback rule: keep the exe plus its first non-option arg.
+const FIRST_ARG_RULE: ToolRule = ToolRule {
+    exes: &[],
+    subcommands: None,
+    target_verbs: &[],
+};
+
+/// Render `exe` plus its operative verb (and optional target) per `rule`.
+fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
+    let verb = match rule.subcommands {
+        Some(subs) => known_subcommand(args, subs),
+        None => first_non_option(args, 0),
+    };
+    let Some((idx, verb)) = verb else {
+        return exe.to_string();
+    };
+    if rule.target_verbs.contains(&verb) {
+        if let Some(target) = target_after(args, idx + 1).filter(|t| !t.starts_with('-')) {
+            return raw_display(&[exe, verb, target]);
+        }
+    }
+    raw_display(&[exe, verb])
+}
+
+/// `python -m <module>` has its own shape (the `-m` flag, plus a `pytest`
+/// target), so it stays a dedicated path rather than bending the table.
+fn display_python(exe: &str, args: &[String]) -> String {
+    if let Some(idx) = args.iter().position(|arg| arg == "-m") {
+        match args.get(idx + 1).map(String::as_str) {
+            Some("pytest") => match target_after(args, idx + 2) {
+                Some(target) => raw_display(&[exe, "-m", "pytest", target]),
+                None => raw_display(&[exe, "-m", "pytest"]),
+            },
+            Some(module) => raw_display(&[exe, "-m", module]),
+            None => exe.to_string(),
+        }
+    } else if let Some((_, script)) = first_non_option(args, 0) {
+        raw_display(&[exe, basename(script)])
+    } else {
+        exe.to_string()
+    }
+}
+
 /// Compact foreground argv into a rail-friendly activity string. Keep useful
 /// verbs/subcommands (`cargo test`, `npm run build`) while dropping noisy flags
 /// (`--dangerously-bypass-...`, `--features`, `--watch`) that make the sidebar
@@ -141,95 +224,15 @@ fn display_command(command: &[String]) -> String {
     let exe = basename(first);
     let args = &command[1..];
     let raw = match exe {
-        "cargo" => {
-            const SUBS: &[&str] = &[
-                "test", "build", "check", "clippy", "fmt", "run", "bench", "doc", "clean",
-                "install", "publish", "update", "nextest",
-            ];
-            if let Some((idx, sub)) = known_subcommand(args, SUBS) {
-                if sub == "nextest" {
-                    if let Some(next) = target_after(args, idx + 1) {
-                        raw_display(&[exe, sub, next])
-                    } else {
-                        raw_display(&[exe, sub])
-                    }
-                } else if matches!(sub, "test" | "bench" | "run")
-                    && target_after(args, idx + 1).is_some_and(|target| !target.starts_with('-'))
-                {
-                    raw_display(&[exe, sub, target_after(args, idx + 1).unwrap()])
-                } else {
-                    raw_display(&[exe, sub])
-                }
-            } else {
-                exe.to_string()
-            }
-        }
-        "npm" | "pnpm" | "yarn" | "bun" => {
-            if let Some((idx, first)) = first_non_option(args, 0) {
-                if first == "run" {
-                    if let Some(script) = target_after(args, idx + 1) {
-                        raw_display(&[exe, "run", script])
-                    } else {
-                        raw_display(&[exe, "run"])
-                    }
-                } else {
-                    raw_display(&[exe, first])
-                }
-            } else {
-                exe.to_string()
-            }
-        }
-        "python" | "python3" => {
-            if let Some(idx) = args.iter().position(|arg| arg == "-m") {
-                if let Some(module) = args.get(idx + 1).map(String::as_str) {
-                    if module == "pytest" {
-                        if let Some(target) = target_after(args, idx + 2) {
-                            raw_display(&[exe, "-m", module, target])
-                        } else {
-                            raw_display(&[exe, "-m", module])
-                        }
-                    } else {
-                        raw_display(&[exe, "-m", module])
-                    }
-                } else {
-                    exe.to_string()
-                }
-            } else if let Some((_, script)) = first_non_option(args, 0) {
-                raw_display(&[exe, basename(script)])
-            } else {
-                exe.to_string()
-            }
-        }
-        "go" => {
-            const SUBS: &[&str] = &["test", "build", "run", "fmt", "vet", "mod"];
-            if let Some((idx, sub)) = known_subcommand(args, SUBS) {
-                if matches!(sub, "test" | "run") {
-                    if let Some(target) = target_after(args, idx + 1) {
-                        raw_display(&[exe, sub, target])
-                    } else {
-                        raw_display(&[exe, sub])
-                    }
-                } else {
-                    raw_display(&[exe, sub])
-                }
-            } else {
-                exe.to_string()
-            }
-        }
-        "pytest" | "ruff" | "make" | "just" => {
-            if let Some((_, target)) = first_non_option(args, 0) {
-                raw_display(&[exe, target])
-            } else {
-                exe.to_string()
-            }
-        }
+        // Agents own their pane via the push pipe; show only the bare name.
         "codex" | "claude" | "gemini" => exe.to_string(),
+        "python" | "python3" => display_python(exe, args),
         _ => {
-            if let Some((_, target)) = first_non_option(args, 0) {
-                raw_display(&[exe, target])
-            } else {
-                exe.to_string()
-            }
+            let rule = TOOL_RULES
+                .iter()
+                .find(|r| r.exes.contains(&exe))
+                .unwrap_or(&FIRST_ARG_RULE);
+            apply_tool_rule(exe, args, rule)
         }
     };
     sanitize(&raw, MAX_MSG_CHARS)
