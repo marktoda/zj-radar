@@ -314,8 +314,10 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::Timer(_) => {
-                let marker = self.session_files.permission_marker();
-                let outcome = self.runtime.timer(marker);
+                // Re-probe (marker + lock) each tick so a waiting peer can take
+                // over a prompt whose owner died holding a now-stale lock.
+                let probe = self.session_files.refresh_permission_probe();
+                let outcome = self.runtime.timer(probe);
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {

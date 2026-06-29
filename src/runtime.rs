@@ -116,11 +116,11 @@ impl PluginRuntime {
         Outcome::with_effects(true, effects)
     }
 
-    pub(crate) fn timer(&mut self, permission_marker: Option<PermissionMarker>) -> Outcome {
+    pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
         self.timer_armed = false;
         let mut effects = Vec::new();
         let permission_changed =
-            self.check_deferred_permission_request(permission_marker, &mut effects);
+            self.check_deferred_permission_request(permission, &mut effects);
         self.tick += 1;
         self.radar.timer(self.tick);
         self.arm_timer_if_needed(&mut effects);
@@ -299,13 +299,13 @@ impl PluginRuntime {
 
     fn check_deferred_permission_request(
         &mut self,
-        marker: Option<PermissionMarker>,
+        probe: PermissionProbe,
         effects: &mut Vec<Effect>,
     ) -> bool {
         if !self.permission_waiting_for_peer {
             return false;
         }
-        match marker {
+        match probe.marker {
             Some(PermissionMarker::Granted) => {
                 self.permission_waiting_for_peer = false;
                 self.record_permission_request_started();
@@ -315,6 +315,16 @@ impl PluginRuntime {
             }
             Some(PermissionMarker::Denied) => {
                 self.record_permission_result(false);
+                effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
+                true
+            }
+            // No marker, but we now hold the lock: the prior owner went away and
+            // we reclaimed its stale lock (see session_files). Take over the
+            // prompt — mirrors the `lock_acquired` arm of `begin_permission_flow`.
+            None if probe.lock_acquired => {
+                self.permission_waiting_for_peer = false;
+                self.record_permission_request_started();
+                effects.push(Effect::RequestPermission);
                 effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
                 true
             }
@@ -466,7 +476,10 @@ mod tests {
             vec![Effect::SetTimeout, Effect::SetSelectable(false)]
         );
 
-        let timer = runtime.timer(Some(PermissionMarker::Granted));
+        let timer = runtime.timer(PermissionProbe {
+            marker: Some(PermissionMarker::Granted),
+            lock_acquired: false,
+        });
 
         assert!(timer.render);
         assert!(runtime.permission_request_started);
@@ -475,6 +488,33 @@ mod tests {
             timer.effects,
             vec![Effect::RequestPermission, Effect::SetSelectable(true)]
         );
+    }
+
+    #[test]
+    fn waiting_peer_self_promotes_when_it_reclaims_the_lock() {
+        // A peer waiting on the owner's marker re-probes each timer. If the
+        // owner died and the peer reclaimed the now-stale lock, the refreshed
+        // probe reports lock_acquired with no marker — the peer must take over
+        // the prompt rather than wait forever.
+        let mut runtime = PluginRuntime::default();
+        let _ = runtime.load(
+            config(),
+            None,
+            PermissionProbe {
+                marker: None,
+                lock_acquired: false,
+            },
+        );
+        assert!(runtime.permission_waiting_for_peer);
+
+        let timer = runtime.timer(PermissionProbe {
+            marker: None,
+            lock_acquired: true,
+        });
+
+        assert!(runtime.permission_request_started);
+        assert!(!runtime.permission_waiting_for_peer);
+        assert!(timer.effects.contains(&Effect::RequestPermission));
     }
 
     #[test]
@@ -621,7 +661,7 @@ mod tests {
         let command_outcome = runtime.command_changed(7, &command, true);
         assert_eq!(command_outcome.effects, vec![Effect::SetTimeout]);
 
-        let timer = runtime.timer(None);
+        let timer = runtime.timer(PermissionProbe::default());
         assert!(timer.render);
         assert_eq!(timer.effects, vec![Effect::SetTimeout]);
         let state = runtime

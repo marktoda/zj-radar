@@ -19,6 +19,12 @@ const CACHE_ROOT: &str = "/cache";
 const TMP_ROOT: &str = "/tmp/zj-radar";
 const SNAPSHOT_PREFIX: &str = "zj-radar.";
 const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long the first-run permission lock is trusted. The lock prevents every
+/// peer sidebar from prompting at once, but its owner can die with the prompt
+/// unanswered (the user closes the pane). After this, the next instance assumes
+/// the owner is gone and reclaims the lock rather than waiting forever. Generous
+/// so a user slowly answering a live prompt is never preempted.
+const PERMISSION_LOCK_TTL: Duration = Duration::from_secs(120);
 const PERMISSION_GRANTED_MARKER: &str = "granted";
 const PERMISSION_DENIED_MARKER: &str = "denied";
 
@@ -79,7 +85,7 @@ impl SessionFiles {
             prune_stale_files(&paths, now, max_age);
             let snapshot = std::fs::read_to_string(&paths.snapshot).ok();
             let files = SessionFiles { paths: Some(paths) };
-            let permission = files.permission_probe();
+            let permission = files.permission_probe(now);
             return SessionFilesOpen {
                 files,
                 snapshot,
@@ -138,16 +144,25 @@ impl SessionFiles {
         }
     }
 
-    fn permission_probe(&self) -> PermissionProbe {
+    /// Re-probe the permission state for a timer tick: re-read the marker and,
+    /// if still unmarked, re-attempt lock ownership (reclaiming a now-stale
+    /// lock). This lets a waiting peer take over a prompt whose owner has gone,
+    /// not just newly-opened instances.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn refresh_permission_probe(&self) -> PermissionProbe {
+        self.permission_probe(SystemTime::now())
+    }
+
+    fn permission_probe(&self, now: SystemTime) -> PermissionProbe {
         let marker = self.permission_marker();
-        let lock_acquired = marker.is_none() && self.become_permission_request_owner();
+        let lock_acquired = marker.is_none() && self.become_permission_request_owner(now);
         PermissionProbe {
             marker,
             lock_acquired,
         }
     }
 
-    fn become_permission_request_owner(&self) -> bool {
+    fn become_permission_request_owner(&self, now: SystemTime) -> bool {
         let Some(paths) = &self.paths else {
             return true;
         };
@@ -157,12 +172,36 @@ impl SessionFiles {
             .open(&paths.permission_lock)
         {
             Ok(_) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                reclaim_if_stale(&paths.permission_lock, now)
+            }
             // If coordination itself fails, prefer one reachable prompt over a
             // session where every instance waits forever.
             Err(_) => true,
         }
     }
+}
+
+/// A peer found the permission lock already held. If it has outlived
+/// `PERMISSION_LOCK_TTL` its owner likely died with the prompt unanswered, so
+/// remove it and try to take it. Best-effort: if another peer wins the recreate
+/// race we defer to it (returns false) — consistent with preferring at least one
+/// reachable prompt over a deadlock.
+fn reclaim_if_stale(lock: &Path, now: SystemTime) -> bool {
+    let stale = std::fs::metadata(lock)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_some_and(|age| age > PERMISSION_LOCK_TTL);
+    if !stale {
+        return false;
+    }
+    let _ = std::fs::remove_file(lock);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock)
+        .is_ok()
 }
 
 impl SessionPaths {
@@ -348,6 +387,31 @@ mod tests {
         assert!(owner.permission.lock_acquired);
         assert_eq!(peer.permission.marker, None);
         assert!(!peer.permission.lock_acquired);
+    }
+
+    #[test]
+    fn stale_permission_lock_is_reclaimed() {
+        let dir = TempDir::new("stale-lock");
+        let now = SystemTime::now();
+        let root = || [dir.path().to_path_buf()];
+
+        // Owner takes the lock; a peer arriving while it's fresh must wait.
+        let owner = SessionFiles::open_with_roots_at(ids(1, 42), root(), now, SNAPSHOT_MAX_AGE);
+        assert!(owner.permission.lock_acquired);
+        let fresh_peer = SessionFiles::open_with_roots_at(ids(2, 42), root(), now, SNAPSHOT_MAX_AGE);
+        assert!(
+            !fresh_peer.permission.lock_acquired,
+            "a fresh lock must still make peers wait"
+        );
+
+        // Once the lock outlives the TTL (owner presumed gone with the prompt
+        // unanswered) the next instance reclaims it instead of waiting forever.
+        let later = now + PERMISSION_LOCK_TTL + Duration::from_secs(60);
+        let reclaimer = SessionFiles::open_with_roots_at(ids(3, 42), root(), later, SNAPSHOT_MAX_AGE);
+        assert!(
+            reclaimer.permission.lock_acquired,
+            "a stale lock must be reclaimed so peers aren't stranded forever"
+        );
     }
 
     #[test]
