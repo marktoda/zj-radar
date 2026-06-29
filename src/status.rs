@@ -1,6 +1,10 @@
 //! Pure agent-status vocabulary. No zellij-tile dependency.
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Variants are declared in ascending-severity order (`Idle` … `Error`) so the
+/// derived `Ord` *is* the aggregation order used by the Tab Roll-Up — there is
+/// no separate severity table to keep in sync. Reordering these variants
+/// reorders severity.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
     Idle,
     Done,
@@ -29,17 +33,6 @@ impl Status {
             Status::Done => "done",
             Status::Error => "error",
             Status::Idle => "idle",
-        }
-    }
-
-    /// Higher = more urgent. Used for per-tab aggregation.
-    pub fn severity(self) -> u8 {
-        match self {
-            Status::Error => 4,
-            Status::Pending => 3,
-            Status::Running => 2,
-            Status::Done => 1,
-            Status::Idle => 0,
         }
     }
 
@@ -135,11 +128,18 @@ mod tests {
     }
 
     #[test]
-    fn severity_orders_error_highest_idle_lowest() {
-        assert!(Status::Error.severity() > Status::Pending.severity());
-        assert!(Status::Pending.severity() > Status::Running.severity());
-        assert!(Status::Running.severity() > Status::Done.severity());
-        assert!(Status::Done.severity() > Status::Idle.severity());
+    fn ord_ranks_idle_lowest_error_highest() {
+        // `Status` derives `Ord` in ascending-severity declaration order; the
+        // Tab Roll-Up relies on `max` picking the most-urgent member.
+        assert!(Status::Idle < Status::Done);
+        assert!(Status::Done < Status::Running);
+        assert!(Status::Running < Status::Pending);
+        assert!(Status::Pending < Status::Error);
+        assert_eq!(
+            [Status::Done, Status::Error, Status::Running].into_iter().max(),
+            Some(Status::Error),
+            "max yields the most-urgent status",
+        );
     }
 
     #[test]

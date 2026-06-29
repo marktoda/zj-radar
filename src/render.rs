@@ -2264,7 +2264,7 @@ mod tests {
         let status = panes
             .iter()
             .filter_map(PaneDisplay::status)
-            .max_by_key(|s| s.severity())
+            .max()
             .unwrap_or(Status::Idle);
         let total = panes.iter().filter(|p| p.is_tracked()).count();
         let done = panes

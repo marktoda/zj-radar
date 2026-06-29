@@ -156,7 +156,6 @@ pub fn roll_up<'a>(
     panes: &[TerminalPane],
     resolve: impl Fn(u32) -> Option<&'a TrackedObservation>,
 ) -> TabDisplay {
-    let mut best_status = Status::Idle;
     let mut best: Option<PrimaryDetail> = None;
     let mut done = 0usize;
     let mut total = 0usize;
@@ -187,27 +186,30 @@ pub fn roll_up<'a>(
         if s.status == Status::Pending {
             pending += 1;
         }
-        let better = s.status.severity() > best_status.severity()
-            || (s.status.severity() == best_status.severity()
-                && best
-                    .as_ref()
-                    .is_none_or(|d| s.last_change_tick >= d.since_tick));
-        if s.status.is_active() && better {
-            best_status = s.status;
-            best = Some(PrimaryDetail {
-                repo: s.repo.clone(),
-                branch: s.branch.clone(),
-                msg: s.msg.clone(),
-                since_tick: s.last_change_tick,
-                status: s.status,
-                kind: Kind::from_source(&s.source),
-                outcome: pane_outcome(s),
-            });
+        // Most-urgent active pane wins, ties broken by most-recent change.
+        // `Status: Ord` ranks severity, so this is a single lexicographic
+        // `(status, tick)` compare — `>=` keeps the last pane on a full tie.
+        if s.status.is_active() {
+            let key = (s.status, s.last_change_tick);
+            let wins = best
+                .as_ref()
+                .is_none_or(|d| key >= (d.status, d.since_tick));
+            if wins {
+                best = Some(PrimaryDetail {
+                    repo: s.repo.clone(),
+                    branch: s.branch.clone(),
+                    msg: s.msg.clone(),
+                    since_tick: s.last_change_tick,
+                    status: s.status,
+                    kind: Kind::from_source(&s.source),
+                    outcome: pane_outcome(s),
+                });
+            }
         }
     }
 
     TabDisplay {
-        status: best_status,
+        status: best.as_ref().map_or(Status::Idle, |d| d.status),
         progress: ProgressCounts {
             done,
             total,
