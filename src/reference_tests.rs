@@ -281,6 +281,13 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
                 TabDisplay {
                     status: best_status,
+                    // NOTE: these counts assume every listed pane is ever_active
+                    // (tracked). The real `tab_display` gates done/total on
+                    // `ever_active`. That divergence is inert today because the
+                    // renderer reads no `progress` field (the right-slot was
+                    // dropped). If ⟦D1⟧ revives done/total in the slot, mirror
+                    // the `ever_active` gating here or the oracle could pass on
+                    // wrong counts.
                     progress: ProgressCounts { done, total, pending },
                     detail,
                     panes: pane_displays,
