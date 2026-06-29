@@ -49,6 +49,7 @@ impl StatusStore {
                 seq: p.seq,
                 on_focus: p.on_focus,
                 ever_active,
+                exit_code: None,
             },
         );
     }

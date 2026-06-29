@@ -293,6 +293,7 @@ impl CommandStore {
                         on_focus: None,
                         ever_active: true,
                         source: p.source,
+                        exit_code: None,
                     },
                 );
             }
@@ -325,6 +326,7 @@ impl CommandStore {
             s.status = new_status;
             s.on_focus = Some(Status::Idle);
             s.last_change_tick = tick;
+            s.exit_code = exit_status;
         } else {
             self.resolved.insert(
                 pane_id,
@@ -339,6 +341,7 @@ impl CommandStore {
                     on_focus: Some(Status::Idle),
                     ever_active: true,
                     source: "command".into(),
+                    exit_code: exit_status,
                 },
             );
         }

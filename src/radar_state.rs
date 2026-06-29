@@ -6,7 +6,7 @@ use crate::config;
 use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
-use crate::render::{PaneDisplay, PrimaryDetail, ProgressCounts, TabDisplay, TabRow};
+use crate::render::{Outcome, PaneDisplay, PrimaryDetail, ProgressCounts, TabDisplay, TabRow};
 use crate::status::Status;
 use crate::status_store::StatusStore;
 use crate::theme;
@@ -78,6 +78,8 @@ struct SnapshotObservation {
     #[serde(default)]
     on_focus: Option<String>,
     ever_active: bool,
+    #[serde(default)]
+    exit_code: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -547,6 +549,7 @@ impl RadarState {
                     Kind::from_source(&s.source),
                     s.status,
                     s.msg.clone(),
+                    pane_outcome(s),
                 ));
             } else {
                 pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
@@ -568,6 +571,7 @@ impl RadarState {
                     since_tick: s.last_change_tick,
                     status: s.status,
                     kind: Kind::from_source(&s.source),
+                    outcome: pane_outcome(s),
                 });
             }
         }
@@ -582,6 +586,21 @@ impl RadarState {
             detail: best,
             panes: pane_displays,
         }
+    }
+}
+
+/// Derive the end-result outcome tag for a pane, scoped to *command-origin*
+/// panes — agents (status pipe) keep their hook msg with no tag. Done → `Ok`
+/// (`✓`); Error → `Failed(exit_code)` (`(exit N)`, or `✗` when the code is
+/// unknown). Returns `None` for active/idle panes and all agents.
+fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
+    if s.origin != ObservationOrigin::Command {
+        return None;
+    }
+    match s.status {
+        Status::Done => Some(Outcome::Ok),
+        Status::Error => Some(Outcome::Failed(s.exit_code)),
+        _ => None,
     }
 }
 
@@ -660,6 +679,7 @@ fn snapshot_observation(pane_id: u32, observation: &TrackedObservation) -> Snaps
             .on_focus
             .map(|status| status.as_wire().to_string()),
         ever_active: observation.ever_active,
+        exit_code: observation.exit_code,
     }
 }
 
@@ -706,6 +726,7 @@ fn parse_legacy_status_snapshot(
                     seq: pane.seq,
                     on_focus: pane.on_focus.as_deref().map(Status::from_wire),
                     ever_active: pane.ever_active,
+                    exit_code: None,
                 },
             )
         })
@@ -728,6 +749,7 @@ fn tracked_observation_from_snapshot(
         seq: pane.seq,
         on_focus: pane.on_focus.as_deref().map(Status::from_wire),
         ever_active: pane.ever_active,
+        exit_code: pane.exit_code,
     }
 }
 
@@ -1149,6 +1171,79 @@ mod tests {
         assert_eq!(row.display.panes.len(), 2);
         assert_eq!(row.display.panes[0].pane_id(), 1);
         assert_eq!(row.display.panes[1].pane_id(), 2);
+    }
+
+    // ── End-result outcome ──
+
+    fn command_obs(status: Status, exit_code: Option<i32>) -> TrackedObservation {
+        TrackedObservation {
+            origin: ObservationOrigin::Command,
+            status,
+            repo: "repo".into(),
+            branch: String::new(),
+            msg: "cargo build".into(),
+            source: "build".into(),
+            last_change_tick: 1,
+            seq: None,
+            on_focus: None,
+            ever_active: true,
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn pane_outcome_maps_finished_commands_only() {
+        assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(Outcome::Ok));
+        assert_eq!(
+            pane_outcome(&command_obs(Status::Error, Some(2))),
+            Some(Outcome::Failed(Some(2)))
+        );
+        assert_eq!(
+            pane_outcome(&command_obs(Status::Error, None)),
+            Some(Outcome::Failed(None))
+        );
+        // Active commands get no tag.
+        assert_eq!(pane_outcome(&command_obs(Status::Running, None)), None);
+        // Agents (status pipe) never get a tag, even when Done.
+        let mut agent = command_obs(Status::Done, Some(0));
+        agent.origin = ObservationOrigin::StatusPipe;
+        assert_eq!(pane_outcome(&agent), None);
+    }
+
+    #[test]
+    fn finished_command_pane_carries_outcome_through_rows() {
+        // Full path: a foreground command runs, then exits nonzero → the tab's
+        // detail carries Failed(code) and msg stays the pure command string.
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+        radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
+        radar.timer(2); // promote pending → Running
+        assert_eq!(radar.command(1).unwrap().status, Status::Running);
+
+        radar.command_mut().on_exit(1, Some(2), 3);
+
+        let row = radar.rows().remove(0);
+        assert_eq!(row.display.status, Status::Error);
+        let detail = row.display.detail.as_ref().unwrap();
+        assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
+        assert_eq!(detail.outcome, Some(Outcome::Failed(Some(2))));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_command_exit_code() {
+        let mut radar = RadarState::default();
+        radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
+        radar.timer(2);
+        radar.command_mut().on_exit(7, Some(3), 3);
+        assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
+
+        let json = radar.snapshot_json(None, 3);
+        let mut restored = RadarState::default();
+        restored.load_snapshot(&json).expect("valid snapshot");
+        let cmd = restored.command(7).expect("command restored");
+        assert_eq!(cmd.status, Status::Error);
+        assert_eq!(cmd.exit_code, Some(3));
     }
 
     #[test]

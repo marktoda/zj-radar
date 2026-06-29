@@ -35,6 +35,47 @@ pub struct TabRow {
     pub display: TabDisplay,
 }
 
+/// The end-result of a finished *command* pane, shown as a tag after the
+/// activity (`cargo build ✓`, `cargo build (exit 1)`). Built in
+/// `radar_state::tab_display`; agents never carry one. Kept structured (not
+/// baked into `msg`) so the renderer can reserve its width — the outcome
+/// survives truncation while the command absorbs the squeeze — and color it
+/// independently of the (dim) command text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Exit 0 / returned to the shell with no failure evidence.
+    Ok,
+    /// Nonzero exit; `Some(code)` when known, `None` for a signal/no-code exit.
+    Failed(Option<i32>),
+}
+
+impl Outcome {
+    /// The roomy form: `✓` / `(exit N)` (or `✗` when the code is unknown).
+    fn full(self) -> String {
+        match self {
+            Outcome::Ok => "✓".to_string(),
+            Outcome::Failed(Some(code)) => format!("(exit {})", code),
+            Outcome::Failed(None) => "✗".to_string(),
+        }
+    }
+
+    /// The irreducible 1-column form, shown when width is too tight for `full`.
+    fn minimal(self) -> &'static str {
+        match self {
+            Outcome::Ok => "✓",
+            Outcome::Failed(_) => "✗",
+        }
+    }
+
+    /// The hue the tag reads in: success (green) / error (red).
+    fn role(self) -> Role {
+        match self {
+            Outcome::Ok => Role::Success,
+            Outcome::Failed(_) => Role::Error,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrimaryDetail {
     pub repo: String,
@@ -43,6 +84,8 @@ pub struct PrimaryDetail {
     pub since_tick: u64,
     pub status: Status,
     pub kind: Kind,
+    /// End-result tag for a finished command pane (None for agents/active).
+    pub outcome: Option<Outcome>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +95,7 @@ pub enum PaneDisplay {
         kind: Kind,
         status: Status,
         msg: String,
+        outcome: Option<Outcome>,
     },
     Untracked {
         pane_id: u32,
@@ -60,12 +104,19 @@ pub enum PaneDisplay {
 }
 
 impl PaneDisplay {
-    pub(crate) fn tracked(pane_id: u32, kind: Kind, status: Status, msg: String) -> Self {
+    pub(crate) fn tracked(
+        pane_id: u32,
+        kind: Kind,
+        status: Status,
+        msg: String,
+        outcome: Option<Outcome>,
+    ) -> Self {
         Self::Tracked {
             pane_id,
             kind,
             status,
             msg,
+            outcome,
         }
     }
 
@@ -113,6 +164,12 @@ impl PaneDisplay {
         }
     }
 
+    fn outcome(&self) -> Option<Outcome> {
+        match self {
+            Self::Tracked { outcome, .. } => *outcome,
+            Self::Untracked { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -600,7 +657,10 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     } else {
         hue(st.role())
     };
-    let label_bold = if st == Status::Pending { BOLD } else { "" };
+    // Bold encodes *activity*: every non-idle row's glyph+number+name is bold so
+    // state reads at a glance. Idle stays light/recessed. (Focus is a separate
+    // cue — the accent spine + brighter card — so the two stay independent.)
+    let label_bold = if st == Status::Idle { "" } else { BOLD };
 
     // right slot (reserved width even when empty). Waiting/done/error color
     // their slot with the status role (it carries meaning); the *working*
@@ -693,7 +753,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let show = total_tracked.min(MAX_PANE_LINES);
 
         for pane in tracked_panes.iter().take(show) {
-            let text = emit_pane_line(pane, opts, row.active, &idle_color, &dim_strong);
+            let text = emit_pane_line(pane, opts, row.active, &dim_strong);
             lines.push(Line {
                 text,
                 target: Some(RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) }),
@@ -726,33 +786,34 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
     // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
-    // Only emitted when the status is active, a detail with a non-empty msg exists.
-    // For Pending (the question), activity is colored in attention (loud). Others dim_strong.
+    // Emitted when a detail exists with a non-empty msg OR a finished-command
+    // outcome tag to show. For Pending (the question), the command is colored in
+    // attention (loud); others dim. The outcome tag carries its own role hue.
     if let Some(d) = &row.display.detail {
-        if !d.msg.trim().is_empty() {
+        if !d.msg.trim().is_empty() || d.outcome.is_some() {
             match st {
                 Status::Idle => {}
                 Status::Done | Status::Running | Status::Error | Status::Pending => {
-                    // mark glyph in neutral idle_text color (vendor-neutral)
-                    let mark = d.kind.mark();
+                    // Identity mark: vendor-neutral but bold + the stronger dim
+                    // (dim_strong, not the faint idle_text) so it reads as a
+                    // deliberate mark, not a footnote. Glyph-set aware.
+                    let mark = d.kind.mark(opts.glyphs);
                     let mark_width = UnicodeWidthChar::width(mark).unwrap_or(1);
                     // "  ‹mark› " prefix: 2-space indent + mark + space. The
                     // mark sits one column right of the line-1 glyph (which is at
                     // col 1 after the bar/spine column), matching the design.
                     let prefix_vis = 2 + mark_width + 1;
                     let avail = width.saturating_sub(prefix_vis);
-                    // Build activity string (no braille spinner).
-                    let activity = d.msg.clone();
-                    let activity_str = truncate(&activity, avail);
-                    let activity_color = if st == Status::Pending {
+                    let cmd_color = if st == Status::Pending {
                         hue(Role::Attention)
                     } else {
                         dim_strong.clone()
                     };
+                    let activity = compose_activity(&d.msg, d.outcome, avail, &cmd_color);
                     lines.push(Line {
                         text: format!(
-                            "  {}{}{} {}{}{}\n",
-                            idle_color, mark, RESET, activity_color, activity_str, RESET
+                            "  {}{}{}{} {}\n",
+                            dim_strong, BOLD, mark, RESET, activity
                         ),
                         target: Some(tab_target),
                         bg: LineBg::Card,
@@ -764,6 +825,70 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     lines
 }
 
+/// Compose the styled activity segment for a detail/pane line: the command text
+/// (in `cmd_color`) plus, when the pane has finished, its outcome tag in the
+/// outcome's role hue. The tag is reserved FIRST so it always survives — the
+/// command absorbs any truncation (degrading to `…`, then vanishing), while the
+/// outcome shrinks only from its full form (`(exit 1)`) to the irreducible
+/// 1-column glyph (`✓`/`✗`). The returned string fits within `avail` columns and
+/// carries its own color escapes (each segment RESET-terminated).
+fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
+    let Some(oc) = outcome else {
+        return format!("{}{}{}", cmd_color, truncate(cmd, avail), RESET);
+    };
+    let role = oc.role().ansi();
+    let cmd = cmd.trim();
+    // Outcome with no command (e.g. an exit with no recorded command string):
+    // show the largest form that fits.
+    if cmd.is_empty() {
+        let full = oc.full();
+        let tag = if UnicodeWidthStr::width(full.as_str()) <= avail {
+            full
+        } else {
+            truncate(oc.minimal(), avail)
+        };
+        return format!("{}{}{}", role, tag, RESET);
+    }
+    // Command + tag: prefer the full tag as long as ≥1 command column remains
+    // (tag width + 1 separating space + ≥1 command col). The `+ 2` reserves the
+    // space and that one command column.
+    let full = oc.full();
+    let full_w = UnicodeWidthStr::width(full.as_str());
+    let min = oc.minimal();
+    let min_w = UnicodeWidthStr::width(min);
+    if full_w + 2 <= avail {
+        let cmd_budget = avail - full_w - 1;
+        return format!(
+            "{}{}{} {}{}{}",
+            cmd_color,
+            truncate(cmd, cmd_budget),
+            RESET,
+            role,
+            full,
+            RESET
+        );
+    }
+    if min_w + 2 <= avail {
+        let cmd_budget = avail - min_w - 1;
+        return format!(
+            "{}{}{} {}{}{}",
+            cmd_color,
+            truncate(cmd, cmd_budget),
+            RESET,
+            role,
+            min,
+            RESET
+        );
+    }
+    // Too tight for any command: show the outcome glyph alone (clip if even that
+    // overflows the extreme-narrow width).
+    if min_w <= avail {
+        format!("{}{}{}", role, min, RESET)
+    } else {
+        format!("{}{}{}", role, truncate(min, avail), RESET)
+    }
+}
+
 /// Emit one pane line in the new line-per-pane design:
 /// Inactive: `  {glyph} {mark} {msg}` (2-space indent)
 /// Active:   `▌ {glyph} {mark} {msg}` (spine + space)
@@ -771,11 +896,10 @@ fn emit_pane_line(
     pane: &PaneDisplay,
     opts: &RenderOpts,
     tab_active: bool,
-    idle_color: &str,
     dim_strong: &str,
 ) -> String {
     let width = opts.width;
-    let mark = pane.kind().mark();
+    let mark = pane.kind().mark(opts.glyphs);
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
     let glyph = if status == Status::Running {
@@ -787,28 +911,31 @@ fn emit_pane_line(
     // Prefix: 2 cols (either "  " or "▌ ") + glyph + 1 space + mark + 1 space
     let prefix_vis = 2 + glyph_w + 1 + mark_w + 1;
     let avail = width.saturating_sub(prefix_vis);
-    let activity_str = truncate(pane.msg(), avail);
     let role_ansi = |r: Role| -> &'static str { r.ansi() };
-    let glyph_color = role_ansi(status.role()).to_string();
-    let activity_color = if status == Status::Pending {
+    // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
+    // (vendor-neutral, heavier than the faint idle_text).
+    let glyph_color = role_ansi(status.role());
+    let glyph_bold = if status == Status::Idle { "" } else { BOLD };
+    let cmd_color = if status == Status::Pending {
         role_ansi(Role::Attention).to_string()
     } else {
         dim_strong.to_string()
     };
+    let activity = compose_activity(pane.msg(), pane.outcome(), avail, &cmd_color);
     if tab_active {
         format!(
-            "{}▌{} {}{}{} {}{}{} {}{}{}\n",
+            "{}▌{} {}{}{}{} {}{}{}{} {}\n",
             role_ansi(Role::Accent), RESET,
-            glyph_color, glyph, RESET,
-            idle_color, mark, RESET,
-            activity_color, activity_str, RESET,
+            glyph_color, glyph_bold, glyph, RESET,
+            dim_strong, BOLD, mark, RESET,
+            activity,
         )
     } else {
         format!(
-            "  {}{}{} {}{}{} {}{}{}\n",
-            glyph_color, glyph, RESET,
-            idle_color, mark, RESET,
-            activity_color, activity_str, RESET,
+            "  {}{}{}{} {}{}{}{} {}\n",
+            glyph_color, glyph_bold, glyph, RESET,
+            dim_strong, BOLD, mark, RESET,
+            activity,
         )
     }
 }
@@ -1009,7 +1136,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         }
 
         // content (truncated to the planned budget == today's compression).
-        for line in blocks[i].iter().cloned().take(budget) {
+        for line in blocks[i].iter().take(budget).cloned() {
             let text = if cards {
                 let bg = match line.bg { LineBg::ActiveChild => &active_child_bg, _ => &card_bg };
                 paint_card_line(&line.text, width, bg)
@@ -1120,6 +1247,7 @@ mod tests {
             msg: "approve".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let rows = vec![
@@ -1137,8 +1265,8 @@ mod tests {
                     },
                     detail: Some(detail),
                     panes: vec![
-                        PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into()),
-                        PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into()),
+                        PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), None),
+                        PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), None),
                     ],
                 },
             },
@@ -1222,6 +1350,7 @@ mod tests {
                 msg: msg.into(),
                 kind: Kind::Claude,
                 since_tick: 0,
+                outcome: None,
                 status,
             })
         };
@@ -1287,6 +1416,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let rows = vec![TabRow {
@@ -1314,6 +1444,7 @@ mod tests {
                 msg: "".into(),
                 kind: Kind::Claude,
                 since_tick: 0,
+                outcome: None,
                 status,
             };
             TabRow {
@@ -1341,6 +1472,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -1364,6 +1496,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let row = |_t| TabRow {
@@ -1458,6 +1591,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Running,
         };
@@ -1490,6 +1624,7 @@ mod tests {
             branch: "feature/some-long-branch".into(),
             msg: "should we proceed with this long question".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -1522,6 +1657,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -1542,6 +1678,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Done,
         };
         let rows = vec![TabRow {
@@ -1587,6 +1724,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Error,
         };
         let rows = vec![TabRow {
@@ -1611,6 +1749,7 @@ mod tests {
             msg: "running tests".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -1671,6 +1810,7 @@ mod tests {
             msg: "approve?".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         rows.push(TabRow {
@@ -1728,6 +1868,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "some message".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status,
         };
@@ -1835,6 +1976,7 @@ mod tests {
             branch: "fix".into(),
             msg: "approve the push?".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -1887,6 +2029,7 @@ mod tests {
             branch: "fix".into(),
             msg: "".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -1915,6 +2058,7 @@ mod tests {
             branch: "feature/some-very-long-branch".into(),
             msg: "a very long question that should be truncated appropriately here".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -1965,6 +2109,7 @@ mod tests {
             branch: "feature/some-very-long-branch-name".into(),
             msg: "".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -2050,6 +2195,7 @@ mod tests {
             branch: "main".into(),
             msg: "🚀 deploying now".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Pending,
         };
@@ -2108,7 +2254,141 @@ mod tests {
 
     /// Build a PaneDisplay for tree tests.
     fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
-        PaneDisplay::tracked(id, kind, status, msg.into())
+        PaneDisplay::tracked(id, kind, status, msg.into(), None)
+    }
+
+    /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
+    fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
+        PaneDisplay::tracked(id, kind, status, msg.into(), Some(outcome))
+    }
+
+    // ── End-result outcome tag rendering ──
+
+    #[test]
+    fn compose_activity_reserves_outcome_against_truncation() {
+        let cmd_color = "\x1b[2m"; // stand-in; we assert on visible text + role
+        // Wide: command and full tag both intact.
+        let wide = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, cmd_color);
+        assert!(wide.contains("cargo build"), "command shown: {:?}", wide);
+        assert!(wide.contains("(exit 1)"), "full tag shown: {:?}", wide);
+        assert!(wide.contains(Role::Error.ansi()), "tag is red: {:?}", wide);
+
+        // Narrow: command is squeezed but the outcome survives in full.
+        let narrow = compose_activity(
+            "cargo build integration suite",
+            Some(Outcome::Failed(Some(1))),
+            14,
+            cmd_color,
+        );
+        assert!(narrow.contains("(exit 1)"), "tag must survive truncation: {:?}", narrow);
+        assert!(
+            narrow.contains('…') && !narrow.contains("integration"),
+            "command is the part that truncates: {:?}",
+            narrow
+        );
+
+        // Extreme: only the irreducible glyph fits; command is dropped entirely.
+        let tiny = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 2, cmd_color);
+        assert!(tiny.contains('✗'), "minimal glyph survives: {:?}", tiny);
+        assert!(!tiny.contains("cargo"), "command dropped at extreme width: {:?}", tiny);
+
+        // Width-safety across the whole range (incl. a wide exit code).
+        for avail in 1..=30 {
+            let s = compose_activity(
+                "cargo build integration",
+                Some(Outcome::Failed(Some(137))),
+                avail,
+                cmd_color,
+            );
+            assert!(
+                visible_len(&s) <= avail,
+                "compose_activity exceeds avail={}: {:?} (visible {})",
+                avail,
+                s,
+                visible_len(&s)
+            );
+        }
+    }
+
+    #[test]
+    fn finished_command_line2_shows_role_colored_tag() {
+        let mk = |status, outcome, msg: &str| {
+            let d = PrimaryDetail {
+                repo: "r".into(),
+                branch: "".into(),
+                msg: msg.into(),
+                since_tick: 0,
+                status,
+                kind: Kind::Build,
+                outcome,
+            };
+            TabRow {
+                number: 1,
+                name: "web".into(),
+                active: false,
+                has_bell: false,
+                display: display(status, 1, 1, Some(d)),
+            }
+        };
+        let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
+        let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
+        assert!(dline.contains('✓') && dline.contains(Role::Success.ansi()), "done tag green ✓: {:?}", dline);
+
+        let err = render(
+            &[mk(Status::Error, Some(Outcome::Failed(Some(2))), "cargo build")],
+            &ro(30, 0),
+        );
+        let eline = err.lines().find(|l| l.contains("cargo build")).unwrap();
+        assert!(
+            eline.contains("(exit 2)") && eline.contains(Role::Error.ansi()),
+            "error tag red (exit 2): {:?}",
+            eline
+        );
+    }
+
+    #[test]
+    fn multi_pane_finished_command_shows_outcome_tag() {
+        let a = display_multi(vec![
+            pe(1, Kind::Build, Status::Running, "cargo build"),
+            pe_outcome(2, Kind::Test, Status::Done, "cargo test", Outcome::Ok),
+        ]);
+        let row = TabRow {
+            number: 1,
+            name: "ci".into(),
+            active: false,
+            has_bell: false,
+            display: a,
+        };
+        let s = render(&[row], &ro(30, 0));
+        let line = s.lines().find(|l| l.contains("cargo test")).unwrap();
+        assert!(line.contains('✓') && line.contains(Role::Success.ansi()), "pane tag green ✓: {:?}", line);
+    }
+
+    #[test]
+    fn nerd_set_renders_robot_mark_for_claude() {
+        let d = PrimaryDetail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "thinking".into(),
+            since_tick: 0,
+            status: Status::Running,
+            kind: Kind::Claude,
+            outcome: None,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "agent".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Running, 0, 1, Some(d)),
+        }];
+        let opts = RenderOpts {
+            glyphs: GlyphSet::Nerd,
+            ..ro(30, 0)
+        };
+        let s = render(&rows, &opts);
+        assert!(s.contains('\u{f06a9}'), "Nerd Claude mark (robot): {:?}", s);
+        assert!(!s.contains('✳'), "plain mark must not appear in Nerd set: {:?}", s);
     }
 
     /// Build a multi-pane TabDisplay from per-pane entries. The header status is the
@@ -2140,6 +2420,7 @@ mod tests {
                 msg: msg.clone(),
                 kind: *kind,
                 since_tick: 0,
+                outcome: None,
                 status: *pane_status,
             }),
             _ => None,
@@ -2295,11 +2576,12 @@ mod tests {
                     branch: "b".into(),
                     msg: "tests".into(),
                     since_tick: 0,
+                    outcome: None,
                     status: Status::Running,
                     kind: Kind::Codex,
                 }),
                 panes: vec![
-                    PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into()),
+                    PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), None),
                     PaneDisplay::untracked(2, "shell"),
                 ],
             },
@@ -2438,6 +2720,7 @@ mod tests {
             msg: "working".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let detail_pending = PrimaryDetail {
@@ -2446,6 +2729,7 @@ mod tests {
             msg: "please review".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
 
@@ -2552,6 +2836,7 @@ mod tests {
             msg: "msg".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let rows = vec![
@@ -2696,6 +2981,7 @@ mod tests {
             msg: "working".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -2845,6 +3131,7 @@ mod tests {
             msg: "working".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -2931,6 +3218,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Done,
         };
         let rows = vec![TabRow {
@@ -2970,6 +3258,7 @@ mod tests {
             msg: "some work".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -2998,6 +3287,7 @@ mod tests {
             msg: "work".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -3065,6 +3355,7 @@ mod tests {
             msg: "x".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -3163,6 +3454,7 @@ mod tests {
             msg: "working".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -3215,6 +3507,7 @@ mod tests {
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(),
             since_tick: 0,
+            outcome: None,
             kind: Kind::Claude,
             status: Status::Running,
         };
@@ -3404,6 +3697,7 @@ mod tests {
             msg: "working".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![
@@ -3525,6 +3819,7 @@ mod tests {
             msg: "building…".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let pending = PrimaryDetail {
@@ -3533,6 +3828,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let done = PrimaryDetail {
@@ -3541,6 +3837,7 @@ mod tests {
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Done,
         };
         let rows = vec![
@@ -3616,15 +3913,17 @@ rail";
         // THE KEY OUTCOME: status hues are ANSI-16 so the terminal renders them
         // in its own theme. ANSI has no orange/peach, so a waiting "needs you"
         // row and a red error row are both red-FAMILY — they're kept distinct by
-        // SHAPE + BOLD + CODE, not by hue:
-        //   waiting → `\x1b[91m` (bright red) + ◆ glyph + bold
-        //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
+        // SHAPE + CODE, not by hue. (Bold no longer distinguishes them: bold now
+        // encodes *activity*, so every non-idle row — including error — is bold.)
+        //   waiting → `\x1b[91m` (bright red) + ◆ glyph
+        //   error   → `\x1b[31m` (red)        + ✗ glyph
         let pending = PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix".into(),
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let err = PrimaryDetail {
@@ -3633,6 +3932,7 @@ rail";
             msg: "boom".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Error,
         };
         let rows = vec![
@@ -3690,9 +3990,11 @@ rail";
             "error row must use the ✗ glyph: {:?}",
             error_line
         );
+        // Error is also bold now (activity cue); shape + code still distinguish it
+        // from the waiting row.
         assert!(
-            !error_line.contains(BOLD),
-            "error row must not be bold: {:?}",
+            error_line.contains(BOLD),
+            "error row is bold (non-idle activity cue): {:?}",
             error_line
         );
         // The two ANSI codes are distinct.
@@ -3713,6 +4015,7 @@ rail";
             msg: "approve?".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let rows = vec![
@@ -3858,6 +4161,7 @@ rail";
             msg: "building\u{2026}".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let pending = PrimaryDetail {
@@ -3866,6 +4170,7 @@ rail";
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Pending,
         };
         let done = PrimaryDetail {
@@ -3874,6 +4179,7 @@ rail";
             msg: "".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Done,
         };
         vec![
@@ -4007,6 +4313,7 @@ rail";
                 msg: "".into(),
                 kind: Kind::Claude,
                 since_tick: 0,
+                outcome: None,
                 status: Status::Pending,
             };
             rows.push(TabRow {
@@ -4073,6 +4380,7 @@ rail";
             msg: "测试 \u{1f680} e\u{0301}".into(),
             kind: Kind::Claude,
             since_tick: 0,
+            outcome: None,
             status: Status::Running,
         };
         let rows = vec![TabRow {
@@ -4131,6 +4439,7 @@ rail";
                     msg: "m".into(),
                     kind: Kind::Claude,
                     since_tick: 0,
+                    outcome: None,
                     status,
                 })
             } else {
