@@ -5,20 +5,7 @@ status for every tab — *working*, *waiting for you*, *done*, or *error* — wi
 repo·branch, elapsed time, and the last message. Click a row to jump to that
 tab.
 
-```
-╔═ RADAR ════════════╗┌─ your panes ──────────────┐
-║● 1 dotfiles         ║│                            │
-║  main · done 2m     ║│   focused tab content      │
-║  "refactored the…"  ║│                            │
-║◐ 2 pinky      2/4   ║│                            │
-║  fix/x · 0:14       ║│                            │
-║  "running tests…"   ║│                            │
-║◆ 3 api              ║│                            │
-║  feat/y · needs you ║│                            │
-║○ 4 notes            ║│                            │
-╚════════════════════╝└────────────────────────────┘
- NORMAL  <p>ane <t>ab …   ← existing status-bar, untouched
-```
+![zj-radar — live per-tab agent and command status in a Zellij sidebar](docs/media/hero.gif)
 
 `◆ needs you` · `◐ working` · `● done` · `✗ error` · `○ idle / plain terminal`
 

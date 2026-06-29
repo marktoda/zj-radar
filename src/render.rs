@@ -660,10 +660,13 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let dim_strong = tc_fg(opts.theme.dim_strong);
     let idle_color = tc_fg(opts.theme.idle_text);
 
-    // ── Multi-pane line-per-pane (new design) ─────────────────────────────────
+    // ── Multi-pane line-per-pane tree (new design) ────────────────────────────
     // A tab with >1 tracked pane renders as: header (line 1, above) + one line
-    // per tracked pane (in position order), up to MAX_PANE_LINES; if more exist,
-    // a final `+N more` line is emitted. No collapse, no tree chars.
+    // per tracked pane (in position order), up to MAX_PANE_LINES, joined by tree
+    // connectors (`├` for every child that has a sibling/`+N more` below it, `└`
+    // for the last visible child); if more exist, a final `+N more` line is the
+    // `└`. No collapse — the tree is purely a visual affordance for "these panes
+    // belong to the tab above."
     if is_multi_pane(&row.display) {
         const MAX_PANE_LINES: usize = 6;
         let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
@@ -671,9 +674,17 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             .collect();
         let total_tracked = tracked_panes.len();
         let show = total_tracked.min(MAX_PANE_LINES);
+        let remaining = total_tracked - show;
 
-        for pane in tracked_panes.iter().take(show) {
-            let text = emit_pane_line(pane, opts, row.active, st, &dim_strong);
+        for (i, pane) in tracked_panes.iter().take(show).enumerate() {
+            // The final pane line is the `└` only when no `+N more` line follows
+            // it; otherwise that trailing line carries the elbow.
+            let branch = if i + 1 == show && remaining == 0 {
+                Branch::Elbow
+            } else {
+                Branch::Tee
+            };
+            let text = emit_pane_line(pane, opts, row.active, st, &dim_strong, &idle_color, branch);
             lines.push(Line {
                 text,
                 target: Some(RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) }),
@@ -681,15 +692,14 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             });
         }
 
-        let remaining = total_tracked - show;
         if remaining > 0 {
             let more_text = format!("+{} more", remaining);
-            // Both branches prepend a 2-col prefix (spine+space or 2 spaces), so
-            // reserve those columns before clamping the text to avoid overflow.
-            let clamped = truncate(&more_text, opts.width.saturating_sub(2));
+            // The prefix is a 3-col tree prefix (spine/space + connector + space),
+            // so reserve those columns before clamping the text to avoid overflow.
+            let clamped = truncate(&more_text, opts.width.saturating_sub(3));
             let text = format!(
                 "{}{}\n",
-                child_prefix(row.active, st),
+                child_prefix(row.active, st, Branch::Elbow, &idle_color),
                 Seg::new(&idle_color, clamped),
             );
             lines.push(Line {
@@ -791,15 +801,17 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
     }
 }
 
-/// Emit one pane line in the new line-per-pane design:
-/// Inactive: `  {glyph} {mark} {msg}` (2-space indent)
-/// Active:   `▌ {glyph} {mark} {msg}` (spine + space)
+/// Emit one pane line in the line-per-pane / tree design:
+/// Inactive: ` {connector} {glyph} {mark} {msg}` (space + `├`/`└` + space)
+/// Active:   `▌{connector} {glyph} {mark} {msg}` (spine + `├`/`└` + space)
 fn emit_pane_line(
     pane: &PaneDisplay,
     opts: &RenderOpts,
     tab_active: bool,
     tab_status: Status,
     dim_strong: &str,
+    conn_color: &str,
+    branch: Branch,
 ) -> String {
     let width = opts.width;
     let mark = pane.kind().mark(opts.glyphs);
@@ -811,15 +823,15 @@ fn emit_pane_line(
         status.glyph_for(opts.glyphs)
     };
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
-    // Prefix: 2 cols (either "  " or "▌ ") + glyph + 1 space + mark + 1 space
-    let prefix_vis = 2 + glyph_w + 1 + mark_w + 1;
+    // Prefix: 3 cols (spine/space + connector + space) + glyph + 1 space + mark + 1 space
+    let prefix_vis = 3 + glyph_w + 1 + mark_w + 1;
     // Narrow-width fallback: the colored path always emits the full fixed prefix
-    // (spine/indent + glyph + mark + spaces) unconditionally, so at widths below
-    // it the line would overflow. Below that floor, drop all color and emit a
+    // (spine/connector/indent + glyph + mark + spaces) unconditionally, so at widths
+    // below it the line would overflow. Below that floor, drop all color and emit a
     // single plain line clamped to `width` so nothing exceeds the band.
     if width < prefix_vis {
-        let indent = if tab_active { "▌ " } else { "  " };
-        let plain = format!("{indent}{glyph} {mark} {}", pane.msg());
+        let spine = if tab_active { "▌" } else { " " };
+        let plain = format!("{spine}{} {glyph} {mark} {}", branch.glyph(), pane.msg());
         return format!("{}\n", truncate(&plain, width));
     }
     let avail = width.saturating_sub(prefix_vis);
@@ -843,23 +855,48 @@ fn emit_pane_line(
     let mark_seg = Seg::bold(dim_strong, mark.to_string());
     format!(
         "{}{} {} {}\n",
-        child_prefix(tab_active, tab_status),
+        child_prefix(tab_active, tab_status, branch, conn_color),
         glyph_seg,
         mark_seg,
         activity,
     )
 }
 
-/// The 2-column left prefix shared by child / detail lines: an accent spine
-/// followed by a space when the tab is active, two plain spaces otherwise. The
-/// spine hue tracks the tab's status (peach when waiting/error, mauve accent
-/// otherwise), matching the line-1 spine in [`render_row`].
-fn child_prefix(active: bool, tab_status: Status) -> String {
-    if active {
-        format!("{} ", Seg::new(spine_role(tab_status).ansi(), "▌"))
-    } else {
-        "  ".to_string()
+/// Which tree connector a multi-pane child line draws at column 1.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Branch {
+    /// `├` — a child that has more siblings (or a `+N more` line) below it.
+    Tee,
+    /// `└` — the last *visible* child under the tab (the `+N more` line when
+    /// present, otherwise the final pane line).
+    Elbow,
+}
+
+impl Branch {
+    fn glyph(self) -> &'static str {
+        match self {
+            Branch::Tee => "├",
+            Branch::Elbow => "└",
+        }
     }
+}
+
+/// The 3-column left prefix shared by multi-pane child / `+N more` lines:
+///   col 0  — active-tab spine `▌` (status-hued: peach when waiting/error,
+///            mauve accent otherwise) or a plain space when inactive;
+///   col 1  — the tree connector (`├`/`└`), in the muted `conn_color`;
+///   col 2  — a separating space before the glyph.
+///
+/// Holding the connector at a fixed column (1) whether or not the tab is active
+/// keeps the glyph aligned at column 3 across all child lines, so the per-line
+/// truncation budget is constant (`prefix_vis` in [`emit_pane_line`]).
+fn child_prefix(active: bool, tab_status: Status, branch: Branch, conn_color: &str) -> String {
+    let spine = if active {
+        Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
+    } else {
+        " ".to_string()
+    };
+    format!("{}{} ", spine, Seg::new(conn_color, branch.glyph()))
 }
 
 /// Measure visible (display) width of a string that may contain ANSI SGR escapes.
@@ -2272,18 +2309,25 @@ mod tests {
     // ── End-result outcome tag rendering ──
 
     #[test]
-    fn child_prefix_spine_when_active_two_spaces_when_not() {
-        // Inactive: exactly two plain columns, no escape, no spine.
-        assert_eq!(child_prefix(false, Status::Running), "  ");
-        assert_eq!(child_prefix(false, Status::Error), "  ");
-        // Active: an accent spine + trailing space, hue tracking the tab status
-        // (mauve accent normally, peach attention when waiting/error) — the same
-        // spine_role coupling as the line-1 bar.
-        let running = child_prefix(true, Status::Running);
+    fn child_prefix_is_tree_connector_with_optional_spine() {
+        let conn = Role::Muted.ansi(); // stand-in connector color
+        // Inactive: a leading space (no spine), then the connector, then a
+        // trailing space before the glyph — col 1 always holds the connector.
+        let tee = child_prefix(false, Status::Running, Branch::Tee, conn);
+        assert!(tee.starts_with(' '), "inactive col 0 is a plain space: {tee:?}");
+        assert!(!tee.contains('▌'), "inactive has no spine: {tee:?}");
+        assert!(tee.contains('├') && tee.ends_with(' '), "tee connector + space: {tee:?}");
+        let elbow = child_prefix(false, Status::Running, Branch::Elbow, conn);
+        assert!(elbow.contains('└'), "elbow connector: {elbow:?}");
+        // Active: an accent spine at col 0, hue tracking the tab status (mauve
+        // accent normally, peach attention when waiting/error) — the same
+        // spine_role coupling as the line-1 bar — then the connector + space.
+        let running = child_prefix(true, Status::Running, Branch::Tee, conn);
         assert!(running.starts_with(Role::Accent.ansi()), "accent spine: {running:?}");
-        assert!(running.contains('▌') && running.ends_with(' '), "spine + space: {running:?}");
-        assert!(child_prefix(true, Status::Error).starts_with(Role::Attention.ansi()));
-        assert!(child_prefix(true, Status::Pending).starts_with(Role::Attention.ansi()));
+        assert!(running.contains('▌') && running.contains('├') && running.ends_with(' '),
+            "spine + connector + space: {running:?}");
+        assert!(child_prefix(true, Status::Error, Branch::Tee, conn).starts_with(Role::Attention.ansi()));
+        assert!(child_prefix(true, Status::Pending, Branch::Elbow, conn).starts_with(Role::Attention.ansi()));
     }
 
     #[test]
@@ -2515,9 +2559,10 @@ mod tests {
             "pending pane activity in attention: {:?}",
             body[1]
         );
-        // No tree chars (new design uses no ├/└).
-        assert!(!s.contains('├'), "no tree chars in new design: {:?}", s);
-        assert!(!s.contains('└'), "no tree chars in new design: {:?}", s);
+        // Tree connectors join the panes to the tab: `├` for the non-final
+        // children, `└` for the last one.
+        assert!(s.contains('├'), "non-final children use a tee: {:?}", s);
+        assert!(s.contains('└'), "the last child uses an elbow: {:?}", s);
         // Exactly 5 body lines (header + 4 pane lines).
         assert_eq!(body.len(), 5, "header + 4 pane lines: {:?}", s);
     }
@@ -2645,10 +2690,10 @@ mod tests {
             "no collapse line: {:?}",
             s
         );
-        // No tree chars in new design.
-        assert!(!s.contains('├'), "no tree chars: {:?}", s);
-        assert!(!s.contains('└'), "no tree chars: {:?}", s);
-        // Active pane lines have the spine ▌.
+        // Tree connectors present: first child is a tee, last child an elbow.
+        assert!(body[1].contains('├'), "first child uses a tee: {:?}", body[1]);
+        assert!(body[2].contains('└'), "last child uses an elbow: {:?}", body[2]);
+        // Active pane lines have the spine ▌ (at col 0, before the connector).
         assert!(body[1].contains('▌'), "active pane line has spine: {:?}", body[1]);
     }
 
@@ -3430,10 +3475,11 @@ mod tests {
 
     #[test]
     fn child_line_status_glyph_precedes_spaced_mark() {
-        // Pane lines (new design) render as `  ‹status› ‹mark› ‹activity›` (inactive)
-        // or `▌ ‹status› ‹mark› ‹activity›` (active). The status glyph comes FIRST,
-        // then a space, then the identity mark — so the status icons line up and
-        // the mark isn't cramped against the status glyph. No tree chars (├/└) in new design.
+        // Pane lines render as ` ‹conn› ‹status› ‹mark› ‹activity›` (inactive) or
+        // `▌‹conn› ‹status› ‹mark› ‹activity›` (active), where ‹conn› is the tree
+        // connector (├/└). The status glyph comes FIRST after the connector, then a
+        // space, then the identity mark — so the status icons line up and the mark
+        // isn't cramped against the status glyph.
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "searching web"),
             pe(2, Kind::Claude, Status::Done, "done thing"),
@@ -3474,8 +3520,10 @@ mod tests {
             "status glyph must precede the identity mark: {:?}",
             child
         );
-        // No tree chars in new design.
-        assert!(!s.contains('├'), "no tree chars in new design: {:?}", s);
+        // Tree connectors join the children to the tab (tee on the non-final
+        // child, elbow on the last).
+        assert!(s.contains('├'), "tee connector present: {:?}", s);
+        assert!(s.contains('└'), "elbow connector present: {:?}", s);
     }
 
     #[test]

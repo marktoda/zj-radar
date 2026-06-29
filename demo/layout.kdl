@@ -1,0 +1,60 @@
+// zj-radar demo — Zellij layout (template).
+// `record.sh` substitutes __WASM__ with the built wasm path and __ROOT__ with
+// the repo root, then writes the concrete layout to target/demo/layout.kdl.
+// Four tabs, each running a scripted demo agent; the radar sidebar is pinned
+// left in every tab. Uses a direct `file:` plugin path with inline config (no
+// alias) so the layout is self-contained.
+
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=34 borderless=true {
+                plugin location="file:__WASM__" {
+                    glyphs "nerd"
+                    density "cards"
+                    naming "managed"
+                }
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size=34 borderless=true {
+                plugin location="file:__WASM__" {
+                    glyphs "nerd"
+                    density "cards"
+                    naming "managed"
+                }
+            }
+            pane focus=true
+        }
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="api" {
+        pane command="__ROOT__/demo/agent.sh" {
+            args "claude" "api" "feat/auth" "needs-you"
+        }
+    }
+    tab name="web" {
+        pane command="__ROOT__/demo/agent.sh" {
+            args "codex" "web" "fix/login" "done"
+        }
+    }
+    tab name="tests" focus=true {
+        pane command="__ROOT__/demo/agent.sh" {
+            args "test" "core" "main" "tests"
+        }
+    }
+    tab name="infra" {
+        pane command="__ROOT__/demo/agent.sh" {
+            args "deploy" "infra" "main" "deploy-error"
+        }
+    }
+}
