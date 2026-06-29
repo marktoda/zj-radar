@@ -524,6 +524,33 @@ mod tests {
         assert_eq!(display_command(&argv(&["sleep", "5"])), "sleep 5");
     }
 
+    /// Representative `(argv, display, expected Kind)` covering every `Kind`
+    /// that `command_kind` can emit. Shared by the classification test and the
+    /// Kind-round-trip guard so both exercise exactly the same set.
+    fn kind_classification_cases() -> Vec<(Vec<String>, &'static str, Kind)> {
+        use crate::kind::Kind;
+        vec![
+            // Agents, by basename.
+            (argv(&["claude"]), "claude", Kind::Claude),
+            (argv(&["codex", "--dangerously-bypass-sandbox"]), "codex", Kind::Codex),
+            (argv(&["gemini"]), "gemini", Kind::Gemini),
+            // Test runners across ecosystems.
+            (argv(&["cargo", "test", "--features", "cli"]), "cargo test", Kind::Test),
+            (argv(&["pytest"]), "pytest", Kind::Test),
+            (argv(&["go", "test", "./..."]), "go test ./...", Kind::Test),
+            (argv(&["npm", "run", "test"]), "npm run test", Kind::Test),
+            // Build.
+            (argv(&["cargo", "build"]), "cargo build", Kind::Build),
+            (argv(&["npm", "run", "build"]), "npm run build", Kind::Build),
+            // Server and deploy (npm dev-server; make/just verb routing).
+            (argv(&["npm", "run", "dev"]), "npm run dev", Kind::Server),
+            (argv(&["just", "serve"]), "just serve", Kind::Server),
+            (argv(&["make", "deploy"]), "make deploy", Kind::Deploy),
+            // Anything unrecognized is a plain command.
+            (argv(&["sleep", "5"]), "sleep 5", Kind::Command),
+        ]
+    }
+
     #[test]
     fn wrappers_and_env_prefixes_are_peeled_before_classification() {
         // Real Zellij argv routinely carries env assignments and launcher
@@ -571,46 +598,48 @@ mod tests {
 
     #[test]
     fn command_kind_classifies_every_emitted_kind() {
+        for (cmd, display, expected) in kind_classification_cases() {
+            assert_eq!(command_kind(&cmd, display), expected, "classify {display:?}");
+        }
+    }
+
+    #[test]
+    fn command_source_round_trips_through_kind() {
+        // Twin of the agent-side `source_round_trips_through_kind` (see
+        // CONTEXT.md "Information source"). The command path stores
+        // `command_kind(..).as_source()` and the roll-up reads it back via
+        // `Kind::from_source`, so every classified command must survive that
+        // round-trip to the SAME kind — and never degrade to `Kind::Other`,
+        // the reserved sentinel for a genuinely-unknown source. (Kind's own
+        // universal round-trip is guarded in `kind.rs`; this pins that the
+        // command boundary actually rides that seam.)
         use crate::kind::Kind;
-        // Agents, by basename.
-        assert_eq!(command_kind(&argv(&["claude"]), "claude"), Kind::Claude);
-        assert_eq!(
-            command_kind(&argv(&["codex", "--dangerously-bypass-sandbox"]), "codex"),
-            Kind::Codex
-        );
-        assert_eq!(command_kind(&argv(&["gemini"]), "gemini"), Kind::Gemini);
-        // Test runners across ecosystems.
-        assert_eq!(
-            command_kind(&argv(&["cargo", "test", "--features", "cli"]), "cargo test"),
-            Kind::Test
-        );
-        assert_eq!(command_kind(&argv(&["pytest"]), "pytest"), Kind::Test);
-        assert_eq!(
-            command_kind(&argv(&["go", "test", "./..."]), "go test ./..."),
-            Kind::Test
-        );
-        assert_eq!(
-            command_kind(&argv(&["npm", "run", "test"]), "npm run test"),
-            Kind::Test
-        );
-        // Build.
-        assert_eq!(
-            command_kind(&argv(&["cargo", "build"]), "cargo build"),
-            Kind::Build
-        );
-        assert_eq!(
-            command_kind(&argv(&["npm", "run", "build"]), "npm run build"),
-            Kind::Build
-        );
-        // Server and deploy (npm dev-server; make/just verb routing).
-        assert_eq!(
-            command_kind(&argv(&["npm", "run", "dev"]), "npm run dev"),
-            Kind::Server
-        );
-        assert_eq!(command_kind(&argv(&["just", "serve"]), "just serve"), Kind::Server);
-        assert_eq!(command_kind(&argv(&["make", "deploy"]), "make deploy"), Kind::Deploy);
-        // Anything unrecognized is a plain command.
-        assert_eq!(command_kind(&argv(&["sleep", "5"]), "sleep 5"), Kind::Command);
+        for (cmd, display, _) in kind_classification_cases() {
+            let kind = command_kind(&cmd, display);
+            assert_ne!(kind, Kind::Other, "{display:?} classified as the Other sentinel");
+            assert_eq!(
+                Kind::from_source(kind.as_source()),
+                kind,
+                "{display:?} source {:?} must round-trip to its kind",
+                kind.as_source(),
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_command_source_round_trips_through_kind() {
+        // End-to-end twin: drive a command through the store and confirm the
+        // *persisted* observation `source` (not just the classifier output)
+        // round-trips to the kind the classifier picked. Guards the wiring in
+        // `on_command_changed` → `on_timer`, not only `command_kind` in
+        // isolation.
+        use crate::kind::Kind;
+        let mut store = CommandStore::default();
+        let cmd = argv(&["cargo", "test", "--features", "cli"]);
+        store.on_command_changed(1, &cmd, true, Some("/home/u/repo"), 1);
+        store.on_timer(1 + DEBOUNCE_TICKS);
+        let obs = store.get(1).expect("fg command promoted to resolved");
+        assert_eq!(Kind::from_source(&obs.source), Kind::Test);
     }
 
     // ── Test 1: fg real command → pending, NOT Running until on_timer past DEBOUNCE_TICKS

@@ -88,9 +88,11 @@ a `Kind`-keyed `Status`:
   wire, no CLI. `cargo test` lives here, **not** in `agents/`.
 
 Both modalities emit a `source` string that must be a subset of `Kind`
-(`Kind::from_source`). The agent half is guarded today; the matching
-`command_source` ↔ `Kind` twin guard is a TODO to land with the observation-store
-deepening.
+(`Kind::from_source`). Both halves are guarded: the agent half by
+`source_round_trips_through_kind` (in `cli/agents`), the command half by
+`command_source_round_trips_through_kind` (in `command.rs`) — each pins that its
+classifier's `source` token round-trips back to the same `Kind`, never the
+`Other` sentinel.
 
 ## Tab Roll-Up
 
