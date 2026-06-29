@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod agents;
 mod notify;
+mod run;
 mod setup;
 
 #[derive(Parser)]
