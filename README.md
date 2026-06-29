@@ -5,9 +5,13 @@ status for every tab — *working*, *waiting for you*, *done*, or *error* — wi
 repo·branch, elapsed time, and the last message. Click a row to jump to that
 tab.
 
-![zj-radar — live per-tab agent and command status in a Zellij sidebar](docs/media/hero.gif)
+![zj-radar — every agent, every tab, at a glance](docs/media/zj-radar-hero.png)
 
-`◆ needs you` · `◐ working` · `● done` · `✗ error` · `○ idle / plain terminal`
+`◆ needs you` · `⠋ working` · `● done` · `✗ error` · `○ idle / plain terminal`
+
+*Live in a real session:*
+
+![zj-radar — live per-tab agent and command status in a Zellij sidebar](docs/media/hero.gif)
 
 ## Why it exists
 
