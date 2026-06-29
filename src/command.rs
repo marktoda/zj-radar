@@ -1,8 +1,8 @@
 //! Per-pane command activity derived from Zellij's `CommandChanged` event.
 //! No `zellij-tile` dependency — pure logic, host-testable.
 
+use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload::{sanitize, MAX_MSG_CHARS};
-use crate::state::AgentState;
 use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
@@ -23,12 +23,12 @@ struct Pending {
 }
 
 /// Tracks per-pane command activity for terminal panes that have no agent
-/// producer. The resolved display state is stored as `AgentState` so it can be
+/// producer. The resolved display state is stored as `TrackedObservation` so it can be
 /// consumed uniformly by the downstream aggregator.
 #[derive(Default)]
 pub struct CommandStore {
     /// Resolved displayable state, ready for aggregation.
-    resolved: HashMap<u32, AgentState>,
+    resolved: HashMap<u32, TrackedObservation>,
     /// Pending fg commands awaiting debounce promotion.
     pending: HashMap<u32, Pending>,
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
@@ -282,7 +282,8 @@ impl CommandStore {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
                 self.resolved.insert(
                     pane_id,
-                    AgentState {
+                    TrackedObservation {
+                        origin: ObservationOrigin::Command,
                         status: Status::Running,
                         repo,
                         branch: String::new(),
@@ -327,7 +328,8 @@ impl CommandStore {
         } else {
             self.resolved.insert(
                 pane_id,
-                AgentState {
+                TrackedObservation {
+                    origin: ObservationOrigin::Command,
                     status: new_status,
                     repo: String::new(),
                     branch: String::new(),
@@ -343,7 +345,7 @@ impl CommandStore {
     }
 
     /// Clear-on-focus: apply a pending `on_focus` transition for this pane via
-    /// the shared `AgentState::apply_on_focus` (same semantics as `StateStore`).
+    /// the shared `TrackedObservation::apply_on_focus` (same semantics as `StatusStore`).
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
         if let Some(s) = self.resolved.get_mut(&pane_id) {
             s.apply_on_focus(tick);
@@ -358,8 +360,24 @@ impl CommandStore {
     }
 
     /// Resolved displayable state for a pane, or None.
-    pub fn get(&self, pane_id: u32) -> Option<&AgentState> {
+    pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {
         self.resolved.get(&pane_id)
+    }
+
+    pub(crate) fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
+        self.resolved
+            .iter()
+            .map(|(&pane_id, observation)| (pane_id, observation))
+    }
+
+    pub(crate) fn insert_snapshot_observation(
+        &mut self,
+        pane_id: u32,
+        observation: TrackedObservation,
+    ) {
+        if observation.origin == ObservationOrigin::Command {
+            self.resolved.insert(pane_id, observation);
+        }
     }
 
     /// True if any pane is Running or has a pending fg command.

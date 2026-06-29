@@ -111,17 +111,21 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
             // Also drop Unicode C1 control chars (U+0080–U+009F) whose lead byte
             // (0xC2) passes the ASCII-range check above but are still control chars.
             match s.get(i..) {
-                Some(remaining) => {
-                    match remaining.chars().next() {
-                        Some(c) if !c.is_control() => {
-                            cleaned.push(c);
-                            i += c.len_utf8();
-                        }
-                        Some(c) => { i += c.len_utf8(); }
-                        None => { i += 1; }
+                Some(remaining) => match remaining.chars().next() {
+                    Some(c) if !c.is_control() => {
+                        cleaned.push(c);
+                        i += c.len_utf8();
                     }
+                    Some(c) => {
+                        i += c.len_utf8();
+                    }
+                    None => {
+                        i += 1;
+                    }
+                },
+                None => {
+                    i += 1;
                 }
-                None => { i += 1; }
             }
         }
     }
@@ -315,8 +319,10 @@ mod tests {
 
     #[test]
     fn rejects_oversized_payload() {
-        let big = format!(r#"{{"v":1,"pane":{{"type":"terminal","id":1}},"status":"running","msg":"{}"}}"#,
-            "x".repeat(MAX_PAYLOAD_BYTES));
+        let big = format!(
+            r#"{{"v":1,"pane":{{"type":"terminal","id":1}},"status":"running","msg":"{}"}}"#,
+            "x".repeat(MAX_PAYLOAD_BYTES)
+        );
         assert!(parse(&big).is_none());
     }
 

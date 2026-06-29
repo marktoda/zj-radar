@@ -77,7 +77,12 @@ impl ZellijSession {
     /// subprocesses. This ensures permission grants stay out of the real user
     /// cache. The caller is responsible for writing permissions.kdl under
     /// `temp_home` before calling this (see `pre_grant_permissions`).
-    pub fn start(name: &str, layout_kdl: &str, _plugin_wasm: &Path, temp_home: tempfile::TempDir) -> Self {
+    pub fn start(
+        name: &str,
+        layout_kdl: &str,
+        _plugin_wasm: &Path,
+        temp_home: tempfile::TempDir,
+    ) -> Self {
         let temp_home_path = temp_home.path().to_path_buf();
 
         // Kill any previous session with this name to avoid conflicts.
@@ -99,7 +104,12 @@ impl ZellijSession {
 
         // Open a PTY pair. Zellij needs a real TTY to start.
         let pty = NativePtySystem::default()
-            .openpty(PtySize { rows: 40, cols: 100, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 40,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .unwrap();
 
         // Build the zellij command.
@@ -107,8 +117,10 @@ impl ZellijSession {
         // zellij session (unlike plain --session which tries to attach).
         let mut cmd = CommandBuilder::new("zellij");
         cmd.args([
-            "--session", name,
-            "--new-session-with-layout", layout_path.to_str().unwrap(),
+            "--session",
+            name,
+            "--new-session-with-layout",
+            layout_path.to_str().unwrap(),
         ]);
         // Prevent inheriting the outer session's env vars.
         cmd.env_remove("ZELLIJ");
@@ -151,6 +163,7 @@ impl ZellijSession {
     }
 
     /// Return the temp HOME path used by this session's Zellij processes.
+    #[allow(dead_code)]
     pub fn temp_home(&self) -> &std::path::Path {
         self._temp_home.path()
     }
@@ -167,8 +180,11 @@ impl ZellijSession {
             let text = self.pty_text();
 
             // Handle permission prompt (fallback if permissions.kdl wasn't read).
-            if !perm_sent && (text.contains("Grant") || text.contains("Allow")
-                || text.contains("y/n") || text.contains("Deny"))
+            if !perm_sent
+                && (text.contains("Grant")
+                    || text.contains("Allow")
+                    || text.contains("y/n")
+                    || text.contains("Deny"))
             {
                 if let Ok(mut w) = self.pty_writer.lock() {
                     let _ = w.write_all(b"y");
@@ -189,7 +205,15 @@ impl ZellijSession {
         panic!(
             "zellij session '{}' never showed plugin header; PTY tail:\n{}",
             self.name,
-            &self.pty_text().chars().rev().take(200).collect::<String>().chars().rev().collect::<String>()
+            &self
+                .pty_text()
+                .chars()
+                .rev()
+                .take(200)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
         );
     }
 
@@ -202,8 +226,10 @@ impl ZellijSession {
         // Inject: echo "ZPID=$ZELLIJ_PANE_ID"
         let _ = Command::new("zellij")
             .args([
-                "--session", &self.name,
-                "action", "write-chars",
+                "--session",
+                &self.name,
+                "action",
+                "write-chars",
                 r#"echo "ZPID=$ZELLIJ_PANE_ID""#,
             ])
             .env("HOME", self._temp_home.path())
@@ -221,7 +247,10 @@ impl ZellijSession {
         }
 
         eprintln!("[e2e] warn: could not parse ZPID from dump-screen; defaulting to 0");
-        eprintln!("[e2e] dump-screen was: {:?}", &screen[..screen.len().min(300)]);
+        eprintln!(
+            "[e2e] dump-screen was: {:?}",
+            &screen[..screen.len().min(300)]
+        );
         0
     }
 
@@ -238,8 +267,10 @@ impl ZellijSession {
         // Inject `echo ZPID2=$ZELLIJ_PANE_ID` into the newly focused pane.
         let _ = Command::new("zellij")
             .args([
-                "--session", &self.name,
-                "action", "write-chars",
+                "--session",
+                &self.name,
+                "action",
+                "write-chars",
                 r#"echo "ZPID2=$ZELLIJ_PANE_ID""#,
             ])
             .env("HOME", self._temp_home.path())
@@ -274,10 +305,13 @@ impl ZellijSession {
     pub fn pipe_status(&self, json: &str) {
         let out = Command::new("zellij")
             .args([
-                "--session", &self.name,
+                "--session",
+                &self.name,
                 "pipe",
-                "--name", "zj_radar.status.v1",
-                "--", json,
+                "--name",
+                "zj_radar.status.v1",
+                "--",
+                json,
             ])
             .env("HOME", self._temp_home.path())
             .output()
@@ -351,6 +385,7 @@ impl ZellijSession {
     /// Full PTY buffer parsed through vt100 for cell-level assertions.
     /// The parser processes every frame rendered since session start, so
     /// `screen()` reflects the final rendered state.
+    #[allow(dead_code)]
     pub fn screen(&self) -> vt100::Screen {
         let raw = self.buf.lock().unwrap().clone();
         let mut p = vt100::Parser::new(40, 100, 0);
@@ -394,20 +429,28 @@ fn strip_ansi(raw: &[u8]) -> String {
                     while i < bytes.len() {
                         let fb = bytes[i];
                         i += 1;
-                        if (0x40..=0x7e).contains(&fb) { break; }
+                        if (0x40..=0x7e).contains(&fb) {
+                            break;
+                        }
                     }
                 }
                 Some(b']') => {
                     i += 2;
                     while i < bytes.len() {
-                        if bytes[i] == 0x07 { i += 1; break; }
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
                         if bytes[i] == 0x1b && bytes.get(i + 1).copied() == Some(b'\\') {
-                            i += 2; break;
+                            i += 2;
+                            break;
                         }
                         i += 1;
                     }
                 }
-                _ => { i += 2.min(bytes.len() - i); }
+                _ => {
+                    i += 2.min(bytes.len() - i);
+                }
             }
         } else if b == b'\r' || b == b'\n' || b == b'\t' {
             out.push(' ');
@@ -416,11 +459,20 @@ fn strip_ansi(raw: &[u8]) -> String {
             // Also pass multi-byte UTF-8.
             match text.get(i..) {
                 Some(s) => match s.chars().next() {
-                    Some(c) if !c.is_control() => { out.push(c); i += c.len_utf8(); }
-                    Some(c) => { i += c.len_utf8(); }
-                    None => { i += 1; }
+                    Some(c) if !c.is_control() => {
+                        out.push(c);
+                        i += c.len_utf8();
+                    }
+                    Some(c) => {
+                        i += c.len_utf8();
+                    }
+                    None => {
+                        i += 1;
+                    }
                 },
-                None => { i += 1; }
+                None => {
+                    i += 1;
+                }
             }
         } else {
             i += 1;
@@ -457,8 +509,7 @@ fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
 #[cfg(feature = "e2e")]
 pub fn plugin_wasm_path() -> std::path::PathBuf {
     let root = env!("CARGO_MANIFEST_DIR");
-    std::path::Path::new(root)
-        .join("target/wasm32-wasip1/release/zj_radar.wasm")
+    std::path::Path::new(root).join("target/wasm32-wasip1/release/zj_radar.wasm")
 }
 
 /// Pre-seed "granted" entries in Zellij's `permissions.kdl` for the plugin path.
@@ -581,6 +632,7 @@ pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
 /// Extract all visible text from a vt100 Screen (rows x cols grid),
 /// joining rows with newlines.
 #[cfg(feature = "e2e")]
+#[allow(dead_code)]
 pub fn screen_text(screen: &vt100::Screen) -> String {
     let rows = screen.size().0;
     let cols = screen.size().1;

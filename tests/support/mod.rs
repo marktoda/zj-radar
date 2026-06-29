@@ -1,15 +1,23 @@
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
-pub struct ShimDir { pub dir: TempDir }
+pub struct ShimDir {
+    pub dir: TempDir,
+}
 
 #[derive(Debug)]
-pub struct Recorded { pub args: Vec<String>, pub stdin: String }
+pub struct Recorded {
+    pub args: Vec<String>,
+    pub stdin: String,
+}
 
 impl ShimDir {
-    pub fn new() -> Self { ShimDir { dir: TempDir::new().unwrap() } }
+    pub fn new() -> Self {
+        ShimDir {
+            dir: TempDir::new().unwrap(),
+        }
+    }
 
     /// Install a fake `name` binary that records argv + stdin to
     /// `<dir>/<name>.log` (one tab-separated line per invocation) and exits 0.
@@ -44,7 +52,8 @@ impl ShimDir {
                'rev-parse --show-toplevel') echo {repo:?};;\n\
                'branch --show-current') echo {branch:?};;\n\
                *) exit 0;;\nesac\n",
-            repo = repo_toplevel, branch = branch
+            repo = repo_toplevel,
+            branch = branch
         );
         let bin = self.dir.path().join("git");
         fs::write(&bin, script).unwrap();
@@ -67,14 +76,20 @@ impl ShimDir {
     pub fn recorded(&self, name: &str) -> Vec<Recorded> {
         let log = self.dir.path().join(format!("{name}.log"));
         let body = fs::read_to_string(&log).unwrap_or_default();
-        body.lines().filter(|l| !l.is_empty()).map(|l| {
-            let mut parts = l.splitn(2, '\t');
-            Recorded {
-                args: parts.next().unwrap_or("").split_whitespace().map(String::from).collect(),
-                stdin: parts.next().unwrap_or("").to_string(),
-            }
-        }).collect()
+        body.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let mut parts = l.splitn(2, '\t');
+                Recorded {
+                    args: parts
+                        .next()
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect(),
+                    stdin: parts.next().unwrap_or("").to_string(),
+                }
+            })
+            .collect()
     }
-
-    pub fn path_buf(&self) -> PathBuf { self.dir.path().to_path_buf() }
 }

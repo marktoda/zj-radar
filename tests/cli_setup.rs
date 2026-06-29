@@ -13,8 +13,6 @@
 
 #![cfg(feature = "cli")]
 
-mod support;
-
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;

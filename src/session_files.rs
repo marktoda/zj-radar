@@ -103,6 +103,11 @@ impl SessionFiles {
         marker_from_str(raw.trim())
     }
 
+    pub(crate) fn snapshot(&self) -> Option<String> {
+        let paths = self.paths.as_ref()?;
+        std::fs::read_to_string(&paths.snapshot).ok()
+    }
+
     pub(crate) fn persist_permission_marker(&self, marker: PermissionMarker) {
         let Some(paths) = &self.paths else {
             return;
@@ -407,6 +412,7 @@ mod tests {
             std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(),
             r#"{"v":1}"#
         );
+        assert_eq!(opened.files.snapshot().as_deref(), Some(r#"{"v":1}"#));
         assert!(!dir.join("zj-radar.42.json.9.tmp").exists());
     }
 

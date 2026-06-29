@@ -1,0 +1,1006 @@
+//! Session radar state: live tabs/panes plus source-specific observations.
+//! No zellij-tile dependency.
+
+use crate::command::CommandStore;
+use crate::config;
+use crate::kind::Kind;
+use crate::observation::{ObservationOrigin, TrackedObservation};
+use crate::payload;
+use crate::render::{PaneDisplay, PrimaryDetail, ProgressCounts, TabDisplay, TabRow};
+use crate::status::Status;
+use crate::status_store::StatusStore;
+use crate::theme;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct TabId(usize);
+
+impl TabId {
+    pub(crate) fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RadarTab {
+    pub id: TabId,
+    pub position: usize,
+    pub name: String,
+    pub active: bool,
+    pub has_bell: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TerminalPane {
+    pub id: u32,
+    pub title: String,
+    pub focused_in_tab: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct PaneUpdate {
+    pub tab_panes: HashMap<usize, Vec<TerminalPane>>,
+    pub live: HashSet<u32>,
+    pub theme: Option<theme::DerivedColors>,
+    pub exits: Vec<(u32, Option<i32>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TabRename {
+    pub position: usize,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RadarChange {
+    pub render: bool,
+    pub persist_snapshot: bool,
+    pub renames: Vec<TabRename>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotObservation {
+    pane_id: u32,
+    origin: String,
+    status: String,
+    repo: String,
+    branch: String,
+    msg: String,
+    source: String,
+    last_change_tick: u64,
+    #[serde(default)]
+    seq: Option<u64>,
+    #[serde(default)]
+    on_focus: Option<String>,
+    ever_active: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RadarSnapshot {
+    v: u32,
+    tick: u64,
+    observations: Vec<SnapshotObservation>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyStatusSnapshot {
+    v: u32,
+    tick: u64,
+    panes: Vec<LegacyPaneSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyPaneSnapshot {
+    pane_id: u32,
+    status: String,
+    repo: String,
+    branch: String,
+    msg: String,
+    source: String,
+    last_change_tick: u64,
+    #[serde(default)]
+    seq: Option<u64>,
+    #[serde(default)]
+    on_focus: Option<String>,
+    ever_active: bool,
+}
+
+const RADAR_SNAPSHOT_V: u32 = 2;
+const LEGACY_STATUS_SNAPSHOT_V: u32 = 1;
+
+#[derive(Default)]
+pub(crate) struct RadarState {
+    status: StatusStore,
+    command: CommandStore,
+    tabs: Vec<RadarTab>,
+    tab_panes: HashMap<usize, Vec<TerminalPane>>,
+    pane_cwd: HashMap<u32, String>,
+    applied_names: HashMap<TabId, String>,
+    last_focused: Option<u32>,
+    live_panes: Option<HashSet<u32>>,
+}
+
+impl RadarState {
+    pub(crate) fn load_snapshot(&mut self, raw: &str) -> Option<u64> {
+        let (observations, tick) = parse_snapshot(raw)?;
+        self.status = StatusStore::default();
+        self.command = CommandStore::default();
+        for (pane_id, observation) in observations {
+            match observation.origin {
+                ObservationOrigin::StatusPipe => self
+                    .status
+                    .insert_snapshot_observation(pane_id, observation),
+                ObservationOrigin::Command => self
+                    .command
+                    .insert_snapshot_observation(pane_id, observation),
+            }
+        }
+        Some(tick)
+    }
+
+    pub(crate) fn snapshot_json(&self, existing: Option<&str>, tick: u64) -> String {
+        let mut snapshot_tick = tick;
+        let mut observations: BTreeMap<(u32, ObservationOrigin), TrackedObservation> =
+            BTreeMap::new();
+
+        if let Some(raw) = existing {
+            if let Some((existing_observations, existing_tick)) = parse_snapshot(raw) {
+                snapshot_tick = snapshot_tick.max(existing_tick);
+                for (pane_id, observation) in existing_observations {
+                    if self
+                        .live_panes
+                        .as_ref()
+                        .is_some_and(|live| !live.contains(&pane_id))
+                    {
+                        continue;
+                    }
+                    observations.insert((pane_id, observation.origin), observation);
+                }
+            }
+        }
+
+        for (pane_id, observation) in self.status.observations() {
+            observations.insert(
+                (pane_id, ObservationOrigin::StatusPipe),
+                observation.clone(),
+            );
+        }
+        for (pane_id, observation) in self.command.observations() {
+            observations.insert((pane_id, ObservationOrigin::Command), observation.clone());
+        }
+
+        let snapshot = RadarSnapshot {
+            v: RADAR_SNAPSHOT_V,
+            tick: snapshot_tick,
+            observations: observations
+                .into_iter()
+                .map(|((pane_id, _), observation)| snapshot_observation(pane_id, &observation))
+                .collect(),
+        };
+        serde_json::to_string(&snapshot).unwrap_or_default()
+    }
+
+    pub(crate) fn rows(&self) -> Vec<TabRow> {
+        let mut rows = Vec::new();
+        let mut sorted = self.tabs.clone();
+        sorted.sort_by_key(|t| t.position);
+        for t in &sorted {
+            let empty = Vec::new();
+            let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
+            rows.push(TabRow {
+                number: t.position as u32 + 1,
+                name: t.name.clone(),
+                active: t.active,
+                has_bell: t.has_bell,
+                display: self.tab_display(panes),
+            });
+        }
+        rows
+    }
+
+    pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> RadarChange {
+        self.tabs = tabs;
+        RadarChange {
+            render: true,
+            ..RadarChange::default()
+        }
+    }
+
+    pub(crate) fn panes_changed(
+        &mut self,
+        update: PaneUpdate,
+        tick: u64,
+        naming: config::NamingMode,
+    ) -> RadarChange {
+        for (pane_id, exit_status) in update.exits {
+            self.command.on_exit(pane_id, exit_status, tick);
+        }
+        self.live_panes = Some(update.live.clone());
+        self.tab_panes = update.tab_panes;
+        self.status.prune(&update.live);
+        self.command.prune(&update.live);
+        self.pane_cwd.retain(|id, _| update.live.contains(id));
+        self.apply_focus_transition(self.focused_terminal_in_active_tab(), tick);
+
+        RadarChange {
+            render: true,
+            persist_snapshot: true,
+            renames: self.rename_tabs(naming),
+        }
+    }
+
+    pub(crate) fn timer(&mut self, tick: u64) {
+        self.command.on_timer(tick);
+    }
+
+    pub(crate) fn cwd_changed(
+        &mut self,
+        pane_id: u32,
+        path: String,
+        naming: config::NamingMode,
+    ) -> RadarChange {
+        self.pane_cwd.insert(pane_id, path);
+        RadarChange {
+            render: true,
+            renames: self.rename_tabs(naming),
+            ..RadarChange::default()
+        }
+    }
+
+    pub(crate) fn command_changed(
+        &mut self,
+        pane_id: u32,
+        command: &[String],
+        is_foreground: bool,
+        tick: u64,
+    ) -> RadarChange {
+        let cwd = self.pane_cwd.get(&pane_id).map(String::as_str);
+        self.command
+            .on_command_changed(pane_id, command, is_foreground, cwd, tick);
+        RadarChange {
+            render: true,
+            ..RadarChange::default()
+        }
+    }
+
+    pub(crate) fn status_pipe(
+        &mut self,
+        raw: &str,
+        tick: u64,
+        naming: config::NamingMode,
+    ) -> Option<RadarChange> {
+        let p = payload::parse(raw)?;
+        self.status.apply(p, tick);
+        Some(RadarChange {
+            render: true,
+            persist_snapshot: true,
+            renames: self.rename_tabs(naming),
+        })
+    }
+
+    pub(crate) fn has_active_or_pending_work(&self) -> bool {
+        self.status.any_active() || self.command.has_pending_or_active()
+    }
+
+    pub(crate) fn recompute_renames(&mut self, naming: config::NamingMode) -> Vec<TabRename> {
+        self.rename_tabs(naming)
+    }
+
+    pub(crate) fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        if focused == self.last_focused {
+            return false;
+        }
+        self.last_focused = focused;
+        if let Some(id) = focused {
+            self.status.on_pane_focused(id, tick);
+            self.command.on_pane_focused(id, tick);
+        }
+        true
+    }
+
+    pub(crate) fn last_focused(&self) -> Option<u32> {
+        self.last_focused
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status(&self, pane_id: u32) -> Option<&crate::observation::TrackedObservation> {
+        self.status.get(pane_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command(&self, pane_id: u32) -> Option<&crate::observation::TrackedObservation> {
+        self.command.get(pane_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_mut(&mut self) -> &mut StatusStore {
+        &mut self.status
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_store(&self) -> &StatusStore {
+        &self.status
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_mut(&mut self) -> &mut CommandStore {
+        &mut self.command
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_store(&self) -> &CommandStore {
+        &self.command
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_focused(&mut self, pane_id: Option<u32>) {
+        self.last_focused = pane_id;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tab_panes_for_position(&mut self, position: usize, panes: Vec<TerminalPane>) {
+        self.tab_panes.insert(position, panes);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn applied_name(&self, tab_id: TabId) -> Option<&str> {
+        self.applied_names.get(&tab_id).map(String::as_str)
+    }
+
+    fn focused_terminal_in_active_tab(&self) -> Option<u32> {
+        let active = self.tabs.iter().find(|tab| tab.active)?;
+        let panes = self.tab_panes.get(&active.position)?;
+        panes
+            .iter()
+            .find(|pane| pane.focused_in_tab)
+            .map(|pane| pane.id)
+    }
+
+    fn rename_tabs(&mut self, naming_mode: config::NamingMode) -> Vec<TabRename> {
+        if naming_mode == config::NamingMode::Off {
+            return Vec::new();
+        }
+        let force = naming_mode == config::NamingMode::Force;
+        let mut out = Vec::new();
+        let tabs: Vec<RadarTab> = self.tabs.clone();
+        for tab in tabs {
+            let empty = Vec::new();
+            let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
+            let Some(desired) = self.computed_name(panes) else {
+                continue;
+            };
+            if desired == tab.name {
+                continue;
+            }
+            let ours = self.applied_names.get(&tab.id) == Some(&tab.name);
+            if force || is_default_name(&tab.name) || ours {
+                self.applied_names.insert(tab.id, desired.clone());
+                out.push(TabRename {
+                    position: tab.position,
+                    name: desired,
+                });
+            }
+        }
+        out
+    }
+
+    fn computed_name(&self, panes: &[TerminalPane]) -> Option<String> {
+        let repo_of = |p: &TerminalPane| {
+            self.status
+                .get(p.id)
+                .map(|s| s.repo.clone())
+                .filter(|r| !r.is_empty())
+        };
+        let focused = panes.iter().find(|p| p.focused_in_tab);
+        if let Some(p) = focused {
+            if let Some(r) = repo_of(p) {
+                return Some(r);
+            }
+        }
+        for p in panes {
+            if let Some(r) = repo_of(p) {
+                return Some(r);
+            }
+        }
+        if let Some(p) = focused {
+            if let Some(cwd) = self.pane_cwd.get(&p.id) {
+                if let Some(name) = cwd_basename(cwd) {
+                    return Some(name);
+                }
+            }
+        }
+        for p in panes {
+            if let Some(cwd) = self.pane_cwd.get(&p.id) {
+                if let Some(name) = cwd_basename(cwd) {
+                    return Some(name);
+                }
+            }
+        }
+        if let Some(p) = focused {
+            if let Some(name) = title_name(&p.title) {
+                return Some(name);
+            }
+        }
+        panes.first().and_then(|p| title_name(&p.title))
+    }
+
+    fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
+        let mut best_status = Status::Idle;
+        let mut best: Option<PrimaryDetail> = None;
+        let mut done = 0usize;
+        let mut total = 0usize;
+        let mut pending = 0usize;
+        let mut pane_displays = Vec::with_capacity(panes.len());
+
+        for pane in panes {
+            let tracked = self
+                .status
+                .get(pane.id)
+                .or_else(|| self.command.get(pane.id));
+            let Some(s) = tracked else {
+                pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
+                continue;
+            };
+
+            if s.ever_active {
+                total += 1;
+                if s.status == Status::Done {
+                    done += 1;
+                }
+                pane_displays.push(PaneDisplay::tracked(
+                    pane.id,
+                    Kind::from_source(&s.source),
+                    s.status,
+                    s.msg.clone(),
+                ));
+            } else {
+                pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
+            }
+            if s.status == Status::Pending {
+                pending += 1;
+            }
+            let better = s.status.severity() > best_status.severity()
+                || (s.status.severity() == best_status.severity()
+                    && best
+                        .as_ref()
+                        .is_none_or(|d| s.last_change_tick >= d.since_tick));
+            if s.status.is_active() && better {
+                best_status = s.status;
+                best = Some(PrimaryDetail {
+                    repo: s.repo.clone(),
+                    branch: s.branch.clone(),
+                    msg: s.msg.clone(),
+                    since_tick: s.last_change_tick,
+                    status: s.status,
+                    kind: Kind::from_source(&s.source),
+                });
+            }
+        }
+
+        TabDisplay {
+            status: best_status,
+            progress: ProgressCounts {
+                done,
+                total,
+                pending,
+            },
+            detail: best,
+            panes: pane_displays,
+        }
+    }
+}
+
+fn title_name(title: &str) -> Option<String> {
+    let trimmed = title.trim_start();
+    let stable = strip_activity_prefix(trimmed).trim();
+    if stable.is_empty() {
+        None
+    } else {
+        Some(stable.to_string())
+    }
+}
+
+fn is_default_name(name: &str) -> bool {
+    name.strip_prefix("Tab #")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn cwd_basename(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn strip_activity_prefix(title: &str) -> &str {
+    let Some(first) = title.chars().next() else {
+        return title;
+    };
+    if !('\u{2800}'..='\u{28ff}').contains(&first) {
+        return title;
+    }
+    let rest = &title[first.len_utf8()..];
+    if rest.chars().next().is_some_and(char::is_whitespace) {
+        rest
+    } else {
+        title
+    }
+}
+
+fn snapshot_observation(pane_id: u32, observation: &TrackedObservation) -> SnapshotObservation {
+    SnapshotObservation {
+        pane_id,
+        origin: origin_to_wire(observation.origin).to_string(),
+        status: observation.status.as_wire().to_string(),
+        repo: observation.repo.clone(),
+        branch: observation.branch.clone(),
+        msg: observation.msg.clone(),
+        source: observation.source.clone(),
+        last_change_tick: observation.last_change_tick,
+        seq: observation.seq,
+        on_focus: observation
+            .on_focus
+            .map(|status| status.as_wire().to_string()),
+        ever_active: observation.ever_active,
+    }
+}
+
+fn parse_snapshot(raw: &str) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    match value.get("v").and_then(serde_json::Value::as_u64)? as u32 {
+        RADAR_SNAPSHOT_V => parse_v2_snapshot(value),
+        LEGACY_STATUS_SNAPSHOT_V => parse_legacy_status_snapshot(value),
+        _ => None,
+    }
+}
+
+fn parse_v2_snapshot(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
+    let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
+    let mut observations = Vec::with_capacity(snapshot.observations.len());
+    for pane in snapshot.observations {
+        let origin = origin_from_wire(&pane.origin)?;
+        observations.push((
+            pane.pane_id,
+            tracked_observation_from_snapshot(pane, origin),
+        ));
+    }
+    Some((observations, snapshot.tick))
+}
+
+fn parse_legacy_status_snapshot(
+    value: serde_json::Value,
+) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
+    let snapshot: LegacyStatusSnapshot = serde_json::from_value(value).ok()?;
+    let observations = snapshot
+        .panes
+        .into_iter()
+        .map(|pane| {
+            (
+                pane.pane_id,
+                TrackedObservation {
+                    origin: ObservationOrigin::StatusPipe,
+                    status: Status::from_wire(&pane.status),
+                    repo: pane.repo,
+                    branch: pane.branch,
+                    msg: pane.msg,
+                    source: pane.source,
+                    last_change_tick: pane.last_change_tick,
+                    seq: pane.seq,
+                    on_focus: pane.on_focus.as_deref().map(Status::from_wire),
+                    ever_active: pane.ever_active,
+                },
+            )
+        })
+        .collect();
+    Some((observations, snapshot.tick))
+}
+
+fn tracked_observation_from_snapshot(
+    pane: SnapshotObservation,
+    origin: ObservationOrigin,
+) -> TrackedObservation {
+    TrackedObservation {
+        origin,
+        status: Status::from_wire(&pane.status),
+        repo: pane.repo,
+        branch: pane.branch,
+        msg: pane.msg,
+        source: pane.source,
+        last_change_tick: pane.last_change_tick,
+        seq: pane.seq,
+        on_focus: pane.on_focus.as_deref().map(Status::from_wire),
+        ever_active: pane.ever_active,
+    }
+}
+
+fn origin_to_wire(origin: ObservationOrigin) -> &'static str {
+    match origin {
+        ObservationOrigin::StatusPipe => "status_pipe",
+        ObservationOrigin::Command => "command",
+    }
+}
+
+fn origin_from_wire(raw: &str) -> Option<ObservationOrigin> {
+    match raw {
+        "status_pipe" => Some(ObservationOrigin::StatusPipe),
+        "command" => Some(ObservationOrigin::Command),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::payload::StatusPayload;
+
+    fn tab(id: usize, position: usize, name: &str, active: bool) -> RadarTab {
+        RadarTab {
+            id: TabId::new(id),
+            position,
+            name: name.into(),
+            active,
+            has_bell: false,
+        }
+    }
+
+    fn pane(id: u32) -> TerminalPane {
+        TerminalPane {
+            id,
+            ..TerminalPane::default()
+        }
+    }
+
+    fn focused_pane(id: u32) -> TerminalPane {
+        TerminalPane {
+            id,
+            focused_in_tab: true,
+            ..TerminalPane::default()
+        }
+    }
+
+    fn titled_pane(id: u32, title: &str, focused_in_tab: bool) -> TerminalPane {
+        TerminalPane {
+            id,
+            title: title.into(),
+            focused_in_tab,
+        }
+    }
+
+    fn payload_for(pane_id: u32, status: Status, repo: &str) -> StatusPayload {
+        StatusPayload {
+            pane_id,
+            status,
+            repo: repo.into(),
+            branch: "main".into(),
+            msg: "working".into(),
+            on_focus: None,
+            seq: None,
+            source: "claude".into(),
+        }
+    }
+
+    #[test]
+    fn rows_sort_tabs_by_position_and_aggregate_panes() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![
+            tab(30, 2, "c", false),
+            tab(10, 0, "a", true),
+            tab(20, 1, "b", false),
+        ]);
+        radar.set_tab_panes_for_position(0, vec![pane(42)]);
+        radar
+            .status_mut()
+            .apply(payload_for(42, Status::Running, "repo"), 1);
+
+        let rows = radar.rows();
+
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(rows[0].display.status, Status::Running);
+    }
+
+    #[test]
+    fn active_tab_focus_is_the_only_global_focus_transition() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "left", false), tab(20, 1, "right", true)]);
+        let update = PaneUpdate {
+            tab_panes: HashMap::from([(0, vec![focused_pane(1)]), (1, vec![focused_pane(2)])]),
+            live: HashSet::from([1, 2]),
+            theme: None,
+            exits: Vec::new(),
+        };
+
+        radar.panes_changed(update, 7, config::NamingMode::Off);
+
+        assert_eq!(radar.last_focused(), Some(2));
+    }
+
+    #[test]
+    fn rename_ownership_follows_stable_tab_id_across_reorder() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![
+            tab(10, 0, "Tab #1", true),
+            tab(20, 1, "custom", false),
+        ]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+        let rename = radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
+        assert_eq!(
+            rename.renames,
+            vec![TabRename {
+                position: 0,
+                name: "alpha".into(),
+            }]
+        );
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("alpha"));
+
+        radar.tabs_changed(vec![tab(20, 0, "custom", false), tab(10, 1, "alpha", true)]);
+        radar.set_tab_panes_for_position(1, vec![focused_pane(1)]);
+        let rename = radar.cwd_changed(1, "/work/beta".into(), config::NamingMode::Managed);
+
+        assert_eq!(
+            rename.renames,
+            vec![TabRename {
+                position: 1,
+                name: "beta".into(),
+            }]
+        );
+        assert_eq!(radar.applied_name(TabId::new(10)), Some("beta"));
+    }
+
+    #[test]
+    fn observation_origin_is_source_specific() {
+        let mut radar = RadarState::default();
+        radar
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "status"), 1);
+        radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
+        radar.timer(2);
+
+        assert_eq!(
+            radar.status(1).unwrap().origin,
+            crate::observation::ObservationOrigin::StatusPipe
+        );
+        assert_eq!(
+            radar.command(2).unwrap().origin,
+            crate::observation::ObservationOrigin::Command
+        );
+    }
+
+    #[test]
+    fn cwd_basename_handles_normal_trailing_root_and_empty_paths() {
+        assert_eq!(
+            cwd_basename("/Users/m/dev/zj-radar"),
+            Some("zj-radar".into())
+        );
+        assert_eq!(
+            cwd_basename("/Users/m/dev/zj-radar/"),
+            Some("zj-radar".into())
+        );
+        assert_eq!(cwd_basename("/"), None);
+        assert_eq!(cwd_basename(""), None);
+    }
+
+    #[test]
+    fn default_name_matches_zellij_tab_numbers_only() {
+        assert!(is_default_name("Tab #1"));
+        assert!(is_default_name("Tab #12"));
+        assert!(!is_default_name("Tab #"));
+        assert!(!is_default_name("Tab #x"));
+        assert!(!is_default_name("custom"));
+    }
+
+    #[test]
+    fn computed_name_prefers_focused_repo_then_cwd_then_title() {
+        let mut radar = RadarState::default();
+        radar
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "repo-one"), 1);
+        radar
+            .status_mut()
+            .apply(payload_for(2, Status::Running, "repo-two"), 1);
+        let panes = vec![titled_pane(1, "one", false), titled_pane(2, "two", true)];
+        assert_eq!(radar.computed_name(&panes), Some("repo-two".into()));
+
+        let mut radar = RadarState::default();
+        radar.pane_cwd.insert(1, "/work/one".into());
+        radar.pane_cwd.insert(2, "/work/two".into());
+        assert_eq!(radar.computed_name(&panes), Some("two".into()));
+
+        let panes = vec![
+            titled_pane(1, "first", false),
+            titled_pane(2, "⠀ spinner-title", true),
+        ];
+        let radar = RadarState::default();
+        assert_eq!(radar.computed_name(&panes), Some("spinner-title".into()));
+    }
+
+    #[test]
+    fn managed_naming_skips_manual_names_but_force_overrides() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "manual", true)]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+        radar.pane_cwd.insert(1, "/work/repo".into());
+
+        let managed = radar.recompute_renames(config::NamingMode::Managed);
+        assert!(managed.is_empty());
+
+        let forced = radar.recompute_renames(config::NamingMode::Force);
+        assert_eq!(
+            forced,
+            vec![TabRename {
+                position: 0,
+                name: "repo".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn live_untracked_panes_are_displayed_but_not_counted_as_work() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+        radar.set_tab_panes_for_position(
+            0,
+            vec![
+                titled_pane(1, "codex", false),
+                titled_pane(2, "shell", false),
+            ],
+        );
+        radar
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "repo"), 1);
+
+        let row = radar.rows().remove(0);
+
+        assert_eq!(row.display.status, Status::Running);
+        assert_eq!(row.display.progress.total, 1);
+        assert_eq!(row.display.panes.len(), 2);
+        assert_eq!(row.display.panes[0].pane_id(), 1);
+        assert_eq!(row.display.panes[1].pane_id(), 2);
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_status_observations_and_tick() {
+        let mut radar = RadarState::default();
+        radar
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "repo"), 3);
+        let mut done = payload_for(2, Status::Done, "pinky");
+        done.on_focus = Some(Status::Idle);
+        done.seq = Some(9);
+        done.branch = "fix/x".into();
+        done.msg = "shipped it".into();
+        done.source = "codex".into();
+        radar.status_mut().apply(done, 5);
+
+        let json = radar.snapshot_json(None, 42);
+        let mut restored = RadarState::default();
+        let tick = restored.load_snapshot(&json).expect("valid snapshot");
+
+        assert_eq!(tick, 42);
+        assert_eq!(restored.status(1).unwrap().status, Status::Running);
+        let pane = restored.status(2).expect("pane 2 restored");
+        assert_eq!(pane.status, Status::Done);
+        assert_eq!(pane.repo, "pinky");
+        assert_eq!(pane.branch, "fix/x");
+        assert_eq!(pane.msg, "shipped it");
+        assert_eq!(pane.source, "codex");
+        assert_eq!(pane.seq, Some(9));
+        assert_eq!(pane.on_focus, Some(Status::Idle));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_command_observations() {
+        let mut radar = RadarState::default();
+        radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
+        radar.timer(2);
+
+        let json = radar.snapshot_json(None, 2);
+        let mut restored = RadarState::default();
+        restored.load_snapshot(&json).expect("valid snapshot");
+
+        let command = restored.command(7).expect("command restored");
+        assert_eq!(command.origin, ObservationOrigin::Command);
+        assert_eq!(command.status, Status::Running);
+        assert_eq!(command.msg, "cargo test");
+    }
+
+    #[test]
+    fn snapshot_load_migrates_legacy_status_snapshot() {
+        let legacy = r#"{"v":1,"tick":7,"panes":[{"pane_id":9,"status":"running","repo":"repo","branch":"main","msg":"work","source":"claude","last_change_tick":6,"seq":3,"on_focus":"idle","ever_active":true}]}"#;
+        let mut radar = RadarState::default();
+
+        let tick = radar.load_snapshot(legacy).expect("legacy snapshot loads");
+
+        assert_eq!(tick, 7);
+        let pane = radar.status(9).expect("legacy pane restored");
+        assert_eq!(pane.origin, ObservationOrigin::StatusPipe);
+        assert_eq!(pane.status, Status::Running);
+        assert_eq!(pane.on_focus, Some(Status::Idle));
+        assert_eq!(pane.seq, Some(3));
+    }
+
+    #[test]
+    fn snapshot_rejects_garbage_and_unknown_versions() {
+        let mut radar = RadarState::default();
+        assert!(radar.load_snapshot("not json").is_none());
+        assert!(radar
+            .load_snapshot(r#"{"v":999,"tick":1,"observations":[]}"#)
+            .is_none());
+    }
+
+    #[test]
+    fn snapshot_merge_preserves_existing_when_live_panes_are_unknown() {
+        let mut existing = RadarState::default();
+        existing
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "old"), 1);
+        let existing_json = existing.snapshot_json(None, 5);
+
+        let mut current = RadarState::default();
+        current
+            .status_mut()
+            .apply(payload_for(2, Status::Running, "new"), 2);
+        let merged = current.snapshot_json(Some(&existing_json), 3);
+
+        let mut restored = RadarState::default();
+        let tick = restored.load_snapshot(&merged).expect("merged snapshot");
+        assert_eq!(tick, 5, "merge keeps the higher existing tick");
+        assert_eq!(restored.status(1).unwrap().repo, "old");
+        assert_eq!(restored.status(2).unwrap().repo, "new");
+    }
+
+    #[test]
+    fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
+        let mut existing = RadarState::default();
+        existing
+            .status_mut()
+            .apply(payload_for(1, Status::Running, "dead"), 1);
+        let existing_json = existing.snapshot_json(None, 5);
+
+        let mut current = RadarState::default();
+        current.tabs_changed(vec![tab(10, 0, "work", true)]);
+        current
+            .status_mut()
+            .apply(payload_for(2, Status::Running, "live"), 2);
+        current.panes_changed(
+            PaneUpdate {
+                tab_panes: HashMap::from([(0, vec![focused_pane(2)])]),
+                live: HashSet::from([2]),
+                theme: None,
+                exits: Vec::new(),
+            },
+            3,
+            config::NamingMode::Off,
+        );
+
+        let merged = current.snapshot_json(Some(&existing_json), 3);
+        let mut restored = RadarState::default();
+        restored.load_snapshot(&merged).expect("merged snapshot");
+
+        assert!(restored.status(1).is_none(), "known-dead pane is pruned");
+        assert_eq!(restored.status(2).unwrap().repo, "live");
+    }
+
+    #[test]
+    fn snapshot_seeded_done_pane_still_clears_on_focus() {
+        let mut radar = RadarState::default();
+        let mut done = payload_for(5, Status::Done, "repo");
+        done.on_focus = Some(Status::Idle);
+        radar.status_mut().apply(done, 1);
+        let json = radar.snapshot_json(None, 2);
+
+        let mut restored = RadarState::default();
+        restored.load_snapshot(&json).unwrap();
+        restored.apply_focus_transition(Some(5), 9);
+
+        assert_eq!(restored.status(5).unwrap().status, Status::Idle);
+        assert_eq!(restored.status(5).unwrap().on_focus, None);
+    }
+}

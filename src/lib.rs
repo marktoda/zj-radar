@@ -8,11 +8,10 @@ mod config;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod kind;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod model;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod naming;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod observation;
 mod payload;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod radar_state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
@@ -20,9 +19,9 @@ mod runtime;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod session_files;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod state;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod status_store;
 // `theme` is only consumed by the wasm glue; on a non-wasm non-test host build
 // everything in it appears dead. Its own unit tests exercise it on the host.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
@@ -33,10 +32,10 @@ mod theme;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-// `PaneLite` is referenced by host tests and wasm glue; the helper imports are
-// only consumed by tests on the host target.
+// Radar state types are referenced by host tests and wasm glue; the helper
+// imports are only consumed by tests on the host target.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
-use naming::PaneLite;
+use radar_state::{RadarTab, TabId, TerminalPane};
 #[cfg(test)]
 use render::TabRow;
 use runtime::PluginRuntime;
@@ -173,7 +172,11 @@ impl State {
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout => set_timeout(1.0),
-                Effect::PersistSnapshot(json) => self.session_files.persist_snapshot(&json),
+                Effect::PersistSnapshot => {
+                    let existing = self.session_files.snapshot();
+                    let json = self.runtime.snapshot_json(existing.as_deref());
+                    self.session_files.persist_snapshot(&json);
+                }
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }
@@ -220,7 +223,8 @@ impl ZellijPlugin for State {
             Event::TabUpdate(tabs) => {
                 let tabs = tabs
                     .into_iter()
-                    .map(|t| runtime::TabLite {
+                    .map(|t| RadarTab {
+                        id: TabId::new(t.tab_id),
                         position: t.position,
                         name: t.name,
                         active: t.active,
@@ -231,9 +235,8 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::PaneUpdate(manifest) => {
-                let mut tab_panes: HashMap<usize, Vec<PaneLite>> = HashMap::new();
+                let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
                 let mut live: HashSet<u32> = HashSet::new();
-                let mut focused_terminal: Option<u32> = None;
                 let mut exits: Vec<(u32, Option<i32>)> = Vec::new();
                 // Capture the terminal's reported default bg/fg so we can derive
                 // the dark-panel surfaces in the terminal's own theme. Prefer the
@@ -259,15 +262,12 @@ impl ZellijPlugin for State {
                                 focused_colors = Some(c);
                             }
                         }
-                        tab_panes.entry(tab_pos).or_default().push(PaneLite {
+                        tab_panes.entry(tab_pos).or_default().push(TerminalPane {
                             id: p.id,
                             title: payload::sanitize(&p.title, 40),
-                            is_focused: p.is_focused,
+                            focused_in_tab: p.is_focused,
                         });
                         live.insert(p.id);
-                        if p.is_focused {
-                            focused_terminal = Some(p.id);
-                        }
                         if p.exited {
                             exits.push((p.id, p.exit_status));
                         }
@@ -276,10 +276,9 @@ impl ZellijPlugin for State {
                 let theme = focused_colors
                     .or(any_colors)
                     .map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
-                let update = runtime::PaneUpdate {
+                let update = radar_state::PaneUpdate {
                     tab_panes,
                     live,
-                    focused_terminal,
                     theme,
                     exits,
                 };
@@ -348,8 +347,8 @@ mod tests {
     use crate::payload::StatusPayload;
     use crate::status::Status;
 
-    fn pane(id: u32) -> PaneLite {
-        PaneLite {
+    fn pane(id: u32) -> TerminalPane {
+        TerminalPane {
             id,
             ..Default::default()
         }
@@ -361,7 +360,8 @@ mod tests {
         // line numbers assuming no gap lines) continue to pass unchanged.
         let tabs = tab_specs
             .iter()
-            .map(|&(pos, name, active)| runtime::TabLite {
+            .map(|&(pos, name, active)| RadarTab {
+                id: TabId::new(pos + 1),
                 position: pos,
                 name: name.to_string(),
                 active,
@@ -369,7 +369,7 @@ mod tests {
             })
             .collect();
         let mut state = State::default();
-        state.runtime.tabs = tabs;
+        state.runtime.tabs_changed(tabs);
         state.runtime.config = config::Config {
             density: config::Density::Compact,
             ..config::Config::default()
@@ -388,7 +388,7 @@ mod tests {
         tick: u64,
         msg: &str,
     ) {
-        state.runtime.store.apply(
+        state.runtime.radar.status_mut().apply(
             StatusPayload {
                 pane_id,
                 status,
@@ -438,14 +438,17 @@ mod tests {
     }
 
     #[test]
-    fn build_rows_agg_reflects_pane_status() {
+    fn build_rows_display_reflects_pane_status() {
         let mut state = make_state_with_tabs(&[(0, "agent-tab", false)]);
         // Assign pane 42 to tab position 0
-        state.runtime.tab_panes.insert(0, vec![pane(42)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(42)]);
         apply_payload(&mut state, 42, Status::Running, 1);
         let rows = state.build_rows();
-        assert_eq!(rows[0].agg.status, Status::Running);
-        assert!(rows[0].agg.detail.is_some());
+        assert_eq!(rows[0].display.status, Status::Running);
+        assert!(rows[0].display.detail.is_some());
     }
 
     #[test]
@@ -453,8 +456,8 @@ mod tests {
         let state = make_state_with_tabs(&[(0, "plain", false)]);
         // No entry in tab_panes for position 0 — no agent state
         let rows = state.build_rows();
-        assert_eq!(rows[0].agg.status, Status::Idle);
-        assert!(rows[0].agg.detail.is_none());
+        assert_eq!(rows[0].display.status, Status::Idle);
+        assert!(rows[0].display.detail.is_none());
     }
 
     // ── tab_position_at_line tests ──
@@ -486,7 +489,10 @@ mod tests {
     #[test]
     fn agent_tab_running_occupies_two_lines() {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.runtime.tab_panes.insert(0, vec![pane(10)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // running → 2 lines
                                                            // rows 0,1 = header
         assert_eq!(state.tab_position_at_line(1), None);
@@ -502,7 +508,10 @@ mod tests {
     fn agent_tab_pending_with_msg_occupies_two_lines() {
         // New line-2 rule: pending + msg → 2 lines (mark + activity). Old 3-line case gone.
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state.runtime.tab_panes.insert(0, vec![pane(10)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 2
         assert_eq!(state.tab_position_at_line(1), None); // header
         assert_eq!(state.tab_position_at_line(2), Some(0)); // line 1
@@ -545,7 +554,10 @@ mod tests {
             (4, "e", false),
             (5, "pinky", false),
         ]);
-        state.runtime.tab_panes.insert(5, vec![pane(50)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(5, vec![pane(50)]);
         apply_payload(&mut state, 50, Status::Pending, 1); // pending → non-idle, kept
         state.runtime.last_render_height = 6; // body_budget = 4
 
@@ -606,7 +618,10 @@ mod tests {
         // A tab with 2 panes both running, NOT active → multi-pane tree: both
         // calm panes collapse, so row_lines = 1 header + 1 collapse = 2 lines.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state.runtime.tab_panes.insert(0, vec![pane(10), pane(11)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         // header = lines 0,1
@@ -630,8 +645,8 @@ mod tests {
         let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
         state
             .runtime
-            .tab_panes
-            .insert(0, vec![pane(10), pane(11), pane(12)]);
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "run migration?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
@@ -663,7 +678,10 @@ mod tests {
     fn multi_pane_active_all_children_clickable() {
         // Active tab → ALL panes expand; each child line targets its pane.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
-        state.runtime.tab_panes.insert(0, vec![pane(20), pane(21)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
         apply_payload(&mut state, 20, Status::Running, 1);
         apply_payload(&mut state, 21, Status::Done, 1);
         state.runtime.last_render_height = 100;
@@ -680,6 +698,41 @@ mod tests {
             "child 1 → pane 21"
         );
         assert!(state.tab_position_at_line(5).is_none());
+    }
+
+    #[test]
+    fn multi_pane_active_tracked_and_untracked_children_clickable() {
+        let mut state = make_state_with_tabs(&[(0, "team", true)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
+        apply_payload(&mut state, 20, Status::Running, 1);
+        state.runtime.last_render_height = 100;
+
+        assert_eq!(state.target_at_line(2), Some((0, None)), "header");
+        assert_eq!(
+            state.target_at_line(3),
+            Some((0, Some(20))),
+            "tracked child"
+        );
+        assert_eq!(
+            state.target_at_line(4),
+            Some((0, Some(21))),
+            "untracked child"
+        );
+        assert!(state.tab_position_at_line(5).is_none());
+
+        let rows = state.build_rows();
+        assert_eq!(
+            rows[0].display.progress.total, 1,
+            "untracked pane is not progress"
+        );
+        assert_eq!(
+            rows[0].display.panes.len(),
+            2,
+            "both live panes are visible"
+        );
     }
 
     /// Click mapping uses PLANNED (compressed) line counts, not uncompressed
@@ -703,10 +756,22 @@ mod tests {
             (2, "r2", false),
             (3, "urgent", false),
         ]);
-        state.runtime.tab_panes.insert(0, vec![pane(10)]);
-        state.runtime.tab_panes.insert(1, vec![pane(11)]);
-        state.runtime.tab_panes.insert(2, vec![pane(12)]);
-        state.runtime.tab_panes.insert(3, vec![pane(13)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(1, vec![pane(11)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(2, vec![pane(12)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(3, vec![pane(13)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
@@ -739,8 +804,8 @@ mod tests {
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
         state
             .runtime
-            .tab_panes
-            .insert(0, vec![pane(10), pane(11), pane(12)]);
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
@@ -862,7 +927,10 @@ mod tests {
         // tab 0 is a Running tab WITH detail → 2 content lines.
         let mut state = make_state_with_tabs(&[(0, "work", false), (1, "b", false)]);
         // Make tab 0 a running agent with a detail line (2 content lines).
-        state.runtime.tab_panes.insert(0, vec![pane(10)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         state.runtime.last_render_height = 100;
         state.runtime.config = config::Config {
@@ -892,11 +960,17 @@ mod tests {
     #[test]
     fn focus_transition_clears_only_on_entry_not_while_focused() {
         let mut state = make_state_with_tabs(&[(0, "a", true), (1, "b", false)]);
-        state.runtime.tab_panes.insert(0, vec![pane(10)]);
-        state.runtime.tab_panes.insert(1, vec![pane(11)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(10)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(1, vec![pane(11)]);
         // Pane 10 finished a command WHILE focused → Done with on_focus=Idle.
-        state.runtime.command.on_exit(10, Some(0), 1);
-        state.runtime.last_focused = Some(10);
+        state.runtime.radar.command_mut().on_exit(10, Some(0), 1);
+        state.runtime.radar.set_last_focused(Some(10));
         // A subsequent PaneUpdate with the SAME focused pane is not a transition
         // → must NOT clear it (stays lit while you sit on it).
         assert!(
@@ -904,21 +978,21 @@ mod tests {
             "no transition when focus unchanged"
         );
         assert_eq!(
-            state.runtime.command.get(10).unwrap().status,
+            state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Done,
             "Done pane stays lit while focus remains on it"
         );
         // Leaving to pane 11 is a transition, but must not touch the pane we left.
         assert!(state.apply_focus_transition(Some(11), 3));
         assert_eq!(
-            state.runtime.command.get(10).unwrap().status,
+            state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Done,
             "leaving does not change the pane you left"
         );
         // Re-entering pane 10 is a transition → NOW it clears to Idle ("visited").
         assert!(state.apply_focus_transition(Some(10), 4));
         assert_eq!(
-            state.runtime.command.get(10).unwrap().status,
+            state.runtime.radar.command_store().get(10).unwrap().status,
             Status::Idle,
             "re-entering a Done pane clears it to Idle"
         );
@@ -933,17 +1007,26 @@ mod tests {
         let run = |dest: u32| {
             let mut state =
                 make_state_with_tabs(&[(0, "l", false), (1, "mid", true), (2, "r", false)]);
-            state.runtime.tab_panes.insert(0, vec![pane(1)]);
-            state.runtime.tab_panes.insert(1, vec![pane(2)]);
-            state.runtime.tab_panes.insert(2, vec![pane(3)]);
+            state
+                .runtime
+                .radar
+                .set_tab_panes_for_position(0, vec![pane(1)]);
+            state
+                .runtime
+                .radar
+                .set_tab_panes_for_position(1, vec![pane(2)]);
+            state
+                .runtime
+                .radar
+                .set_tab_panes_for_position(2, vec![pane(3)]);
             // Focus is on pane 2; its command finishes → Done while focused.
-            state.runtime.last_focused = Some(2);
-            state.runtime.command.on_exit(2, Some(0), 1);
+            state.runtime.radar.set_last_focused(Some(2));
+            state.runtime.radar.command_mut().on_exit(2, Some(0), 1);
             // A redraw update arrives while still focused (must not clear).
             state.apply_focus_transition(Some(2), 2);
             // Now move focus to the destination pane.
             state.apply_focus_transition(Some(dest), 3);
-            state.runtime.command.get(2).unwrap().status
+            state.runtime.radar.command_store().get(2).unwrap().status
         };
         assert_eq!(
             run(3),
@@ -964,13 +1047,16 @@ mod tests {
         use crate::command::DEBOUNCE_TICKS;
 
         let mut state = make_state_with_tabs(&[(0, "t", true)]);
-        state.runtime.tab_panes.insert(0, vec![pane(5)]);
+        state
+            .runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(5)]);
 
         // Tick counter managed locally, matching what PluginRuntime.tick would be.
         let mut tick: u64 = 0;
 
         // 1) shell prompt only → idle (zsh is in IGNORE_NAMES, no resolved state)
-        state.runtime.command.on_command_changed(
+        state.runtime.radar.command_mut().on_command_changed(
             5,
             &["zsh".to_string()],
             true,
@@ -978,9 +1064,9 @@ mod tests {
             tick,
         );
         tick += 1;
-        state.runtime.command.on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick);
         assert!(
-            state.runtime.command.get(5).is_none(),
+            state.runtime.radar.command_store().get(5).is_none(),
             "shell prompt must leave pane idle"
         );
 
@@ -988,7 +1074,7 @@ mod tests {
         // DEBOUNCE_TICKS = 1: pending since_tick = tick; next tick satisfies
         // (tick + 1) - tick = 1 >= DEBOUNCE_TICKS.
         let since = tick;
-        state.runtime.command.on_command_changed(
+        state.runtime.radar.command_mut().on_command_changed(
             5,
             &["cargo".to_string(), "test".to_string()],
             true,
@@ -997,29 +1083,32 @@ mod tests {
         );
         // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
         tick += DEBOUNCE_TICKS;
-        state.runtime.command.on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick);
         assert_eq!(
-            state.runtime.command.get(5).map(|s| s.status),
+            state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Running),
-            "must promote to Running after debounce (since={}, tick={})", since, tick
+            "must promote to Running after debounce (since={}, tick={})",
+            since,
+            tick
         );
 
         // 3) pane exits with code 0 → Done
         tick += 1;
-        state.runtime.command.on_exit(5, Some(0), tick);
+        state.runtime.radar.command_mut().on_exit(5, Some(0), tick);
         assert_eq!(
-            state.runtime.command.get(5).map(|s| s.status),
+            state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Done),
             "exit 0 must set Done"
         );
 
         // 4) pane gains focus → clear-on-focus → Idle
         tick += 1;
-        state.runtime.command.on_pane_focused(5, tick);
-        let st = state.runtime.command.get(5).map(|s| s.status);
+        state.runtime.radar.command_mut().on_pane_focused(5, tick);
+        let st = state.runtime.radar.command_store().get(5).map(|s| s.status);
         assert!(
             st == Some(Status::Idle) || st.is_none(),
-            "Done must clear to Idle on focus, got {:?}", st
+            "Done must clear to Idle on focus, got {:?}",
+            st
         );
     }
 
@@ -1071,7 +1160,7 @@ mod tests {
                 };
                 // one pane per tab; pane id = tab index
                 apply_payload(&mut state, i as u32, st, 1);
-                state.runtime.tab_panes.insert(i, vec![pane(i as u32)]);
+                state.runtime.radar.set_tab_panes_for_position(i, vec![pane(i as u32)]);
             }
             // Render through the production path at the given width; this populates last_rendered.
             state.runtime.permission_granted = true;

@@ -1,23 +1,11 @@
 //! Deep runtime module: repo-owned events in, ordered host effects out.
 //! No zellij-tile dependency.
 
-use crate::command;
 use crate::config;
-use crate::model;
-use crate::naming::{self, PaneLite};
-use crate::payload;
+use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabRename};
 use crate::render::{self, RenderedRail, TabRow};
-use crate::state::StateStore;
 use crate::theme;
-use std::collections::{BTreeMap, HashMap, HashSet};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TabLite {
-    pub position: usize,
-    pub name: String,
-    pub active: bool,
-    pub has_bell: bool,
-}
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PermissionMarker {
@@ -31,21 +19,12 @@ pub(crate) struct PermissionProbe {
     pub lock_acquired: bool,
 }
 
-#[derive(Debug)]
-pub(crate) struct PaneUpdate {
-    pub tab_panes: HashMap<usize, Vec<PaneLite>>,
-    pub live: HashSet<u32>,
-    pub focused_terminal: Option<u32>,
-    pub theme: Option<theme::DerivedColors>,
-    pub exits: Vec<(u32, Option<i32>)>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
     SetSelectable(bool),
     SetTimeout,
-    PersistSnapshot(String),
+    PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
     RenameTab { position: usize, name: String },
     SwitchTab { position: usize },
@@ -63,13 +42,6 @@ impl Outcome {
         Self::default()
     }
 
-    fn render() -> Self {
-        Self {
-            render: true,
-            effects: Vec::new(),
-        }
-    }
-
     fn with_effects(render: bool, effects: Vec<Effect>) -> Self {
         Self { render, effects }
     }
@@ -77,13 +49,9 @@ impl Outcome {
 
 #[derive(Default)]
 pub(crate) struct PluginRuntime {
-    pub(crate) store: StateStore,
-    pub(crate) tabs: Vec<TabLite>,
-    pub(crate) tab_panes: HashMap<usize, Vec<PaneLite>>,
-    pub(crate) pane_cwd: HashMap<u32, String>,
+    pub(crate) radar: RadarState,
     pub(crate) tick: u64,
     pub(crate) timer_armed: bool,
-    pub(crate) applied_names: HashMap<usize, String>,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission_granted: bool,
@@ -91,8 +59,6 @@ pub(crate) struct PluginRuntime {
     pub(crate) permission_request_started: bool,
     pub(crate) permission_waiting_for_peer: bool,
     pub(crate) theme: theme::DerivedColors,
-    pub(crate) command: command::CommandStore,
-    pub(crate) last_focused: Option<u32>,
     last_rendered: RenderedRail,
 }
 
@@ -105,8 +71,7 @@ impl PluginRuntime {
     ) -> Outcome {
         self.config = config;
         if let Some(raw) = snapshot {
-            if let Some((store, tick)) = StateStore::from_json(raw) {
-                self.store = store;
+            if let Some(tick) = self.radar.load_snapshot(raw) {
                 self.tick = tick;
             }
         }
@@ -114,44 +79,25 @@ impl PluginRuntime {
     }
 
     pub(crate) fn build_rows(&self) -> Vec<TabRow> {
-        let mut rows = Vec::new();
-        let mut sorted = self.tabs.clone();
-        sorted.sort_by_key(|t| t.position);
-        for t in &sorted {
-            let empty = Vec::new();
-            let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
-            let ids: Vec<u32> = panes.iter().map(|p| p.id).collect();
-            rows.push(TabRow {
-                number: t.position as u32 + 1,
-                name: t.name.clone(),
-                active: t.active,
-                has_bell: t.has_bell,
-                agg: model::aggregate(&ids, &self.store, &self.command),
-            });
-        }
-        rows
+        self.radar.rows()
     }
 
-    pub(crate) fn tabs_changed(&mut self, tabs: Vec<TabLite>) -> Outcome {
-        self.tabs = tabs;
-        Outcome::render()
+    pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
+        let change = self.radar.tabs_changed(tabs);
+        Outcome::with_effects(change.render, Vec::new())
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
-        for (pane_id, exit_status) in update.exits {
-            self.command.on_exit(pane_id, exit_status, self.tick);
-        }
-        if let Some(theme) = update.theme {
+        if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        self.tab_panes = update.tab_panes;
-        self.store.prune(&update.live);
-        self.command.prune(&update.live);
-        self.pane_cwd.retain(|id, _| update.live.contains(id));
-        self.apply_focus_transition(update.focused_terminal, self.tick);
-
-        let mut effects = self.rename_effects();
-        effects.push(Effect::PersistSnapshot(self.store.to_json(self.tick)));
+        let change = self
+            .radar
+            .panes_changed(update, self.tick, self.config.naming);
+        let mut effects = self.effects_from_renames(change.renames);
+        if change.persist_snapshot {
+            effects.push(Effect::PersistSnapshot);
+        }
         Outcome::with_effects(true, effects)
     }
 
@@ -161,10 +107,10 @@ impl PluginRuntime {
         let permission_changed =
             self.check_deferred_permission_request(permission_marker, &mut effects);
         self.tick += 1;
-        self.command.on_timer(self.tick);
+        self.radar.timer(self.tick);
         self.arm_timer_if_needed(&mut effects);
         Outcome::with_effects(
-            permission_changed || self.store.any_active() || self.command.has_pending_or_active(),
+            permission_changed || self.radar.has_active_or_pending_work(),
             effects,
         )
     }
@@ -201,8 +147,8 @@ impl PluginRuntime {
     }
 
     pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String) -> Outcome {
-        self.pane_cwd.insert(pane_id, path);
-        Outcome::with_effects(true, self.rename_effects())
+        let change = self.radar.cwd_changed(pane_id, path, self.config.naming);
+        Outcome::with_effects(change.render, self.effects_from_renames(change.renames))
     }
 
     pub(crate) fn command_changed(
@@ -211,23 +157,28 @@ impl PluginRuntime {
         command: &[String],
         is_foreground: bool,
     ) -> Outcome {
-        let cwd = self.pane_cwd.get(&pane_id).map(|s| s.as_str());
-        self.command
-            .on_command_changed(pane_id, command, is_foreground, cwd, self.tick);
+        let change = self
+            .radar
+            .command_changed(pane_id, command, is_foreground, self.tick);
         let mut effects = Vec::new();
         self.arm_timer_if_needed(&mut effects);
-        Outcome::with_effects(true, effects)
+        Outcome::with_effects(change.render, effects)
     }
 
     pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
-        let Some(p) = payload::parse(raw) else {
+        let Some(change) = self.radar.status_pipe(raw, self.tick, self.config.naming) else {
             return Outcome::none();
         };
-        self.store.apply(p, self.tick);
-        let mut effects = self.rename_effects();
+        let mut effects = self.effects_from_renames(change.renames);
         self.arm_timer_if_needed(&mut effects);
-        effects.push(Effect::PersistSnapshot(self.store.to_json(self.tick)));
-        Outcome::with_effects(true, effects)
+        if change.persist_snapshot {
+            effects.push(Effect::PersistSnapshot);
+        }
+        Outcome::with_effects(change.render, effects)
+    }
+
+    pub(crate) fn snapshot_json(&self, existing: Option<&str>) -> String {
+        self.radar.snapshot_json(existing, self.tick)
     }
 
     pub(crate) fn config_pipe(&mut self, raw: &str) -> Outcome {
@@ -252,7 +203,8 @@ impl PluginRuntime {
             })
             .collect();
         self.config.apply_overrides(&kv);
-        Outcome::with_effects(true, self.rename_effects())
+        let renames = self.radar.recompute_renames(self.config.naming);
+        Outcome::with_effects(true, self.effects_from_renames(renames))
     }
 
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
@@ -293,15 +245,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        if focused == self.last_focused {
-            return false;
-        }
-        self.last_focused = focused;
-        if let Some(id) = focused {
-            self.store.on_pane_focused(id, tick);
-            self.command.on_pane_focused(id, tick);
-        }
-        true
+        self.radar.apply_focus_transition(focused, tick)
     }
 
     #[cfg(test)]
@@ -365,39 +309,17 @@ impl PluginRuntime {
 
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
         if !self.timer_armed
-            && (self.permission_waiting_for_peer
-                || self.store.any_active()
-                || self.command.has_pending_or_active())
+            && (self.permission_waiting_for_peer || self.radar.has_active_or_pending_work())
         {
             self.timer_armed = true;
             effects.push(Effect::SetTimeout);
         }
     }
 
-    fn rename_effects(&mut self) -> Vec<Effect> {
-        if self.config.naming == config::NamingMode::Off {
-            return Vec::new();
-        }
-        let force = self.config.naming == config::NamingMode::Force;
-        let tabs: Vec<(usize, String)> = self
-            .tabs
-            .iter()
-            .map(|t| (t.position, t.name.clone()))
-            .collect();
-        let changes = naming::compute_renames(
-            &tabs,
-            &self.tab_panes,
-            &self.store,
-            &self.applied_names,
-            force,
-            &self.pane_cwd,
-        );
-        for (pos, name) in &changes {
-            self.applied_names.insert(*pos, name.clone());
-        }
-        changes
+    fn effects_from_renames(&self, renames: Vec<TabRename>) -> Vec<Effect> {
+        renames
             .into_iter()
-            .map(|(position, name)| Effect::RenameTab { position, name })
+            .map(|TabRename { position, name }| Effect::RenameTab { position, name })
             .collect()
     }
 }
@@ -407,10 +329,13 @@ mod tests {
     use super::*;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
+    use crate::radar_state::{TabId, TerminalPane};
     use crate::status::{GlyphSet, Status};
+    use std::collections::{HashMap, HashSet};
 
-    fn tab(position: usize, name: &str, active: bool) -> TabLite {
-        TabLite {
+    fn tab(position: usize, name: &str, active: bool) -> RadarTab {
+        RadarTab {
+            id: TabId::new(position + 1),
             position,
             name: name.into(),
             active,
@@ -418,8 +343,8 @@ mod tests {
         }
     }
 
-    fn pane(id: u32) -> PaneLite {
-        PaneLite {
+    fn pane(id: u32) -> TerminalPane {
+        TerminalPane {
             id,
             ..Default::default()
         }
@@ -455,9 +380,11 @@ mod tests {
 
     #[test]
     fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
-        let mut seeded = StateStore::default();
-        seeded.apply(payload_for(9, Status::Running), 7);
-        let snapshot = seeded.to_json(7);
+        let mut seeded = RadarState::default();
+        seeded
+            .status_mut()
+            .apply(payload_for(9, Status::Running), 7);
+        let snapshot = seeded.snapshot_json(None, 7);
 
         let mut runtime = PluginRuntime::default();
         let outcome = runtime.load(
@@ -470,7 +397,10 @@ mod tests {
         );
 
         assert_eq!(runtime.tick, 7);
-        assert_eq!(runtime.store.get(9).unwrap().status, Status::Running);
+        assert_eq!(
+            runtime.radar.status_store().get(9).unwrap().status,
+            Status::Running
+        );
         assert!(runtime.permission_request_started);
         assert_eq!(
             outcome,
@@ -569,45 +499,62 @@ mod tests {
         let outcome = runtime.status_pipe(&raw);
 
         assert!(outcome.render);
-        assert!(runtime.store.any_active());
+        assert!(runtime.radar.status_store().any_active());
         assert_eq!(outcome.effects.len(), 2);
         assert_eq!(outcome.effects[0], Effect::SetTimeout);
-        let Effect::PersistSnapshot(json) = &outcome.effects[1] else {
+        let Effect::PersistSnapshot = &outcome.effects[1] else {
             panic!("expected persisted snapshot");
         };
-        let (restored, tick) = StateStore::from_json(json).expect("valid snapshot");
+        let json = runtime.snapshot_json(None);
+        let mut restored = RadarState::default();
+        let tick = restored.load_snapshot(&json).expect("valid snapshot");
         assert_eq!(tick, 0);
-        assert_eq!(restored.get(5).unwrap().status, Status::Running);
+        assert_eq!(
+            restored.status_store().get(5).unwrap().status,
+            Status::Running
+        );
     }
 
     #[test]
     fn panes_changed_prunes_focuses_and_persists_snapshot() {
         let mut runtime = runtime_with_config(config());
-        runtime.store.apply(payload_for(10, Status::Running), 1);
-        runtime.store.apply(payload_for(11, Status::Running), 1);
-        runtime.command.on_exit(12, Some(0), 1);
+        runtime.tabs_changed(vec![tab(0, "work", true)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(10, Status::Running), 1);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(11, Status::Running), 1);
+        runtime.radar.command_mut().on_exit(12, Some(0), 1);
 
         let mut live = HashSet::new();
         live.insert(10);
         let mut tab_panes = HashMap::new();
-        tab_panes.insert(0, vec![pane(10)]);
+        tab_panes.insert(
+            0,
+            vec![TerminalPane {
+                focused_in_tab: true,
+                ..pane(10)
+            }],
+        );
 
         let outcome = runtime.panes_changed(PaneUpdate {
             tab_panes,
             live,
-            focused_terminal: Some(10),
             theme: Some(theme::DerivedColors::default()),
             exits: vec![(10, Some(0))],
         });
 
         assert!(outcome.render);
-        assert_eq!(runtime.last_focused, Some(10));
-        assert!(runtime.store.get(11).is_none());
-        assert!(runtime.command.get(12).is_none());
+        assert_eq!(runtime.radar.last_focused(), Some(10));
+        assert!(runtime.radar.status_store().get(11).is_none());
+        assert!(runtime.radar.command_store().get(12).is_none());
         assert!(outcome
             .effects
             .iter()
-            .any(|effect| matches!(effect, Effect::PersistSnapshot(_))));
+            .any(|effect| matches!(effect, Effect::PersistSnapshot)));
     }
 
     #[test]
@@ -618,7 +565,7 @@ mod tests {
             ..config::Config::default()
         });
         runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
-        runtime.tab_panes.insert(0, vec![pane(7)]);
+        runtime.radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
         let rename = runtime.cwd_changed(7, "/work/myrepo".into());
 
@@ -629,10 +576,7 @@ mod tests {
                 name: "myrepo".into(),
             }]
         );
-        assert_eq!(
-            runtime.applied_names.get(&0).map(String::as_str),
-            Some("myrepo")
-        );
+        assert_eq!(runtime.radar.applied_name(TabId::new(1)), Some("myrepo"));
 
         let command = vec!["cargo".to_string(), "test".to_string()];
         let command_outcome = runtime.command_changed(7, &command, true);
@@ -641,7 +585,11 @@ mod tests {
         let timer = runtime.timer(None);
         assert!(timer.render);
         assert_eq!(timer.effects, vec![Effect::SetTimeout]);
-        let state = runtime.command.get(7).expect("promoted command");
+        let state = runtime
+            .radar
+            .command_store()
+            .get(7)
+            .expect("promoted command");
         assert_eq!(state.status, Status::Running);
         assert_eq!(state.repo, "myrepo");
     }
@@ -669,11 +617,20 @@ mod tests {
         };
         runtime.tabs_changed(vec![tab(0, "team", false), tab(1, "plain", false)]);
         runtime
-            .tab_panes
-            .insert(0, vec![pane(20), pane(21), pane(22)]);
-        runtime.store.apply(payload_for(20, Status::Pending), 1);
-        runtime.store.apply(payload_for(21, Status::Running), 1);
-        runtime.store.apply(payload_for(22, Status::Running), 1);
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(20), pane(21), pane(22)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(20, Status::Pending), 1);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(21, Status::Running), 1);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(22, Status::Running), 1);
 
         let ansi = runtime.render(100, 80);
         assert!(ansi.contains("team"));

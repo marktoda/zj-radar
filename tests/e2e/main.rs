@@ -58,7 +58,10 @@ fn plugin_loads_and_renders_status() {
     let session_name = format!("zjr_smoke_{}", std::process::id());
     let layout = sidebar_layout(&wasm);
 
-    eprintln!("[e2e] starting session '{}' with layout:\n{}", session_name, layout);
+    eprintln!(
+        "[e2e] starting session '{}' with layout:\n{}",
+        session_name, layout
+    );
     let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
     eprintln!("[e2e] plugin loaded (saw ' RADAR' in PTY)");
 
@@ -86,7 +89,10 @@ fn plugin_loads_and_renders_status() {
     // `pty_text()` returns a String of printable ASCII/UTF-8, so pre_len is
     // always on a char boundary; the fallback to "" handles any edge case.
     let suffix = full.get(pre_len..).unwrap_or("");
-    eprintln!("[e2e] PTY suffix (last 500 chars): {:?}", &suffix[suffix.len().saturating_sub(500)..]);
+    eprintln!(
+        "[e2e] PTY suffix (last 500 chars): {:?}",
+        &suffix[suffix.len().saturating_sub(500)..]
+    );
 
     assert!(
         suffix.contains("web") || suffix.contains("building"),
@@ -122,7 +128,10 @@ fn multi_agent_needs_you_is_visible() {
     // the tab, allowing both agents' states to aggregate and render.
     let layout = sidebar_layout_two_terminal(&wasm);
 
-    eprintln!("[e2e] starting multi-agent session '{}' with two-terminal layout", session_name);
+    eprintln!(
+        "[e2e] starting multi-agent session '{}' with two-terminal layout",
+        session_name
+    );
     let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
     eprintln!("[e2e] plugin loaded");
 
@@ -212,7 +221,10 @@ fn notify_sh_end_to_end_updates_sidebar() {
     // Fire the real notify.sh with a PostToolUse Edit hook payload.
     // notify.sh will derive msg="editing auth.rs" and pipe it to the plugin.
     let hook_json = r#"{"hook_event_name":"PostToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
-    eprintln!("[e2e] firing notify.sh running with hook JSON: {}", hook_json);
+    eprintln!(
+        "[e2e] firing notify.sh running with hook JSON: {}",
+        hook_json
+    );
     session.run_notify_sh("running", pane_id, hook_json);
 
     let full = session.pty_text();

@@ -36,6 +36,19 @@ expanded multi-pane row, a specific pane to show (`pane_id`). Header, gap, and
 idle-strip lines have no `RailTarget`. The runtime turns a `RailTarget` into a
 `SwitchTab` / `ShowPane` effect on click.
 
+## RadarState
+
+The plugin's session-state module: the current radar view of tabs, live terminal
+panes, pane observations, focus transitions, snapshot serialization, and rename
+ownership. `RadarState` is not a replacement for the source-specific stores; it
+composes `StatusStore` (status-payload observations) and `CommandStore`
+(command-derived observations) with live pane topology, then produces `TabRow`s
+for the rail.
+
+The runtime owns host concerns: permission flow, timers, rendered-rail caching,
+and turning repo-owned outcomes into Zellij effects. The rail owns layout and
+click-target lockstep. `RadarState` owns the domain facts between those seams.
+
 ## Lockstep
 
 The load-bearing invariant of the rail: the emitted ANSI and the click-target map
@@ -54,7 +67,7 @@ on_focus, seq}`). Producers (the Claude plugin, the Codex CLI) are adapters that
 broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
 oversized/out-of-order).
 
-## Aggregation
+## Tab Roll-Up
 
 The per-pane → per-tab roll-up: severity order `error > pending > running > done >
 idle`, with `done/total` counts and a highest-severity detail line. Tab status is

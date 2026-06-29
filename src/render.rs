@@ -1,7 +1,7 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
 
 use crate::config::Density;
-use crate::model::{PaneEntry, TabAgg};
+use crate::kind::Kind;
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
 use crate::theme::DerivedColors;
@@ -32,7 +32,105 @@ pub struct TabRow {
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
-    pub agg: TabAgg,
+    pub display: TabDisplay,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrimaryDetail {
+    pub repo: String,
+    pub branch: String,
+    pub msg: String,
+    pub since_tick: u64,
+    pub status: Status,
+    pub kind: Kind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneDisplay {
+    Tracked {
+        pane_id: u32,
+        kind: Kind,
+        status: Status,
+        msg: String,
+    },
+    Untracked {
+        pane_id: u32,
+        title: String,
+    },
+}
+
+impl PaneDisplay {
+    pub(crate) fn tracked(pane_id: u32, kind: Kind, status: Status, msg: String) -> Self {
+        Self::Tracked {
+            pane_id,
+            kind,
+            status,
+            msg,
+        }
+    }
+
+    pub(crate) fn untracked(pane_id: u32, title: &str) -> Self {
+        let title = if title.trim().is_empty() {
+            "terminal".to_string()
+        } else {
+            title.to_string()
+        };
+        Self::Untracked { pane_id, title }
+    }
+
+    fn is_tracked(&self) -> bool {
+        matches!(self, Self::Tracked { .. })
+    }
+
+    pub(crate) fn pane_id(&self) -> u32 {
+        match self {
+            Self::Tracked { pane_id, .. } | Self::Untracked { pane_id, .. } => *pane_id,
+        }
+    }
+
+    fn status(&self) -> Option<Status> {
+        match self {
+            Self::Tracked { status, .. } => Some(*status),
+            Self::Untracked { .. } => None,
+        }
+    }
+
+    fn render_status(&self) -> Status {
+        self.status().unwrap_or(Status::Idle)
+    }
+
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Tracked { kind, .. } => *kind,
+            Self::Untracked { .. } => Kind::Other,
+        }
+    }
+
+    fn msg(&self) -> &str {
+        match self {
+            Self::Tracked { msg, .. } => msg,
+            Self::Untracked { title, .. } => title,
+        }
+    }
+
+    fn needs_you(&self) -> bool {
+        matches!(self.status(), Some(Status::Pending | Status::Error))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabDisplay {
+    pub status: Status,
+    pub progress: ProgressCounts,
+    pub detail: Option<PrimaryDetail>,
+    pub panes: Vec<PaneDisplay>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProgressCounts {
+    pub done: usize,
+    pub total: usize,
+    pub pending: usize,
 }
 
 /// "0:14" under a minute-ish, "2m", "1h3m".
@@ -148,15 +246,15 @@ impl RenderedRail {
 /// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
 /// external-separation rows). `render_rail()` budgets in terms of this so the
 /// emitted ANSI lines and line targets stay exact.
-fn card_block_lines(agg: &TabAgg, active: bool, spacing: CardSpacing) -> usize {
-    spacing.pad_y + row_lines(agg, active) + spacing.gap
+fn card_block_lines(display: &TabDisplay, active: bool, spacing: CardSpacing) -> usize {
+    spacing.pad_y + row_lines(display, active) + spacing.gap
 }
 
-/// A pane is "multi-pane" for tree purposes when it has more than one ever-active
-/// pane. Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
+/// A tab is "multi-pane" for tree purposes when it has more than one live pane.
+/// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the adaptive tree (`pane_tree_plan`).
-fn is_multi_pane(agg: &TabAgg) -> bool {
-    agg.panes.len() > 1
+fn is_multi_pane(display: &TabDisplay) -> bool {
+    display.panes.len() > 1
 }
 
 /// The expand/collapse split for a multi-pane tab's adaptive tree. The SINGLE
@@ -171,46 +269,43 @@ fn is_multi_pane(agg: &TabAgg) -> bool {
 ///     Running, else "done".
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PaneTreePlan {
-    expanded: Vec<PaneEntry>,
+    expanded: Vec<PaneDisplay>,
     collapsed_count: usize,
-    /// The dominant calm verb for the collapse line ("working" or "done").
+    /// The dominant calm label for the collapse line ("working", "done", or "panes").
     collapsed_verb: &'static str,
+    collapsed_is_remainder: bool,
 }
 
-const ACTIVE_CALM_CHILD_LIMIT: usize = 2;
-
 /// Compute the expand/collapse split for a multi-pane tab. Callers should only
-/// invoke this when `is_multi_pane(agg)` is true; for a single-pane tab it would
+/// invoke this when `is_multi_pane(display)` is true; for a single-pane tab it would
 /// return all panes collapsed (which is not how single-pane tabs render).
-fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
-    let needs_you = |s: Status| matches!(s, Status::Pending | Status::Error);
-    let mut expanded: Vec<PaneEntry> = Vec::new();
-    let mut collapsed: Vec<&PaneEntry> = Vec::new();
-    let mut active_calm_seen: Vec<(crate::kind::Kind, Status, String)> = Vec::new();
-    let mut active_calm_expanded = 0usize;
-    for p in &agg.panes {
-        if needs_you(p.status) {
+fn pane_tree_plan(display: &TabDisplay, active: bool) -> PaneTreePlan {
+    let mut expanded: Vec<PaneDisplay> = Vec::new();
+    let mut collapsed: Vec<&PaneDisplay> = Vec::new();
+    for p in &display.panes {
+        if active || p.needs_you() {
             expanded.push(p.clone());
-        } else if active {
-            let key = (p.kind, p.status, p.msg.clone());
-            let duplicate = active_calm_seen.iter().any(|seen| seen == &key);
-            if !duplicate && active_calm_expanded < ACTIVE_CALM_CHILD_LIMIT {
-                active_calm_seen.push(key);
-                active_calm_expanded += 1;
-                expanded.push(p.clone());
-            } else {
-                collapsed.push(p);
-            }
         } else {
             collapsed.push(p);
         }
     }
-    let any_running = collapsed.iter().any(|p| p.status == Status::Running);
-    let collapsed_verb = if any_running { "working" } else { "done" };
+    let any_untracked = collapsed.iter().any(|p| !p.is_tracked());
+    let any_running = collapsed
+        .iter()
+        .any(|p| p.status() == Some(Status::Running));
+    let collapsed_verb = if any_untracked {
+        "panes"
+    } else if any_running {
+        "working"
+    } else {
+        "done"
+    };
+    let collapsed_is_remainder = !collapsed.is_empty() && !expanded.is_empty();
     PaneTreePlan {
         expanded,
         collapsed_count: collapsed.len(),
         collapsed_verb,
+        collapsed_is_remainder,
     }
 }
 
@@ -222,17 +317,17 @@ fn pane_tree_plan(agg: &TabAgg, active: bool) -> PaneTreePlan {
 ///
 /// Multi-pane tabs (chunk-2 adaptive tree): 1 header line + one child line per
 /// expanded pane + one collapse line when any calm pane is collapsed. The split
-/// is computed by `pane_tree_plan(agg, active)` so rendered lines and their
+/// is computed by `pane_tree_plan(display, active)` so rendered lines and their
 /// click targets stay in lockstep.
-fn row_lines(agg: &TabAgg, active: bool) -> usize {
-    if is_multi_pane(agg) {
-        let plan = pane_tree_plan(agg, active);
+fn row_lines(display: &TabDisplay, active: bool) -> usize {
+    if is_multi_pane(display) {
+        let plan = pane_tree_plan(display, active);
         let collapse_line = if plan.collapsed_count > 0 { 1 } else { 0 };
         return 1 + plan.expanded.len() + collapse_line;
     }
-    match agg.status {
+    match display.status {
         Status::Idle | Status::Done => 1,
-        Status::Running | Status::Error | Status::Pending => match &agg.detail {
+        Status::Running | Status::Error | Status::Pending => match &display.detail {
             Some(d) if !d.msg.trim().is_empty() => 2,
             _ => 1,
         },
@@ -240,18 +335,18 @@ fn row_lines(agg: &TabAgg, active: bool) -> usize {
 }
 
 /// Right-aligned status slot text (no color). Empty for idle.
-fn right_slot(agg: &TabAgg, now_tick: u64, width: usize) -> String {
-    let elapsed = agg
+fn right_slot(display: &TabDisplay, now_tick: u64, width: usize) -> String {
+    let elapsed = display
         .detail
         .as_ref()
         .map(|d| format_elapsed(now_tick.saturating_sub(d.since_tick)))
         .unwrap_or_default();
-    let count = if agg.total > 1 {
-        format!("{}/{} ", agg.done, agg.total)
+    let count = if display.progress.total > 1 {
+        format!("{}/{} ", display.progress.done, display.progress.total)
     } else {
         String::new()
     };
-    match agg.status {
+    match display.status {
         Status::Idle => String::new(),
         Status::Running => format!("{}{}", count, elapsed),
         Status::Pending => format!("{}⏵ {}", count, elapsed),
@@ -307,13 +402,13 @@ fn is_calm(status: Status) -> bool {
 /// `row_lines` remains the *uncompressed* line count; this function produces
 /// the *planned* per-row line count actually rendered.
 fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, usize) {
-    let total: usize = rows.iter().map(|r| row_lines(&r.agg, r.active)).sum();
+    let total: usize = rows.iter().map(|r| row_lines(&r.display, r.active)).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
         let plan = rows
             .iter()
             .enumerate()
-            .map(|(i, r)| (i, row_lines(&r.agg, r.active)))
+            .map(|(i, r)| (i, row_lines(&r.display, r.active)))
             .collect();
         return (plan, 0);
     }
@@ -322,15 +417,18 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
     let non_idle_idx: Vec<usize> = rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.agg.status != Status::Idle)
+        .filter(|(_, r)| r.display.status != Status::Idle)
         .map(|(i, _)| i)
         .collect();
-    let folded_count = rows.iter().filter(|r| r.agg.status == Status::Idle).count();
+    let folded_count = rows
+        .iter()
+        .filter(|r| r.display.status == Status::Idle)
+        .count();
 
     // Each kept row starts at its full (uncompressed) line count.
     let mut planned: Vec<(usize, usize)> = non_idle_idx
         .iter()
-        .map(|&i| (i, row_lines(&rows[i].agg, rows[i].active)))
+        .map(|&i| (i, row_lines(&rows[i].display, rows[i].active)))
         .collect();
 
     // Step 2: check if the strip line itself (1 extra line) would overflow.
@@ -355,7 +453,7 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
         if *lines <= 1 {
             continue;
         }
-        if is_calm(rows[idx].agg.status) {
+        if is_calm(rows[idx].display.status) {
             used -= *lines - 1; // account for the lines we're dropping
             *lines = 1;
             if used + strip_used <= body_budget {
@@ -379,7 +477,7 @@ fn plan_overflow(rows: &[TabRow], body_budget: usize) -> (Vec<(usize, usize)>, u
             if *lines <= 1 {
                 continue;
             }
-            if !is_calm(rows[idx].agg.status) {
+            if !is_calm(rows[idx].display.status) {
                 used -= 1;
                 *lines -= 1;
                 changed = true;
@@ -434,13 +532,13 @@ fn plan_layout(
     // single footprint source shared with the budgeting below.
     let full_footprint: usize = rows
         .iter()
-        .map(|r| card_block_lines(&r.agg, r.active, base))
+        .map(|r| card_block_lines(&r.display, r.active, base))
         .sum();
     if full_footprint <= body_budget {
         let plan = rows
             .iter()
             .enumerate()
-            .map(|(i, r)| (i, row_lines(&r.agg, r.active)))
+            .map(|(i, r)| (i, row_lines(&r.display, r.active)))
             .collect();
         return (plan, 0, base);
     }
@@ -520,7 +618,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
 /// Emit one row's body into `out`, respecting `max_lines`.
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
-/// Detail/roster lines are emitted in priority order while `lines_emitted < max_lines`:
+/// PrimaryDetail/roster lines are emitted in priority order while `lines_emitted < max_lines`:
 ///
 /// - For urgent rows (Pending/Error): detail line comes before msg line;
 ///   roster is least-priority and is dropped first.
@@ -539,7 +637,7 @@ fn render_row<F>(
 {
     let width = opts.width;
     let now_tick = opts.now_tick;
-    let st = row.agg.status;
+    let st = row.display.status;
     let tab_target = target_for_row(row);
 
     // Status HUES are always ANSI-16 role codes so the terminal renders them in
@@ -589,7 +687,7 @@ fn render_row<F>(
     // right slot (reserved width even when empty). Waiting/done/error color
     // their slot with the status role (it carries meaning); the *working*
     // elapsed is ambient info, not an alarm, so it's dimmed (design uses `id`).
-    let slot_raw = right_slot(&row.agg, now_tick, width);
+    let slot_raw = right_slot(&row.display, now_tick, width);
 
     // bell marker just before the slot.
     let bell = if row.has_bell {
@@ -672,8 +770,8 @@ fn render_row<F>(
     // one collapse line for the calm remainder. The expand/collapse split comes
     // from `pane_tree_plan`, the SINGLE source of truth shared with `row_lines`
     // and this function's target recorder, so emitted lines stay in lockstep.
-    if is_multi_pane(&row.agg) {
-        let plan = pane_tree_plan(&row.agg, row.active);
+    if is_multi_pane(&row.display) {
+        let plan = pane_tree_plan(&row.display, row.active);
         let has_collapse = plan.collapsed_count > 0;
         let total_children = plan.expanded.len() + if has_collapse { 1 } else { 0 };
 
@@ -688,15 +786,19 @@ fn render_row<F>(
             emit_child_line(out, tree, pane, opts, &idle_color, &dim_strong);
             record_target(Some(RailTarget {
                 tab_position: tab_target.tab_position,
-                pane_id: Some(pane.pane_id),
+                pane_id: Some(pane.pane_id()),
             }));
             emitted += 1;
         }
 
         if has_collapse && emitted < max_lines {
-            // Collapse summary: `  +N working` (or "done"). This deliberately
-            // avoids tree chrome so it reads as a summary, not another pane.
-            let text = format!("+{} {}", plan.collapsed_count, plan.collapsed_verb);
+            // Fully collapsed calm rosters read as `2 working`; hidden
+            // remainders after urgent children read as `+2 more working`.
+            let text = if plan.collapsed_is_remainder {
+                format!("+{} more {}", plan.collapsed_count, plan.collapsed_verb)
+            } else {
+                format!("{} {}", plan.collapsed_count, plan.collapsed_verb)
+            };
             let clamped = truncate(&text, width.saturating_sub(2));
             out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
             record_target(Some(tab_target));
@@ -709,7 +811,7 @@ fn render_row<F>(
     // Only emitted when the status is active, a detail with a non-empty msg exists,
     // and there is remaining budget. For Running, the braille spinner is appended.
     // For Pending (the question), activity is colored in attention (loud). Others dim_strong.
-    if let Some(d) = &row.agg.detail {
+    if let Some(d) = &row.display.detail {
         if emitted < max_lines && !d.msg.trim().is_empty() {
             match st {
                 Status::Idle | Status::Done => {}
@@ -761,28 +863,29 @@ fn render_row<F>(
 fn emit_child_line(
     out: &mut String,
     tree: &str,
-    pane: &PaneEntry,
+    pane: &PaneDisplay,
     opts: &RenderOpts,
     idle_color: &str,
     dim_strong: &str,
 ) {
     let width = opts.width;
-    let mark = pane.kind.mark();
+    let mark = pane.kind().mark();
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
+    let status = pane.render_status();
     // Status glyph: working spins; others use the static glyph.
-    let glyph = if pane.status == Status::Running {
+    let glyph = if status == Status::Running {
         crate::status::working_spin(opts.now_tick as usize)
     } else {
-        pane.status.glyph_for(opts.glyphs)
+        status.glyph_for(opts.glyphs)
     };
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
     // Visible prefix: 2 indent + tree(2) + glyph + 1 space + mark + 1 space.
     let tree_w = UnicodeWidthStr::width(tree);
     let prefix_vis = 2 + tree_w + glyph_w + 1 + mark_w + 1;
     let avail = width.saturating_sub(prefix_vis);
-    let activity_str = truncate(&pane.msg, avail);
+    let activity_str = truncate(pane.msg(), avail);
     let role_ansi = |r: Role| -> &'static str { r.ansi() };
-    let activity_color = if pane.status == Status::Pending {
+    let activity_color = if status == Status::Pending {
         role_ansi(Role::Attention).to_string()
     } else {
         dim_strong.to_string()
@@ -792,7 +895,7 @@ fn emit_child_line(
         idle_color,
         tree,
         RESET, // tree char (muted)
-        role_ansi(pane.status.role()),
+        role_ansi(status.role()),
         glyph,
         RESET, // status glyph in role color (aligned column)
         idle_color,
@@ -840,7 +943,7 @@ fn tc_fg(c: (u8, u8, u8)) -> String {
 fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
     let rgb = if row.active {
         theme.surface_active
-    } else if row.agg.status.is_active() {
+    } else if row.display.status.is_active() {
         theme.surface_agent
     } else {
         theme.surface_idle
@@ -929,7 +1032,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     };
     let pending = rows
         .iter()
-        .filter(|r| r.agg.status == Status::Pending)
+        .filter(|r| r.display.status == Status::Pending)
         .count();
     let urgent = if pending > 0 {
         format!(" ·{}!", pending)
@@ -951,11 +1054,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
         // Title in accent; total count muted (accent when overflowing, so the
         // ▲ marker stays loud); urgent marker in the attention role.
-        let count_color = if overflow {
-            accent
-        } else {
-            Role::Muted.ansi()
-        };
+        let count_color = if overflow { accent } else { Role::Muted.ansi() };
         // Clamp visible portions to width before assembling the ANSI line.
         let title_budget = width.saturating_sub(right_w + gap);
         let title_clamped = truncate(title, title_budget);
@@ -1012,7 +1111,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
             }
             let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
             for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
-                let line_bg = if rows[i].active && is_multi_pane(&rows[i].agg) && line_idx > 0 {
+                let line_bg = if rows[i].active && is_multi_pane(&rows[i].display) && line_idx > 0 {
                     &active_child_bg
                 } else {
                     &bg
@@ -1089,14 +1188,20 @@ fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 mod tests {
     use super::*;
     use crate::kind::Kind;
-    use crate::model::Detail;
 
-    fn agg(status: Status, done: usize, total: usize, detail: Option<Detail>) -> TabAgg {
-        TabAgg {
+    fn display(
+        status: Status,
+        done: usize,
+        total: usize,
+        detail: Option<PrimaryDetail>,
+    ) -> TabDisplay {
+        TabDisplay {
             status,
-            done,
-            total,
-            pending: if status == Status::Pending { 1 } else { 0 },
+            progress: ProgressCounts {
+                done,
+                total,
+                pending: if status == Status::Pending { 1 } else { 0 },
+            },
             detail,
             panes: vec![],
         }
@@ -1128,7 +1233,7 @@ mod tests {
             name: "a".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 0, 0, None),
+            display: display(Status::Running, 0, 0, None),
         }];
         assert_eq!(
             header_lines(&rows, true, crate::config::Density::Compact),
@@ -1160,7 +1265,7 @@ mod tests {
         assert_eq!(untargeted.line_count(), 2);
         assert_eq!(untargeted.target_at_line(0), None);
 
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "repo".into(),
             branch: "main".into(),
             msg: "approve".into(),
@@ -1174,25 +1279,17 @@ mod tests {
                 name: "team".into(),
                 active: false,
                 has_bell: false,
-                agg: TabAgg {
+                display: TabDisplay {
                     status: Status::Pending,
-                    done: 0,
-                    total: 2,
-                    pending: 1,
+                    progress: ProgressCounts {
+                        done: 0,
+                        total: 2,
+                        pending: 1,
+                    },
                     detail: Some(detail),
                     panes: vec![
-                        PaneEntry {
-                            pane_id: 10,
-                            kind: Kind::Claude,
-                            status: Status::Pending,
-                            msg: "approve".into(),
-                        },
-                        PaneEntry {
-                            pane_id: 11,
-                            kind: Kind::Claude,
-                            status: Status::Running,
-                            msg: "tests".into(),
-                        },
+                        PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into()),
+                        PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into()),
                     ],
                 },
             },
@@ -1201,7 +1298,7 @@ mod tests {
                 name: "plain".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
         ];
 
@@ -1247,7 +1344,7 @@ mod tests {
             name: "notes".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro(24, 0));
         assert!(s.contains("notes"));
@@ -1257,10 +1354,10 @@ mod tests {
 
     #[test]
     fn row_lines_by_state() {
-        assert_eq!(row_lines(&agg(Status::Idle, 0, 0, None), false), 1);
+        assert_eq!(row_lines(&display(Status::Idle, 0, 0, None), false), 1);
 
         let detail = |status, msg: &str| {
-            Some(Detail {
+            Some(PrimaryDetail {
                 repo: "r".into(),
                 branch: "b".into(),
                 msg: msg.into(),
@@ -1270,32 +1367,38 @@ mod tests {
             })
         };
         assert_eq!(
-            row_lines(&agg(Status::Done, 1, 1, detail(Status::Done, "")), false),
+            row_lines(
+                &display(Status::Done, 1, 1, detail(Status::Done, "")),
+                false
+            ),
             1
         );
         assert_eq!(
             row_lines(
-                &agg(Status::Running, 1, 1, detail(Status::Running, "x")),
+                &display(Status::Running, 1, 1, detail(Status::Running, "x")),
                 false
             ),
             2
         );
         assert_eq!(
-            row_lines(&agg(Status::Error, 1, 1, detail(Status::Error, "x")), false),
+            row_lines(
+                &display(Status::Error, 1, 1, detail(Status::Error, "x")),
+                false
+            ),
             2
         );
         // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
         // Old 3-line case (branch · needs you + quoted msg) is gone.
         assert_eq!(
             row_lines(
-                &agg(Status::Pending, 1, 1, detail(Status::Pending, "")),
+                &display(Status::Pending, 1, 1, detail(Status::Pending, "")),
                 false
             ),
             1
         );
         assert_eq!(
             row_lines(
-                &agg(Status::Pending, 1, 1, detail(Status::Pending, "go?")),
+                &display(Status::Pending, 1, 1, detail(Status::Pending, "go?")),
                 false
             ),
             2
@@ -1303,7 +1406,7 @@ mod tests {
         // Running with no msg: only 1 line
         assert_eq!(
             row_lines(
-                &agg(Status::Running, 1, 1, detail(Status::Running, "")),
+                &display(Status::Running, 1, 1, detail(Status::Running, "")),
                 false
             ),
             1
@@ -1318,14 +1421,14 @@ mod tests {
                 name: "a".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "b".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
         ];
         let s = render(&rows, &ro(24, 0));
@@ -1337,7 +1440,7 @@ mod tests {
 
     #[test]
     fn active_and_waiting_row_bar_is_attention_not_accent() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "p".into(),
             branch: "fix".into(),
             msg: "".into(),
@@ -1350,7 +1453,7 @@ mod tests {
             name: "pinky".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Pending, 0, 0, Some(detail)),
+            display: display(Status::Pending, 0, 0, Some(detail)),
         }];
         let s = render(&rows, &ro(30, 5));
         let line1 = s.lines().nth(2).unwrap();
@@ -1362,7 +1465,7 @@ mod tests {
     #[test]
     fn right_slot_per_state() {
         let mk = |status, done, total| {
-            let d = Detail {
+            let d = PrimaryDetail {
                 repo: "r".into(),
                 branch: "b".into(),
                 msg: "".into(),
@@ -1375,7 +1478,7 @@ mod tests {
                 name: "n".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(status, done, total, Some(d)),
+                display: display(status, done, total, Some(d)),
             }
         };
         assert!(render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
@@ -1391,7 +1494,7 @@ mod tests {
     #[test]
     fn working_slot_is_dim_not_role_colored() {
         // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
-        let d = Detail {
+        let d = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -1404,7 +1507,7 @@ mod tests {
             name: "n".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 0, 1, Some(d)),
+            display: display(Status::Running, 0, 1, Some(d)),
         }];
         let opts = ro(30, 14);
         let s = render(&rows, &opts);
@@ -1424,7 +1527,7 @@ mod tests {
 
     #[test]
     fn working_glyph_spins_with_tick() {
-        let d = Detail {
+        let d = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -1437,7 +1540,7 @@ mod tests {
             name: "n".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 0, 1, Some(d.clone())),
+            display: display(Status::Running, 0, 1, Some(d.clone())),
         };
         let f0 = render(
             &[row(0)],
@@ -1474,7 +1577,7 @@ mod tests {
             name: "logs".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro(24, 0));
         assert_eq!(s.lines().skip(2).count(), 1); // exactly one body line
@@ -1489,7 +1592,7 @@ mod tests {
             name: "a-very-long-tab-name-indeed".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro(12, 0));
         assert!(s.contains('…'));
@@ -1519,7 +1622,7 @@ mod tests {
     #[test]
     fn no_emitted_line_exceeds_width() {
         let width = 20;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
@@ -1532,7 +1635,7 @@ mod tests {
             name: "a-very-long-tab-name-indeed".into(),
             active: true, // exercises BOLD escapes too
             has_bell: false,
-            agg: agg(Status::Running, 2, 4, Some(detail)),
+            display: display(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, &ro(width, 14));
         // header (2) + two tab lines emitted (Running+detail = 2 lines)
@@ -1551,7 +1654,7 @@ mod tests {
 
     #[test]
     fn pending_detail_lines_never_exceed_width() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "averylongreponame".into(),
             branch: "feature/some-long-branch".into(),
             msg: "should we proceed with this long question".into(),
@@ -1564,7 +1667,7 @@ mod tests {
             name: "a-long-tab-name".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Pending, 0, 1, Some(detail)),
+            display: display(Status::Pending, 0, 1, Some(detail)),
         }];
         for width in [16usize, 20, 24, 30] {
             let s = render(&rows, &ro(width, 5));
@@ -1582,7 +1685,7 @@ mod tests {
 
     #[test]
     fn running_has_no_warning_glyph() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -1595,14 +1698,14 @@ mod tests {
             name: "t".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 1, 1, Some(detail)),
+            display: display(Status::Running, 1, 1, Some(detail)),
         }];
         assert!(!render(&rows, &ro(30, 599)).contains('⚠'));
     }
 
     #[test]
     fn done_has_no_warning_glyph() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -1615,7 +1718,7 @@ mod tests {
             name: "t".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Done, 1, 1, Some(detail)),
+            display: display(Status::Done, 1, 1, Some(detail)),
         }];
         assert!(!render(&rows, &ro(30, 10_000)).contains('⚠'));
     }
@@ -1627,7 +1730,7 @@ mod tests {
             name: "t".into(),
             active: false,
             has_bell: true,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         assert!(render(&rows, &ro(24, 0)).contains('⚑'));
     }
@@ -1639,14 +1742,14 @@ mod tests {
             name: "t".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         assert!(!render(&rows, &ro(24, 0)).contains('⚑'));
     }
 
     #[test]
     fn error_word_narrows_when_tight() {
-        let d = Detail {
+        let d = PrimaryDetail {
             repo: "infra".into(),
             branch: "".into(),
             msg: "".into(),
@@ -1659,7 +1762,7 @@ mod tests {
             name: "infra".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Error, 0, 1, Some(d)),
+            display: display(Status::Error, 0, 1, Some(d)),
         }];
         // wide: "failed"; narrow: "err"
         assert!(render(&rows, &ro(30, 0)).contains("failed"));
@@ -1670,7 +1773,7 @@ mod tests {
 
     #[test]
     fn working_detail_drops_branch_before_message_when_narrow() {
-        let d = Detail {
+        let d = PrimaryDetail {
             repo: "web".into(),
             branch: "main".into(),
             msg: "running tests".into(),
@@ -1683,7 +1786,7 @@ mod tests {
             name: "api".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 0, 1, Some(d)),
+            display: display(Status::Running, 0, 1, Some(d)),
         }];
         let narrow = render(&rows, &ro(16, 5));
         for line in narrow.lines() {
@@ -1699,7 +1802,7 @@ mod tests {
             name: format!("t{}", n),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }
     }
 
@@ -1730,7 +1833,7 @@ mod tests {
     fn overflow_keeps_non_idle_rows_visible() {
         let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
         // an urgent waiting tab at the very end (high position)
-        let d = Detail {
+        let d = PrimaryDetail {
             repo: "p".into(),
             branch: "x".into(),
             msg: "approve?".into(),
@@ -1743,7 +1846,7 @@ mod tests {
             name: "pinky".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Pending, 0, 1, Some(d)),
+            display: display(Status::Pending, 0, 1, Some(d)),
         });
         let s = render(
             &rows,
@@ -1784,12 +1887,11 @@ mod tests {
     #[test]
     fn render_glyph_role_colors_are_present() {
         // Verify that ANSI-16 palette role codes for glyphs/status indicators are
-        // still present in Compact-density output. (Detail text now uses theme-derived
+        // still present in Compact-density output. (PrimaryDetail text now uses theme-derived
         // truecolor foregrounds; card surfaces use truecolor backgrounds in Cards
         // density — but glyphs remain role-colored ANSI-16.)
-        use crate::model::Detail;
 
-        let mk_detail = |status: Status| Detail {
+        let mk_detail = |status: Status| PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix/x".into(),
             msg: "some message".into(),
@@ -1805,7 +1907,7 @@ mod tests {
                 name: "idle-tab".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             // running — two lines, with detail
             TabRow {
@@ -1813,7 +1915,7 @@ mod tests {
                 name: "run-tab".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
+                display: display(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
             },
             // pending with msg — three lines
             TabRow {
@@ -1821,7 +1923,7 @@ mod tests {
                 name: "pend-tab".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
+                display: display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
             },
             // done — one line
             TabRow {
@@ -1829,7 +1931,7 @@ mod tests {
                 name: "done-tab".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
+                display: display(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
             },
             // error — two lines
             TabRow {
@@ -1837,7 +1939,7 @@ mod tests {
                 name: "err-tab".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Error, 0, 1, Some(mk_detail(Status::Error))),
+                display: display(Status::Error, 0, 1, Some(mk_detail(Status::Error))),
             },
         ];
 
@@ -1883,7 +1985,7 @@ mod tests {
             s.contains(Role::Error.ansi()),
             "expected error role ANSI code not found"
         );
-        // Detail lines use truecolor foreground for readable dims.
+        // PrimaryDetail lines use truecolor foreground for readable dims.
         assert!(
             s.contains("38;2;"),
             "detail lines must use theme-derived truecolor foreground for readable dims"
@@ -1896,7 +1998,7 @@ mod tests {
         // With msg → 2 lines; without msg → 1 line (line 2 suppressed).
 
         // Case 1: pending with msg — 2 lines, mark + activity in attention color.
-        let detail_with_msg = Detail {
+        let detail_with_msg = PrimaryDetail {
             repo: "proj".into(),
             branch: "fix".into(),
             msg: "approve the push?".into(),
@@ -1909,11 +2011,13 @@ mod tests {
             name: "agents".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg {
+            display: TabDisplay {
                 status: Status::Pending,
-                done: 0,
-                total: 3,
-                pending: 2,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 3,
+                    pending: 2,
+                },
                 detail: Some(detail_with_msg),
                 panes: vec![],
             },
@@ -1943,10 +2047,10 @@ mod tests {
             s
         );
         // row_lines = 2 (mark+activity line present)
-        assert_eq!(row_lines(&rows[0].agg, false), 2);
+        assert_eq!(row_lines(&rows[0].display, false), 2);
 
         // Case 2: pending without msg → 1 line only, no line 2.
-        let detail_no_msg = Detail {
+        let detail_no_msg = PrimaryDetail {
             repo: "proj".into(),
             branch: "fix".into(),
             msg: "".into(),
@@ -1959,20 +2063,22 @@ mod tests {
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg {
+            display: TabDisplay {
                 status: Status::Pending,
-                done: 0,
-                total: 1,
-                pending: 1,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 1,
+                    pending: 1,
+                },
                 detail: Some(detail_no_msg),
                 panes: vec![],
             },
         }];
         // row_lines = 1 (no msg → no line 2)
-        assert_eq!(row_lines(&rows2[0].agg, false), 1);
+        assert_eq!(row_lines(&rows2[0].display, false), 1);
 
         // Width constraint: pending detail line must not exceed width
-        let detail_long = Detail {
+        let detail_long = PrimaryDetail {
             repo: "averylongreponame".into(),
             branch: "feature/some-very-long-branch".into(),
             msg: "a very long question that should be truncated appropriately here".into(),
@@ -1985,11 +2091,13 @@ mod tests {
             name: "multi".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg {
+            display: TabDisplay {
                 status: Status::Pending,
-                done: 0,
-                total: 5,
-                pending: 3,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 5,
+                    pending: 3,
+                },
                 detail: Some(detail_long),
                 panes: vec![],
             },
@@ -2020,7 +2128,7 @@ mod tests {
         // With msg:"" → no line 2, so only line 1 (the status line) is rendered.
         // This tests the width-safety of the first line at narrow widths.
         // (Kept as a regression guard; previously tested "N needs you" overflow.)
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "averylongreponame".into(),
             branch: "feature/some-very-long-branch-name".into(),
             msg: "".into(),
@@ -2033,11 +2141,13 @@ mod tests {
             name: "m".into(),
             active: false,
             has_bell: false,
-            agg: TabAgg {
+            display: TabDisplay {
                 status: Status::Pending,
-                done: 0,
-                total: 1,
-                pending: 3,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 1,
+                    pending: 3,
+                },
                 detail: Some(detail),
                 panes: vec![],
             },
@@ -2103,7 +2213,7 @@ mod tests {
     fn cjk_and_emoji_names_never_exceed_width() {
         // CJK: each char is 2 display columns. "作業中デプロイ" = 7 chars = 14 cols.
         // Emoji in msg: 🚀 = 2 cols.
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "proj".into(),
             branch: "main".into(),
             msg: "🚀 deploying now".into(),
@@ -2116,7 +2226,7 @@ mod tests {
             name: "作業中デプロイ".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Pending, 0, 1, Some(detail)),
+            display: display(Status::Pending, 0, 1, Some(detail)),
         }];
         for width in [16usize, 20, 24, 30] {
             let s = render(&rows, &ro(width, 5));
@@ -2139,7 +2249,7 @@ mod tests {
             name: "a".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Running, 0, 0, None),
+            display: display(Status::Running, 0, 0, None),
         }];
         assert_eq!(
             header_lines(&rows, false, crate::config::Density::Compact),
@@ -2164,42 +2274,51 @@ mod tests {
 
     // ── Multi-pane adaptive tree (chunk 2) ──
 
-    use crate::model::PaneEntry;
-
-    /// Build a PaneEntry for tree tests.
-    fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneEntry {
-        PaneEntry {
-            pane_id: id,
-            kind,
-            status,
-            msg: msg.into(),
-        }
+    /// Build a PaneDisplay for tree tests.
+    fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
+        PaneDisplay::tracked(id, kind, status, msg.into())
     }
 
-    /// Build a multi-pane TabAgg from per-pane entries. The header status is the
+    /// Build a multi-pane TabDisplay from per-pane entries. The header status is the
     /// most-urgent (highest-severity) member; done/total derive from the entries.
-    fn agg_multi(panes: Vec<PaneEntry>) -> TabAgg {
+    fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         let status = panes
             .iter()
-            .map(|p| p.status)
+            .filter_map(PaneDisplay::status)
             .max_by_key(|s| s.severity())
             .unwrap_or(Status::Idle);
-        let total = panes.len();
-        let done = panes.iter().filter(|p| p.status == Status::Done).count();
-        let pending = panes.iter().filter(|p| p.status == Status::Pending).count();
-        let detail = panes.iter().find(|p| p.status == status).map(|p| Detail {
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: p.msg.clone(),
-            kind: p.kind,
-            since_tick: 0,
-            status: p.status,
+        let total = panes.iter().filter(|p| p.is_tracked()).count();
+        let done = panes
+            .iter()
+            .filter(|p| p.status() == Some(Status::Done))
+            .count();
+        let pending = panes
+            .iter()
+            .filter(|p| p.status() == Some(Status::Pending))
+            .count();
+        let detail = panes.iter().find_map(|p| match p {
+            PaneDisplay::Tracked {
+                kind,
+                status: pane_status,
+                msg,
+                ..
+            } if *pane_status == status => Some(PrimaryDetail {
+                repo: "r".into(),
+                branch: "b".into(),
+                msg: msg.clone(),
+                kind: *kind,
+                since_tick: 0,
+                status: *pane_status,
+            }),
+            _ => None,
         });
-        TabAgg {
+        TabDisplay {
             status,
-            done,
-            total,
-            pending,
+            progress: ProgressCounts {
+                done,
+                total,
+                pending,
+            },
             detail,
             panes,
         }
@@ -2208,7 +2327,7 @@ mod tests {
     #[test]
     fn pane_tree_plan_needs_you_always_expands() {
         // Inactive tab: only Pending/Error panes expand; calm panes collapse.
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "approve?"),
             pe(2, Kind::Claude, Status::Running, "building"),
             pe(3, Kind::Claude, Status::Running, "testing"),
@@ -2217,49 +2336,45 @@ mod tests {
         let plan = pane_tree_plan(&a, false);
         // Pending + Error expand; two Running collapse.
         assert_eq!(plan.expanded.len(), 2);
-        assert_eq!(plan.expanded[0].pane_id, 1);
-        assert_eq!(plan.expanded[1].pane_id, 4);
+        assert_eq!(plan.expanded[0].pane_id(), 1);
+        assert_eq!(plan.expanded[1].pane_id(), 4);
         assert_eq!(plan.collapsed_count, 2);
         assert_eq!(plan.collapsed_verb, "working"); // any running → "working"
     }
 
     #[test]
-    fn pane_tree_plan_active_expands_representative_calm_children() {
-        let a = agg_multi(vec![
+    fn pane_tree_plan_active_expands_all_calm_children() {
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
             pe(3, Kind::Claude, Status::Idle, "c"),
         ]);
         let plan = pane_tree_plan(&a, true);
-        assert_eq!(
-            plan.expanded.len(),
-            2,
-            "active tab expands representative calm panes"
-        );
-        assert_eq!(plan.collapsed_count, 1);
-        assert_eq!(plan.collapsed_verb, "done");
+        assert_eq!(plan.expanded.len(), 3, "active tab expands every calm pane");
+        assert_eq!(plan.collapsed_count, 0);
     }
 
     #[test]
-    fn pane_tree_plan_active_collapses_duplicate_calm_children() {
-        let a = agg_multi(vec![
+    fn pane_tree_plan_active_expands_duplicate_calm_children() {
+        let a = display_multi(vec![
             pe(1, Kind::Codex, Status::Running, "codex"),
             pe(2, Kind::Codex, Status::Running, "codex"),
             pe(3, Kind::Codex, Status::Running, "codex"),
             pe(4, Kind::Test, Status::Running, "cargo test"),
         ]);
         let plan = pane_tree_plan(&a, true);
-        assert_eq!(plan.expanded.len(), 2, "codex + tests are representative");
-        assert_eq!(plan.expanded[0].pane_id, 1);
-        assert_eq!(plan.expanded[1].pane_id, 4);
-        assert_eq!(plan.collapsed_count, 2, "duplicate codex panes collapse");
-        assert_eq!(plan.collapsed_verb, "working");
+        assert_eq!(plan.expanded.len(), 4, "active tab expands every pane");
+        assert_eq!(plan.expanded[0].pane_id(), 1);
+        assert_eq!(plan.expanded[1].pane_id(), 2);
+        assert_eq!(plan.expanded[2].pane_id(), 3);
+        assert_eq!(plan.expanded[3].pane_id(), 4);
+        assert_eq!(plan.collapsed_count, 0);
     }
 
     #[test]
     fn pane_tree_plan_calm_collapse_verb_done_when_no_running() {
         // No needs-you panes, inactive: all collapse. No running → verb "done".
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Done, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
             pe(3, Kind::Claude, Status::Idle, "c"),
@@ -2273,25 +2388,21 @@ mod tests {
     #[test]
     fn row_lines_multi_pane_counts_header_children_collapse() {
         // 1 pending (expands) + 3 running (collapse) → 1 header + 1 child + 1 collapse = 3.
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "run migration?"),
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
             pe(4, Kind::Claude, Status::Running, "z"),
         ]);
         assert_eq!(row_lines(&a, false), 3, "header + 1 expanded + collapse");
-        // Active → urgent + two representative calm children + collapse = 5.
-        assert_eq!(
-            row_lines(&a, true),
-            5,
-            "active expands representative children and summarizes the rest"
-        );
+        // Active → all four panes expand, so row_lines = header + 4 children.
+        assert_eq!(row_lines(&a, true), 5, "active expands every pane");
     }
 
     #[test]
     fn multi_pane_render_emits_header_child_and_collapse_lines() {
         // Design example: pending child expanded + collapse line for the calm rest.
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "run migration?"),
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
@@ -2302,7 +2413,7 @@ mod tests {
             name: "monorepo".into(),
             active: false,
             has_bell: false,
-            agg: a,
+            display: a,
         };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
@@ -2339,14 +2450,14 @@ mod tests {
             "pending child activity in attention: {:?}",
             body[1]
         );
-        // Collapse summary: `+3 working`.
+        // Collapse summary: `+3 more working`.
         assert!(
             !body[2].contains("└"),
             "collapse summary must not read like a pane row: {:?}",
             body[2]
         );
         assert!(
-            body[2].contains("+3 working"),
+            body[2].contains("+3 more working"),
             "collapse line counts calm panes: {:?}",
             body[2]
         );
@@ -2355,8 +2466,115 @@ mod tests {
     }
 
     #[test]
+    fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
+        let a = display_multi(vec![
+            pe(1, Kind::Claude, Status::Running, "x"),
+            pe(2, Kind::Codex, Status::Running, "y"),
+        ]);
+        let row = TabRow {
+            number: 1,
+            name: "team".into(),
+            active: false,
+            has_bell: false,
+            display: a,
+        };
+        let s = render(&[row], &ro(30, 0));
+        let body: Vec<&str> = s.lines().skip(2).collect();
+
+        assert!(
+            body[1].contains("2 working"),
+            "collapse copy: {:?}",
+            body[1]
+        );
+        assert!(
+            !body[1].contains("+2"),
+            "full roster is not a remainder: {:?}",
+            body[1]
+        );
+        assert!(
+            !body[1].contains("more"),
+            "full roster is not a remainder: {:?}",
+            body[1]
+        );
+    }
+
+    #[test]
+    fn multi_pane_untracked_only_summary_names_panes() {
+        let row = TabRow {
+            number: 1,
+            name: "shells".into(),
+            active: false,
+            has_bell: false,
+            display: TabDisplay {
+                status: Status::Idle,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 0,
+                    pending: 0,
+                },
+                detail: None,
+                panes: vec![
+                    PaneDisplay::untracked(1, "shell"),
+                    PaneDisplay::untracked(2, "logs"),
+                ],
+            },
+        };
+        let s = render(&[row], &ro(30, 0));
+        let body: Vec<&str> = s.lines().skip(2).collect();
+
+        assert!(
+            body[1].contains("2 panes"),
+            "untracked summary: {:?}",
+            body[1]
+        );
+    }
+
+    #[test]
+    fn multi_pane_mixed_untracked_summary_names_panes() {
+        let row = TabRow {
+            number: 1,
+            name: "mixed".into(),
+            active: false,
+            has_bell: false,
+            display: TabDisplay {
+                status: Status::Running,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 1,
+                    pending: 0,
+                },
+                detail: Some(PrimaryDetail {
+                    repo: "r".into(),
+                    branch: "b".into(),
+                    msg: "tests".into(),
+                    since_tick: 0,
+                    status: Status::Running,
+                    kind: Kind::Codex,
+                }),
+                panes: vec![
+                    PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into()),
+                    PaneDisplay::untracked(2, "shell"),
+                ],
+            },
+        };
+        let s = render(&[row], &ro(30, 0));
+        let body: Vec<&str> = s.lines().skip(2).collect();
+
+        assert!(
+            body[1].contains("2 panes"),
+            "mixed tracked/untracked summary: {:?}",
+            body[1]
+        );
+        assert!(
+            !body[1].contains("2 working"),
+            "untracked pane must not be counted as working: {:?}",
+            body[1]
+        );
+    }
+
+    #[test]
     fn multi_pane_active_expands_all_no_collapse() {
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
         ]);
@@ -2365,7 +2583,7 @@ mod tests {
             name: "team".into(),
             active: true,
             has_bell: false,
-            agg: a,
+            display: a,
         };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
@@ -2388,7 +2606,7 @@ mod tests {
         // existing renderer's own width rules, covered by other line-1 tests.)
         // Use an inactive tab so a collapse line accompanies an expanded child.
         for &width in &[16usize, 20, 24, 30] {
-            let a = agg_multi(vec![
+            let a = display_multi(vec![
                 pe(
                     1,
                     Kind::Claude,
@@ -2403,7 +2621,7 @@ mod tests {
                 name: "tab".into(),
                 active: false,
                 has_bell: false,
-                agg: a,
+                display: a,
             };
             let s = render(&[row], &ro(width, 5));
             let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
@@ -2424,7 +2642,7 @@ mod tests {
     #[test]
     fn single_pane_tab_unchanged_no_tree() {
         // A single ever-active pane is NOT multi-pane → keeps chunk-1 line 2.
-        let a = agg_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
+        let a = display_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
         assert!(!is_multi_pane(&a), "one pane is not multi-pane");
         assert_eq!(
             row_lines(&a, false),
@@ -2436,7 +2654,7 @@ mod tests {
             name: "solo".into(),
             active: false,
             has_bell: false,
-            agg: a,
+            display: a,
         };
         let s = render(&[row], &ro(30, 0));
         // No tree chars, no collapse line.
@@ -2463,7 +2681,7 @@ mod tests {
         // We pick height = 7 → body_budget = 5.
         // Compression: Running rows compressed to 1 line each (3 lines saved);
         //   3×1 + 2 = 5 ≤ 5. Done. Pending keeps its activity line (2 lines total).
-        let detail_running = |n: u8| Detail {
+        let detail_running = |n: u8| PrimaryDetail {
             repo: format!("repo{}", n),
             branch: "main".into(),
             msg: "working".into(),
@@ -2471,7 +2689,7 @@ mod tests {
             since_tick: 0,
             status: Status::Running,
         };
-        let detail_pending = Detail {
+        let detail_pending = PrimaryDetail {
             repo: "urgent-proj".into(),
             branch: "fix/thing".into(),
             msg: "please review".into(),
@@ -2486,36 +2704,36 @@ mod tests {
                 name: "r1".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail_running(1))),
+                display: display(Status::Running, 0, 1, Some(detail_running(1))),
             },
             TabRow {
                 number: 2,
                 name: "r2".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail_running(2))),
+                display: display(Status::Running, 0, 1, Some(detail_running(2))),
             },
             TabRow {
                 number: 3,
                 name: "r3".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail_running(3))),
+                display: display(Status::Running, 0, 1, Some(detail_running(3))),
             },
             TabRow {
                 number: 4,
                 name: "urgent".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(detail_pending)),
+                display: display(Status::Pending, 0, 1, Some(detail_pending)),
             },
         ];
 
         // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
-        assert_eq!(row_lines(&rows[0].agg, false), 2);
-        assert_eq!(row_lines(&rows[1].agg, false), 2);
-        assert_eq!(row_lines(&rows[2].agg, false), 2);
-        assert_eq!(row_lines(&rows[3].agg, false), 2); // pending + msg = 2 (mark + activity)
+        assert_eq!(row_lines(&rows[0].display, false), 2);
+        assert_eq!(row_lines(&rows[1].display, false), 2);
+        assert_eq!(row_lines(&rows[2].display, false), 2);
+        assert_eq!(row_lines(&rows[3].display, false), 2); // pending + msg = 2 (mark + activity)
 
         // body_budget = 5 (height 7, header 2)
         let body_budget = 5usize;
@@ -2572,7 +2790,7 @@ mod tests {
     /// 1 line; no panic; total output lines ≤ budget.
     #[test]
     fn overflow_all_one_line_when_extreme() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "msg".into(),
@@ -2586,14 +2804,14 @@ mod tests {
                 name: "pending".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(detail.clone())),
+                display: display(Status::Pending, 0, 1, Some(detail.clone())),
             },
             TabRow {
                 number: 2,
                 name: "run".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail.clone())),
+                display: display(Status::Running, 0, 1, Some(detail.clone())),
             },
         ];
         // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
@@ -2708,8 +2926,7 @@ mod tests {
         // Cards paints a background band on AGENT rows — so a session with at
         // least one agent differs from Comfortable. (An all-idle session would
         // now render identically, since idle rows are bare in the hybrid.)
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "working".into(),
@@ -2723,7 +2940,7 @@ mod tests {
                 name: "work".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
             idle_row(2),
         ];
@@ -2843,8 +3060,7 @@ mod tests {
     fn cards_paint_content_lines_with_bg() {
         // Render an idle tab and an active working tab at normal width with Cards.
         // Every content line carries a truecolor band; gap lines and header must NOT.
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "repo".into(),
             branch: "main".into(),
             msg: "working".into(),
@@ -2858,14 +3074,14 @@ mod tests {
                 name: "idle".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "work".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
@@ -2930,8 +3146,7 @@ mod tests {
     fn cards_band_fills_full_width() {
         // Short-name agent (done) tab at width 24, Cards: the painted band fills
         // the full width.
-        use crate::model::Detail;
-        let done = Detail {
+        let done = PrimaryDetail {
             repo: "r".into(),
             branch: "".into(),
             msg: "".into(),
@@ -2944,7 +3159,7 @@ mod tests {
             name: "x".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Done, 1, 1, Some(done)),
+            display: display(Status::Done, 1, 1, Some(done)),
         }];
         let width = 24usize;
         let s = render(&rows, &ro_cards(width, 100));
@@ -2970,8 +3185,7 @@ mod tests {
         // Active working tab (line has multiple role-colored tokens with \x1b[0m
         // resets) under Cards: the active truecolor tint must re-arm after every reset,
         // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix/x".into(),
             msg: "some work".into(),
@@ -2984,7 +3198,7 @@ mod tests {
             name: "agent".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Running, 0, 1, Some(detail)),
+            display: display(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
         // The neutral-dark fallback active surface from the dark-panel ladder is (56,59,71).
@@ -2999,8 +3213,7 @@ mod tests {
     fn cards_use_truecolor_not_256color() {
         // Card surfaces use theme-derived truecolor (48;2;r;g;b) — not fixed 256-color
         // indices, not truecolor foreground (38;2;), and not raw hex literals.
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "work".into(),
@@ -3014,14 +3227,14 @@ mod tests {
                 name: "idle".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "work".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
@@ -3067,8 +3280,7 @@ mod tests {
 
     #[test]
     fn cards_left_chrome_is_single_column() {
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "x".into(),
@@ -3082,14 +3294,14 @@ mod tests {
                 name: "idle".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "work".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
@@ -3119,7 +3331,7 @@ mod tests {
         // glyph comes FIRST (fixed/aligned column), then a space, then the
         // identity mark, then a space — so the status icons line up down the
         // tree and the mark isn't cramped against the status glyph.
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "searching web"),
             pe(2, Kind::Claude, Status::Done, "done thing"),
         ]);
@@ -3128,7 +3340,7 @@ mod tests {
             name: "t".into(),
             active: true,
             has_bell: false,
-            agg: a,
+            display: a,
         };
         let s = render(&[row], &ro_cards(30, 100));
         let child = s
@@ -3161,8 +3373,7 @@ mod tests {
     #[test]
     fn comfortable_and_compact_emit_no_bg() {
         // Same tabs with Comfortable and Compact must contain NO card band.
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
             msg: "working".into(),
@@ -3176,14 +3387,14 @@ mod tests {
                 name: "idle".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "work".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
         ];
         for density in [
@@ -3215,8 +3426,7 @@ mod tests {
     fn no_emitted_line_exceeds_width_cards() {
         // The no_emitted_line_exceeds_width invariant holds for Cards density too.
         let width = 20usize;
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix/x".into(),
             msg: "abcdefghijklmnopqrstuvwxyz".into(),
@@ -3229,7 +3439,7 @@ mod tests {
             name: "a-very-long-tab-name-indeed".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Running, 2, 4, Some(detail)),
+            display: display(Status::Running, 2, 4, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(width, 100));
         for line in s.lines() {
@@ -3276,7 +3486,7 @@ mod tests {
     #[test]
     fn card_block_lines_is_pad_y_plus_content_plus_gap() {
         // The single footprint source: pad_y + row_lines + gap.
-        let idle = agg(Status::Idle, 0, 0, None);
+        let idle = display(Status::Idle, 0, 0, None);
         assert_eq!(row_lines(&idle, false), 1);
         // Cards: 0 pad_y + 1 content + 1 gap = 2.
         assert_eq!(
@@ -3308,7 +3518,7 @@ mod tests {
             name: "idle".into(),
             active: false,
             has_bell: false,
-            agg: agg(Status::Idle, 0, 0, None),
+            display: display(Status::Idle, 0, 0, None),
         }];
         let s = render(&rows, &ro_cards(24, 100));
         let lines: Vec<&str> = s.lines().collect();
@@ -3406,8 +3616,7 @@ mod tests {
         //   focused (active) row → brightest (240),
         //   agent row (active status, not focused) → mid (238),
         //   idle/plain row → dimmest (236).
-        use crate::model::Detail;
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "repo".into(),
             branch: "main".into(),
             msg: "working".into(),
@@ -3421,21 +3630,21 @@ mod tests {
                 name: "idle".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 2,
                 name: "agent".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail.clone())),
+                display: display(Status::Running, 0, 1, Some(detail.clone())),
             },
             TabRow {
                 number: 3,
                 name: "focus".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(detail)),
+                display: display(Status::Running, 0, 1, Some(detail)),
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
@@ -3499,7 +3708,7 @@ mod tests {
             name: "team".into(),
             active: true,
             has_bell: false,
-            agg: agg_multi(vec![
+            display: display_multi(vec![
                 pe(1, Kind::Codex, Status::Running, "codex"),
                 pe(2, Kind::Test, Status::Running, "cargo test"),
             ]),
@@ -3528,8 +3737,7 @@ mod tests {
         // Golden tint-map for the canonical sidebar.dc.html "cards" session:
         // active running agent, pending agent, done agent, then two idle panes.
         // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
-        use crate::model::Detail;
-        let running = Detail {
+        let running = PrimaryDetail {
             repo: "web".into(),
             branch: "".into(),
             msg: "building…".into(),
@@ -3537,7 +3745,7 @@ mod tests {
             since_tick: 0,
             status: Status::Running,
         };
-        let pending = Detail {
+        let pending = PrimaryDetail {
             repo: "api".into(),
             branch: "fix".into(),
             msg: "".into(),
@@ -3545,7 +3753,7 @@ mod tests {
             since_tick: 0,
             status: Status::Pending,
         };
-        let done = Detail {
+        let done = PrimaryDetail {
             repo: "worker".into(),
             branch: "".into(),
             msg: "".into(),
@@ -3559,35 +3767,35 @@ mod tests {
                 name: "Claude".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(running)),
+                display: display(Status::Running, 0, 1, Some(running)),
             },
             TabRow {
                 number: 2,
                 name: "api".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(pending)),
+                display: display(Status::Pending, 0, 1, Some(pending)),
             },
             TabRow {
                 number: 3,
                 name: "worker".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Done, 1, 1, Some(done)),
+                display: display(Status::Done, 1, 1, Some(done)),
             },
             TabRow {
                 number: 4,
                 name: "Pane #1".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
             TabRow {
                 number: 5,
                 name: "Pane #1".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
         ];
         let s = render(&rows, &ro_cards(24, 100));
@@ -3629,8 +3837,7 @@ rail";
         // SHAPE + BOLD + CODE, not by hue:
         //   waiting → `\x1b[91m` (bright red) + ◆ glyph + bold
         //   error   → `\x1b[31m` (red)        + ✗ glyph (not bold)
-        use crate::model::Detail;
-        let pending = Detail {
+        let pending = PrimaryDetail {
             repo: "pinky".into(),
             branch: "fix".into(),
             msg: "".into(),
@@ -3638,7 +3845,7 @@ rail";
             since_tick: 0,
             status: Status::Pending,
         };
-        let err = Detail {
+        let err = PrimaryDetail {
             repo: "infra".into(),
             branch: "".into(),
             msg: "boom".into(),
@@ -3652,14 +3859,14 @@ rail";
                 name: "pinky".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(pending)),
+                display: display(Status::Pending, 0, 1, Some(pending)),
             },
             TabRow {
                 number: 2,
                 name: "infra".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Error, 0, 1, Some(err)),
+                display: display(Status::Error, 0, 1, Some(err)),
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
@@ -3718,8 +3925,7 @@ rail";
     fn header_shows_radar_and_urgent_count() {
         // Header reads " RADAR" and, when any tab is pending, appends a "·N!"
         // urgent marker in the attention role.
-        use crate::model::Detail;
-        let pending = Detail {
+        let pending = PrimaryDetail {
             repo: "p".into(),
             branch: "x".into(),
             msg: "approve?".into(),
@@ -3733,7 +3939,7 @@ rail";
                 name: "pinky".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(pending)),
+                display: display(Status::Pending, 0, 1, Some(pending)),
             },
             idle_row(2),
             idle_row(3),
@@ -3791,7 +3997,9 @@ rail";
                 if chars.peek() == Some(&'[') {
                     chars.next(); // consume '['
                     for ch in chars.by_ref() {
-                        if ch == 'm' { break; }
+                        if ch == 'm' {
+                            break;
+                        }
                     }
                 } else {
                     out.push(c);
@@ -3807,19 +4015,28 @@ rail";
     fn color_is_purely_additive_over_a_fixed_layout() {
         let rows = vec![
             TabRow {
-                number: 1, name: "agent".into(), active: true, has_bell: false,
-                agg: agg(Status::Pending, 0, 1, None),
+                number: 1,
+                name: "agent".into(),
+                active: true,
+                has_bell: false,
+                display: display(Status::Pending, 0, 1, None),
             },
             TabRow {
-                number: 2, name: "idle".into(), active: false, has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                number: 2,
+                name: "idle".into(),
+                active: false,
+                has_bell: false,
+                display: display(Status::Idle, 0, 0, None),
             },
         ];
         let out = render(&rows, &ro(30, 0));
         // Stripping all SGR leaves a clean character grid (no escape residue),
         // i.e. color sits *on top of* layout and never alters the cell content.
         let stripped = strip_sgr(&out);
-        assert!(!stripped.contains('\x1b'), "no escape residue after strip: {stripped:?}");
+        assert!(
+            !stripped.contains('\x1b'),
+            "no escape residue after strip: {stripped:?}"
+        );
         assert!(stripped.contains("agent"));
         assert!(stripped.contains("idle"));
         // Visible width per line is unchanged by color (color adds zero columns).
@@ -3857,7 +4074,7 @@ rail";
 
     /// A representative multi-state session used by several snapshot tests.
     fn scenario_canonical() -> Vec<TabRow> {
-        let running = Detail {
+        let running = PrimaryDetail {
             repo: "web".into(),
             branch: "".into(),
             msg: "building\u{2026}".into(),
@@ -3865,7 +4082,7 @@ rail";
             since_tick: 0,
             status: Status::Running,
         };
-        let pending = Detail {
+        let pending = PrimaryDetail {
             repo: "api".into(),
             branch: "fix".into(),
             msg: "".into(),
@@ -3873,7 +4090,7 @@ rail";
             since_tick: 0,
             status: Status::Pending,
         };
-        let done = Detail {
+        let done = PrimaryDetail {
             repo: "worker".into(),
             branch: "".into(),
             msg: "".into(),
@@ -3887,28 +4104,28 @@ rail";
                 name: "web".into(),
                 active: true,
                 has_bell: false,
-                agg: agg(Status::Running, 0, 1, Some(running)),
+                display: display(Status::Running, 0, 1, Some(running)),
             },
             TabRow {
                 number: 2,
                 name: "api".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(pending)),
+                display: display(Status::Pending, 0, 1, Some(pending)),
             },
             TabRow {
                 number: 3,
                 name: "worker".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Done, 1, 1, Some(done)),
+                display: display(Status::Done, 1, 1, Some(done)),
             },
             TabRow {
                 number: 4,
                 name: "notes".into(),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             },
         ]
     }
@@ -3973,11 +4190,7 @@ rail";
             &ro_full(8, 100, crate::config::Density::Cards, GlyphSet::Plain),
         );
         for line in s.lines() {
-            assert!(
-                visible_width(line) <= 8,
-                "line exceeds width 8: {:?}",
-                line
-            );
+            assert!(visible_width(line) <= 8, "line exceeds width 8: {:?}", line);
         }
     }
 
@@ -4006,11 +4219,11 @@ rail";
                 name: format!("t{}", n),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Idle, 0, 0, None),
+                display: display(Status::Idle, 0, 0, None),
             })
             .collect();
         for n in 6u32..=15 {
-            let d = Detail {
+            let d = PrimaryDetail {
                 repo: "r".into(),
                 branch: "b".into(),
                 msg: "".into(),
@@ -4023,7 +4236,7 @@ rail";
                 name: format!("t{}", n),
                 active: false,
                 has_bell: false,
-                agg: agg(Status::Pending, 0, 1, Some(d)),
+                display: display(Status::Pending, 0, 1, Some(d)),
             });
         }
         let s = render(
@@ -4042,49 +4255,28 @@ rail";
 
     #[test]
     fn pane_tree_plan_handles_all_states_present() {
-        use crate::model::PaneEntry;
         let panes = vec![
-            PaneEntry {
-                pane_id: 1,
-                kind: Kind::Claude,
-                status: Status::Error,
-                msg: "boom".into(),
-            },
-            PaneEntry {
-                pane_id: 2,
-                kind: Kind::Claude,
-                status: Status::Pending,
-                msg: "approve?".into(),
-            },
-            PaneEntry {
-                pane_id: 3,
-                kind: Kind::Claude,
-                status: Status::Running,
-                msg: "work".into(),
-            },
-            PaneEntry {
-                pane_id: 4,
-                kind: Kind::Claude,
-                status: Status::Done,
-                msg: "".into(),
-            },
-            PaneEntry {
-                pane_id: 5,
-                kind: Kind::Claude,
-                status: Status::Idle,
-                msg: "".into(),
-            },
+            PaneDisplay::tracked(1, Kind::Claude, Status::Error, "boom".into()),
+            PaneDisplay::tracked(2, Kind::Claude, Status::Pending, "approve?".into()),
+            PaneDisplay::tracked(3, Kind::Claude, Status::Running, "work".into()),
+            PaneDisplay::tracked(4, Kind::Claude, Status::Done, "".into()),
+            PaneDisplay::tracked(5, Kind::Claude, Status::Idle, "".into()),
         ];
-        let mut a = agg(Status::Error, 1, 5, None);
+        let mut a = display(Status::Error, 1, 5, None);
         a.panes = panes;
         let plan = pane_tree_plan(&a, false);
         // Needs-you panes (Error, Pending) are always expanded.
-        assert!(plan.expanded.iter().any(|p| p.status == Status::Error));
-        assert!(plan.expanded.iter().any(|p| p.status == Status::Pending));
+        assert!(plan
+            .expanded
+            .iter()
+            .any(|p| p.status() == Some(Status::Error)));
+        assert!(plan
+            .expanded
+            .iter()
+            .any(|p| p.status() == Some(Status::Pending)));
         // Running/Done/Idle (3 calm panes) collapse when the tab is inactive.
         assert_eq!(
-            plan.collapsed_count,
-            3,
+            plan.collapsed_count, 3,
             "Running/Done/Idle collapse when inactive"
         );
     }
@@ -4108,12 +4300,7 @@ rail";
             let width = 30u16;
             let raw = render(
                 &rows,
-                &ro_full(
-                    width as usize,
-                    100,
-                    crate::config::Density::Cards,
-                    glyphs,
-                ),
+                &ro_full(width as usize, 100, crate::config::Density::Cards, glyphs),
             );
             let g = grid(&raw, width);
             for line in g.lines() {
@@ -4130,7 +4317,7 @@ rail";
 
     #[test]
     fn wide_and_combining_chars_do_not_break_alignment() {
-        let detail = Detail {
+        let detail = PrimaryDetail {
             repo: "caf\u{00e9}".into(),
             branch: "".into(),
             msg: "测试 \u{1f680} e\u{0301}".into(),
@@ -4143,7 +4330,7 @@ rail";
             name: "测试caf\u{00e9}\u{1f680}".into(),
             active: true,
             has_bell: false,
-            agg: agg(Status::Running, 0, 1, Some(detail)),
+            display: display(Status::Running, 0, 1, Some(detail)),
         }];
         let width = 24u16;
         let raw = render(
@@ -4188,7 +4375,7 @@ rail";
             total in 0usize..4,
         ) -> TabRow {
             let detail = if total > 0 {
-                Some(Detail {
+                Some(PrimaryDetail {
                     repo: "r".into(),
                     branch: "".into(),
                     msg: "m".into(),
@@ -4204,7 +4391,7 @@ rail";
                 name,
                 active,
                 has_bell: false,
-                agg: agg(status, 0, total, detail),
+                display: display(status, 0, total, detail),
             }
         }
     }
@@ -4287,8 +4474,11 @@ rail";
         assert!(rail.line_count() > 0, "onboarding paints a panel");
         assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
         for line in 0..rail.line_count() {
-            assert_eq!(rail.target_at_line(line as isize), None,
-                "onboarding has no clickable rows");
+            assert_eq!(
+                rail.target_at_line(line as isize),
+                None,
+                "onboarding has no clickable rows"
+            );
         }
     }
 
@@ -4299,7 +4489,7 @@ rail";
         // 3-pane inactive tab: 1 Pending expands, 2 Running collapse.
         // header(1) + 1 expanded child + collapse(1) = 3 content lines.
         // Mirrors the row_lines assertion from lib.rs::multi_pane_tree_click_mapping_lockstep.
-        let a = agg_multi(vec![
+        let a = display_multi(vec![
             pe(10, Kind::Claude, Status::Pending, "approve?"),
             pe(11, Kind::Claude, Status::Running, "building"),
             pe(12, Kind::Claude, Status::Running, "testing"),
@@ -4312,9 +4502,7 @@ rail";
         // Single-pane Running tab with a non-empty detail msg → 2 content lines
         // (name row + detail row). Mirrors the row_lines assertion from
         // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
-        let a = agg_multi(vec![
-            pe(10, Kind::Claude, Status::Running, "msg"),
-        ]);
+        let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
         assert_eq!(row_lines(&a, false), 2, "tab 0 should be 2 content lines");
     }
 }
