@@ -519,25 +519,40 @@ const ONBOARDING_LEGEND: [(Status, &str); Status::ALL.len()] = [
 /// The rail's resting "hello / how it works" face — shown on cold start or
 /// before permission is granted. Not a permission interceptor.
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
+    // Every line is clamped to `opts.width`, so the panel honors the same width
+    // discipline as the rail (`onboarding_never_exceeds_width`). Color is purely
+    // additive: the truncation acts on the visible text, never the SGR codes.
+    fn line(out: &mut String, role: &str, text: &str, w: usize) {
+        out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
+    }
+
+    let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
     let g = opts.glyphs;
-    out.push_str(&format!("{}\n", Seg::new(accent, " RADAR")));
-    out.push_str(&format!("{}\n", Seg::new(accent, "═".repeat(opts.width))));
-    out.push_str(&format!("{}\n", Seg::new(muted, " watching your tabs for")));
-    out.push_str(&format!("{}\n", Seg::new(muted, " AI agent activity.")));
+    line(&mut out, accent, " RADAR", w);
+    line(&mut out, accent, &"═".repeat(w), w);
+    line(&mut out, muted, " watching your tabs for", w);
+    line(&mut out, muted, " AI agent activity.", w);
     out.push('\n');
     for (st, label) in ONBOARDING_LEGEND {
         let role_code = st.role().ansi();
-        out.push_str(&format!(
-            " {} {}\n",
-            Seg::new(role_code, st.glyph_for(g).to_string()),
-            Seg::new(muted, label),
-        ));
+        let glyph = st.glyph_for(g);
+        // " {glyph} {label}" — the marker+spaces are a fixed 3-col prefix. Below
+        // that the label has no room, so clamp the marker alone.
+        if w < 3 {
+            line(&mut out, role_code, &format!(" {glyph}"), w);
+        } else {
+            out.push_str(&format!(
+                " {} {}\n",
+                Seg::new(role_code, glyph.to_string()),
+                Seg::new(muted, truncate(label, w - 3)),
+            ));
+        }
     }
     out.push('\n');
-    out.push_str(&format!("{}\n", Seg::new(muted, " click a row to jump")));
+    line(&mut out, muted, " click a row to jump", w);
     RenderedRail::from_ansi_without_targets(out)
 }
 
@@ -2071,6 +2086,23 @@ mod tests {
         for &want in Status::ALL {
             let hits = ONBOARDING_LEGEND.iter().filter(|(st, _)| *st == want).count();
             assert_eq!(hits, 1, "{want:?} must appear exactly once in the legend");
+        }
+    }
+
+    #[test]
+    fn onboarding_never_exceeds_width() {
+        // The onboarding panel must honor the same width discipline as the rail
+        // (which is proptested down to tiny widths). Includes degenerate widths
+        // so the legend's fixed " glyph " prefix can't overflow either.
+        for width in [1usize, 2, 3, 4, 8, 12, 20, 28] {
+            let s = onboarding(&ro(width, 0));
+            for line in s.ansi.lines() {
+                assert!(
+                    visible_len(line) <= width,
+                    "onboarding line exceeds width {width}: {line:?} (visible {})",
+                    visible_len(line)
+                );
+            }
         }
     }
 
