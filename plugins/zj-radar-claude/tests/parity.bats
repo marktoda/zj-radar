@@ -59,3 +59,9 @@ teardown() { teardown_fakes; }
 @test "parity: TodoWrite activity" {
   parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"TodoWrite","tool_input":{"todos":[]}}' running
 }
+
+@test "parity: running with no activity falls back to working" {
+  # No tool activity to derive (UserPromptSubmit, empty message) → both
+  # producers emit the neutral "working" baseline, never a blank msg.
+  parity_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo"}' running
+}

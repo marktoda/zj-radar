@@ -36,10 +36,15 @@ pub fn derive_claude(
             return None; // backstop: not a real "needs you"
         }
     }
-    Some(Update {
-        status,
-        msg: msg.to_string(),
-    })
+    // A running broadcast with no message would render as a blank active row.
+    // Give it a neutral baseline; run()'s tool-activity substitution refines it
+    // when a tool name/input is present.
+    let msg = if status == Status::Running && msg.trim().is_empty() {
+        "working".to_string()
+    } else {
+        msg.to_string()
+    };
+    Some(Update { status, msg })
 }
 
 /// Terminal pane id from `$ZELLIJ_PANE_ID` (strip a `terminal_` prefix), or None
@@ -232,6 +237,30 @@ mod tests {
         assert!(derive_claude(Some("pending"), None, "").is_none());
         assert!(derive_claude(Some("pending"), None, "Claude needs attention").is_none());
         assert!(derive_claude(Some("pending"), None, "Claude Code needs your attention").is_none());
+    }
+
+    #[test]
+    fn claude_running_with_empty_msg_falls_back_to_working() {
+        // A running broadcast with no activity text must not render as a blank
+        // active row (the bare `◐ ✳` line) — derive a neutral "working"
+        // baseline. run()'s tool-activity substitution still refines it when a
+        // tool name/input is present.
+        let u = derive_claude(Some("running"), None, "").unwrap();
+        assert_eq!(u.status, Status::Running);
+        assert_eq!(u.msg, "working");
+        // Whitespace-only is also empty.
+        assert_eq!(derive_claude(Some("running"), None, "   ").unwrap().msg, "working");
+        // Event-derived running (no explicit status) with no message too.
+        assert_eq!(
+            derive_claude(None, Some("UserPromptSubmit"), "").unwrap().msg,
+            "working"
+        );
+    }
+
+    #[test]
+    fn claude_running_with_real_msg_is_unchanged() {
+        let u = derive_claude(Some("running"), None, "compiling").unwrap();
+        assert_eq!(u.msg, "compiling");
     }
 
     #[test]

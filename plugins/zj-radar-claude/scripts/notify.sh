@@ -96,6 +96,9 @@ if [[ "$status" == "running" ]]; then
         esac
         [[ -n "$tool_activity" ]] && msg="$tool_activity"
     fi
+    # A running broadcast with no derived activity would render as a blank
+    # active row — give it a neutral baseline (parity with derive_claude).
+    [[ -z "$msg" ]] && msg="working"
 fi
 
 # Defense-in-depth: if a Claude version fires Notification without a matcher
