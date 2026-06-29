@@ -13,6 +13,22 @@ pub enum Status {
     Error,
 }
 
+// Serde delegates to the existing wire vocabulary so the snapshot uses the same
+// tokens as the pipe payload — one source of truth (`as_wire`/`from_wire`), no
+// second representation to keep in sync. Deserialization is deliberately lenient
+// (unknown/absent → Idle), matching how the pipe payload parses status.
+impl serde::Serialize for Status {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Status {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        Ok(Status::from_wire(&<String as serde::Deserialize>::deserialize(de)?))
+    }
+}
+
 impl Status {
     /// Parse a wire value; anything unknown/absent is Idle.
     pub fn from_wire(s: &str) -> Status {

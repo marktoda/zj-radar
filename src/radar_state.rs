@@ -63,30 +63,22 @@ pub(crate) struct RadarChange {
     pub cwd_bootstrap: Vec<u32>,
 }
 
+/// One v2 snapshot record: a `pane_id` key plus the pane's `TrackedObservation`
+/// flattened inline. `TrackedObservation` serializes itself (enum fields as wire
+/// tokens, optional fields defaulted), so this wrapper is the *only* snapshot
+/// glue — there is no field-by-field mirror struct or mapper.
 #[derive(Serialize, Deserialize)]
-struct SnapshotObservation {
+struct SnapshotEntry {
     pane_id: u32,
-    origin: String,
-    status: String,
-    repo: String,
-    branch: String,
-    msg: String,
-    source: String,
-    last_change_tick: u64,
-    #[serde(default)]
-    seq: Option<u64>,
-    #[serde(default)]
-    on_focus: Option<String>,
-    ever_active: bool,
-    #[serde(default)]
-    exit_code: Option<i32>,
+    #[serde(flatten)]
+    obs: TrackedObservation,
 }
 
 #[derive(Serialize, Deserialize)]
 struct RadarSnapshot {
     v: u32,
     tick: u64,
-    observations: Vec<SnapshotObservation>,
+    observations: Vec<SnapshotEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -195,7 +187,7 @@ impl RadarState {
             tick: snapshot_tick,
             observations: observations
                 .into_iter()
-                .map(|((pane_id, _), observation)| snapshot_observation(pane_id, &observation))
+                .map(|((pane_id, _), obs)| SnapshotEntry { pane_id, obs })
                 .collect(),
         };
         serde_json::to_string(&snapshot).unwrap_or_default()
@@ -592,25 +584,6 @@ fn strip_activity_prefix(title: &str) -> &str {
     }
 }
 
-fn snapshot_observation(pane_id: u32, observation: &TrackedObservation) -> SnapshotObservation {
-    SnapshotObservation {
-        pane_id,
-        origin: observation.origin.as_wire().to_string(),
-        status: observation.status.as_wire().to_string(),
-        repo: observation.repo.clone(),
-        branch: observation.branch.clone(),
-        msg: observation.msg.clone(),
-        source: observation.source.clone(),
-        last_change_tick: observation.last_change_tick,
-        seq: observation.seq,
-        on_focus: observation
-            .on_focus
-            .map(|status| status.as_wire().to_string()),
-        ever_active: observation.ever_active,
-        exit_code: observation.exit_code,
-    }
-}
-
 fn parse_snapshot(raw: &str) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     match value.get("v").and_then(serde_json::Value::as_u64)? as u32 {
@@ -621,15 +594,14 @@ fn parse_snapshot(raw: &str) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
 }
 
 fn parse_v2_snapshot(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
+    // `TrackedObservation` deserializes itself; an entry with an unknown origin
+    // fails deserialization, which drops the whole snapshot (`.ok()?`).
     let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
-    let mut observations = Vec::with_capacity(snapshot.observations.len());
-    for pane in snapshot.observations {
-        let origin = ObservationOrigin::from_wire(&pane.origin)?;
-        observations.push((
-            pane.pane_id,
-            tracked_observation_from_snapshot(pane, origin),
-        ));
-    }
+    let observations = snapshot
+        .observations
+        .into_iter()
+        .map(|entry| (entry.pane_id, entry.obs))
+        .collect();
     Some((observations, snapshot.tick))
 }
 
@@ -660,25 +632,6 @@ fn parse_legacy_status_snapshot(
         })
         .collect();
     Some((observations, snapshot.tick))
-}
-
-fn tracked_observation_from_snapshot(
-    pane: SnapshotObservation,
-    origin: ObservationOrigin,
-) -> TrackedObservation {
-    TrackedObservation {
-        origin,
-        status: Status::from_wire(&pane.status),
-        repo: pane.repo,
-        branch: pane.branch,
-        msg: pane.msg,
-        source: pane.source,
-        last_change_tick: pane.last_change_tick,
-        seq: pane.seq,
-        on_focus: pane.on_focus.as_deref().map(Status::from_wire),
-        ever_active: pane.ever_active,
-        exit_code: pane.exit_code,
-    }
 }
 
 #[cfg(test)]
@@ -1204,6 +1157,19 @@ mod tests {
         assert!(radar
             .load_snapshot(r#"{"v":999,"tick":1,"observations":[]}"#)
             .is_none());
+    }
+
+    #[test]
+    fn snapshot_with_one_unknown_origin_is_rejected_whole() {
+        // A corrupt origin fails `TrackedObservation` deserialization, and the
+        // loader drops the entire snapshot rather than silently keeping the rest
+        // — so a partially-corrupt file can't load as a partial radar.
+        let json = r#"{"v":2,"tick":4,"observations":[
+            {"pane_id":1,"origin":"status_pipe","status":"running","repo":"r","branch":"b","msg":"m","source":"claude","last_change_tick":1,"ever_active":true},
+            {"pane_id":2,"origin":"???","status":"done","repo":"r","branch":"b","msg":"m","source":"build","last_change_tick":2,"ever_active":true}
+        ]}"#;
+        let mut radar = RadarState::default();
+        assert!(radar.load_snapshot(json).is_none());
     }
 
     #[test]

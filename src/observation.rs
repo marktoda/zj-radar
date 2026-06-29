@@ -1,6 +1,7 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
 use crate::status::Status;
+use serde::{Deserialize, Serialize};
 
 /// Which source produced an observation: the status pipe (agents) or a tracked
 /// shell command. Carries its own snapshot wire vocabulary, like `Status` —
@@ -31,7 +32,29 @@ impl ObservationOrigin {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Serde delegates to `as_wire`/`from_wire` (one source of truth). Unlike
+// `Status`, an unknown origin is an *error*: the snapshot loader turns that into
+// a dropped snapshot rather than silently guessing a source.
+impl Serialize for ObservationOrigin {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for ObservationOrigin {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(de)?;
+        Self::from_wire(&raw)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown observation origin: {raw:?}")))
+    }
+}
+
+/// A resolved observation for one pane. `#[serde(...)]` makes this the persisted
+/// snapshot record directly: the enum fields serialize as their wire tokens (see
+/// the `Status`/`ObservationOrigin` impls) and the optional fields default when
+/// absent, so older snapshots still load. There is no separate snapshot mirror
+/// struct — this type *is* the v2 record (wrapped only with its `pane_id` key).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedObservation {
     pub origin: ObservationOrigin,
     pub status: Status,
@@ -40,7 +63,9 @@ pub struct TrackedObservation {
     pub msg: String,
     pub source: String,
     pub last_change_tick: u64,
+    #[serde(default)]
     pub seq: Option<u64>,
+    #[serde(default)]
     pub on_focus: Option<Status>,
     pub ever_active: bool,
     /// Exit code of a finished command pane, when known. Set by
@@ -48,6 +73,7 @@ pub struct TrackedObservation {
     /// agents (status pipe) and for commands that finish by returning to the
     /// shell prompt (no exit code is reported). Drives the `(exit N)` outcome
     /// tag on error rows.
+    #[serde(default)]
     pub exit_code: Option<i32>,
 }
 
@@ -77,5 +103,48 @@ mod tests {
         }
         assert_eq!(ObservationOrigin::from_wire("nonsense"), None);
         assert_eq!(ObservationOrigin::from_wire(""), None);
+    }
+
+    fn sample() -> TrackedObservation {
+        TrackedObservation {
+            origin: ObservationOrigin::Command,
+            status: Status::Error,
+            repo: "zj-radar".into(),
+            branch: "main".into(),
+            msg: "cargo build".into(),
+            source: "build".into(),
+            last_change_tick: 7,
+            seq: Some(3),
+            on_focus: Some(Status::Idle),
+            ever_active: true,
+            exit_code: Some(1),
+        }
+    }
+
+    #[test]
+    fn serializes_enum_fields_as_wire_tokens_and_round_trips() {
+        let obs = sample();
+        let json = serde_json::to_string(&obs).unwrap();
+        // Enum fields persist as their wire vocabulary, not serde's default
+        // variant names — so the snapshot format is stable and human-legible.
+        assert!(json.contains(r#""origin":"command""#), "origin token: {json}");
+        assert!(json.contains(r#""status":"error""#), "status token: {json}");
+        assert!(json.contains(r#""on_focus":"idle""#), "on_focus token: {json}");
+        assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+    }
+
+    #[test]
+    fn deserialize_is_lenient_on_status_but_strict_on_origin() {
+        // Optional fields may be absent (serde defaults), and an unknown status
+        // degrades to Idle — matching the pipe payload's `from_wire` contract.
+        let json = r#"{"origin":"command","status":"???","repo":"","branch":"","msg":"","source":"","last_change_tick":0,"ever_active":false}"#;
+        let obs: TrackedObservation = serde_json::from_str(json).unwrap();
+        assert_eq!(obs.status, Status::Idle);
+        assert_eq!(obs.seq, None);
+        assert_eq!(obs.exit_code, None);
+        // An unknown origin is rejected so a corrupt entry can't masquerade as a
+        // valid one — the snapshot loader drops the whole snapshot instead.
+        let bad = json.replace(r#""origin":"command""#, r#""origin":"???""#);
+        assert!(serde_json::from_str::<TrackedObservation>(&bad).is_err());
     }
 }
