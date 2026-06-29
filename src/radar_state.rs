@@ -242,6 +242,24 @@ impl RadarState {
         serde_json::to_string(&snapshot).unwrap_or_default()
     }
 
+    /// Target tab position for an `attention-next`/`attention-prev` command, or
+    /// `None` for a no-op. Reads the live active tab and per-tab rollup; the
+    /// pure `cycle_attention` owns the ordering/wrap logic.
+    pub(crate) fn next_attention_tab(&self, dir: Direction) -> Option<usize> {
+        let mut sorted = self.tabs.clone();
+        sorted.sort_by_key(|t| t.position);
+        let active = self.tabs.iter().find(|t| t.active).map(|t| t.position);
+        let empty = Vec::new();
+        let pairs: Vec<(usize, Status)> = sorted
+            .iter()
+            .map(|t| {
+                let panes = self.tab_panes.get(&t.position).unwrap_or(&empty);
+                (t.position, self.tab_display(panes).status)
+            })
+            .collect();
+        cycle_attention(&pairs, active, dir)
+    }
+
     pub(crate) fn rows(&self) -> Vec<TabRow> {
         let mut rows = Vec::new();
         let mut sorted = self.tabs.clone();
@@ -1213,6 +1231,38 @@ mod tests {
                 .render,
             "cwd_changed must request a render"
         );
+    }
+
+    // ── next_attention_tab integration tests ─────────────────────────────────
+
+    #[test]
+    fn next_attention_tab_skips_running_and_idle() {
+        let mut st = RadarState::default();
+        // 3 tabs at positions 0,1,2; tab 0 active.
+        st.tabs_changed(vec![
+            RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true,  has_bell: false },
+            RadarTab { id: TabId::new(2), position: 1, name: "b".into(), active: false, has_bell: false },
+            RadarTab { id: TabId::new(3), position: 2, name: "c".into(), active: false, has_bell: false },
+        ]);
+        // tab 0: running (not attention); tab 1: pending (attention); tab 2: idle.
+        st.set_tab_panes_for_position(0, vec![pane(10)]);
+        st.set_tab_panes_for_position(1, vec![pane(11)]);
+        st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+        st.status_mut().apply(payload_for(11, Status::Pending, ""), 1);
+
+        assert_eq!(st.next_attention_tab(Direction::Next), Some(1));
+        assert_eq!(st.next_attention_tab(Direction::Prev), Some(1));
+    }
+
+    #[test]
+    fn next_attention_tab_none_when_no_attention() {
+        let mut st = RadarState::default();
+        st.tabs_changed(vec![
+            RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false },
+        ]);
+        st.set_tab_panes_for_position(0, vec![pane(10)]);
+        st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+        assert_eq!(st.next_attention_tab(Direction::Next), None);
     }
 
     // ── cycle_attention unit tests ────────────────────────────────────────────
