@@ -278,5 +278,4 @@ mod tests {
         assert!(!Status::Running.needs_attention());
         assert!(!Status::Idle.needs_attention());
     }
-
 }
