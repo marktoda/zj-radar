@@ -49,43 +49,37 @@ fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
     }
 }
 
+/// Run `git -C <cwd> <args…>` and return its trimmed stdout, or `None` when git
+/// can't be spawned, exits non-zero, or produces only whitespace. The single
+/// shape behind every git probe here, so the success/trim/empty handling can't
+/// drift across calls (and treating empty output as "absent" matches what every
+/// caller wanted: two filtered it explicitly, the third used `unwrap_or_default`).
+fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
+    let trimmed = Command::new("git")
+        .args(["-C", cwd])
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
 fn git_repo_branch(cwd: &str) -> (String, String) {
     // Resolve the repo name from the COMMON git dir so worktrees report the main
     // repo, not the worktree directory. Fall back to `--show-toplevel`'s basename
     // for git versions without `--path-format` (added in 2.31).
-    let common = Command::new("git")
-        .args([
-            "-C",
-            cwd,
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .and_then(|d| repo_name_from_common_dir(&d));
-    let repo = common
-        .or_else(|| {
-            Command::new("git")
-                .args(["-C", cwd, "rev-parse", "--show-toplevel"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty())
-                .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
-        })
-        .unwrap_or_default();
-    let branch = Command::new("git")
-        .args(["-C", cwd, "branch", "--show-current"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    let repo = git_output(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .and_then(|d| repo_name_from_common_dir(&d))
+    .or_else(|| {
+        git_output(cwd, &["rev-parse", "--show-toplevel"])
+            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
+    })
+    .unwrap_or_default();
+    let branch = git_output(cwd, &["branch", "--show-current"]).unwrap_or_default();
     (repo, branch)
 }
 
