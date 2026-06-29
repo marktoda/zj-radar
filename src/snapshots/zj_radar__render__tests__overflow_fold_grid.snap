@@ -1,0 +1,9 @@
+---
+source: src/render.rs
+expression: "grid(&raw, 30)"
+---
+ RADAR                     15▲
+══════════════════════════════
+◆ 15 pinky
+  ✳ approve?
++14 idle ▾

@@ -1123,6 +1123,63 @@ mod tests {
         }
     }
 
+    // ── Surface-tint oracle ──────────────────────────────────────────────────
+    //
+    // The Cards renderer paints every row with one of four truecolor background
+    // "surface" bands. Tests classify rows by *role* — never by literal hex — and
+    // the escape strings are derived from the same `DerivedColors` the renderer
+    // uses (`DerivedColors::default()`, which all Cards tests render against). So
+    // a theme-color change touches exactly one place (`theme.rs`); the role names
+    // here and in snapshots stay stable, and the oracle can never silently drift
+    // from the renderer.
+
+    /// One of the four background surface bands, in brightness order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Surface {
+        /// `surface_active` — the focused row; the only band brighter than bg.
+        Active,
+        /// `surface_agent` — a running (non-focused) agent row.
+        Agent,
+        /// `surface_idle` — an idle/plain row, barely above the panel.
+        Idle,
+        /// `rail_bg` — the dark panel base (header + gap rows).
+        Rail,
+        /// No truecolor background band at all.
+        Bare,
+    }
+
+    /// The `\e[48;2;r;g;bm` background SGR a given color is emitted as.
+    fn bg_sgr(rgb: (u8, u8, u8)) -> String {
+        format!("\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+    }
+
+    /// Classify a rendered line by which band of `theme` paints it. Checked
+    /// brightest-first so the dominant band wins when a line is mixed.
+    fn surface_of_theme(line: &str, theme: &crate::theme::DerivedColors) -> Surface {
+        if line.contains(&bg_sgr(theme.surface_active)) {
+            Surface::Active
+        } else if line.contains(&bg_sgr(theme.surface_agent)) {
+            Surface::Agent
+        } else if line.contains(&bg_sgr(theme.surface_idle)) {
+            Surface::Idle
+        } else if line.contains(&bg_sgr(theme.rail_bg)) {
+            Surface::Rail
+        } else {
+            Surface::Bare
+        }
+    }
+
+    /// Classify against the default (neutral-dark fallback) theme — the one all
+    /// Cards tests render against unless they pass an explicit theme.
+    fn surface_of(line: &str) -> Surface {
+        surface_of_theme(line, &crate::theme::DerivedColors::default())
+    }
+
+    /// True iff the line carries any truecolor background band (any surface).
+    fn is_painted(line: &str) -> bool {
+        line.contains("\x1b[48;2;")
+    }
+
     #[test]
     fn header_is_title_then_rule_two_lines() {
         let rows = vec![TabRow {
@@ -1850,7 +1907,7 @@ mod tests {
 
         // Compact density must NOT have card background bands.
         assert!(
-            !s.contains("48;2;"),
+            !is_painted(&s),
             "Compact must not emit truecolor bg bands"
         );
         // Must NOT contain raw hex color literals
@@ -3122,11 +3179,10 @@ mod tests {
         // The 1-line header and the gap carry the dark panel base (rail_bg, the
         // neutral-dark fallback's = 18,19,27); content lines carry their own
         // (subtle) surface tint.
-        const RAIL: &str = "\x1b[48;2;18;19;27m";
-
         // line 0 = header title (no rule in Cards) → painted with rail_bg.
-        assert!(
-            lines[0].contains(RAIL),
+        assert_eq!(
+            surface_of(lines[0]),
+            Surface::Rail,
             "header title line must carry the rail panel band: {:?}",
             lines[0]
         );
@@ -3136,28 +3192,37 @@ mod tests {
             lines[0]
         );
 
+        // A card surface is any painted band that is NOT the rail base.
+        let is_card_surface = |line: &str| {
+            matches!(
+                surface_of(line),
+                Surface::Idle | Surface::Agent | Surface::Active
+            )
+        };
+
         // line 1 = idle tab content → a card surface (NOT the rail base).
         assert!(
-            lines[1].contains("\x1b[48;2;") && !lines[1].contains(RAIL),
+            is_card_surface(lines[1]),
             "idle content line must carry a card surface band, not rail: {:?}",
             lines[1]
         );
 
         // line 2 = idle card gap → painted with rail_bg (panel shows through).
-        assert!(
-            lines[2].contains(RAIL),
+        assert_eq!(
+            surface_of(lines[2]),
+            Surface::Rail,
             "idle card gap row must carry the rail panel band: {:?}",
             lines[2]
         );
 
         // line 3 = working tab line 1, line 4 = working detail.
         assert!(
-            lines[3].contains("\x1b[48;2;") && !lines[3].contains(RAIL),
+            is_card_surface(lines[3]),
             "working tab line 1 must carry a card surface band: {:?}",
             lines[3]
         );
         assert!(
-            lines[4].contains("\x1b[48;2;") && !lines[4].contains(RAIL),
+            is_card_surface(lines[4]),
             "working tab detail line must carry a card surface band: {:?}",
             lines[4]
         );
@@ -3199,7 +3264,7 @@ mod tests {
         let body: Vec<&str> = s.lines().skip(1).collect();
         let content_line = body[0];
         assert!(
-            content_line.contains("\x1b[48;2;"),
+            is_painted(content_line),
             "content line must have truecolor card bg: {:?}",
             content_line
         );
@@ -3234,9 +3299,12 @@ mod tests {
             display: display(Status::Running, 0, 1, Some(detail)),
         }];
         let s = render(&rows, &ro_cards(30, 100));
-        // The neutral-dark fallback active surface from the dark-panel ladder is (56,59,71).
+        // After a role-reset (\x1b[0m) the active surface band must be re-armed
+        // immediately, so the focused card stays painted across token boundaries.
+        let active = bg_sgr(crate::theme::DerivedColors::default().surface_active);
+        let rearm = format!("\x1b[0m{active}");
         assert!(
-            s.contains("\x1b[0m\x1b[48;2;56;59;71m"),
+            s.contains(&rearm),
             "reset immediately followed by truecolor bg re-arm must appear in Cards output: {:?}",
             s
         );
@@ -3274,7 +3342,7 @@ mod tests {
         let s = render(&rows, &ro_cards(30, 100));
         // Card surfaces must emit truecolor backgrounds.
         assert!(
-            s.contains("\x1b[48;2;"),
+            is_painted(&s),
             "cards must use a truecolor surface (48;2;): {:?}",
             s
         );
@@ -3455,7 +3523,7 @@ mod tests {
                 },
             );
             assert!(
-                !s.contains("\x1b[48;2;"),
+                !is_painted(&s),
                 "density {:?} must NOT emit a truecolor card band: {:?}",
                 density,
                 s
@@ -3565,14 +3633,10 @@ mod tests {
         // line 0 = header (rail). line 1 = idle card content. line 2 = trailing gap row.
         let content_row = lines[1];
         // Content row carries the idle card surface tint (NOT rail_bg).
-        assert!(
-            content_row.contains("\x1b[48;2;20;21;30m"),
-            "content row must carry the card's own idle surface tint: {:?}",
-            content_row
-        );
-        assert!(
-            !content_row.contains("\x1b[48;2;18;19;27m"),
-            "content row must NOT be the rail panel base: {:?}",
+        assert_eq!(
+            surface_of(content_row),
+            Surface::Idle,
+            "content row must carry the card's own idle surface tint, not rail: {:?}",
             content_row
         );
         assert!(
@@ -3582,14 +3646,10 @@ mod tests {
         );
         // The trailing gap row (line 2) carries the rail panel base.
         let gap_row = lines[2];
-        assert!(
-            gap_row.contains("\x1b[48;2;18;19;27m"),
-            "gap row must carry the rail panel base: {:?}",
-            gap_row
-        );
-        assert!(
-            !gap_row.contains("\x1b[48;2;20;21;30m"),
-            "gap row must NOT be the card surface tint: {:?}",
+        assert_eq!(
+            surface_of(gap_row),
+            Surface::Rail,
+            "gap row must carry the rail panel base, not the card surface tint: {:?}",
             gap_row
         );
         // ANSI-stripped, the gap row is blank (only spaces / no glyphs or text).
@@ -3620,30 +3680,30 @@ mod tests {
 
     // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
-    /// Classify each rendered line for a tint-map snapshot by which truecolor
-    /// surface band it carries (using the neutral-dark fallback's dark-panel ladder):
-    ///   "active" = surface_active (56,59,71)  — brighter than bg, gently pops
-    ///   "agent"  = surface_agent  (24,25,35)  — mid step up from rail
-    ///   "idle"   = surface_idle   (20,21,30)  — barely above the panel
-    ///   "rail"   = rail_bg        (18,19,27)  — the dark panel base (gaps/header)
-    ///   "bare"   = no band at all.
-    /// Note: in Cards every emitted line is painted, so blank gaps now carry the
-    /// rail band rather than being empty — they classify as "rail", not "gap".
+    /// Classify each rendered line for a tint-map snapshot by which surface band
+    /// it carries, via the shared `surface_of` oracle (see "Surface-tint oracle"
+    /// near the top of this module). The labels are stable across theme changes.
+    /// Note: in Cards every emitted line is painted, so blank gaps carry the rail
+    /// band rather than being empty — they classify as "rail", not "gap".
     fn tint_map(s: &str) -> String {
+        tint_map_for(s, &crate::theme::DerivedColors::default())
+    }
+
+    /// Theme-parameterized tint map, so a light-theme render can be classified
+    /// against the colors it was actually painted with.
+    fn tint_map_for(s: &str, theme: &crate::theme::DerivedColors) -> String {
         s.lines()
-            .map(|line| {
-                if line.contains("\x1b[48;2;56;59;71m") {
-                    "active"
-                } else if line.contains("\x1b[48;2;24;25;35m") {
-                    "agent"
-                } else if line.contains("\x1b[48;2;20;21;30m") {
-                    "idle"
-                } else if line.contains("\x1b[48;2;18;19;27m") {
-                    "rail"
-                } else if line.is_empty() {
-                    "gap"
-                } else {
-                    "bare"
+            .map(|line| match surface_of_theme(line, theme) {
+                Surface::Active => "active",
+                Surface::Agent => "agent",
+                Surface::Idle => "idle",
+                Surface::Rail => "rail",
+                Surface::Bare => {
+                    if line.is_empty() {
+                        "gap"
+                    } else {
+                        "bare"
+                    }
                 }
             })
             .collect::<Vec<_>>()
@@ -3689,53 +3749,26 @@ mod tests {
             },
         ];
         let s = render(&rows, &ro_cards(30, 100));
-        let lines: Vec<&str> = s.lines().collect();
         // Cards header is 1 line (no rule); each card emits content then a
-        // trailing gap row (rail_bg — the panel shows through). Layout:
-        //   line 0  header(rail)
-        //   line 1  idle content             → idle (20,21,30)
-        //   line 2  idle gap                 → rail (18,19,27)
-        //   line 3  agent content line 1     → agent (24,25,35)
-        //   line 4  agent detail             → agent (24,25,35)
-        //   line 5  agent gap                → rail (18,19,27)
-        //   line 6  focus content line 1     → active (56,59,71)
-        //   line 7  focus detail             → active (56,59,71)
-        //   line 8  focus gap                → rail (18,19,27)
-        let rail = "\x1b[48;2;18;19;27m";
-        assert!(
-            lines[1].contains("\x1b[48;2;20;21;30m"),
-            "idle content must carry the dim card tint (20;21;30): {:?}",
-            lines[1]
-        );
-        assert!(
-            lines[2].contains(rail) && !lines[2].contains("\x1b[48;2;20;21;30m"),
-            "idle gap row must carry the rail panel base: {:?}",
-            lines[2]
-        );
-        assert!(
-            lines[3].contains("\x1b[48;2;24;25;35m"),
-            "agent content must carry the mid card tint (24;25;35): {:?}",
-            lines[3]
-        );
-        assert!(
-            lines[4].contains("\x1b[48;2;24;25;35m"),
-            "agent detail must carry the mid card tint (24;25;35): {:?}",
-            lines[4]
-        );
-        assert!(
-            lines[5].contains(rail) && !lines[5].contains("\x1b[48;2;24;25;35m"),
-            "agent gap row must carry the rail panel base: {:?}",
-            lines[5]
-        );
-        assert!(
-            lines[6].contains("\x1b[48;2;56;59;71m"),
-            "focused content must carry the active card tint (56;59;71): {:?}",
-            lines[6]
-        );
-        assert!(
-            lines[7].contains("\x1b[48;2;56;59;71m"),
-            "focused detail must carry the active card tint (56;59;71): {:?}",
-            lines[7]
+        // trailing gap row (rail_bg — the panel shows through). Classifying every
+        // row by surface band pins the full hierarchy in one assertion: idle <
+        // agent < active, with the panel base (rail) under the header and gaps.
+        let expected = [
+            "rail",   // line 0  header
+            "idle",   // line 1  idle content
+            "rail",   // line 2  idle gap
+            "agent",  // line 3  agent content line 1
+            "agent",  // line 4  agent detail
+            "rail",   // line 5  agent gap
+            "active", // line 6  focus content line 1
+            "active", // line 7  focus detail
+            "rail",   // line 8  focus gap
+        ]
+        .join("\n");
+        assert_eq!(
+            tint_map(&s),
+            expected,
+            "per-row surface bands must encode idle<agent<active hierarchy;\nrender:\n{s:?}"
         );
     }
 
@@ -3756,18 +3789,18 @@ mod tests {
         };
         let s = render(&[row], &ro_cards(30, 100));
         let lines: Vec<&str> = s.lines().collect();
-        let active = "\x1b[48;2;56;59;71m";
-        let agent = "\x1b[48;2;24;25;35m";
         // line 0 = header/rail, line 1 = tab parent, lines 2-3 = child panes.
-        assert!(
-            lines[1].contains(active),
+        assert_eq!(
+            surface_of(lines[1]),
+            Surface::Active,
             "parent row must carry active tint: {:?}",
             lines[1]
         );
         for line in &lines[2..=3] {
-            assert!(
-                line.contains(agent) && !line.contains(active),
-                "child row must carry subordinate agent tint: {:?}",
+            assert_eq!(
+                surface_of(line),
+                Surface::Agent,
+                "child row must carry subordinate agent tint, not the active card tint: {:?}",
                 line
             );
         }
@@ -4096,7 +4129,10 @@ rail";
     /// Render raw output into the visible character grid (ANSI stripped via a real
     /// VT parser), one line per terminal row — the human-readable snapshot.
     fn grid(raw: &str, width: u16) -> String {
-        let height = raw.lines().count().max(1) as u16;
+        // +1 row of headroom so a trailing newline (Cards/Comfortable emit a
+        // trailing gap row) cannot scroll the " RADAR" title off the top. The
+        // extra blank row is removed by the trailing-blank trim below.
+        let height = (raw.lines().count().max(1) + 1) as u16;
         let mut parser = vt100::Parser::new(height, width, 0);
         let joined = raw.replace('\n', "\r\n");
         parser.process(joined.as_bytes());
@@ -4208,16 +4244,13 @@ rail";
         insta::assert_snapshot!("canonical_cards_grid", grid(&raw, 30));
     }
 
-    #[test]
-    fn snapshot_canonical_cards_raw() {
-        let rows = scenario_canonical();
-        let raw = render(
-            &rows,
-            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
-        );
-        let shown = raw.replace('\x1b', "\\e");
-        insta::assert_snapshot!("canonical_cards_raw", shown);
-    }
+    // NOTE: the byte-exact raw-ANSI snapshot was retired. Its information is
+    // covered at higher signal by two siblings — `canonical_cards_grid` pins the
+    // visible text (vt100-rendered) and `canonical_tint_map` pins the per-row
+    // surface bands semantically — while foreground role colors are asserted by
+    // `render_glyph_role_colors_are_present` and the `*_role` tests. A raw escape
+    // dump churned on every spacing/color tweak and carried a self-rewriting
+    // `assertion_line:` header, so it cost diff noise without adding coverage.
 
     #[test]
     fn snapshot_canonical_tint_map() {
@@ -4227,6 +4260,123 @@ rail";
             &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
         );
         insta::assert_snapshot!("canonical_tint_map", tint_map(&raw));
+    }
+
+    // ── Widened snapshot matrix ──
+    //
+    // The proptests prove these states never panic and never exceed width; the
+    // snapshots below pin *what they actually look like* as reviewable goldens.
+    // Each scenario picks the oracle that carries the most signal for what it
+    // exercises: `grid` for visible text/layout, `tint_map` for surface bands.
+
+    /// Narrow width: long names/messages clamp (the branch path is dropped
+    /// first, then names/messages ellipsize) while the painted band still fills
+    /// the full column. Uses deliberately long content so the clamp is visible.
+    #[test]
+    fn snapshot_cards_narrow_width_grid() {
+        let detail = PrimaryDetail {
+            repo: "payments-service".into(),
+            branch: "feature/long-branch".into(),
+            msg: "refactoring the auth middleware".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            outcome: None,
+            status: Status::Running,
+        };
+        let rows = vec![TabRow {
+            number: 1,
+            name: "payments-service".into(),
+            active: true,
+            has_bell: false,
+            display: display(Status::Running, 0, 1, Some(detail)),
+        }];
+        let raw = render(
+            &rows,
+            &ro_full(16, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        );
+        insta::assert_snapshot!("cards_narrow_width_grid", grid(&raw, 16));
+    }
+
+    /// Nerd glyph set: the visible status/identity marks swap to nerd-font
+    /// glyphs. `grid` captures the substituted glyphs in the rendered text.
+    #[test]
+    fn snapshot_cards_nerd_glyphs_grid() {
+        let rows = scenario_canonical();
+        let raw = render(
+            &rows,
+            &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Nerd),
+        );
+        insta::assert_snapshot!("cards_nerd_glyphs_grid", grid(&raw, 30));
+    }
+
+    /// Height-constrained overflow: many idle tabs fold into a `+N idle ▾` strip
+    /// and the header gains the `▲` overflow marker, while an urgent (pending)
+    /// row is never folded. `grid` pins which rows survive and the strip copy.
+    #[test]
+    fn snapshot_overflow_fold_grid() {
+        let mut rows: Vec<TabRow> = (1..=14).map(idle_row).collect();
+        let urgent = PrimaryDetail {
+            repo: "pinky".into(),
+            branch: "fix".into(),
+            msg: "approve?".into(),
+            kind: Kind::Claude,
+            since_tick: 0,
+            outcome: None,
+            status: Status::Pending,
+        };
+        rows.push(TabRow {
+            number: 15,
+            name: "pinky".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Pending, 0, 1, Some(urgent)),
+        });
+        let raw = render(
+            &rows,
+            &ro_full(30, 8, crate::config::Density::Compact, GlyphSet::Plain),
+        );
+        insta::assert_snapshot!("overflow_fold_grid", grid(&raw, 30));
+    }
+
+    /// Multi-pane tab tree (active, three panes with distinct statuses):
+    /// `grid` pins the parent header + one child row per pane (running/pending/
+    /// done glyphs), and `tint_map` pins the hierarchy — the active parent over
+    /// subordinate (agent) child rows. (The `+N more` overflow path is covered by
+    /// `cards_active_more_line_uses_active_child_surface_not_card_tint`.)
+    #[test]
+    fn snapshot_cards_multi_pane() {
+        let panes: Vec<PaneDisplay> = vec![
+            pe(1, Kind::Claude, Status::Running, "building"),
+            pe(2, Kind::Codex, Status::Pending, "approve?"),
+            pe(3, Kind::Test, Status::Done, "cargo test"),
+        ];
+        let row = TabRow {
+            number: 1,
+            name: "team".into(),
+            active: true,
+            has_bell: false,
+            display: display_multi(panes),
+        };
+        let raw = render(&[row], &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain));
+        insta::assert_snapshot!("cards_multi_pane_grid", grid(&raw, 30));
+        insta::assert_snapshot!("cards_multi_pane_tint", tint_map(&raw));
+    }
+
+    /// Light terminal theme: the visible text is theme-independent (so `grid`
+    /// matches the dark canonical layout), but the surface ladder derives
+    /// different colors. The tint map — computed against the *light* theme it was
+    /// painted with — must still order idle < agent < active just like dark.
+    #[test]
+    fn snapshot_cards_light_theme() {
+        let light = crate::theme::DerivedColors::from_bg_fg((250, 250, 250), (40, 40, 40));
+        let rows = scenario_canonical();
+        let opts = RenderOpts {
+            theme: light.clone(),
+            ..ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain)
+        };
+        let raw = render(&rows, &opts);
+        insta::assert_snapshot!("cards_light_theme_grid", grid(&raw, 30));
+        insta::assert_snapshot!("cards_light_theme_tint", tint_map_for(&raw, &light));
     }
 
     // ── Overflow tests ──
@@ -4312,7 +4462,7 @@ rail";
             &rows,
             &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
         );
-        assert!(s.contains("\x1b[48;2;"), "expected 24-bit background SGR");
+        assert!(is_painted(&s), "expected 24-bit background SGR");
     }
 
     #[test]
@@ -4705,34 +4855,29 @@ rail";
         };
         let s = render(&[row], &ro_cards(30, 100));
 
-        // surface_agent bg escape (neutral-dark fallback): the active-child tint.
-        // All pane child lines in an active multi-pane tab use this surface.
-        let agent_bg = "\x1b[48;2;24;25;35m";
-        // surface_active bg escape: the card-header tint (brighter; wrong for the +more line).
-        let active_bg = "\x1b[48;2;56;59;71m";
-
+        // All pane child lines in an active multi-pane tab use the subordinate
+        // agent surface — including the "+N more" line, NOT the brighter card
+        // (active) header tint.
         // Find the "+2 more" line.
         let more_line = s.lines().find(|l| l.contains("more"))
             .expect("'+N more' summary line must be emitted when >6 panes");
 
         // The +more line must carry the active-child (agent) surface, not the card tint.
-        assert!(
-            more_line.contains(agent_bg),
-            "+more line must carry active-child surface ({agent_bg}): {:?}", more_line
-        );
-        assert!(
-            !more_line.contains(active_bg),
-            "+more line must NOT carry the card-header tint ({active_bg}): {:?}", more_line
+        assert_eq!(
+            surface_of(more_line),
+            Surface::Agent,
+            "+more line must carry the active-child (agent) surface, not the card-header tint: {:?}",
+            more_line
         );
 
-        // Confirm a regular pane child line also carries agent_bg,
+        // Confirm a regular pane child line also carries the agent surface,
         // proving the +more line is consistent with its siblings.
         let child_lines: Vec<&str> = s.lines()
-            .filter(|l| l.contains(agent_bg) && !l.contains("more"))
+            .filter(|l| surface_of(l) == Surface::Agent && !l.contains("more"))
             .collect();
         assert!(
             !child_lines.is_empty(),
-            "there must be at least one visible pane child line carrying agent_bg: {:?}", s
+            "there must be at least one visible pane child line carrying the agent surface: {:?}", s
         );
     }
 

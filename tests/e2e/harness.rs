@@ -646,6 +646,36 @@ pub fn screen_text(screen: &vt100::Screen) -> String {
         .join("\n")
 }
 
+/// The 0-based index of the first sidebar row whose left-`width` text contains
+/// `needle`. Lets a test locate a rendered row (e.g. the agent's tab line)
+/// without hard-coding a row number that shifts as the layout evolves.
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn sidebar_row_index(screen: &vt100::Screen, width: u16, needle: &str) -> Option<usize> {
+    sidebar_region(screen, width)
+        .lines()
+        .position(|l| l.contains(needle))
+}
+
+/// The first truecolor (`Rgb`) background color found scanning the left `width`
+/// columns of sidebar row `row`, or `None` if every cell uses the terminal
+/// default / a 256-index color.
+///
+/// This reads the color of the *actually rendered* frame — after the plugin's
+/// ANSI has round-tripped through Zellij's own compositor and the PTY — so it is
+/// the e2e analogue of the unit-test `surface_of` tint oracle. The plugin emits
+/// its card surfaces as `\e[48;2;r;g;bm` truecolor, which vt100 reports as
+/// `Color::Rgb`; the dark-panel rail base and each card surface are distinct
+/// RGBs, so two differently-classed rows return different values here.
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn sidebar_row_bg_rgb(screen: &vt100::Screen, row: u16, width: u16) -> Option<(u8, u8, u8)> {
+    (0..width).find_map(|c| match screen.cell(row, c)?.bgcolor() {
+        vt100::Color::Rgb(r, g, b) => Some((r, g, b)),
+        _ => None,
+    })
+}
+
 /// Extract only the left `width` columns of the vt100 Screen — the sidebar region.
 ///
 /// Returns one string per row joined by newlines. Because `screen()` processes

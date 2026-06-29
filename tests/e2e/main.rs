@@ -349,3 +349,107 @@ fn multi_pane_renders_one_line_per_pane() {
         line_a, line_b
     );
 }
+
+/// Rendered-output fidelity: assert on the ACTUAL cells Zellij painted — both
+/// text and color — not just substring presence in the PTY stream.
+///
+/// After piping a running agent to the focused pane, the parsed sidebar must show:
+///   1. the " RADAR" header on row 0;
+///   2. the agent card as TWO rows — a tab row carrying the focus spine `▌` and a
+///      running spinner glyph (one of `◐◓◑◒`), and the next row carrying the
+///      activity (`building`) and the Claude identity mark `✳` — proving the
+///      two-line agent card layout survived the full plugin → Zellij → PTY
+///      round-trip;
+///   3. the focused card row painted with a truecolor surface band that DIFFERS
+///      from the header's rail band — proving the Cards 3-tint hierarchy renders
+///      end-to-end (the unit `tint_map` oracle, but on the real frame).
+///
+/// Robust to the spinner tick, pane-id assignment, and timing: it pins structure
+/// and the color *relationship*, not exact RGB or a byte-for-byte frame. (Note we
+/// key off the activity `building`, not the repo `web`: in this layout the tab
+/// name comes from Zellij's cwd, so the repo isn't shown — only the msg is.)
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
+        wasm
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_render_{}", std::process::id());
+    let layout = sidebar_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+    eprintln!("[e2e] plugin loaded");
+
+    let pane_id = session.discover_terminal_pane_id();
+    eprintln!("[e2e] terminal pane_id={}", pane_id);
+
+    // Running agent on the focused pane → its tab is the active (focused) card.
+    let payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","repo":"web","msg":"building"}}"#
+    );
+    eprintln!("[e2e] piping: {}", payload);
+    session.pipe_status(&payload);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let screen = session.screen();
+    let sidebar = sidebar_region(&screen, 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
+
+    // (1) Header on row 0.
+    let row0 = sidebar.lines().next().unwrap_or("");
+    assert!(
+        row0.contains("RADAR"),
+        "row 0 must be the ' RADAR' header; got {row0:?}\nsidebar:\n{sidebar}"
+    );
+
+    // (2) The agent card is two rows: a detail row carrying the activity +
+    //     Claude mark, and the tab row above it carrying the focus spine + a
+    //     running spinner glyph. Locate by the activity text (reliably rendered).
+    let lines: Vec<&str> = sidebar.lines().collect();
+    let detail_idx = sidebar_row_index(&screen, 32, "building").unwrap_or_else(|| {
+        panic!("the agent activity 'building' must render in the sidebar;\nsidebar:\n{sidebar}")
+    });
+    assert!(
+        lines[detail_idx].contains('✳'),
+        "the Claude identity mark '✳' must render on the activity row; got {:?}\nsidebar:\n{sidebar}",
+        lines[detail_idx]
+    );
+    let tab_idx = detail_idx
+        .checked_sub(1)
+        .expect("the agent tab row must sit above its activity row");
+    let tab_row = lines[tab_idx];
+    assert!(
+        tab_row.contains('▌'),
+        "the focused agent's tab row must carry the focus spine '▌'; got {tab_row:?}\nsidebar:\n{sidebar}"
+    );
+    const SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
+    assert!(
+        tab_row.chars().any(|c| SPINNER.contains(&c)),
+        "the running agent's tab row must carry a spinner glyph (one of {SPINNER:?}); got {tab_row:?}\nsidebar:\n{sidebar}"
+    );
+
+    // (3) The focused card row is painted with a truecolor surface band that
+    //     differs from the header's rail band — the 3-tint hierarchy is visible
+    //     in the real rendered frame.
+    let card_bg = sidebar_row_bg_rgb(&screen, tab_idx as u16, 32);
+    let header_bg = sidebar_row_bg_rgb(&screen, 0, 32);
+    eprintln!("[e2e] focused-card bg={:?}, header bg={:?}", card_bg, header_bg);
+    assert!(
+        card_bg.is_some(),
+        "focused card row must be painted with a truecolor surface in the real frame;\nsidebar:\n{sidebar}"
+    );
+    assert!(
+        header_bg.is_some(),
+        "header row must carry the truecolor rail band in the real frame;\nsidebar:\n{sidebar}"
+    );
+    assert_ne!(
+        card_bg, header_bg,
+        "the focused card tint must differ from the header rail band (3-tint hierarchy);\nsidebar:\n{sidebar}"
+    );
+
+    eprintln!("[e2e] PASS: focused card rendered with correct text + a distinct surface tint");
+}

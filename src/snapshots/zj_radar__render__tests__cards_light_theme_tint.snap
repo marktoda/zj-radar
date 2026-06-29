@@ -1,0 +1,14 @@
+---
+source: src/render.rs
+expression: "tint_map_for(&raw, &light)"
+---
+rail
+active
+active
+rail
+agent
+rail
+agent
+rail
+idle
+rail

@@ -559,6 +559,63 @@ tab 1 "work"
 
 ---
 
+## Z. Comfortable density — blank gap row between tabs
+
+**Render-derived.** Multiple tabs at `density comfortable`. Comfortable keeps the
+`═` header rule (like compact) but inserts ONE blank gap row after each tab so the
+list breathes. The trailing gap after the last tab is stripped. This is the sole
+behavior that distinguishes comfortable from compact in the stripped grid.
+
+```rail-input
+width 32
+density comfortable
+tab 1 "web"
+  claude running "building"
+tab 2 "notes"
+```
+```rail-expect
+ RADAR                        ·2
+════════════════════════════════
+◐ 1 web
+  ✳ building
+
+○ 2 notes
+```
+
+> Comfortable density: header rule present; a blank line separates each tab. ⟦Comfortable density⟧
+
+## AA. Cards density — multi-tab card stack (idle / working / done)
+
+**Render-derived.** Three tabs at `density cards`, none focused. Cards drops the `═`
+rule (title-only header) and paints every tab as a card followed by a trailing gap
+row — which appears as a blank line in the stripped grid. Pins the card-stack text
+layout across states; the per-row surface tints (idle/agent) are covered by the
+`canonical_tint_map` / `cards_3tint_layout_snapshot` snapshots.
+
+```rail-input
+width 32
+density cards
+tab 1 "web"
+  claude running "building"
+tab 2 "worker"
+  claude done "shipped"
+tab 3 "notes"
+```
+```rail-expect
+ RADAR                        ·3
+◐ 1 web
+  ✳ building
+
+● 2 worker
+  ✳ shipped
+
+○ 3 notes
+```
+
+> Cards density: title-only header (no `═`); each card followed by a blank gap row. ⟦Cards density⟧
+
+---
+
 ## Open decisions
 
 - **⟦D1⟧** right-slot: keep dropped, or re-add `done/total` for multi-pane?
