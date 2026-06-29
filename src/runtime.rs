@@ -29,6 +29,9 @@ pub(crate) enum Effect {
     RenameTab { position: usize, name: String },
     SwitchTab { position: usize },
     ShowPane { pane_id: u32 },
+    /// Read these panes' working directories once (blocking `get_pane_cwd`) to
+    /// bootstrap a name for a freshly-opened tab before it emits `CwdChanged`.
+    ResolveCwd { pane_ids: Vec<u32> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -97,6 +100,11 @@ impl PluginRuntime {
         let mut effects = self.effects_from_renames(change.renames);
         if change.persist_snapshot {
             effects.push(Effect::PersistSnapshot);
+        }
+        if !change.cwd_bootstrap.is_empty() {
+            effects.push(Effect::ResolveCwd {
+                pane_ids: change.cwd_bootstrap,
+            });
         }
         Outcome::with_effects(true, effects)
     }
@@ -555,6 +563,30 @@ mod tests {
             .effects
             .iter()
             .any(|effect| matches!(effect, Effect::PersistSnapshot)));
+    }
+
+    #[test]
+    fn panes_changed_emits_resolve_cwd_effect_for_new_panes() {
+        let mut runtime = runtime_with_config(config::Config {
+            naming: NamingMode::Managed,
+            density: Density::Compact,
+            ..config::Config::default()
+        });
+        runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
+
+        let mut focused = pane(7);
+        focused.focused_in_tab = true;
+        let outcome = runtime.panes_changed(PaneUpdate {
+            tab_panes: HashMap::from([(0, vec![focused])]),
+            live: HashSet::from([7]),
+            theme: None,
+            exits: Vec::new(),
+        });
+
+        assert!(outcome
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![7])));
     }
 
     #[test]

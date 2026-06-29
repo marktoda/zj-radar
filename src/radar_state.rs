@@ -57,6 +57,10 @@ pub(crate) struct RadarChange {
     pub render: bool,
     pub persist_snapshot: bool,
     pub renames: Vec<TabRename>,
+    /// Terminal panes whose working directory should be read once (via a
+    /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
+    /// for a freshly-opened tab that has not emitted a `CwdChanged` yet.
+    pub cwd_bootstrap: Vec<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,6 +113,13 @@ struct LegacyPaneSnapshot {
 const RADAR_SNAPSHOT_V: u32 = 2;
 const LEGACY_STATUS_SNAPSHOT_V: u32 = 1;
 
+/// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
+/// `PaneUpdate`. Each read is a blocking host round-trip, so we cap a single
+/// update's fan-out (e.g. a session restore surfacing many panes at once) and
+/// let the remainder drain across subsequent updates — focused panes first.
+/// This is the postmortem's "cap concurrent in-flight host calls" rule.
+const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
+
 #[derive(Default)]
 pub(crate) struct RadarState {
     status: StatusStore,
@@ -119,6 +130,10 @@ pub(crate) struct RadarState {
     applied_names: HashMap<TabId, String>,
     last_focused: Option<u32>,
     live_panes: Option<HashSet<u32>>,
+    /// Pane ids we have already requested an initial `get_pane_cwd` read for.
+    /// Tracks *attempts*, not successes, so a pane that has no cwd yet is never
+    /// re-polled; pruned with `pane_cwd` so a recycled id can bootstrap again.
+    cwd_bootstrap_attempted: HashSet<u32>,
 }
 
 impl RadarState {
@@ -221,12 +236,22 @@ impl RadarState {
         self.status.prune(&update.live);
         self.command.prune(&update.live);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
+        self.cwd_bootstrap_attempted
+            .retain(|id| update.live.contains(id));
         self.apply_focus_transition(self.focused_terminal_in_active_tab(), tick);
 
+        // Bootstrap exists only to name tabs, so don't pay for blocking cwd
+        // reads when naming is disabled.
+        let cwd_bootstrap = if naming == config::NamingMode::Off {
+            Vec::new()
+        } else {
+            self.cwd_bootstrap_targets()
+        };
         RadarChange {
             render: true,
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
+            cwd_bootstrap,
         }
     }
 
@@ -276,6 +301,7 @@ impl RadarState {
             render: true,
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
+            cwd_bootstrap: Vec::new(),
         })
     }
 
@@ -355,6 +381,42 @@ impl RadarState {
             .iter()
             .find(|pane| pane.focused_in_tab)
             .map(|pane| pane.id)
+    }
+
+    /// Live terminal panes whose cwd we have neither learned (via `CwdChanged`)
+    /// nor yet attempted to read. Focused panes come first — they name their tab
+    /// — and the result is capped at `MAX_CWD_BOOTSTRAP_PER_UPDATE` so one update
+    /// never fans out an unbounded number of blocking host calls. Every returned
+    /// id is recorded as attempted, so it is requested at most once per lifetime.
+    fn cwd_bootstrap_targets(&mut self) -> Vec<u32> {
+        let mut focused = Vec::new();
+        let mut others = Vec::new();
+        for panes in self.tab_panes.values() {
+            for p in panes {
+                if self.pane_cwd.contains_key(&p.id)
+                    || self.cwd_bootstrap_attempted.contains(&p.id)
+                {
+                    continue;
+                }
+                if p.focused_in_tab {
+                    focused.push(p.id);
+                } else {
+                    others.push(p.id);
+                }
+            }
+        }
+        // Deterministic order regardless of HashMap iteration; focused first.
+        focused.sort_unstable();
+        others.sort_unstable();
+        let targets: Vec<u32> = focused
+            .into_iter()
+            .chain(others)
+            .take(MAX_CWD_BOOTSTRAP_PER_UPDATE)
+            .collect();
+        for id in &targets {
+            self.cwd_bootstrap_attempted.insert(*id);
+        }
+        targets
     }
 
     fn rename_tabs(&mut self, naming_mode: config::NamingMode) -> Vec<TabRename> {
@@ -837,6 +899,179 @@ mod tests {
             vec![TabRename {
                 position: 0,
                 name: "repo".into(),
+            }]
+        );
+    }
+
+    fn pane_update(tab_panes: HashMap<usize, Vec<TerminalPane>>) -> PaneUpdate {
+        let live = tab_panes
+            .values()
+            .flat_map(|panes| panes.iter().map(|p| p.id))
+            .collect();
+        PaneUpdate {
+            tab_panes,
+            live,
+            theme: None,
+            exits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn panes_changed_requests_cwd_bootstrap_for_new_pane_without_cwd() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+
+        let change = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            1,
+            config::NamingMode::Managed,
+        );
+
+        assert_eq!(change.cwd_bootstrap, vec![7]);
+    }
+
+    #[test]
+    fn panes_changed_requests_no_cwd_bootstrap_when_naming_off() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+
+        let change = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            1,
+            config::NamingMode::Off,
+        );
+
+        assert!(change.cwd_bootstrap.is_empty());
+    }
+
+    #[test]
+    fn panes_changed_skips_cwd_bootstrap_when_cwd_already_known() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        radar.cwd_changed(7, "/work/repo".into(), config::NamingMode::Managed);
+
+        let change = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            1,
+            config::NamingMode::Managed,
+        );
+
+        assert!(change.cwd_bootstrap.is_empty());
+    }
+
+    #[test]
+    fn panes_changed_requests_each_pane_cwd_only_once_even_if_unresolved() {
+        // The host call may come back empty (a fresh pane with no cwd yet); we
+        // must never re-issue it, or we rebuild the meltdown re-poll loop.
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        let update = || pane_update(HashMap::from([(0, vec![focused_pane(7)])]));
+
+        let first = radar.panes_changed(update(), 1, config::NamingMode::Managed);
+        let second = radar.panes_changed(update(), 2, config::NamingMode::Managed);
+
+        assert_eq!(first.cwd_bootstrap, vec![7]);
+        assert!(second.cwd_bootstrap.is_empty());
+    }
+
+    #[test]
+    fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+
+        let first = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            1,
+            config::NamingMode::Managed,
+        );
+        assert_eq!(first.cwd_bootstrap, vec![7]);
+
+        // Pane 7 closes (no longer live), then a new pane reuses id 7.
+        radar.panes_changed(pane_update(HashMap::new()), 2, config::NamingMode::Managed);
+        let reborn = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            3,
+            config::NamingMode::Managed,
+        );
+
+        assert_eq!(reborn.cwd_bootstrap, vec![7]);
+    }
+
+    #[test]
+    fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+        // Eight unfocused panes (ids 1..=8) plus one focused pane (id 9): more
+        // candidates than the per-update cap.
+        let mut panes: Vec<TerminalPane> = (1..=MAX_CWD_BOOTSTRAP_PER_UPDATE as u32)
+            .map(pane)
+            .collect();
+        panes.push(focused_pane(9));
+
+        let first = radar.panes_changed(
+            pane_update(HashMap::from([(0, panes)])),
+            1,
+            config::NamingMode::Managed,
+        );
+
+        assert_eq!(first.cwd_bootstrap.len(), MAX_CWD_BOOTSTRAP_PER_UPDATE);
+        // The focused pane is resolved this round even though its id sorts last;
+        // the lowest-id unfocused pane (8) spills to the next round.
+        assert!(first.cwd_bootstrap.contains(&9));
+        assert!(!first.cwd_bootstrap.contains(&8));
+
+        let second = radar.panes_changed(
+            pane_update(HashMap::from([(
+                0,
+                (1..=MAX_CWD_BOOTSTRAP_PER_UPDATE as u32)
+                    .map(pane)
+                    .chain(std::iter::once(focused_pane(9)))
+                    .collect(),
+            )])),
+            2,
+            config::NamingMode::Managed,
+        );
+        assert_eq!(second.cwd_bootstrap, vec![8]);
+    }
+
+    #[test]
+    fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+
+        // 1. New tab → bootstrap requests pane 7's cwd.
+        let opened = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            1,
+            config::NamingMode::Managed,
+        );
+        assert_eq!(opened.cwd_bootstrap, vec![7]);
+
+        // 2. Host resolves it; the tab is named from the spawn directory.
+        let bootstrapped = radar.cwd_changed(7, "/work/alpha".into(), config::NamingMode::Managed);
+        assert_eq!(
+            bootstrapped.renames,
+            vec![TabRename {
+                position: 0,
+                name: "alpha".into(),
+            }]
+        );
+
+        // 3. A later PaneUpdate does not re-request the cwd (we already have it).
+        let refreshed = radar.panes_changed(
+            pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+            2,
+            config::NamingMode::Managed,
+        );
+        assert!(refreshed.cwd_bootstrap.is_empty());
+
+        // 4. A real `cd` (CwdChanged) renames the tab as before.
+        let moved = radar.cwd_changed(7, "/work/beta".into(), config::NamingMode::Managed);
+        assert_eq!(
+            moved.renames,
+            vec![TabRename {
+                position: 0,
+                name: "beta".into(),
             }]
         );
     }

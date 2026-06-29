@@ -188,6 +188,25 @@ impl State {
                 Effect::ShowPane { pane_id } => {
                     show_pane_with_id(PaneId::Terminal(pane_id), false, true);
                 }
+                Effect::ResolveCwd { pane_ids } => self.resolve_cwd(pane_ids),
+            }
+        }
+    }
+
+    /// Bootstrap tab names for freshly-opened panes by reading each pane's cwd
+    /// once. `get_pane_cwd` is a blocking host round-trip, but the runtime has
+    /// already gated this to at most once per pane id (capped per update), so it
+    /// runs at pane-creation rate — never the per-output re-poll that melted the
+    /// predecessor plugin. A successful read feeds the existing `cwd_changed`
+    /// path, which performs the rename; a failure is simply dropped (the id is
+    /// already marked attempted and a later `cd` will still name the tab).
+    fn resolve_cwd(&mut self, pane_ids: Vec<u32>) {
+        for id in pane_ids {
+            if let Ok(path) = get_pane_cwd(PaneId::Terminal(id)) {
+                let outcome = self
+                    .runtime
+                    .cwd_changed(id, path.to_string_lossy().to_string());
+                self.handle_effects(outcome.effects);
             }
         }
     }

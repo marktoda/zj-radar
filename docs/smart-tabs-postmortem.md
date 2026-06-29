@@ -91,11 +91,22 @@ crystallizes *why* — these are constraints to preserve, not just happy acciden
   `zj_radar.status.v1` broadcast pipe from Claude/Codex hooks. The plugin never asks the
   server "what's running in this pane?" — the hook tells it. There is no per-pane,
   per-output query path, so there is no storm to feed.
-- **No blocking host calls on the hot path.** zj-radar must *never* add
-  `get_pane_running_command()` / `get_pane_cwd()` (or any blocking host call) inside
-  `update`/`pipe`/`render`. If we ever want program/cwd for non-agent tabs, derive it from
-  the `PaneUpdate` manifest and `CwdChanged` events (push), or from the hook payload — never
-  by polling.
+- **No *polled* blocking host calls on the hot path.** The lethal pattern was
+  `get_pane_running_command()` / `get_pane_cwd()` re-issued *on every output tick*, per pane —
+  unbounded calls driven by output volume. zj-radar must never reintroduce that. Prefer push
+  (`PaneUpdate` manifest, `CwdChanged`, hook payload) for anything that changes over a pane's
+  life.
+  - **Narrow exception (added with cwd-bootstrap naming):** a blocking call is allowed *once
+    per pane id, at first sighting*, when it can't be re-triggered by output. The cwd-bootstrap
+    path issues `get_pane_cwd` exactly once per new terminal pane to name a freshly-opened tab,
+    then lets the `CwdChanged` push path own every change after. It is **gated on attempts, not
+    successes** (a pane that returns no cwd is never re-polled), **capped per `PaneUpdate`**
+    (`MAX_CWD_BOOTSTRAP_PER_UPDATE`, focused panes first), and **off entirely when naming is
+    `Off`**. Call count is bounded by pane-*creation* rate, not output — the exact dimension
+    that melted smart-tabs is untouched. This is precisely recommendations #2 (resolve on a
+    manifest delta, not a dirty tick) and #3 (cap concurrent in-flight calls). Decision logic
+    lives in the pure `RadarState::cwd_bootstrap_targets`; the blocking call itself is isolated
+    to `lib.rs::resolve_cwd` (wasm glue). Do not widen this to per-output or uncapped use.
 - **The one-shot timer must stay event-gated.** zj-radar re-arms its timer only while
   `any_active()` is true, and only to refresh elapsed-time display — it does no work
   proportional to pane count. Keep it that way; never let a timer tick fan out into N host
