@@ -445,6 +445,17 @@ impl CommandStore {
         }
     }
 
+    /// Recede this pane's completion the instant it finishes under focus (Done
+    /// only — see `TrackedObservation::recede_on_focus`). Twin of `StatusStore`'s
+    /// method: the caller passes the focused pane id, the store forwards. Lets a
+    /// `cargo build` that finishes in the focused pane recede without waiting for
+    /// a leave-and-return.
+    pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
+        if let Some(s) = self.resolved.get_mut(&pane_id) {
+            s.recede_on_focus(tick);
+        }
+    }
+
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
     pub fn prune(&mut self, live: &HashSet<u32>) {
         self.resolved.retain(|id, _| live.contains(id));
@@ -768,6 +779,20 @@ mod tests {
             "starship must not enter pending"
         );
         assert!(store.get(1).is_none(), "no resolved state expected");
+    }
+
+    #[test]
+    fn recede_if_focused_clears_done_command_but_not_error() {
+        let mut store = CommandStore::default();
+        store.on_exit(1, Some(0), 1); // Done, on_focus = Some(Idle)
+        store.on_exit(2, Some(3), 1); // Error, on_focus = Some(Idle)
+
+        store.recede_if_focused(1, 5);
+        store.recede_if_focused(2, 5);
+
+        assert_eq!(store.get(1).unwrap().status, Status::Idle, "Done recedes");
+        assert_eq!(store.get(2).unwrap().status, Status::Error, "Error persists");
+        store.recede_if_focused(999, 5); // unknown id is a no-op
     }
 
     // ── Test 4: Running → return-to-shell → Done with on_focus; on_pane_focused → Idle

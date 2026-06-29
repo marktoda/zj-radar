@@ -78,6 +78,20 @@ impl TrackedObservation {
             self.status = next;
         }
     }
+
+    /// Recede a pane that completed *while focused* (the design's "if they were
+    /// looking at it when it finished, don't flag it"): apply the queued
+    /// `on_focus` transition immediately, but ONLY for a successful finish
+    /// (`Done`). An `Error` must persist even when watched (hard rule), and a
+    /// `Pending` ("needs you") is an active alarm, not a completion — neither
+    /// recedes here. The clear-on-*visit* path (`apply_on_focus`) still clears
+    /// both, once seen. Sibling of `apply_on_focus`; the status guard is the
+    /// only difference between "you saw it finish" and "you came back to it".
+    pub fn recede_on_focus(&mut self, tick: u64) {
+        if self.status == Status::Done {
+            self.apply_on_focus(tick);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +105,48 @@ mod tests {
         }
         assert_eq!(ObservationOrigin::from_wire("nonsense"), None);
         assert_eq!(ObservationOrigin::from_wire(""), None);
+    }
+
+    /// An observation in `status` with a queued `on_focus = Some(Idle)` — the
+    /// shape every completion leaves behind (Done/Error both queue the clear).
+    fn finished(status: Status) -> TrackedObservation {
+        TrackedObservation {
+            status,
+            on_focus: Some(Status::Idle),
+            ..sample()
+        }
+    }
+
+    #[test]
+    fn recede_on_focus_clears_a_done_pane_immediately() {
+        // Done finished while focused → you saw it → recede to Idle now.
+        let mut obs = finished(Status::Done);
+        obs.recede_on_focus(7);
+        assert_eq!(obs.status, Status::Idle);
+        assert_eq!(obs.on_focus, None);
+    }
+
+    #[test]
+    fn recede_on_focus_leaves_an_error_lit() {
+        // Errors persist even when you were watching (the hard rule): recede is a
+        // no-op, and the queued clear survives for the later clear-on-visit path.
+        let mut obs = finished(Status::Error);
+        obs.recede_on_focus(7);
+        assert_eq!(obs.status, Status::Error);
+        assert_eq!(obs.on_focus, Some(Status::Idle));
+        // The visit path still clears it once seen.
+        obs.apply_on_focus(9);
+        assert_eq!(obs.status, Status::Idle);
+    }
+
+    #[test]
+    fn recede_on_focus_leaves_a_pending_pane_lit() {
+        // "Needs you" is an active alarm, not a completion — never auto-dismissed
+        // just because the pane is focused.
+        let mut obs = finished(Status::Pending);
+        obs.recede_on_focus(7);
+        assert_eq!(obs.status, Status::Pending);
+        assert_eq!(obs.on_focus, Some(Status::Idle));
     }
 
     fn sample() -> TrackedObservation {
