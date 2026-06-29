@@ -1508,8 +1508,8 @@ mod tests {
                 theme: crate::theme::DerivedColors::default(),
             },
         );
-        assert!(f0.contains('◐'));
-        assert!(f1.contains('◓'));
+        assert!(f0.contains('⠋'));
+        assert!(f1.contains('⠙'));
     }
 
     #[test]
@@ -2542,8 +2542,8 @@ mod tests {
         // body[0] = header, body[1] = pane1(Claude/Running x), body[2] = pane2(Codex/Running y)
         // No collapse line — each pane is on its own line.
         assert_eq!(body.len(), 3, "header + 2 pane lines: {:?}", s);
-        assert!(body[1].contains('◐'), "pane1 shows running glyph: {:?}", body[1]);
-        assert!(body[2].contains('◐'), "pane2 shows running glyph: {:?}", body[2]);
+        assert!(body[1].contains('⠋'), "pane1 shows running glyph: {:?}", body[1]);
+        assert!(body[2].contains('⠋'), "pane2 shows running glyph: {:?}", body[2]);
         assert!(!s.contains("2 working"), "no collapse line: {:?}", s);
     }
 
@@ -3422,8 +3422,8 @@ mod tests {
         // Active: the spine in col 0 immediately followed by the glyph at col 1 —
         // no second pad column.
         assert!(
-            active.starts_with("▌◐"),
-            "active row must be '▌◐…' (spine+glyph, no pad): {:?}",
+            active.starts_with("▌⠋"),
+            "active row must be '▌⠋…' (spine+glyph, no pad): {:?}",
             active
         );
     }
@@ -3446,11 +3446,11 @@ mod tests {
             display: a,
         };
         let s = render(&[row], &ro_cards(30, 100));
-        // Find the running pane line (active → has spine ▌, contains ◐ and ✳).
+        // Find the running pane line (active → has spine ▌, contains ⠋ and ✳).
         let pane_lines: Vec<String> = s
             .lines()
             .map(strip_ansi_local)
-            .filter(|l| l.contains('◐') && l.contains('✳'))
+            .filter(|l| l.contains('⠋') && l.contains('✳'))
             .collect();
         assert!(!pane_lines.is_empty(), "running pane line with mark not found");
         let child = &pane_lines[0];

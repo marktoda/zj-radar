@@ -356,7 +356,7 @@ fn multi_pane_renders_one_line_per_pane() {
 /// After piping a running agent to the focused pane, the parsed sidebar must show:
 ///   1. the " RADAR" header on row 0;
 ///   2. the agent card as TWO rows — a tab row carrying the focus spine `▌` and a
-///      running spinner glyph (one of `◐◓◑◒`), and the next row carrying the
+///      running spinner glyph (one of `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`), and the next row carrying the
 ///      activity (`building`) and the Claude identity mark `✳` — proving the
 ///      two-line agent card layout survived the full plugin → Zellij → PTY
 ///      round-trip;
@@ -426,7 +426,7 @@ fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
         tab_row.contains('▌'),
         "the focused agent's tab row must carry the focus spine '▌'; got {tab_row:?}\nsidebar:\n{sidebar}"
     );
-    const SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     assert!(
         tab_row.chars().any(|c| SPINNER.contains(&c)),
         "the running agent's tab row must carry a spinner glyph (one of {SPINNER:?}); got {tab_row:?}\nsidebar:\n{sidebar}"

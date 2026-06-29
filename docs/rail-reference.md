@@ -30,7 +30,7 @@
 
 ## Vocabulary
 
-**Status glyphs (plain):** `○` idle · `◐` working *(spins ◐◓◑◒)* · `◆` needs-you ·
+**Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠋⠏)* · `◆` needs-you ·
 `●` done · `✗` error.
 **Kind marks:** `✳` claude · `❉` codex · `✦` gemini · `$` command · `⚙` build ·
 `⚗` test · `⇡` deploy · `❯` server · `⦿` other.
@@ -47,8 +47,8 @@
 ```
  RADAR                        ·N   ← title + tab count (·N; "N▲" when overflowing)
 ════════════════════════════════   ← rule (32 wide)
-▌◐ 2 name                          ← tab row: [spine][glyph] [num] [name]
-▌ ◐ ❉ activity message             ← pane row (indent 2): [glyph] [mark] [msg]
+▌⠋ 2 name                          ← tab row: [spine][glyph] [num] [name]
+▌ ⠋ ❉ activity message             ← pane row (indent 2): [glyph] [mark] [msg]
 ```
 
 `▌` = active-tab spine (focused tab only). Tab **glyph** = dominant status.
@@ -93,7 +93,7 @@ tab 1 "pinky"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 pinky
+⠋ 1 pinky
   ✳ running tests…
 ```
 
@@ -149,7 +149,7 @@ tab 1 "web"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 web
+⠋ 1 web
   ⚙ cargo build
 ```
 
@@ -166,8 +166,8 @@ tab 2 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 2 af
-  ◐ ❉ exploring render
+⠋ 2 af
+  ⠋ ❉ exploring render
   ● ⚙ cargo build
 ```
 
@@ -187,7 +187,7 @@ tab 4 "review"
 ════════════════════════════════
 ◆ 4 review
   ◆ ✳ approve diff?
-  ◐ ❉ writing tests
+  ⠋ ❉ writing tests
 ```
 
 > Tab glyph is `◆` (dominant = needs-you). Panes in position order.
@@ -205,8 +205,8 @@ tab 2 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 2 af
-  ◐ ❉ exploring render
+⠋ 2 af
+  ⠋ ❉ exploring render
   ○ $ ./deploy.sh
 ```
 
@@ -230,13 +230,13 @@ tab 2 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 2 swarm
-  ◐ ❉ planning api
-  ◐ ❉ writing tests
-  ◐ ❉ refactoring
-  ◐ ❉ reviewing pr
-  ◐ ❉ docs pass
-  ◐ ❉ benchmarks
+⠋ 2 swarm
+  ⠋ ❉ planning api
+  ⠋ ❉ writing tests
+  ⠋ ❉ refactoring
+  ⠋ ❉ reviewing pr
+  ⠋ ❉ docs pass
+  ⠋ ❉ benchmarks
   +1 more
 ```
 
@@ -262,7 +262,7 @@ tab 6 "logs"
 ════════════════════════════════
 ◆ 1 review
   ✳ approve diff?
-◐ 2 af
+⠋ 2 af
   ❉ exploring render
 ● 3 dotfiles
   ✳ refactored auth
@@ -283,8 +283,8 @@ tab 2 "af" active
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-▌◐ 2 af
-▌ ◐ ❉ exploring render
+▌⠋ 2 af
+▌ ⠋ ❉ exploring render
 ▌ ● ⚙ cargo build
 ```
 
@@ -309,13 +309,13 @@ tab 1 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 swarm
-  ◐ ❉ pane one
-  ◐ ❉ pane two
-  ◐ ❉ pane three
-  ◐ ❉ pane four
-  ◐ ❉ pane five
-  ◐ ❉ pane six
+⠋ 1 swarm
+  ⠋ ❉ pane one
+  ⠋ ❉ pane two
+  ⠋ ❉ pane three
+  ⠋ ❉ pane four
+  ⠋ ❉ pane five
+  ⠋ ❉ pane six
 ```
 
 > 6 panes = exactly the cap; the `+N more` line does not appear. ⟦D6: cap=6⟧
@@ -339,13 +339,13 @@ tab 1 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 swarm
-  ◐ ❉ pane one
-  ◐ ❉ pane two
-  ◐ ❉ pane three
-  ◐ ❉ pane four
-  ◐ ❉ pane five
-  ◐ ❉ pane six
+⠋ 1 swarm
+  ⠋ ❉ pane one
+  ⠋ ❉ pane two
+  ⠋ ❉ pane three
+  ⠋ ❉ pane four
+  ⠋ ❉ pane five
+  ⠋ ❉ pane six
   +2 more
 ```
 
@@ -364,8 +364,8 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 work
-  ◐ ✳ this message is quite lon…
+⠋ 1 work
+  ⠋ ✳ this message is quite lon…
   ● ⚙ ok
 ```
 
@@ -384,8 +384,8 @@ tab 1 "cjk"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 cjk
-  ◐ ✳ 処理中のメッセージが長す…
+⠋ 1 cjk
+  ⠋ ✳ 処理中のメッセージが長す…
   ● ⚙ ok
 ```
 
@@ -409,7 +409,7 @@ tab 1 "alerts" bell
 
 ## S. Bell with running agent
 
-**Author-from-intent.** Bell + single tracked pane — exercises bell on a non-idle tab. `◐ 1 pinky` + spaces + `⚑`, then the pane line (no bell on pane lines).
+**Author-from-intent.** Bell + single tracked pane — exercises bell on a non-idle tab. `⠋ 1 pinky` + spaces + `⚑`, then the pane line (no bell on pane lines).
 
 ```rail-input
 width 32
@@ -419,7 +419,7 @@ tab 1 "pinky" bell
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 pinky                     ⚑
+⠋ 1 pinky                     ⚑
   ✳ running tests
 ```
 
@@ -453,7 +453,7 @@ tab 1 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◐ 1 af
+⠋ 1 af
   ✳ exploring render
 ```
 
@@ -472,7 +472,7 @@ tab 1 "pinky"
 ```
 ```rail-expect
  RADAR                        ·1
-◐ 1 pinky
+⠋ 1 pinky
   ✳ running tests
 ```
 
@@ -492,8 +492,8 @@ tab 1 "af" active
 ```
 ```rail-expect
  RADAR                        ·1
-▌◐ 1 af
-▌ ◐ ❉ exploring render
+▌⠋ 1 af
+▌ ⠋ ❉ exploring render
 ▌ ● ⚙ cargo build
 ```
 
@@ -576,7 +576,7 @@ tab 2 "notes"
 ```rail-expect
  RADAR                        ·2
 ════════════════════════════════
-◐ 1 web
+⠋ 1 web
   ✳ building
 
 ○ 2 notes
@@ -603,7 +603,7 @@ tab 3 "notes"
 ```
 ```rail-expect
  RADAR                        ·3
-◐ 1 web
+⠋ 1 web
   ✳ building
 
 ● 2 worker

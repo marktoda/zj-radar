@@ -3,7 +3,7 @@ source: src/render.rs
 expression: "grid(&raw, 30)"
 ---
  RADAR                      ·4
-▌◐ 1 web
+▌⠋ 1 web
   󰚩 building…
 
  2 api
