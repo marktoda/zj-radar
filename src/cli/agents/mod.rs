@@ -47,6 +47,12 @@ pub enum Agent {
 }
 
 impl Agent {
+    /// Every push-reporter agent, in declaration order. Lets the coherence
+    /// guards iterate the variants without re-typing the list (mirrors
+    /// `Kind::ALL`). Test-only today — its sole consumers are the guard tests.
+    #[cfg(test)]
+    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex];
+
     /// Parse the `notify <agent>` CLI argument. Inverse of [`Agent::source`].
     pub fn from_cli(s: &str) -> Option<Agent> {
         match s {
@@ -153,7 +159,7 @@ mod tests {
     /// match arm here.
     #[test]
     fn source_round_trips_through_kind() {
-        for agent in [Agent::Claude, Agent::Codex] {
+        for &agent in Agent::ALL {
             let expected = match agent {
                 Agent::Claude => Kind::Claude,
                 Agent::Codex => Kind::Codex,
@@ -169,12 +175,30 @@ mod tests {
 
     #[test]
     fn from_cli_is_inverse_of_source() {
-        for agent in [Agent::Claude, Agent::Codex] {
+        for &agent in Agent::ALL {
             assert_eq!(Agent::from_cli(agent.source()), Some(agent));
         }
         assert_eq!(Agent::from_cli("gemini"), None);
         assert_eq!(Agent::from_cli("Claude"), None); // case-sensitive
         assert_eq!(Agent::from_cli(""), None);
+    }
+
+    /// The command observer suppresses an exe from command-tracking iff that exe
+    /// is a push-reporter agent (`command.rs::AGENT_NAMES`). If the two sets
+    /// drift, an exe in `AGENT_NAMES` with no adapter goes dark (suppressed AND
+    /// never pushed) — the original Gemini bug. This pins them across a feature
+    /// boundary they can't reference in code: command.rs has no `cli` feature, so
+    /// it can't see `Agent`, and `cli` can't see into the wasm plugin's runtime.
+    #[test]
+    fn agent_names_match_push_adapter_sources() {
+        use std::collections::BTreeSet;
+        let suppressed: BTreeSet<&str> = crate::command::AGENT_NAMES.iter().copied().collect();
+        let adapters: BTreeSet<&str> = Agent::ALL.iter().map(|a| a.source()).collect();
+        assert_eq!(
+            suppressed, adapters,
+            "command.rs::AGENT_NAMES must equal the push-adapter source set — \
+             an agent in one but not the other either goes dark or flickers"
+        );
     }
 
     // ── tool_activity ─────────────────────────────────────────────────────────

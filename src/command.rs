@@ -15,12 +15,20 @@ pub const DEBOUNCE_TICKS: u64 = 1;
 /// foreground command.
 const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship"];
 
-/// Agent binaries. These are *push*-tracked via the `zj_radar.status.v1` pipe
-/// from their hooks, so the command observer must never apply its command
-/// lifecycle to them. Treating an agent's foreground process as an ordinary
-/// command flickers the row between Running and Done as the agent spawns and
-/// reaps tool subprocesses (each fg transition is a `CommandChanged` event).
-const AGENT_NAMES: &[&str] = &["claude", "codex", "gemini"];
+/// Binaries of the *push*-instrumented agents. These report via the
+/// `zj_radar.status.v1` pipe from their hooks, so the command observer must
+/// never apply its command lifecycle to them: treating an agent's foreground
+/// process as an ordinary command flickers the row between Running and Done as
+/// the agent spawns and reaps tool subprocesses (each fg transition is a
+/// `CommandChanged` event).
+///
+/// This MUST equal the set of push adapters (`cli::agents::Agent`) — an exe
+/// here with no adapter is suppressed *and* never pushed, so its pane goes dark
+/// (the original Gemini bug). The `agent_names_match_push_adapter_sources` guard
+/// pins the two sets. Agents without an adapter (e.g. Gemini today) are
+/// deliberately absent: they fall through to ordinary command-tracking, which
+/// still surfaces a Running/Done lifecycle under their own `Kind`.
+pub(crate) const AGENT_NAMES: &[&str] = &["claude", "codex"];
 
 /// A pending foreground command awaiting debounce promotion.
 struct Pending {
@@ -834,11 +842,14 @@ mod tests {
 
     #[test]
     fn agent_foreground_commands_are_not_tracked() {
-        // claude/codex/gemini report their status via the push pipe. Their
+        // Push-instrumented agents report their status via the push pipe. Their
         // foreground command must leave NO command-store trace — otherwise
         // Zellij's CommandChanged churn (agent → tool subprocess → agent)
         // flickers the row between Running and Done and rewrites its message.
-        for agent in &["claude", "codex", "gemini"] {
+        // The set of suppressed agents is exactly the push adapters (see the
+        // `agent_names_match_push_adapter_sources` guard); Gemini is NOT one —
+        // see `gemini_foreground_command_is_tracked`.
+        for agent in &["claude", "codex"] {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &[agent.to_string()], true, Some("/work/repo"), 1);
             assert!(
@@ -851,6 +862,22 @@ mod tests {
                 "{agent} must leave no resolved command state"
             );
         }
+    }
+
+    #[test]
+    fn gemini_foreground_command_is_tracked() {
+        // Gemini has no push adapter (the shipped scope is Claude + Codex), so
+        // unlike them it is *observed* via command-tracking rather than
+        // suppressed — otherwise its panes would show nothing at all. It carries
+        // its own `Kind::Gemini` source so it renders with the gemini mark.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &["gemini".to_string()], true, Some("/work/repo"), 1);
+        store.on_timer(2);
+        let s = store
+            .get(1)
+            .expect("gemini must leave a resolved command observation");
+        assert_eq!(s.status, Status::Running);
+        assert_eq!(s.source, Kind::Gemini.as_source());
     }
 
     // ── B: leaving the foreground is debounced before flipping to Done ──
