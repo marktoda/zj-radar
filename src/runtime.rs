@@ -610,6 +610,8 @@ mod tests {
 
     #[test]
     fn render_records_targets_and_mouse_click_returns_host_effect() {
+        // 3 tracked panes → multi-pane mode (line-per-pane).
+        // Line 2 = tab header, line 3 = pane 20, line 4 = pane 21, line 5 = pane 22.
         let mut runtime = PluginRuntime {
             permission_granted: true,
             config: config(),
@@ -636,15 +638,12 @@ mod tests {
         assert!(ansi.contains("team"));
 
         let tab_click = runtime.mouse_click(2);
-        let pane_click = runtime.mouse_click(3);
-        let collapse_click = runtime.mouse_click(4);
+        let pane20_click = runtime.mouse_click(3);
+        let pane21_click = runtime.mouse_click(4);
 
         assert_eq!(tab_click.effects, vec![Effect::SwitchTab { position: 0 }]);
-        assert_eq!(pane_click.effects, vec![Effect::ShowPane { pane_id: 20 }]);
-        assert_eq!(
-            collapse_click.effects,
-            vec![Effect::SwitchTab { position: 0 }]
-        );
+        assert_eq!(pane20_click.effects, vec![Effect::ShowPane { pane_id: 20 }]);
+        assert_eq!(pane21_click.effects, vec![Effect::ShowPane { pane_id: 21 }]);
     }
 
     #[test]

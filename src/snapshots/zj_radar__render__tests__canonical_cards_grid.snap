@@ -2,11 +2,12 @@
 source: src/render.rs
 expression: "grid(&raw, 30)"
 ---
-▌◐ 1 web                  0:00
-  ✳ building… ⠋
+ RADAR                      ·4
+▌◐ 1 web
+  ✳ building…
 
- ◆ 2 api                ⏵ 0:00
+◆ 2 api
 
- ● 3 worker               done
+● 3 worker
 
- ○ 4 notes
+○ 4 notes

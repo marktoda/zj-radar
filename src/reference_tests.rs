@@ -351,7 +351,6 @@ fn grid(ansi: &str, width: usize) -> String {
 // ── The test ─────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "rail-redesign target on RadarState base — un-ignore when renderer matches docs/rail-reference.md"]
 fn rail_reference_matches() {
     let doc = include_str!("../docs/rail-reference.md");
     let cases = parse_cases(doc);

@@ -618,8 +618,8 @@ mod tests {
 
     #[test]
     fn multi_pane_inactive_collapses_to_header_plus_count() {
-        // A tab with 2 panes both running, NOT active → multi-pane tree: both
-        // calm panes collapse, so row_lines = 1 header + 1 collapse = 2 lines.
+        // A tab with 2 panes both running, NOT active → new line-per-pane design:
+        // row_lines = 1 header + 2 pane lines = 3 lines.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
         state
             .runtime
@@ -630,21 +630,23 @@ mod tests {
         // header = lines 0,1
         assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(1), None);
-        // 2-line multi-pane tab at position 0: header (line 2) + collapse (line 3).
+        // 3-line multi-pane tab at position 0: header (line 2) + pane10 (line 3) + pane11 (line 4).
         assert_eq!(state.tab_position_at_line(2), Some(0));
         assert_eq!(state.tab_position_at_line(3), Some(0));
-        // Both lines are tab-only (collapse line has no per-pane target).
+        assert_eq!(state.tab_position_at_line(4), Some(0));
+        // Header line is tab-only; pane lines each target their pane.
         assert_eq!(state.target_at_line(2), Some((0, None)));
-        assert_eq!(state.target_at_line(3), Some((0, None)));
-        // plain tab at position 1: line 4
-        assert_eq!(state.tab_position_at_line(4), Some(1));
-        assert!(state.tab_position_at_line(5).is_none());
+        assert_eq!(state.target_at_line(3), Some((0, Some(10))));
+        assert_eq!(state.target_at_line(4), Some((0, Some(11))));
+        // plain tab at position 1: line 5
+        assert_eq!(state.tab_position_at_line(5), Some(1));
+        assert!(state.tab_position_at_line(6).is_none());
     }
 
     #[test]
     fn multi_pane_child_line_click_targets_that_pane() {
-        // 3-pane tab: pane 10 Pending (expands), 11 + 12 Running (collapse).
-        // Tree: header + 1 expanded child (pane 10) + collapse line = 3 lines.
+        // 3-pane tab: pane 10 Pending, 11 + 12 Running. New line-per-pane design:
+        // header (line 2) + pane 10 (line 3) + pane 11 (line 4) + pane 12 (line 5) = 4 lines.
         let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
         state
             .runtime
@@ -660,21 +662,25 @@ mod tests {
             Some((0, None)),
             "header → tab only"
         );
-        // child line → pane 10 (the expanded Pending pane)
+        // pane lines each target their pane (in position order)
         assert_eq!(
             state.target_at_line(3),
             Some((0, Some(10))),
-            "child line → pane 10"
+            "pane line → pane 10"
         );
-        // collapse line → tab only
         assert_eq!(
             state.target_at_line(4),
-            Some((0, None)),
-            "collapse line → tab only"
+            Some((0, Some(11))),
+            "pane line → pane 11"
         );
-        // plain tab follows at line 5
-        assert_eq!(state.tab_position_at_line(5), Some(1));
-        assert!(state.tab_position_at_line(6).is_none());
+        assert_eq!(
+            state.target_at_line(5),
+            Some((0, Some(12))),
+            "pane line → pane 12"
+        );
+        // plain tab follows at line 6
+        assert_eq!(state.tab_position_at_line(6), Some(1));
+        assert!(state.tab_position_at_line(7).is_none());
     }
 
     #[test]
@@ -705,6 +711,9 @@ mod tests {
 
     #[test]
     fn multi_pane_active_tracked_and_untracked_children_clickable() {
+        // Only 1 tracked pane (pane 20 Running); pane 21 is untracked.
+        // is_multi_pane = false → single-pane path: header + detail line (2 lines total).
+        // The untracked pane has no rendered line; the detail line has no per-pane target.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
         state
             .runtime
@@ -716,15 +725,10 @@ mod tests {
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
         assert_eq!(
             state.target_at_line(3),
-            Some((0, Some(20))),
-            "tracked child"
+            Some((0, None)),
+            "detail line (single-pane mode, no per-pane target)"
         );
-        assert_eq!(
-            state.target_at_line(4),
-            Some((0, Some(21))),
-            "untracked child"
-        );
-        assert!(state.tab_position_at_line(5).is_none());
+        assert!(state.tab_position_at_line(4).is_none(), "tab ends after 2 lines");
 
         let rows = state.build_rows();
         assert_eq!(
@@ -734,7 +738,7 @@ mod tests {
         assert_eq!(
             rows[0].display.panes.len(),
             2,
-            "both live panes are visible"
+            "both live panes are visible in display"
         );
     }
 
@@ -795,15 +799,15 @@ mod tests {
         assert_eq!(state.tab_position_at_line(7), None);
     }
 
-    /// Lockstep: a multi-pane tab's tree lines (header + expanded children +
-    /// collapse) must consume exactly `row_lines()` lines in the click-mapping,
-    /// so a plain tab immediately after it maps to the correct line. The tree
-    /// plan is the single source of truth for both render() and click-mapping.
+    /// Lockstep: a multi-pane tab's rendered line count must consume exactly
+    /// `row_lines()` lines in the click-mapping, so a plain tab immediately
+    /// after it maps to the correct line.
     #[test]
     fn multi_pane_tree_click_mapping_lockstep() {
         use crate::status::Status;
-        // 3-pane tab (1 Pending expands, 2 Running collapse) → header + 1 child
-        // + collapse = 3 content lines. Followed by a plain tab.
+        // 3-pane tab (all tracked) → new line-per-pane design:
+        // header (line 2) + pane10 (line 3) + pane11 (line 4) + pane12 (line 5) = 4 lines.
+        // Followed by a plain tab at line 6.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
         state
             .runtime
@@ -813,19 +817,20 @@ mod tests {
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         state.runtime.last_render_height = 100;
-        // header = lines 0,1. Tree at position 0: lines 2,3,4. Plain tab: line 5.
+        // header = lines 0,1. Multi-pane tab at position 0: lines 2-5. Plain tab: line 6.
         assert_eq!(state.tab_position_at_line(0), None, "header line 0");
         assert_eq!(state.tab_position_at_line(1), None, "header line 1");
-        assert_eq!(state.tab_position_at_line(2), Some(0), "tree header line");
-        assert_eq!(state.tab_position_at_line(3), Some(0), "tree child line");
-        assert_eq!(state.tab_position_at_line(4), Some(0), "tree collapse line");
-        // The plain tab must start at line 5, not earlier.
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab header line");
+        assert_eq!(state.tab_position_at_line(3), Some(0), "pane 10 line");
+        assert_eq!(state.tab_position_at_line(4), Some(0), "pane 11 line");
+        assert_eq!(state.tab_position_at_line(5), Some(0), "pane 12 line");
+        // The plain tab must start at line 6, not earlier.
         assert_eq!(
-            state.tab_position_at_line(5),
+            state.tab_position_at_line(6),
             Some(1),
-            "plain tab follows the tree"
+            "plain tab follows the multi-pane tab"
         );
-        assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
+        assert_eq!(state.tab_position_at_line(7), None, "beyond last tab");
     }
 
     // ── Density click-mapping tests ──

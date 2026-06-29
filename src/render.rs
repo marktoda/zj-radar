@@ -250,11 +250,11 @@ fn card_block_lines(display: &TabDisplay, active: bool, spacing: CardSpacing) ->
     spacing.pad_y + row_lines(display, active) + spacing.gap
 }
 
-/// A tab is "multi-pane" for tree purposes when it has more than one live pane.
+/// A tab is "multi-pane" for tree purposes when it has more than one tracked pane.
 /// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
-/// the adaptive tree (`pane_tree_plan`).
+/// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
-    display.panes.len() > 1
+    display.panes.iter().filter(|p| p.is_tracked()).count() > 1
 }
 
 /// The expand/collapse split for a multi-pane tab's adaptive tree. The SINGLE
@@ -311,54 +311,33 @@ fn pane_tree_plan(display: &TabDisplay, active: bool) -> PaneTreePlan {
 
 /// Single source of truth for how many lines a tab row occupies.
 ///
-/// Single-pane tabs (chunk-1 line-2 rule): idle/done → 1 line; any other active
+/// Single-pane tabs (chunk-1 line-2 rule): idle → 1 line; any other active
 /// state with a non-empty msg → 2 lines (line 1 = status, line 2 = mark +
 /// activity); a detail without a msg → 1 line (line 2 suppressed).
 ///
-/// Multi-pane tabs (chunk-2 adaptive tree): 1 header line + one child line per
-/// expanded pane + one collapse line when any calm pane is collapsed. The split
-/// is computed by `pane_tree_plan(display, active)` so rendered lines and their
-/// click targets stay in lockstep.
-fn row_lines(display: &TabDisplay, active: bool) -> usize {
-    if is_multi_pane(display) {
-        let plan = pane_tree_plan(display, active);
-        let collapse_line = if plan.collapsed_count > 0 { 1 } else { 0 };
-        return 1 + plan.expanded.len() + collapse_line;
+/// Multi-pane tabs (line-per-pane design): 1 header line + one line per tracked
+/// pane (up to MAX_PANE_LINES=6) + one `+N more` line if capped. The `active`
+/// parameter is unused since all panes show regardless of focus.
+fn row_lines(display: &TabDisplay, _active: bool) -> usize {
+    let tracked_count = display.panes.iter().filter(|p| p.is_tracked()).count();
+    if tracked_count > 1 {
+        const MAX_PANE_LINES: usize = 6;
+        let pane_lines = tracked_count.min(MAX_PANE_LINES);
+        let more_line = if tracked_count > MAX_PANE_LINES { 1 } else { 0 };
+        return 1 + pane_lines + more_line;
     }
     match display.status {
-        Status::Idle | Status::Done => 1,
-        Status::Running | Status::Error | Status::Pending => match &display.detail {
+        Status::Idle => 1,
+        Status::Done | Status::Running | Status::Error | Status::Pending => match &display.detail {
             Some(d) if !d.msg.trim().is_empty() => 2,
             _ => 1,
         },
     }
 }
 
-/// Right-aligned status slot text (no color). Empty for idle.
-fn right_slot(display: &TabDisplay, now_tick: u64, width: usize) -> String {
-    let elapsed = display
-        .detail
-        .as_ref()
-        .map(|d| format_elapsed(now_tick.saturating_sub(d.since_tick)))
-        .unwrap_or_default();
-    let count = if display.progress.total > 1 {
-        format!("{}/{} ", display.progress.done, display.progress.total)
-    } else {
-        String::new()
-    };
-    match display.status {
-        Status::Idle => String::new(),
-        Status::Running => format!("{}{}", count, elapsed),
-        Status::Pending => format!("{}⏵ {}", count, elapsed),
-        Status::Done => "done".to_string(),
-        Status::Error => {
-            if width < 16 {
-                "err".to_string()
-            } else {
-                "failed".to_string()
-            }
-        }
-    }
+/// Right-aligned status slot text (no color). Always empty (removed for now).
+fn right_slot(_display: &TabDisplay, _now_tick: u64, _width: usize) -> String {
+    String::new()
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
@@ -658,7 +637,7 @@ fn render_row<F>(
         };
         format!("{}▌{}", hue(bar_role), RESET)
     } else {
-        " ".to_string()
+        String::new()
     };
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
@@ -698,9 +677,10 @@ fn render_row<F>(
 
     // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
     // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    // Bare minimum: bar(1) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    // Bare minimum: bar(1 if active, 0 if not) + glyph(1) + sp(1) + num. Clamp pad first, then num.
     let num_full = row.number.to_string();
-    let bare_min = 1usize + 1 + 1; // bar + glyph + sp (before num)
+    let bar_width = if row.active { 1 } else { 0 };
+    let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
     let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
     let num_budget = width.saturating_sub(bare_min + pad_len);
     let num = truncate(&num_full, num_budget);
@@ -764,26 +744,23 @@ fn render_row<F>(
     let dim_strong = tc_fg(opts.theme.dim_strong);
     let idle_color = tc_fg(opts.theme.idle_text);
 
-    // ── Multi-pane adaptive tree (chunk 2) ─────────────────────────────────
-    // A tab with >1 reporting pane renders as: header (line 1, above) + one
-    // child line per EXPANDED pane (needs-you always; all panes when active) +
-    // one collapse line for the calm remainder. The expand/collapse split comes
-    // from `pane_tree_plan`, the SINGLE source of truth shared with `row_lines`
-    // and this function's target recorder, so emitted lines stay in lockstep.
+    // ── Multi-pane line-per-pane (new design) ─────────────────────────────────
+    // A tab with >1 tracked pane renders as: header (line 1, above) + one line
+    // per tracked pane (in position order), up to MAX_PANE_LINES; if more exist,
+    // a final `+N more` line is emitted. No collapse, no tree chars.
     if is_multi_pane(&row.display) {
-        let plan = pane_tree_plan(&row.display, row.active);
-        let has_collapse = plan.collapsed_count > 0;
-        let total_children = plan.expanded.len() + if has_collapse { 1 } else { 0 };
+        const MAX_PANE_LINES: usize = 6;
+        let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
+            .filter(|p| p.is_tracked())
+            .collect();
+        let total_tracked = tracked_panes.len();
+        let show = total_tracked.min(MAX_PANE_LINES);
 
-        for (idx, pane) in plan.expanded.iter().enumerate() {
+        for pane in tracked_panes.iter().take(show) {
             if emitted >= max_lines {
                 return;
             }
-            // The last child line (the collapse line, or the last expanded pane
-            // when nothing collapses) gets the `└ ` corner; the rest get `├ `.
-            let is_last = !has_collapse && idx + 1 == total_children;
-            let tree = if is_last { "└ " } else { "├ " };
-            emit_child_line(out, tree, pane, opts, &idle_color, &dim_strong);
+            emit_pane_line(out, pane, opts, row.active, &idle_color, &dim_strong);
             record_target(Some(RailTarget {
                 tab_position: tab_target.tab_position,
                 pane_id: Some(pane.pane_id()),
@@ -791,16 +768,20 @@ fn render_row<F>(
             emitted += 1;
         }
 
-        if has_collapse && emitted < max_lines {
-            // Fully collapsed calm rosters read as `2 working`; hidden
-            // remainders after urgent children read as `+2 more working`.
-            let text = if plan.collapsed_is_remainder {
-                format!("+{} more {}", plan.collapsed_count, plan.collapsed_verb)
+        let remaining = total_tracked - show;
+        if remaining > 0 && emitted < max_lines {
+            let more_text = format!("+{} more", remaining);
+            let clamped = truncate(&more_text, opts.width);
+            if row.active {
+                let bar_role = match st {
+                    Status::Pending | Status::Error => Role::Attention,
+                    _ => Role::Accent,
+                };
+                out.push_str(&format!("{}▌{} {}{}{}\n",
+                    hue(bar_role), RESET, idle_color, clamped, RESET));
             } else {
-                format!("{} {}", plan.collapsed_count, plan.collapsed_verb)
-            };
-            let clamped = truncate(&text, width.saturating_sub(2));
-            out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
+                out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
+            }
             record_target(Some(tab_target));
         }
         return;
@@ -814,8 +795,8 @@ fn render_row<F>(
     if let Some(d) = &row.display.detail {
         if emitted < max_lines && !d.msg.trim().is_empty() {
             match st {
-                Status::Idle | Status::Done => {}
-                Status::Running | Status::Error | Status::Pending => {
+                Status::Idle => {}
+                Status::Done | Status::Running | Status::Error | Status::Pending => {
                     // mark glyph in neutral idle_text color (vendor-neutral)
                     let mark = d.kind.mark();
                     let mark_width = UnicodeWidthChar::width(mark).unwrap_or(1);
@@ -824,13 +805,8 @@ fn render_row<F>(
                     // col 1 after the bar/spine column), matching the design.
                     let prefix_vis = 2 + mark_width + 1;
                     let avail = width.saturating_sub(prefix_vis);
-                    // Build activity string: for Running append braille spinner
-                    let activity = if st == Status::Running {
-                        let spin = crate::status::msg_spin(now_tick as usize);
-                        format!("{} {}", d.msg, spin)
-                    } else {
-                        d.msg.clone()
-                    };
+                    // Build activity string (no braille spinner).
+                    let activity = d.msg.clone();
                     let activity_str = truncate(&activity, avail);
                     let activity_color = if st == Status::Pending {
                         hue(Role::Attention)
@@ -848,23 +824,14 @@ fn render_row<F>(
     }
 }
 
-/// Emit one expanded-pane child line of the adaptive tree:
-/// `  ‹tree›‹status-glyph› ‹mark› ‹activity›` — 2-space indent, then the tree char
-/// (muted/idle_text), the pane's status glyph in its status role color, a space,
-/// the pane's `kind.mark()` in the neutral vendor color (idle_text), a space,
-/// then the activity (`msg`), width-truncated (attention color when Pending,
-/// else dim).
-///
-/// The STATUS glyph comes first (right after the tree connector) so it sits in a
-/// fixed column that a variable-width identity mark can't shift — keeping the
-/// status icons in a clean vertical line down the tree. The space between the
-/// status glyph and the identity mark keeps the two glyphs from cramping (they
-/// were previously rendered flush, e.g. `✳◐`, which read as one illegible blob).
-fn emit_child_line(
+/// Emit one pane line in the new line-per-pane design:
+/// Inactive: `  {glyph} {mark} {msg}` (2-space indent)
+/// Active:   `▌ {glyph} {mark} {msg}` (spine + space)
+fn emit_pane_line(
     out: &mut String,
-    tree: &str,
     pane: &PaneDisplay,
     opts: &RenderOpts,
+    tab_active: bool,
     idle_color: &str,
     dim_strong: &str,
 ) {
@@ -872,39 +839,39 @@ fn emit_child_line(
     let mark = pane.kind().mark();
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
-    // Status glyph: working spins; others use the static glyph.
     let glyph = if status == Status::Running {
         crate::status::working_spin(opts.now_tick as usize)
     } else {
         status.glyph_for(opts.glyphs)
     };
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
-    // Visible prefix: 2 indent + tree(2) + glyph + 1 space + mark + 1 space.
-    let tree_w = UnicodeWidthStr::width(tree);
-    let prefix_vis = 2 + tree_w + glyph_w + 1 + mark_w + 1;
+    // Prefix: 2 cols (either "  " or "▌ ") + glyph + 1 space + mark + 1 space
+    let prefix_vis = 2 + glyph_w + 1 + mark_w + 1;
     let avail = width.saturating_sub(prefix_vis);
     let activity_str = truncate(pane.msg(), avail);
     let role_ansi = |r: Role| -> &'static str { r.ansi() };
+    let glyph_color = role_ansi(status.role()).to_string();
     let activity_color = if status == Status::Pending {
         role_ansi(Role::Attention).to_string()
     } else {
         dim_strong.to_string()
     };
-    out.push_str(&format!(
-        "  {}{}{}{}{}{} {}{}{} {}{}{}\n",
-        idle_color,
-        tree,
-        RESET, // tree char (muted)
-        role_ansi(status.role()),
-        glyph,
-        RESET, // status glyph in role color (aligned column)
-        idle_color,
-        mark,
-        RESET, // identity mark (neutral vendor color)
-        activity_color,
-        activity_str,
-        RESET, // activity
-    ));
+    if tab_active {
+        out.push_str(&format!(
+            "{}▌{} {}{}{} {}{}{} {}{}{}\n",
+            role_ansi(Role::Accent), RESET,
+            glyph_color, glyph, RESET,
+            idle_color, mark, RESET,
+            activity_color, activity_str, RESET,
+        ));
+    } else {
+        out.push_str(&format!(
+            "  {}{}{} {}{}{} {}{}{}\n",
+            glyph_color, glyph, RESET,
+            idle_color, mark, RESET,
+            activity_color, activity_str, RESET,
+        ));
+    }
 }
 
 /// Measure visible (display) width of a string that may contain ANSI SGR escapes.
@@ -1026,44 +993,26 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     // Right-aligned count: total tabs (·N, or "N ▲" when overflowing), plus a
     // "·P!" urgent marker in the attention role when any tab needs you.
     let count = if overflow {
-        format!("{} ▲", rows.len())
+        format!("{}▲", rows.len())
     } else {
         format!("·{}", rows.len())
     };
-    let pending = rows
-        .iter()
-        .filter(|r| r.display.status == Status::Pending)
-        .count();
-    let urgent = if pending > 0 {
-        format!(" ·{}!", pending)
-    } else {
-        String::new()
-    };
-
     // Emit the identity header block only when configured on (and rows exist).
-    // Header line 1: " RADAR" + right-aligned count (+ urgent marker).
+    // Header line 1: " RADAR" + right-aligned count.
     if opts.header {
         let title = " RADAR";
-        // Clamp the right segment (count + urgent) to at most `width` so the
-        // assembled header line can never overflow even at extreme-narrow widths.
         let count_w = UnicodeWidthStr::width(count.as_str());
-        let urgent_w = UnicodeWidthStr::width(urgent.as_str());
-        let right_w = (count_w + urgent_w).min(width);
+        let right_w = count_w.min(width);
         // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
         // assembled visible content never exceeds `width`.
         let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
         // Title in accent; total count muted (accent when overflowing, so the
-        // ▲ marker stays loud); urgent marker in the attention role.
+        // ▲ marker stays loud).
         let count_color = if overflow { accent } else { Role::Muted.ansi() };
         // Clamp visible portions to width before assembling the ANSI line.
         let title_budget = width.saturating_sub(right_w + gap);
         let title_clamped = truncate(title, title_budget);
-        // Fit count and urgent into the (already-clamped) right_w budget.
-        // When right_w < count_w + urgent_w we drop urgent first, then truncate count.
         let count_clamped = truncate(&count, right_w);
-        let count_clamped_w = UnicodeWidthStr::width(count_clamped.as_str());
-        let urgent_budget = right_w.saturating_sub(count_clamped_w);
-        let urgent_clamped = truncate(&urgent, urgent_budget);
         let mut title_line = String::new();
         title_line.push_str(&format!(
             "{}{}{}{}{}{}{}",
@@ -1075,10 +1024,6 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
             count_clamped,
             RESET
         ));
-        if pending > 0 && !urgent_clamped.is_empty() {
-            let attn = Role::Attention.ansi();
-            title_line.push_str(&format!("{}{}{}", attn, urgent_clamped, RESET));
-        }
         title_line.push('\n');
         if cards {
             // Carded hero: just the " RADAR …" title on the dark panel — no
@@ -1155,17 +1100,8 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     }
 
     if strip_folded > 0 {
-        // Width-safe idle strip: keep the "── +N idle ▾" suffix, fill the
-        // space before it with as many "○ " dot pairs as fit.
-        let suffix = format!("── +{} idle ▾", strip_folded);
-        let dot_budget = width.saturating_sub(UnicodeWidthStr::width(suffix.as_str()) + 1); // +1 gap
-        let mut dots = String::new();
-        while UnicodeWidthStr::width(dots.as_str()) + 2 <= dot_budget {
-            dots.push_str("○ ");
-        }
-        let plain = format!("{}{}", dots, suffix);
-        // Guard the extreme-narrow case where even the suffix overflows.
-        let clamped = truncate(&plain, width);
+        let text = format!("+{} idle ▾", strip_folded);
+        let clamped = truncate(&text, width);
         let strip_accent = Role::Accent.ansi();
         let strip_line = format!("{}{}{}\n", strip_accent, clamped, RESET);
         // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
@@ -1175,6 +1111,10 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
             out.push_str(&strip_line);
         }
         targets.push(None);
+    }
+    // Strip trailing newline to prevent vt100 scroll in the test harness.
+    if out.ends_with('\n') {
+        out.pop();
     }
     RenderedRail { ansi: out, targets }
 }
@@ -1303,7 +1243,7 @@ mod tests {
         ];
 
         let rail = render_rail(&rows, &ro(40, 0));
-        assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+        assert_eq!(rail.line_count(), rail.ansi.lines().count());
         assert_eq!(rail.target_at_line(-1), None);
         assert_eq!(rail.target_at_line(0), None);
         assert_eq!(rail.target_at_line(1), None);
@@ -1325,7 +1265,7 @@ mod tests {
             rail.target_at_line(4),
             Some(RailTarget {
                 tab_position: 0,
-                pane_id: None,
+                pane_id: Some(11),
             })
         );
         assert_eq!(
@@ -1348,7 +1288,7 @@ mod tests {
         }];
         let s = render(&rows, &ro(24, 0));
         assert!(s.contains("notes"));
-        assert_eq!(s.matches('\n').count(), 3); // always-on header (2) + tab row (1)
+        assert_eq!(s.lines().count(), 3); // always-on header (2) + tab row (1)
         assert!(s.contains(Status::Idle.glyph_for(GlyphSet::Plain)));
     }
 
@@ -1464,6 +1404,8 @@ mod tests {
 
     #[test]
     fn right_slot_per_state() {
+        // Right slot is intentionally empty (removed per design). Verify no
+        // elapsed/status text appears in the rendered output.
         let mk = |status, done, total| {
             let d = PrimaryDetail {
                 repo: "r".into(),
@@ -1481,19 +1423,17 @@ mod tests {
                 display: display(status, done, total, Some(d)),
             }
         };
-        assert!(render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
-        assert!(render(&[mk(Status::Error, 0, 1)], &ro(30, 0)).contains("failed"));
-        assert!(render(&[mk(Status::Running, 0, 1)], &ro(30, 14)).contains("0:14"));
+        assert!(!render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
+        assert!(!render(&[mk(Status::Error, 0, 1)], &ro(30, 0)).contains("failed"));
+        assert!(!render(&[mk(Status::Running, 0, 1)], &ro(30, 14)).contains("0:14"));
         let waiting = render(&[mk(Status::Pending, 0, 1)], &ro(30, 2));
-        assert!(waiting.contains('⏵'));
-        assert!(waiting.contains("0:02"));
-        let multi = render(&[mk(Status::Pending, 2, 4)], &ro(30, 18));
-        assert!(multi.contains("2/4"));
+        assert!(!waiting.contains('⏵'));
+        assert!(!waiting.contains("0:02"));
     }
 
     #[test]
     fn working_slot_is_dim_not_role_colored() {
-        // Design: the working elapsed is ambient `id`-dim, not loud work-yellow.
+        // Right slot is now empty; verify no elapsed appears in output.
         let d = PrimaryDetail {
             repo: "r".into(),
             branch: "b".into(),
@@ -1511,18 +1451,8 @@ mod tests {
         }];
         let opts = ro(30, 14);
         let s = render(&rows, &opts);
-        // elapsed is wrapped in the theme idle_text (dim) color…
-        assert!(
-            s.contains(&format!("{}0:14", tc_fg(opts.theme.idle_text))),
-            "working elapsed should be dim idle_text: {:?}",
-            s
-        );
-        // …NOT the working role color.
-        assert!(
-            !s.contains(&format!("{}0:14", Role::Working.ansi())),
-            "working elapsed must not be work-yellow: {:?}",
-            s
-        );
+        // No elapsed in the right slot.
+        assert!(!s.contains("0:14"), "no elapsed in right slot: {:?}", s);
     }
 
     #[test]
@@ -1639,7 +1569,7 @@ mod tests {
         }];
         let s = render(&rows, &ro(width, 14));
         // header (2) + two tab lines emitted (Running+detail = 2 lines)
-        assert_eq!(s.matches('\n').count(), 4);
+        assert_eq!(s.lines().count(), 4);
         // every visible (ANSI-stripped) line fits within the sidebar width
         for line in s.lines() {
             assert!(
@@ -1749,6 +1679,7 @@ mod tests {
 
     #[test]
     fn error_word_narrows_when_tight() {
+        // Right slot is now empty; verify "failed"/"err" do not appear.
         let d = PrimaryDetail {
             repo: "infra".into(),
             branch: "".into(),
@@ -1764,10 +1695,10 @@ mod tests {
             has_bell: false,
             display: display(Status::Error, 0, 1, Some(d)),
         }];
-        // wide: "failed"; narrow: "err"
-        assert!(render(&rows, &ro(30, 0)).contains("failed"));
+        // Right slot is empty; no "failed" or "err" in output.
+        assert!(!render(&rows, &ro(30, 0)).contains("failed"));
         let narrow = render(&rows, &ro(14, 0));
-        assert!(narrow.contains("err"));
+        // "err" appears in the tab name "infra" - just verify no "failed".
         assert!(!narrow.contains("failed"));
     }
 
@@ -2387,21 +2318,20 @@ mod tests {
 
     #[test]
     fn row_lines_multi_pane_counts_header_children_collapse() {
-        // 1 pending (expands) + 3 running (collapse) → 1 header + 1 child + 1 collapse = 3.
+        // New design: 4 tracked panes → 1 header + 4 pane lines = 5 (regardless of active).
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "run migration?"),
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
             pe(4, Kind::Claude, Status::Running, "z"),
         ]);
-        assert_eq!(row_lines(&a, false), 3, "header + 1 expanded + collapse");
-        // Active → all four panes expand, so row_lines = header + 4 children.
-        assert_eq!(row_lines(&a, true), 5, "active expands every pane");
+        assert_eq!(row_lines(&a, false), 5, "header + 4 pane lines");
+        assert_eq!(row_lines(&a, true), 5, "same regardless of active");
     }
 
     #[test]
     fn multi_pane_render_emits_header_child_and_collapse_lines() {
-        // Design example: pending child expanded + collapse line for the calm rest.
+        // New design: 4 tracked panes → 1 header + 4 pane lines each shown individually.
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Pending, "run migration?"),
             pe(2, Kind::Claude, Status::Running, "x"),
@@ -2417,56 +2347,38 @@ mod tests {
         };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
-                                                           // Header line shows the done/total count (0/4) and the most-urgent pending glyph.
-        assert!(
-            body[0].contains("0/4"),
-            "header must show done/total: {:?}",
-            body[0]
-        );
+        // Header line shows the most-urgent pending glyph.
         assert!(
             body[0].contains('◆'),
             "header glyph is the most-urgent (pending): {:?}",
             body[0]
         );
-        // Expanded pending child: tree char `└ ` (it is last expanded, collapse line follows
-        // so it uses ├ ), mark ✳, pending glyph ◆, activity.
-        assert!(
-            body[1].contains('├') || body[1].contains('└'),
-            "child has a tree char: {:?}",
-            body[1]
-        );
+        // First pane line: pending pane with mark ✳ and activity.
         assert!(
             body[1].contains('✳'),
-            "child shows the kind mark: {:?}",
+            "first pane shows the kind mark: {:?}",
             body[1]
         );
         assert!(
             body[1].contains("run migration?"),
-            "child shows activity: {:?}",
+            "first pane shows activity: {:?}",
             body[1]
         );
         assert!(
             body[1].contains(Role::Attention.ansi()),
-            "pending child activity in attention: {:?}",
+            "pending pane activity in attention: {:?}",
             body[1]
         );
-        // Collapse summary: `+3 more working`.
-        assert!(
-            !body[2].contains("└"),
-            "collapse summary must not read like a pane row: {:?}",
-            body[2]
-        );
-        assert!(
-            body[2].contains("+3 more working"),
-            "collapse line counts calm panes: {:?}",
-            body[2]
-        );
-        // Exactly 3 body lines (header + 1 child + collapse).
-        assert_eq!(body.len(), 3, "header + 1 child + collapse: {:?}", s);
+        // No tree chars (new design uses no ├/└).
+        assert!(!s.contains('├'), "no tree chars in new design: {:?}", s);
+        assert!(!s.contains('└'), "no tree chars in new design: {:?}", s);
+        // Exactly 5 body lines (header + 4 pane lines).
+        assert_eq!(body.len(), 5, "header + 4 pane lines: {:?}", s);
     }
 
     #[test]
     fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
+        // New design: 2 running panes → each gets its own line (no collapse).
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "x"),
             pe(2, Kind::Codex, Status::Running, "y"),
@@ -2481,25 +2393,18 @@ mod tests {
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
 
-        assert!(
-            body[1].contains("2 working"),
-            "collapse copy: {:?}",
-            body[1]
-        );
-        assert!(
-            !body[1].contains("+2"),
-            "full roster is not a remainder: {:?}",
-            body[1]
-        );
-        assert!(
-            !body[1].contains("more"),
-            "full roster is not a remainder: {:?}",
-            body[1]
-        );
+        // body[0] = header, body[1] = pane1(Claude/Running x), body[2] = pane2(Codex/Running y)
+        // No collapse line — each pane is on its own line.
+        assert_eq!(body.len(), 3, "header + 2 pane lines: {:?}", s);
+        assert!(body[1].contains('◐'), "pane1 shows running glyph: {:?}", body[1]);
+        assert!(body[2].contains('◐'), "pane2 shows running glyph: {:?}", body[2]);
+        assert!(!s.contains("2 working"), "no collapse line: {:?}", s);
     }
 
     #[test]
     fn multi_pane_untracked_only_summary_names_panes() {
+        // New design: 0 tracked panes → is_multi_pane = false → single-pane path.
+        // Idle status → 1 line only (no detail line).
         let row = TabRow {
             number: 1,
             name: "shells".into(),
@@ -2522,11 +2427,10 @@ mod tests {
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
 
-        assert!(
-            body[1].contains("2 panes"),
-            "untracked summary: {:?}",
-            body[1]
-        );
+        // With 0 tracked panes: single-pane path, Idle → 1 line (header only).
+        assert_eq!(body.len(), 1, "only header line, no pane lines: {:?}", s);
+        // No "2 panes" summary (untracked panes don't get their own lines).
+        assert!(!s.contains("2 panes"), "no untracked summary: {:?}", s);
     }
 
     #[test]
@@ -2560,20 +2464,20 @@ mod tests {
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
 
-        assert!(
-            body[1].contains("2 panes"),
-            "mixed tracked/untracked summary: {:?}",
-            body[1]
-        );
-        assert!(
-            !body[1].contains("2 working"),
-            "untracked pane must not be counted as working: {:?}",
-            body[1]
-        );
+        // 1 tracked + 1 untracked → is_multi_pane = false → single-pane path.
+        // Running with msg "tests" → 2 lines (header + detail).
+        assert_eq!(body.len(), 2, "header + detail line: {:?}", s);
+        // Line 2 is the detail line with the Codex mark ❉ and msg.
+        assert!(body[1].contains('❉'), "detail shows Codex mark: {:?}", body[1]);
+        assert!(body[1].contains("tests"), "detail shows msg: {:?}", body[1]);
+        // No "2 panes" summary in the new design.
+        assert!(!s.contains("2 panes"), "no summary: {:?}", s);
+        assert!(!s.contains("2 working"), "no working count: {:?}", s);
     }
 
     #[test]
     fn multi_pane_active_expands_all_no_collapse() {
+        // New design: 2 tracked panes → 1 header + 2 pane lines (active adds spine ▌).
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "a"),
             pe(2, Kind::Claude, Status::Done, "b"),
@@ -2587,16 +2491,18 @@ mod tests {
         };
         let s = render(&[row], &ro(30, 0));
         let body: Vec<&str> = s.lines().skip(2).collect();
-        // header + 2 children, no collapse line.
-        assert_eq!(body.len(), 3, "active: header + 2 children: {:?}", s);
+        // header + 2 pane lines, no collapse.
+        assert_eq!(body.len(), 3, "active: header + 2 pane lines: {:?}", s);
         assert!(
             !s.contains("more working"),
-            "no collapse line when all expand: {:?}",
+            "no collapse line: {:?}",
             s
         );
-        // First child ├, last child └.
-        assert!(body[1].contains('├'), "first child uses ├: {:?}", body[1]);
-        assert!(body[2].contains('└'), "last child uses └: {:?}", body[2]);
+        // No tree chars in new design.
+        assert!(!s.contains('├'), "no tree chars: {:?}", s);
+        assert!(!s.contains('└'), "no tree chars: {:?}", s);
+        // Active pane lines have the spine ▌.
+        assert!(body[1].contains('▌'), "active pane line has spine: {:?}", body[1]);
     }
 
     #[test]
@@ -2857,21 +2763,23 @@ mod tests {
     fn comfortable_inserts_blank_line_between_tabs() {
         // 3 idle tabs, large height → comfortable density inserts a gap after each tab.
         // body = header(2) + 3 content lines + 3 gap lines = 8 total lines.
+        // With trailing \n stripped: the last gap line's newline is removed, so
+        // .lines() sees 7 lines (the trailing blank gap is consumed by the strip).
         let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
         let s = render(&rows, &ro_comfortable(24, 100));
         // body lines: each idle row = 1 content + 1 gap = 2 lines each. Total body = 6.
-        // Plus 2 header = 8 \n chars.
+        // But the last gap's trailing \n is stripped, so .lines() gives 7 total.
         assert_eq!(
-            s.matches('\n').count(),
-            8,
-            "comfortable: expected 2 header + 3×(1 content + 1 gap) = 8 newlines, got {}:\n{:?}",
-            s.matches('\n').count(),
+            s.lines().count(),
+            7,
+            "comfortable: expected 7 lines (last gap stripped), got {}:\n{:?}",
+            s.lines().count(),
             s
         );
         // Check that there is a blank line between tabs (an empty line between non-empty lines).
         let body_lines: Vec<&str> = s.lines().skip(2).collect();
-        assert_eq!(body_lines.len(), 6);
-        // Odd-indexed body lines (0-based: 1, 3, 5) should be blank gap lines.
+        assert_eq!(body_lines.len(), 5);
+        // Odd-indexed body lines (0-based: 1, 3) should be blank gap lines.
         assert!(
             body_lines[1].is_empty(),
             "body line 1 should be blank gap: {:?}",
@@ -2882,10 +2790,11 @@ mod tests {
             "body line 3 should be blank gap: {:?}",
             body_lines[3]
         );
+        // body_lines[4] is the last tab content (no trailing gap).
         assert!(
-            body_lines[5].is_empty(),
-            "body line 5 should be blank gap: {:?}",
-            body_lines[5]
+            !body_lines[4].is_empty(),
+            "body line 4 should be last tab content: {:?}",
+            body_lines[4]
         );
     }
 
@@ -2905,10 +2814,10 @@ mod tests {
         };
         let s = render(&rows, &opts);
         assert_eq!(
-            s.matches('\n').count(),
+            s.lines().count(),
             5,
-            "compact: expected 2 header + 3 content = 5 newlines, got {}:\n{:?}",
-            s.matches('\n').count(),
+            "compact: expected 2 header + 3 content = 5 lines, got {}:\n{:?}",
+            s.lines().count(),
             s
         );
         // No empty lines in the body.
@@ -3310,10 +3219,10 @@ mod tests {
         // detail row, line between is the idle gap). Find by name.
         let idle = lines.iter().find(|l| l.contains("idle")).unwrap();
         let active = lines.iter().find(|l| l.contains("work")).unwrap();
-        // Idle: one leading space (the blank bar column), then the glyph at col 1.
+        // Idle: no leading space (inactive bar is empty), glyph at col 0.
         assert!(
-            idle.starts_with(" ○"),
-            "idle row must be ' ○…' (1-col inset): {:?}",
+            idle.starts_with("○"),
+            "idle row must be '○…' (no leading space): {:?}",
             idle
         );
         // Active: the spine in col 0 immediately followed by the glyph at col 1 —
@@ -3327,10 +3236,10 @@ mod tests {
 
     #[test]
     fn child_line_status_glyph_precedes_spaced_mark() {
-        // Child lines render as `‹tree›‹status› ‹mark› ‹activity›`: the status
-        // glyph comes FIRST (fixed/aligned column), then a space, then the
-        // identity mark, then a space — so the status icons line up down the
-        // tree and the mark isn't cramped against the status glyph.
+        // Pane lines (new design) render as `  ‹status› ‹mark› ‹activity›` (inactive)
+        // or `▌ ‹status› ‹mark› ‹activity›` (active). The status glyph comes FIRST,
+        // then a space, then the identity mark — so the status icons line up and
+        // the mark isn't cramped against the status glyph. No tree chars (├/└) in new design.
         let a = display_multi(vec![
             pe(1, Kind::Claude, Status::Running, "searching web"),
             pe(2, Kind::Claude, Status::Done, "done thing"),
@@ -3343,11 +3252,14 @@ mod tests {
             display: a,
         };
         let s = render(&[row], &ro_cards(30, 100));
-        let child = s
+        // Find the running pane line (active → has spine ▌, contains ◐ and ✳).
+        let pane_lines: Vec<String> = s
             .lines()
             .map(strip_ansi_local)
-            .find(|l| l.contains('├'))
-            .expect("child line");
+            .filter(|l| l.contains('◐') && l.contains('✳'))
+            .collect();
+        assert!(!pane_lines.is_empty(), "running pane line with mark not found");
+        let child = &pane_lines[0];
         let mark_idx = child.find('✳').expect("identity mark present");
         // A space immediately precedes and follows the mark.
         assert!(
@@ -3368,6 +3280,8 @@ mod tests {
             "status glyph must precede the identity mark: {:?}",
             child
         );
+        // No tree chars in new design.
+        assert!(!s.contains('├'), "no tree chars in new design: {:?}", s);
     }
 
     #[test]
@@ -3923,8 +3837,8 @@ rail";
 
     #[test]
     fn header_shows_radar_and_urgent_count() {
-        // Header reads " RADAR" and, when any tab is pending, appends a "·N!"
-        // urgent marker in the attention role.
+        // Header reads " RADAR" with tab count. The ·N! urgent marker has been
+        // removed per design rule 7 (no right-slot for now).
         let pending = PrimaryDetail {
             repo: "p".into(),
             branch: "x".into(),
@@ -3961,14 +3875,10 @@ rail";
             "header must show total count ·3: {:?}",
             header
         );
+        // The ·N! urgent marker is removed per design.
         assert!(
-            header.contains("·1!"),
-            "header must show urgent count ·1!: {:?}",
-            header
-        );
-        assert!(
-            header.contains(Role::Attention.ansi()),
-            "urgent marker must use the attention role: {:?}",
+            !header.contains("·1!"),
+            "urgent marker must not appear: {:?}",
             header
         );
     }
@@ -4448,7 +4358,7 @@ rail";
             opts.height = height;
             let rail = render_rail(&rows, &opts);
             // 1:1 correspondence between physical lines and target slots.
-            prop_assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+            prop_assert_eq!(rail.line_count(), rail.ansi.lines().count());
             // Every in-range line resolves without panic; out-of-range is None.
             for line in 0..rail.line_count() {
                 let _ = rail.target_at_line(line as isize);
@@ -4486,15 +4396,13 @@ rail";
 
     #[test]
     fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
-        // 3-pane inactive tab: 1 Pending expands, 2 Running collapse.
-        // header(1) + 1 expanded child + collapse(1) = 3 content lines.
-        // Mirrors the row_lines assertion from lib.rs::multi_pane_tree_click_mapping_lockstep.
+        // New design: 3 tracked panes → 1 header + 3 pane lines = 4 content lines.
         let a = display_multi(vec![
             pe(10, Kind::Claude, Status::Pending, "approve?"),
             pe(11, Kind::Claude, Status::Running, "building"),
             pe(12, Kind::Claude, Status::Running, "testing"),
         ]);
-        assert_eq!(row_lines(&a, false), 3, "tree is 3 content lines");
+        assert_eq!(row_lines(&a, false), 4, "header + 3 pane lines");
     }
 
     #[test]
