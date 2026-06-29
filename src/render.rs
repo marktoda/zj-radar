@@ -556,6 +556,28 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     RenderedRail::from_ansi_without_targets(out)
 }
 
+/// Rail face shown when permission has NOT been granted. Distinct from
+/// `onboarding` (which is the granted-but-idle face) so a blocked install is
+/// never mistaken for a working one.
+pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
+    fn line(out: &mut String, role: &str, text: &str, w: usize) {
+        out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
+    }
+    let w = opts.width;
+    let mut out = String::new();
+    let accent = Role::Accent.ansi();
+    let needs = Role::Attention.ansi(); // Attention (bright orange/red) for the warning line
+    let muted = Role::Muted.ansi();
+    line(&mut out, accent, " RADAR", w);
+    line(&mut out, accent, &"═".repeat(w), w);
+    line(&mut out, needs, " ⚠ needs permission", w);
+    out.push('\n');
+    line(&mut out, muted, " focus this pane", w);
+    line(&mut out, muted, " and press y to", w);
+    line(&mut out, muted, " enable agent status.", w);
+    RenderedRail::from_ansi_without_targets(out)
+}
+
 /// Emit one row's body into `out`, respecting `max_lines`.
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
@@ -4926,5 +4948,16 @@ rail";
         // colored run can never escape un-RESET, whatever the color or content.
         assert!(Seg::new("\x1b[35m", "▌").to_string().ends_with("\x1b[0m"));
         assert!(Seg::bold("\x1b[38;2;1;2;3m", "x y z").to_string().ends_with("\x1b[0m"));
+    }
+
+    #[test]
+    fn needs_permission_face_is_distinct_and_actionable() {
+        let opts = ro(24, 0); // existing test helper: RenderOpts at width 24
+        let onboard = onboarding(&opts).ansi;
+        let needs = needs_permission(&opts).ansi;
+        assert_ne!(needs, onboard, "permission face must differ from idle onboarding");
+        let plain: String = needs.chars().collect();
+        assert!(plain.contains("press y"), "must tell the user to press y:\n{needs}");
+        assert!(plain.to_lowercase().contains("permission"), "must mention permission");
     }
 }
