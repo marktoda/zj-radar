@@ -143,6 +143,22 @@ enum LineBg {
     ActiveChild, // active multi-pane child line (surface_agent)
 }
 
+impl LineBg {
+    /// The one home for the surface-class → bg-escape map. `render_rail` resolves
+    /// every painted line through here, so the `ActiveChild` vs `Card` split (the
+    /// drift `cards_active_more_line_*` guards) lives in a single place. `row` is
+    /// the card's owning row (only `Card` consults it); `rail` is the precomputed
+    /// panel-base escape. `None` means the line is never painted.
+    fn escape(self, row: &TabRow, theme: &DerivedColors, rail: &str) -> Option<String> {
+        match self {
+            LineBg::None => Option::None,
+            LineBg::Rail => Some(rail.to_string()),
+            LineBg::Card => Some(card_tint(row, theme)),
+            LineBg::ActiveChild => Some(tc_bg(theme.surface_agent)),
+        }
+    }
+}
+
 /// One physical rail line and the click target it resolves to. `text` always
 /// ends in exactly one '\n'. The unit of rendering: ansi, targets, and
 /// footprint all derive from a `Vec<Line>`, so they cannot drift.
@@ -991,31 +1007,33 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
 
     // Body: one card block per kept row.
     for &(i, budget) in &plan {
-        let row_target = target_for_row(&rows[i]);
-        let card_bg = card_tint(&rows[i], &opts.theme);
-        let active_child_bg = tc_bg(opts.theme.surface_agent);
+        let row = &rows[i];
+        let row_target = target_for_row(row);
+
+        // Resolve a raw line's surface through the one `LineBg::escape` map and
+        // paint it (Cards only). The emitted line is final, so it carries
+        // `LineBg::None`; its footprint is exactly the lines pushed here.
+        let finalize = |bg: LineBg, text: String, target: Option<RailTarget>| -> Line {
+            let text = match bg.escape(row, &opts.theme, &rail) {
+                Some(esc) if cards => paint_card_line(&text, width, &esc),
+                _ => text,
+            };
+            Line { text, target, bg: LineBg::None }
+        };
 
         // pad_y internal top padding — belongs to this card's click span.
         for _ in 0..spacing.pad_y {
-            let text = if cards { paint_card_line("\n", width, &card_bg) } else { "\n".to_string() };
-            flat.push(Line { text, target: Some(row_target), bg: LineBg::None });
+            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target)));
         }
 
         // content (truncated to the planned budget == today's compression).
-        for line in blocks[i].iter().take(budget).cloned() {
-            let text = if cards {
-                let bg = match line.bg { LineBg::ActiveChild => &active_child_bg, _ => &card_bg };
-                paint_card_line(&line.text, width, bg)
-            } else {
-                line.text
-            };
-            flat.push(Line { text, target: line.target, bg: LineBg::None });
+        for line in blocks[i].iter().take(budget) {
+            flat.push(finalize(line.bg, line.text.clone(), line.target));
         }
 
         // gap external separation (dark panel base in Cards).
         for _ in 0..spacing.gap {
-            let text = if cards { paint_card_line("\n", width, &rail) } else { "\n".to_string() };
-            flat.push(Line { text, target: None, bg: LineBg::None });
+            flat.push(finalize(LineBg::Rail, "\n".to_string(), None));
         }
     }
 
@@ -4639,6 +4657,39 @@ rail";
         assert!(
             !child_lines.is_empty(),
             "there must be at least one visible pane child line carrying agent_bg: {:?}", s
+        );
+    }
+
+    #[test]
+    fn line_bg_escape_is_the_one_home_for_the_surface_map() {
+        let theme = DerivedColors::default();
+        let rail = tc_bg(theme.rail_bg);
+        let active_row = TabRow {
+            number: 1,
+            name: "a".into(),
+            active: true,
+            has_bell: false,
+            display: display(Status::Running, 0, 1, None),
+        };
+
+        // Each class resolves to exactly the surface the old inline logic used —
+        // asserted against the existing helpers, not hard-coded RGB.
+        assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
+        assert_eq!(LineBg::Rail.escape(&active_row, &theme, &rail), Some(rail.clone()));
+        assert_eq!(
+            LineBg::Card.escape(&active_row, &theme, &rail),
+            Some(card_tint(&active_row, &theme)),
+        );
+        assert_eq!(
+            LineBg::ActiveChild.escape(&active_row, &theme, &rail),
+            Some(tc_bg(theme.surface_agent)),
+        );
+        // The drift the `cards_active_more_line_*` regression guards: on an active
+        // row a child line (ActiveChild → surface_agent) must NOT resolve to the
+        // card tint (surface_active). One resolver makes that structural.
+        assert_ne!(
+            LineBg::ActiveChild.escape(&active_row, &theme, &rail),
+            LineBg::Card.escape(&active_row, &theme, &rail),
         );
     }
 }
