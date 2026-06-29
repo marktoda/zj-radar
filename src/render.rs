@@ -337,16 +337,22 @@ fn card_block_lines(full_lines: usize, spacing: CardSpacing) -> usize {
     spacing.pad_y + full_lines + spacing.gap
 }
 
+/// Color of the active-tab spine (col-0 `▌`), by the tab's dominant status:
+/// accent (mauve) normally, attention (peach) when the tab is waiting/error so
+/// the focus cue carries the alarm. Single source for all three spine sites
+/// (line-1 header, `+N more`, active pane lines).
+fn spine_role(status: Status) -> Role {
+    match status {
+        Status::Pending | Status::Error => Role::Attention,
+        _ => Role::Accent,
+    }
+}
+
 /// A tab is "multi-pane" for tree purposes when it has more than one tracked pane.
 /// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
     display.panes.iter().filter(|p| p.is_tracked()).count() > 1
-}
-
-/// Right-aligned status slot text (no color). Always empty (removed for now).
-fn right_slot(_display: &TabDisplay, _now_tick: u64, _width: usize) -> String {
-    String::new()
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
@@ -627,11 +633,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // col 0: active spine — accent (mauve) normally, attention (peach) when the
     // active row is also waiting/error.
     let bar = if row.active {
-        let bar_role = match st {
-            Status::Pending | Status::Error => Role::Attention,
-            _ => Role::Accent,
-        };
-        format!("{}▌{}", hue(bar_role), RESET)
+        format!("{}▌{}", hue(spine_role(st)), RESET)
     } else {
         String::new()
     };
@@ -662,12 +664,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // cue — the accent spine + brighter card — so the two stay independent.)
     let label_bold = if st == Status::Idle { "" } else { BOLD };
 
-    // right slot (reserved width even when empty). Waiting/done/error color
-    // their slot with the status role (it carries meaning); the *working*
-    // elapsed is ambient info, not an alarm, so it's dimmed (design uses `id`).
-    let slot_raw = right_slot(&row.display, now_tick, width);
-
-    // bell marker just before the slot.
+    // bell marker just before the (removed) slot.
     let bell = if row.has_bell {
         format!("{}⚑{} ", hue(Role::Working), RESET)
     } else {
@@ -689,34 +686,18 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let pad = " ".repeat(pad_len);
     let prefix_len = bare_min + pad_len + num_w + if has_trailing_sp { 1 } else { 0 };
     let bell_len = if row.has_bell { 2 } else { 0 };
-    // At extreme-narrow widths the slot may not fit at all; clamp slot_len to
-    // what's available after the fixed prefix and bell so nothing overflows.
-    let raw_slot_len = UnicodeWidthStr::width(slot_raw.as_str());
-    let slot_len = raw_slot_len.min(width.saturating_sub(prefix_len + bell_len));
-    let slot = if slot_len < raw_slot_len {
-        truncate(&slot_raw, slot_len)
-    } else {
-        slot_raw
-    };
-    let slot_styled = if slot.is_empty() {
-        String::new()
-    } else if st == Status::Running {
-        format!("{}{}{}", tc_fg(opts.theme.idle_text), slot, RESET)
-    } else {
-        format!("{}{}{}", hue(st.role()), slot, RESET)
-    };
     // At extreme-narrow widths name_budget saturates to 0 → name = ""; no
     // .max(1) so we never force an extra `…` that would push past `width`.
-    let name_budget = width.saturating_sub(prefix_len + bell_len + slot_len);
+    let name_budget = width.saturating_sub(prefix_len + bell_len);
     let name = truncate(&row.name, name_budget);
 
     // gap can be 0 at extreme-narrow widths; saturating_sub prevents underflow.
-    let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
+    let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len;
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
     lines.push(Line {
         text: format!(
-            "{}{}{}{}{} {}{}{}{}{}{}{}\n",
+            "{}{}{}{}{} {}{}{}{}{}{}\n",
             bar,
             pad,
             label_color,
@@ -727,8 +708,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             name,
             RESET,
             " ".repeat(gap),
-            bell,
-            slot_styled
+            bell
         ),
         target: Some(tab_target),
         bg: LineBg::Card,
@@ -753,7 +733,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let show = total_tracked.min(MAX_PANE_LINES);
 
         for pane in tracked_panes.iter().take(show) {
-            let text = emit_pane_line(pane, opts, row.active, &dim_strong);
+            let text = emit_pane_line(pane, opts, row.active, st, &dim_strong);
             lines.push(Line {
                 text,
                 target: Some(RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) }),
@@ -764,14 +744,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let remaining = total_tracked - show;
         if remaining > 0 {
             let more_text = format!("+{} more", remaining);
-            let clamped = truncate(&more_text, opts.width);
+            // Both branches prepend a 2-col prefix (spine+space or 2 spaces), so
+            // reserve those columns before clamping the text to avoid overflow.
+            let clamped = truncate(&more_text, opts.width.saturating_sub(2));
             let text = if row.active {
-                let bar_role = match st {
-                    Status::Pending | Status::Error => Role::Attention,
-                    _ => Role::Accent,
-                };
                 format!("{}▌{} {}{}{}\n",
-                    hue(bar_role), RESET, idle_color, clamped, RESET)
+                    hue(spine_role(st)), RESET, idle_color, clamped, RESET)
             } else {
                 format!("  {}{}{}\n", idle_color, clamped, RESET)
             };
@@ -896,6 +874,7 @@ fn emit_pane_line(
     pane: &PaneDisplay,
     opts: &RenderOpts,
     tab_active: bool,
+    tab_status: Status,
     dim_strong: &str,
 ) -> String {
     let width = opts.width;
@@ -910,6 +889,15 @@ fn emit_pane_line(
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
     // Prefix: 2 cols (either "  " or "▌ ") + glyph + 1 space + mark + 1 space
     let prefix_vis = 2 + glyph_w + 1 + mark_w + 1;
+    // Narrow-width fallback: the colored path always emits the full fixed prefix
+    // (spine/indent + glyph + mark + spaces) unconditionally, so at widths below
+    // it the line would overflow. Below that floor, drop all color and emit a
+    // single plain line clamped to `width` so nothing exceeds the band.
+    if width < prefix_vis {
+        let indent = if tab_active { "▌ " } else { "  " };
+        let plain = format!("{indent}{glyph} {mark} {}", pane.msg());
+        return format!("{}\n", truncate(&plain, width));
+    }
     let avail = width.saturating_sub(prefix_vis);
     let role_ansi = |r: Role| -> &'static str { r.ansi() };
     // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
@@ -925,7 +913,7 @@ fn emit_pane_line(
     if tab_active {
         format!(
             "{}▌{} {}{}{}{} {}{}{}{} {}\n",
-            role_ansi(Role::Accent), RESET,
+            role_ansi(spine_role(tab_status)), RESET,
             glyph_color, glyph_bold, glyph, RESET,
             dim_strong, BOLD, mark, RESET,
             activity,
@@ -4426,31 +4414,81 @@ rail";
     }
 
     prop_compose! {
+        fn arb_kind()(n in 0u8..9) -> Kind {
+            match n {
+                0 => Kind::Claude,
+                1 => Kind::Codex,
+                2 => Kind::Gemini,
+                3 => Kind::Command,
+                4 => Kind::Other,
+                5 => Kind::Test,
+                6 => Kind::Build,
+                7 => Kind::Deploy,
+                _ => Kind::Server,
+            }
+        }
+    }
+
+    prop_compose! {
+        /// An arbitrary pane: ~15% untracked, else a tracked pane with an
+        /// arbitrary Kind/Status and a short / long / CJK message so truncation,
+        /// wide-glyph width, and the narrow-width plain fallback all get hit.
+        fn arb_pane()(
+            id in 1u32..100,
+            kind in arb_kind(),
+            status in arb_status(),
+            untracked in 0u8..100,
+            msg_pick in 0u8..3,
+        ) -> PaneDisplay {
+            if untracked < 15 {
+                PaneDisplay::untracked(id, "term")
+            } else {
+                let msg = match msg_pick {
+                    0 => "ok",
+                    1 => "running a fairly long migration command across the cluster now",
+                    _ => "日本語のメッセージ表示テスト中です", // CJK wide glyphs
+                };
+                PaneDisplay::tracked(id, kind, status, msg.to_string(), None)
+            }
+        }
+    }
+
+    prop_compose! {
         fn arb_row()(
             status in arb_status(),
             name in "[a-zA-Z0-9_-]{0,20}",
             active in any::<bool>(),
             total in 0usize..4,
+            panes in proptest::collection::vec(arb_pane(), 0..=8),
         ) -> TabRow {
-            let detail = if total > 0 {
-                Some(PrimaryDetail {
-                    repo: "r".into(),
-                    branch: "".into(),
-                    msg: "m".into(),
-                    kind: Kind::Claude,
-                    since_tick: 0,
-                    outcome: None,
-                    status,
-                })
+            // With >1 tracked pane, render as a multi-pane row (line-per-pane +
+            // `+N more`); otherwise keep the single-/zero-pane chunk-1 shape so
+            // existing invariants stay exercised in their original form.
+            let tracked = panes.iter().filter(|p| p.is_tracked()).count();
+            let display = if tracked > 1 {
+                display_multi(panes)
             } else {
-                None
+                let detail = if total > 0 {
+                    Some(PrimaryDetail {
+                        repo: "r".into(),
+                        branch: "".into(),
+                        msg: "m".into(),
+                        kind: Kind::Claude,
+                        since_tick: 0,
+                        outcome: None,
+                        status,
+                    })
+                } else {
+                    None
+                };
+                display(status, 0, total, detail)
             };
             TabRow {
                 number: 1,
                 name,
                 active,
                 has_bell: false,
-                display: display(status, 0, total, detail),
+                display,
             }
         }
     }
@@ -4490,6 +4528,40 @@ rail";
                     width,
                     line
                 );
+            }
+        }
+    }
+
+    proptest! {
+        /// Multi-pane + narrow-width fuzz: with rows carrying arbitrary panes
+        /// (tracked/untracked, every Kind/Status, short/long/CJK messages) the
+        /// rail must (1) never panic and (2) keep every ANSI-stripped emitted
+        /// line within `width` — including the extreme-narrow band where the
+        /// per-pane prefix and `+N more` line take the plain clamped fallback.
+        #[test]
+        fn render_multi_pane_never_overflows_width(
+            rows in arb_rows(),
+            width in 4usize..=120,
+            height in 1usize..=60,
+        ) {
+            for (density, glyphs) in [
+                (Density::Compact, GlyphSet::Plain),
+                (Density::Comfortable, GlyphSet::Plain),
+                (Density::Cards, GlyphSet::Nerd),
+            ] {
+                let opts = ro_full(width, height, density, glyphs);
+                let s = render(&rows, &opts); // must not panic
+                for line in s.lines() {
+                    prop_assert!(
+                        visible_width(line) <= width,
+                        "line width {} > {} (density {:?}, glyphs {:?}): {:?}",
+                        visible_width(line),
+                        width,
+                        density,
+                        glyphs,
+                        line
+                    );
+                }
             }
         }
     }

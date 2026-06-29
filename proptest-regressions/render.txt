@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 188019aa73cd7710789e717e63f45857485baff2026ae08a3f7a36183c5df88b # shrinks to rows = [TabRow { number: 1, name: "", active: false, has_bell: false, agg: TabAgg { status: Done, done: 0, total: 0, pending: 0, detail: None, panes: [] } }], width = 4, height = 1
+cc 05e4ba2c6ae7dc7bc5389b4b7b190765ca03dd4bcdcc9189bb2f7eb01e507824 # shrinks to rows = [TabRow { number: 1, name: "", active: false, has_bell: false, display: TabDisplay { status: Idle, progress: ProgressCounts { done: 0, total: 2, pending: 0 }, detail: Some(PrimaryDetail { repo: "r", branch: "b", msg: "ok", since_tick: 0, status: Idle, kind: Claude, outcome: None }), panes: [Tracked { pane_id: 1, kind: Claude, status: Idle, msg: "ok", outcome: None }, Tracked { pane_id: 1, kind: Claude, status: Idle, msg: "ok", outcome: None }] } }], width = 4, height = 4
