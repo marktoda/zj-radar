@@ -48,11 +48,17 @@
  RADAR                        ·N   ← title + tab count (·N; "N▲" when overflowing)
 ════════════════════════════════   ← rule (32 wide)
 ▌⠋ 2 name                          ← tab row: [spine][glyph] [num] [name]
-▌ ⠋ ❉ activity message             ← pane row (indent 2): [glyph] [mark] [msg]
+▌├ ⠋ ❉ activity message            ← pane row: [spine][conn] [glyph] [mark] [msg]
+▌└ ● ⚙ activity message            ← last pane row uses the └ elbow connector
 ```
 
 `▌` = active-tab spine (focused tab only). Tab **glyph** = dominant status.
-Single-pane tabs put the one pane's message on line 2 with just its mark.
+**Multi-pane** tabs (>1 tracked pane) join their pane lines to the tab with a
+tree connector at column 1: `├` for every child that has a sibling (or a
+`+N more` line) below it, `└` for the last visible child. The connector sits one
+column right of the spine, so the prefix is 3 cols (`[spine/space][conn][space]`)
+and the status glyph aligns at column 3. **Single-pane** tabs are connector-free:
+they put the one pane's message on line 2 with just its mark (`  ‹mark› ‹msg›`).
 
 ---
 
@@ -167,8 +173,8 @@ tab 2 "af"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 2 af
-  ⠋ ❉ exploring render
-  ● ⚙ cargo build
+ ├ ⠋ ❉ exploring render
+ └ ● ⚙ cargo build
 ```
 
 > **Today** an unfocused `af` shows only `+1 working`. **Target:** both real
@@ -186,8 +192,8 @@ tab 4 "review"
  RADAR                        ·1
 ════════════════════════════════
 ◆ 4 review
-  ◆ ✳ approve diff?
-  ⠋ ❉ writing tests
+ ├ ◆ ✳ approve diff?
+ └ ⠋ ❉ writing tests
 ```
 
 > Tab glyph is `◆` (dominant = needs-you). Panes in position order.
@@ -206,8 +212,8 @@ tab 2 "af"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 2 af
-  ⠋ ❉ exploring render
-  ○ $ ./deploy.sh
+ ├ ⠋ ❉ exploring render
+ └ ○ $ ./deploy.sh
 ```
 
 > Contrast J with H: in H the second pane finished (`● done`); here it went
@@ -231,13 +237,13 @@ tab 2 "swarm"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 2 swarm
-  ⠋ ❉ planning api
-  ⠋ ❉ writing tests
-  ⠋ ❉ refactoring
-  ⠋ ❉ reviewing pr
-  ⠋ ❉ docs pass
-  ⠋ ❉ benchmarks
-  +1 more
+ ├ ⠋ ❉ planning api
+ ├ ⠋ ❉ writing tests
+ ├ ⠋ ❉ refactoring
+ ├ ⠋ ❉ reviewing pr
+ ├ ⠋ ❉ docs pass
+ ├ ⠋ ❉ benchmarks
+ └ +1 more
 ```
 
 > Cap = 6 pane lines (the tab line + 6 = 7 rows), then `+N more`. ⟦D6⟧
@@ -284,8 +290,8 @@ tab 2 "af" active
  RADAR                        ·1
 ════════════════════════════════
 ▌⠋ 2 af
-▌ ⠋ ❉ exploring render
-▌ ● ⚙ cargo build
+▌├ ⠋ ❉ exploring render
+▌└ ● ⚙ cargo build
 ```
 
 > Identical content to H; focus only adds the `▌` spine (and a bg highlight, not
@@ -310,12 +316,12 @@ tab 1 "swarm"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 1 swarm
-  ⠋ ❉ pane one
-  ⠋ ❉ pane two
-  ⠋ ❉ pane three
-  ⠋ ❉ pane four
-  ⠋ ❉ pane five
-  ⠋ ❉ pane six
+ ├ ⠋ ❉ pane one
+ ├ ⠋ ❉ pane two
+ ├ ⠋ ❉ pane three
+ ├ ⠋ ❉ pane four
+ ├ ⠋ ❉ pane five
+ └ ⠋ ❉ pane six
 ```
 
 > 6 panes = exactly the cap; the `+N more` line does not appear. ⟦D6: cap=6⟧
@@ -340,20 +346,20 @@ tab 1 "swarm"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 1 swarm
-  ⠋ ❉ pane one
-  ⠋ ❉ pane two
-  ⠋ ❉ pane three
-  ⠋ ❉ pane four
-  ⠋ ❉ pane five
-  ⠋ ❉ pane six
-  +2 more
+ ├ ⠋ ❉ pane one
+ ├ ⠋ ❉ pane two
+ ├ ⠋ ❉ pane three
+ ├ ⠋ ❉ pane four
+ ├ ⠋ ❉ pane five
+ ├ ⠋ ❉ pane six
+ └ +2 more
 ```
 
 > 8 panes, cap 6: `8 - 6 = 2` remainder → `+2 more`. ⟦D6⟧
 
 ## P. Truncation at width 32
 
-**Author-from-intent.** Multi-pane tab: pane line prefix is `"  " + glyph(1) + " " + mark(1) + " "` = 6 visible cols; budget = 26; truncate at 25 chars + `…`. The 51-char msg is clipped to `this message is quite lon…`.
+**Author-from-intent.** Multi-pane tab: pane line prefix is `" " + conn(1) + " " + glyph(1) + " " + mark(1) + " "` = 7 visible cols; avail = 25; truncate at 24 chars + `…`. The 51-char msg is clipped to `this message is quite lo…`.
 
 ```rail-input
 width 32
@@ -365,15 +371,15 @@ tab 1 "work"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 1 work
-  ⠋ ✳ this message is quite lon…
-  ● ⚙ ok
+ ├ ⠋ ✳ this message is quite lo…
+ └ ● ⚙ ok
 ```
 
-> Prefix = 6 cols; avail = 26; budget = 25 + `…`. Exercises `emit_pane_line` truncation. ⟦D8: width=32⟧
+> Prefix = 7 cols; avail = 25; budget = 24 + `…`. Exercises `emit_pane_line` truncation. ⟦D8: width=32⟧
 
 ## Q. CJK / wide-char message at width 32
 
-**Author-from-intent.** Multi-pane tab with a CJK message. CJK chars are 2 display cols each; prefix = 6 cols; avail = 26; budget = 25 display cols. "処理中のメッセージが長すぎるケース" (17 chars, 34 display cols) → first 12 chars (24 display cols) fit; 13th would exceed, so result = "処理中のメッセージが長す" + `…` (25 display cols). No rendered line exceeds width=32.
+**Author-from-intent.** Multi-pane tab with a CJK message. CJK chars are 2 display cols each; prefix = 7 cols; avail = 25; budget = 24 display cols. "処理中のメッセージが長すぎるケース" (17 chars, 34 display cols) → first 12 chars (24 display cols) fit; 13th would exceed, so result = "処理中のメッセージが長す" + `…` (25 display cols incl. ellipsis; prefix 7 + 25 = 32 = width). No rendered line exceeds width=32.
 
 ```rail-input
 width 32
@@ -385,8 +391,8 @@ tab 1 "cjk"
  RADAR                        ·1
 ════════════════════════════════
 ⠋ 1 cjk
-  ⠋ ✳ 処理中のメッセージが長す…
-  ● ⚙ ok
+ ├ ⠋ ✳ 処理中のメッセージが長す…
+ └ ● ⚙ ok
 ```
 
 > CJK chars are width-2; unicode-width truncation keeps the line at ≤32 display cols.
@@ -493,8 +499,8 @@ tab 1 "af" active
 ```rail-expect
  RADAR                        ·1
 ▌⠋ 1 af
-▌ ⠋ ❉ exploring render
-▌ ● ⚙ cargo build
+▌├ ⠋ ❉ exploring render
+▌└ ● ⚙ cargo build
 ```
 
 > Cards density + active: spine `▌` on all rows; active-child bg path exercised (not visible after ANSI strip). ⟦Cards density⟧

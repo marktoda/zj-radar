@@ -4,6 +4,6 @@ expression: "grid(&raw, 30)"
 ---
  RADAR                      ·1
 ▌◆ 1 team
-▌ ⠋ ✳ building
-▌ ◆ ❉ approve?
-▌ ● ⚗ cargo test
+▌├ ⠋ ✳ building
+▌├ ◆ ❉ approve?
+▌└ ● ⚗ cargo test
