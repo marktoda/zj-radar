@@ -95,6 +95,7 @@ impl State {
     /// Done↔Idle flicker. Gating on the transition makes it deterministic.
     ///
     /// Returns true when a transition was applied (focus actually changed).
+    #[cfg(test)]
     fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
         self.runtime.apply_focus_transition(focused, tick)
     }

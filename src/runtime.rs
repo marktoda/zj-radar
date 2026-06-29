@@ -272,6 +272,7 @@ impl PluginRuntime {
         self.permission_waiting_for_peer = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_focus_transition(&mut self, focused: Option<u32>, tick: u64) -> bool {
         self.radar.apply_focus_transition(focused, tick)
     }

@@ -27,7 +27,10 @@ macro_rules! kinds {
 
         impl Kind {
             /// Every `Kind`, in table order. Lets callers and exhaustiveness
-            /// tests iterate the variants without re-typing the list.
+            /// tests iterate the variants without re-typing the list. The
+            /// generated list is a uniform surface; today only the exhaustiveness
+            /// tests consume it, so allow it to go unused in non-test builds.
+            #[allow(dead_code)]
             pub const ALL: &'static [Kind] = &[ $( Kind::$variant ),+ ];
 
             /// Derive a `Kind` from the payload `source` field (lowercased wire

@@ -314,6 +314,7 @@ impl RadarState {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn last_focused(&self) -> Option<u32> {
         self.last_focused
     }

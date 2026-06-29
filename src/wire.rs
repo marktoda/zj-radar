@@ -88,7 +88,10 @@ macro_rules! wire_enum {
 
         impl $Name {
             /// Every variant, in table order. Lets callers and exhaustiveness
-            /// tests iterate without re-typing the list.
+            /// tests iterate without re-typing the list. The macro emits this for
+            /// every enum uniformly; some (e.g. `Status`) use it in production
+            /// while others are test-only, so allow it to go unused.
+            #[allow(dead_code)]
             pub const ALL: &'static [$Name] = &[ $( $Name::$variant ),+ ];
 
             /// The wire token for this variant.
