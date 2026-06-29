@@ -35,6 +35,8 @@ mod status_store;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod command;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod cmd;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
 
 #[cfg(test)]
