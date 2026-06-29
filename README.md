@@ -251,8 +251,13 @@ everywhere.
 
 A native binary that drops the `jq`/`bash` dependency and wires non-plugin agents.
 
+> **Before the first tagged release**, the prebuilt tarballs and the
+> `#zj-radar-cli` Nix output aren't published yet — use the `cargo install --git`
+> form below (or build from source). The release workflow produces all three on
+> the first `v*` tag.
+
 ```sh
-# Release tarballs:
+# Release tarballs (published on tagged releases):
 #   zj-radar-linux-x86_64.tar.gz
 #   zj-radar-macos-aarch64.tar.gz
 # Nix:

@@ -185,7 +185,7 @@ mod tests {
             // to the same final status. The seq dedup filter (drop if incoming <= stored)
             // guarantees that the highest-seq payload always wins regardless of order.
             let mk = |seq: u64| StatusPayload {
-                pane_id: 1, status: if seq % 2 == 0 { Status::Running } else { Status::Done },
+                pane_id: 1, status: if seq.is_multiple_of(2) { Status::Running } else { Status::Done },
                 repo: "r".into(), branch: "".into(), msg: "".into(),
                 on_focus: None, seq: Some(seq), source: "t".into(),
             };

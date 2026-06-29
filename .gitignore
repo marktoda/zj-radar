@@ -1,3 +1,8 @@
 /target
 .superpowers/
 .Codex
+.spec-workflow/
+.devenv/
+.devenv.flake.nix
+.direnv/
+result

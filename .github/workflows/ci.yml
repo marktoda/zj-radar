@@ -20,7 +20,10 @@ jobs:
           # multi-field structs etc.) and does not match default rustfmt.
           # Running `cargo fmt` would reformat the entire codebase. Do not add
           # a fmt gate, and never run `cargo fmt --all` in any task.
-          nix develop -c cargo clippy --all-features -- -D warnings
+          # --all-targets so test/bench/example code is linted too (matches the
+          # `clippy`/`cli-clippy` checks in `nix flake check`); without it this
+          # cheap job stays green while the flake check fails on test-only lints.
+          nix develop -c cargo clippy --all-targets --all-features -- -D warnings
           nix develop -c shellcheck plugins/zj-radar-claude/scripts/notify.sh
 
   test:
