@@ -19,6 +19,18 @@ pub(crate) struct PermissionProbe {
     pub lock_acquired: bool,
 }
 
+/// What a `PermissionProbe` dictates this sidebar do, independent of whether it
+/// arrived at load or on a deferred timer tick. `None` from
+/// [`PluginRuntime::permission_decision`] means "no decision yet — keep waiting
+/// on a peer." See that function for the single mapping both entry points share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PermissionDecision {
+    /// Become the prompt-shower: request permission from Zellij.
+    Request,
+    /// Permission was denied; record the terminal result.
+    Deny,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
@@ -274,25 +286,49 @@ impl PluginRuntime {
         self.target_at_line(line).map(|(pos, _)| pos)
     }
 
+    /// The single source of truth for what a probe means — shared by the load
+    /// path (`begin_permission_flow`) and the deferred timer path
+    /// (`check_deferred_permission_request`) so the two can never disagree.
+    ///
+    /// `Granted` and "no marker but we hold the lock" both mean *request now*:
+    /// either permission is already granted (the request will auto-resolve) or
+    /// we just won/reclaimed the first-run lock and own the prompt. A bare
+    /// `None` (no marker, no lock) is no decision yet — keep waiting on a peer.
+    fn permission_decision(probe: &PermissionProbe) -> Option<PermissionDecision> {
+        match probe.marker {
+            Some(PermissionMarker::Granted) => Some(PermissionDecision::Request),
+            Some(PermissionMarker::Denied) => Some(PermissionDecision::Deny),
+            None if probe.lock_acquired => Some(PermissionDecision::Request),
+            None => None,
+        }
+    }
+
+    /// Apply a resolved decision: mutate permission state and push the
+    /// request/record effect. Always clears `permission_waiting_for_peer` (a
+    /// decision ends the wait). The caller owns the trailing `SetSelectable`,
+    /// since the two entry points emit it differently (always vs. only on a
+    /// decision).
+    fn apply_permission_decision(&mut self, decision: PermissionDecision, effects: &mut Vec<Effect>) {
+        self.permission_waiting_for_peer = false;
+        match decision {
+            PermissionDecision::Request => {
+                self.record_permission_request_started();
+                effects.push(Effect::RequestPermission);
+            }
+            PermissionDecision::Deny => self.record_permission_result(false),
+        }
+    }
+
     fn begin_permission_flow(&mut self, permission: PermissionProbe) -> Outcome {
         let mut effects = Vec::new();
-        match permission.marker {
-            Some(PermissionMarker::Granted) => {
-                self.record_permission_request_started();
-                effects.push(Effect::RequestPermission);
-            }
-            Some(PermissionMarker::Denied) => {
-                self.record_permission_result(false);
-            }
-            None if permission.lock_acquired => {
-                self.record_permission_request_started();
-                effects.push(Effect::RequestPermission);
-            }
+        match Self::permission_decision(&permission) {
+            Some(decision) => self.apply_permission_decision(decision, &mut effects),
             None => {
                 self.permission_waiting_for_peer = true;
                 self.arm_timer_if_needed(&mut effects);
             }
         }
+        // Load always initializes the sidebar's selectability, every arm.
         effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
         Outcome::with_effects(false, effects)
     }
@@ -305,29 +341,15 @@ impl PluginRuntime {
         if !self.permission_waiting_for_peer {
             return false;
         }
-        match probe.marker {
-            Some(PermissionMarker::Granted) => {
-                self.permission_waiting_for_peer = false;
-                self.record_permission_request_started();
-                effects.push(Effect::RequestPermission);
+        match Self::permission_decision(&probe) {
+            // A decision landed (marker arrived, or we reclaimed a stale lock —
+            // see session_files): apply it and refresh selectability.
+            Some(decision) => {
+                self.apply_permission_decision(decision, effects);
                 effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
                 true
             }
-            Some(PermissionMarker::Denied) => {
-                self.record_permission_result(false);
-                effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
-                true
-            }
-            // No marker, but we now hold the lock: the prior owner went away and
-            // we reclaimed its stale lock (see session_files). Take over the
-            // prompt — mirrors the `lock_acquired` arm of `begin_permission_flow`.
-            None if probe.lock_acquired => {
-                self.permission_waiting_for_peer = false;
-                self.record_permission_request_started();
-                effects.push(Effect::RequestPermission);
-                effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
-                true
-            }
+            // Still no marker and no lock: keep waiting (no effect, no change).
             None => false,
         }
     }
@@ -457,6 +479,35 @@ mod tests {
                 effects: vec![Effect::SetSelectable(false)],
             }
         );
+    }
+
+    #[test]
+    fn permission_decision_maps_every_probe() {
+        // Lock the shared probe→decision table directly (all marker × lock
+        // combinations), so the mapping both entry points ride is guarded
+        // independently of the flow tests below.
+        use PermissionDecision::{Deny, Request};
+        use PermissionMarker::{Denied, Granted};
+        let cases = [
+            // marker,          lock,  expected
+            (Some(Granted), false, Some(Request)),
+            (Some(Granted), true, Some(Request)),
+            (Some(Denied), false, Some(Deny)),
+            (Some(Denied), true, Some(Deny)),
+            (None, true, Some(Request)), // reclaimed/own the lock → request
+            (None, false, None),         // no marker, no lock → keep waiting
+        ];
+        for (marker, lock_acquired, expected) in cases {
+            let probe = PermissionProbe {
+                marker,
+                lock_acquired,
+            };
+            assert_eq!(
+                PluginRuntime::permission_decision(&probe),
+                expected,
+                "probe {probe:?}",
+            );
+        }
     }
 
     #[test]
