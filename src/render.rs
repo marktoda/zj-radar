@@ -200,7 +200,6 @@ pub struct RailTarget {
 
 /// Surface class a line sits on (Cards density only); resolved to a concrete
 /// bg escape during assembly using the owning row. `None` = never painted.
-#[allow(dead_code)] // variants consumed by Tasks 2-3
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineBg {
     None,
@@ -915,6 +914,81 @@ fn target_for_row(row: &TabRow) -> RailTarget {
     }
 }
 
+/// Produce the identity header lines as raw (unpainted) `Line` values.
+/// Returns 0 lines if `!opts.header` or rows is empty; 1 line (title only) in
+/// Cards density; 2 lines (title + `═` rule) in all other densities.
+/// `overflow` is computed by the caller and passed in.
+fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line> {
+    if !opts.header || rows.is_empty() {
+        return vec![];
+    }
+    let width = opts.width;
+    let accent = Role::Accent.ansi();
+    let count = if overflow {
+        format!("{}▲", rows.len())
+    } else {
+        format!("·{}", rows.len())
+    };
+    let title = " RADAR";
+    let count_w = UnicodeWidthStr::width(count.as_str());
+    let right_w = count_w.min(width);
+    // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
+    // assembled visible content never exceeds `width`.
+    let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
+    // Title in accent; total count muted (accent when overflowing, so the
+    // ▲ marker stays loud).
+    let count_color = if overflow { accent } else { Role::Muted.ansi() };
+    // Clamp visible portions to width before assembling the ANSI line.
+    let title_budget = width.saturating_sub(right_w + gap);
+    let title_clamped = truncate(title, title_budget);
+    let count_clamped = truncate(&count, right_w);
+    let mut title_line = String::new();
+    title_line.push_str(&format!(
+        "{}{}{}{}{}{}{}",
+        accent,
+        title_clamped,
+        RESET,
+        " ".repeat(gap),
+        count_color,
+        count_clamped,
+        RESET
+    ));
+    title_line.push('\n');
+
+    let mut lines = vec![Line {
+        text: title_line,
+        target: None,
+        bg: LineBg::Rail,
+    }];
+    // Header line 2: rule across the full width — only in non-Cards densities.
+    if opts.density != Density::Cards {
+        lines.push(Line {
+            text: format!("{}{}{}\n", accent, "═".repeat(width), RESET),
+            target: None,
+            bg: LineBg::Rail,
+        });
+    }
+    lines
+}
+
+/// Produce the idle-strip line as a raw (unpainted) `Line` value.
+/// Returns 0 lines if `strip_folded == 0`; else 1 line tagged `LineBg::Rail`.
+fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
+    if strip_folded == 0 {
+        return vec![];
+    }
+    vec![Line {
+        text: format!(
+            "{}{}{}\n",
+            Role::Accent.ansi(),
+            truncate(&format!("+{} idle ▾", strip_folded), opts.width),
+            RESET
+        ),
+        target: None,
+        bg: LineBg::Rail,
+    }]
+}
+
 pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     let mut out = String::new();
     let mut targets: Vec<Option<RailTarget>> = Vec::new();
@@ -922,7 +996,6 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         return RenderedRail { ansi: out, targets };
     }
     let width = opts.width;
-    let accent = Role::Accent.ansi();
     let cards = opts.density == Density::Cards;
     // In Cards density the whole sidebar is a cohesive dark panel: the header,
     // gaps and idle strip all sit on `rail_bg`; only card content lines carry
@@ -935,53 +1008,14 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
     let (plan, strip_folded, spacing) = plan_layout(rows, body_budget, opts.density);
     // Overflow = any row is absent from the plan (those are idle-folded rows).
     let overflow = plan.len() < rows.len();
-    // Right-aligned count: total tabs (·N, or "N ▲" when overflowing), plus a
-    // "·P!" urgent marker in the attention role when any tab needs you.
-    let count = if overflow {
-        format!("{}▲", rows.len())
-    } else {
-        format!("·{}", rows.len())
-    };
     // Emit the identity header block only when configured on (and rows exist).
-    // Header line 1: " RADAR" + right-aligned count.
-    if opts.header {
-        let title = " RADAR";
-        let count_w = UnicodeWidthStr::width(count.as_str());
-        let right_w = count_w.min(width);
-        // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
-        // assembled visible content never exceeds `width`.
-        let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
-        // Title in accent; total count muted (accent when overflowing, so the
-        // ▲ marker stays loud).
-        let count_color = if overflow { accent } else { Role::Muted.ansi() };
-        // Clamp visible portions to width before assembling the ANSI line.
-        let title_budget = width.saturating_sub(right_w + gap);
-        let title_clamped = truncate(title, title_budget);
-        let count_clamped = truncate(&count, right_w);
-        let mut title_line = String::new();
-        title_line.push_str(&format!(
-            "{}{}{}{}{}{}{}",
-            accent,
-            title_clamped,
-            RESET,
-            " ".repeat(gap),
-            count_color,
-            count_clamped,
-            RESET
-        ));
-        title_line.push('\n');
+    for line in render_header(rows, opts, overflow) {
         if cards {
-            // Carded hero: just the " RADAR …" title on the dark panel — no
-            // rule line (header_lines() returns 1 for Cards to match).
-            out.push_str(&paint_card_line(&title_line, width, &rail));
-            targets.push(None);
+            out.push_str(&paint_card_line(&line.text, width, &rail));
         } else {
-            out.push_str(&title_line);
-            targets.push(None);
-            // Header line 2: rule across the full width.
-            out.push_str(&format!("{}{}{}\n", accent, "═".repeat(width), RESET));
-            targets.push(None);
+            out.push_str(&line.text);
         }
+        targets.push(None);
     }
 
     for &(i, max_lines) in &plan {
@@ -1032,16 +1066,12 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         }
     }
 
-    if strip_folded > 0 {
-        let text = format!("+{} idle ▾", strip_folded);
-        let clamped = truncate(&text, width);
-        let strip_accent = Role::Accent.ansi();
-        let strip_line = format!("{}{}{}\n", strip_accent, clamped, RESET);
-        // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
+    // In Cards the idle strip is part of the dark panel → paint it on rail_bg.
+    for line in render_strip(strip_folded, opts) {
         if cards {
-            out.push_str(&paint_card_line(&strip_line, width, &rail));
+            out.push_str(&paint_card_line(&line.text, width, &rail));
         } else {
-            out.push_str(&strip_line);
+            out.push_str(&line.text);
         }
         targets.push(None);
     }
