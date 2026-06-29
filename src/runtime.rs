@@ -31,6 +31,13 @@ pub(crate) enum Effect {
     ShowPane { pane_id: u32 },
     /// Read these panes' working directories once (blocking `get_pane_cwd`) to
     /// bootstrap a name for a freshly-opened tab before it emits `CwdChanged`.
+    ///
+    /// Unlike the other (fire-and-forget) effects, this one is a *request*: the
+    /// glue feeds each result back through `cwd_changed`, which re-enters the
+    /// runtime and may itself emit `RenameTab`. The recursion is bounded —
+    /// `cwd_changed` never emits another `ResolveCwd` — but note that this
+    /// effect's full consequences are realized in that second pass, not in the
+    /// `Outcome` that carried it.
     ResolveCwd { pane_ids: Vec<u32> },
 }
 

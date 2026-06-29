@@ -115,9 +115,12 @@ const LEGACY_STATUS_SNAPSHOT_V: u32 = 1;
 
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
 /// `PaneUpdate`. Each read is a blocking host round-trip, so we cap a single
-/// update's fan-out (e.g. a session restore surfacing many panes at once) and
-/// let the remainder drain across subsequent updates — focused panes first.
-/// This is the postmortem's "cap concurrent in-flight host calls" rule.
+/// update's fan-out (e.g. a session restore surfacing many panes at once),
+/// resolving focused panes first. The overflow is picked up on the next
+/// `PaneUpdate` that occurs — so in the rare case of a large burst followed by
+/// total inactivity, the tail stays unnamed until the next interaction. This is
+/// the postmortem's "cap concurrent in-flight host calls" rule; the cap is
+/// generous enough that opening tabs one at a time never hits it.
 const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
 
 #[derive(Default)]
@@ -240,18 +243,11 @@ impl RadarState {
             .retain(|id| update.live.contains(id));
         self.apply_focus_transition(self.focused_terminal_in_active_tab(), tick);
 
-        // Bootstrap exists only to name tabs, so don't pay for blocking cwd
-        // reads when naming is disabled.
-        let cwd_bootstrap = if naming == config::NamingMode::Off {
-            Vec::new()
-        } else {
-            self.cwd_bootstrap_targets()
-        };
         RadarChange {
             render: true,
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
-            cwd_bootstrap,
+            cwd_bootstrap: self.cwd_bootstrap_targets(naming),
         }
     }
 
@@ -388,7 +384,13 @@ impl RadarState {
     /// — and the result is capped at `MAX_CWD_BOOTSTRAP_PER_UPDATE` so one update
     /// never fans out an unbounded number of blocking host calls. Every returned
     /// id is recorded as attempted, so it is requested at most once per lifetime.
-    fn cwd_bootstrap_targets(&mut self) -> Vec<u32> {
+    ///
+    /// Bootstrap exists only to name tabs, so it is a no-op (and pays for no
+    /// blocking reads) when naming is `Off` — mirroring `rename_tabs`.
+    fn cwd_bootstrap_targets(&mut self, naming_mode: config::NamingMode) -> Vec<u32> {
+        if naming_mode == config::NamingMode::Off {
+            return Vec::new();
+        }
         let mut focused = Vec::new();
         let mut others = Vec::new();
         for panes in self.tab_panes.values() {
