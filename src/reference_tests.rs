@@ -138,6 +138,9 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         msg: String,
         /// true = register pane but send NO status (→ PaneDisplay::Untracked)
         untracked: bool,
+        /// Some(code) → command-origin path: command_changed + timer + on_exit.
+        /// None → status_pipe path (existing behavior).
+        exit_code: Option<Option<i32>>,
     }
 
     struct TabSpec {
@@ -237,21 +240,36 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                         status: Status::Idle,
                         msg: title.to_string(),
                         untracked: true,
+                        exit_code: None,
                     });
                 }
                 continue;
             }
 
-            // Parse: kind status "msg"
+            // Parse: kind status "msg" [exit <N>|?]
+            // We split on the first two spaces to get kind and status, then parse
+            // the remainder manually to correctly handle quoted messages that may
+            // contain spaces, followed by an optional `exit <N>|?` trailer.
             let mut parts = trimmed.splitn(3, ' ');
             let kind_str = parts.next().unwrap_or("other");
             let status_str = parts.next().unwrap_or("idle");
-            let msg_part = parts.next().unwrap_or("\"\"");
-            // Strip surrounding quotes from msg
-            let msg = if let Some(inner) = msg_part.strip_prefix('"') {
-                inner.strip_suffix('"').unwrap_or(inner)
+            let rest = parts.next().unwrap_or("\"\"");
+
+            // Parse the (possibly-quoted) message and any trailing `exit <N>|?`.
+            // If the msg starts with `"`, find the closing `"`, then look for
+            // a trailer after it. Otherwise treat the whole rest as the msg.
+            let (msg, exit_trailer) = if let Some(after_open) = rest.strip_prefix('"') {
+                if let Some(close_pos) = after_open.find('"') {
+                    let msg_inner = &after_open[..close_pos];
+                    let after_close = after_open[close_pos + 1..].trim();
+                    let trailer = if after_close.is_empty() { None } else { Some(after_close) };
+                    (msg_inner, trailer)
+                } else {
+                    // No closing quote — treat the whole thing as the msg
+                    (after_open, None)
+                }
             } else {
-                msg_part
+                (rest, None)
             };
 
             // Validate kind token
@@ -269,6 +287,32 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 panic!("reference DSL: unknown status '{}' in scenario", status_str);
             }
 
+            // Parse optional `exit <N>|?` trailer (appears after the closing quote).
+            // Presence of this trailer routes the pane through the command-origin
+            // path (command_changed + timer + on_exit) instead of status_pipe.
+            let exit_code: Option<Option<i32>> = if let Some(trailer) = exit_trailer {
+                if let Some(code_str) = trailer.strip_prefix("exit ") {
+                    let code_str = code_str.trim();
+                    if code_str == "?" {
+                        Some(None)
+                    } else if let Ok(n) = code_str.parse::<i32>() {
+                        Some(Some(n))
+                    } else {
+                        panic!(
+                            "reference DSL: bad exit code '{}' — must be an integer or '?'",
+                            code_str
+                        );
+                    }
+                } else {
+                    panic!(
+                        "reference DSL: unknown pane trailer '{}' — only 'exit <N>|?' is supported",
+                        trailer
+                    );
+                }
+            } else {
+                None
+            };
+
             let kind = Kind::from_source(kind_str);
             let status = Status::from_wire(status_str);
             let pane_id = next_pane_id;
@@ -281,6 +325,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     status,
                     msg: msg.to_string(),
                     untracked: false,
+                    exit_code,
                 });
             }
             continue;
@@ -330,16 +375,29 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     };
     radar.panes_changed(update, 0, NamingMode::Off);
 
-    // 3. status_pipe: apply status for each tracked pane.
-    // Untracked panes get NO status update — the real aggregator yields PaneDisplay::Untracked.
-    // For idle panes: first apply Running (tick=0) to set ever_active=true,
-    // then apply Idle (tick=1). This preserves scenario J's idle-but-tracked behavior.
+    // 3. Apply status for each tracked pane.
+    //
+    // Two paths:
+    //   a) status_pipe path (exit_code == None): the existing StatusPipe-origin path.
+    //      Untracked panes get NO update → PaneDisplay::Untracked.
+    //      For idle panes: first apply Running (tick=0) to set ever_active=true,
+    //      then apply Idle (tick=1). This preserves scenario J's idle-but-tracked behavior.
+    //
+    //   b) command-origin path (exit_code == Some(code)): drives the CommandStore path
+    //      so that pane_outcome() fires and end-result tags (✓ / (exit N) / ✗) render.
+    //      Sequence:
+    //        1. command_changed(tick=0) — registers a pending command with the msg as argv.
+    //        2. timer(tick=1) — promotes pending→Running (debounce window = 1 tick).
+    //        3. panes_changed with exits vec containing the exit code — calls on_exit,
+    //           which sets status Done/Error and exit_code on the resolved entry.
+
+    // Collect command-exit panes so we can feed them as a batch to panes_changed.
+    let mut command_exits: Vec<(u32, Option<i32>)> = Vec::new();
+
     for spec in &tabs {
         for pane in &spec.panes {
-            // Untracked panes: registered in panes_changed but never receive a
-            // status update, so the aggregator yields PaneDisplay::Untracked.
-            if pane.untracked {
-                continue;
+            if pane.untracked || pane.exit_code.is_some() {
+                continue; // untracked + command-exit panes handled separately
             }
 
             // kind -> wire source name
@@ -391,6 +449,55 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 radar.status_pipe(&wire, 0, NamingMode::Off);
             }
         }
+    }
+
+    // Command-origin path for panes with an `exit <N>|?` trailer.
+    // Step 1: command_changed (tick=0) — registers each pane as a pending command.
+    // Step 2: timer(tick=1) — promotes all pending commands to Running (debounce=1).
+    // Step 3: panes_changed with exits — on_exit sets Done/Error + exit_code.
+    for spec in &tabs {
+        for pane in &spec.panes {
+            if let Some(code) = pane.exit_code {
+                // Build argv from the msg string so the CommandStore compacts it
+                // into the display message (e.g. "cargo build" stays "cargo build").
+                let argv: Vec<String> = pane.msg.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                radar.command_changed(pane.pane_id, &argv, true, 0);
+                command_exits.push((pane.pane_id, code));
+            }
+        }
+    }
+
+    if !command_exits.is_empty() {
+        // Promote all pending commands to Running so the msg is set before exit.
+        radar.timer(1);
+
+        // Now deliver the exits. Re-register the live pane set (unchanged) along
+        // with the exits vec so that panes_changed → on_exit sets Done/Error.
+        let mut tab_panes2: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
+        let mut live2: HashSet<u32> = HashSet::new();
+        for spec in &tabs {
+            let position = spec.pos.saturating_sub(1);
+            let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
+                live2.insert(p.pane_id);
+                TerminalPane {
+                    id: p.pane_id,
+                    title: p.msg.clone(),
+                    focused_in_tab: false,
+                }
+            }).collect();
+            if !terminal_panes.is_empty() {
+                tab_panes2.insert(position, terminal_panes);
+            }
+        }
+        let update2 = PaneUpdate {
+            tab_panes: tab_panes2,
+            live: live2,
+            theme: None,
+            exits: command_exits,
+        };
+        radar.panes_changed(update2, 2, NamingMode::Off);
     }
 
     // 4. Build RenderOpts
@@ -472,3 +579,4 @@ fn rail_reference_matches() {
         failures.join("\n\n")
     );
 }
+

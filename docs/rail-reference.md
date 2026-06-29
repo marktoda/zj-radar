@@ -501,6 +501,64 @@ tab 1 "af" active
 
 ---
 
+## X. Command-origin end-result tag — done (`✓`)
+
+**Author-from-intent.** A single build pane that exited successfully (exit 0) via the
+Command-origin path. The `pane_outcome()` function fires only for Command-origin panes;
+status-pipe panes never get an outcome tag. Single-pane path: tab glyph `●` (Done),
+pane line 2 = `  ⚙ cargo build ✓`.
+
+Grid reasoning at width 32, prefix 6 (`"  ⚙ "` = indent 2 + mark 1 + space 1 = 4 cols;
+pane line 2 uses single-pane path with `prefix_vis = 2 + 1 + 1 = 4` cols):
+- Tab line: `● 1 work` (3 chars prefix + `1 work` = 8 chars total).
+- Pane line 2: `  ⚙ cargo build ✓` = 4-col prefix + `cargo build ✓` (13 chars) = 17 cols total.
+  No truncation (17 ≤ 32).
+
+```rail-input
+width 32
+tab 1 "work"
+  build done "cargo build" exit 0
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+● 1 work
+  ⚙ cargo build ✓
+```
+
+> `exit 0` routes through `command_changed` → `timer` → `panes_changed(exits)` so the
+> CommandStore sets `origin = Command` and `status = Done`. `pane_outcome()` returns
+> `Outcome::Ok` → `✓` tag appended after the command string.
+
+## Y. Command-origin end-result tag — failed (`(exit 1)`)
+
+**Author-from-intent.** A single build pane that exited with code 1 via the Command-origin
+path. `on_exit(Some(1))` sets `status = Error` and `exit_code = Some(1)`; `pane_outcome()`
+returns `Outcome::Failed(Some(1))` → tag `(exit 1)`. Tab glyph `✗` (Error); pane line 2
+= `  ⚙ cargo build (exit 1)`.
+
+Grid reasoning at width 32:
+- Tab line: `✗ 1 work`.
+- Pane line 2 prefix (single-pane path): `  ⚙ ` = 4 cols; avail = 28.
+  `cargo build (exit 1)` = 21 chars, fits without truncation.
+
+```rail-input
+width 32
+tab 1 "work"
+  build error "cargo build" exit 1
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+✗ 1 work
+  ⚙ cargo build (exit 1)
+```
+
+> `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `(exit 1)`.
+> The full form is shown because 21 cols fits within the 28-col avail budget.
+
+---
+
 ## Open decisions
 
 - **⟦D1⟧** right-slot: keep dropped, or re-add `done/total` for multi-pane?
