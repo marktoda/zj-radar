@@ -314,19 +314,7 @@ impl CommandStore {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
                 self.resolved.insert(
                     pane_id,
-                    TrackedObservation {
-                        origin: ObservationOrigin::Command,
-                        status: Status::Running,
-                        repo,
-                        branch: String::new(),
-                        msg: p.command,
-                        last_change_tick: tick,
-                        seq: None,
-                        on_focus: None,
-                        ever_active: true,
-                        source: p.source,
-                        exit_code: None,
-                    },
+                    TrackedObservation::command(Status::Running, repo, p.command, p.source, tick),
                 );
             }
         }
@@ -385,17 +373,15 @@ impl CommandStore {
             self.resolved.insert(
                 pane_id,
                 TrackedObservation {
-                    origin: ObservationOrigin::Command,
-                    status: new_status,
-                    repo: String::new(),
-                    branch: String::new(),
-                    msg: String::new(),
-                    last_change_tick: tick,
-                    seq: None,
                     on_focus: Some(Status::Idle),
-                    ever_active: true,
-                    source: "command".into(),
                     exit_code: exit_status,
+                    ..TrackedObservation::command(
+                        new_status,
+                        String::new(),
+                        String::new(),
+                        "command".into(),
+                        tick,
+                    )
                 },
             );
         }

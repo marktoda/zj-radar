@@ -78,6 +78,26 @@ pub struct TrackedObservation {
 }
 
 impl TrackedObservation {
+    /// A freshly-resolved command-origin observation. Command panes carry no VCS
+    /// branch and no payload sequence, and are active by definition, so those
+    /// fields take fixed defaults; callers pass only what varies and override
+    /// `on_focus` / `exit_code` via struct-update when a command exits.
+    pub fn command(status: Status, repo: String, msg: String, source: String, tick: u64) -> Self {
+        Self {
+            origin: ObservationOrigin::Command,
+            status,
+            repo,
+            branch: String::new(),
+            msg,
+            source,
+            last_change_tick: tick,
+            seq: None,
+            on_focus: None,
+            ever_active: true,
+            exit_code: None,
+        }
+    }
+
     /// Apply a pending `on_focus` transition (clear-on-focus): adopt the queued
     /// status and clear it. `last_change_tick` advances only when the status
     /// actually changes. Shared by `StatusStore` and `CommandStore`; the
