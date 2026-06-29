@@ -1,16 +1,82 @@
 //! Pure agent-status vocabulary. No zellij-tile dependency.
 
-/// Variants are declared in ascending-severity order (`Idle` … `Error`) so the
-/// derived `Ord` *is* the aggregation order used by the Tab Roll-Up — there is
-/// no separate severity table to keep in sync. Reordering these variants
-/// reorders severity.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Status {
-    Idle,
-    Done,
-    Running,
-    Pending,
-    Error,
+/// Define `Status` and everything that varies per variant from one table.
+///
+/// Each row is `Variant => "wire", Role, plain_glyph, nerd_glyph`. The macro
+/// expands the table into the `Status` enum plus `from_wire` / `as_wire` /
+/// `role` / `glyph_for` / `ALL`, so the variant list, the wire vocabulary, the
+/// role mapping, and the two glyph sets are a *single source of truth* — they
+/// cannot drift, and the generated `as_wire` / `role` / `glyph_for` use
+/// exhaustive `match self`, so a row that omits a variant fails to compile.
+///
+/// Two invariants ride on the table layout, both preserved by construction:
+/// - **Severity order.** Rows are listed in ascending-severity order so the
+///   derived `Ord` *is* the aggregation order used by the Tab Roll-Up
+///   (`.max()` picks the most-urgent member). Reordering rows reorders severity.
+/// - **Lenient parse.** `from_wire` falls back to `$fallback` for any unknown or
+///   absent token, matching how the pipe payload parses status.
+macro_rules! statuses {
+    (
+        fallback = $fallback:ident;
+        $( $variant:ident => $wire:literal, $role:expr, $plain:literal, $nerd:literal );+ $(;)?
+    ) => {
+        /// A pure agent-status value. See the `statuses!` table below for each
+        /// variant's wire token, role color, and glyph in both glyph sets.
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        pub enum Status {
+            $( $variant ),+
+        }
+
+        impl Status {
+            /// Every `Status`, in table (ascending-severity) order. Lets callers
+            /// and exhaustiveness tests iterate the variants without re-typing.
+            pub const ALL: &'static [Status] = &[ $( Status::$variant ),+ ];
+
+            /// Parse a wire value; anything unknown/absent is the fallback
+            /// (`Status::Idle`).
+            pub fn from_wire(s: &str) -> Status {
+                match s {
+                    $( $wire => Status::$variant, )+
+                    _ => Status::$fallback,
+                }
+            }
+
+            /// Serialize to the wire vocabulary — the inverse of `from_wire` for
+            /// every variant (`Status::from_wire(s.as_wire()) == s`).
+            pub fn as_wire(self) -> &'static str {
+                match self {
+                    $( Status::$variant => $wire, )+
+                }
+            }
+
+            /// The semantic color role for this status.
+            pub fn role(self) -> Role {
+                match self {
+                    $( Status::$variant => $role, )+
+                }
+            }
+
+            /// The status glyph for the active glyph set.
+            pub fn glyph_for(self, set: GlyphSet) -> char {
+                match self {
+                    $( Status::$variant => match set {
+                        GlyphSet::Plain => $plain,
+                        GlyphSet::Nerd => $nerd,
+                    }, )+
+                }
+            }
+        }
+    };
+}
+
+statuses! {
+    fallback = Idle;
+    //  variant    wire         role             plain  nerd
+    Idle    => "idle",    Role::Muted,     '○', '\u{eb83}';
+    Done    => "done",    Role::Success,   '●', '\u{f058}';
+    Running => "running", Role::Working,   '◐', '\u{f110}';
+    Pending => "pending", Role::Attention, '◆', '\u{f0f3}';
+    Error   => "error",   Role::Error,     '✗', '\u{f057}';
 }
 
 // Serde delegates to the existing wire vocabulary so the snapshot uses the same
@@ -30,59 +96,8 @@ impl<'de> serde::Deserialize<'de> for Status {
 }
 
 impl Status {
-    /// Parse a wire value; anything unknown/absent is Idle.
-    pub fn from_wire(s: &str) -> Status {
-        match s {
-            "running" => Status::Running,
-            "pending" => Status::Pending,
-            "done" => Status::Done,
-            "error" => Status::Error,
-            _ => Status::Idle,
-        }
-    }
-
-    /// Serialize to the wire vocabulary (inverse of `from_wire`).
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Status::Running => "running",
-            Status::Pending => "pending",
-            Status::Done => "done",
-            Status::Error => "error",
-            Status::Idle => "idle",
-        }
-    }
-
     pub fn is_active(self) -> bool {
         self != Status::Idle
-    }
-
-    pub fn role(self) -> Role {
-        match self {
-            Status::Error => Role::Error,
-            Status::Pending => Role::Attention,
-            Status::Running => Role::Working,
-            Status::Done => Role::Success,
-            Status::Idle => Role::Muted,
-        }
-    }
-
-    pub fn glyph_for(self, set: GlyphSet) -> char {
-        match set {
-            GlyphSet::Plain => match self {
-                Status::Idle => '○',
-                Status::Running => '◐',
-                Status::Pending => '◆',
-                Status::Done => '●',
-                Status::Error => '✗',
-            },
-            GlyphSet::Nerd => match self {
-                Status::Idle => '\u{eb83}',
-                Status::Running => '\u{f110}',
-                Status::Pending => '\u{f0f3}',
-                Status::Done => '\u{f058}',
-                Status::Error => '\u{f057}',
-            },
-        }
     }
 }
 
@@ -166,17 +181,38 @@ mod tests {
     }
 
     #[test]
+    fn all_enumerates_every_variant() {
+        // `ALL` drives the exhaustiveness of the other table tests; pin its size
+        // so a dropped table row is caught here instead of silently shrinking
+        // coverage.
+        assert_eq!(Status::ALL.len(), 5);
+        assert_eq!(Status::ALL.first(), Some(&Status::Idle)); // ascending severity
+        assert_eq!(Status::ALL.last(), Some(&Status::Error));
+    }
+
+    #[test]
+    fn wire_round_trips_for_every_status() {
+        // The table generates `from_wire`/`as_wire` from one row each, so the
+        // inverse holds for every variant by construction — this guards it.
+        for &s in Status::ALL {
+            assert_eq!(
+                Status::from_wire(s.as_wire()),
+                s,
+                "{s:?} must survive a wire round-trip",
+            );
+        }
+    }
+
+    #[test]
     fn glyphs_and_roles_distinct_per_variant() {
         use GlyphSet::Plain;
-        use Status::*;
-        let all = [Idle, Done, Running, Pending, Error];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
+        for (i, a) in Status::ALL.iter().enumerate() {
+            for b in &Status::ALL[i + 1..] {
                 assert_ne!(a.glyph_for(Plain), b.glyph_for(Plain));
             }
         }
-        assert_eq!(Done.glyph_for(Plain), '●');
-        assert_eq!(Error.role().ansi(), "\x1b[31m");
+        assert_eq!(Status::Done.glyph_for(Plain), '●');
+        assert_eq!(Status::Error.role().ansi(), "\x1b[31m");
     }
 
     #[test]
