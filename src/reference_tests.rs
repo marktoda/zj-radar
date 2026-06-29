@@ -2,12 +2,9 @@
 //! run the real render pipeline, and compare the rendered grid to the doc's
 //! expected block.
 //!
-//! This is a RED baseline: the renderer is the OLD architecture; the doc's
-//! `rail-expect` blocks describe the NEW target design. Most scenarios are
-//! expected to fail until the renderer matches docs/rail-reference.md.
-//!
-//! To see which scenarios pass:
-//!   cargo test --lib reference_tests -- --ignored --nocapture
+//! Green regression guard: the renderer matches every `rail-expect` block in
+//! docs/rail-reference.md. Editing a `rail-input`/`rail-expect` pair in the doc
+//! edits this test — the doc is the single source of truth for rail rendering.
 
 use crate::config::Density;
 use crate::kind::Kind;
