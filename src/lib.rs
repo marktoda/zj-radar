@@ -29,6 +29,9 @@ mod command;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod theme;
 
+#[cfg(test)]
+mod reference_tests;
+
 #[cfg(feature = "cli")]
 pub mod cli;
 
