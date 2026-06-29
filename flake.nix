@@ -99,12 +99,25 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ toolchain pkgs.jq pkgs.zellij ];
+          # `just`, `bats`, and `shellcheck` are required by the CI recipes
+          # (`just test-bash` / `just test-e2e`, and the `shellcheck` step) — keep
+          # them here so `nix develop -c just …` resolves on PATH. `jq` is used by
+          # the bash hook tests.
+          packages = [
+            toolchain
+            pkgs.jq
+            pkgs.zellij
+            pkgs.just
+            pkgs.bats
+            pkgs.shellcheck
+          ];
           shellHook = ''
             echo "zj-radar dev shell: $(rustc --version)"
             echo "dev:    ./dev/run.sh"
             echo "build:  ./dev/run.sh --build-only"
-            echo "test:   cargo test"
+            echo "test:   just test        (cargo test --all-features)"
+            echo "        just test-bash   (shellcheck + bats hook tests)"
+            echo "        just test-e2e    (wasm build + live Zellij PTY)"
           '';
         };
       });
