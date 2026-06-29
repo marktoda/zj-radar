@@ -216,7 +216,6 @@ enum LineBg {
 struct Line {
     text: String,
     target: Option<RailTarget>,
-    #[allow(dead_code)]
     bg: LineBg,
 }
 
@@ -570,23 +569,10 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
 /// Emit one row's body into `out`, respecting `max_lines`.
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
-/// PrimaryDetail/roster lines are emitted in priority order while `lines_emitted < max_lines`:
-///
-/// - For urgent rows (Pending/Error): detail line comes before msg line;
-///   roster is least-priority and is dropped first.
-/// - For calm rows (Done/Running): there is at most 1 detail line + 1 roster;
-///   roster is dropped before the detail line.
-///
-/// Caller guarantees `max_lines >= 1`.
-fn render_row<F>(
-    out: &mut String,
-    row: &TabRow,
-    opts: &RenderOpts,
-    max_lines: usize,
-    mut record_target: F,
-) where
-    F: FnMut(Option<RailTarget>),
-{
+/// PrimaryDetail/roster lines are emitted in priority order. Returns the full
+/// untruncated set of lines; caller applies `.take(max_lines)` for overflow.
+fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.display.status;
@@ -688,28 +674,25 @@ fn render_row<F>(
     let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len + slot_len;
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
-    out.push_str(&format!(
-        "{}{}{}{}{} {}{}{}{}{}{}{}\n",
-        bar,
-        pad,
-        label_color,
-        label_bold,
-        glyph_char,
-        num,
-        sp_after_num,
-        name,
-        RESET,
-        " ".repeat(gap),
-        bell,
-        slot_styled
-    ));
-    record_target(Some(tab_target));
-
-    // Line 1 done. Emit child/detail lines only within the remaining budget.
-    if max_lines <= 1 {
-        return;
-    }
-    let mut emitted = 1usize;
+    lines.push(Line {
+        text: format!(
+            "{}{}{}{}{} {}{}{}{}{}{}{}\n",
+            bar,
+            pad,
+            label_color,
+            label_bold,
+            glyph_char,
+            num,
+            sp_after_num,
+            name,
+            RESET,
+            " ".repeat(gap),
+            bell,
+            slot_styled
+        ),
+        target: Some(tab_target),
+        bg: LineBg::Card,
+    });
 
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
     // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
@@ -730,43 +713,39 @@ fn render_row<F>(
         let show = total_tracked.min(MAX_PANE_LINES);
 
         for pane in tracked_panes.iter().take(show) {
-            if emitted >= max_lines {
-                return;
-            }
-            emit_pane_line(out, pane, opts, row.active, &idle_color, &dim_strong);
-            record_target(Some(RailTarget {
-                tab_position: tab_target.tab_position,
-                pane_id: Some(pane.pane_id()),
-            }));
-            emitted += 1;
+            let text = emit_pane_line(pane, opts, row.active, &idle_color, &dim_strong);
+            lines.push(Line {
+                text,
+                target: Some(RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) }),
+                bg: if row.active { LineBg::ActiveChild } else { LineBg::Card },
+            });
         }
 
         let remaining = total_tracked - show;
-        if remaining > 0 && emitted < max_lines {
+        if remaining > 0 {
             let more_text = format!("+{} more", remaining);
             let clamped = truncate(&more_text, opts.width);
-            if row.active {
+            let text = if row.active {
                 let bar_role = match st {
                     Status::Pending | Status::Error => Role::Attention,
                     _ => Role::Accent,
                 };
-                out.push_str(&format!("{}▌{} {}{}{}\n",
-                    hue(bar_role), RESET, idle_color, clamped, RESET));
+                format!("{}▌{} {}{}{}\n",
+                    hue(bar_role), RESET, idle_color, clamped, RESET)
             } else {
-                out.push_str(&format!("  {}{}{}\n", idle_color, clamped, RESET));
-            }
-            record_target(Some(tab_target));
+                format!("  {}{}{}\n", idle_color, clamped, RESET)
+            };
+            lines.push(Line { text, target: Some(tab_target), bg: LineBg::Card });
         }
-        return;
+        return lines;
     }
 
     // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
     // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
-    // Only emitted when the status is active, a detail with a non-empty msg exists,
-    // and there is remaining budget. For Running, the braille spinner is appended.
+    // Only emitted when the status is active, a detail with a non-empty msg exists.
     // For Pending (the question), activity is colored in attention (loud). Others dim_strong.
     if let Some(d) = &row.display.detail {
-        if emitted < max_lines && !d.msg.trim().is_empty() {
+        if !d.msg.trim().is_empty() {
             match st {
                 Status::Idle => {}
                 Status::Done | Status::Running | Status::Error | Status::Pending => {
@@ -786,28 +765,31 @@ fn render_row<F>(
                     } else {
                         dim_strong.clone()
                     };
-                    out.push_str(&format!(
-                        "  {}{}{} {}{}{}\n",
-                        idle_color, mark, RESET, activity_color, activity_str, RESET
-                    ));
-                    record_target(Some(tab_target));
+                    lines.push(Line {
+                        text: format!(
+                            "  {}{}{} {}{}{}\n",
+                            idle_color, mark, RESET, activity_color, activity_str, RESET
+                        ),
+                        target: Some(tab_target),
+                        bg: LineBg::Card,
+                    });
                 }
             }
         }
     }
+    lines
 }
 
 /// Emit one pane line in the new line-per-pane design:
 /// Inactive: `  {glyph} {mark} {msg}` (2-space indent)
 /// Active:   `▌ {glyph} {mark} {msg}` (spine + space)
 fn emit_pane_line(
-    out: &mut String,
     pane: &PaneDisplay,
     opts: &RenderOpts,
     tab_active: bool,
     idle_color: &str,
     dim_strong: &str,
-) {
+) -> String {
     let width = opts.width;
     let mark = pane.kind().mark();
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
@@ -830,20 +812,20 @@ fn emit_pane_line(
         dim_strong.to_string()
     };
     if tab_active {
-        out.push_str(&format!(
+        format!(
             "{}▌{} {}{}{} {}{}{} {}{}{}\n",
             role_ansi(Role::Accent), RESET,
             glyph_color, glyph, RESET,
             idle_color, mark, RESET,
             activity_color, activity_str, RESET,
-        ));
+        )
     } else {
-        out.push_str(&format!(
+        format!(
             "  {}{}{} {}{}{} {}{}{}\n",
             glyph_color, glyph, RESET,
             idle_color, mark, RESET,
             activity_color, activity_str, RESET,
-        ));
+        )
     }
 }
 
@@ -927,20 +909,6 @@ fn target_for_row(row: &TabRow) -> RailTarget {
         tab_position: row.number.saturating_sub(1) as usize,
         pane_id: None,
     }
-}
-
-fn render_row_buffer(
-    row: &TabRow,
-    opts: &RenderOpts,
-    max_lines: usize,
-) -> (String, Vec<Option<RailTarget>>) {
-    let mut tab_buf = String::new();
-    let mut row_targets = Vec::new();
-    render_row(&mut tab_buf, row, opts, max_lines.max(1), |target| {
-        row_targets.push(target);
-    });
-    debug_assert_eq!(row_targets.len(), tab_buf.matches('\n').count());
-    (tab_buf, row_targets)
 }
 
 pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
@@ -1027,20 +995,14 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
                 out.push_str(&paint_card_line("\n", width, &bg));
                 targets.push(Some(row_target));
             }
-            let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
-            for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
-                let line_bg = if rows[i].active && is_multi_pane(&rows[i].display) && line_idx > 0 {
-                    &active_child_bg
-                } else {
-                    &bg
+            for (line_idx, line) in render_row(&rows[i], opts).into_iter().take(max_lines).enumerate() {
+                let line_bg = match line.bg {
+                    LineBg::ActiveChild => &active_child_bg,
+                    _ => &bg,
                 };
-                out.push_str(&paint_card_line(line, width, line_bg));
-                targets.push(
-                    row_targets
-                        .get(line_idx)
-                        .copied()
-                        .unwrap_or(Some(row_target)),
-                );
+                out.push_str(&paint_card_line(&line.text, width, line_bg));
+                targets.push(line.target);
+                let _ = line_idx;
             }
         } else {
             // Non-card densities: pad_y is 0, so emit content directly.
@@ -1048,15 +1010,9 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
                 out.push('\n');
                 targets.push(Some(row_target));
             }
-            let (tab_buf, row_targets) = render_row_buffer(&rows[i], opts, max_lines);
-            for (line_idx, line) in tab_buf.split_inclusive('\n').enumerate() {
-                out.push_str(line);
-                targets.push(
-                    row_targets
-                        .get(line_idx)
-                        .copied()
-                        .unwrap_or(Some(row_target)),
-                );
+            for line in render_row(&rows[i], opts).into_iter().take(max_lines) {
+                out.push_str(&line.text);
+                targets.push(line.target);
             }
         }
         // Emit blank gap line(s) after each tab's content block (external
