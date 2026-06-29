@@ -138,6 +138,10 @@ impl RadarState {
         let (observations, tick) = parse_snapshot(raw)?;
         self.status = StatusStore::default();
         self.command = CommandStore::default();
+        // This match is the SINGLE origin→store guard: each entry's intrinsic
+        // origin (strict on deserialize) routes it to exactly one store, so the
+        // stores trust what they're handed and don't re-check. Deserialize already
+        // rejects unknown origins, dropping the whole snapshot.
         for (pane_id, observation) in observations {
             match observation.origin {
                 ObservationOrigin::StatusPipe => self

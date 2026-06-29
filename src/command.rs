@@ -2,7 +2,7 @@
 //! No `zellij-tile` dependency — pure logic, host-testable.
 
 use crate::kind::Kind;
-use crate::observation::{ObservationOrigin, TrackedObservation};
+use crate::observation::TrackedObservation;
 use crate::payload::{sanitize, MAX_MSG_CHARS};
 use crate::status::Status;
 use std::collections::{HashMap, HashSet};
@@ -414,18 +414,22 @@ impl CommandStore {
             .map(|(&pane_id, observation)| (pane_id, observation))
     }
 
+    /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
+    /// owns origin routing — it `match`es on `observation.origin` to pick the store
+    /// — so this trusts what it's handed rather than re-checking the origin.
     pub(crate) fn insert_snapshot_observation(
         &mut self,
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        if observation.origin == ObservationOrigin::Command {
-            self.resolved.insert(pane_id, observation);
-        }
+        self.resolved.insert(pane_id, observation);
     }
 
-    /// True if any pane is Running or has a pending fg command.
-    /// Used by the wasm glue to keep the timer armed.
+    /// True if any pane is Running or has a pending fg command. Used by the wasm
+    /// glue to keep the timer armed. Deliberately narrower than
+    /// `StatusStore::any_active` (which counts any non-idle, Done included): a
+    /// finished command is terminal and needs no further ticking, so only
+    /// `Running` (plus a not-yet-promoted pending command) counts as live here.
     pub fn has_pending_or_active(&self) -> bool {
         !self.pending.is_empty() || self.resolved.values().any(|s| s.status == Status::Running)
     }

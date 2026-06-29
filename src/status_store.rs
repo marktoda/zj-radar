@@ -69,6 +69,12 @@ impl StatusStore {
         self.map.get(&pane_id)
     }
 
+    /// True if any observation is non-idle (`is_active`: Running/Pending/Done/Error).
+    /// Deliberately broader than `CommandStore::has_pending_or_active` (which keys
+    /// on `Running` only): a *finished* agent row stays "active" here so the timer
+    /// keeps re-arming to refresh its elapsed-time display. Keep the two predicates
+    /// distinct — they answer "should the timer tick?" for sources with different
+    /// resting behaviour.
     pub fn any_active(&self) -> bool {
         self.map.values().any(|s| s.status.is_active())
     }
@@ -79,14 +85,15 @@ impl StatusStore {
             .map(|(&pane_id, observation)| (pane_id, observation))
     }
 
+    /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
+    /// owns origin routing — it `match`es on `observation.origin` to pick the store
+    /// — so this trusts what it's handed rather than re-checking the origin.
     pub(crate) fn insert_snapshot_observation(
         &mut self,
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        if observation.origin == ObservationOrigin::StatusPipe {
-            self.map.insert(pane_id, observation);
-        }
+        self.map.insert(pane_id, observation);
     }
 }
 
