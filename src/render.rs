@@ -4209,6 +4209,48 @@ rail";
         }
     }
 
+    prop_compose! {
+        /// Like arb_row but also produces multi-pane rows with >6 panes so the
+        /// `+N more` overflow path and every density mode are exercised.
+        fn arb_tab_row()(
+            status in arb_status(),
+            name in "[a-zA-Z0-9_-]{0,20}",
+            active in any::<bool>(),
+            n_panes in 0usize..9,
+        ) -> TabRow {
+            let display = if n_panes == 0 {
+                display(status, 0, 0, None)
+            } else {
+                let panes: Vec<PaneDisplay> = (1u32..=(n_panes as u32))
+                    .map(|id| pe(id, Kind::Claude, status, "m"))
+                    .collect();
+                display_multi(panes)
+            };
+            TabRow { number: 1, name, active, has_bell: false, display }
+        }
+    }
+
+    proptest! {
+        /// Structural lockstep holds across all densities and input shapes:
+        /// `ansi` line count == `line_count()` (== targets.len()) always.
+        #[test]
+        fn lockstep_holds_for_arbitrary_rails(
+            rows in prop::collection::vec(arb_tab_row(), 0..8),
+            width in 8usize..40,
+            height in 1usize..30,
+            density in prop_oneof![
+                Just(Density::Compact),
+                Just(Density::Comfortable),
+                Just(Density::Cards),
+            ],
+        ) {
+            let opts = RenderOpts { width, height, density, ..ro(width, 0) };
+            let rr = render_rail(&rows, &opts);
+            let ansi_lines = if rr.ansi.is_empty() { 0 } else { rr.ansi.split('\n').count() };
+            prop_assert_eq!(ansi_lines, rr.line_count());
+        }
+    }
+
     #[test]
     fn render_rail_empty_has_zero_lines_and_no_targets() {
         let opts = ro(24, 0);

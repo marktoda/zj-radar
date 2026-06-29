@@ -54,10 +54,12 @@ click-target lockstep. `RadarState` owns the domain facts between those seams.
 The load-bearing invariant of the rail: the emitted ANSI and the click-target map
 stay in exact 1:1 line correspondence. `line_count() == ansi newline count`, and
 every drawn line maps to the intended target (or a deliberate `None`). Lockstep is
-why click-to-switch lands on the row the user pointed at. It is verified as a
-property of `RenderedRail` through `render_rail` — never by re-deriving heights
-from a separate predictor, and never by re-rendering at a different width than was
-drawn.
+why click-to-switch lands on the row the user pointed at. Lockstep is now
+structural, not discipline-held: `render_rail` builds a single `Vec<Line>` where
+each line carries its own `RailTarget`, and `ansi`/`targets`/line-count all derive
+from that one list via `RenderedRail::from_lines`. There is no separate height
+predictor — a row's footprint is `block.len()` of the very lines it renders — so
+the emitted ANSI and the click-target map cannot drift.
 
 ## Status contract
 
