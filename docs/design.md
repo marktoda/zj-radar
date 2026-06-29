@@ -114,8 +114,8 @@ runtime.
 │    owns per-session filesystem coordination across sidebar instances:  │
 │    snapshot durability, permission marker/lock, root fallback, pruning │
 │                                                                        │
-│  state.rs/model.rs/command.rs/naming.rs: pure state and tab model      │
-│    StateStore + CommandStore + aggregate(tab) + compute_renames        │
+│  radar_state.rs/rollup.rs/command.rs/tab_namer.rs: state + tab model   │
+│    StatusStore + CommandStore + roll_up(tab) + TabNamer                │
 │                                                                        │
 │  render.rs: pure rail renderer                                         │
 │    render_rail(rows, opts) -> RenderedRail { ansi, line_targets }      │

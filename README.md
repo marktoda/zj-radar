@@ -372,8 +372,8 @@ target plugin was created by a layout and has made itself non-selectable (as the
 radar sidebar does after permissions). The default inside-Zellij dev loop avoids
 both in-place plugin reloads and session switching.
 
-The host-testable modules (`status`, `payload`, `state`, `model`, `render`,
-`naming`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency
+The host-testable modules (`status`, `payload`, `radar_state`, `rollup`, `render`,
+`tab_namer`, `command`, `config`, `theme`, `session_files`) carry no `zellij-tile` dependency
 and are covered on the host target. Only `lib.rs`/`main.rs` touch the Zellij host
 API and are gated behind `#[cfg(target_arch = "wasm32")]`. See
 [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).

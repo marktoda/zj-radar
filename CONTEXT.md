@@ -39,15 +39,40 @@ idle-strip lines have no `RailTarget`. The runtime turns a `RailTarget` into a
 ## RadarState
 
 The plugin's session-state module: the current radar view of tabs, live terminal
-panes, pane observations, focus transitions, snapshot serialization, and rename
-ownership. `RadarState` is not a replacement for the source-specific stores; it
-composes `StatusStore` (status-payload observations) and `CommandStore`
-(command-derived observations) with live pane topology, then produces `TabRow`s
-for the rail.
+panes, pane observations, focus transitions, and snapshot serialization.
+`RadarState` is not a replacement for the source-specific stores; it composes
+`StatusStore` (status-payload observations) and `CommandStore` (command-derived
+observations) with live pane topology, then produces `TabRow`s for the rail. It
+also composes `TabNamer` for tab naming — assembling the resolved facts that seam
+consumes, the same way it hands `roll_up` a `resolve` closure.
 
 The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and
 click-target lockstep. `RadarState` owns the domain facts between those seams.
+
+## Tab naming
+
+The policy that decides what each tab is called, and remembers what it last
+applied. The **tab-naming seam** is `TabNamer::rename(tabs, mode) -> Vec<TabRename>`
+in `src/tab_namer.rs`: a deep module fed resolved `TabFacts` (per-tab `id`,
+`name`, `position`, and per-pane `PaneFacts` carrying `repo`, raw `cwd`, raw
+`title`, `focused`). `RadarState::name_facts` does the joins across its stores and
+pane topology, so the namer never learns about `StatusStore`, `TerminalPane`, or
+the cwd map — only `repo` (the one fact it can't derive) crosses pre-resolved;
+worktree resolution, basename, and activity-prefix stripping are implementation
+behind the seam.
+
+The candidate space is one ordered list (`name_candidates`): focused pane's repo,
+any pane's repo, focused/any worktree-resolved cwd, focused/any title. Stickiness
+derives from that single list — `computed_name` takes the top, `name_supported`
+asks whether a name sits anywhere in it — so an applied name (tracked in
+`TabNamer`'s own `applied` state, keyed by stable `TabId`) stays put while any
+pane still justifies it, and `Managed` never clobbers a manual rename (only
+`Force`, a default `Tab #N`, or a name the namer itself applied is overwritten).
+`TabRename` is the namer's output vocabulary; `RadarState` uses it in
+`RadarChange` and the runtime turns it into a `RenameTab` effect. Bootstrap (the one-shot `get_pane_cwd`
+reads that *feed* naming) stays in `RadarState` — it ensures cwd facts exist; it
+is not naming policy.
 
 ## Lockstep
 

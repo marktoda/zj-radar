@@ -9,6 +9,7 @@ use crate::render::TabRow;
 use crate::rollup::{self, TabDisplay};
 use crate::status::Status;
 use crate::status_store::StatusStore;
+use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -44,12 +45,6 @@ pub(crate) struct PaneUpdate {
     pub live: HashSet<u32>,
     pub theme: Option<theme::DerivedColors>,
     pub exits: Vec<(u32, Option<i32>)>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TabRename {
-    pub position: usize,
-    pub name: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -124,7 +119,7 @@ pub(crate) struct RadarState {
     tabs: Vec<RadarTab>,
     tab_panes: HashMap<usize, Vec<TerminalPane>>,
     pane_cwd: HashMap<u32, String>,
-    applied_names: HashMap<TabId, String>,
+    namer: TabNamer,
     last_focused: Option<u32>,
     live_panes: Option<HashSet<u32>>,
     /// Pane ids we have already requested an initial `get_pane_cwd` read for.
@@ -365,7 +360,7 @@ impl RadarState {
 
     #[cfg(test)]
     pub(crate) fn applied_name(&self, tab_id: TabId) -> Option<&str> {
-        self.applied_names.get(&tab_id).map(String::as_str)
+        self.namer.applied_name(tab_id)
     }
 
     fn focused_terminal_in_active_tab(&self) -> Option<u32> {
@@ -419,81 +414,44 @@ impl RadarState {
         targets
     }
 
+    /// Delegate naming to the [`TabNamer`]: assemble resolved facts, then let the
+    /// naming module pick and remember names. `Off` short-circuits before any
+    /// fact-building (the namer also no-ops on `Off`).
     fn rename_tabs(&mut self, naming_mode: config::NamingMode) -> Vec<TabRename> {
         if naming_mode == config::NamingMode::Off {
             return Vec::new();
         }
-        let force = naming_mode == config::NamingMode::Force;
-        let mut out = Vec::new();
-        let tabs: Vec<RadarTab> = self.tabs.clone();
-        for tab in tabs {
-            let empty = Vec::new();
-            let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
-            let ours = self.applied_names.get(&tab.id) == Some(&tab.name);
-            // Stickiness: a name we applied stays put as long as some pane still
-            // justifies it, so moving focus between panes in different repos does
-            // not flip the tab name. We only re-pick once no pane supports it
-            // (e.g. the pane that named the tab closed).
-            if ours && self.name_supported(panes, &tab.name) {
-                continue;
-            }
-            let Some(desired) = self.computed_name(panes) else {
-                continue;
-            };
-            if desired == tab.name {
-                continue;
-            }
-            if force || is_default_name(&tab.name) || ours {
-                self.applied_names.insert(tab.id, desired.clone());
-                out.push(TabRename {
+        let facts = self.name_facts();
+        self.namer.rename(&facts, naming_mode)
+    }
+
+    /// Join this state's tabs, pane topology, status observations, and known
+    /// cwds into the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is
+    /// sourced from the *status* store only (commands carry no repo), matching
+    /// the pre-extraction behavior; the raw `cwd`/`title` are processed inside
+    /// the namer. Iterates `self.tabs` in stored order, as the old renamer did.
+    fn name_facts(&self) -> Vec<TabFacts> {
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let empty = Vec::new();
+                let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
+                TabFacts {
+                    id: tab.id,
+                    name: tab.name.clone(),
                     position: tab.position,
-                    name: desired,
-                });
-            }
-        }
-        out
-    }
-
-    /// The ordered space of names this tab could take, highest priority first:
-    /// the focused pane's repo, then any pane's repo, then focused/any
-    /// worktree-resolved cwd, then focused/any pane title. `computed_name` takes
-    /// the first; `name_supported` asks whether a name sits anywhere in this
-    /// space. Deriving both from this one list is what keeps applied-name
-    /// stickiness (`name_supported`) in lockstep with what the renamer would
-    /// actually pick (`computed_name`) — they cannot disagree about the candidate
-    /// space because there is only one.
-    fn name_candidates(&self, panes: &[TerminalPane]) -> Vec<String> {
-        let repo_of = |p: &TerminalPane| {
-            self.status
-                .get(p.id)
-                .map(|s| s.repo.clone())
-                .filter(|r| !r.is_empty())
-        };
-        let worktree_of =
-            |p: &TerminalPane| self.pane_cwd.get(&p.id).and_then(|cwd| worktree_repo_dir(cwd));
-        let title_of = |p: &TerminalPane| title_name(&p.title);
-        let focused = panes.iter().find(|p| p.focused_in_tab);
-
-        let mut out = Vec::new();
-        out.extend(focused.and_then(&repo_of));
-        out.extend(panes.iter().filter_map(&repo_of));
-        out.extend(focused.and_then(&worktree_of));
-        out.extend(panes.iter().filter_map(&worktree_of));
-        out.extend(focused.and_then(&title_of));
-        out.extend(panes.iter().filter_map(&title_of));
-        out
-    }
-
-    /// The tab's preferred name: the top of [`Self::name_candidates`].
-    fn computed_name(&self, panes: &[TerminalPane]) -> Option<String> {
-        self.name_candidates(panes).into_iter().next()
-    }
-
-    /// Does any pane still justify `name`? True when `name` is anywhere in
-    /// [`Self::name_candidates`] — used to keep an applied name "sticky" so focus
-    /// changes between panes don't churn it.
-    fn name_supported(&self, panes: &[TerminalPane], name: &str) -> bool {
-        self.name_candidates(panes).iter().any(|c| c == name)
+                    panes: panes
+                        .iter()
+                        .map(|p| PaneFacts {
+                            repo: self.status.get(p.id).map(|s| s.repo.clone()),
+                            cwd: self.pane_cwd.get(&p.id).cloned(),
+                            title: p.title.clone(),
+                            focused: p.focused_in_tab,
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
     }
 
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
@@ -504,66 +462,6 @@ impl RadarState {
         rollup::roll_up(panes, |id| {
             self.status.get(id).or_else(|| self.command.get(id))
         })
-    }
-}
-
-fn title_name(title: &str) -> Option<String> {
-    let trimmed = title.trim_start();
-    let stable = strip_activity_prefix(trimmed).trim();
-    if stable.is_empty() {
-        None
-    } else {
-        Some(stable.to_string())
-    }
-}
-
-fn is_default_name(name: &str) -> bool {
-    name.strip_prefix("Tab #")
-        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
-}
-
-fn cwd_basename(path: &str) -> Option<String> {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
-/// Path markers for agent-managed git worktrees created under the standard
-/// conventions: Claude (`<repo>/.claude/worktrees/<branch>`) and Codex
-/// (`<repo>/.Codex/worktrees/<branch>`). A cwd sitting inside such a worktree
-/// belongs, conceptually, to the parent repo — so naming should follow the repo,
-/// not the (per-branch) worktree directory. Mirrors the CLI's git-common-dir
-/// resolution (`cli::notify`) without needing a `git` process from inside wasm.
-const WORKTREE_MARKERS: [&str; 2] = ["/.claude/worktrees/", "/.Codex/worktrees/"];
-
-/// Resolve the directory NAME a tab should take from a pane's cwd. For a cwd
-/// under a [`WORKTREE_MARKERS`] segment, this is the parent repo's basename (so
-/// every worktree of `zj-radar` reads as `zj-radar` instead of flipping to each
-/// branch dir); otherwise it is the plain cwd basename.
-fn worktree_repo_dir(path: &str) -> Option<String> {
-    match WORKTREE_MARKERS.iter().filter_map(|m| path.find(m)).min() {
-        Some(idx) => cwd_basename(&path[..idx]),
-        None => cwd_basename(path),
-    }
-}
-
-fn strip_activity_prefix(title: &str) -> &str {
-    let Some(first) = title.chars().next() else {
-        return title;
-    };
-    if !('\u{2800}'..='\u{28ff}').contains(&first) {
-        return title;
-    }
-    let rest = &title[first.len_utf8()..];
-    if rest.chars().next().is_some_and(char::is_whitespace) {
-        rest
-    } else {
-        title
     }
 }
 
@@ -645,14 +543,6 @@ mod tests {
             id,
             focused_in_tab: true,
             ..TerminalPane::default()
-        }
-    }
-
-    fn titled_pane(id: u32, title: &str, focused_in_tab: bool) -> TerminalPane {
-        TerminalPane {
-            id,
-            title: title.into(),
-            focused_in_tab,
         }
     }
 
@@ -756,89 +646,6 @@ mod tests {
             radar.command(2).unwrap().origin,
             crate::observation::ObservationOrigin::Command
         );
-    }
-
-    #[test]
-    fn cwd_basename_handles_normal_trailing_root_and_empty_paths() {
-        assert_eq!(
-            cwd_basename("/Users/m/dev/zj-radar"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(
-            cwd_basename("/Users/m/dev/zj-radar/"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(cwd_basename("/"), None);
-        assert_eq!(cwd_basename(""), None);
-    }
-
-    #[test]
-    fn default_name_matches_zellij_tab_numbers_only() {
-        assert!(is_default_name("Tab #1"));
-        assert!(is_default_name("Tab #12"));
-        assert!(!is_default_name("Tab #"));
-        assert!(!is_default_name("Tab #x"));
-        assert!(!is_default_name("custom"));
-    }
-
-    #[test]
-    fn computed_name_prefers_focused_repo_then_cwd_then_title() {
-        let mut radar = RadarState::default();
-        radar
-            .status_mut()
-            .apply(payload_for(1, Status::Running, "repo-one"), 1);
-        radar
-            .status_mut()
-            .apply(payload_for(2, Status::Running, "repo-two"), 1);
-        let panes = vec![titled_pane(1, "one", false), titled_pane(2, "two", true)];
-        assert_eq!(radar.computed_name(&panes), Some("repo-two".into()));
-
-        let mut radar = RadarState::default();
-        radar.pane_cwd.insert(1, "/work/one".into());
-        radar.pane_cwd.insert(2, "/work/two".into());
-        assert_eq!(radar.computed_name(&panes), Some("two".into()));
-
-        let panes = vec![
-            titled_pane(1, "first", false),
-            titled_pane(2, "⠀ spinner-title", true),
-        ];
-        let radar = RadarState::default();
-        assert_eq!(radar.computed_name(&panes), Some("spinner-title".into()));
-    }
-
-    #[test]
-    fn computed_name_falls_back_to_the_first_pane_that_has_a_title() {
-        // No repo, no cwd, nothing focused; the first pane has no usable title
-        // but a later one does. The name falls through to that pane's title
-        // rather than giving up — the title tier mirrors name_supported, which
-        // already accepts any pane's title.
-        let radar = RadarState::default();
-        let panes = vec![titled_pane(1, "   ", false), titled_pane(2, "scratch", false)];
-        assert_eq!(radar.computed_name(&panes), Some("scratch".into()));
-    }
-
-    #[test]
-    fn every_computed_name_is_supported() {
-        // computed_name and name_supported share one candidate space, so any
-        // name computed_name can yield must be "supported" (sticky) — and any
-        // pane attribute name_supported accepts must be computable. This pins
-        // the two against drift across repo / worktree / title tiers.
-        let mut radar = RadarState::default();
-        radar
-            .status_mut()
-            .apply(payload_for(1, Status::Running, "repo-one"), 1);
-        radar.pane_cwd.insert(2, "/work/two".into());
-        let panes = vec![titled_pane(1, "t1", false), titled_pane(2, "t2", true)];
-        let name = radar
-            .computed_name(&panes)
-            .expect("a name should be computable here");
-        assert!(
-            radar.name_supported(&panes, &name),
-            "computed name {name:?} must be considered supported"
-        );
-        // A non-focused, non-first pane's title is both supported AND computable
-        // (the case that used to diverge).
-        assert!(radar.name_supported(&panes, "t1"));
     }
 
     #[test]
@@ -1257,49 +1064,6 @@ mod tests {
 
         assert_eq!(restored.status(5).unwrap().status, Status::Idle);
         assert_eq!(restored.status(5).unwrap().on_focus, None);
-    }
-
-    #[test]
-    fn worktree_repo_dir_resolves_claude_worktree_paths_to_parent_repo() {
-        // A worktree under the standard `<repo>/.claude/worktrees/<branch>` path
-        // resolves to the PARENT repo's basename, not the branch dir.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x"),
-            Some("zj-radar".into())
-        );
-        // Deeper cwd inside the worktree still resolves to the repo.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x/src/app"),
-            Some("zj-radar".into())
-        );
-        // Codex worktrees live under `<repo>/.Codex/worktrees/<branch>`.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/.Codex/worktrees/sidebar-ui-polish"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/.Codex/worktrees/sidebar-ui-polish/src"),
-            Some("zj-radar".into())
-        );
-        // A normal (non-worktree) path keeps its plain basename.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/src"),
-            Some("src".into())
-        );
-    }
-
-    #[test]
-    fn computed_name_resolves_worktree_cwd_to_parent_repo() {
-        let mut radar = RadarState::default();
-        radar
-            .pane_cwd
-            .insert(1, "/Users/m/dev/zj-radar/.claude/worktrees/feat-x".into());
-        let panes = vec![focused_pane(1)];
-        assert_eq!(radar.computed_name(&panes), Some("zj-radar".into()));
     }
 
     #[test]

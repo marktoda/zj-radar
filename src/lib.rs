@@ -13,6 +13,8 @@ mod payload;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod radar_state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+mod tab_namer;
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod render;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod rollup;

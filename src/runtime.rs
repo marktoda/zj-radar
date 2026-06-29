@@ -2,8 +2,9 @@
 //! No zellij-tile dependency.
 
 use crate::config;
-use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabRename};
+use crate::radar_state::{PaneUpdate, RadarState, RadarTab};
 use crate::render::{self, RenderedRail, TabRow};
+use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
 
