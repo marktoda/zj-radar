@@ -420,6 +420,11 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
 - Moving notification logic into the plugin (it belongs in shell adapters by design).
+- **Keybinds, the passive way** — the supported keyboard path is a Zellij
+  `MessagePlugin` binding that delivers a verb to the `zj_radar.cmd.v1` pipe
+  (e.g. `attention-next`), handled in `pipe()` exactly like `config.v1`. This
+  keeps the plugin a passive renderer (no `Key` subscription, no focus grab),
+  unlike a `LaunchOrFocusPlugin` panel.
 - **Launchable floating mode** (`LaunchOrFocusPlugin` keybind, zero layout change) — *deliberate
   non-goal.* It's a different product: an on-demand *peek* (current tab only), not the always-on
   ambient column radar exists to be, and it overlaps `room`/session-manager. It would also force
