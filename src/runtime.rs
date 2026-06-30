@@ -137,9 +137,12 @@ impl PluginRuntime {
             self.check_deferred_permission_request(permission, &mut effects);
         self.tick += 1;
         self.radar.timer(self.tick);
+        // Capture before re-arming: an in-flight permission request must repaint
+        // the needs_permission screen each tick until the user answers.
+        let awaiting_permission = self.sidebar_should_be_selectable();
         self.arm_timer_if_needed(&mut effects);
         Outcome::with_effects(
-            permission_changed || self.radar.has_active_or_pending_work(),
+            permission_changed || awaiting_permission || self.radar.has_active_or_pending_work(),
             effects,
         )
     }
@@ -353,11 +356,14 @@ impl PluginRuntime {
         let mut effects = Vec::new();
         match Self::permission_decision(&permission) {
             Some(decision) => self.apply_permission_decision(decision, &mut effects),
-            None => {
-                self.permission_waiting_for_peer = true;
-                self.arm_timer_if_needed(&mut effects);
-            }
+            None => self.permission_waiting_for_peer = true,
         }
+        // Arm a timer whenever a decision is still outstanding — either we're
+        // waiting on a peer's marker, or our own request is in-flight. Pre-grant
+        // Zellij withholds the state events that would otherwise trigger a paint
+        // (they need ReadApplicationState), so this timer is the only thing that
+        // gets the needs_permission screen onto the rail.
+        self.arm_timer_if_needed(&mut effects);
         // Load always initializes the sidebar's selectability, every arm.
         effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
         Outcome::with_effects(false, effects)
@@ -386,7 +392,9 @@ impl PluginRuntime {
 
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
         if !self.timer_armed
-            && (self.permission_waiting_for_peer || self.radar.has_active_or_pending_work())
+            && (self.permission_waiting_for_peer
+                || self.sidebar_should_be_selectable()
+                || self.radar.has_active_or_pending_work())
         {
             self.timer_armed = true;
             effects.push(Effect::SetTimeout);
@@ -483,7 +491,14 @@ mod tests {
             outcome,
             Outcome {
                 render: false,
-                effects: vec![Effect::RequestPermission, Effect::SetSelectable(true)],
+                // SetTimeout keeps a paint trigger alive so the needs_permission
+                // screen reaches the rail before the user grants (pre-grant
+                // Zellij sends no state events to trigger a render).
+                effects: vec![
+                    Effect::RequestPermission,
+                    Effect::SetTimeout,
+                    Effect::SetSelectable(true),
+                ],
             }
         );
     }
@@ -565,10 +580,60 @@ mod tests {
         assert!(timer.render);
         assert!(runtime.permission_request_started);
         assert!(!runtime.permission_waiting_for_peer);
+        // The promoted peer is now an owner with an in-flight request, so it also
+        // arms the needs_permission heartbeat until the user answers.
         assert_eq!(
             timer.effects,
-            vec![Effect::RequestPermission, Effect::SetSelectable(true)]
+            vec![
+                Effect::RequestPermission,
+                Effect::SetSelectable(true),
+                Effect::SetTimeout,
+            ]
         );
+    }
+
+    #[test]
+    fn owner_paints_needs_permission_while_request_in_flight() {
+        // Fresh first-run owner: it requests permission and must keep a paint
+        // trigger alive until the user answers. Pre-grant, Zellij delivers no
+        // state events (they need ReadApplicationState), so without this the
+        // needs_permission screen never gets a render trigger and the rail sits
+        // blank — the bug this guards.
+        let mut runtime = PluginRuntime::default();
+        let load = runtime.load(
+            config(),
+            None,
+            PermissionProbe {
+                marker: None,
+                lock_acquired: true,
+            },
+        );
+        assert!(
+            load.effects.contains(&Effect::SetTimeout),
+            "owner must arm a timer so the needs_permission screen gets a paint trigger",
+        );
+
+        // The tick repaints while still awaiting the user's y/n — even with no
+        // marker, no reclaimed lock, and no agent work to report.
+        let tick = runtime.timer(PermissionProbe {
+            marker: None,
+            lock_acquired: false,
+        });
+        assert!(
+            tick.render,
+            "owner repaints needs_permission while its request is in-flight",
+        );
+        assert!(!runtime.permission_granted);
+
+        // Once the user answers, the heartbeat stops: a granted, idle rail must
+        // not spin a timer forever.
+        let _ = runtime.permission_result(true);
+        let after = runtime.timer(PermissionProbe {
+            marker: None,
+            lock_acquired: false,
+        });
+        assert!(!after.render, "granted idle rail must not keep repainting");
+        assert!(!after.effects.contains(&Effect::SetTimeout));
     }
 
     #[test]
