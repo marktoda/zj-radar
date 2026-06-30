@@ -1,7 +1,32 @@
 // zj-radar run: owned Zellij config. The WASM token is replaced with the
-// absolute materialized wasm path at first run. Keybinds/theme inherit Zellij defaults.
+// absolute materialized wasm path at first run. Theme inherits Zellij defaults;
+// the keybinds block below is ADDITIVE (Zellij merges it with the defaults), so
+// every default chord still works — it only adds the Ctrl-y grant escape hatch.
 plugins {
     radar location="file:@WASM@" {
         naming "managed"
+    }
+}
+
+// Ctrl-y summons the permission grant prompt in a legible floating pane, from
+// ANY session state. The auto-float in radar-onboarding.kdl only appears when
+// `run` CREATES a session; attaching to an existing ungranted session applies no
+// layout (and Zellij resurrects sessions, so attach is the COMMON path), so the
+// float would otherwise never reappear and the rail's grant is unreachable. This
+// keybind is baked in at session creation and lives with the server, so it works
+// on every later attach. `role "onboarding"` makes the launched pane the
+// dedicated grant host: it always requests, writes the grant marker the deferring
+// rails wait on, then closes itself once the user answers. Bound in
+// `shared_except "locked"` (Zellij's idiom for global chords) so it fires from
+// normal use but not from locked mode.
+keybinds {
+    shared_except "locked" {
+        bind "Ctrl y" {
+            LaunchOrFocusPlugin "radar" {
+                floating true
+                move_to_focused_tab true
+                role "onboarding"
+            }
+        }
     }
 }

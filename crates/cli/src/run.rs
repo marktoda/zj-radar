@@ -8,8 +8,16 @@ use super::fsutil::atomic_write;
 use super::setup::CODEX_HOOK_MARKER;
 use std::path::{Path, PathBuf};
 
-const GRANT_HINT: &str =
+/// Shown when CREATING a new ungranted session: the onboarding layout opens a
+/// centered floating pane that hosts Zellij's grant prompt legibly.
+const GRANT_HINT_CREATE: &str =
     "First run: a permission prompt opens in the center — press y to enable agent status.";
+/// Shown when ATTACHING to an existing ungranted session. Attach applies no
+/// layout, so the onboarding float never auto-opens; the baked-in Ctrl-y keybind
+/// summons it instead. (Without this distinction `run` told users a prompt would
+/// open in the center even when it was only attaching — a dead-end.)
+const GRANT_HINT_ATTACH: &str =
+    "This session isn't enabled yet — focus a pane and press Ctrl-y to open the grant prompt.";
 const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -241,7 +249,11 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
 
     let mut advisories = Vec::new();
     if !granted {
-        advisories.push(GRANT_HINT.to_string());
+        // Create vs attach differ in whether the onboarding float auto-opens:
+        // creation applies the layout (float appears); attach does not (point at
+        // the Ctrl-y keybind that summons it).
+        let hint = if facts.session_exists { GRANT_HINT_ATTACH } else { GRANT_HINT_CREATE };
+        advisories.push(hint.to_string());
     }
     let claude = claude_producer_wired(facts.installed_plugins.as_deref());
     if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude) {
@@ -500,6 +512,24 @@ mod tests {
         assert!(CONFIG_TEMPLATE.contains("@WASM@"), "config template needs the @WASM@ token");
     }
 
+    #[test]
+    fn bundled_config_has_grant_keybind() {
+        // The Ctrl-y escape hatch is the only legible grant path on an attached
+        // session (no layout applies on attach, so the onboarding float can't
+        // auto-open). Baked into the owned config so it lives with every session's
+        // server. It must launch the radar plugin floating in the onboarding role.
+        assert!(CONFIG_TEMPLATE.contains("bind \"Ctrl y\""), "config must bind the grant escape hatch");
+        assert!(
+            CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""),
+            "keybind must launch the radar plugin"
+        );
+        assert!(CONFIG_TEMPLATE.contains("floating true"), "grant pane must be floating to be legible");
+        assert!(
+            CONFIG_TEMPLATE.contains("role \"onboarding\""),
+            "grant float must use the onboarding role so it owns the prompt and closes on grant"
+        );
+    }
+
     // ── plan_run decision matrix ──
     // `granted`/`codex`/`claude` toggle whether each input signals "already set up".
     // Defaults: session "proj", does not exist (create path), not nested.
@@ -558,6 +588,20 @@ mod tests {
         let p = plan_run(&facts(false, true, false)); // producer wired, not granted
         assert_eq!(p.advisories.len(), 1);
         assert!(p.advisories[0].contains("press y"));
+    }
+
+    #[test]
+    fn plan_run_advises_keybind_not_center_float_when_attaching_ungranted() {
+        // Attaching to an existing ungranted session applies no layout, so the
+        // onboarding float never auto-opens — the advisory must point at the
+        // Ctrl-y keybind, NOT promise a prompt "in the center" (the old dead-end).
+        let mut f = facts(false, true, false); // ungranted, producer wired
+        f.session_exists = true;
+        let p = plan_run(&f);
+        assert_eq!(p.args, attach_session_args("proj"), "ungranted + existing session still attaches");
+        assert_eq!(p.advisories.len(), 1);
+        assert!(p.advisories[0].contains("Ctrl-y"), "attach hint points at the keybind");
+        assert!(!p.advisories[0].contains("center"), "attach hint must not promise a center float");
     }
 
     #[test]
