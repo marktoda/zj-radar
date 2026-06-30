@@ -79,6 +79,23 @@ kinds! {
     Server  => "server",  '❯', '❯';
 }
 
+// `Kind` crosses the persisted snapshot as its `source` wire token. Lenient,
+// like `Status`: an unknown/absent token folds to `Other` rather than erroring,
+// so an old or hand-edited snapshot still loads. Hand-written rather than via
+// `wire_serde!` because Kind's vocabulary is `as_source`/`from_source` — the wire
+// field is literally `source` — not the macro's `as_wire`/`from_wire`.
+impl serde::Serialize for Kind {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_source())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Kind {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        Ok(Kind::from_source(&<String as serde::Deserialize>::deserialize(de)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +114,17 @@ mod tests {
         assert_eq!(Kind::from_source("build"), Kind::Build);
         assert_eq!(Kind::from_source("deploy"), Kind::Deploy);
         assert_eq!(Kind::from_source("server"), Kind::Server);
+    }
+
+    #[test]
+    fn serde_serializes_as_source_token_and_is_lenient() {
+        assert_eq!(serde_json::to_string(&Kind::Claude).unwrap(), r#""claude""#);
+        for &k in Kind::ALL {
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(serde_json::from_str::<Kind>(&json).unwrap(), k);
+        }
+        // Unknown/absent tokens fold to Other (lenient), never error.
+        assert_eq!(serde_json::from_str::<Kind>(r#""nonsense""#).unwrap(), Kind::Other);
     }
 
     #[test]

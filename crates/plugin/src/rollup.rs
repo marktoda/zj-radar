@@ -181,7 +181,7 @@ pub fn roll_up<'a>(
             }
             pane_displays.push(PaneDisplay::tracked(
                 pane.id,
-                Kind::from_source(&s.source),
+                s.kind,
                 s.status,
                 s.msg.clone(),
                 pane_outcome(s),
@@ -204,7 +204,7 @@ pub fn roll_up<'a>(
                     msg: s.msg.clone(),
                     since_tick: s.last_change_tick,
                     status: s.status,
-                    kind: Kind::from_source(&s.source),
+                    kind: s.kind,
                     outcome: pane_outcome(s),
                 });
             }

@@ -139,7 +139,7 @@
                 .get(1)
                 .unwrap_or_else(|| panic!("{args:?} should be tracked"));
             assert_eq!(&s.msg, want_msg, "display for {args:?}");
-            assert_eq!(s.source, want_kind.as_source(), "kind for {args:?}");
+            assert_eq!(s.kind, *want_kind, "kind for {args:?}");
         }
     }
 
@@ -162,7 +162,7 @@
         store.on_command_changed(1, &argv(&["sudo", "-u", "user", "make"]), true, Some("/r"), 1);
         store.on_timer(2);
         let s = store.get(1).expect("should still be tracked");
-        assert_eq!(s.source, Kind::Command.as_source());
+        assert_eq!(s.kind, Kind::Command);
     }
 
     #[test]
@@ -208,7 +208,7 @@
         store.on_command_changed(1, &cmd, true, Some("/home/u/repo"), 1);
         store.on_timer(1 + DEBOUNCE_TICKS);
         let obs = store.get(1).expect("fg command promoted to resolved");
-        assert_eq!(Kind::from_source(&obs.source), Kind::Test);
+        assert_eq!(obs.kind, Kind::Test);
     }
 
     // ── Test 1: fg real command → pending, NOT Running until on_timer past DEBOUNCE_TICKS
@@ -235,7 +235,7 @@
         let s = store.get(1).expect("must be Running after debounce");
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.msg, "sleep 5");
-        assert_eq!(s.source, "command");
+        assert_eq!(s.kind, Kind::Command);
         assert_eq!(s.repo, "myrepo");
         assert!(
             !store.pending.contains_key(&1),
@@ -410,7 +410,7 @@
         store.on_timer(2);
         let s = store.get(1).expect("must be Running");
         assert_eq!(s.msg, "cargo build", "basename of nix path must be used");
-        assert_eq!(s.source, "build");
+        assert_eq!(s.kind, Kind::Build);
         assert_eq!(s.repo, "myproject", "repo must be basename of cwd");
     }
 
@@ -558,7 +558,7 @@
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().repo, "pinky");
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
-        assert_eq!(store.get(1).unwrap().source, "test");
+        assert_eq!(store.get(1).unwrap().kind, Kind::Test);
 
         // Exit 0 → Done, but repo and msg preserved
         store.on_exit(1, Some(0), 3);
@@ -607,7 +607,7 @@
             .get(1)
             .expect("gemini must leave a resolved command observation");
         assert_eq!(s.status, Status::Running);
-        assert_eq!(s.source, Kind::Gemini.as_source());
+        assert_eq!(s.kind, Kind::Gemini);
     }
 
     // ── B: leaving the foreground is debounced before flipping to Done ──

@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     fn obs(status: Status, repo: &str, branch: &str, msg: &str) -> TrackedObservation {
-        let mut o = TrackedObservation::command(status, repo.to_string(), msg.to_string(), "shell".to_string(), 1);
+        let mut o = TrackedObservation::command(status, repo.to_string(), msg.to_string(), crate::kind::Kind::Other, 1);
         o.branch = branch.to_string();
         o
     }

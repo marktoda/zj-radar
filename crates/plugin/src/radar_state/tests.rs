@@ -445,7 +445,7 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     assert_eq!(pane.repo, "pinky");
     assert_eq!(pane.branch, "fix/x");
     assert_eq!(pane.msg, "shipped it");
-    assert_eq!(pane.source, "codex");
+    assert_eq!(pane.kind, Kind::Codex);
     assert_eq!(pane.on_focus, Some(Status::Idle));
 }
 

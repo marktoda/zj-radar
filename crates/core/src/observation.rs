@@ -1,5 +1,6 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
+use crate::kind::Kind;
 use crate::status::Status;
 use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,12 @@ pub struct TrackedObservation {
     pub repo: String,
     pub branch: String,
     pub msg: String,
-    pub source: String,
+    /// The source kind that produced this observation. Classified once at intake
+    /// (`StatusStore::apply` / `command_kind`); the renderer reads it directly
+    /// rather than re-parsing a string. Serializes under the `source` wire key as
+    /// its `as_source()` token, so the persisted snapshot format is unchanged.
+    #[serde(rename = "source")]
+    pub kind: Kind,
     pub last_change_tick: u64,
     #[serde(default)]
     pub on_focus: Option<Status>,
@@ -48,14 +54,14 @@ impl TrackedObservation {
     /// branch, and are active by definition, so those fields take fixed defaults;
     /// callers pass only what varies and override `on_focus` / `exit_code` via
     /// struct-update when a command exits.
-    pub fn command(status: Status, repo: String, msg: String, source: String, tick: u64) -> Self {
+    pub fn command(status: Status, repo: String, msg: String, kind: Kind, tick: u64) -> Self {
         Self {
             origin: ObservationOrigin::Command,
             status,
             repo,
             branch: String::new(),
             msg,
-            source,
+            kind,
             last_change_tick: tick,
             on_focus: None,
             ever_active: true,
@@ -153,7 +159,7 @@ mod tests {
             repo: "zj-radar".into(),
             branch: "main".into(),
             msg: "cargo build".into(),
-            source: "build".into(),
+            kind: Kind::Build,
             last_change_tick: 7,
             on_focus: Some(Status::Idle),
             ever_active: true,

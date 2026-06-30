@@ -3,6 +3,7 @@
 
 use crate::command::CommandStore;
 use crate::config;
+use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::render::TabRow;
@@ -699,7 +700,7 @@ fn parse_legacy_status_snapshot(
                     repo: pane.repo,
                     branch: pane.branch,
                     msg: pane.msg,
-                    source: pane.source,
+                    kind: Kind::from_source(&pane.source),
                     last_change_tick: pane.last_change_tick,
                     on_focus: pane.on_focus.as_deref().map(Status::from_wire),
                     ever_active: pane.ever_active,
