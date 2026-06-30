@@ -1049,6 +1049,13 @@ fn println_layout_snippet() {
         "\nAdd the sidebar to a Zellij layout with:\n\n{}",
         ZELLIJ_LAYOUT_SNIPPET.trim_end()
     );
+    // The rail can't show Zellij's grant prompt legibly (it's a small borderless
+    // pane — Zellij #4749), so tell the user how to grant on first launch. The
+    // turnkey `zj-radar run` handles this with a floating prompt instead.
+    println!(
+        "\nFirst launch: focus the RADAR rail (the left column) and press y to allow \
+         access — Zellij asks once, then remembers."
+    );
 }
 
 fn confirm(prompt: &str) -> bool {

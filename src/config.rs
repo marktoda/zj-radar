@@ -46,12 +46,41 @@ impl Density {
     }
 }
 
+/// Which face this plugin instance plays. A normal launch is all `Sidebar`
+/// instances (the pinned rail). The first-run onboarding *floating* pane sets
+/// `role "onboarding"` so it owns Zellij's permission prompt — legibly, because
+/// a floating pane is framed and sized (the prompt is illegible in the small
+/// borderless rail; Zellij #4749) — then closes itself once granted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Role {
+    /// Default: the pinned left rail.
+    #[default]
+    Sidebar,
+    /// Transient floating pane that exists only to host the grant prompt.
+    Onboarding,
+}
+
+impl Role {
+    pub fn from_config(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "onboarding" => Role::Onboarding,
+            "sidebar" => Role::Sidebar,
+            _ => Role::default(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Config {
     pub naming: NamingMode,
     pub header: bool,
     pub glyphs: crate::status::GlyphSet,
     pub density: Density,
+    pub role: Role,
+    /// Set on the onboarding layout's rail instances: never fire our own
+    /// permission request — wait for the floating onboarding pane to win the
+    /// grant, so Zellij binds its prompt to the float, not the rail.
+    pub defer_permission: bool,
     pub notify: bool,
     pub notify_done: bool,
     pub notify_error: bool,
@@ -66,6 +95,8 @@ impl Default for Config {
             header: true,
             glyphs: crate::status::GlyphSet::default(),
             density: Density::default(),
+            role: Role::default(),
+            defer_permission: false,
             notify: true,
             notify_done: true,
             notify_error: true,
@@ -143,9 +174,11 @@ config_fields! {
         naming:  "naming"  => NamingMode::from_config,
         density: "density" => Density::from_config,
         glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
+        role:    "role"    => Role::from_config,
     }
     opt {
         header:              "header"              => parse_bool,
+        defer_permission:    "defer_permission"    => parse_bool,
         notify:              "notify"              => parse_bool,
         notify_done:         "notify_done"         => parse_bool,
         notify_error:        "notify_error"        => parse_bool,
@@ -157,6 +190,30 @@ config_fields! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_parses_and_defaults_to_sidebar() {
+        assert_eq!(Config::default().role, Role::Sidebar);
+        assert_eq!(Config::from_map(&map(&[])).role, Role::Sidebar);
+        assert_eq!(
+            Config::from_map(&map(&[("role", "onboarding")])).role,
+            Role::Onboarding
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("role", "ONBOARDING")])).role,
+            Role::Onboarding
+        );
+        // unknown → default Sidebar
+        assert_eq!(Config::from_map(&map(&[("role", "wat")])).role, Role::Sidebar);
+    }
+
+    #[test]
+    fn defer_permission_parses_and_defaults_false() {
+        assert!(!Config::default().defer_permission);
+        assert!(Config::from_map(&map(&[("defer_permission", "true")])).defer_permission);
+        // garbage → keeps default (false)
+        assert!(!Config::from_map(&map(&[("defer_permission", "maybe")])).defer_permission);
+    }
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
