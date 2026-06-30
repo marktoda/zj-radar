@@ -491,21 +491,31 @@ impl RadarState {
         self.last_focused
     }
 
+    /// THE precedence between observation sources: a status-pipe observation wins
+    /// over a command one for the same pane id. This is the single definition of
+    /// the rule — the one place that knows there is more than one store. Both
+    /// consumers (`tab_display`'s roll-up and `notify_views`) read through it, so
+    /// the precedence can never be encoded two different ways and silently drift.
+    fn resolve(&self, pane_id: u32) -> Option<&TrackedObservation> {
+        self.status.get(pane_id).or_else(|| self.command.get(pane_id))
+    }
+
     /// Union of both stores' observations, keyed by pane id, for the notifier.
-    /// A pane CAN appear in both stores; status takes precedence (matching the
-    /// system-wide rule), so command is inserted first and status second so that
-    /// status overwrites command on collision.
+    /// A pane CAN appear in both stores; `resolve` applies the system-wide
+    /// "status wins over command" precedence, so a shared id maps to the status
+    /// observation.
     pub(crate) fn notify_views(
         &self,
     ) -> std::collections::BTreeMap<u32, &crate::observation::TrackedObservation> {
-        let mut m = std::collections::BTreeMap::new();
-        for (id, o) in self.command.observations() {
-            m.insert(id, o);
-        }
-        for (id, o) in self.status.observations() {
-            m.insert(id, o);
-        }
-        m
+        let ids: std::collections::BTreeSet<u32> = self
+            .command
+            .observations()
+            .map(|(id, _)| id)
+            .chain(self.status.observations().map(|(id, _)| id))
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.resolve(id).map(|o| (id, o)))
+            .collect()
     }
 
     #[cfg(test)]
@@ -645,13 +655,11 @@ impl RadarState {
     }
 
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
-    /// command" precedence across observation sources lives here, with the
-    /// stores; `rollup::roll_up` only sees "is there an observation for this
+    /// command" precedence across observation sources lives in `resolve`, with
+    /// the stores; `rollup::roll_up` only sees "is there an observation for this
     /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam.
     fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
-        rollup::roll_up(panes, |id| {
-            self.status.get(id).or_else(|| self.command.get(id))
-        })
+        rollup::roll_up(panes, |id| self.resolve(id))
     }
 
     /// Roll a tab up by position, treating an absent pane list as no panes.
