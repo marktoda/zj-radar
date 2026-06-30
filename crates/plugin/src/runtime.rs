@@ -3,35 +3,12 @@
 
 use crate::control::Command;
 use crate::config;
+use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::radar_state::{Direction, PaneUpdate, RadarState, RadarTab};
 use crate::render::{self, RenderedRail, TabRow};
 use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PermissionMarker {
-    Granted,
-    Denied,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PermissionProbe {
-    pub marker: Option<PermissionMarker>,
-    pub lock_acquired: bool,
-}
-
-/// What a `PermissionProbe` dictates this sidebar do, independent of whether it
-/// arrived at load or on a deferred timer tick. `None` from
-/// [`PluginRuntime::permission_decision`] means "no decision yet — keep waiting
-/// on a peer." See that function for the single mapping both entry points share.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PermissionDecision {
-    /// Become the prompt-shower: request permission from Zellij.
-    Request,
-    /// Permission was denied; record the terminal result.
-    Deny,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
@@ -83,10 +60,7 @@ pub(crate) struct PluginRuntime {
     pub(crate) timer_armed: bool,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
-    pub(crate) permission_granted: bool,
-    pub(crate) permission_response_received: bool,
-    pub(crate) permission_request_started: bool,
-    pub(crate) permission_waiting_for_peer: bool,
+    pub(crate) permission: PermissionState,
     pub(crate) theme: theme::DerivedColors,
     last_rendered: RenderedRail,
     notify_prev: BTreeMap<u32, crate::status::Status>,
@@ -159,7 +133,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn mouse_click(&self, line: isize) -> Outcome {
-        if !self.permission_granted {
+        if !self.permission.granted() {
             return Outcome::none();
         }
         let Some(target) = self.last_rendered.target_at_line(line) else {
@@ -178,7 +152,7 @@ impl PluginRuntime {
     /// deterministic target tab and emits `SwitchTab`. Inert until permission is
     /// granted, mirroring `mouse_click`.
     pub(crate) fn command(&self, cmd: Command) -> Outcome {
-        if !self.permission_granted {
+        if !self.permission.granted() {
             return Outcome::none();
         }
         let dir = match cmd {
@@ -291,7 +265,7 @@ impl PluginRuntime {
             density: self.config.density,
             theme: self.theme.clone(),
         };
-        let rail = if !self.permission_granted {
+        let rail = if !self.permission.granted() {
             render::needs_permission(&opts)
         } else if tabrows.is_empty() {
             render::onboarding(&opts)
@@ -304,18 +278,18 @@ impl PluginRuntime {
     }
 
     pub(crate) fn sidebar_should_be_selectable(&self) -> bool {
-        self.permission_request_started && !self.permission_response_received
+        self.permission.selectable()
     }
 
+    /// Test-only: force the in-flight `Requesting` state without driving the
+    /// full probe flow. Production reaches `Requesting` via `on_load`/`on_timer`.
+    #[cfg(test)]
     pub(crate) fn record_permission_request_started(&mut self) {
-        self.permission_request_started = true;
+        self.permission = PermissionState::Requesting;
     }
 
     pub(crate) fn record_permission_result(&mut self, granted: bool) {
-        self.permission_granted = granted;
-        self.permission_response_received = true;
-        self.permission_request_started = false;
-        self.permission_waiting_for_peer = false;
+        self.permission.on_result(granted);
     }
 
     #[cfg(test)]
@@ -334,65 +308,27 @@ impl PluginRuntime {
         self.target_at_line(line).map(|(pos, _)| pos)
     }
 
-    /// The single source of truth for what a probe means — shared by the load
-    /// path (`begin_permission_flow`) and the deferred timer path
-    /// (`check_deferred_permission_request`) so the two can never disagree.
-    ///
-    /// `Granted` and "no marker but we hold the lock" both mean *request now*:
-    /// either permission is already granted (the request will auto-resolve) or
-    /// we just won/reclaimed the first-run lock and own the prompt. A bare
-    /// `None` (no marker, no lock) is no decision yet — keep waiting on a peer.
-    fn permission_decision(probe: &PermissionProbe) -> Option<PermissionDecision> {
-        match probe.marker {
-            Some(PermissionMarker::Granted) => Some(PermissionDecision::Request),
-            Some(PermissionMarker::Denied) => Some(PermissionDecision::Deny),
-            None if probe.lock_acquired => Some(PermissionDecision::Request),
-            None => None,
-        }
-    }
-
-    /// Role/defer-aware decision, used by BOTH the load and timer paths so they
-    /// can't diverge:
-    /// - the onboarding float always owns the prompt (it's the only legible
-    ///   surface), regardless of the lock;
-    /// - a deferring rail acts ONLY on a landed marker — it never self-owns via
-    ///   the lock, which would steal Zellij's prompt binding from the float;
-    /// - everyone else uses the plain lock-coordinated decision.
-    fn decide(&self, probe: &PermissionProbe) -> Option<PermissionDecision> {
+    /// Collapse the two config flags into the permission module's policy. The
+    /// precedence (onboarding wins, then defer, else the lock dance) lives here,
+    /// so `permission.rs` never imports `Config` and the dead
+    /// `Onboarding && defer` combination is unrepresentable downstream.
+    fn permission_policy(&self) -> PermissionPolicy {
         if self.config.role == config::Role::Onboarding {
-            return Some(PermissionDecision::Request);
-        }
-        if self.config.defer_permission {
-            return match probe.marker {
-                Some(PermissionMarker::Granted) => Some(PermissionDecision::Request),
-                Some(PermissionMarker::Denied) => Some(PermissionDecision::Deny),
-                None => None,
-            };
-        }
-        Self::permission_decision(probe)
-    }
-
-    /// Apply a resolved decision: mutate permission state and push the
-    /// request/record effect. Always clears `permission_waiting_for_peer` (a
-    /// decision ends the wait). The caller owns the trailing `SetSelectable`,
-    /// since the two entry points emit it differently (always vs. only on a
-    /// decision).
-    fn apply_permission_decision(&mut self, decision: PermissionDecision, effects: &mut Vec<Effect>) {
-        self.permission_waiting_for_peer = false;
-        match decision {
-            PermissionDecision::Request => {
-                self.record_permission_request_started();
-                effects.push(Effect::RequestPermission);
-            }
-            PermissionDecision::Deny => self.record_permission_result(false),
+            PermissionPolicy::OnboardingPane
+        } else if self.config.defer_permission {
+            PermissionPolicy::Deferring
+        } else {
+            PermissionPolicy::LockCoordinated
         }
     }
 
-    fn begin_permission_flow(&mut self, permission: PermissionProbe) -> Outcome {
+    fn begin_permission_flow(&mut self, probe: PermissionProbe) -> Outcome {
+        let policy = self.permission_policy();
         let mut effects = Vec::new();
-        match self.decide(&permission) {
-            Some(decision) => self.apply_permission_decision(decision, &mut effects),
-            None => self.permission_waiting_for_peer = true,
+        // Only a fresh request needs the host's permission prompt; a marker-driven
+        // resolution or a wait emit no permission effect here.
+        if self.permission.on_load(&probe, policy) == Transition::Requested {
+            effects.push(Effect::RequestPermission);
         }
         // Arm a timer whenever a decision is still outstanding — either we're
         // waiting on a peer's marker, or our own request is in-flight. Pre-grant
@@ -401,7 +337,7 @@ impl PluginRuntime {
         // gets the needs_permission screen onto the rail.
         self.arm_timer_if_needed(&mut effects);
         // Load always initializes the sidebar's selectability, every arm.
-        effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
+        effects.push(Effect::SetSelectable(self.permission.selectable()));
         Outcome::with_effects(false, effects)
     }
 
@@ -410,26 +346,23 @@ impl PluginRuntime {
         probe: PermissionProbe,
         effects: &mut Vec<Effect>,
     ) -> bool {
-        if !self.permission_waiting_for_peer {
-            return false;
+        let policy = self.permission_policy();
+        // `on_timer` is inert unless we're waiting on a peer; a decision landing
+        // (marker arrived, or we reclaimed a stale lock — see session_files)
+        // refreshes selectability. `Requested` additionally fires the prompt.
+        match self.permission.on_timer(&probe, policy) {
+            Transition::Requested => effects.push(Effect::RequestPermission),
+            Transition::Resolved { .. } => {}
+            Transition::NoChange | Transition::StillWaiting => return false,
         }
-        match self.decide(&probe) {
-            // A decision landed (marker arrived, or we reclaimed a stale lock —
-            // see session_files): apply it and refresh selectability.
-            Some(decision) => {
-                self.apply_permission_decision(decision, effects);
-                effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
-                true
-            }
-            // Still no marker and no lock: keep waiting (no effect, no change).
-            None => false,
-        }
+        effects.push(Effect::SetSelectable(self.permission.selectable()));
+        true
     }
 
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
         if !self.timer_armed
-            && (self.permission_waiting_for_peer
-                || self.sidebar_should_be_selectable()
+            && (self.permission.is_waiting()
+                || self.permission.selectable()
                 || self.radar.has_active_or_pending_work())
         {
             self.timer_armed = true;
@@ -542,7 +475,7 @@ mod tests {
             runtime.radar.status_store().get(9).unwrap().status,
             Status::Running
         );
-        assert!(runtime.permission_request_started);
+        assert_eq!(runtime.permission, PermissionState::Requesting);
         assert_eq!(
             outcome,
             Outcome {
@@ -571,8 +504,8 @@ mod tests {
             },
         );
 
-        assert!(!runtime.permission_granted);
-        assert!(runtime.permission_response_received);
+        assert!(!runtime.permission.granted());
+        assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
         assert_eq!(
             outcome,
             Outcome {
@@ -582,34 +515,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn permission_decision_maps_every_probe() {
-        // Lock the shared probe→decision table directly (all marker × lock
-        // combinations), so the mapping both entry points ride is guarded
-        // independently of the flow tests below.
-        use PermissionDecision::{Deny, Request};
-        use PermissionMarker::{Denied, Granted};
-        let cases = [
-            // marker,          lock,  expected
-            (Some(Granted), false, Some(Request)),
-            (Some(Granted), true, Some(Request)),
-            (Some(Denied), false, Some(Deny)),
-            (Some(Denied), true, Some(Deny)),
-            (None, true, Some(Request)), // reclaimed/own the lock → request
-            (None, false, None),         // no marker, no lock → keep waiting
-        ];
-        for (marker, lock_acquired, expected) in cases {
-            let probe = PermissionProbe {
-                marker,
-                lock_acquired,
-            };
-            assert_eq!(
-                PluginRuntime::permission_decision(&probe),
-                expected,
-                "probe {probe:?}",
-            );
-        }
-    }
+    // The exhaustive probe→decision/state truth table now lives in
+    // `permission.rs` (`on_load_truth_table` et al.), tested directly against
+    // the state machine. Runtime tests below assert only on the derived effects.
 
     #[test]
     fn onboarding_pane_requests_even_without_lock_and_closes_on_grant() {
@@ -623,7 +531,7 @@ mod tests {
             None,
             PermissionProbe { marker: None, lock_acquired: false },
         );
-        assert!(runtime.permission_request_started);
+        assert_eq!(runtime.permission, PermissionState::Requesting);
         assert!(load.effects.contains(&Effect::RequestPermission));
 
         // Once the user grants via that prompt, the onboarding pane removes itself.
@@ -653,7 +561,7 @@ mod tests {
             PermissionProbe { marker: None, lock_acquired: true },
         );
         assert!(!load.effects.contains(&Effect::RequestPermission));
-        assert!(runtime.permission_waiting_for_peer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
 
         // A later tick that (re)acquires the lock still must not request —
         // only a landed Granted marker may unblock it.
@@ -679,7 +587,7 @@ mod tests {
                 lock_acquired: false,
             },
         );
-        assert!(runtime.permission_waiting_for_peer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
         assert_eq!(
             load.effects,
             vec![Effect::SetTimeout, Effect::SetSelectable(false)]
@@ -691,8 +599,8 @@ mod tests {
         });
 
         assert!(timer.render);
-        assert!(runtime.permission_request_started);
-        assert!(!runtime.permission_waiting_for_peer);
+        assert_eq!(runtime.permission, PermissionState::Requesting);
+        assert!(!runtime.permission.is_waiting());
         // The promoted peer is now an owner with an in-flight request, so it also
         // arms the needs_permission heartbeat until the user answers.
         assert_eq!(
@@ -736,7 +644,7 @@ mod tests {
             tick.render,
             "owner repaints needs_permission while its request is in-flight",
         );
-        assert!(!runtime.permission_granted);
+        assert!(!runtime.permission.granted());
 
         // Once the user answers, the heartbeat stops: a granted, idle rail must
         // not spin a timer forever.
@@ -764,15 +672,15 @@ mod tests {
                 lock_acquired: false,
             },
         );
-        assert!(runtime.permission_waiting_for_peer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
 
         let timer = runtime.timer(PermissionProbe {
             marker: None,
             lock_acquired: true,
         });
 
-        assert!(runtime.permission_request_started);
-        assert!(!runtime.permission_waiting_for_peer);
+        assert_eq!(runtime.permission, PermissionState::Requesting);
+        assert!(!runtime.permission.is_waiting());
         assert!(timer.effects.contains(&Effect::RequestPermission));
     }
 
@@ -783,8 +691,8 @@ mod tests {
 
         let outcome = runtime.permission_result(true);
 
-        assert!(runtime.permission_granted);
-        assert!(runtime.permission_response_received);
+        assert!(runtime.permission.granted());
+        assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
         assert_eq!(
             outcome,
             Outcome {
@@ -951,7 +859,7 @@ mod tests {
         // 3 tracked panes → multi-pane mode (line-per-pane).
         // Line 2 = tab header, line 3 = pane 20, line 4 = pane 21, line 5 = pane 22.
         let mut runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };
@@ -996,7 +904,7 @@ mod tests {
     #[test]
     fn command_attention_next_emits_switch_tab() {
         let mut runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };
@@ -1024,7 +932,7 @@ mod tests {
     #[test]
     fn command_no_op_when_no_attention() {
         let mut runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };
@@ -1035,7 +943,7 @@ mod tests {
     #[test]
     fn command_pipe_unknown_verb_is_no_op() {
         let runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };
@@ -1137,7 +1045,7 @@ mod tests {
     #[test]
     fn command_attention_prev_emits_switch_tab() {
         let mut runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };
@@ -1158,7 +1066,7 @@ mod tests {
     #[test]
     fn command_pipe_dispatches_known_verb() {
         let mut runtime = PluginRuntime {
-            permission_granted: true,
+            permission: PermissionState::Resolved { granted: true },
             config: config(),
             ..Default::default()
         };

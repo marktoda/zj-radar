@@ -9,7 +9,7 @@
 //! start empty until the next broadcast, and first-run permission prompts cannot
 //! be coordinated across tab instances.
 
-use crate::runtime::{PermissionMarker, PermissionProbe};
+use crate::permission::{PermissionMarker, PermissionProbe};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
