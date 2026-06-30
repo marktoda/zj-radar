@@ -8,8 +8,15 @@ use super::fsutil::atomic_write;
 use super::setup::CODEX_HOOK_MARKER;
 use std::path::{Path, PathBuf};
 
+// Shown only on the `--no-grant` path, where the rail must request permission
+// itself (and Zellij renders the y/n prompt in that pane).
 const GRANT_HINT: &str =
     "First run: focus the RADAR rail (left) and press y to enable agent status.";
+// Printed once when we pre-seed the grant, so the permission write is disclosed
+// rather than silent.
+const GRANTED_NOTICE: &str = "zj-radar: granted its sidebar Zellij permissions \
+    (ReadApplicationState, ReadCliPipes, ChangeApplicationState). Revoke by removing \
+    the entry from Zellij's permissions.kdl.";
 const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -70,6 +77,42 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
         .lines()
         .map(str::trim_start)
         .any(|l| l.starts_with(&needle) && l.contains('{'))
+}
+
+/// The three permissions the sidebar plugin requests (must match the wasm glue's
+/// `request_permission` call): state for tab/pane events, the status pipe, and
+/// tab/pane actions (rename, switch, show).
+const GRANT_PERMS: [&str; 3] = ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState"];
+
+/// Pure: given current `permissions.kdl` content, return the content that also
+/// grants `wasm_abs` — or `None` if it's already granted (no write needed).
+/// Purely additive: every existing entry is preserved verbatim and our block is
+/// appended, so other plugins' grants are never disturbed.
+pub(crate) fn append_grant(existing: &str, wasm_abs: &str) -> Option<String> {
+    if wasm_is_granted(existing, wasm_abs) {
+        return None;
+    }
+    let perms = GRANT_PERMS.map(|p| format!("    {p}\n")).concat();
+    let sep = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
+    Some(format!("{existing}{sep}\"{wasm_abs}\" {{\n{perms}}}\n"))
+}
+
+/// Idempotently pre-seed Zellij's permission cache so the sidebar loads granted
+/// (no in-pane prompt — illegible in the rail, Zellij #4749). Returns `Ok(true)`
+/// if it newly wrote the grant, `Ok(false)` if already present. Creates the cache
+/// dir/file if missing; writes atomically.
+pub(crate) fn ensure_wasm_granted(perm_path: &Path, wasm_abs: &str) -> std::io::Result<bool> {
+    let existing = std::fs::read_to_string(perm_path).unwrap_or_default();
+    match append_grant(&existing, wasm_abs) {
+        None => Ok(false),
+        Some(updated) => {
+            if let Some(parent) = perm_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            atomic_write(perm_path, updated.as_bytes())?;
+            Ok(true)
+        }
+    }
 }
 
 /// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
@@ -236,6 +279,8 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
 pub struct RunOptions {
     pub name: Option<String>,
     pub print_cmd: bool,
+    /// Skip pre-seeding Zellij's permission grant; the rail will prompt instead.
+    pub no_grant: bool,
 }
 
 /// Read `~/<rel>` if present. Producer/grant probes are strictly read-only.
@@ -286,18 +331,39 @@ pub fn run(opts: RunOptions) {
         }
     }
 
+    // Pre-seed Zellij's permission cache so the sidebar loads already granted:
+    // its consent prompt is illegible in the small rail (Zellij #4749). Additive
+    // and idempotent. `--no-grant` opts out — then plan_run shows a press-y hint.
+    let perm_path = zellij_permissions_path();
+    let mut newly_granted = false;
+    if !opts.no_grant {
+        if let Some(p) = &perm_path {
+            match ensure_wasm_granted(p, &materialized.wasm_path.to_string_lossy()) {
+                Ok(true) => newly_granted = true,
+                Ok(false) => {}
+                Err(e) => eprintln!(
+                    "zj-radar: could not pre-grant Zellij permissions ({e}); \
+                     the rail will prompt on first run instead."
+                ),
+            }
+        }
+    }
+
     let facts = RunFacts {
         session,
         config_dir: materialized.config_dir,
         wasm_path: materialized.wasm_path,
         session_exists,
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
-        permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        permissions_kdl: perm_path.and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: read_under_home(".codex/hooks.json"),
         installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
     };
     let plan = plan_run(&facts);
 
+    if newly_granted {
+        println!("{GRANTED_NOTICE}");
+    }
     for advisory in &plan.advisories {
         println!("{advisory}");
     }
@@ -363,6 +429,30 @@ mod tests {
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm\"\n", "/x/zj_radar.wasm"));
         // The closing quote in the needle prevents matching a longer path it prefixes.
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm.bak\" {\n}\n", "/x/zj_radar.wasm"));
+    }
+
+    #[test]
+    fn append_grant_is_idempotent_and_additive() {
+        let p = "/x/zj_radar.wasm";
+        // Fresh/empty file → writes a full grant block for our three perms.
+        let fresh = append_grant("", p).expect("ungranted → returns content to write");
+        assert!(wasm_is_granted(&fresh, p));
+        assert!(fresh.contains("ReadApplicationState"));
+        assert!(fresh.contains("ReadCliPipes"));
+        assert!(fresh.contains("ChangeApplicationState"));
+        // Already granted → None (no write, idempotent).
+        assert!(append_grant(&fresh, p).is_none());
+        // Additive: an existing entry for another plugin is preserved verbatim.
+        let other = "\"/other/room.wasm\" {\n    ReadApplicationState\n}\n";
+        let merged = append_grant(other, p).expect("our path still ungranted");
+        assert!(merged.starts_with(other), "other plugin's entry preserved");
+        assert!(wasm_is_granted(&merged, p));
+        assert!(wasm_is_granted(&merged, "/other/room.wasm"));
+        // Missing trailing newline on existing content → a separator is inserted
+        // so the appended block doesn't fuse onto the prior node.
+        let no_nl = "\"/other/room.wasm\" {\n    ReadApplicationState\n}";
+        let merged2 = append_grant(no_nl, p).unwrap();
+        assert!(merged2.contains("}\n\""), "appended block starts on its own line");
     }
 
     #[test]
