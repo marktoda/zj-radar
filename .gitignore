@@ -6,3 +6,6 @@
 .devenv.flake.nix
 .direnv/
 result
+
+# Superpowers SDD process artifacts (plans/specs) — working exhaust, not docs
+docs/superpowers/

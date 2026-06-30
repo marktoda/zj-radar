@@ -1,5 +1,10 @@
 # Distribution: making the agent notifiers easy to install
 
+> **Status: shipped — historical.** The conclusions here landed as the turnkey
+> `zj-radar run` command and the zero-config Claude Code producer plugin (no
+> `settings.json` editing). Kept for the rationale behind those choices; for how
+> to *use* the result, see the README's *Install* section, not this memo.
+
 **Problem:** today wiring up the notifiers means hand-editing several files
 (`~/.claude/settings.json`, `~/.codex/hooks.json`, shell scripts, Nix). That's
 fine for Mark's own machine; it's a non-starter for anyone else adopting this.
