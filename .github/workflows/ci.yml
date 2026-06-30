@@ -42,12 +42,12 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - uses: Swatinem/rust-cache@v2
-      # --all-targets so test/example code is linted too; --all-features covers
-      # the `cli` feature (the only real feature besides the off-by-default `e2e`).
+      # --workspace --all-targets so test/example code is linted too;
+      # --all-features covers the off-by-default `e2e` flag.
       - name: clippy
-        run: nix develop -c cargo clippy --all-targets --all-features -- -D warnings
+        run: nix develop -c cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: deterministic suite (L1-L4)
-        run: nix develop -c cargo test --all-features
+        run: nix develop -c cargo test --workspace --all-features
       - name: wasm plugin compiles
         run: nix develop -c cargo build --target wasm32-wasip1 -p zj-radar-plugin
       - name: bash hook tests (L3, runs shellcheck + bats)
@@ -72,7 +72,7 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - uses: Swatinem/rust-cache@v2
       - name: deterministic suite (L1-L4)
-        run: nix develop -c cargo test --all-features
+        run: nix develop -c cargo test --workspace --all-features
 
   # ── Hermetic crane build (slow, ~10 min) ───────────────────────────────────
   # The ONLY thing that exercises crane's source filter, so it catches

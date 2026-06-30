@@ -192,17 +192,18 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 
 | Path | What it is |
 |------|------------|
-| `src/` | The shared library (pure runtime, stores, model, renderer, wasm adapter) **and** the host `zj-radar` CLI (`src/cli/`, `src/bin/cli.rs`). |
-| `crates/plugin/` | The Zellij sidebar **wasm plugin** (Rust → `wasm32-wasip1`) — `register_plugin!` wiring over the shared lib. Built with `-p zj-radar-plugin`. |
+| `crates/core/` | Pure shared library (`zj_radar_core`): runtime, stores, model, renderer, payload, tab naming. No Zellij API dependency — fully host-testable. |
+| `crates/cli/` | Host-side `zj-radar` CLI (package `zj-radar`). `build.rs` embeds the wasm at compile time via `include_bytes!`. Built with `-p zj-radar`. |
+| `crates/plugin/` | The Zellij sidebar **wasm plugin** (`zj_radar_plugin`, Rust → `wasm32-wasip1`) — `register_plugin!` wiring over `crates/core`. Built with `-p zj-radar-plugin`. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |
 | `dev/dev.kdl` | A dev layout for dogfooding the debug plugin while building. |
 
 The host-testable modules (`status`, `payload`, `radar_state`, `rollup`, `render`,
-`tab_namer`, `command`, `config`, `theme`, `session_files`) carry no `zellij-tile`
-dependency and are covered on the host target. Only `lib.rs`/`main.rs` touch the
-Zellij host API and are gated behind `#[cfg(target_arch = "wasm32")]`. See
+`tab_namer`, `command`, `config`, `theme`, `session_files`) live in `crates/core`
+and carry no `zellij-tile` dependency. Only `crates/plugin/src/lib.rs` touches the
+Zellij host API and is gated behind `#[cfg(target_arch = "wasm32")]`. See
 [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
 
 ## Contributing
