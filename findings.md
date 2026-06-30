@@ -211,6 +211,29 @@ payload doesn't hang/OOM; embedded null bytes don't corrupt the emitted JSON.
 
 ---
 
+# Outcome (what actually shipped)
+
+8 commits on `cleanup-ship-polish`, `just ci` green, **zero snapshot drift**
+(behavior preserved), e2e verified live against zellij 0.44.x.
+
+| Pass | Status | Note |
+|------|--------|------|
+| R1 store unification | ✅ shipped | `ObservationStore` by composition; stores keep identical public APIs → RadarState + all tests untouched |
+| R2 setup dispatch | ◑ descoped | shipped the `edit_or_report` preamble (3→1); the one-driver form rejected — zellij's per-arm side effects would become callback soup |
+| R3 marker-strip helper | ✗ dropped | not real duplication — `edit.rs` (Vec, always-delete) and `layout.rs` (byte-offset, collapse-vs-delete) differ in data model and semantics; a shared helper fails the leverage test |
+| R4 Kind serde via macro | ✗ dropped | hand-written serde is deliberate + documented (`as_source`/`from_source` vs the macro's `as_wire`/`from_wire`); using the macro needs a rename or alias methods, no net win |
+| R5 layout re-export | ✅ shipped | `pub(crate) use` → `use`; planning seam no longer leaks crate-wide |
+| T1 wire contract | ✅ shipped | round-trip proptest now covers all statuses + on_focus + msg + source; per-field caps + pane-id bounds + never-panic |
+| T2 color additivity | ✅ shipped | property across rows×widths×densities×glyphs (was one fixed layout) |
+| T3 e2e behavior | ✅ shipped | Done-recedes + Error-stays-lit; pins the `reconcile_focus` contract live |
+| T4 bash adversarial | ✅ shipped | oversized / malformed / control-byte stdin never hangs or crashes |
+| (bonus) wasm warning | ✅ shipped | `TerminalPane` unused-import on the shipped wasm artifact, gated to `#[cfg(test)]` |
+
+The dropped items are the headline finding of the review: this is a well-tended
+codebase where most apparent "duplication" is intentional and documented. The one
+real structural collapse (R1) plus targeted test hardening is the honest result —
+forcing R2-full/R3/R4 would have *added* indirection, not removed it.
+
 # Considered and rejected (kept here so the trail is explicit)
 
 - **Delete `kind.rs`, merge into `status.rs`** — code motion, couples orthogonal
