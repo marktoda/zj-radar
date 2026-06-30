@@ -1,10 +1,16 @@
-You are doing a structural cleanup pass over the zj-radar codebase.
+---
+name: cleanup-pass
+description: Use when doing a structural cleanup or refactor pass over the zj-radar codebase — tightening module boundaries, encapsulation, naming, dead code, indirection, and idiomatic Rust without changing external behavior. Fits post-sprint resets or paying down accumulated drift. NOT for bug-hunting (use /code-review) or feature work.
+---
 
-Goal: improve clarity, modularity, encapsulation, maintainability, and idiomatic
-Rust design **without changing external behavior** unless explicitly requested.
-Treat this as cleanup and structural tightening — not a rewrite, framework
-migration, or architecture-astronaut exercise. (This works well as a post-sprint
-reset, but it is a general-purpose tool: run it any time the codebase has drifted.)
+# Cleanup Pass
+
+Structural cleanup over the zj-radar codebase: improve clarity, modularity,
+encapsulation, maintainability, and idiomatic Rust design **without changing
+external behavior** unless explicitly requested. This is cleanup and structural
+tightening — not a rewrite, framework migration, or architecture-astronaut
+exercise. Works well as a post-sprint reset, but it's a general-purpose tool: run
+it any time the codebase has drifted.
 
 **Bias toward deletion, privacy, and simpler concrete code.** Do not add a trait,
 registry, macro, dependency, generic parameter, or new crate unless you can name
@@ -13,13 +19,13 @@ the concrete coupling or duplication it removes.
 ## What zj-radar is
 
 A native [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`) plus a
-host-side `zj-radar` CLI and a Claude Code producer plugin. It is a three-member
-Cargo workspace:
+host-side `zj-radar` CLI and a Claude Code producer plugin. Three-member Cargo
+workspace:
 
 - `crates/core/` (`zj_radar_core`) — pure shared library: the versioned wire
   schema and status/command classification (`command`, `kind`, `observation`,
-  `payload`, `status`, `wire`). **No `clap`, no `zellij-tile`.** This is the
-  bottom of the dependency stack; it must not learn about the CLI or the plugin.
+  `payload`, `status`, `wire`). **No `clap`, no `zellij-tile`.** Bottom of the
+  dependency stack; must not learn about the CLI or the plugin.
 - `crates/cli/` — the native `zj-radar` CLI (`notify`, `setup`, `run`).
   `build.rs` embeds the wasm via `include_bytes!`.
 - `crates/plugin/` — the Zellij sidebar wasm plugin. A thin Zellij adapter
@@ -28,16 +34,15 @@ Cargo workspace:
 - `plugins/zj-radar-claude/` — the Claude Code producer plugin (hooks + bundled
   `notify.sh`).
 
-**Read [`CONTEXT.md`](../../CONTEXT.md) before changing the core.** It names the
-load-bearing seams — the rail, `RadarState`, `roll_up`, tab naming, the status
-contract — in the deep-module vocabulary from the `codebase-design` skill
-(module, interface, depth, seam, leverage, locality). Use that vocabulary; align
-proposals with the seams already documented there rather than inventing parallel
-ones.
+**Read `CONTEXT.md` before changing the core.** It names the load-bearing seams —
+the rail, `RadarState`, `roll_up`, tab naming, the status contract — in the
+deep-module vocabulary from the `codebase-design` skill (module, interface, depth,
+seam, leverage, locality). Use that vocabulary; align proposals with the seams
+documented there rather than inventing parallel ones.
 
 ## Non-negotiable invariants (do not break these while cleaning up)
 
-These are project rules, not preferences. Violating them gets the change rejected:
+Project rules, not preferences. Violating them gets the change rejected:
 
 - **Do not run `cargo fmt` / `rustfmt`.** The code is intentionally hand-formatted
   (e.g. aligned one-line multi-field structs). A `cargo fmt` diff reformats the
@@ -45,13 +50,12 @@ These are project rules, not preferences. Violating them gets the change rejecte
 - **Push-driven, never poll-driven.** The plugin must not issue blocking host
   queries (`get_pane_running_command`, etc.); status arrives via `zellij pipe`
   broadcasts. Polling melted the predecessor plugin
-  ([`docs/smart-tabs-postmortem.md`](../smart-tabs-postmortem.md)). Do not
-  "simplify" any push path into a poll.
+  (`docs/smart-tabs-postmortem.md`). Do not "simplify" a push path into a poll.
 - **Rail lockstep.** Emitted ANSI and the click-target map stay in exact 1:1 line
   correspondence (`CONTEXT.md` → *Lockstep*). It is structural — every `Line`
   carries its own `RailTarget` and `ansi`/`targets`/line-count all derive from one
   list. Keep it structural; do not reintroduce a separate height predictor.
-- **`docs/rail-reference.md` is an executable spec** — it is `include_str!`'d by
+- **`docs/rail-reference.md` is an executable spec** — `include_str!`'d by
   `crates/plugin/src/reference_tests.rs`. Edit it through that test, not casually.
 - **The only external interface is the versioned `zj_radar.status.v1` pipe
   payload.** Don't change its shape, field names, or `v` as part of cleanup. The
