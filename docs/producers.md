@@ -73,8 +73,7 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
   "repo": "pinky",
   "branch": "fix/x",
   "msg": "running tests…",
-  "on_focus": "idle",
-  "seq": 42 }
+  "on_focus": "idle" }
 ```
 
 - `status`: `running` → working · `pending` → needs-you · `done` · `error` ·
@@ -82,11 +81,11 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
 - `pane.id`: strip any `terminal_` prefix from `$ZELLIJ_PANE_ID`.
 - `on_focus` (optional): the status to apply when you next focus that exact pane
   (lets `done` persist on other tabs, then auto-clear).
-- `seq` (optional): monotonic per-pane counter; a `seq` ≤ the stored one is
-  dropped (hook-race guard).
 
-The plugin defends itself: it ignores oversized payloads, strips ANSI/control
-chars, folds newlines to spaces, and truncates. Adapters can stay simple.
+The plugin applies the latest broadcast per pane (the pipe delivers in order, so
+there is no sequence number). It also defends itself: it ignores oversized
+payloads, strips ANSI/control chars, folds newlines to spaces, and truncates —
+and silently ignores any unknown fields, so extra keys never break a producer.
 
 Quick smoke test (a "fake agent" — broadcast straight from your shell):
 

@@ -361,6 +361,40 @@
         );
     }
 
+    #[test]
+    fn rerun_with_same_exit_code_is_not_swallowed_by_dedup() {
+        // A held-open command pane (e.g. `zellij run`, or "rerun command pane")
+        // keeps its id and stays live, so its `exited` dedup entry survives. When
+        // the pane is RE-RUN and exits with the SAME code, the second exit must
+        // still resolve to Done — otherwise the row is stuck Running forever and
+        // `has_pending_or_active` keeps the timer armed (poll/CPU drain).
+        let mut store = CommandStore::default();
+
+        // First run: promote to Running, then exit 0 → Done.
+        store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), 1);
+        store.on_timer(2);
+        assert_eq!(store.get(7).unwrap().status, Status::Running);
+        store.on_exit(7, Some(0), 3);
+        assert_eq!(store.get(7).unwrap().status, Status::Done);
+
+        // Re-run in the same (still-live) pane: back to Running.
+        store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), 4);
+        store.on_timer(5);
+        assert_eq!(store.get(7).unwrap().status, Status::Running);
+
+        // Second run exits with the SAME code — must resolve to Done, not stay Running.
+        store.on_exit(7, Some(0), 6);
+        assert_eq!(
+            store.get(7).unwrap().status,
+            Status::Done,
+            "a re-run's exit must apply even when its code matches the prior run"
+        );
+        assert!(
+            !store.has_pending_or_active(),
+            "a finished re-run must not keep the timer armed"
+        );
+    }
+
     // ── Test 6: basename of an absolute argv[0] path
 
     #[test]

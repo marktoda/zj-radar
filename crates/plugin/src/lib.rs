@@ -438,7 +438,6 @@ mod tests {
                 branch: "branch".into(),
                 msg: msg.into(),
                 on_focus: None,
-                seq: None,
                 source: "test".into(),
             },
             tick,

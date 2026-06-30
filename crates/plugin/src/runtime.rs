@@ -460,7 +460,6 @@ mod tests {
             branch: "main".into(),
             msg: "working".into(),
             on_focus: None,
-            seq: None,
             source: "claude".into(),
         }
     }

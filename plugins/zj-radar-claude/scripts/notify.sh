@@ -35,6 +35,15 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
 
+# Whole-word containment (mirrors agents.rs::contains_word): is $2 present in $1
+# bounded by non-[a-z0-9] chars or string edges? $1 is assumed lowercased; $2 is
+# a literal (a phrase like "git push" works — its space is a boundary char). Used
+# so "latest"/"uninstall"/"rebuild" don't trip the test/install/build verbs.
+contains_word() {
+    local re="(^|[^a-z0-9])$2([^a-z0-9]|$)"
+    [[ "$1" =~ $re ]]
+}
+
 # For running events (PreToolUse/PostToolUse), derive a live activity string
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
@@ -73,17 +82,17 @@ if [[ "$status" == "running" ]]; then
                 cmd_lower="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
                 # Non-empty after stripping ALL whitespace (mirrors Rust .trim()).
                 if [[ -n "$(printf '%s' "$cmd" | tr -d '[:space:]')" ]]; then
-                    if [[ "$cmd_lower" == *"git push"* ]]; then
+                    if contains_word "$cmd_lower" "git push"; then
                         tool_activity="pushing"
-                    elif [[ "$cmd_lower" == *"git commit"* ]]; then
+                    elif contains_word "$cmd_lower" "git commit"; then
                         tool_activity="committing"
-                    elif [[ "$cmd_lower" == *"git pull"* || "$cmd_lower" == *"git fetch"* ]]; then
+                    elif contains_word "$cmd_lower" "git pull" || contains_word "$cmd_lower" "git fetch"; then
                         tool_activity="syncing"
-                    elif [[ "$cmd_lower" == *"test"* ]]; then
+                    elif contains_word "$cmd_lower" "test"; then
                         tool_activity="running tests"
-                    elif [[ "$cmd_lower" == *"build"* || "$cmd_lower" == *"compile"* ]]; then
+                    elif contains_word "$cmd_lower" "build" || contains_word "$cmd_lower" "compile"; then
                         tool_activity="building"
-                    elif [[ "$cmd_lower" == *"install"* ]]; then
+                    elif contains_word "$cmd_lower" "install"; then
                         tool_activity="installing"
                     else
                         # first token, basename only

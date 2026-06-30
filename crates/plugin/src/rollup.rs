@@ -173,6 +173,12 @@ pub fn roll_up<'a>(
             if s.status == Status::Done {
                 done += 1;
             }
+            // Counted with `total`/`done`, not outside the gate: a pane excluded
+            // from `total` (never ever_active, e.g. a snapshot-loaded row) must
+            // not inflate `pending`, or progress reads inconsistent (pending > total).
+            if s.status == Status::Pending {
+                pending += 1;
+            }
             pane_displays.push(PaneDisplay::tracked(
                 pane.id,
                 Kind::from_source(&s.source),
@@ -182,9 +188,6 @@ pub fn roll_up<'a>(
             ));
         } else {
             pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
-        }
-        if s.status == Status::Pending {
-            pending += 1;
         }
         // Most-urgent active pane wins, ties broken by most-recent change.
         // `Status: Ord` ranks severity, so this is a single lexicographic

@@ -14,7 +14,6 @@ pub struct StatusPayload {
     pub branch: String,
     pub msg: String,
     pub on_focus: Option<Status>,
-    pub seq: Option<u64>,
     pub source: String,
 }
 
@@ -37,8 +36,6 @@ struct Raw {
     msg: String,
     #[serde(default)]
     on_focus: Option<String>,
-    #[serde(default)]
-    seq: Option<u64>,
     #[serde(default)]
     source: String,
 }
@@ -149,7 +146,6 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
         branch: sanitize(&r.branch, 40),
         msg: sanitize(&r.msg, MAX_MSG_CHARS),
         on_focus: r.on_focus.as_deref().map(Status::from_wire),
-        seq: r.seq,
         source: sanitize(&r.source, 16),
     })
 }
@@ -217,12 +213,13 @@ mod tests {
 
     #[test]
     fn parses_full_payload() {
+        // The trailing "seq":42 is an unknown field now (seq was removed) — it
+        // must be ignored, not rejected, so older producers stay compatible.
         let got = p(r#"{"v":1,"source":"claude","pane":{"type":"terminal","id":12},"status":"running","repo":"pinky","branch":"fix/x","msg":"running tests","on_focus":"idle","seq":42}"#).unwrap();
         assert_eq!(got.pane_id, 12);
         assert_eq!(got.status, Status::Running);
         assert_eq!(got.repo, "pinky");
         assert_eq!(got.on_focus, Some(Status::Idle));
-        assert_eq!(got.seq, Some(42));
     }
 
     #[test]
@@ -232,7 +229,6 @@ mod tests {
         assert_eq!(got.status, Status::Done);
         assert_eq!(got.repo, "");
         assert_eq!(got.on_focus, None);
-        assert_eq!(got.seq, None);
     }
 
     #[test]

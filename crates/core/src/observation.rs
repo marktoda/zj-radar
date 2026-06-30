@@ -32,8 +32,6 @@ pub struct TrackedObservation {
     pub source: String,
     pub last_change_tick: u64,
     #[serde(default)]
-    pub seq: Option<u64>,
-    #[serde(default)]
     pub on_focus: Option<Status>,
     pub ever_active: bool,
     /// Exit code of a finished command pane, when known. Set by
@@ -47,9 +45,9 @@ pub struct TrackedObservation {
 
 impl TrackedObservation {
     /// A freshly-resolved command-origin observation. Command panes carry no VCS
-    /// branch and no payload sequence, and are active by definition, so those
-    /// fields take fixed defaults; callers pass only what varies and override
-    /// `on_focus` / `exit_code` via struct-update when a command exits.
+    /// branch, and are active by definition, so those fields take fixed defaults;
+    /// callers pass only what varies and override `on_focus` / `exit_code` via
+    /// struct-update when a command exits.
     pub fn command(status: Status, repo: String, msg: String, source: String, tick: u64) -> Self {
         Self {
             origin: ObservationOrigin::Command,
@@ -59,7 +57,6 @@ impl TrackedObservation {
             msg,
             source,
             last_change_tick: tick,
-            seq: None,
             on_focus: None,
             ever_active: true,
             exit_code: None,
@@ -158,7 +155,6 @@ mod tests {
             msg: "cargo build".into(),
             source: "build".into(),
             last_change_tick: 7,
-            seq: Some(3),
             on_focus: Some(Status::Idle),
             ever_active: true,
             exit_code: Some(1),
@@ -184,7 +180,6 @@ mod tests {
         let json = r#"{"origin":"command","status":"???","repo":"","branch":"","msg":"","source":"","last_change_tick":0,"ever_active":false}"#;
         let obs: TrackedObservation = serde_json::from_str(json).unwrap();
         assert_eq!(obs.status, Status::Idle);
-        assert_eq!(obs.seq, None);
         assert_eq!(obs.exit_code, None);
         // An unknown origin is rejected so a corrupt entry can't masquerade as a
         // valid one — the snapshot loader drops the whole snapshot instead.
