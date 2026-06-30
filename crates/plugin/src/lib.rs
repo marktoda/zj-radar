@@ -41,10 +41,14 @@ mod status_store;
 mod tab_namer;
 mod theme;
 
-// Radar state types are referenced by host tests and wasm glue; the helper
-// imports are only consumed by tests on the host target.
+// RadarTab/TabId are used by the wasm glue (and tests); on a plain host build
+// both the glue and tests are cfg'd out, so the import is allowed to go unused
+// there. TerminalPane is only ever a test fixture, so gate it on `test` directly
+// — that keeps the shipped wasm build (where unused_imports is denied) clean.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
-use radar_state::{RadarTab, TabId, TerminalPane};
+use radar_state::{RadarTab, TabId};
+#[cfg(test)]
+use radar_state::TerminalPane;
 #[cfg(test)]
 use render::TabRow;
 use runtime::PluginRuntime;
