@@ -168,6 +168,32 @@ mod tests {
     }
 
     #[test]
+    fn notify_done_false_suppresses_running_to_done_edge() {
+        let o = obs(Status::Done, "pinky", "main", "cargo build");
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let cfg = Config { notify_done: false, ..Config::default() };
+        assert!(
+            diff(&prev, &cur, None, &cfg).is_empty(),
+            "notify_done:false must suppress a Running→Done edge"
+        );
+    }
+
+    #[test]
+    fn notify_pending_false_suppresses_running_to_pending_edge() {
+        let o = obs(Status::Pending, "pinky", "main", "needs you");
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let cfg = Config { notify_pending: false, ..Config::default() };
+        assert!(
+            diff(&prev, &cur, None, &cfg).is_empty(),
+            "notify_pending:false must suppress a Running→Pending edge"
+        );
+    }
+
+    #[test]
     fn running_and_idle_never_notify() {
         let r = obs(Status::Running, "pinky", "main", "work");
         let i = obs(Status::Idle, "pinky", "main", "");

@@ -426,15 +426,17 @@ impl RadarState {
     }
 
     /// Union of both stores' observations, keyed by pane id, for the notifier.
-    /// A pane is tracked by exactly one store, so keys never collide.
+    /// A pane CAN appear in both stores; status takes precedence (matching the
+    /// system-wide rule), so command is inserted first and status second so that
+    /// status overwrites command on collision.
     pub(crate) fn notify_views(
         &self,
     ) -> std::collections::BTreeMap<u32, &crate::observation::TrackedObservation> {
         let mut m = std::collections::BTreeMap::new();
-        for (id, o) in self.status.observations() {
+        for (id, o) in self.command.observations() {
             m.insert(id, o);
         }
-        for (id, o) in self.command.observations() {
+        for (id, o) in self.status.observations() {
             m.insert(id, o);
         }
         m
@@ -1003,6 +1005,33 @@ mod tests {
         assert_eq!(
             detail.repo, "from-status",
             "status pipe wins over command for the same pane id"
+        );
+    }
+
+    #[test]
+    fn notify_views_status_wins_over_command_for_same_pane() {
+        // Guards the status>command precedence in `notify_views`: when the same pane
+        // id appears in both the status store and the command store, the returned
+        // observation must be the STATUS one (mirrors the system-wide rule and the
+        // precedence tested for `rows()` in `same_pane_status_observation_wins_over_command`).
+        let mut radar = RadarState::default();
+
+        // A command observation on pane 5 (foreground command, promoted to Running).
+        radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
+        radar.timer(2);
+        assert_eq!(radar.command(5).unwrap().status, Status::Running);
+
+        // A status-pipe observation on the SAME pane 5, with a distinct repo so
+        // the two sources are distinguishable.
+        radar
+            .status_mut()
+            .apply(payload_for(5, Status::Done, "from-status"), 3);
+
+        let views = radar.notify_views();
+        let obs = views.get(&5).expect("pane 5 must appear in notify_views");
+        assert_eq!(
+            obs.repo, "from-status",
+            "notify_views must return the status-store observation, not the command-store one"
         );
     }
 

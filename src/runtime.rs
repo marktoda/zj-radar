@@ -400,6 +400,15 @@ impl PluginRuntime {
         }
     }
 
+    /// Diff observable pane statuses against `notify_prev` and emit `Effect::Notify`
+    /// for each attention-status transition.
+    ///
+    /// Intentionally runs regardless of `permission_granted`. Without the
+    /// `RunCommands` grant, `run_command` is a silent host no-op, so notifications
+    /// are harmlessly dropped. More importantly, gating this on `permission_granted`
+    /// would skip advancing `notify_prev` during the ungranted window, which risks a
+    /// burst of stale notifications the moment the grant arrives. The ungranted window
+    /// is startup-only and brief, so the no-op cost is negligible.
     fn notify_effects(&mut self) -> Vec<Effect> {
         let views = self.radar.notify_views();
         let focused = self.radar.last_focused();
@@ -902,9 +911,10 @@ mod tests {
         rt.command_changed(7, &["cargo".into(), "test".into()], true);
         // Promote pending → Running via a timer tick.
         rt.timer(PermissionProbe::default());
-        // Seed notify_prev so the baseline reflects Running, not Idle-default.
-        // (Not strictly required for the Notify tests, but makes the baseline
-        // explicit and mirrors what would happen in production after the timer.)
+        // The timer tick above also advances notify_prev to a Running baseline via
+        // notify_effects, so subsequent tests start from Running rather than the
+        // Idle default. In production the same happens on every timer fire; here
+        // it means test assertions only see the transition edge under test.
         rt
     }
 
@@ -930,8 +940,11 @@ mod tests {
     #[test]
     fn focused_done_emits_no_notify_effect() {
         let mut rt = two_tab_runtime_with_running_commands();
-        // Pane 5 is focused and exits 0. reconcile_focus recedes Done → Idle
-        // before notify_effects runs, so no notification must be emitted.
+        // Pane 5 is focused and exits 0. The helper never calls panes_changed, so
+        // last_focused is None; panes_changed here transitions focus None→Some(5),
+        // which is a change, so reconcile_focus takes the visit-clear branch
+        // (on_pane_focused) and clears the Done before notify_effects runs.
+        // No notification must be emitted.
         let out = rt.panes_changed(PaneUpdate {
             tab_panes: HashMap::from([
                 (0, vec![TerminalPane { id: 5, focused_in_tab: true, ..Default::default() }]),
