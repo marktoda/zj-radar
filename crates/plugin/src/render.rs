@@ -268,25 +268,26 @@ const ONBOARDING_LEGEND: [(Status, &str); Status::ALL.len()] = [
     (Status::Idle, "idle"),
 ];
 
+/// Push one full-width, click-inert line (`role`-colored, clamped to `w`) into a
+/// targetless panel face. The truncation acts on the visible text, never the SGR
+/// codes (color is purely additive), so the panel honors the same width
+/// discipline as the rail. Shared by `onboarding` and `needs_permission`.
+fn push_panel_line(out: &mut String, role: &str, text: &str, w: usize) {
+    out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
+}
+
 /// The rail's resting "hello / how it works" face — shown on cold start or
 /// before permission is granted. Not a permission interceptor.
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
-    // Every line is clamped to `opts.width`, so the panel honors the same width
-    // discipline as the rail (`onboarding_never_exceeds_width`). Color is purely
-    // additive: the truncation acts on the visible text, never the SGR codes.
-    fn line(out: &mut String, role: &str, text: &str, w: usize) {
-        out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
-    }
-
     let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
     let g = opts.glyphs;
-    line(&mut out, accent, " RADAR", w);
-    line(&mut out, accent, &"═".repeat(w), w);
-    line(&mut out, muted, " watching your tabs for", w);
-    line(&mut out, muted, " AI agent activity.", w);
+    push_panel_line(&mut out, accent, " RADAR", w);
+    push_panel_line(&mut out, accent, &"═".repeat(w), w);
+    push_panel_line(&mut out, muted, " watching your tabs for", w);
+    push_panel_line(&mut out, muted, " AI agent activity.", w);
     out.push('\n');
     for (st, label) in ONBOARDING_LEGEND {
         let role_code = st.role().ansi();
@@ -294,7 +295,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
         // " {glyph} {label}" — the marker+spaces are a fixed 3-col prefix. Below
         // that the label has no room, so clamp the marker alone.
         if w < 3 {
-            line(&mut out, role_code, &format!(" {glyph}"), w);
+            push_panel_line(&mut out, role_code, &format!(" {glyph}"), w);
         } else {
             out.push_str(&format!(
                 " {} {}\n",
@@ -304,7 +305,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
         }
     }
     out.push('\n');
-    line(&mut out, muted, " click a row to jump", w);
+    push_panel_line(&mut out, muted, " click a row to jump", w);
     RenderedRail::from_ansi_without_targets(out)
 }
 
@@ -316,21 +317,18 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
 /// onboarding float was ever opened — `Ctrl-y` summons that legible float from
 /// any session state.
 pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
-    fn line(out: &mut String, role: &str, text: &str, w: usize) {
-        out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
-    }
     let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
     let needs = Role::Attention.ansi(); // Attention (bright orange/red) for the warning line
     let muted = Role::Muted.ansi();
-    line(&mut out, accent, " RADAR", w);
-    line(&mut out, accent, &"═".repeat(w), w);
-    line(&mut out, needs, " ⚠ needs permission", w);
+    push_panel_line(&mut out, accent, " RADAR", w);
+    push_panel_line(&mut out, accent, &"═".repeat(w), w);
+    push_panel_line(&mut out, needs, " ⚠ needs permission", w);
     out.push('\n');
-    line(&mut out, muted, " press Ctrl-y to", w);
-    line(&mut out, muted, " open the grant", w);
-    line(&mut out, muted, " prompt.", w);
+    push_panel_line(&mut out, muted, " press Ctrl-y to", w);
+    push_panel_line(&mut out, muted, " open the grant", w);
+    push_panel_line(&mut out, muted, " prompt.", w);
     RenderedRail::from_ansi_without_targets(out)
 }
 
