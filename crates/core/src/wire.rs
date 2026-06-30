@@ -20,35 +20,49 @@
 //! [`Status`]: crate::status::Status
 //! [`ObservationOrigin`]: crate::observation::ObservationOrigin
 
-/// Generate `serde::Serialize` + `serde::Deserialize` for a type that already
-/// has `as_wire(self) -> &'static str` and a `from_wire` matching the policy.
-/// Serialization is identical for both policies (`serialize_str(as_wire())`);
-/// only deserialization differs in how it treats an unknown token.
-macro_rules! wire_serde {
-    // `from_wire(&str) -> Self` — unknown tokens already fold into a fallback.
-    (lenient, $T:ty) => {
+/// Generate just `serde::Serialize` for a wire type, from its token accessor
+/// `$to(self) -> &'static str`. Factored out because serialization is identical
+/// for both policies — only deserialization differs — so neither `wire_serde!`
+/// arm hand-copies it.
+macro_rules! wire_serialize {
+    ($T:ty, $to:ident) => {
         impl serde::Serialize for $T {
             fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-                ser.serialize_str(self.as_wire())
-            }
-        }
-        impl<'de> serde::Deserialize<'de> for $T {
-            fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-                Ok(<$T>::from_wire(&<String as serde::Deserialize>::deserialize(de)?))
+                ser.serialize_str(self.$to())
             }
         }
     };
-    // `from_wire(&str) -> Option<Self>` — an unknown token is a hard error.
-    (strict, $T:ty) => {
-        impl serde::Serialize for $T {
-            fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-                ser.serialize_str(self.as_wire())
+}
+pub(crate) use wire_serialize;
+
+/// Generate `serde::Serialize` + `serde::Deserialize` for a type that already has
+/// a token accessor pair. The pair defaults to `as_wire`/`from_wire`; pass an
+/// explicit `$to, $from` for a type whose wire vocabulary has a domain-specific
+/// name (e.g. `Kind`'s `as_source`/`from_source` — the wire field is `source`),
+/// so it rides the same guarded generator instead of a hand-copied impl.
+/// Serialization is shared via [`wire_serialize!`]; only deserialization differs
+/// in how it treats an unknown token.
+macro_rules! wire_serde {
+    // Default accessor names.
+    (lenient, $T:ty) => { $crate::wire::wire_serde!(lenient, $T, as_wire, from_wire); };
+    (strict,  $T:ty) => { $crate::wire::wire_serde!(strict,  $T, as_wire, from_wire); };
+
+    // lenient: `$from(&str) -> Self` — unknown tokens already fold into a fallback.
+    (lenient, $T:ty, $to:ident, $from:ident) => {
+        $crate::wire::wire_serialize!($T, $to);
+        impl<'de> serde::Deserialize<'de> for $T {
+            fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                Ok(<$T>::$from(&<String as serde::Deserialize>::deserialize(de)?))
             }
         }
+    };
+    // strict: `$from(&str) -> Option<Self>` — an unknown token is a hard error.
+    (strict, $T:ty, $to:ident, $from:ident) => {
+        $crate::wire::wire_serialize!($T, $to);
         impl<'de> serde::Deserialize<'de> for $T {
             fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
                 let raw = <String as serde::Deserialize>::deserialize(de)?;
-                <$T>::from_wire(&raw).ok_or_else(|| {
+                <$T>::$from(&raw).ok_or_else(|| {
                     serde::de::Error::custom(format!(
                         "unknown {} wire token: {raw:?}",
                         stringify!($T),
