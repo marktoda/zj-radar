@@ -34,17 +34,30 @@ pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
     }
 }
 
-/// Args to exec: `zellij --config-dir <dir> --layout radar --session <name>`
-/// (attach-or-create is Zellij's default for `--session`).
-pub(crate) fn build_zellij_args(config_dir: &Path, session: &str) -> Vec<String> {
+/// Args to CREATE a new session with the rail layout:
+/// `zellij --config-dir <dir> --session <name> --new-session-with-layout radar`.
+///
+/// `--new-session-with-layout` (NOT `--layout`) is required here: when combined
+/// with `--session`, a plain `--layout` is interpreted by Zellij as "add a tab to
+/// the EXISTING session <name>", which fails ("session not found") when it
+/// doesn't exist yet. `--new-session-with-layout` always starts a new session —
+/// even when invoked from inside Zellij — using the named layout resolved from
+/// `--config-dir`'s `layouts/`.
+pub(crate) fn create_session_args(config_dir: &Path, session: &str) -> Vec<String> {
     vec![
         "--config-dir".into(),
         config_dir.to_string_lossy().into_owned(),
-        "--layout".into(),
-        "radar".into(),
         "--session".into(),
         session.into(),
+        "--new-session-with-layout".into(),
+        "radar".into(),
     ]
+}
+
+/// Args to attach to (or resurrect) an existing session. The layout was applied
+/// at creation, so no layout/config-dir flags are needed.
+pub(crate) fn attach_session_args(session: &str) -> Vec<String> {
+    vec!["attach".into(), session.into()]
 }
 
 /// True iff `permissions.kdl` contains a top-level grant block whose quoted key
@@ -159,10 +172,14 @@ fn embedded_assets() -> Assets {
 /// Inputs gathered from the environment, separated from the decision so that
 /// `plan_run` is pure and unit-testable.
 struct RunFacts {
-    cwd: PathBuf,
-    name_override: Option<String>,
+    /// Resolved session name (cwd basename or override).
+    session: String,
     config_dir: PathBuf,
     wasm_path: PathBuf,
+    /// Whether a Zellij session of this name already exists (attach vs create).
+    session_exists: bool,
+    /// Whether we're invoked from inside a Zellij session (`run` can't nest).
+    inside_zellij: bool,
     permissions_kdl: Option<String>,
     codex_hooks: Option<String>,
     installed_plugins: Option<String>,
@@ -172,13 +189,19 @@ struct RunFacts {
 struct RunPlan {
     args: Vec<String>,
     advisories: Vec<String>,
+    /// When set, the caller must NOT launch (we're nested) — show guidance.
+    nested: bool,
 }
 
-/// Pure decision: build the launch args and the (ordered) advisory lines. The
-/// grant hint precedes the producer hint.
+/// Pure decision: attach if the session exists, otherwise create with the rail
+/// layout; collect the ordered advisory lines (grant hint before producer hint);
+/// surface whether we're nested.
 fn plan_run(facts: &RunFacts) -> RunPlan {
-    let session = session_name(&facts.cwd, facts.name_override.as_deref());
-    let args = build_zellij_args(&facts.config_dir, &session);
+    let args = if facts.session_exists {
+        attach_session_args(&facts.session)
+    } else {
+        create_session_args(&facts.config_dir, &facts.session)
+    };
 
     let mut advisories = Vec::new();
     let granted = facts
@@ -192,7 +215,7 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude) {
         advisories.push(hint);
     }
-    RunPlan { args, advisories }
+    RunPlan { args, advisories, nested: facts.inside_zellij }
 }
 
 pub struct RunOptions {
@@ -203,6 +226,18 @@ pub struct RunOptions {
 /// Read `~/<rel>` if present. Producer/grant probes are strictly read-only.
 fn read_under_home(rel: &str) -> Option<String> {
     dirs::home_dir().and_then(|h| std::fs::read_to_string(h.join(rel)).ok())
+}
+
+/// True iff a Zellij session named `name` exists (alive or resurrectable), per
+/// `zellij list-sessions --short` (plain names, one per line). Any error
+/// (zellij missing, no server) is treated as "does not exist" → create path.
+fn session_is_live(name: &str) -> bool {
+    std::process::Command::new("zellij")
+        .args(["list-sessions", "--short"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == name))
 }
 
 pub fn run(opts: RunOptions) {
@@ -218,11 +253,15 @@ pub fn run(opts: RunOptions) {
         }
     };
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let session = session_name(&cwd, opts.name.as_deref());
+    let session_exists = session_is_live(&session);
     let facts = RunFacts {
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        name_override: opts.name,
+        session,
         config_dir: materialized.config_dir,
         wasm_path: materialized.wasm_path,
+        session_exists,
+        inside_zellij: std::env::var_os("ZELLIJ").is_some(),
         permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: read_under_home(".codex/hooks.json"),
         installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
@@ -234,6 +273,14 @@ pub fn run(opts: RunOptions) {
     }
     if opts.print_cmd {
         println!("zellij {}", plan.args.join(" "));
+        return;
+    }
+    if plan.nested {
+        eprintln!(
+            "zj-radar: you're already inside Zellij. `run` starts a NEW session — detach first \
+             (Ctrl-q by default) and re-run, or use `zj-radar setup` to add the rail to your \
+             current Zellij config."
+        );
         return;
     }
     if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
@@ -257,9 +304,12 @@ mod tests {
     }
 
     #[test]
-    fn zellij_args_are_exact() {
-        let args = build_zellij_args(Path::new("/cfg"), "foo");
-        assert_eq!(args, vec!["--config-dir", "/cfg", "--layout", "radar", "--session", "foo"]);
+    fn create_and_attach_args_are_exact() {
+        assert_eq!(
+            create_session_args(Path::new("/cfg"), "foo"),
+            vec!["--config-dir", "/cfg", "--session", "foo", "--new-session-with-layout", "radar"]
+        );
+        assert_eq!(attach_session_args("foo"), vec!["attach", "foo"]);
     }
 
     const SAMPLE: &str = r#"
@@ -327,7 +377,6 @@ mod tests {
         let dir = d.path().join("c");
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         let first_layout = std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();
-        // Second call: same version, sentinel assets that must NOT land on disk.
         let sentinel = Assets {
             config_template: "SENTINEL-CONFIG-SHOULD-NOT-BE-WRITTEN\n",
             layout: "SENTINEL-SHOULD-NOT-BE-WRITTEN\n",
@@ -345,7 +394,6 @@ mod tests {
         let dir = d.path().join("c");
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         std::fs::remove_file(dir.join("config.kdl")).unwrap();
-        // Same version, but config.kdl is gone -> completeness guard forces a rewrite.
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         assert!(dir.join("config.kdl").exists(), "deleted file must be restored");
     }
@@ -370,7 +418,6 @@ mod tests {
 
     #[test]
     fn producer_hint_only_when_none_wired() {
-        // Uses the shared CODEX_HOOK_MARKER from setup.rs.
         let wired = format!("{CODEX_HOOK_MARKER} zj-radar notify codex");
         assert!(producer_hint(Some(&wired), false).is_none());
         assert!(producer_hint(None, true).is_none());
@@ -386,13 +433,15 @@ mod tests {
 
     // ── plan_run decision matrix ──
     // `granted`/`codex`/`claude` toggle whether each input signals "already set up".
+    // Defaults: session "proj", does not exist (create path), not nested.
     fn facts(granted: bool, codex: bool, claude: bool) -> RunFacts {
         let wasm = "/data/zj-radar/zellij/plugins/zj_radar.wasm";
         RunFacts {
-            cwd: PathBuf::from("/Users/m/dev/proj"),
-            name_override: None,
+            session: "proj".to_string(),
             config_dir: PathBuf::from("/data/zj-radar/zellij"),
             wasm_path: PathBuf::from(wasm),
+            session_exists: false,
+            inside_zellij: false,
             permissions_kdl: granted.then(|| format!("\"{wasm}\" {{\n}}\n")),
             codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
             installed_plugins: claude.then(|| "zj-radar-claude".to_string()),
@@ -400,9 +449,25 @@ mod tests {
     }
 
     #[test]
-    fn plan_run_builds_args_from_session() {
+    fn plan_run_creates_new_session_when_absent() {
         let p = plan_run(&facts(true, true, false));
-        assert_eq!(p.args, build_zellij_args(Path::new("/data/zj-radar/zellij"), "proj"));
+        assert_eq!(p.args, create_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
+        assert!(!p.nested);
+    }
+
+    #[test]
+    fn plan_run_attaches_when_session_exists() {
+        let mut f = facts(true, true, false);
+        f.session_exists = true;
+        let p = plan_run(&f);
+        assert_eq!(p.args, attach_session_args("proj"));
+    }
+
+    #[test]
+    fn plan_run_flags_nested_when_inside_zellij() {
+        let mut f = facts(true, true, false);
+        f.inside_zellij = true;
+        assert!(plan_run(&f).nested);
     }
 
     #[test]
