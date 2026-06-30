@@ -3,7 +3,6 @@
 
 use crate::command::CommandStore;
 use crate::config;
-use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::render::TabRow;
@@ -12,8 +11,7 @@ use crate::status::Status;
 use crate::status_store::StatusStore;
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// Direction for attention-tab cycling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,48 +174,6 @@ pub(crate) struct RadarChange {
     pub cwd_bootstrap: Vec<u32>,
 }
 
-/// One v2 snapshot record: a `pane_id` key plus the pane's `TrackedObservation`
-/// flattened inline. `TrackedObservation` serializes itself (enum fields as wire
-/// tokens, optional fields defaulted), so this wrapper is the *only* snapshot
-/// glue — there is no field-by-field mirror struct or mapper.
-#[derive(Serialize, Deserialize)]
-struct SnapshotEntry {
-    pane_id: u32,
-    #[serde(flatten)]
-    obs: TrackedObservation,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RadarSnapshot {
-    v: u32,
-    tick: u64,
-    observations: Vec<SnapshotEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct LegacyStatusSnapshot {
-    v: u32,
-    tick: u64,
-    panes: Vec<LegacyPaneSnapshot>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct LegacyPaneSnapshot {
-    pane_id: u32,
-    status: String,
-    repo: String,
-    branch: String,
-    msg: String,
-    source: String,
-    last_change_tick: u64,
-    #[serde(default)]
-    on_focus: Option<String>,
-    ever_active: bool,
-}
-
-const RADAR_SNAPSHOT_V: u32 = 2;
-const LEGACY_STATUS_SNAPSHOT_V: u32 = 1;
-
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
 /// `PaneUpdate`. Each read is a blocking host round-trip, so we cap a single
 /// update's fan-out (e.g. a session restore surfacing many panes at once),
@@ -246,7 +202,7 @@ pub(crate) struct RadarState {
 
 impl RadarState {
     pub(crate) fn load_snapshot(&mut self, raw: &str) -> Option<u64> {
-        let (observations, tick) = parse_snapshot(raw)?;
+        let (observations, tick) = snapshot::load(raw)?;
         self.status = StatusStore::default();
         self.command = CommandStore::default();
         // This match is the SINGLE origin→store guard: each entry's intrinsic
@@ -267,45 +223,10 @@ impl RadarState {
     }
 
     pub(crate) fn snapshot_json(&self, existing: Option<&str>, tick: u64) -> String {
-        let mut snapshot_tick = tick;
-        let mut observations: BTreeMap<(u32, ObservationOrigin), TrackedObservation> =
-            BTreeMap::new();
-
-        if let Some(raw) = existing {
-            if let Some((existing_observations, existing_tick)) = parse_snapshot(raw) {
-                snapshot_tick = snapshot_tick.max(existing_tick);
-                for (pane_id, observation) in existing_observations {
-                    if self
-                        .live_panes
-                        .as_ref()
-                        .is_some_and(|live| !live.contains(&pane_id))
-                    {
-                        continue;
-                    }
-                    observations.insert((pane_id, observation.origin), observation);
-                }
-            }
-        }
-
-        for (pane_id, observation) in self.status.observations() {
-            observations.insert(
-                (pane_id, ObservationOrigin::StatusPipe),
-                observation.clone(),
-            );
-        }
-        for (pane_id, observation) in self.command.observations() {
-            observations.insert((pane_id, ObservationOrigin::Command), observation.clone());
-        }
-
-        let snapshot = RadarSnapshot {
-            v: RADAR_SNAPSHOT_V,
-            tick: snapshot_tick,
-            observations: observations
-                .into_iter()
-                .map(|((pane_id, _), obs)| SnapshotEntry { pane_id, obs })
-                .collect(),
-        };
-        serde_json::to_string(&snapshot).unwrap_or_default()
+        // Both stores' observations carry their own `origin`, so the snapshot
+        // module keys the merge on it — no need to tag the two iterators here.
+        let current = self.status.observations().chain(self.command.observations());
+        snapshot::to_json(current, self.live_panes.as_ref(), existing, tick)
     }
 
     /// Target tab position for an `attention-next`/`attention-prev` command, or
@@ -671,54 +592,7 @@ impl RadarState {
     }
 }
 
-fn parse_snapshot(raw: &str) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    match value.get("v").and_then(serde_json::Value::as_u64)? as u32 {
-        RADAR_SNAPSHOT_V => parse_v2_snapshot(value),
-        LEGACY_STATUS_SNAPSHOT_V => parse_legacy_status_snapshot(value),
-        _ => None,
-    }
-}
-
-fn parse_v2_snapshot(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
-    // `TrackedObservation` deserializes itself; an entry with an unknown origin
-    // fails deserialization, which drops the whole snapshot (`.ok()?`).
-    let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
-    let observations = snapshot
-        .observations
-        .into_iter()
-        .map(|entry| (entry.pane_id, entry.obs))
-        .collect();
-    Some((observations, snapshot.tick))
-}
-
-fn parse_legacy_status_snapshot(
-    value: serde_json::Value,
-) -> Option<(Vec<(u32, TrackedObservation)>, u64)> {
-    let snapshot: LegacyStatusSnapshot = serde_json::from_value(value).ok()?;
-    let observations = snapshot
-        .panes
-        .into_iter()
-        .map(|pane| {
-            (
-                pane.pane_id,
-                TrackedObservation {
-                    origin: ObservationOrigin::StatusPipe,
-                    status: Status::from_wire(&pane.status),
-                    repo: pane.repo,
-                    branch: pane.branch,
-                    msg: pane.msg,
-                    kind: Kind::from_source(&pane.source),
-                    last_change_tick: pane.last_change_tick,
-                    on_focus: pane.on_focus.as_deref().map(Status::from_wire),
-                    ever_active: pane.ever_active,
-                    exit_code: None,
-                },
-            )
-        })
-        .collect();
-    Some((observations, snapshot.tick))
-}
+mod snapshot;
 
 #[cfg(test)]
 mod tests;
