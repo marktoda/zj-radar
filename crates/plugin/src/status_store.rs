@@ -206,6 +206,28 @@ mod tests {
         assert!(!s.any_active());
     }
 
+    #[test]
+    fn idle_clears_a_prior_dones_message() {
+        // Regression for the `/clear` stale-status bug: a finished pane carries a
+        // `done` + message; the SessionStart{clear} hook broadcasts an empty
+        // `idle`. The pane must drop its stale message and stop counting as
+        // active, so the rail no longer shows the pre-clear line.
+        let mut s = StatusStore::default();
+        let mut done = payload(1, Status::Done, None);
+        done.msg = "shipped the feature".into();
+        s.apply(done, 1);
+        assert_eq!(s.get(1).unwrap().msg, "shipped the feature");
+        assert!(s.any_active());
+
+        let mut idle = payload(1, Status::Idle, None);
+        idle.msg = String::new();
+        s.apply(idle, 2);
+
+        assert_eq!(s.get(1).unwrap().status, Status::Idle);
+        assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
+        assert!(!s.any_active(), "a cleared pane no longer drives tab status");
+    }
+
     // ── proptest properties (ported from harness branch) ──
 
     proptest! {

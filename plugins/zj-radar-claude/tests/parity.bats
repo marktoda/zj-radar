@@ -65,3 +65,21 @@ teardown() { teardown_fakes; }
   # producers emit the neutral "working" baseline, never a blank msg.
   parity_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo"}' running
 }
+
+@test "parity: idle clears the message in both producers" {
+  # `parity_case` asserts a NON-empty msg, so idle (intentionally blank) needs
+  # its own check: both producers must agree on status=idle AND an empty msg,
+  # even when a stale message rides in on the SessionStart payload.
+  local json='{"hook_event_name":"SessionStart","source":"clear","cwd":"/home/u/myrepo","message":"old work in progress"}'
+
+  rm -f "$RECORD"; echo "$json" | "$SCRIPT" idle
+  local bash_payload; bash_payload="$(last_payload)"
+
+  rm -f "$RECORD"; echo "$json" | "$CLI" notify claude --status idle
+  local rust_payload; rust_payload="$(last_payload)"
+
+  [ "$(jq -r '.status' <<<"$bash_payload")" = idle ]
+  [ "$(jq -r '.status' <<<"$rust_payload")" = idle ]
+  [ "$(jq -r '.msg' <<<"$bash_payload")" = "" ]
+  [ "$(jq -r '.msg' <<<"$rust_payload")" = "" ]
+}

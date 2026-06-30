@@ -44,3 +44,34 @@ teardown() { teardown_fakes; }
   [[ "$output" == *"on_focus"* ]]
   [[ "$output" == *"idle"* ]]
 }
+
+@test "hooks.json wires SessionStart{clear} to notify.sh idle" {
+  # The fix for the /clear stale-status bug: SessionStart fires on clear; the
+  # matcher scopes the reset to `clear` only (never startup/resume/compact),
+  # mirroring how Notification scopes to permission_prompt.
+  local hooks="$BATS_TEST_DIRNAME/../hooks/hooks.json"
+  [ "$(jq -r '.hooks.SessionStart[0].matcher' "$hooks")" = clear ]
+  local cmd; cmd="$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$hooks")"
+  [[ "$cmd" == *"notify.sh idle"* ]]
+}
+
+@test "SessionStart clear broadcasts idle with blank msg and no on_focus" {
+  # `/clear` fires SessionStart{source:clear}; the plugin wires it to `idle`.
+  # The broadcast resets the pane: status idle, no message, and (unlike done)
+  # no on_focus — there is nothing left to clear on the next visit.
+  echo '{"hook_event_name":"SessionStart","source":"clear","cwd":"/home/u/myrepo"}' | "$SCRIPT" idle
+  run last_payload
+  [ "$(jq -r '.status' <<<"$output")" = idle ]
+  [ "$(jq -r '.msg' <<<"$output")" = "" ]
+  [ "$(jq 'has("on_focus")' <<<"$output")" = false ]
+}
+
+@test "idle drops any stale message" {
+  # idle means "no activity": a message riding on the payload must not leak into
+  # the idle row, or the rail would still show the pre-clear line.
+  echo '{"hook_event_name":"SessionStart","source":"clear","cwd":"/home/u/myrepo","message":"old work in progress"}' \
+    | "$SCRIPT" idle
+  run last_payload
+  [ "$(jq -r '.status' <<<"$output")" = idle ]
+  [ "$(jq -r '.msg' <<<"$output")" = "" ]
+}
