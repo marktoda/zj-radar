@@ -41,9 +41,9 @@ struct Cli {
 enum Command {
     /// Broadcast one agent's status to the sidebar (called from an agent hook).
     Notify {
-        /// Agent: claude | codex
+        /// Which agent is reporting: `claude` or `codex`.
         agent: String,
-        /// For codex: the JSON the agent passes as a trailing argument.
+        /// Hook payload as a trailing argument (codex). Claude passes it on stdin instead.
         input: Option<String>,
         /// Explicit status (claude hooks pass this); bypasses event derivation.
         #[arg(long)]

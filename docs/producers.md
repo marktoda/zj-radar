@@ -9,12 +9,17 @@ Install the [sidebar](install.md) first, then add a producer below.
 ## Claude Code
 
 Installing this plugin auto-registers the status hooks — **no `settings.json`
-editing**, clean uninstall.
+editing**, clean uninstall. Run both **inside Claude Code** (these are `/plugin`
+slash commands, not shell):
 
-```sh
+```text
 /plugin marketplace add marktoda/zj-radar
 /plugin install zj-radar-claude@zj-radar
 ```
+
+The first command registers this repo as a plugin marketplace named `zj-radar`;
+the second installs the `zj-radar-claude` plugin *from* it — that's what the
+`zj-radar-claude@zj-radar` (`plugin@marketplace`) syntax means.
 
 Requires `jq` and `git` on `PATH` (used to parse the hook payload and derive
 repo/branch). See [`plugins/zj-radar-claude/README.md`](../plugins/zj-radar-claude/README.md)

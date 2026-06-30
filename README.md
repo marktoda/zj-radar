@@ -63,12 +63,18 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 zj-radar setup zellij --download
 
 # 3. Prompts to inject the rail into your default layout; answer y or paste the
-#    printed snippet manually. Then start Zellij.
+#    printed snippet manually. Then start (or restart) Zellij:
+zellij
 ```
 
-Then add a **producer** so the rail has something to show — for Claude Code:
+> **Just want to see it?** `zj-radar run` launches a throwaway Zellij session
+> with the rail already wired in — its own config, no edits to yours. It
+> downloads the matching wasm on first use.
 
-```sh
+Then add a **producer** so the rail has something to show. For Claude Code, run
+these **inside Claude Code** (they're `/plugin` slash commands, not shell):
+
+```text
 /plugin marketplace add marktoda/zj-radar
 /plugin install zj-radar-claude@zj-radar
 ```

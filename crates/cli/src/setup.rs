@@ -504,7 +504,24 @@ pub fn edit_zellij(
 /// can). Pure so the version→asset mapping is unit-tested; the fetch itself is
 /// thin IO below.
 fn wasm_release_url(version: &str) -> String {
-    format!("https://github.com/marktoda/zj-radar/releases/download/v{version}/zj_radar.wasm")
+    format!("https://github.com/{}/releases/download/v{version}/zj_radar.wasm", repo_slug())
+}
+
+/// The `owner/repo` slug release assets are fetched from. Defaults to the
+/// repository baked in at build time (`CARGO_PKG_REPOSITORY`), so a fork only has
+/// to set `repository` in Cargo.toml — no source edit and no drift between the
+/// download URL and the error message. `ZJ_RADAR_REPO` overrides at runtime,
+/// mirroring the curl|sh installer's same-named knob.
+fn repo_slug() -> String {
+    match std::env::var("ZJ_RADAR_REPO") {
+        Ok(slug) if !slug.is_empty() => slug,
+        _ => env!("CARGO_PKG_REPOSITORY")
+            .trim_end_matches('/')
+            .rsplit("github.com/")
+            .next()
+            .unwrap_or("marktoda/zj-radar")
+            .to_string(),
+    }
 }
 
 // ── Grant helper ──
@@ -589,8 +606,9 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
             Ok(())
         } else {
             Err(format!(
-                "curl failed for {url} — is v{} released? See https://github.com/marktoda/zj-radar/releases",
-                env!("CARGO_PKG_VERSION")
+                "curl failed for {url} — is v{} released? See https://github.com/{}/releases",
+                env!("CARGO_PKG_VERSION"),
+                repo_slug()
             ))
         };
     }
