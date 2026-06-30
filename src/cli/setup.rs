@@ -1326,9 +1326,15 @@ fn setup_zellij(
 }
 
 fn print_grant_hint() {
+    // The rail can't show Zellij's grant prompt legibly (it's a small borderless
+    // pane — Zellij #4749). On first launch the user grants by focusing the rail
+    // and pressing y; `--grant` offers an explicit floating prompt instead. The
+    // turnkey `zj-radar run` handles this automatically. One coherent line — the
+    // merge with main's onboarding work otherwise printed two overlapping notes.
     println!(
-        "zellij: grant once with `zj-radar setup zellij --grant`, \
-         or launch and press y on the rail."
+        "zellij: on first launch, focus the RADAR rail (the left column) and press y to \
+         allow access — or run `zj-radar setup zellij --grant` to grant via a floating \
+         pane. Zellij asks once, then remembers."
     );
 }
 
