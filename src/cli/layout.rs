@@ -95,6 +95,7 @@ pub(crate) const SWAP_BLOCKS: &str = r#"    swap_tiled_layout name="vertical" {
 /// The full rail layout (3 templates + swaps), assembled from the canonical
 /// fragments. Single source of truth shared by `run` (embeds it), the tailored
 /// snippet, and injection.
+#[allow(dead_code)]
 pub(crate) fn full_layout() -> String {
     format!(
         "layout {{\n{DEFAULT_TAB_TEMPLATE}\n\n{NEW_TAB_TEMPLATE}\n\n{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}\n\n    tab name=\"shell\" focus=true {{\n        pane\n    }}\n}}\n"
@@ -288,6 +289,73 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     out.push('\n');
     out.push_str(&layout[close_brace..]);
     Ok(out)
+}
+
+/// Remove all `// zj-radar: begin` … `// zj-radar: end` fenced blocks from a
+/// layout string. Returns `Some(cleaned)` when any blocks were removed, `None`
+/// when no marker fences were found (nothing to do).
+///
+/// Only complete begin/end pairs are stripped; an unmatched begin or end is left
+/// in place (fail-safe: better to leave a stale comment than to corrupt the file).
+pub(crate) fn uninstall(layout: &str) -> Option<String> {
+    const BEGIN: &str = "// zj-radar: begin";
+    const END:   &str = "// zj-radar: end";
+
+    let mut out = String::with_capacity(layout.len());
+    let mut changed = false;
+    let mut i = 0;
+    let bytes = layout.as_bytes();
+    let len = bytes.len();
+
+    while i < len {
+        // Scan for a BEGIN marker at the start of a (possibly-indented) line.
+        // We look for BEGIN as a substring; the indentation before it is also
+        // consumed so we don't leave a blank-indented line behind.
+        let remaining = &layout[i..];
+        if let Some(rel) = remaining.find(BEGIN) {
+            let abs_begin_marker = i + rel;
+            // Walk back to the start of this line to capture leading whitespace.
+            let line_start = layout[..abs_begin_marker]
+                .rfind('\n')
+                .map_or(0, |pos| pos + 1);
+            // The whitespace before BEGIN must be only spaces/tabs (no content).
+            let before_marker = &layout[line_start..abs_begin_marker];
+            if !before_marker.chars().all(|c| c == ' ' || c == '\t') {
+                // BEGIN appears mid-line (inside a string? unusual). Emit up to
+                // and including this point, advance past it, and keep scanning.
+                out.push_str(&layout[i..abs_begin_marker + BEGIN.len()]);
+                i = abs_begin_marker + BEGIN.len();
+                continue;
+            }
+
+            // Look for the matching END.
+            let search_from = abs_begin_marker + BEGIN.len();
+            if let Some(rel_end) = layout[search_from..].find(END) {
+                let abs_end_marker = search_from + rel_end;
+                // Consume through the end of the END marker's line (including \n).
+                let after_end = abs_end_marker + END.len();
+                let end_of_line = layout[after_end..]
+                    .find('\n')
+                    .map_or(layout.len(), |pos| after_end + pos + 1);
+
+                // Emit everything from current position up to (but not including)
+                // the leading whitespace of the BEGIN line.
+                out.push_str(&layout[i..line_start]);
+                i = end_of_line;
+                changed = true;
+            } else {
+                // No matching END — leave everything as-is from here.
+                out.push_str(&layout[i..]);
+                i = len;
+            }
+        } else {
+            // No more BEGIN markers — append the rest verbatim.
+            out.push_str(&layout[i..]);
+            i = len;
+        }
+    }
+
+    if changed { Some(out) } else { None }
 }
 
 /// Find a bare `children` anchor (no args, no body) that is a **direct child**
@@ -486,6 +554,31 @@ layout {
             matches!(inject(weird, &facts), Err(Refusal::Unrecognized(_))),
             "inject must refuse a layout whose only children is nested in a user split"
         );
+    }
+
+    /// `uninstall` removes the marker-fenced blocks and returns `Some` when any
+    /// were found; when no markers are present it returns `None`.
+    #[test]
+    fn uninstall_round_trip() {
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let injected = inject(clean, &analyze(clean)).unwrap();
+        assert!(injected.contains("// zj-radar: begin"), "inject must add markers");
+
+        let restored = uninstall(&injected).expect("uninstall must find and strip markers");
+        // The restored layout must parse as KDL (it may differ from `clean` in
+        // whitespace or ordering, but must be valid).
+        restored.parse::<kdl::KdlDocument>()
+            .expect("restored layout must be valid KDL");
+        // Must no longer contain our markers or the radar plugin.
+        assert!(!restored.contains("// zj-radar: begin"));
+        assert!(!restored.contains("// zj-radar: end"));
+        assert!(!restored.contains("plugin location=\"radar\""));
+    }
+
+    #[test]
+    fn uninstall_returns_none_when_no_markers() {
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n}\n";
+        assert!(uninstall(clean).is_none(), "no markers → must return None");
     }
 
     /// Drift guard: `full_layout()` must stay byte-equal to `run_assets/radar.kdl`

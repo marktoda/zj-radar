@@ -39,6 +39,40 @@ pub struct SetupOptions<'a> {
     pub check: bool,
     pub legacy_notify: bool,
     pub force: bool,
+    /// Non-interactive consent to inject the rail into the target layout.
+    pub inject: bool,
+    /// Layout name to inject into (`<config_dir>/layouts/<name>.kdl`).
+    /// `None` means `default`.
+    pub layout: Option<&'a str>,
+}
+
+/// Decision about how to handle layout injection for a given invocation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum InjectMode {
+    /// Inject without prompting (`--inject` was passed).
+    Inject,
+    /// Ask the user interactively (default N — no mutation without explicit y).
+    Prompt,
+    /// Print the tailored snippet and skip injection. The safe non-mutating
+    /// default when `--yes` is in effect or when stdin is not a tty.
+    Snippet,
+}
+
+/// Pure decision: given the CLI flags and whether stdin is a tty, decide how
+/// the layout injection step should behave. The rules are:
+///
+/// 1. `--inject` → `Inject` (unconditional explicit consent).
+/// 2. `--yes` → `Snippet`  (take the safe default; never mutate silently).
+/// 3. Not a tty → `Snippet` (no way to ask).
+/// 4. Otherwise → `Prompt`  (interactive).
+pub(crate) fn inject_mode(inject_flag: bool, yes: bool, is_tty: bool) -> InjectMode {
+    if inject_flag {
+        return InjectMode::Inject;
+    }
+    if yes || !is_tty {
+        return InjectMode::Snippet;
+    }
+    InjectMode::Prompt
 }
 
 #[derive(Debug)]
@@ -583,6 +617,8 @@ pub fn run(options: SetupOptions<'_>) {
             options.dry_run,
             options.yes,
             options.force,
+            options.inject,
+            options.layout,
         );
     }
     if want_codex {
@@ -921,6 +957,7 @@ fn codex_hooks_disabled() -> bool {
     codex_hooks_disabled_in_config(&existing).unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_zellij(
     wasm: Option<&Path>,
     download: bool,
@@ -928,11 +965,20 @@ fn setup_zellij(
     dry_run: bool,
     yes: bool,
     force: bool,
+    inject_flag: bool,
+    layout_name: Option<&str>,
 ) {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
+
+    // Resolve the target layout path up front (needed whether or not a managed
+    // config short-circuits): `--layout <name>` → `<config_dir>/layouts/<name>.kdl`,
+    // else `<config_dir>/layouts/default.kdl`.
+    let layout_path = config_dir
+        .join("layouts")
+        .join(format!("{}.kdl", layout_name.unwrap_or("default")));
 
     // Refuse to clobber a managed (symlinked) config.kdl: print the layout snippet
     // for guidance, then return early. A Nix/home-manager user gets the wasm + alias
@@ -944,7 +990,7 @@ fn setup_zellij(
              your Nix config instead. See docs/install.md for the home-manager snippet.",
             config_path.display()
         );
-        println_layout_snippet();
+        print_snippet_for(&layout_path);
         return;
     }
 
@@ -972,6 +1018,22 @@ fn setup_zellij(
         wasm
     };
 
+    // When `--inject` is set (or `--yes` is set for a non-mutating snippet) but
+    // no wasm source is given, skip the wasm/alias step and go directly to the
+    // layout step. This makes `setup zellij --inject` and `setup zellij --yes`
+    // usable and testable without a wasm artifact while preserving the existing
+    // "refused — pass --wasm" error for bare `setup zellij` invocations.
+    let layout_only_install = src.is_none() && !uninstall && (inject_flag || yes);
+    if layout_only_install {
+        run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+        return;
+    }
+    // `--uninstall` with no wasm/config: layout-only uninstall.
+    if uninstall && src.is_none() && !config_path.exists() {
+        run_layout_uninstall(&layout_path, dry_run);
+        return;
+    }
+
     if !uninstall {
         let Some(src) = src else {
             eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm> or --download");
@@ -995,13 +1057,16 @@ fn setup_zellij(
     match outcome {
         Outcome::Unchanged if uninstall => {
             println!("zellij: already removed ({})", config_path.display());
+            // uninstall: also try to remove the injected rail from the layout.
+            run_layout_uninstall(&layout_path, dry_run);
         }
         Outcome::Unchanged => {
             println!(
                 "zellij: config already up to date ({})",
                 config_path.display()
             );
-            println_layout_snippet();
+            // alias already up to date — still offer injection.
+            run_layout_inject(&layout_path, inject_flag, yes, dry_run);
         }
         Outcome::Conflict => {
             eprintln!(
@@ -1022,8 +1087,10 @@ fn setup_zellij(
                     }
                 }
                 println!("--- {} (dry-run) ---\n{new}", config_path.display());
-                if !uninstall {
-                    println_layout_snippet();
+                if uninstall {
+                    run_layout_uninstall(&layout_path, dry_run);
+                } else {
+                    run_layout_inject(&layout_path, inject_flag, yes, dry_run);
                 }
                 return;
             }
@@ -1058,21 +1125,152 @@ fn setup_zellij(
                 if uninstall { "removed" } else { "installed" },
                 config_path.display()
             );
-            if !uninstall {
+            if uninstall {
+                run_layout_uninstall(&layout_path, dry_run);
+            } else {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
-                println_layout_snippet();
+                run_layout_inject(&layout_path, inject_flag, yes, dry_run);
             }
         }
     }
 }
 
-fn println_layout_snippet() {
-    let config_dir = zellij_config_dir();
-    let default_layout = config_dir.join("layouts").join("default.kdl");
-    let text = std::fs::read_to_string(&default_layout).unwrap_or_default();
+/// Print the tailored snippet for a given layout path (empty string → default facts).
+fn print_snippet_for(layout_path: &Path) {
+    let text = std::fs::read_to_string(layout_path).unwrap_or_default();
     let facts = super::layout::analyze(&text);
     let snippet = super::layout::tailored_snippet(&facts);
     println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+}
+
+/// Handle layout injection after the alias step. Reads `layout_path`, decides
+/// the mode, and either injects (writing a `.zj-radar.bak` backup first) or
+/// prints the tailored snippet. A missing layout → snippet only (safe fallback).
+fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: bool) {
+    use std::io::IsTerminal;
+    let is_tty = std::io::stdin().is_terminal();
+    let mode = inject_mode(inject_flag, yes, is_tty);
+
+    let text = match std::fs::read_to_string(layout_path) {
+        Ok(t) => t,
+        Err(_) => {
+            // Layout not found — just print the snippet, no failure.
+            let facts = super::layout::analyze("");
+            let snippet = super::layout::tailored_snippet(&facts);
+            println!(
+                "zellij: layout not found at {} — add the rail manually:\n\n{snippet}",
+                layout_path.display()
+            );
+            return;
+        }
+    };
+
+    let facts = super::layout::analyze(&text);
+
+    // Already injected → idempotent no-op for Inject/Prompt; snippet still accurate.
+    if facts.has_rail {
+        println!("zellij: layout already has the rail ({})", layout_path.display());
+        return;
+    }
+
+    match mode {
+        InjectMode::Snippet => {
+            // --yes or non-tty: print snippet, never mutate.
+            let snippet = super::layout::tailored_snippet(&facts);
+            println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+        }
+        InjectMode::Prompt => {
+            let prompt = format!("Inject the rail into {}?", layout_path.display());
+            if !confirm(&prompt) {
+                let snippet = super::layout::tailored_snippet(&facts);
+                println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+                return;
+            }
+            do_inject(layout_path, &text, &facts, dry_run);
+        }
+        InjectMode::Inject => {
+            do_inject(layout_path, &text, &facts, dry_run);
+        }
+    }
+}
+
+/// Perform the actual inject: call `layout::inject`, write backup + new text.
+/// On `Refusal`, print the reason + tailored snippet (fail-closed).
+fn do_inject(layout_path: &Path, text: &str, facts: &super::layout::LayoutFacts, dry_run: bool) {
+    match super::layout::inject(text, facts) {
+        Ok(new_text) => {
+            if dry_run {
+                println!(
+                    "zellij: would inject rail into {} (dry-run)\n--- layout (dry-run) ---\n{new_text}",
+                    layout_path.display()
+                );
+                return;
+            }
+            // Back up then atomically write.
+            if layout_path.exists() {
+                let _ = std::fs::copy(
+                    layout_path,
+                    path_with_suffix(layout_path, ".zj-radar.bak"),
+                );
+            }
+            match super::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+                Ok(()) => println!(
+                    "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
+                    layout_path.display(),
+                    layout_path.display()
+                ),
+                Err(e) => eprintln!("zellij: write failed — {e}"),
+            }
+        }
+        Err(super::layout::Refusal::Unparseable(msg)) => {
+            eprintln!("zellij: layout could not be parsed — {msg}");
+            eprintln!("        Add the rail manually using the snippet below.");
+            let snippet = super::layout::tailored_snippet(facts);
+            println!("\n{snippet}");
+        }
+        Err(super::layout::Refusal::Unrecognized(msg)) => {
+            eprintln!("zellij: layout shape not recognized — {msg}");
+            eprintln!("        Add the rail manually using the snippet below.");
+            let snippet = super::layout::tailored_snippet(facts);
+            println!("\n{snippet}");
+        }
+    }
+}
+
+/// Handle `--uninstall` for the layout: strip the injected rail if present.
+fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
+    let text = match std::fs::read_to_string(layout_path) {
+        Ok(t) => t,
+        Err(_) => return, // layout not found — nothing to uninstall
+    };
+    match super::layout::uninstall(&text) {
+        None => {
+            // no injected rail present — nothing to do
+        }
+        Some(new_text) => {
+            if dry_run {
+                println!(
+                    "zellij: would remove rail from {} (dry-run)\n--- layout (dry-run) ---\n{new_text}",
+                    layout_path.display()
+                );
+                return;
+            }
+            if layout_path.exists() {
+                let _ = std::fs::copy(
+                    layout_path,
+                    path_with_suffix(layout_path, ".zj-radar.bak"),
+                );
+            }
+            match super::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+                Ok(()) => println!(
+                    "zellij: rail removed from {} (backup: {}.zj-radar.bak)",
+                    layout_path.display(),
+                    layout_path.display()
+                ),
+                Err(e) => eprintln!("zellij: write failed — {e}"),
+            }
+        }
+    }
 }
 
 fn confirm(prompt: &str) -> bool {
@@ -1636,5 +1834,34 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
+    }
+
+    // ── inject_mode decision tests ───────────────────────────────────────────
+
+    #[test]
+    fn inject_flag_forces_inject() {
+        assert_eq!(inject_mode(true, false, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, false, true), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, true), InjectMode::Inject);
+    }
+
+    #[test]
+    fn yes_takes_safe_default_snippet() {
+        // --yes without --inject → Snippet regardless of tty
+        assert_eq!(inject_mode(false, true, true),  InjectMode::Snippet);
+        assert_eq!(inject_mode(false, true, false), InjectMode::Snippet);
+    }
+
+    #[test]
+    fn non_tty_takes_safe_default_snippet() {
+        // non-tty without --inject or --yes → Snippet
+        assert_eq!(inject_mode(false, false, false), InjectMode::Snippet);
+    }
+
+    #[test]
+    fn prompt_when_interactive() {
+        // interactive tty, no --inject, no --yes → Prompt
+        assert_eq!(inject_mode(false, false, true), InjectMode::Prompt);
     }
 }

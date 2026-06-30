@@ -74,6 +74,13 @@ enum Command {
         /// Overwrite conflicting entries where supported.
         #[arg(long)]
         force: bool,
+        /// Inject the rail into the target layout without prompting (consent flag).
+        #[arg(long)]
+        inject: bool,
+        /// Target layout name to inject into (default: default). Looks up
+        /// `<config_dir>/layouts/<name>.kdl`.
+        #[arg(long, value_name = "NAME")]
+        layout: Option<String>,
     },
 }
 
@@ -102,6 +109,8 @@ pub fn run() {
             check,
             legacy_notify,
             force,
+            inject,
+            layout,
         } => {
             setup::run(setup::SetupOptions {
                 targets: &targets,
@@ -113,6 +122,8 @@ pub fn run() {
                 check,
                 legacy_notify,
                 force,
+                inject,
+                layout: layout.as_deref(),
             });
         }
     }
