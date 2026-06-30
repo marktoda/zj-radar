@@ -60,6 +60,15 @@ teardown() { teardown_fakes; }
   parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"TodoWrite","tool_input":{"todos":[]}}' running
 }
 
+@test "parity: word-bounded classification (no substring misfire)" {
+  # "latest" must not read as a test; both producers fall through to the exe.
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git checkout latest"}}' running
+}
+
+@test "parity: uninstall is not install" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"npm uninstall left-pad"}}' running
+}
+
 @test "parity: running with no activity falls back to working" {
   # No tool activity to derive (UserPromptSubmit, empty message) → both
   # producers emit the neutral "working" baseline, never a blank msg.

@@ -117,23 +117,38 @@ fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|base| !base.is_empty())
 }
 
+/// Whole-word containment: is `word` present in `haystack` bounded by non
+/// `[a-z0-9]` characters (or string edges)? Used instead of a bare substring so
+/// `latest`/`uninstall`/`fastest`/`rebuild` don't trip the test/install/build
+/// verbs. `haystack` is assumed already lowercased; `word` is a lowercase
+/// literal (a multi-word phrase like `git push` works — its inner space is a
+/// boundary char, not a `[a-z0-9]`). Mirrors `contains_word` in notify.sh.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
+    haystack.match_indices(word).any(|(i, _)| {
+        boundary(haystack[..i].chars().next_back())
+            && boundary(haystack[i + word.len()..].chars().next())
+    })
+}
+
 fn bash_activity(tool_input: &Value) -> Option<String> {
     let cmd = tool_input.get("command")?.as_str()?;
     let cmd_lower = cmd.to_lowercase();
     if cmd.trim().is_empty() {
         return None;
     }
-    if cmd_lower.contains("git push") {
+    let has = |w: &str| contains_word(&cmd_lower, w);
+    if has("git push") {
         Some("pushing".to_string())
-    } else if cmd_lower.contains("git commit") {
+    } else if has("git commit") {
         Some("committing".to_string())
-    } else if cmd_lower.contains("git pull") || cmd_lower.contains("git fetch") {
+    } else if has("git pull") || has("git fetch") {
         Some("syncing".to_string())
-    } else if cmd_lower.contains("test") {
+    } else if has("test") {
         Some("running tests".to_string())
-    } else if cmd_lower.contains("build") || cmd_lower.contains("compile") {
+    } else if has("build") || has("compile") {
         Some("building".to_string())
-    } else if cmd_lower.contains("install") {
+    } else if has("install") {
         Some("installing".to_string())
     } else {
         let first_token = cmd.split_whitespace().next()?;
@@ -308,6 +323,26 @@ mod tests {
     fn tool_bash_pip_install() {
         let input = json(r#"{"command": "pip install foo"}"#);
         assert_eq!(tool_activity("Bash", &input).unwrap(), "installing");
+    }
+
+    #[test]
+    fn tool_bash_classification_is_word_bounded_not_substring() {
+        // The verb match must be whole-word, not a substring, or innocent
+        // commands misclassify. Each of these embeds a keyword inside another
+        // word and must fall through to the generic "running <exe>".
+        for (cmd, expected) in [
+            ("git checkout latest", "running git"), // "latest" ⊅ test
+            ("npm uninstall left-pad", "running npm"), // "uninstall" ⊅ install
+            ("cat fastest.txt", "running cat"),     // "fastest" ⊅ test
+            ("./rebuilder.sh", "running rebuilder.sh"), // "rebuilder" ⊅ build
+        ] {
+            let input = json(&format!(r#"{{"command": {cmd:?}}}"#));
+            assert_eq!(
+                tool_activity("Bash", &input).as_deref(),
+                Some(expected),
+                "cmd={cmd}"
+            );
+        }
     }
 
     #[test]

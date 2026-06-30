@@ -143,8 +143,6 @@ struct LegacyPaneSnapshot {
     source: String,
     last_change_tick: u64,
     #[serde(default)]
-    seq: Option<u64>,
-    #[serde(default)]
     on_focus: Option<String>,
     ever_active: bool,
 }
@@ -636,7 +634,6 @@ fn parse_legacy_status_snapshot(
                     msg: pane.msg,
                     source: pane.source,
                     last_change_tick: pane.last_change_tick,
-                    seq: pane.seq,
                     on_focus: pane.on_focus.as_deref().map(Status::from_wire),
                     ever_active: pane.ever_active,
                     exit_code: None,

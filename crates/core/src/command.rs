@@ -336,6 +336,14 @@ impl CommandStore {
             }
             let source = command_kind(command, &cmd_string).as_source().to_string();
 
+            // A genuine new run opens here: forget any prior run's exit so its
+            // exit is applied fresh. The `exited` dedup only exists to absorb
+            // Zellij re-reporting the SAME finished run across ticks (no fg
+            // command opens between those repeats). A re-run of a held-open pane
+            // reuses the id and must not inherit the previous run's exit, or an
+            // identical-code exit would be swallowed and the row stuck Running.
+            self.exited.remove(&pane_id);
+
             let cwd_str = cwd.unwrap_or("").to_string();
             self.pending.insert(
                 pane_id,

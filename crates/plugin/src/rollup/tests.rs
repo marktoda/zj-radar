@@ -18,7 +18,6 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         msg: "msg".into(),
         source: "build".into(),
         last_change_tick: tick,
-        seq: None,
         on_focus: None,
         ever_active: true,
         exit_code: None,
@@ -112,6 +111,29 @@ fn counts_done_total_and_pending() {
 }
 
 #[test]
+fn pending_is_only_counted_for_tracked_panes() {
+    // A pane rendered as untracked (never ever_active — reachable via a
+    // snapshot/legacy load that stores ever_active verbatim) must not inflate the
+    // `pending` count while being excluded from `total`. `pending` counts the
+    // same set as `total`/`done`, never more, so progress stays internally
+    // consistent (pending <= total).
+    let mut map = HashMap::new();
+    let mut stale = obs(ObservationOrigin::StatusPipe, Status::Pending, 1);
+    stale.ever_active = false;
+    map.insert(1, stale);
+    let panes = [pane(1, "shell")];
+
+    let display = roll_up(&panes, resolver(&map));
+
+    assert_eq!(display.progress.total, 0, "an un-tracked pane is not in total");
+    assert_eq!(
+        display.progress.pending, 0,
+        "pending must not count a pane excluded from total"
+    );
+    assert!(!display.panes[0].is_tracked());
+}
+
+#[test]
 fn pane_outcome_maps_finished_commands_only() {
     assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(Outcome::Ok));
     assert_eq!(
@@ -181,7 +203,6 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     msg: "m".into(),
                     source: "build".into(),
                     last_change_tick: tick,
-                    seq: None,
                     on_focus: None,
                     ever_active,
                     exit_code,
@@ -248,7 +269,7 @@ proptest! {
         let done = panes.iter().filter_map(|p| map.get(&p.id))
             .filter(|o| o.ever_active && o.status == Status::Done).count();
         let pending = panes.iter().filter_map(|p| map.get(&p.id))
-            .filter(|o| o.status == Status::Pending).count();
+            .filter(|o| o.ever_active && o.status == Status::Pending).count();
         prop_assert_eq!(d.progress.total, total);
         prop_assert_eq!(d.progress.done, done);
         prop_assert_eq!(d.progress.pending, pending);

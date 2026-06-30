@@ -35,7 +35,6 @@ fn payload_for(pane_id: u32, status: Status, repo: &str) -> StatusPayload {
         branch: "main".into(),
         msg: "working".into(),
         on_focus: None,
-        seq: None,
         source: "claude".into(),
     }
 }
@@ -430,7 +429,6 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
         .apply(payload_for(1, Status::Running, "repo"), 3);
     let mut done = payload_for(2, Status::Done, "pinky");
     done.on_focus = Some(Status::Idle);
-    done.seq = Some(9);
     done.branch = "fix/x".into();
     done.msg = "shipped it".into();
     done.source = "codex".into();
@@ -448,7 +446,6 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     assert_eq!(pane.branch, "fix/x");
     assert_eq!(pane.msg, "shipped it");
     assert_eq!(pane.source, "codex");
-    assert_eq!(pane.seq, Some(9));
     assert_eq!(pane.on_focus, Some(Status::Idle));
 }
 
@@ -470,6 +467,8 @@ fn snapshot_round_trip_preserves_command_observations() {
 
 #[test]
 fn snapshot_load_migrates_legacy_status_snapshot() {
+    // The legacy record still carries a `"seq":3` — now an unknown field that
+    // must be ignored, not rejected, so old snapshots keep loading.
     let legacy = r#"{"v":1,"tick":7,"panes":[{"pane_id":9,"status":"running","repo":"repo","branch":"main","msg":"work","source":"claude","last_change_tick":6,"seq":3,"on_focus":"idle","ever_active":true}]}"#;
     let mut radar = RadarState::default();
 
@@ -480,7 +479,6 @@ fn snapshot_load_migrates_legacy_status_snapshot() {
     assert_eq!(pane.origin, ObservationOrigin::StatusPipe);
     assert_eq!(pane.status, Status::Running);
     assert_eq!(pane.on_focus, Some(Status::Idle));
-    assert_eq!(pane.seq, Some(3));
 }
 
 #[test]

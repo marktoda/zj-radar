@@ -11,15 +11,9 @@ pub struct StatusStore {
 }
 
 impl StatusStore {
-    /// Apply an incoming payload. Drops out-of-order updates (seq <= stored seq).
+    /// Apply an incoming payload. Latest broadcast wins (the pipe delivers in
+    /// order; no producer stamps a sequence, so there is nothing to reorder).
     pub fn apply(&mut self, p: StatusPayload, tick: u64) {
-        if let (Some(existing), Some(incoming)) =
-            (self.map.get(&p.pane_id).and_then(|s| s.seq), p.seq)
-        {
-            if incoming <= existing {
-                return;
-            }
-        }
         let prev_status = self.map.get(&p.pane_id).map(|s| s.status);
         let status_changed = prev_status != Some(p.status);
         let last_change_tick = if status_changed {
@@ -46,7 +40,6 @@ impl StatusStore {
                 msg: p.msg,
                 source: p.source,
                 last_change_tick,
-                seq: p.seq,
                 on_focus: p.on_focus,
                 ever_active,
                 exit_code: None,
@@ -111,11 +104,10 @@ impl StatusStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     use crate::status::Status;
 
-    fn payload(pane_id: u32, status: Status, seq: Option<u64>) -> StatusPayload {
+    fn payload(pane_id: u32, status: Status) -> StatusPayload {
         StatusPayload {
             pane_id,
             status,
@@ -123,7 +115,6 @@ mod tests {
             branch: "b".into(),
             msg: "m".into(),
             on_focus: None,
-            seq,
             source: "test".into(),
         }
     }
@@ -131,11 +122,11 @@ mod tests {
     #[test]
     fn apply_sets_last_change_tick_only_on_status_change() {
         let mut s = StatusStore::default();
-        s.apply(payload(1, Status::Running, None), 5);
+        s.apply(payload(1, Status::Running), 5);
         assert_eq!(s.get(1).unwrap().last_change_tick, 5);
-        s.apply(payload(1, Status::Running, None), 9); // same status
+        s.apply(payload(1, Status::Running), 9); // same status
         assert_eq!(s.get(1).unwrap().last_change_tick, 5);
-        s.apply(payload(1, Status::Done, None), 12); // changed
+        s.apply(payload(1, Status::Done), 12); // changed
         assert_eq!(s.get(1).unwrap().last_change_tick, 12);
         // verify repo, branch, msg fields are set
         assert_eq!(s.get(1).unwrap().repo, "r");
@@ -144,19 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn out_of_order_seq_is_dropped() {
-        let mut s = StatusStore::default();
-        s.apply(payload(1, Status::Running, Some(10)), 1);
-        s.apply(payload(1, Status::Done, Some(5)), 2); // stale
-        assert_eq!(s.get(1).unwrap().status, Status::Running);
-        s.apply(payload(1, Status::Done, Some(11)), 3); // newer
-        assert_eq!(s.get(1).unwrap().status, Status::Done);
-    }
-
-    #[test]
     fn on_focus_applies_once_then_clears() {
         let mut s = StatusStore::default();
-        let mut p = payload(1, Status::Done, None);
+        let mut p = payload(1, Status::Done);
         p.on_focus = Some(Status::Idle);
         s.apply(p, 1);
         s.on_pane_focused(1, 7);
@@ -170,10 +151,10 @@ mod tests {
     #[test]
     fn recede_if_focused_clears_done_but_not_error() {
         let mut s = StatusStore::default();
-        let mut done = payload(1, Status::Done, None);
+        let mut done = payload(1, Status::Done);
         done.on_focus = Some(Status::Idle);
         s.apply(done, 1);
-        let mut err = payload(2, Status::Error, None);
+        let mut err = payload(2, Status::Error);
         err.on_focus = Some(Status::Idle);
         s.apply(err, 1);
 
@@ -189,8 +170,8 @@ mod tests {
     #[test]
     fn prune_removes_dead_panes() {
         let mut s = StatusStore::default();
-        s.apply(payload(1, Status::Running, None), 1);
-        s.apply(payload(2, Status::Done, None), 1);
+        s.apply(payload(1, Status::Running), 1);
+        s.apply(payload(2, Status::Done), 1);
         let live: HashSet<u32> = [2].into_iter().collect();
         s.prune(&live);
         assert!(s.get(1).is_none());
@@ -200,8 +181,8 @@ mod tests {
     #[test]
     fn ever_active_sticks_after_returning_to_idle() {
         let mut s = StatusStore::default();
-        s.apply(payload(1, Status::Running, None), 1);
-        s.apply(payload(1, Status::Idle, None), 2);
+        s.apply(payload(1, Status::Running), 1);
+        s.apply(payload(1, Status::Idle), 2);
         assert!(s.get(1).unwrap().ever_active);
         assert!(!s.any_active());
     }
@@ -213,49 +194,18 @@ mod tests {
         // `idle`. The pane must drop its stale message and stop counting as
         // active, so the rail no longer shows the pre-clear line.
         let mut s = StatusStore::default();
-        let mut done = payload(1, Status::Done, None);
+        let mut done = payload(1, Status::Done);
         done.msg = "shipped the feature".into();
         s.apply(done, 1);
         assert_eq!(s.get(1).unwrap().msg, "shipped the feature");
         assert!(s.any_active());
 
-        let mut idle = payload(1, Status::Idle, None);
+        let mut idle = payload(1, Status::Idle);
         idle.msg = String::new();
         s.apply(idle, 2);
 
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
         assert!(!s.any_active(), "a cleared pane no longer drives tab status");
-    }
-
-    // ── proptest properties (ported from harness branch) ──
-
-    proptest! {
-        #[test]
-        fn apply_order_independent_with_seq(seqs in proptest::collection::vec(0u64..20, 1..12)) {
-            // Same payloads applied in arbitrary order vs sorted-by-seq must converge
-            // to the same final status. The seq dedup filter (drop if incoming <= stored)
-            // guarantees that the highest-seq payload always wins regardless of order.
-            let mk = |seq: u64| StatusPayload {
-                pane_id: 1, status: if seq.is_multiple_of(2) { Status::Running } else { Status::Done },
-                repo: "r".into(), branch: "".into(), msg: "".into(),
-                on_focus: None, seq: Some(seq), source: "t".into(),
-            };
-            let mut a = StatusStore::default();
-            for &s in &seqs { a.apply(mk(s), s); }
-
-            let mut sorted = seqs.clone(); sorted.sort_unstable();
-            let mut b = StatusStore::default();
-            for &s in &sorted { b.apply(mk(s), s); }
-
-            prop_assert_eq!(a.get(1).map(|x| x.status), b.get(1).map(|x| x.status));
-
-            // Pin the dedup contract: the surviving status must be the one carried
-            // by the MAX-seq payload (highest seq wins, not just "both agree").
-            let max_seq = seqs.iter().max().unwrap();
-            let expected_status = if max_seq % 2 == 0 { Status::Running } else { Status::Done };
-            prop_assert_eq!(a.get(1).map(|x| x.status), Some(expected_status));
-            prop_assert_eq!(b.get(1).map(|x| x.status), Some(expected_status));
-        }
     }
 }
