@@ -38,7 +38,7 @@ fi
 
 gen="$root/target/demo"
 mkdir -p "$gen" "$root/docs/media"
-chmod +x "$root/demo/agent.sh"
+chmod +x "$root/demo/agent.sh" "$root/demo/banner.sh"
 
 # Pre-grant the sidebar's permissions so the recording shows no prompt. Zellij
 # keys grants by the plugin's filesystem path (no `file:` prefix) in

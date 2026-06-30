@@ -21,6 +21,8 @@ layout {
             plugin location="zellij:status-bar"
         }
     }
+    // Runtime tabs (Ctrl+t n — used as the demo's closing beat) get a clean
+    // bash prompt via demorc.sh, instead of the recording host's shell config.
     new_tab_template {
         pane split_direction="vertical" {
             pane size=34 borderless=true {
@@ -30,24 +32,34 @@ layout {
                     naming "managed"
                 }
             }
-            pane focus=true
+            pane focus=true {
+                command "bash"
+                args "--rcfile" "__ROOT__/demo/demorc.sh" "-i"
+            }
         }
         pane size=2 borderless=true {
             plugin location="zellij:status-bar"
         }
     }
 
-    tab name="api" {
+    tab name="api" focus=true {
         pane command="__ROOT__/demo/agent.sh" {
             args "claude" "api" "feat/auth" "needs-you"
         }
     }
+    // Two agents in one tab → the rail rolls them up (done/total count) and
+    // expands them as a tree (├/└). We tab over to this one in the demo.
     tab name="web" {
-        pane command="__ROOT__/demo/agent.sh" {
-            args "codex" "web" "fix/login" "done"
+        pane split_direction="horizontal" {
+            pane command="__ROOT__/demo/agent.sh" {
+                args "claude" "web" "fix/login" "form"
+            }
+            pane command="__ROOT__/demo/agent.sh" {
+                args "claude" "web" "fix/login" "suite"
+            }
         }
     }
-    tab name="tests" focus=true {
+    tab name="tests" {
         pane command="__ROOT__/demo/agent.sh" {
             args "test" "core" "main" "tests"
         }
