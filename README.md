@@ -202,9 +202,9 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 
 | Path | What it is |
 |------|------------|
-| `crates/core/` | Pure shared library (`zj_radar_core`): runtime, stores, model, renderer, payload, tab naming. No Zellij API dependency — fully host-testable. |
+| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema + status/command classification (`command`, `kind`, `observation`, `payload`, `status`, `wire`). No `clap`, no `zellij-tile` — fully host-testable. |
 | `crates/cli/` | Host-side `zj-radar` CLI (package `zj-radar`). `build.rs` embeds the wasm at compile time via `include_bytes!`. Built with `-p zj-radar`. |
-| `crates/plugin/` | The Zellij sidebar **wasm plugin** (`zj_radar_plugin`, Rust → `wasm32-wasip1`) — `register_plugin!` wiring over `crates/core`. Built with `-p zj-radar-plugin`. |
+| `crates/plugin/` | The Zellij sidebar **wasm plugin** (`zj_radar_plugin`, Rust → `wasm32-wasip1`): the rail renderer, roll-up, radar-state, tab naming, runtime, and the thin `register_plugin!` wasm wiring. Built with `-p zj-radar-plugin`. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |

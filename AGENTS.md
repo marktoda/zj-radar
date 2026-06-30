@@ -23,7 +23,7 @@ cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the wasm plu
 just test        # L1–L4 deterministic host suite (unit, insta, proptest, vt100)
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5 live: builds wasm, drives a real Zellij in a PTY (needs zellij)
-just ci          # what every PR must pass: test + test-bash
+just ci          # what every PR must pass: test + clippy + test-bash
 just review      # accept intentional insta snapshot changes (cargo insta review)
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```

@@ -53,7 +53,7 @@ The suite is layered. `just` is the entry point:
 just test        # L1–L4: deterministic host suite (unit, insta snapshots, proptest, vt100)
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5: live — builds the wasm and drives a real Zellij in a PTY (needs zellij)
-just ci          # what every PR must pass locally: test + test-bash
+just ci          # what every PR must pass locally: test + clippy + test-bash
 ```
 
 - The shared core (`status`, `payload`, `command`, `kind`, `observation`,
@@ -96,7 +96,8 @@ section for the inside-Zellij caveats.
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. Keep PRs focused; one logical change per PR.
-3. `just ci` must pass, and `cargo clippy ... -D warnings` must be clean.
+3. `just ci` must pass — it runs the host suite, `cargo clippy ... -D warnings`,
+   and the bash hook tests.
 4. Add or update tests at the appropriate layer. New render behavior → a snapshot
    or `rail-reference.md` scenario; new wire/parse behavior → a unit/proptest.
 5. Update docs (`README.md`, `docs/`, `CONTEXT.md`) when behavior or interfaces
