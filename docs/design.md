@@ -94,7 +94,7 @@ runtime.
 │ Claude → plugin hook / native CLI  (running/pending/done) │
 │ Codex  → native CLI via hooks.json (running/pending/done) │
 └───────────────────────────┬───────────────────────────────┘
-   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus,seq}
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus}
    (BROADCAST by name — not --plugin: see §6)
                             │
                             ▼
@@ -193,16 +193,17 @@ unaffected.
   "repo": "pinky",
   "branch": "fix/x",
   "msg": "running tests…",            // truncated last assistant message
-  "on_focus": "idle",                 // optional: status to apply when this exact pane is next focused
-  "seq": 42 }                         // optional monotonic per-pane counter; newer seq wins (hook race guard)
+  "on_focus": "idle" }                // optional: status to apply when this exact pane is next focused
 ```
 
 **Plugin-side handling (defensive — the renderer/store, not the adapter, enforces these):**
 - Match `pane` to `PaneId::Terminal(id)`. Adapters derive `id` by stripping any `terminal_`
   prefix from `$ZELLIJ_PANE_ID` (its form has varied across Zellij versions).
-- Tolerate malformed/older/partial payloads: unknown fields ignored, missing fields default,
-  unknown `status` → treated as `idle`.
-- If `seq` present and ≤ the stored `seq` for that pane, drop (out-of-order hook race).
+- Tolerate malformed/older/partial payloads: unknown fields ignored (including a
+  legacy `seq` from older producers), missing fields default, unknown `status` →
+  treated as `idle`.
+- Ordering is latest-wins: the pipe delivers in order and no producer stamps a
+  sequence, so a payload simply overwrites the pane's prior state.
 - Sanitize `repo`/`branch`/`msg`: strip ANSI/control chars, convert newlines to spaces, cap
   `msg` to a fixed length before rendering.
 - Ignore payloads over a fixed size cap (e.g. 64 KB).
