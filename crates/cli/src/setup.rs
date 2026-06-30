@@ -737,6 +737,65 @@ fn check_codex(legacy_notify: bool) {
     print_check_items(&items);
 }
 
+/// Raw, already-read environment for Zellij setup. The ONLY layer that touched
+/// the filesystem — `analyze_zellij` is pure over this struct.
+#[allow(dead_code)] // wired in Task 2
+pub(crate) struct ZellijEnv {
+    pub config_text:           Option<String>,
+    pub layout_text:           Option<String>,
+    pub permissions_text:      Option<String>,
+    pub codex_hooks_text:      Option<String>,
+    pub installed_plugins_text: Option<String>,
+    pub wasm_present:          bool,
+    pub config_managed:        bool,
+    pub wasm_path:             String,
+}
+
+/// Every derived fact about the current Zellij setup state, in one place. Both
+/// `check` (renders) and `install` (gates) read these; the derivation is here so
+/// "is our alias present?" has exactly one definition.
+#[allow(dead_code)] // wired in Task 2
+pub(crate) struct ZellijFacts {
+    pub managed_alias_present:   bool,
+    pub unmanaged_alias_present: bool,
+    pub alias_is_store_path:     bool,
+    pub wasm_present:            bool,
+    pub has_rail:                Option<bool>,
+    pub granted:                 Option<bool>,
+    pub producer_wired:          bool,
+    pub config_managed:          bool,
+}
+
+/// Pure: derive every Zellij setup fact from already-read inputs. No I/O.
+#[allow(dead_code)] // wired in Task 2
+pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
+    let lines: Vec<String> = env.config_text.as_deref().map(split_lines).unwrap_or_default();
+    let managed_alias_present = lines.iter().any(|l| l.trim() == ZELLIJ_ALIAS_BEGIN);
+    let mut lines_without_managed = lines.clone();
+    strip_managed_zellij_alias(&mut lines_without_managed);
+    let unmanaged_alias_present = has_unmanaged_radar_alias(&lines_without_managed);
+    let alias_is_store_path =
+        env.config_text.as_deref().is_some_and(|t| t.contains("/nix/store/"));
+    let has_rail = env.layout_text.as_deref().map(|t| super::layout::analyze(t).has_rail);
+    let granted = env
+        .permissions_text
+        .as_deref()
+        .map(|t| super::run::wasm_is_granted(t, &env.wasm_path));
+    let claude_present = super::run::claude_producer_wired(env.installed_plugins_text.as_deref());
+    let producer_wired =
+        super::run::producer_hint(env.codex_hooks_text.as_deref(), claude_present).is_none();
+    ZellijFacts {
+        managed_alias_present,
+        unmanaged_alias_present,
+        alias_is_store_path,
+        wasm_present: env.wasm_present,
+        has_rail,
+        granted,
+        producer_wired,
+        config_managed: env.config_managed,
+    }
+}
+
 /// Pure builder: given already-gathered inputs, emit the ordered list of
 /// Inputs to [`zellij_check_items`]. All I/O is done by the caller; the
 /// function itself is pure.
@@ -2307,5 +2366,63 @@ mod tests {
         let items = all_good_check_items();
         let names: Vec<&str> = items.iter().map(|i| i.name).collect();
         assert_eq!(names, &["alias", "wasm", "layout", "grant", "producer"]);
+    }
+
+    #[test]
+    fn analyze_zellij_derives_managed_and_unmanaged_alias_separately() {
+        // Managed alias block present, no unmanaged line.
+        let managed = format!("plugins {{\n{ZELLIJ_ALIAS_BEGIN}\n    radar location=\"file:/x.wasm\"\n{ZELLIJ_ALIAS_END}\n}}\n");
+        let env = ZellijEnv {
+            config_text: Some(managed),
+            layout_text: None,
+            permissions_text: None,
+            codex_hooks_text: None,
+            installed_plugins_text: None,
+            wasm_present: false,
+            config_managed: false,
+            wasm_path: "/x.wasm".to_string(),
+        };
+        let f = analyze_zellij(&env);
+        assert!(f.managed_alias_present, "managed marker must be detected");
+        assert!(!f.unmanaged_alias_present, "no unmanaged alias here");
+    }
+
+    #[test]
+    fn analyze_zellij_derives_has_rail_and_grant_from_text() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let layout = "layout {\n    plugin location=\"radar\"\n}\n";
+        let perms = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n");
+        let env = ZellijEnv {
+            config_text: None,
+            layout_text: Some(layout.to_string()),
+            permissions_text: Some(perms),
+            codex_hooks_text: None,
+            installed_plugins_text: None,
+            wasm_present: true,
+            config_managed: false,
+            wasm_path: wasm_path.to_string(),
+        };
+        let f = analyze_zellij(&env);
+        assert_eq!(f.has_rail, Some(true), "layout text with radar plugin has rail");
+        assert_eq!(f.granted, Some(true), "permissions naming the wasm path is granted");
+        assert!(f.wasm_present);
+    }
+
+    #[test]
+    fn analyze_zellij_absent_files_are_none_not_false() {
+        let env = ZellijEnv {
+            config_text: None,
+            layout_text: None,
+            permissions_text: None,
+            codex_hooks_text: None,
+            installed_plugins_text: None,
+            wasm_present: false,
+            config_managed: false,
+            wasm_path: "/x.wasm".to_string(),
+        };
+        let f = analyze_zellij(&env);
+        assert_eq!(f.has_rail, None, "no layout file -> None, distinct from Some(false)");
+        assert_eq!(f.granted, None, "no permissions file -> None");
+        assert!(!f.producer_wired, "no codex hooks and no claude plugin -> not wired");
     }
 }
