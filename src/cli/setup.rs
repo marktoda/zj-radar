@@ -27,7 +27,6 @@ const CODEX_HOOK_EVENTS: [&str; 7] = [
 ];
 const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
-const ZELLIJ_LAYOUT_SNIPPET: &str = include_str!("../../examples/radar-template-snippet.kdl");
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -1045,10 +1044,12 @@ fn setup_zellij(
 }
 
 fn println_layout_snippet() {
-    println!(
-        "\nAdd the sidebar to a Zellij layout with:\n\n{}",
-        ZELLIJ_LAYOUT_SNIPPET.trim_end()
-    );
+    let config_dir = zellij_config_dir();
+    let default_layout = config_dir.join("layouts").join("default.kdl");
+    let text = std::fs::read_to_string(&default_layout).unwrap_or_default();
+    let facts = super::layout::analyze(&text);
+    let snippet = super::layout::tailored_snippet(&facts);
+    println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
 }
 
 fn confirm(prompt: &str) -> bool {
