@@ -58,6 +58,18 @@ pub(crate) fn owned_config_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| owned_config_dir_in(&d))
 }
 
+pub(crate) fn producer_hint(
+    codex_hooks: Option<&str>,
+    claude_present: bool,
+    _zj_radar_on_path: bool,
+) -> Option<String> {
+    let codex = codex_hooks.is_some_and(|h| h.contains("ZJ_RADAR_CODEX_HOOK=v1"));
+    if codex || claude_present {
+        return None;
+    }
+    Some("Agent status off — no producer wired. Run `zj-radar setup` to enable.".into())
+}
+
 pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
 }
@@ -208,5 +220,16 @@ mod tests {
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         materialize(&dir, "0.2.0", &test_assets()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.2.0");
+    }
+
+    #[test]
+    fn producer_hint_only_when_none_wired() {
+        // Codex hooks contain our marker -> producer present -> no hint.
+        assert!(producer_hint(Some("ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"), false, false).is_none());
+        // Claude plugin present -> no hint.
+        assert!(producer_hint(None, true, false).is_none());
+        // Nothing wired -> hint mentions `zj-radar setup`.
+        let h = producer_hint(None, false, true).unwrap();
+        assert!(h.contains("zj-radar setup"));
     }
 }
