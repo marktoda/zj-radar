@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "A native Zellij sidebar that shows live AI-agent status (working/waiting/done) per tab."
-repository = "https://github.com/mark-toda/zj-radar"
+repository = "https://github.com/marktoda/zj-radar"
 readme = "README.md"
 
 # Zellij loads plugins as WASI *command* modules (it calls `_start` then `load`
