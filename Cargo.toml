@@ -14,6 +14,16 @@ license = "MIT"
 description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
 repository = "https://github.com/marktoda/zj-radar"
 readme = "README.md"
+keywords = ["zellij", "claude", "agent", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+
+# `cargo binstall zj-radar` fetches the prebuilt CLI from the matching GitHub
+# release instead of compiling. The URL + naming must match release.yml's CLI
+# assets (zj-radar-<target-triple>.tar.gz, each containing the `zj-radar` bin).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/zj-radar-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
 
 # The pure, host-testable core. The wasm host adapter (`State`, render glue) also
 # lives here behind `#[cfg(target_arch = "wasm32")]`, so `crates/plugin` links it
