@@ -533,6 +533,15 @@ fn zellij_plugin_location(path: &Path) -> String {
     format!("file:{display_path}")
 }
 
+/// Returns `true` when `path` is a symlink — the hallmark of a Nix / home-manager
+/// managed file that we must not overwrite. Uses `symlink_metadata` so the query
+/// does not follow the link (a broken symlink still returns `true`).
+pub(crate) fn config_is_managed(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file()))
@@ -958,6 +967,19 @@ fn setup_zellij(
             eprintln!("zellij: refused — wasm not found at {}", src.display());
             return;
         }
+    }
+
+    // Refuse to write a symlinked (home-manager / Nix-managed) config.kdl, but
+    // keep going so wasm handling and the layout snippet still run.
+    if !uninstall && config_is_managed(&config_path) {
+        eprintln!(
+            "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
+             zj-radar will not overwrite a managed config — add the plugin alias via\n\
+             your Nix config instead. See docs/install.md for the home-manager snippet.",
+            config_path.display()
+        );
+        println_layout_snippet();
+        return;
     }
 
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
@@ -1576,6 +1598,21 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn detects_symlinked_config_as_managed() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.kdl");
+        std::fs::write(&real, "").unwrap();
+        let link = dir.path().join("config.kdl");
+        symlink(&real, &link).unwrap();
+        assert!(config_is_managed(&link), "symlink should be managed");
+        assert!(!config_is_managed(&real), "regular file should not be managed");
+        // non-existent path is also not managed
+        assert!(!config_is_managed(&dir.path().join("missing.kdl")));
     }
 
     #[test]
