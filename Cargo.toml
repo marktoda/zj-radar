@@ -40,6 +40,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-width = "0.2"
 clap = { version = "4", features = ["derive"], optional = true }
+kdl = { version = "6", features = ["v1-fallback"], optional = true }
 toml_edit = { version = "0.22", optional = true }
 dirs = { version = "5", optional = true }
 
@@ -57,7 +58,7 @@ zellij-tile = "0.44"
 # never reach the wasm build (a lib.rs guard turns a stray wasm+cli build into a
 # clear error instead of a confusing clap-on-wasm failure).
 default = ["cli"]
-cli = ["dep:clap", "dep:toml_edit", "dep:dirs"]
+cli = ["dep:clap", "dep:kdl", "dep:toml_edit", "dep:dirs"]
 # Live end-to-end tests that drive a real Zellij in a PTY. Off by default so
 # `cargo test` stays fast and hermetic. Requires `zellij` on PATH.
 e2e = []

@@ -1236,9 +1236,22 @@ version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e03e2e96c5926fe761088d66c8c2aee3a4352a2573f4eaca50043ad130af9117"
 dependencies = [
- "miette",
+ "miette 5.10.0",
  "nom",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "kdl"
+version = "6.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670"
+dependencies = [
+ "kdl 4.7.1",
+ "miette 7.6.0",
+ "num-traits",
+ "serde",
+ "winnow",
 ]
 
 [[package]]
@@ -1402,6 +1415,16 @@ dependencies = [
  "terminal_size",
  "textwrap 0.15.2",
  "thiserror 1.0.69",
+ "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "miette"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
+dependencies = [
+ "cfg-if",
  "unicode-width 0.1.14",
 ]
 
@@ -3212,12 +3235,12 @@ dependencies = [
  "include_dir",
  "interprocess",
  "isahc",
- "kdl",
+ "kdl 4.7.1",
  "lazy_static",
  "libc",
  "log",
  "log4rs",
- "miette",
+ "miette 5.10.0",
  "names",
  "nix 0.23.2",
  "notify",
@@ -3326,6 +3349,7 @@ dependencies = [
  "clap 4.6.1",
  "dirs 5.0.1",
  "insta",
+ "kdl 6.7.1",
  "portable-pty",
  "proptest",
  "serde",

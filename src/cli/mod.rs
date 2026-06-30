@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod agents;
 mod fsutil;
+pub(crate) mod layout;
 mod notify;
 mod run;
 mod setup;
