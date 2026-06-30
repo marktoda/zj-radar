@@ -187,9 +187,52 @@ config_fields! {
     }
 }
 
+/// Flatten a JSON object of config overrides into the flat `BTreeMap<String,
+/// String>` vocabulary `apply_overrides` consumes: string values pass through,
+/// bools and numbers stringify, and nested/null values are dropped. Returns
+/// `None` for non-JSON or a non-object payload. This is the wire-decoding sibling
+/// of `from_map`/`apply_overrides`, kept here beside the parsers it feeds rather
+/// than in the runtime — the runtime was otherwise the only module coupled to
+/// `serde_json::Value`.
+pub(crate) fn overrides_from_json(raw: &str) -> Option<BTreeMap<String, String>> {
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let obj = val.as_object()?;
+    Some(
+        obj.iter()
+            .filter_map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Bool(b) => {
+                        Some(if *b { "true" } else { "false" }.to_string())
+                    }
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                };
+                s.map(|s| (k.clone(), s))
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overrides_from_json_flattens_scalars_and_drops_the_rest() {
+        let kv = overrides_from_json(
+            r#"{"naming":"off","header":true,"density":1,"nested":{"x":1},"nul":null}"#,
+        )
+        .expect("a JSON object yields Some");
+        assert_eq!(kv.get("naming").map(String::as_str), Some("off"));
+        assert_eq!(kv.get("header").map(String::as_str), Some("true"));
+        assert_eq!(kv.get("density").map(String::as_str), Some("1"));
+        assert!(!kv.contains_key("nested"), "nested objects are dropped");
+        assert!(!kv.contains_key("nul"), "null is dropped");
+        // Non-JSON and non-object payloads yield None (the runtime no-ops on these).
+        assert!(overrides_from_json("not json").is_none());
+        assert!(overrides_from_json("[1,2,3]").is_none());
+    }
 
     #[test]
     fn role_parses_and_defaults_to_sidebar() {

@@ -237,26 +237,23 @@ pub(crate) fn plan_layout(
         },
     ];
 
-    for spacing in candidates {
-        // Budget the content against the space left after this spacing's luxury
-        // rows. Each kept row costs `pad_y + gap` luxury rows on top of content.
-        let (plan, strip_folded) = plan_overflow(rows, body_budget);
-        let content_total: usize = plan.iter().map(|(_, l)| l).sum();
-        let kept = plan.len();
-        let strip_line = if strip_folded > 0 { 1 } else { 0 };
-        let luxury = kept * (spacing.pad_y + spacing.gap);
-        if content_total + luxury + strip_line <= body_budget {
-            return (plan, strip_folded, spacing);
-        }
-    }
-
-    // Even the leanest spacing (no pad_y, no gap) overflows: let plan_overflow
-    // compress content against the raw budget and apply no luxury rows.
-    let lean = CardSpacing {
-        gap: 0,
-        pad_y: 0,
-        ..base
-    };
+    // Budget the content once against the full body budget — the plan does not
+    // depend on the spacing. Then shed luxury (gap first, then pad_y) until the
+    // richest spacing whose luxury rows fit *on top of* that content: content is
+    // never re-compressed to make room for separation — gaps/pads are dropped
+    // first. If even the leanest spacing (no gap, no pad_y) overflows, apply it
+    // anyway over the (already maximally-compressed) content.
     let (plan, strip_folded) = plan_overflow(rows, body_budget);
-    (plan, strip_folded, lean)
+    let content_total: usize = plan.iter().map(|(_, l)| l).sum();
+    let kept = plan.len();
+    let strip_line = if strip_folded > 0 { 1 } else { 0 };
+    let spacing = candidates
+        .into_iter()
+        .find(|s| content_total + kept * (s.pad_y + s.gap) + strip_line <= body_budget)
+        .unwrap_or(CardSpacing {
+            gap: 0,
+            pad_y: 0,
+            ..base
+        });
+    (plan, strip_folded, spacing)
 }

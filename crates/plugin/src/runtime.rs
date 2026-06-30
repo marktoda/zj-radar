@@ -256,26 +256,9 @@ impl PluginRuntime {
     }
 
     pub(crate) fn config_pipe(&mut self, raw: &str) -> Outcome {
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
+        let Some(kv) = crate::config::overrides_from_json(raw) else {
             return Outcome::none();
         };
-        let Some(obj) = val.as_object() else {
-            return Outcome::none();
-        };
-        let kv: BTreeMap<String, String> = obj
-            .iter()
-            .filter_map(|(k, v)| {
-                let s = match v {
-                    serde_json::Value::String(s) => Some(s.clone()),
-                    serde_json::Value::Bool(b) => {
-                        Some(if *b { "true" } else { "false" }.to_string())
-                    }
-                    serde_json::Value::Number(n) => Some(n.to_string()),
-                    _ => None,
-                };
-                s.map(|s| (k.clone(), s))
-            })
-            .collect();
         self.config.apply_overrides(&kv);
         let renames = self.radar.recompute_renames(self.config.naming);
         Outcome::with_effects(true, self.effects_from_renames(renames))

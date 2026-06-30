@@ -81,20 +81,11 @@ kinds! {
 
 // `Kind` crosses the persisted snapshot as its `source` wire token. Lenient,
 // like `Status`: an unknown/absent token folds to `Other` rather than erroring,
-// so an old or hand-edited snapshot still loads. Hand-written rather than via
-// `wire_serde!` because Kind's vocabulary is `as_source`/`from_source` — the wire
-// field is literally `source` — not the macro's `as_wire`/`from_wire`.
-impl serde::Serialize for Kind {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        ser.serialize_str(self.as_source())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Kind {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        Ok(Kind::from_source(&<String as serde::Deserialize>::deserialize(de)?))
-    }
-}
+// so an old or hand-edited snapshot still loads. Rides the shared `wire_serde!`
+// generator with its domain-specific accessor pair (`as_source`/`from_source` —
+// the wire field is literally `source`), so it can't drift from the lenient
+// policy `Status` uses rather than being a hand-copied impl.
+crate::wire::wire_serde!(lenient, Kind, as_source, from_source);
 
 #[cfg(test)]
 mod tests {

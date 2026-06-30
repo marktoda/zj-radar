@@ -102,3 +102,58 @@ teardown() { teardown_fakes; }
   run bash -c "printf '{\"hook_event_name\":\"Stop\",\"cwd\":\"/home/u/my\007repo\"}' | '$SCRIPT' done"
   [ "$status" -eq 0 ]
 }
+
+# ── repo resolution from git (the default fake git only stubs --show-toplevel,
+#    so these override it to drive the primary --git-common-dir paths) ──────────
+
+@test "git worktree: repo resolves from the common dir, not the worktree dir" {
+  # A worktree's --git-common-dir points at the MAIN repo's .git (.../pinky/.git),
+  # so the repo name must be the main project (pinky), never the worktree dir.
+  cat >"$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"--git-common-dir"*)      echo /home/u/pinky/.git ;;
+  *"branch --show-current"*) echo feature-x ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$FAKEBIN/git"
+  echo '{"hook_event_name":"Stop","cwd":"/home/u/pinky-wt/reply"}' | "$SCRIPT" done
+  run last_payload
+  [[ "$output" == *'"repo":"pinky"'* ]]
+  [[ "$output" == *'"branch":"feature-x"'* ]]
+}
+
+@test "git bare repo: repo strips the .git suffix" {
+  # A bare repo's common dir is itself (acme.git); strip .git and take basename.
+  cat >"$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"--git-common-dir"*)      echo /srv/git/acme.git ;;
+  *"branch --show-current"*) echo main ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$FAKEBIN/git"
+  echo '{"hook_event_name":"Stop","cwd":"/srv/checkout"}' | "$SCRIPT" done
+  run last_payload
+  [[ "$output" == *'"repo":"acme"'* ]]
+}
+
+@test "git fallback: old git (no --git-common-dir) uses --show-toplevel basename" {
+  # git < 2.31 lacks --path-format/--git-common-dir; the script falls back to
+  # --show-toplevel and uses its basename.
+  cat >"$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"--git-common-dir"*)      exit 1 ;;
+  *"--show-toplevel"*)       echo /home/u/legacy-repo ;;
+  *"branch --show-current"*) echo main ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$FAKEBIN/git"
+  echo '{"hook_event_name":"Stop","cwd":"/home/u/legacy-repo/src"}' | "$SCRIPT" done
+  run last_payload
+  [[ "$output" == *'"repo":"legacy-repo"'* ]]
+}

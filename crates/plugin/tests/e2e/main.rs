@@ -69,10 +69,6 @@ fn plugin_loads_and_renders_status() {
     let pane_id = session.discover_terminal_pane_id();
     eprintln!("[e2e] terminal pane_id={}", pane_id);
 
-    // Capture the PTY buffer length BEFORE piping so the post-pipe assertion
-    // is ordering-sensitive (proves the plugin rendered AFTER receiving the pipe).
-    let pre_len = session.pty_text().len();
-
     // Build the pipe payload with the real pane ID.
     let payload = format!(
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","repo":"web","branch":"main","msg":"building"}}"#
@@ -80,27 +76,21 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] piping: {}", payload);
     session.pipe_status(&payload);
 
-    // Give the plugin time to re-render after the pipe.
-    std::thread::sleep(std::time::Duration::from_millis(800));
-
-    let full = session.pty_text();
-    // Use only the suffix after the pre-pipe snapshot, proving the plugin
-    // rendered AFTER the pipe (not from earlier startup output).
-    // `pty_text()` returns a String of printable ASCII/UTF-8, so pre_len is
-    // always on a char boundary; the fallback to "" handles any edge case.
-    let suffix = full.get(pre_len..).unwrap_or("");
-    eprintln!(
-        "[e2e] PTY suffix (last 500 chars): {:?}",
-        &suffix[suffix.len().saturating_sub(500)..]
-    );
-
+    // Poll the vt100-parsed sidebar region (left 32 cols) for the agent's
+    // activity, up to 5s. Asserting on the sidebar region — not pty_text() —
+    // excludes the terminal scrollback that echoes the piped JSON, so a match is
+    // a real render, not a false positive; and polling returns the instant the
+    // frame is ready rather than fixed-sleeping. (The repo `web` isn't shown —
+    // the tab name comes from cwd — so we key off the activity msg `building`.)
+    let appeared = session.wait_for_sidebar(32, "building", std::time::Duration::from_secs(5));
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
     assert!(
-        suffix.contains("web") || suffix.contains("building"),
-        "sidebar should show the piped status (repo='web', msg='building') AFTER the pipe;\nPTY suffix (last 1000 chars):\n{}",
-        &suffix[suffix.len().saturating_sub(1000)..]
+        appeared,
+        "sidebar should show the piped activity 'building' after the pipe;\nsidebar:\n{sidebar}"
     );
 
-    eprintln!("[e2e] PASS: found piped status in post-pipe rendered output");
+    eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
 /// Multi-agent scenario: pipe a running agent and a pending ("needs-you") agent
@@ -153,9 +143,6 @@ fn multi_agent_needs_you_is_visible() {
     eprintln!("[e2e] piping running agent: {}", running_payload);
     session.pipe_status(&running_payload);
 
-    // Snapshot PTY length before the pending pipe (ordering-sensitive assertion).
-    let pre_len = session.pty_text().len();
-
     // Pipe a pending ("needs-you") agent to the sibling pane.
     let pending_payload = format!(
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{sibling_id}}},"status":"pending","repo":"api","msg":"approve?"}}"#
@@ -163,22 +150,21 @@ fn multi_agent_needs_you_is_visible() {
     eprintln!("[e2e] piping pending agent: {}", pending_payload);
     session.pipe_status(&pending_payload);
 
-    std::thread::sleep(std::time::Duration::from_millis(800));
-
-    let full = session.pty_text();
-    let suffix = full.get(pre_len..).unwrap_or("");
-    eprintln!(
-        "[e2e] PTY suffix (last 500 chars): {:?}",
-        &suffix[suffix.len().saturating_sub(500)..]
-    );
-
+    // Poll the vt100 sidebar region (not pty_text) for the needs-you agent's
+    // activity — the pending pane is highest-severity, so its msg drives the
+    // tab's detail line. Returns as soon as the frame is ready.
+    let appeared = session.wait_until(std::time::Duration::from_secs(5), |s| {
+        let sb = sidebar_region(&s.screen(), 32);
+        sb.contains("api") || sb.contains("approve")
+    });
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
     assert!(
-        suffix.contains("api") || suffix.contains("approve"),
-        "pending (needs-you) agent must surface in the sidebar after the pipe;\nPTY suffix (last 1000 chars):\n{}",
-        &suffix[suffix.len().saturating_sub(1000)..]
+        appeared,
+        "pending (needs-you) agent must surface in the sidebar after the pipe;\nsidebar:\n{sidebar}"
     );
 
-    eprintln!("[e2e] PASS: needs-you agent appeared in post-pipe rendered output");
+    eprintln!("[e2e] PASS: needs-you agent appeared in the rendered sidebar");
 }
 
 /// End-to-end notify.sh scenario: fire the real notify.sh hook script against
@@ -215,9 +201,6 @@ fn notify_sh_end_to_end_updates_sidebar() {
     let pane_id = session.discover_terminal_pane_id();
     eprintln!("[e2e] terminal pane_id={}", pane_id);
 
-    // Snapshot PTY length before the hook fires (ordering-sensitive assertion).
-    let pre_len = session.pty_text().len();
-
     // Fire the real notify.sh with a PostToolUse Edit hook payload.
     // notify.sh will derive msg="editing auth.rs" and pipe it to the plugin.
     let hook_json = r#"{"hook_event_name":"PostToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
@@ -227,17 +210,16 @@ fn notify_sh_end_to_end_updates_sidebar() {
     );
     session.run_notify_sh("running", pane_id, hook_json);
 
-    let full = session.pty_text();
-    let suffix = full.get(pre_len..).unwrap_or("");
-    eprintln!(
-        "[e2e] PTY suffix (last 500 chars): {:?}",
-        &suffix[suffix.len().saturating_sub(500)..]
-    );
-
+    // Poll the vt100 sidebar region for the activity notify.sh derived.
+    let appeared = session.wait_until(std::time::Duration::from_secs(5), |s| {
+        let sb = sidebar_region(&s.screen(), 32);
+        sb.contains("editing") || sb.contains("auth.rs")
+    });
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
     assert!(
-        suffix.contains("editing") || suffix.contains("auth.rs"),
-        "notify.sh hook should drive the sidebar (expected 'editing' or 'auth.rs');\nPTY suffix (last 1000 chars):\n{}",
-        &suffix[suffix.len().saturating_sub(1000)..]
+        appeared,
+        "notify.sh hook should drive the sidebar (expected 'editing' or 'auth.rs');\nsidebar:\n{sidebar}"
     );
 
     eprintln!("[e2e] PASS: notify.sh hook drove the sidebar render");
@@ -497,13 +479,16 @@ fn focused_done_recedes_from_the_rendered_rail() {
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"done","repo":"web","msg":"deploying","on_focus":"idle"}}"#
     );
     session.pipe_status(&done);
-    // Give the 1s timer several ticks to fire the held-focus recede.
-    std::thread::sleep(std::time::Duration::from_secs(3));
-
+    // The recede rides a timer tick (status_pipe deliberately does not reconcile).
+    // Poll up to 6s for the activity to disappear instead of a fixed sleep — this
+    // returns the instant the tick fires and tolerates a slow runner.
+    let receded = session.wait_until(std::time::Duration::from_secs(6), |s| {
+        !sidebar_region(&s.screen(), 32).contains("deploying")
+    });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] post-recede sidebar (32 cols):\n{}", sidebar);
     assert!(
-        !sidebar.contains("deploying"),
+        receded,
         "a Done watched under focus must recede from the rail (no lingering activity);\nsidebar:\n{}",
         sidebar
     );
@@ -552,4 +537,104 @@ fn focused_error_stays_lit_on_the_rendered_rail() {
         sidebar
     );
     eprintln!("[e2e] PASS: focused error stayed lit");
+}
+
+/// THE headline interaction, end-to-end: a real mouse click on a tab's rail row
+/// switches Zellij's active tab to that tab. Host tests pin the click→SwitchTab
+/// resolution against the lockstep target map, but until now nothing exercised it
+/// through an actual Zellij mouse event.
+///
+/// Setup: tab 1 carries the sidebar (from the layout). We open a second tab, give
+/// each tab a tracked agent row (so both render a clickable rail line), then
+/// return to tab 1 — the only tab showing the rail. We click tab 2's row and
+/// assert Zellij switched the active tab, observed via `dump-screen` now showing
+/// tab 2's terminal (its `ZPID=<pane2>` marker) — a signal *external* to the
+/// rail's own rendering, so it proves the SwitchTab effect actually reached
+/// Zellij rather than the rail merely repainting.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn click_on_a_tab_row_switches_the_active_tab() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
+        wasm
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_click_{}", std::process::id());
+    let layout = sidebar_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+
+    // Tab 1's terminal pane (echoes ZPID=<pane1>) + a tracked agent row ("alpha").
+    let pane1 = session.discover_terminal_pane_id();
+    eprintln!("[e2e] tab1 pane_id={}", pane1);
+    let p1 = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane1}}},"status":"running","repo":"one","msg":"alpha"}}"#
+    );
+    session.pipe_status(&p1);
+
+    // Open tab 2 (default layout → no sidebar). new-tab focuses it; discover its
+    // pane id (echoes ZPID=<pane2>), then give it a tracked row ("beta"). The
+    // tab-1 plugin instance sees both tabs' panes via the global pane manifest,
+    // so its rail renders a row for tab 2 even though tab 2 has no sidebar.
+    session.run_action(&["new-tab"]);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let pane2 = session.discover_terminal_pane_id();
+    eprintln!("[e2e] tab2 pane_id={}", pane2);
+    assert_ne!(pane1, pane2, "tab 2 must have a distinct terminal pane id");
+    let p2 = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane2}}},"status":"running","repo":"two","msg":"beta"}}"#
+    );
+    session.pipe_status(&p2);
+
+    // Return to tab 1 — the only tab showing the rail we will click. go-to-tab is
+    // fire-and-forget and can be dropped under load, so poll-retry it until
+    // dump-screen confirms tab 1's terminal (ZPID=pane1) is focused. This both
+    // performs the switch and serves as the precondition.
+    let on_tab1 = session.wait_until(std::time::Duration::from_secs(8), |s| {
+        s.run_action(&["go-to-tab", "1"]);
+        s.dump_screen().contains(&format!("ZPID={pane1}"))
+    });
+    assert!(on_tab1, "could not return to tab 1 before the click");
+
+    // Both tab rows must render in tab 1's rail before we can click tab 2's.
+    let ready = session.wait_until(std::time::Duration::from_secs(6), |s| {
+        let sb = sidebar_region(&s.screen(), 32);
+        sb.contains("alpha") && sb.contains("beta")
+    });
+    let screen = session.screen();
+    let sidebar = sidebar_region(&screen, 32);
+    eprintln!("[e2e] rail before click (32 cols):\n{}", sidebar);
+    assert!(
+        ready,
+        "both tab rows must render in tab 1's rail before clicking;\nsidebar:\n{sidebar}"
+    );
+
+    // Click tab 2's rail row. Every rendered line of a tab's card carries that
+    // tab's SwitchTab target, so the "beta" detail row is a valid click point.
+    // Re-issue the click on each poll: a single synthetic mouse event can be
+    // dropped under load, and re-clicking is idempotent (clicking tab 2 once it
+    // is already active is a no-op). Assert the switch via dump-screen showing
+    // tab 2's terminal — external to the rail's own rendering, so it proves the
+    // SwitchTab effect reached Zellij.
+    let row2 = sidebar_row_index(&screen, 32, "beta")
+        .expect("tab 2 row must be locatable in the rail");
+    let click_row = (row2 + 1) as u16;
+    eprintln!(
+        "[e2e] clicking tab 2 row at sidebar index {} (screen row {})",
+        row2, click_row
+    );
+    let switched = session.wait_until(std::time::Duration::from_secs(8), |s| {
+        s.click_at(3, click_row);
+        s.dump_screen().contains(&format!("ZPID={pane2}"))
+    });
+    eprintln!("[e2e] dump-screen after click:\n{}", session.dump_screen());
+    assert!(
+        switched,
+        "clicking tab 2's rail row must switch Zellij's active tab to tab 2 \
+         (dump-screen should show ZPID={pane2})"
+    );
+
+    eprintln!("[e2e] PASS: a real rail click switched the active tab end-to-end");
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::kind::Kind;
 use crate::payload::StatusPayload;
 use crate::rollup::Outcome;
 
