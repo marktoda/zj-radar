@@ -93,8 +93,8 @@ pub(crate) const SWAP_BLOCKS: &str = r#"    swap_tiled_layout name="vertical" {
     }"#;
 
 /// The full rail layout (3 templates + swaps), assembled from the canonical
-/// fragments. Single source of truth shared by `run` (embeds it), the tailored
-/// snippet, and injection.
+/// fragments. Kept byte-equal to `run_assets/radar.kdl`, which `run` embeds
+/// directly; the drift-guard test enforces this. Used by tests only on this build.
 #[allow(dead_code)]
 pub(crate) fn full_layout() -> String {
     format!(

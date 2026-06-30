@@ -84,7 +84,7 @@ enum Command {
         /// Open the plugin in a focused floating pane so Zellij can prompt for
         /// permissions (one-time grant). Exits after launching; does not run the
         /// wasm/alias/inject steps.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall"])]
         grant: bool,
     },
 }
