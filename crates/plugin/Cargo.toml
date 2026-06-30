@@ -8,7 +8,7 @@
 # plus zellij-tile. Build it with: cargo build --target wasm32-wasip1 -p zj-radar-plugin
 [package]
 name = "zj-radar-plugin"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2021"
 license = "MIT"
 description = "The zj-radar Zellij sidebar plugin (wasm). Companion to the zj-radar CLI."

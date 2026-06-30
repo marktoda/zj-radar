@@ -8,7 +8,7 @@ members = ["crates/plugin"]
 
 [package]
 name = "zj-radar"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2021"
 license = "MIT"
 description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
