@@ -105,6 +105,66 @@ pub(crate) fn materialize(dir: &Path, version: &str, assets: &Assets) -> std::io
     Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path })
 }
 
+const CONFIG_TEMPLATE: &str = include_str!("run_assets/config.kdl");
+const LAYOUT: &str = include_str!("run_assets/radar.kdl");
+const WASM: &[u8] = include_bytes!(env!("ZJ_RADAR_WASM_PATH"));
+
+fn embedded_assets() -> Assets {
+    Assets { config_template: CONFIG_TEMPLATE, layout: LAYOUT, wasm: WASM }
+}
+
+pub struct RunOptions {
+    pub name: Option<String>,
+    pub print_cmd: bool,
+}
+
+pub fn run(opts: RunOptions) {
+    let Some(dir) = owned_config_dir() else {
+        eprintln!("zj-radar: could not resolve a data directory");
+        return;
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    let materialized = match materialize(&dir, version, &embedded_assets()) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zj-radar: failed to set up config dir {}: {e}", dir.display());
+            return;
+        }
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let session = session_name(&cwd, opts.name.as_deref());
+    let args = build_zellij_args(&materialized.config_dir, &session);
+
+    // First-run grant hint (read-only; never pre-seed).
+    let granted = zellij_permissions_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|kdl| wasm_is_granted(&kdl, &materialized.wasm_path.to_string_lossy()))
+        .unwrap_or(false);
+    if !granted {
+        println!("First run: focus the RADAR rail (left) and press y to enable agent status.");
+    }
+
+    // Producer hint (detect-only).
+    let codex = dirs::home_dir()
+        .map(|h| h.join(".codex/hooks.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let claude_present = dirs::home_dir()
+        .map(|h| h.join(".claude/plugins").exists())
+        .unwrap_or(false);
+    if let Some(hint) = producer_hint(codex.as_deref(), claude_present, true) {
+        println!("{hint}");
+    }
+
+    if opts.print_cmd {
+        println!("zellij {}", args.join(" "));
+        return;
+    }
+    let err = std::process::Command::new("zellij").args(&args).status();
+    if let Err(e) = err {
+        eprintln!("zj-radar: failed to launch zellij: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +291,12 @@ mod tests {
         // Nothing wired -> hint mentions `zj-radar setup`.
         let h = producer_hint(None, false, true).unwrap();
         assert!(h.contains("zj-radar setup"));
+    }
+
+    #[test]
+    fn bundled_layout_has_swaps_and_alias() {
+        assert!(LAYOUT.contains("swap_tiled_layout"), "rail layout must declare swaps");
+        assert!(LAYOUT.contains("location=\"radar\""), "rail must use the radar alias");
+        assert!(CONFIG_TEMPLATE.contains("@WASM@"), "config template needs the @WASM@ token");
     }
 }
