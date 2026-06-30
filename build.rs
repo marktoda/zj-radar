@@ -15,6 +15,7 @@ fn main() {
     // 1. Explicit override (nix/just provide a prebuilt wasm).
     if let Ok(p) = std::env::var("ZJ_RADAR_WASM_PATH") {
         if PathBuf::from(&p).is_file() {
+            println!("cargo:rerun-if-changed={p}");
             println!("cargo:rustc-env=ZJ_RADAR_WASM_PATH={p}");
             return;
         }
@@ -23,6 +24,7 @@ fn main() {
     let prebuilt = manifest.join("target/wasm32-wasip1/release/zj_radar.wasm");
     // 2. Prebuilt artifact (fast path for `just test` / dev).
     if prebuilt.is_file() {
+        println!("cargo:rerun-if-changed={}", prebuilt.display());
         println!("cargo:rustc-env=ZJ_RADAR_WASM_PATH={}", prebuilt.display());
         return;
     }
@@ -33,5 +35,6 @@ fn main() {
         .status()
         .expect("failed to spawn cargo for wasm build");
     assert!(status.success(), "wasm build failed; install the wasm32-wasip1 target");
+    println!("cargo:rerun-if-changed={}", prebuilt.display());
     println!("cargo:rustc-env=ZJ_RADAR_WASM_PATH={}", prebuilt.display());
 }

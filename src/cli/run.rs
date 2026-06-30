@@ -40,10 +40,13 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
         .any(|l| l.starts_with(&needle) && l.contains('{'))
 }
 
+/// Returns the zj-radar–owned Zellij config directory rooted under `data_dir`.
 pub(crate) fn owned_config_dir_in(data_dir: &Path) -> PathBuf {
     data_dir.join("zj-radar").join("zellij")
 }
 
+/// Returns the path to Zellij's `permissions.kdl` file rooted under `cache_dir`.
+/// The sub-folder differs between macOS (`org.Zellij-Contributors.Zellij`) and Linux (`zellij`).
 pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
     if is_macos {
         cache_dir
@@ -54,6 +57,8 @@ pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
     }
 }
 
+/// Returns the platform-resolved zj-radar–owned Zellij config directory, or `None`
+/// if the system data directory cannot be determined.
 pub(crate) fn owned_config_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| owned_config_dir_in(&d))
 }
@@ -70,8 +75,17 @@ pub(crate) fn producer_hint(
     Some("Agent status off — no producer wired. Run `zj-radar setup` to enable.".into())
 }
 
+/// Returns the platform-resolved path to Zellij's `permissions.kdl` file, or `None`
+/// if the system cache directory cannot be determined.
 pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
+}
+
+/// Returns `true` iff `installed_plugins_json` contains the zj-radar Claude marketplace
+/// plugin id `"zj-radar-claude"`, indicating that the Claude producer is wired up.
+/// `None` or empty input returns `false`.
+pub(crate) fn claude_producer_wired(installed_plugins_json: Option<&str>) -> bool {
+    installed_plugins_json.is_some_and(|s| s.contains("zj-radar-claude"))
 }
 
 pub(crate) struct Assets {
@@ -148,9 +162,10 @@ pub fn run(opts: RunOptions) {
     let codex = dirs::home_dir()
         .map(|h| h.join(".codex/hooks.json"))
         .and_then(|p| std::fs::read_to_string(p).ok());
-    let claude_present = dirs::home_dir()
-        .map(|h| h.join(".claude/plugins").exists())
-        .unwrap_or(false);
+    let installed_plugins = dirs::home_dir()
+        .map(|h| h.join(".claude/plugins/installed_plugins.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let claude_present = claude_producer_wired(installed_plugins.as_deref());
     if let Some(hint) = producer_hint(codex.as_deref(), claude_present, true) {
         println!("{hint}");
     }
@@ -280,6 +295,18 @@ mod tests {
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         materialize(&dir, "0.2.0", &test_assets()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.2.0");
+    }
+
+    #[test]
+    fn claude_producer_detection() {
+        // JSON containing the marketplace plugin id -> producer wired.
+        let with_plugin = r#"{"plugins":["zj-radar-claude","some-other-plugin"]}"#;
+        assert!(claude_producer_wired(Some(with_plugin)));
+        // Unrelated plugins JSON -> not wired.
+        let without_plugin = r#"{"plugins":["some-other-plugin","another-one"]}"#;
+        assert!(!claude_producer_wired(Some(without_plugin)));
+        // None -> not wired.
+        assert!(!claude_producer_wired(None));
     }
 
     #[test]

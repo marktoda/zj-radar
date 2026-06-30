@@ -4956,6 +4956,9 @@ rail";
         let onboard = onboarding(&opts).ansi;
         let needs = needs_permission(&opts).ansi;
         assert_ne!(needs, onboard, "permission face must differ from idle onboarding");
+        // The searched substrings ("press y", "permission") contain no characters that
+        // appear in SGR escape sequences (`\x1b`, `[`, digits, `;`, `m`), so a plain
+        // `contains` on the raw ANSI string is valid without stripping SGR first.
         let plain: String = needs.chars().collect();
         assert!(plain.contains("press y"), "must tell the user to press y:\n{needs}");
         assert!(plain.to_lowercase().contains("permission"), "must mention permission");
