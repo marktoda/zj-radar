@@ -43,8 +43,13 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
 
     // A running broadcast with no message renders as a blank active row. Give it
     // a neutral baseline; the tool-activity substitution below refines it when a
-    // tool name/input is present.
-    let mut out_msg = if status == Status::Running && msg.trim().is_empty() {
+    // tool name/input is present. idle is the inverse — it means "no activity",
+    // so it always carries a blank msg (drops any stale message the payload
+    // happens to ride in on, e.g. a SessionStart session_title), letting the row
+    // recede cleanly on `/clear`.
+    let mut out_msg = if status == Status::Idle {
+        String::new()
+    } else if status == Status::Running && msg.trim().is_empty() {
         "working".to_string()
     } else {
         msg.to_string()
@@ -185,6 +190,31 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(bash.msg, "pushing");
+    }
+
+    #[test]
+    fn clear_session_resets_to_idle() {
+        // `/clear` fires SessionStart{source:"clear"}; the plugin wires it to an
+        // explicit `idle` status. With no message in the payload it yields a
+        // blank idle update — the row recedes instead of keeping its stale msg.
+        let u = derive(&intake(
+            r#"{"hook_event_name":"SessionStart","source":"clear","cwd":"/home/u/repo"}"#,
+            Some("idle"),
+        ))
+        .unwrap();
+        assert_eq!(u.status, Status::Idle);
+        assert_eq!(u.msg, "");
+        assert_eq!(u.cwd.as_deref(), Some("/home/u/repo"));
+    }
+
+    #[test]
+    fn idle_status_clears_any_message() {
+        // idle means "no activity": any message riding along the payload (e.g. a
+        // SessionStart session_title, or a stale last_assistant_message) is
+        // dropped so the rail never shows an idle row with leftover text.
+        let u = derive(&intake(r#"{"message":"old work in progress"}"#, Some("idle"))).unwrap();
+        assert_eq!(u.status, Status::Idle);
+        assert_eq!(u.msg, "");
     }
 
     #[test]

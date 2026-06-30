@@ -112,6 +112,11 @@ if [[ "$status" == "pending" ]]; then
     esac
 fi
 
+# idle means "no activity" — never carry a message (drops any stale message the
+# payload rides in on, e.g. a SessionStart session_title), so the rail row
+# recedes cleanly on /clear. Mirrors derive_claude's idle branch.
+[[ "$status" == "idle" ]] && msg=""
+
 # Resolve the repo name from the COMMON git dir so worktrees report the main
 # repo (e.g. "pinky"), not the worktree directory (e.g. "reply-register", which
 # is what --show-toplevel returns inside a worktree). Fall back to --show-toplevel

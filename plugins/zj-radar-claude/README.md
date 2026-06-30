@@ -32,6 +32,7 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStop` | `running` |
 | `Notification` (permission / idle / input) | `pending` |
 | `Stop` | `done` (clears when you focus the tab) |
+| `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
 
 Each fires a `zellij pipe --name zj_radar.status.v1` broadcast. It is a **no-op
 outside Zellij**, so it's safe to leave enabled everywhere.

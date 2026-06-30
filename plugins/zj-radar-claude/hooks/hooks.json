@@ -18,6 +18,9 @@
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh done" }] }
+    ],
+    "SessionStart": [
+      { "matcher": "clear", "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle" }] }
     ]
   }
 }
