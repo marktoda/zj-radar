@@ -1,0 +1,7 @@
+// zj-radar run: owned Zellij config. The WASM token is replaced with the
+// absolute materialized wasm path at first run. Keybinds/theme inherit Zellij defaults.
+plugins {
+    radar location="file:@WASM@" {
+        naming "managed"
+    }
+}

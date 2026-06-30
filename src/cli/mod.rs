@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod agents;
 mod notify;
+mod run;
 mod setup;
 
 #[derive(Parser)]
@@ -33,6 +34,14 @@ enum Command {
         /// Print the payload instead of broadcasting.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Launch a turnkey Zellij session with the radar rail (owns its own config).
+    Run {
+        /// Session name (default: current directory's name).
+        name: Option<String>,
+        /// Print the zellij command instead of launching it.
+        #[arg(long)]
+        print_cmd: bool,
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
@@ -66,6 +75,9 @@ enum Command {
 pub fn run() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Run { name, print_cmd } => {
+            run::run(run::RunOptions { name, print_cmd });
+        }
         Command::Notify {
             agent,
             input,

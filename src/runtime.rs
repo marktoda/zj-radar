@@ -273,7 +273,9 @@ impl PluginRuntime {
             density: self.config.density,
             theme: self.theme.clone(),
         };
-        let rail = if !self.permission_granted || tabrows.is_empty() {
+        let rail = if !self.permission_granted {
+            render::needs_permission(&opts)
+        } else if tabrows.is_empty() {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &opts)
