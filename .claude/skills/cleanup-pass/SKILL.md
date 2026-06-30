@@ -1,20 +1,112 @@
 ---
 name: cleanup-pass
-description: Use when doing a structural cleanup or refactor pass over the zj-radar codebase — tightening module boundaries, encapsulation, naming, dead code, indirection, and idiomatic Rust without changing external behavior. Fits post-sprint resets or paying down accumulated drift. NOT for bug-hunting (use /code-review) or feature work.
+description: Use when rethinking and restructuring the zj-radar codebase for better architecture — deep-module redesign, collapsing duplication, removing indirection and leaky seams, aggressive simplification — without changing external behavior. This is ambitious behavior-preserving refactoring, not a nitpick/lint pass. NOT for bug-hunting (use /code-review) or feature work.
 ---
 
 # Cleanup Pass
 
-Structural cleanup over the zj-radar codebase: improve clarity, modularity,
-encapsulation, maintainability, and idiomatic Rust design **without changing
-external behavior** unless explicitly requested. This is cleanup and structural
-tightening — not a rewrite, framework migration, or architecture-astronaut
-exercise. Works well as a post-sprint reset, but it's a general-purpose tool: run
-it any time the codebase has drifted.
+Rethink and restructure the zj-radar codebase for better architecture. The goal is
+**depth**: more behavior behind smaller, cleaner interfaces, placed at the right
+seams. Be ambitious — big collapses, big simplifications, re-seaming, deleting
+whole layers of indirection are all in scope and encouraged. This is *not* a
+nitpick pass; cosmetic tidying is the least valuable thing you can do here.
 
-**Bias toward deletion, privacy, and simpler concrete code.** Do not add a trait,
-registry, macro, dependency, generic parameter, or new crate unless you can name
-the concrete coupling or duplication it removes.
+**The one hard constraint: external behavior is preserved** (unless the user
+explicitly asks otherwise). This is behavior-preserving refactoring, not a
+feature change and not a from-scratch rewrite. The repo's test suite pins external
+behavior (insta snapshots, proptests, `reference_tests.rs`, the wire round-trip
+guards) — that is your *license to be aggressive inside it*. Gut and rebuild
+internals freely; the suite tells you the instant you changed what the code does.
+
+**Philosophy: aggressive subtraction, skeptical addition.** Be fearless about
+removing, merging, inlining, and re-seaming. Be suspicious of *adding* — do not
+introduce a trait, registry, macro, dependency, generic parameter, or new crate
+unless you can name the concrete coupling or duplication it removes. The big wins
+here are almost always deletions and collapses, not new structure.
+
+Use the deep-module vocabulary from the `codebase-design` skill — module,
+interface, depth, seam, leverage, locality — and its tests (the **deletion test**:
+if deleting a module makes complexity vanish it was a pass-through; one adapter is
+a hypothetical seam, two is a real one). `CONTEXT.md` already names zj-radar's good
+seams in this vocabulary; deepen them.
+
+## How this runs
+
+1. **Isolate.** Create/enter a worktree at `.claude/worktrees/cleanup-<area>`
+   (use the `EnterWorktree` tool, or `Agent` with `isolation: "worktree"`). All
+   work happens there; `main` stays clean. Big refactors are safe because they're
+   isolated and behavior-pinned.
+2. **Map for depth (read-only, no edits).** Scope: the path argument if given,
+   else the whole workspace. Don't hunt nits — look for *shallow modules* (large
+   interface, thin body), *leaky seams* (callers reaching past an interface into
+   internals), duplicated concepts, needless indirection, and structures that
+   fight the seams documented in `CONTEXT.md`. Judge internals freely; the suite
+   pins the externals.
+3. **Findings.** Present them in the terminal **and** write `findings.md` in the
+   worktree root (durable, pasteable into a PR). **Rank by structural leverage** —
+   biggest collapses / simplifications / re-seamings first; cosmetic nits last or
+   omitted. Give each finding its own full, unbounded section (a heading, not a
+   table row) — see *Findings format* below.
+4. **One go-gate.** Recommend a sequence (big moves included as first-class, not
+   deferred), then take **one** confirm. Escape hatches: "show N" (full plan +
+   blast radius for a finding), "skip N", reorder, or "html" (write an HTML report
+   instead). Don't grill pass-by-pass.
+5. **Execute.** One conceptually-focused commit per pass on the branch — a pass
+   may be *large* (a real re-seam), but it's one structural idea per commit; don't
+   bundle unrelated ideas. Run `just ci` + clippy at the end; `just review` to
+   accept any intentional snapshot changes.
+6. **Summarize** (see end) and point at the branch/worktree so the user can PR.
+
+## Findings format
+
+One section per finding, unbounded — give each the room it needs. No side tables
+or compact rows. Each section carries:
+
+- A heading: `## N · <imperative move>` plus a leverage tag (★ high / med).
+- One or two sentences naming the *structural* problem in deep-module terms
+  (shallow module, leaky seam, duplicated concept, needless indirection).
+- **A before → after code block** wherever possible, showing what actually
+  changes — types, signatures, the shape of the interface. Snippets, not whole
+  files; elide bodies with `…`. The point is to make the move legible at the
+  type/seam level, not to paste the diff.
+- Blast radius (files/callers touched, what gets deleted) and the tests that pin
+  the behavior it touches.
+
+Example of the shape (illustrative):
+
+```
+## 2 · Merge StatusStore + CommandStore into one ObservationStore   ★ high leverage
+
+Two stores with identical shape; the "status pipe wins over command" precedence is
+bolted on by hand in RadarState, so the rule leaks across both types (a duplicated
+concept + a leaky seam).
+
+Before:
+    struct StatusStore  { obs: HashMap<PaneId, TrackedObservation> }
+    struct CommandStore { obs: HashMap<PaneId, TrackedObservation> }
+
+    impl RadarState {
+        fn resolve(&self, p: PaneId) -> Option<&TrackedObservation> {
+            self.status.get(p).or_else(|| self.command.get(p))  // precedence by hand
+        }
+    }
+
+After:
+    struct ObservationStore { obs: HashMap<PaneId, BySource> }   // precedence is data
+
+    impl RadarState {
+        fn resolve(&self, p: PaneId) -> Option<&TrackedObservation> {
+            self.store.winner(p)            // one lookup; rule lives in BySource
+        }
+    }
+
+Blast radius: radar_state.rs (resolve, name_facts); deletes command_store.rs and
+its tests; ~120 lines net. Pinned by: radar_state unit tests + roll_up tests
+(resolved output must be byte-identical).
+```
+
+Write the same shape into `findings.md`. (`html` at the gate renders the same
+content as collapsible sections instead.)
 
 ## What zj-radar is
 
@@ -34,157 +126,111 @@ workspace:
 - `plugins/zj-radar-claude/` — the Claude Code producer plugin (hooks + bundled
   `notify.sh`).
 
-**Read `CONTEXT.md` before changing the core.** It names the load-bearing seams —
-the rail, `RadarState`, `roll_up`, tab naming, the status contract — in the
-deep-module vocabulary from the `codebase-design` skill (module, interface, depth,
-seam, leverage, locality). Use that vocabulary; align proposals with the seams
-documented there rather than inventing parallel ones.
+**Read `CONTEXT.md` before restructuring the core.** It names the load-bearing
+seams — the rail (`render_rail`), `RadarState`, `roll_up`, tab naming, the status
+contract — in deep-module vocabulary. Align your moves with those seams; deepen
+them rather than inventing parallel ones.
 
-## Non-negotiable invariants (do not break these while cleaning up)
+## Non-negotiable invariants (even big refactors respect these)
 
-Project rules, not preferences. Violating them gets the change rejected:
+These are the externals the test suite pins, plus project rules. A refactor that
+breaks one is wrong, however clean it looks:
 
 - **Do not run `cargo fmt` / `rustfmt`.** The code is intentionally hand-formatted
   (e.g. aligned one-line multi-field structs). A `cargo fmt` diff reformats the
-  whole tree and will be rejected. Match the formatting of the surrounding code.
+  whole tree and will be rejected. Match the surrounding code.
 - **Push-driven, never poll-driven.** The plugin must not issue blocking host
   queries (`get_pane_running_command`, etc.); status arrives via `zellij pipe`
   broadcasts. Polling melted the predecessor plugin
-  (`docs/smart-tabs-postmortem.md`). Do not "simplify" a push path into a poll.
+  (`docs/smart-tabs-postmortem.md`). A "simplification" that turns a push path
+  into a poll is a regression, not a cleanup.
 - **Rail lockstep.** Emitted ANSI and the click-target map stay in exact 1:1 line
-  correspondence (`CONTEXT.md` → *Lockstep*). It is structural — every `Line`
-  carries its own `RailTarget` and `ansi`/`targets`/line-count all derive from one
-  list. Keep it structural; do not reintroduce a separate height predictor.
+  correspondence (`CONTEXT.md` → *Lockstep*) — every `Line` carries its own
+  `RailTarget`; `ansi`/`targets`/line-count all derive from one list. A render
+  re-seam is high-value *and* the most dangerous place to break this; keep it
+  structural, never reintroduce a separate height predictor.
 - **`docs/rail-reference.md` is an executable spec** — `include_str!`'d by
   `crates/plugin/src/reference_tests.rs`. Edit it through that test, not casually.
-- **The only external interface is the versioned `zj_radar.status.v1` pipe
-  payload.** Don't change its shape, field names, or `v` as part of cleanup. The
-  plugin defends itself at parse time (sanitize, truncate, drop oversized/out-of-
-  order) — preserve that defensiveness.
+- **The versioned `zj_radar.status.v1` pipe payload is the only external
+  interface.** Don't change its shape, field names, or `v` as part of a refactor.
+  Preserve the plugin's parse-time defensiveness (sanitize, truncate, drop
+  oversized/out-of-order).
 
-Preserve all existing behavior, public contracts, data formats, CLI behavior,
-tests, snapshots, and integration expectations unless a change is clearly
-identified and justified. Prefer small, reviewable refactor passes; do not bundle
-unrelated changes.
+## Map for depth — what to look for
 
-## First, map the area you're touching
+Lead with structure, not style:
 
-1. Identify the crates/modules in scope and write each one's purpose in one
-   sentence. Cross-check against `CONTEXT.md` and `CONTRIBUTING.md` — if your
-   one-sentence summary disagrees with the docs, that gap is itself a finding.
-2. Identify the composition paths: where the runtime wires host concerns
-   (permission flow, timers, rendered-rail caching, effect translation), how
-   `RadarState` composes its stores (`StatusStore`, `CommandStore`) with pane
-   topology and `TabNamer`, and how data crosses the documented seams
-   (`render_rail`, `roll_up`, `Agent::derive`, `command_source`).
-3. Identify public APIs, extension seams, core domain types, the wasm/host
-   boundary, and the producer/agent intake boundary.
-4. Identify residue: duplicated logic, oversized files, leaky modules, unclear
-   names, dead code, stale abstractions, unnecessary indirection, inconsistent
-   error handling, and "an agent left a mess here" code.
+- **Shallow modules.** Large interface, thin implementation, or callers reaching
+  through it. Re-seam so a lot of behavior sits behind a small interface. Apply
+  the deletion test to every wrapper, pass-through, and "manager/utils" module.
+- **Duplicated concepts.** Two types/stores/functions that are the same shape with
+  a rule bolted on (the precedence between `StatusStore`/`CommandStore` is the
+  canonical example) — collapse to one, make the rule data.
+- **Leaky seams.** Where `pub`/`pub(crate)` exposes internals callers shouldn't
+  know (layout planning behind `render_rail`; worktree/basename resolution behind
+  the tab-naming seam; store precedence behind `RadarState`, never in `roll_up`).
+  Push the seam down; shrink the surface.
+- **Needless indirection.** Wrapper enums/structs with one variant or one caller,
+  newtypes that wrap nothing, generics with one instantiation, traits with one
+  impl. Inline them.
+- **Dependency-direction violations.** `crates/core` must depend on neither `cli`
+  nor `plugin`; domain logic must not depend on the Zellij adapter; the wasm-only
+  shell (`lib.rs`/`main.rs`) stays thin. Anything pointing the wrong way is a
+  high-leverage fix.
+- **Vocabulary drift.** The same concept under two names across modules — rename
+  to match `CONTEXT.md`.
 
-## Review and improve along these dimensions
+Cosmetic items (match-arm order, import grouping, one-line wording) are not worth a
+pass. Drop them or batch them into a larger structural commit, never on their own.
 
-### Module boundaries and encapsulation
+## Design judgment while restructuring
 
-- Each module should have a crisp purpose. The good seams are already named in
-  `CONTEXT.md`; deepen them, don't fragment them.
-- Public APIs should be minimal and sufficient for the module's role. Reduce
-  `pub` / `pub(crate)` exposure where callers don't need it.
-- Keep implementation behind the seam: layout planning lives behind `render_rail`;
-  store precedence ("status pipe wins over command") lives in `RadarState`, never
-  in `roll_up`; worktree/basename resolution lives behind the tab-naming seam.
-  Don't let consumers reach around a seam into its internals.
-- Respect dependency direction: `crates/core` depends on neither `cli` nor
-  `plugin`; domain logic should not depend on the Zellij adapter. The wasm-only
-  shell (`lib.rs`/`main.rs`) stays thin.
-- Remove dead exports, duplicate helpers, and "misc/utils" dumping grounds.
+- **Enums over traits for closed sets.** This codebase deliberately uses closed
+  enums — `enum Agent`, `Kind`, severity/`Outcome` — guarded by round-trip tests
+  (`source_round_trips_through_kind`). Adding an agent is a compiler-guided enum
+  variant, not a trait impl. Don't "abstract" a closed set into a trait; if a
+  refactor can turn open dispatch into a closed enum, that's a win.
+- **Traits/`dyn` only for real seams.** Two real adapters, genuine runtime
+  heterogeneity, or downstream-supplied behavior. One implementation is a
+  hypothetical seam — collapse it.
+- **Newtypes for domain distinctions** (`TabId`, `Kind`, `RailTarget`, `Outcome`),
+  not stringly/bool/option soup. Extend that habit.
+- **Idiomatic Rust.** Prefer `From`/`TryFrom`/`AsRef`/`IntoIterator` where they
+  make the interface natural; implement standard traits (`Debug`, `Clone`, `Eq`,
+  `Hash`, `Default`, `Serialize`) only where *semantically* correct; meaningful
+  error types over stringly errors; avoid gratuitous clone/box/`dyn`/`Arc<Mutex>`;
+  keep `unsafe` absent or tightly contained.
 
-### Composition and navigability
+## Validation
 
-- It should be obvious where to assemble the system, add an implementation, or
-  trace a workflow. Wiring (constructors, the runtime's effect translation, the
-  `Agent` registry) should live in predictable places.
-- Avoid hidden coupling and cross-module knowledge leaks — e.g. the namer must not
-  learn about `StatusStore`/`TerminalPane`; only pre-resolved facts cross to it.
-- Consolidate scattered composition only when it makes the system easier to
-  understand, not just shorter.
+Run inside the worktree:
 
-### Rust API design
-
-- Follow idiomatic Rust naming, conversion, ownership, and error conventions.
-- Prefer `From`, `TryFrom`, `AsRef`, `IntoIterator`, etc. where they make APIs
-  more natural.
-- Public types should implement the standard traits that are *semantically*
-  correct (`Debug`, `Clone`, `Eq`, `Hash`, `Default`, `Serialize`) — not
-  reflexively.
-- Use newtypes to encode domain distinctions (this codebase already does:
-  `TabId`, `Kind`, `RailTarget`, `Outcome`) rather than passing ambiguous
-  strings/bools/options around. Extend that habit; don't dilute it.
-- Prefer meaningful error types and context over stringly errors.
-- Avoid unnecessary cloning, boxing, dynamic dispatch, `Arc<Mutex<_>>`, or
-  lifetime complexity unless justified. Keep `unsafe` absent or tightly contained.
-
-### Extension seams: enums vs traits vs generics
-
-- This codebase deliberately favors **closed enums over open traits** for its
-  variant spaces — `enum Agent`, `Kind`, severity/`Outcome`. Adding an agent is a
-  compiler-guided enum variant guarded by `source_round_trips_through_kind`, *not*
-  a new trait impl. Respect that; don't "abstract" a closed set into a trait.
-- Use enums when the set is closed, domain-known, exhaustively matchable, or
-  state-machine-like.
-- Use traits only when behavior is genuinely open-ended (multiple backends,
-  downstream-supplied) — and `dyn Trait` only when runtime heterogeneity is real.
-- Don't create a trait to abstract a single implementation unless it marks a real
-  seam, simplifies tests, or removes meaningful coupling. Don't over-generalize —
-  prefer concrete, readable code until repetition or extension pressure proves the
-  seam.
-
-### Simplification
-
-- Delete unused code rather than reorganizing it.
-- Collapse duplicated logic into the smallest natural abstraction.
-- Split oversized modules only when the split creates clearer ownership of
-  concepts.
-- Inline needless wrappers and pass-through functions that hide rather than
-  clarify.
-- Prefer obvious code over clever code; rename concepts so vocabulary is
-  consistent with `CONTEXT.md`.
-
-## Correctness and validation
-
-- Before changing behavior-adjacent code, identify the tests or checks that prove
-  behavior is preserved. The suite is layered (L1–L5):
-  - `just test` — deterministic host suite (unit, insta snapshots, proptest,
-    vt100). No wasm build needed.
-  - `just test-bash` — bash hook tests (needs `bats` + `shellcheck` + `jq`).
-  - `just ci` — what every PR must pass: `test` + `test-bash`. **Run this.**
-  - `just test-e2e` — L5 live: builds the wasm and drives a real Zellij in a PTY
-    (needs `zellij`). Serial and slow; run only if your change could affect it.
-  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — must
-    be clean.
-- Add or improve tests only where they protect a refactor or clarify expected
-  behavior. New render behavior → an `insta` snapshot or a `rail-reference.md`
-  scenario; new wire/parse behavior → a unit/proptest.
-- After an *intentional* render change, accept snapshots with `just review`
-  (`cargo insta review`) — CI fails on unreviewed snapshot drift.
-- **Do not run `cargo fmt`.** If any check cannot be run, state exactly why.
+- `just ci` — what every PR must pass (`just test` host suite + `just test-bash`).
+  **Run this** after the passes.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean.
+- `just review` (`cargo insta review`) — accept *intentional* snapshot changes;
+  CI fails on unreviewed drift. For a behavior-preserving refactor, snapshots
+  should usually be **unchanged** — a snapshot diff is a signal to double-check you
+  didn't alter render output.
+- `just test-e2e` — live Zellij in a PTY; slow/serial. Run only if a refactor could
+  plausibly affect runtime wiring.
+- Add/strengthen tests where a refactor needs a behavior pin it doesn't yet have.
+- **Do not run `cargo fmt`.** If a check can't run, state exactly why.
 
 ## Work style
 
-- Start with a brief findings summary and a proposed sequence of small, focused
-  passes. Then implement the safest high-value passes first.
-- Keep each pass conceptually focused; one logical change per pass (and per PR —
-  see `CONTRIBUTING.md`).
-- Avoid broad rewrites, new dependencies, public API breaks, wire-format changes,
-  migrations, and speculative abstractions unless clearly necessary.
-- If you find a larger architectural issue, document it as a follow-up proposal
-  rather than mixing it into cleanup.
-- Update docs (`README.md`, `docs/`, `CONTEXT.md`) when an interface or behavior
-  you touch changes.
+- Big architectural moves are the point. Bring them to the go-gate as first-class,
+  fully-scoped proposals (with blast radius) — don't silently defer them as
+  "follow-ups." Only genuinely out-of-scope or beyond-the-suite-risk items become
+  follow-up notes.
+- One structural idea per commit; a commit may be large, but keep it conceptually
+  focused (matches one-logical-change-per-PR in `CONTRIBUTING.md`).
+- Update docs (`README.md`, `docs/`, `CONTEXT.md`) when a seam or interface you
+  reshaped changes.
 - When finished, summarize:
-  1. What changed.
-  2. What behavior was preserved.
-  3. What modules/APIs/seams became tighter.
-  4. What tests/checks passed (`just ci`, clippy, and any others you ran).
-  5. What risks or follow-up refactors remain.
+  1. What was restructured (the big moves).
+  2. What behavior was preserved, and which tests prove it.
+  3. What modules/seams got deeper (interface shrunk, callers stopped reaching in,
+     duplication/indirection deleted — with rough line counts).
+  4. What checks passed (`just ci`, clippy, snapshots).
+  5. What risks or follow-up refactors remain — and the branch/worktree to PR from.
