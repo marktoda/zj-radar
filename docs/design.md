@@ -419,7 +419,12 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 - Floating cross-session **dashboard** overlay (`MOD+a`).
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
-- Moving notification logic into the plugin (it belongs in shell adapters by design).
+- Moving notification logic into the plugin. **Update:** the plugin now owns OS desktop
+  notifications (macOS, this version). Rationale: single plugin install provides a standard,
+  user-configurable notification surface (via `notify*` KDL keys) that survives across agent
+  adapters — reversing the prior assumption that notifications belong in shell adapters alone.
+  This trade-off is stable: adapters delegate OS delivery to the plugin while owning their own
+  pipe payload schema and lifecycle logic.
 - **Keybinds, the passive way** — the supported keyboard path is a Zellij
   `MessagePlugin` binding that delivers a verb to the `zj_radar.cmd.v1` pipe
   (e.g. `attention-next`), handled in `pipe()` exactly like `config.v1`. This

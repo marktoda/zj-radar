@@ -19,7 +19,14 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
-                plugin location="radar"
+                plugin location="radar" {
+                    // Desktop notifications (macOS). Master switch + per-status toggles.
+                    // notify true
+                    // notify_done true
+                    // notify_error true
+                    // notify_pending true
+                    // notify_when_focused false
+                }
             }
             children
         }
@@ -35,7 +42,14 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
-                plugin location="radar"
+                plugin location="radar" {
+                    // Desktop notifications (macOS). Master switch + per-status toggles.
+                    // notify true
+                    // notify_done true
+                    // notify_error true
+                    // notify_pending true
+                    // notify_when_focused false
+                }
             }
             pane focus=true
         }

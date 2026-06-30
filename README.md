@@ -287,6 +287,11 @@ plugins {
     radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
         density "comfortable"
         naming "off"
+        notify true
+        notify_done true
+        notify_error true
+        notify_pending true
+        notify_when_focused false
     }
 }
 ```
@@ -300,6 +305,11 @@ ignored and invalid values fall back to the default (parsing never fails):
 | `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
+| `notify` | `true` · `false` | `true` | Enable desktop notifications (macOS). |
+| `notify_done` | `true` · `false` | `true` | Notify on `done` status transitions. |
+| `notify_error` | `true` · `false` | `true` | Notify on `error` status transitions. |
+| `notify_pending` | `true` · `false` | `true` | Notify on `pending` status transitions. |
+| `notify_when_focused` | `true` · `false` | `false` | Suppress notifications when the pane is focused. |
 
 These can also be changed **at runtime** without editing the layout, by
 broadcasting a flat JSON object on the `zj_radar.config.v1` pipe:
