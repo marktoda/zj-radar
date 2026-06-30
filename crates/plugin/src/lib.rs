@@ -13,6 +13,7 @@ pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
 mod config;
 mod control;
 mod notify_rules;
+mod permission;
 mod radar_state;
 #[cfg(test)]
 mod reference_tests;
@@ -112,7 +113,7 @@ impl State {
     /// produce misleading results.
     #[cfg(test)]
     fn render_at(&mut self, width: usize) {
-        self.runtime.permission_granted = true;
+        self.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
         let height = if self.runtime.last_render_height == 0 {
             usize::MAX / 2
         } else {
@@ -607,7 +608,7 @@ mod tests {
     fn state_defaults_glyphs_to_plain_and_ungranted() {
         let s = State::default();
         assert_eq!(s.runtime.config.glyphs, crate::status::GlyphSet::Plain);
-        assert!(!s.runtime.permission_granted);
+        assert!(!s.runtime.permission.granted());
     }
 
     #[test]
@@ -1119,7 +1120,7 @@ mod tests {
         // 2 idle tabs, permission granted, render at width 80.
         // header=2 lines (Compact), tab 0 at line 2.
         let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
-        state.runtime.permission_granted = true;
+        state.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
         let _ = state.runtime.render(100, 80);
         // line 2 is the first tab content row (lines 0-1 are the header)
         let outcome = state.runtime.mouse_click(2);
@@ -1129,7 +1130,7 @@ mod tests {
     #[test]
     fn mouse_click_without_permission_is_inert() {
         let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
-        state.runtime.permission_granted = false;
+        state.runtime.permission = crate::permission::PermissionState::default();
         let _ = state.runtime.render(100, 80);
         assert!(state.runtime.mouse_click(2).effects.is_empty());
     }
@@ -1160,7 +1161,7 @@ mod tests {
                 state.runtime.radar.set_tab_panes_for_position(i, vec![pane(i as u32)]);
             }
             // Render through the production path at the given width; this populates last_rendered.
-            state.runtime.permission_granted = true;
+            state.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
             let ansi = state.runtime.render(200, width);
             let rail_lines = ansi.matches('\n').count();
             // For every drawn line, target_at_line must resolve to a real tab or None.
