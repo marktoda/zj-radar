@@ -1275,7 +1275,7 @@ fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let config_text = std::fs::read_to_string(&config_path).ok();
     let facts = analyze_zellij(&ZellijEnv {
         config_text:            config_text.clone(),
-        layout_text:            std::fs::read_to_string(&layout_path).ok(),
+        layout_text:            None, // install only consults `config_managed`; the layout is read later by the inject flow
         permissions_text:       None,
         codex_hooks_text:       None,
         installed_plugins_text: None,
