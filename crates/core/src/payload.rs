@@ -249,6 +249,39 @@ mod tests {
     }
 
     #[test]
+    fn truncates_each_field_to_its_own_cap() {
+        // Each text field has a distinct cap (repo/branch 40, msg MAX_MSG_CHARS,
+        // source 16). Pin all four so nudging any cap in `parse` is caught here —
+        // the wire boundary is the only thing standing between a hostile producer
+        // and an unbounded row.
+        let json = format!(
+            r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","repo":"{r}","branch":"{b}","msg":"{m}","source":"{s}"}}"#,
+            r = "r".repeat(100),
+            b = "b".repeat(100),
+            m = "m".repeat(200),
+            s = "s".repeat(100),
+        );
+        let got = p(&json).unwrap();
+        assert_eq!(got.repo.chars().count(), 40);
+        assert_eq!(got.branch.chars().count(), 40);
+        assert_eq!(got.msg.chars().count(), MAX_MSG_CHARS);
+        assert_eq!(got.source.chars().count(), 16);
+    }
+
+    #[test]
+    fn parses_pane_id_boundaries() {
+        // 0 and u32::MAX are both valid pane ids — neither overflows nor is special.
+        assert_eq!(
+            p(r#"{"pane":{"type":"terminal","id":0},"status":"done"}"#).unwrap().pane_id,
+            0
+        );
+        assert_eq!(
+            p(r#"{"pane":{"type":"terminal","id":4294967295},"status":"done"}"#).unwrap().pane_id,
+            u32::MAX
+        );
+    }
+
+    #[test]
     fn sanitize_strips_control_newlines_ansi_and_truncates() {
         let dirty = "a\nb\t\x1b[31mc\x07";
         assert_eq!(sanitize(dirty, 10), "a b c");
@@ -371,20 +404,36 @@ mod tests {
 
         #[test]
         fn parse_to_wire_round_trip(
-            pane in 0u32..1000,
+            pane in any::<u32>(),
+            status in proptest::sample::select(Status::ALL.to_vec()),
+            on_focus in proptest::option::of(proptest::sample::select(Status::ALL.to_vec())),
             repo in "[a-z]{0,15}",
             branch in "[a-z/]{0,15}",
             msg in "[a-zA-Z0-9 ]{0,40}",
+            source in "[a-z]{0,12}",
         ) {
-            // to_wire and parse must be inverses: a round-trip through the wire format
-            // must preserve all fields that parse surfaces. Only printable ASCII is
-            // generated so sanitize does not alter any field.
-            let wire = to_wire(pane, Status::Running, &repo, &branch, &msg, None, "test");
+            // to_wire and parse must be inverses: a round-trip through the wire
+            // format must preserve EVERY field parse surfaces — across all statuses,
+            // both on_focus arms, the full pane-id range, and msg/source (the fields
+            // the old version silently dropped). Only printable ASCII within each
+            // field's cap is generated, so sanitize does not alter any field.
+            let wire = to_wire(pane, status, &repo, &branch, &msg, on_focus, &source);
             let got = parse(&wire).expect("our own wire output must parse");
             prop_assert_eq!(got.pane_id, pane);
-            prop_assert_eq!(got.status, Status::Running);
+            prop_assert_eq!(got.status, status);
+            prop_assert_eq!(got.on_focus, on_focus);
             prop_assert_eq!(got.repo, repo);
             prop_assert_eq!(got.branch, branch);
+            prop_assert_eq!(got.msg, msg);
+            prop_assert_eq!(got.source, source);
+        }
+
+        #[test]
+        fn parse_never_panics_on_arbitrary_input(raw in ".{0,2000}") {
+            // parse is the untrusted-input boundary: whatever a producer broadcasts,
+            // it must resolve to Some/None, never panic (no slice on a non-char
+            // boundary, no overflow). The result is intentionally ignored.
+            let _ = parse(&raw);
         }
     }
 }
