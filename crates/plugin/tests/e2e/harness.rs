@@ -83,6 +83,7 @@ impl ZellijSession {
         _plugin_wasm: &Path,
         temp_home: tempfile::TempDir,
     ) -> Self {
+        assert_zellij_version();
         let temp_home_path = temp_home.path().to_path_buf();
 
         // Kill any previous session with this name to avoid conflicts.
@@ -337,8 +338,12 @@ impl ZellijSession {
     /// `pane_id` is the numeric terminal pane ID (from `discover_terminal_pane_id`);
     /// it is formatted as `terminal_<pane_id>` for `$ZELLIJ_PANE_ID`.
     pub fn run_notify_sh(&self, status: &str, pane_id: u32, hook_json: &str) {
+        // notify.sh lives at the workspace root, not under this crate.
+        // CARGO_MANIFEST_DIR is crates/plugin, so go up two levels — mirroring
+        // plugin_wasm_path. (Before the workspace split the manifest dir WAS the
+        // repo root, so the old `plugins/...` path silently broke this test.)
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins/zj-radar-claude/scripts/notify.sh");
+            .join("../../plugins/zj-radar-claude/scripts/notify.sh");
         use std::io::Write as _;
         let mut child = std::process::Command::new("bash")
             .arg(&script)
@@ -391,6 +396,86 @@ impl ZellijSession {
         let mut p = vt100::Parser::new(40, 100, 0);
         p.process(&raw);
         p.screen().clone()
+    }
+
+    /// Poll `cond` against this session until it holds or `timeout` elapses,
+    /// re-checking every 150ms. Returns whether it became true. Prefer this over
+    /// a fixed `sleep` before an assertion: a fast machine returns the instant
+    /// the frame is ready, while a loaded CI runner gets the full budget. The
+    /// dominant source of E2E flake is a fixed sleep that under-waits, so the
+    /// only fixed waits that should remain are those asserting something *stays*
+    /// (a non-event, which polling cannot shorten).
+    #[allow(dead_code)]
+    pub fn wait_until(&self, timeout: Duration, mut cond: impl FnMut(&Self) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cond(self) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    /// Wait until the parsed sidebar region (left `width` columns) contains
+    /// `needle`, up to `timeout`. The vt100 sidebar region — not `pty_text()` —
+    /// is the right surface to assert on: it excludes the terminal panes'
+    /// scrollback, so a match cannot be a false positive from echoed input or a
+    /// piped payload string landing in the buffer.
+    #[allow(dead_code)]
+    pub fn wait_for_sidebar(&self, width: u16, needle: &str, timeout: Duration) -> bool {
+        self.wait_until(timeout, |s| {
+            sidebar_region(&s.screen(), width).contains(needle)
+        })
+    }
+
+    /// Inject a left-button mouse click at 1-based screen (`col`, `row`) by
+    /// writing an SGR mouse sequence (`\e[<0;col;row;M` press, `m` release) to the
+    /// PTY master — the encoding Zellij requests by default. Zellij routes the
+    /// click to the pane under the cursor, so a click within the sidebar columns
+    /// reaches the rail plugin. This is the only way to exercise the rail's
+    /// click→SwitchTab path through a *real* mouse event end-to-end.
+    #[allow(dead_code)]
+    pub fn click_at(&self, col: u16, row: u16) {
+        if let Ok(mut w) = self.pty_writer.lock() {
+            let _ = w.write_all(format!("\x1b[<0;{col};{row}M").as_bytes());
+            let _ = w.write_all(format!("\x1b[<0;{col};{row}m").as_bytes());
+            let _ = w.flush();
+        }
+    }
+
+    /// Run an arbitrary `zellij action` against this session (e.g. `new-tab`,
+    /// `go-to-tab`). Exposed for multi-tab tests; thin wrapper over `action`.
+    #[allow(dead_code)]
+    pub fn run_action(&self, args: &[&str]) {
+        let _ = self.action(args);
+    }
+}
+
+/// Fail fast (with a clear message) if `zellij` is missing, and warn loudly if it
+/// is not the 0.44.x series the harness layout KDL and permission-prompt handling
+/// target. A version skew otherwise surfaces as an opaque `wait_until_ready`
+/// timeout — "the plugin never rendered" — instead of "your zellij is too new".
+#[cfg(feature = "e2e")]
+fn assert_zellij_version() {
+    match Command::new("zellij").arg("--version").output() {
+        Ok(out) => {
+            let v = String::from_utf8_lossy(&out.stdout);
+            if !v.contains("0.44") {
+                eprintln!(
+                    "[e2e] WARNING: harness targets zellij 0.44.x but found `{}`. \
+                     Layout/permission behavior may differ; a timeout below likely means \
+                     a version skew, not a plugin regression.",
+                    v.trim()
+                );
+            }
+        }
+        Err(e) => panic!(
+            "[e2e] `zellij` not found on PATH ({e}). Install zellij 0.44.x to run the \
+             live E2E suite (see CONTRIBUTING.md)."
+        ),
     }
 }
 
