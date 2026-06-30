@@ -208,12 +208,9 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     }
 
     let existing = config_text.unwrap_or_default();
-    let outcome = match edit_zellij(&existing, &location, !uninstall, force) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("zellij: refused — {e}");
-            return;
-        }
+    let Some(outcome) = edit_or_report("zellij", edit_zellij(&existing, &location, !uninstall, force))
+    else {
+        return;
     };
 
     match outcome {
