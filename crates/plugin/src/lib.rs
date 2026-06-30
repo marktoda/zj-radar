@@ -55,7 +55,7 @@ use runtime::Effect;
 #[cfg(target_arch = "wasm32")]
 use session_files::SessionFileIds;
 #[cfg(target_arch = "wasm32")]
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
 
@@ -270,54 +270,29 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::PaneUpdate(manifest) => {
-                let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
-                let mut live: HashSet<u32> = HashSet::new();
-                let mut exits: Vec<(u32, Option<i32>)> = Vec::new();
-                // Capture the terminal's reported default bg/fg so we can derive
-                // the dark-panel surfaces in the terminal's own theme. Prefer the
-                // focused pane; otherwise accept the first terminal pane that
-                // reports both colors.
-                let mut focused_colors: Option<(theme::Rgb, theme::Rgb)> = None;
-                let mut any_colors: Option<(theme::Rgb, theme::Rgb)> = None;
-                for (tab_pos, panes) in manifest.panes {
-                    for p in panes {
-                        if p.is_plugin {
-                            continue;
-                        }
-                        let colors = match (
-                            p.default_bg.as_deref().and_then(theme::parse_hex),
-                            p.default_fg.as_deref().and_then(theme::parse_hex),
-                        ) {
-                            (Some(bg), Some(fg)) => Some((bg, fg)),
-                            _ => None,
-                        };
-                        if let Some(c) = colors {
-                            any_colors.get_or_insert(c);
-                            if p.is_focused {
-                                focused_colors = Some(c);
-                            }
-                        }
-                        tab_panes.entry(tab_pos).or_default().push(TerminalPane {
+                // Pure adapter: copy the host's `PaneInfo` fields into `RawPane`s.
+                // All policy — plugin-skip, title sanitize, theme-color precedence —
+                // lives in the host-tested `PaneUpdate::from_raw`.
+                let raw: Vec<radar_state::RawPane> = manifest
+                    .panes
+                    .into_iter()
+                    .flat_map(|(tab_pos, panes)| {
+                        panes.into_iter().map(move |p| radar_state::RawPane {
+                            tab_pos,
                             id: p.id,
-                            title: payload::sanitize(&p.title, 40),
-                            focused_in_tab: p.is_focused,
-                        });
-                        live.insert(p.id);
-                        if p.exited {
-                            exits.push((p.id, p.exit_status));
-                        }
-                    }
-                }
-                let theme = focused_colors
-                    .or(any_colors)
-                    .map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
-                let update = radar_state::PaneUpdate {
-                    tab_panes,
-                    live,
-                    theme,
-                    exits,
-                };
-                let outcome = self.runtime.panes_changed(update);
+                            title: p.title,
+                            is_plugin: p.is_plugin,
+                            is_focused: p.is_focused,
+                            default_bg: p.default_bg,
+                            default_fg: p.default_fg,
+                            exited: p.exited,
+                            exit_status: p.exit_status,
+                        })
+                    })
+                    .collect();
+                let outcome = self
+                    .runtime
+                    .panes_changed(radar_state::PaneUpdate::from_raw(raw));
                 self.handle_outcome(outcome)
             }
             Event::Timer(_) => {

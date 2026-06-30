@@ -97,6 +97,73 @@ pub(crate) struct PaneUpdate {
     pub exits: Vec<(u32, Option<i32>)>,
 }
 
+/// One terminal pane as the Zellij host reports it — the few `PaneInfo` fields
+/// the radar consumes, copied into plain owned data. The wasm adapter (`lib.rs`)
+/// does nothing but this field copy; every bit of *policy* lives in
+/// [`PaneUpdate::from_raw`], so it stays host-testable.
+pub(crate) struct RawPane {
+    pub tab_pos: usize,
+    pub id: u32,
+    pub title: String,
+    pub is_plugin: bool,
+    pub is_focused: bool,
+    pub default_bg: Option<String>,
+    pub default_fg: Option<String>,
+    pub exited: bool,
+    pub exit_status: Option<i32>,
+}
+
+impl PaneUpdate {
+    /// Fold the host's panes into a `PaneUpdate`: drop plugin panes (the rail
+    /// itself), sanitize titles, collect live ids and exits, and derive the
+    /// terminal theme from the focused pane's reported bg/fg — falling back to
+    /// the first terminal pane that reports both. Pure over `RawPane`, so the
+    /// color precedence and plugin-skip are unit-testable without a live Zellij.
+    pub(crate) fn from_raw(panes: Vec<RawPane>) -> PaneUpdate {
+        let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
+        let mut live: HashSet<u32> = HashSet::new();
+        let mut exits: Vec<(u32, Option<i32>)> = Vec::new();
+        let mut focused_colors: Option<(theme::Rgb, theme::Rgb)> = None;
+        let mut any_colors: Option<(theme::Rgb, theme::Rgb)> = None;
+        for p in panes {
+            if p.is_plugin {
+                continue;
+            }
+            let colors = match (
+                p.default_bg.as_deref().and_then(theme::parse_hex),
+                p.default_fg.as_deref().and_then(theme::parse_hex),
+            ) {
+                (Some(bg), Some(fg)) => Some((bg, fg)),
+                _ => None,
+            };
+            if let Some(c) = colors {
+                any_colors.get_or_insert(c);
+                if p.is_focused {
+                    focused_colors = Some(c);
+                }
+            }
+            tab_panes.entry(p.tab_pos).or_default().push(TerminalPane {
+                id: p.id,
+                title: payload::sanitize(&p.title, 40),
+                focused_in_tab: p.is_focused,
+            });
+            live.insert(p.id);
+            if p.exited {
+                exits.push((p.id, p.exit_status));
+            }
+        }
+        let theme = focused_colors
+            .or(any_colors)
+            .map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
+        PaneUpdate {
+            tab_panes,
+            live,
+            theme,
+            exits,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RadarChange {
     pub render: bool,
