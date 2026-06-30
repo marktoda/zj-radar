@@ -94,9 +94,9 @@ templates — the same place its own tab-bar/status-bar live — so radar integr
 like [zjstatus](https://github.com/dj95/zjstatus): add one pane to your
 templates, and keep the rest of your layout yours.
 
-`setup zellij` (any of `--download`, `--wasm`, `--alias-only`) will prompt you to
-inject the rail automatically after the wasm/alias steps. You can also inject or
-re-inject at any time:
+`setup zellij` with `--wasm <path>` or `--download` installs the wasm and alias,
+then prompts to inject the rail automatically. You can also inject or re-inject
+at any time (no wasm/alias step needed):
 
 ```sh
 zj-radar setup zellij --inject              # inject into the default layout
@@ -173,15 +173,16 @@ component:
 
 ```
 zj-radar setup zellij --check
-  ✓ alias          radar plugin alias present in config.kdl
-  ✓ wasm           wasm plugin file present
-  ✗ layout         default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
-  ✗ grant          wasm not granted — run `zj-radar setup zellij --grant`
-  ✓ producer       a producer is wired (Codex hooks or Claude plugin)
+zellij:
+  ok alias: radar plugin alias present in config.kdl
+  ok wasm: wasm plugin file present
+  missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
+  missing grant: wasm not granted — run `zj-radar setup zellij --grant`
+  ok producer: a producer is wired (Codex hooks or Claude plugin)
 ```
 
-Each item is `✓` (ok), `!` (warning), or `✗` (missing). The check is read-only —
-it never modifies any file. Reported items:
+Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
+modifies any file. Reported items (five always; a sixth only when applicable):
 
 - **alias** — `radar` plugin alias present in `config.kdl`; warns if it points at
   a `/nix/store/` path (grant won't survive a rebuild).
@@ -189,8 +190,8 @@ it never modifies any file. Reported items:
 - **layout** — default layout contains the injected radar rail.
 - **grant** — `permissions.kdl` records a grant for the wasm path.
 - **producer** — Codex hooks or Claude plugin is wired up.
-- **managed config** — `config.kdl` is a symlink (home-manager); warns that
-  direct edits may be overwritten.
+- **managed config** — emitted only when `config.kdl` is a symlink
+  (home-manager); warns that direct edits may be overwritten.
 
 ## Loading straight from a release URL (caveat)
 
