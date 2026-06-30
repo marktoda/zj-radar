@@ -85,6 +85,29 @@ pub enum Outcome {
     Conflict,
 }
 
+/// The single operation a `setup` invocation performs. Resolving this once makes
+/// the precedence (grant > check > uninstall > install) explicit instead of
+/// implicit in the order of `if` blocks.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Grant,
+    Check,
+    Uninstall,
+    Install,
+}
+
+pub(crate) fn mode_from_flags(grant: bool, check: bool, uninstall: bool) -> Mode {
+    if grant {
+        Mode::Grant
+    } else if check {
+        Mode::Check
+    } else if uninstall {
+        Mode::Uninstall
+    } else {
+        Mode::Install
+    }
+}
+
 /// True iff `notify` exists and equals our exact marker array.
 pub fn notify_is_ours(item: Option<&Item>) -> bool {
     item.and_then(|i| i.as_array())
@@ -632,9 +655,9 @@ fn codex_installed() -> bool {
 
 /// Entry point for `zj-radar setup`.
 pub fn run(options: SetupOptions<'_>) {
-    // `--grant` is its own action: open the plugin in a focused floating pane
-    // so Zellij can surface the permissions prompt. Does not run wasm/alias/inject.
-    if options.grant {
+    let mode = mode_from_flags(options.grant, options.check, options.uninstall);
+
+    if mode == Mode::Grant {
         run_grant(&zellij_config_dir());
         return;
     }
@@ -651,7 +674,8 @@ pub fn run(options: SetupOptions<'_>) {
     {
         eprintln!("zj-radar: setup does not support '{a}' (supported: codex, zellij). Skipping.");
     }
-    if options.check {
+
+    if mode == Mode::Check {
         if want_zellij {
             check_zellij();
         }
@@ -660,11 +684,13 @@ pub fn run(options: SetupOptions<'_>) {
         }
         return;
     }
+
+    let uninstall = mode == Mode::Uninstall;
     if want_zellij {
         setup_zellij(
             options.wasm,
             options.download,
-            options.uninstall,
+            uninstall,
             options.dry_run,
             options.yes,
             options.force,
@@ -674,7 +700,7 @@ pub fn run(options: SetupOptions<'_>) {
     }
     if want_codex {
         setup_codex(
-            options.uninstall,
+            uninstall,
             options.dry_run,
             options.yes,
             options.legacy_notify,
@@ -2367,6 +2393,14 @@ mod tests {
         assert!(matches!(mk(Some(foreign)).notify, CodexNotifyState::Foreign));
         assert!(matches!(mk(Some("a = 1\n")).notify, CodexNotifyState::NotInstalled));
         assert!(matches!(mk(None).notify, CodexNotifyState::ConfigAbsent));
+    }
+
+    #[test]
+    fn mode_precedence_grant_beats_check_beats_uninstall() {
+        assert!(matches!(mode_from_flags(true, true, true), Mode::Grant));
+        assert!(matches!(mode_from_flags(false, true, true), Mode::Check));
+        assert!(matches!(mode_from_flags(false, false, true), Mode::Uninstall));
+        assert!(matches!(mode_from_flags(false, false, false), Mode::Install));
     }
 
     #[test]
