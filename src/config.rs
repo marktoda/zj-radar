@@ -52,6 +52,11 @@ pub struct Config {
     pub header: bool,
     pub glyphs: crate::status::GlyphSet,
     pub density: Density,
+    pub notify: bool,
+    pub notify_done: bool,
+    pub notify_error: bool,
+    pub notify_pending: bool,
+    pub notify_when_focused: bool,
 }
 
 impl Default for Config {
@@ -61,6 +66,11 @@ impl Default for Config {
             header: true,
             glyphs: crate::status::GlyphSet::default(),
             density: Density::default(),
+            notify: true,
+            notify_done: true,
+            notify_error: true,
+            notify_pending: true,
+            notify_when_focused: false,
         }
     }
 }
@@ -135,7 +145,12 @@ config_fields! {
         glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
     }
     opt {
-        header: "header" => parse_bool,
+        header:              "header"              => parse_bool,
+        notify:              "notify"              => parse_bool,
+        notify_done:         "notify_done"         => parse_bool,
+        notify_error:        "notify_error"        => parse_bool,
+        notify_pending:      "notify_pending"      => parse_bool,
+        notify_when_focused: "notify_when_focused" => parse_bool,
     }
 }
 
@@ -339,5 +354,38 @@ mod tests {
         let mut via_apply = Config::default();
         via_apply.apply_overrides(&inputs);
         assert_eq!(via_from_map, via_apply);
+    }
+
+    #[test]
+    fn notify_defaults_are_opt_out_on() {
+        let c = Config::default();
+        assert!(c.notify);
+        assert!(c.notify_done);
+        assert!(c.notify_error);
+        assert!(c.notify_pending);
+        assert!(!c.notify_when_focused);
+    }
+
+    #[test]
+    fn notify_keys_parse() {
+        let c = Config::from_map(&map(&[
+            ("notify", "off"),
+            ("notify_done", "false"),
+            ("notify_error", "0"),
+            ("notify_pending", "no"),
+            ("notify_when_focused", "true"),
+        ]));
+        assert!(!c.notify);
+        assert!(!c.notify_done);
+        assert!(!c.notify_error);
+        assert!(!c.notify_pending);
+        assert!(c.notify_when_focused);
+    }
+
+    #[test]
+    fn notify_garbage_keeps_default() {
+        // opt parser leaves the default on unparseable input
+        let c = Config::from_map(&map(&[("notify_done", "maybe")]));
+        assert!(c.notify_done);
     }
 }
