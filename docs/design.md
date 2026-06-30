@@ -324,7 +324,7 @@ replacement is push-only and tiered:
   `~/dev/zj-radar`. **Note:** the artifact is a *binary* crate, not `cdylib` —
   Zellij loads plugins as WASI command modules (it calls `_start`, which
   `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
-  `_start` and won't load. See the comment block in `src/main.rs`.
+  `_start` and won't load. See the comment block in `crates/plugin/src/main.rs`.
 - **Dev loop:** `./dev/run.sh` builds the debug wasm, generates a layout with an
   absolute plugin path, and refreshes the dev surface. From a normal terminal it
   restarts the disposable `zj-radar-dev` session; from inside Zellij it reloads

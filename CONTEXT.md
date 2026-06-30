@@ -75,7 +75,7 @@ click-target lockstep. `RadarState` owns the domain facts between those seams.
 
 The policy that decides what each tab is called, and remembers what it last
 applied. The **tab-naming seam** is `TabNamer::rename(tabs, mode) -> Vec<TabRename>`
-in `src/tab_namer.rs`: a deep module fed resolved `TabFacts` (per-tab `id`,
+in `crates/plugin/src/tab_namer.rs`: a deep module fed resolved `TabFacts` (per-tab `id`,
 `name`, `position`, and per-pane `PaneFacts` carrying `repo`, raw `cwd`, raw
 `title`, `focused`). `RadarState::name_facts` does the joins across its stores and
 pane topology, so the namer never learns about `StatusStore`, `TerminalPane`, or
@@ -123,20 +123,20 @@ a `Kind`-keyed `Status`:
 - **Pushed** — instrumented agents report rich status by broadcasting the *status
   contract* through the host CLI (`zj-radar notify <agent>`). Each agent is a peer
   adapter behind the **agent intake** seam — `Agent::derive(&Intake) ->
-  Option<AgentUpdate>` in `src/cli/agents/` — so `notify::run` is a thin,
+  Option<AgentUpdate>` in `crates/cli/src/agents/` — so `notify::run` is a thin,
   agent-agnostic shell (read input → derive → broadcast). Adding an agent is a
   compiler-guided `enum Agent` variant; its `source()` string is the single
   vocabulary shared across the CLI argument, the wire `source`, and
   `Kind::from_source`, pinned by the `source_round_trips_through_kind` guard test.
 - **Observed** — uninstrumented commands (e.g. `cargo test`) that Radar watches
   from outside. The plugin classifies the observed argv via
-  `command.rs::command_source` and infers status from the process lifecycle. No
-  wire, no CLI. `cargo test` lives here, **not** in `agents/`.
+  `crates/core/src/command.rs::command_source` and infers status from the process
+  lifecycle. No wire, no CLI. `cargo test` lives here, **not** in `agents/`.
 
 Both modalities emit a `source` string that must be a subset of `Kind`
 (`Kind::from_source`). Both halves are guarded: the agent half by
-`source_round_trips_through_kind` (in `cli/agents`), the command half by
-`command_source_round_trips_through_kind` (in `command.rs`) — each pins that its
+`source_round_trips_through_kind` (in `crates/cli/src/agents`), the command half by
+`command_source_round_trips_through_kind` (in `crates/core/src/command.rs`) — each pins that its
 classifier's `source` token round-trips back to the same `Kind`, never the
 `Other` sentinel.
 
@@ -146,8 +146,9 @@ The per-pane → per-tab roll-up: severity order `error > pending > running > do
 idle`, with `done/total` counts and a highest-severity detail line. Tab status is
 never derived from tab names — a single tab can hold several agent panes.
 
-The **roll-up seam** is `rollup::roll_up(panes, resolve) -> TabDisplay`: a deep,
-pure module that owns its output vocabulary (`TabDisplay`, `PaneDisplay`,
+The **roll-up seam** is `rollup::roll_up(panes, resolve) -> TabDisplay` (in
+`crates/plugin/src/rollup.rs`): a deep, pure module that owns its output
+vocabulary (`TabDisplay`, `PaneDisplay`,
 `PrimaryDetail`, `ProgressCounts`, `Outcome`) — the renderer *consumes* these, so
 presentation depends on the roll-up, not the reverse. `resolve(pane_id) ->
 Option<&TrackedObservation>` is the only thing crossing in: the "status pipe wins

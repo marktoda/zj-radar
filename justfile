@@ -16,9 +16,13 @@ test-e2e:
     cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
     cargo test --features e2e --test e2e -- --include-ignored --test-threads=1
 
+# Lint the whole workspace; warnings are errors (matches CI).
+clippy:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+
 # Review/accept snapshot changes after intentional render edits.
 review:
     cargo insta review
 
 # Everything a PR must pass locally.
-ci: test test-bash
+ci: test clippy test-bash

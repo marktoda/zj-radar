@@ -1,4 +1,15 @@
-//! Native CLI (`zj-radar`): `notify` + `setup` + `run`.
+//! Native CLI (`zj-radar`): the host front door for the sidebar.
+//!
+//! Three subcommands, one per module:
+//! - `notify <agent>` ([`notify`]) — the *pushed* information source. Reads an
+//!   agent's hook payload and broadcasts a `zj_radar.status.v1` update. Each
+//!   agent is a peer adapter behind the [`agents::Agent::derive`] seam, so
+//!   `notify` stays agent-agnostic.
+//! - `setup [codex|zellij]` ([`setup`]) — idempotent wiring: manage Codex
+//!   notify/`hooks.json`, install the wasm plugin, and inject the rail into a
+//!   Zellij layout ([`layout`]).
+//! - `run` ([`run`]) — turnkey launch of a Zellij session that owns its own
+//!   config with the rail preinstalled.
 
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.
