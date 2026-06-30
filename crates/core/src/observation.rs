@@ -4,6 +4,7 @@ use crate::kind::Kind;
 use crate::status::Status;
 use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 wire_enum! {
     /// Which source produced an observation: the status pipe (agents) or a
@@ -94,6 +95,68 @@ impl TrackedObservation {
         if self.status == Status::Done {
             self.apply_on_focus(tick);
         }
+    }
+}
+
+/// A map of pane id → resolved observation, plus the focus lifecycle every source
+/// shares (`on_pane_focused`, `recede_if_focused`, `prune`, snapshot insert). Both
+/// `StatusStore` and `CommandStore` *contain* one of these and delegate to it — the
+/// "two sources" split lives only in their intake (`apply` vs the command debounce
+/// machine) and their "is it still live?" predicate, both of which they keep. There
+/// is no trait here: there is no runtime heterogeneity to dispatch over, so a shared
+/// struct by composition is the whole seam. The precedence *between* the two stores
+/// stays in `RadarState`, never here.
+#[derive(Default)]
+pub struct ObservationStore {
+    map: HashMap<u32, TrackedObservation>,
+}
+
+impl ObservationStore {
+    pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {
+        self.map.get(&pane_id)
+    }
+
+    pub fn get_mut(&mut self, pane_id: u32) -> Option<&mut TrackedObservation> {
+        self.map.get_mut(&pane_id)
+    }
+
+    pub fn insert(&mut self, pane_id: u32, observation: TrackedObservation) {
+        self.map.insert(pane_id, observation);
+    }
+
+    pub fn remove(&mut self, pane_id: u32) {
+        self.map.remove(&pane_id);
+    }
+
+    /// One-shot clear-on-*visit*: adopt and clear this pane's queued `on_focus`.
+    pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
+        if let Some(s) = self.map.get_mut(&pane_id) {
+            s.apply_on_focus(tick);
+        }
+    }
+
+    /// Recede a completion the instant it finishes under focus (Done only — see
+    /// `TrackedObservation::recede_on_focus`). Focus-agnostic: the caller passes
+    /// the focused pane id and the store forwards.
+    pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
+        if let Some(s) = self.map.get_mut(&pane_id) {
+            s.recede_on_focus(tick);
+        }
+    }
+
+    pub fn prune(&mut self, live: &HashSet<u32>) {
+        self.map.retain(|id, _| live.contains(id));
+    }
+
+    pub fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
+        self.map.iter().map(|(&pane_id, observation)| (pane_id, observation))
+    }
+
+    /// Does any observation satisfy `pred`? The two stores resting-state predicates
+    /// differ (`StatusStore` counts any non-idle, `CommandStore` only `Running`),
+    /// so each passes its own closure rather than sharing one definition.
+    pub fn any(&self, pred: impl Fn(&TrackedObservation) -> bool) -> bool {
+        self.map.values().any(pred)
     }
 }
 

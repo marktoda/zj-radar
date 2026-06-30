@@ -679,7 +679,7 @@
         // Place pane in Done with on_focus=Some(Done) (same status → no tick update)
         store.on_exit(1, Some(0), 5);
         // Manually set on_focus to Done (same as current status) to test tick stability
-        store.resolved.get_mut(&1).unwrap().on_focus = Some(Status::Done);
+        store.store.get_mut(1).unwrap().on_focus = Some(Status::Done);
         store.on_pane_focused(1, 10);
         assert_eq!(store.get(1).unwrap().status, Status::Done);
         // last_change_tick should NOT be updated (status did not change)

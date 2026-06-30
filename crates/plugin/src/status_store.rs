@@ -2,36 +2,28 @@
 //! No zellij-tile dependency.
 
 use crate::kind::Kind;
-use crate::observation::{ObservationOrigin, TrackedObservation};
+use crate::observation::{ObservationOrigin, ObservationStore, TrackedObservation};
 use crate::payload::StatusPayload;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[derive(Default)]
 pub struct StatusStore {
-    map: HashMap<u32, TrackedObservation>,
+    store: ObservationStore,
 }
 
 impl StatusStore {
     /// Apply an incoming payload. Latest broadcast wins (the pipe delivers in
     /// order; no producer stamps a sequence, so there is nothing to reorder).
     pub fn apply(&mut self, p: StatusPayload, tick: u64) {
-        let prev_status = self.map.get(&p.pane_id).map(|s| s.status);
-        let status_changed = prev_status != Some(p.status);
+        let prev = self.store.get(p.pane_id);
+        let status_changed = prev.map(|s| s.status) != Some(p.status);
         let last_change_tick = if status_changed {
             tick
         } else {
-            self.map
-                .get(&p.pane_id)
-                .map(|s| s.last_change_tick)
-                .unwrap_or(tick)
+            prev.map(|s| s.last_change_tick).unwrap_or(tick)
         };
-        let ever_active = p.status.is_active()
-            || self
-                .map
-                .get(&p.pane_id)
-                .map(|s| s.ever_active)
-                .unwrap_or(false);
-        self.map.insert(
+        let ever_active = p.status.is_active() || prev.is_some_and(|s| s.ever_active);
+        self.store.insert(
             p.pane_id,
             TrackedObservation {
                 origin: ObservationOrigin::StatusPipe,
@@ -52,9 +44,7 @@ impl StatusStore {
 
     /// One-shot: when the exact pane is focused, apply its pending on_focus status.
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
-        if let Some(s) = self.map.get_mut(&pane_id) {
-            s.apply_on_focus(tick);
-        }
+        self.store.on_pane_focused(pane_id, tick);
     }
 
     /// Recede this pane's completion the instant it finishes under focus (Done
@@ -63,17 +53,15 @@ impl StatusStore {
     /// `on_pane_focused`, which clears any state on a *visit* — this one is "you
     /// watched it finish".
     pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
-        if let Some(s) = self.map.get_mut(&pane_id) {
-            s.recede_on_focus(tick);
-        }
+        self.store.recede_if_focused(pane_id, tick);
     }
 
     pub fn prune(&mut self, live: &HashSet<u32>) {
-        self.map.retain(|id, _| live.contains(id));
+        self.store.prune(live);
     }
 
     pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {
-        self.map.get(&pane_id)
+        self.store.get(pane_id)
     }
 
     /// True if any observation is non-idle (`is_active`: Running/Pending/Done/Error).
@@ -83,13 +71,11 @@ impl StatusStore {
     /// distinct — they answer "should the timer tick?" for sources with different
     /// resting behaviour.
     pub fn any_active(&self) -> bool {
-        self.map.values().any(|s| s.status.is_active())
+        self.store.any(|s| s.status.is_active())
     }
 
     pub(crate) fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
-        self.map
-            .iter()
-            .map(|(&pane_id, observation)| (pane_id, observation))
+        self.store.observations()
     }
 
     /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
@@ -100,7 +86,7 @@ impl StatusStore {
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        self.map.insert(pane_id, observation);
+        self.store.insert(pane_id, observation);
     }
 }
 
