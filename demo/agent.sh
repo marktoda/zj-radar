@@ -41,30 +41,44 @@ emit() {
 printf '\033[2m%s · %s\033[0m\n\n' "$repo" "$branch"
 
 case "$scenario" in
-needs-you) # an agent that works, blocks on a permission prompt, then resumes
+needs-you) # the focused agent: works, blocks on approval, then resumes. Its
+           # stdout reads like a Claude session so the content pane mirrors the
+           # rail (an agent, not a build).
+    printf '> add auth middleware\n\n'
     sleep 1;  emit running "reading auth middleware"
+    printf '\033[2m●\033[0m Read  src/auth.rs\n'
+    printf '\033[2m●\033[0m Edit  src/auth.rs\n'
     sleep 4;  emit pending "run database migration?"
-    sleep 5;  emit running "applying migration"
+    printf '\n\033[33m❯ Run migration?\033[0m (y/n)\n'
+    sleep 4;  emit running "applying migration"
+    printf '\n\033[2m●\033[0m Bash  sqlx migrate\n'
     ;;
 done) # an agent that finishes; the card persists on its tab
     sleep 1;  emit running "implementing login form"
     sleep 7;  emit "done" "added login + 2 tests" idle
     ;;
-tests) # an observed task: a test run that progresses, then passes. This is the
-       # focused tab, so its stdout fills the content pane next to the rail.
-    printf '$ cargo test\n'
+tests) # an observed task: a test run that progresses, then passes
     sleep 1;  emit running "running 48 tests"
-    printf '   Compiling core v0.1.0\n'
-    sleep 3;  printf '    Finished test profile in 8.2s\n     Running unittests src/lib.rs\n'
-    sleep 1;  emit running "37 / 48 passing"
-    printf 'test rollup::severity_order ... ok\ntest render::cards_grid ... ok\n'
-    sleep 3;  emit "done" "48 passed in 11s" idle
-    printf '\ntest result: ok. 48 passed; 0 failed; finished in 11.04s\n'
+    sleep 7;  emit "done" "48 passed in 11s" idle
     ;;
 deploy-error) # an observed task that fails
     sleep 1;  emit running "terraform plan"
     sleep 3;  emit running "terraform apply"
     sleep 4;  emit error "apply failed: exit 1"
+    ;;
+form) # one pane of a multi-pane tab: builds the form, finishes early
+    printf '> build LoginForm.tsx\n\n'
+    sleep 1;  emit running "implementing login form"
+    printf '\033[2m●\033[0m Edit  LoginForm.tsx\n'
+    sleep 7;  emit "done" "login form done" idle
+    printf '\033[2m●\033[0m done\n'
+    ;;
+suite) # second pane of the multi-pane tab: writes tests, keeps running (so a
+       # spinner is still animating during the closing dwell)
+    printf '> add login tests\n\n'
+    sleep 1;  emit running "writing login tests"
+    printf '\033[2m●\033[0m Edit  login.test.ts\n'
+    sleep 12; emit "done" "+2 tests passing" idle
     ;;
 *) # generic: just stay working
     sleep 1;  emit running "working…"

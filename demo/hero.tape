@@ -10,39 +10,64 @@ Output "__ROOT__/docs/media/hero.gif"
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 22
-Set Width 1000
-Set Height 720
-Set Padding 24
+Set Width 960
+Set Height 760
+Set Padding 20
 Set Theme "TokyoNight"
 Set Framerate 24
 Set CursorBlink false
-# Skip the launch/blank-load frames in the looping GIF; the file still plays
-# them once from the top. ~15% lands just as the first rows populate.
-Set LoopOffset 15%
 
-# Quiet prompt, then clear the screen for a clean launch.
+# Open on a brief title card that names the tool and pre-teaches the glyphs, so
+# a cold viewer knows what they're looking at before the rail appears.
 Hide
 Type "export PS1='$ '" Enter
 Type "clear" Enter
+Type "__ROOT__/demo/banner.sh" Enter
 Show
-Sleep 500ms
+Sleep 3200ms
 
-# Launch a fresh (auto-named) session. No --session name, so reruns never
-# collide with a stale/exited session. record.sh has pre-granted the plugin's
-# permissions, so there's no prompt — the four sidebars come up and the agents
-# start broadcasting their scripted arcs.
+# Then launch the session off-camera and resume recording once the rail has
+# populated — so the GIF never shows the (long) launch command or a blank load.
+# record.sh has pre-granted the plugin's permissions, so there's no prompt.
+Hide
+Type "clear" Enter
 Type "zellij --config __CFG__ --layout __LAYOUT__" Enter
+Wait+Screen@30s /api/
+Sleep 1200ms
+Show
 
-# t≈0..7: all four rows working — spinners + elapsed animate on the 1s timer,
-# and the focused `tests` pane streams cargo-test output beside the rail.
-Sleep 7s
-# `api` blocks on a permission prompt → needs you (pink bell). The money shot.
+# Beats are synced to on-screen text (Wait), not fixed sleeps, so they're robust
+# to startup lag and stay tight. `api` (focused) shows the Claude agent working,
+# then blocking on approval; meanwhile the rail tracks web/tests/infra.
+Wait+Screen@20s /migration/
 Screenshot "__ROOT__/docs/media/needs-you.png"
-Sleep 4s
-# `web` ● done, `tests` ● done, `infra` ✗ error — the full status spread.
+Sleep 1s
+
+# Tab over to `web` — a tab running two Codex agents — via Zellij's tab mode
+# (Ctrl+t then the tab number; the digit returns to normal mode, no Escape).
+# The rail rolls the two panes up with tree connectors; focusing shows both.
+Ctrl+t
+Sleep 600ms
+Type "2"
+# Dwell on the web tab while infra errors out and the web agents finish/keep
+# spinning (Sleep, not Wait — the rail's text moves around after the tab switch,
+# which makes Wait+Screen unreliable here).
+Sleep 3s
 Screenshot "__ROOT__/docs/media/states.png"
+Sleep 1500ms
+
+# Closing beat: open a fresh tab. The sidebar follows into it (new_tab_template),
+# so the rail gains a new ○ idle tab — a quiet, on-brand sign-off that also shows
+# the sidebar lives in every tab.
+Ctrl+t
+Sleep 400ms
+Type "n"
+Sleep 1200ms
+Type "echo '✦ zj-radar'" Enter
 Sleep 3s
 
-# Quit cleanly so vhs stops.
+# Stop recording BEFORE Ctrl+q so Zellij's "Bye from Zellij!" quit screen never
+# lands in the GIF.
+Hide
 Ctrl+q
 Sleep 1s
