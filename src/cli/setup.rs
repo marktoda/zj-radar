@@ -934,6 +934,20 @@ fn setup_zellij(
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
 
+    // Refuse to clobber a managed (symlinked) config.kdl: print the layout snippet
+    // for guidance, then return early. A Nix/home-manager user gets the wasm + alias
+    // via their config, not from us.
+    if !uninstall && config_is_managed(&config_path) {
+        eprintln!(
+            "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
+             zj-radar will not overwrite a managed config — add the plugin alias via\n\
+             your Nix config instead. See docs/install.md for the home-manager snippet.",
+            config_path.display()
+        );
+        println_layout_snippet();
+        return;
+    }
+
     // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
     // wasm matching this CLI's version). `downloaded` outlives the borrow in `src`.
     let downloaded: PathBuf;
@@ -967,19 +981,6 @@ fn setup_zellij(
             eprintln!("zellij: refused — wasm not found at {}", src.display());
             return;
         }
-    }
-
-    // Refuse to write a symlinked (home-manager / Nix-managed) config.kdl, but
-    // keep going so wasm handling and the layout snippet still run.
-    if !uninstall && config_is_managed(&config_path) {
-        eprintln!(
-            "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
-             zj-radar will not overwrite a managed config — add the plugin alias via\n\
-             your Nix config instead. See docs/install.md for the home-manager snippet.",
-            config_path.display()
-        );
-        println_layout_snippet();
-        return;
     }
 
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
