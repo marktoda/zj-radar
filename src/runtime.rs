@@ -53,6 +53,10 @@ pub(crate) enum Effect {
     /// effect's full consequences are realized in that second pass, not in the
     /// `Outcome` that carried it.
     ResolveCwd { pane_ids: Vec<u32> },
+    /// Close this plugin's own pane. Emitted by the onboarding floating pane
+    /// after permission is granted — it has served its purpose. Needs no Zellij
+    /// permission (`close_self` is always allowed).
+    CloseSelf,
     Notify { title: String, body: String },
 }
 
@@ -197,17 +201,21 @@ impl PluginRuntime {
 
     pub(crate) fn permission_result(&mut self, granted: bool) -> Outcome {
         self.record_permission_result(granted);
-        Outcome::with_effects(
-            true,
-            vec![
-                Effect::PersistPermissionMarker(if granted {
-                    PermissionMarker::Granted
-                } else {
-                    PermissionMarker::Denied
-                }),
-                Effect::SetSelectable(self.sidebar_should_be_selectable()),
-            ],
-        )
+        let mut effects = vec![
+            Effect::PersistPermissionMarker(if granted {
+                PermissionMarker::Granted
+            } else {
+                PermissionMarker::Denied
+            }),
+            Effect::SetSelectable(self.sidebar_should_be_selectable()),
+        ];
+        // The onboarding pane exists only to host the grant prompt. Once granted
+        // — and the grant is cached by plugin URL, so the rail inherits it — it
+        // removes itself, leaving the user with just the rail.
+        if granted && self.config.role == config::Role::Onboarding {
+            effects.push(Effect::CloseSelf);
+        }
+        Outcome::with_effects(true, effects)
     }
 
     pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String) -> Outcome {
@@ -343,6 +351,27 @@ impl PluginRuntime {
         }
     }
 
+    /// Role/defer-aware decision, used by BOTH the load and timer paths so they
+    /// can't diverge:
+    /// - the onboarding float always owns the prompt (it's the only legible
+    ///   surface), regardless of the lock;
+    /// - a deferring rail acts ONLY on a landed marker — it never self-owns via
+    ///   the lock, which would steal Zellij's prompt binding from the float;
+    /// - everyone else uses the plain lock-coordinated decision.
+    fn decide(&self, probe: &PermissionProbe) -> Option<PermissionDecision> {
+        if self.config.role == config::Role::Onboarding {
+            return Some(PermissionDecision::Request);
+        }
+        if self.config.defer_permission {
+            return match probe.marker {
+                Some(PermissionMarker::Granted) => Some(PermissionDecision::Request),
+                Some(PermissionMarker::Denied) => Some(PermissionDecision::Deny),
+                None => None,
+            };
+        }
+        Self::permission_decision(probe)
+    }
+
     /// Apply a resolved decision: mutate permission state and push the
     /// request/record effect. Always clears `permission_waiting_for_peer` (a
     /// decision ends the wait). The caller owns the trailing `SetSelectable`,
@@ -361,7 +390,7 @@ impl PluginRuntime {
 
     fn begin_permission_flow(&mut self, permission: PermissionProbe) -> Outcome {
         let mut effects = Vec::new();
-        match Self::permission_decision(&permission) {
+        match self.decide(&permission) {
             Some(decision) => self.apply_permission_decision(decision, &mut effects),
             None => self.permission_waiting_for_peer = true,
         }
@@ -384,7 +413,7 @@ impl PluginRuntime {
         if !self.permission_waiting_for_peer {
             return false;
         }
-        match Self::permission_decision(&probe) {
+        match self.decide(&probe) {
             // A decision landed (marker arrived, or we reclaimed a stale lock —
             // see session_files): apply it and refresh selectability.
             Some(decision) => {
@@ -580,6 +609,63 @@ mod tests {
                 "probe {probe:?}",
             );
         }
+    }
+
+    #[test]
+    fn onboarding_pane_requests_even_without_lock_and_closes_on_grant() {
+        // The onboarding floating pane is the dedicated, legible prompt host. It
+        // must request permission regardless of the session lock (a sidebar peer
+        // may hold it), so Zellij renders its grant prompt on the focused float.
+        let onboarding = config::Config { role: config::Role::Onboarding, ..config() };
+        let mut runtime = PluginRuntime::default();
+        let load = runtime.load(
+            onboarding,
+            None,
+            PermissionProbe { marker: None, lock_acquired: false },
+        );
+        assert!(runtime.permission_request_started);
+        assert!(load.effects.contains(&Effect::RequestPermission));
+
+        // Once the user grants via that prompt, the onboarding pane removes itself.
+        let granted = runtime.permission_result(true);
+        assert!(granted.effects.contains(&Effect::CloseSelf));
+    }
+
+    #[test]
+    fn sidebar_grant_does_not_close_the_pane() {
+        let mut runtime = runtime_with_config(config());
+        runtime.record_permission_request_started();
+        let granted = runtime.permission_result(true);
+        assert!(!granted.effects.contains(&Effect::CloseSelf));
+    }
+
+    #[test]
+    fn deferring_rail_never_requests_until_marker_lands() {
+        // In the onboarding layout the rail defers: it must NOT fire its own
+        // request even though it could own the lock — that would steal Zellij's
+        // prompt binding from the floating onboarding pane.
+        let deferring = config::Config { defer_permission: true, ..config() };
+        let mut runtime = PluginRuntime::default();
+        let load = runtime.load(
+            deferring,
+            None,
+            // Even WITH the lock available, a deferring rail must wait.
+            PermissionProbe { marker: None, lock_acquired: true },
+        );
+        assert!(!load.effects.contains(&Effect::RequestPermission));
+        assert!(runtime.permission_waiting_for_peer);
+
+        // A later tick that (re)acquires the lock still must not request —
+        // only a landed Granted marker may unblock it.
+        let tick = runtime.timer(PermissionProbe { marker: None, lock_acquired: true });
+        assert!(!tick.effects.contains(&Effect::RequestPermission));
+
+        // The float's granted marker finally lets it request (auto-resolves).
+        let granted_tick = runtime.timer(PermissionProbe {
+            marker: Some(PermissionMarker::Granted),
+            lock_acquired: false,
+        });
+        assert!(granted_tick.effects.contains(&Effect::RequestPermission));
     }
 
     #[test]

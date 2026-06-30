@@ -40,8 +40,6 @@ pub struct SetupOptions<'a> {
     pub check: bool,
     pub legacy_notify: bool,
     pub force: bool,
-    /// Skip pre-seeding Zellij's permission grant for the installed sidebar wasm.
-    pub no_grant: bool,
 }
 
 #[derive(Debug)]
@@ -577,7 +575,6 @@ pub fn run(options: SetupOptions<'_>) {
             options.dry_run,
             options.yes,
             options.force,
-            options.no_grant,
         );
     }
     if want_codex {
@@ -916,7 +913,6 @@ fn codex_hooks_disabled() -> bool {
     codex_hooks_disabled_in_config(&existing).unwrap_or(false)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn setup_zellij(
     wasm: Option<&Path>,
     download: bool,
@@ -924,7 +920,6 @@ fn setup_zellij(
     dry_run: bool,
     yes: bool,
     force: bool,
-    no_grant: bool,
 ) {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
@@ -1047,33 +1042,19 @@ fn setup_zellij(
             }
         }
     }
-
-    // Pre-seed the permission grant for the installed wasm so the rail loads
-    // already granted on first launch — its consent prompt is illegible in the
-    // small rail (Zellij #4749). Idempotent + additive; only when installing and
-    // the wasm is actually in place.
-    if !uninstall && !dry_run && !no_grant && wasm_dest.is_file() {
-        if let Some(perm_path) = super::run::zellij_permissions_path() {
-            match super::run::ensure_wasm_granted(&perm_path, &wasm_dest.to_string_lossy()) {
-                Ok(true) => println!(
-                    "zellij: granted the sidebar Zellij permissions \
-                     (ReadApplicationState, ReadCliPipes, ChangeApplicationState); \
-                     revoke via permissions.kdl"
-                ),
-                Ok(false) => {}
-                Err(e) => eprintln!(
-                    "zellij: could not pre-grant permissions ({e}); \
-                     focus the rail and press y on first run instead."
-                ),
-            }
-        }
-    }
 }
 
 fn println_layout_snippet() {
     println!(
         "\nAdd the sidebar to a Zellij layout with:\n\n{}",
         ZELLIJ_LAYOUT_SNIPPET.trim_end()
+    );
+    // The rail can't show Zellij's grant prompt legibly (it's a small borderless
+    // pane — Zellij #4749), so tell the user how to grant on first launch. The
+    // turnkey `zj-radar run` handles this with a floating prompt instead.
+    println!(
+        "\nFirst launch: focus the RADAR rail (the left column) and press y to allow \
+         access — Zellij asks once, then remembers."
     );
 }
 
