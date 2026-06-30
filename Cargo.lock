@@ -128,16 +128,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "assertables"
-version = "9.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "627b0b35c347252505ec6c078827dfcecc4e9dcfa931c54c54066f9245ac752b"
-dependencies = [
- "regex",
- "walkdir",
-]
-
-[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3322,19 +3312,13 @@ name = "zj-radar"
 version = "0.1.0-rc.1"
 dependencies = [
  "assert_cmd",
- "assertables",
  "clap 4.6.1",
  "dirs 5.0.1",
- "insta",
- "portable-pty",
- "proptest",
  "serde",
  "serde_json",
  "tempfile",
  "toml_edit",
  "unicode-width 0.2.2",
- "vt100",
- "zellij-tile",
  "zj-radar-core",
 ]
 
@@ -3352,8 +3336,16 @@ dependencies = [
 name = "zj-radar-plugin"
 version = "0.1.0-rc.1"
 dependencies = [
+ "insta",
+ "portable-pty",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-width 0.2.2",
+ "vt100",
  "zellij-tile",
- "zj-radar",
+ "zj-radar-core",
 ]
 
 [[package]]

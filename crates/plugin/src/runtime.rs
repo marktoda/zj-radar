@@ -1,0 +1,440 @@
+//! Deep runtime module: repo-owned events in, ordered host effects out.
+//! No zellij-tile dependency.
+
+use crate::control::Command;
+use crate::config;
+use crate::radar_state::{Direction, PaneUpdate, RadarState, RadarTab};
+use crate::render::{self, RenderedRail, TabRow};
+use crate::tab_namer::TabRename;
+use crate::theme;
+use std::collections::BTreeMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PermissionMarker {
+    Granted,
+    Denied,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PermissionProbe {
+    pub marker: Option<PermissionMarker>,
+    pub lock_acquired: bool,
+}
+
+/// What a `PermissionProbe` dictates this sidebar do, independent of whether it
+/// arrived at load or on a deferred timer tick. `None` from
+/// [`PluginRuntime::permission_decision`] means "no decision yet — keep waiting
+/// on a peer." See that function for the single mapping both entry points share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PermissionDecision {
+    /// Become the prompt-shower: request permission from Zellij.
+    Request,
+    /// Permission was denied; record the terminal result.
+    Deny,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    RequestPermission,
+    SetSelectable(bool),
+    SetTimeout,
+    PersistSnapshot,
+    PersistPermissionMarker(PermissionMarker),
+    RenameTab { position: usize, name: String },
+    SwitchTab { position: usize },
+    ShowPane { pane_id: u32 },
+    /// Read these panes' working directories once (blocking `get_pane_cwd`) to
+    /// bootstrap a name for a freshly-opened tab before it emits `CwdChanged`.
+    ///
+    /// Unlike the other (fire-and-forget) effects, this one is a *request*: the
+    /// glue feeds each result back through `cwd_changed`, which re-enters the
+    /// runtime and may itself emit `RenameTab`. The recursion is bounded —
+    /// `cwd_changed` never emits another `ResolveCwd` — but note that this
+    /// effect's full consequences are realized in that second pass, not in the
+    /// `Outcome` that carried it.
+    ResolveCwd { pane_ids: Vec<u32> },
+    Notify { title: String, body: String },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Outcome {
+    pub render: bool,
+    pub effects: Vec<Effect>,
+}
+
+impl Outcome {
+    fn none() -> Self {
+        Self::default()
+    }
+
+    fn with_effects(render: bool, effects: Vec<Effect>) -> Self {
+        Self { render, effects }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PluginRuntime {
+    pub(crate) radar: RadarState,
+    pub(crate) tick: u64,
+    pub(crate) timer_armed: bool,
+    pub(crate) last_render_height: usize,
+    pub(crate) config: config::Config,
+    pub(crate) permission_granted: bool,
+    pub(crate) permission_response_received: bool,
+    pub(crate) permission_request_started: bool,
+    pub(crate) permission_waiting_for_peer: bool,
+    pub(crate) theme: theme::DerivedColors,
+    last_rendered: RenderedRail,
+    notify_prev: BTreeMap<u32, crate::status::Status>,
+}
+
+impl PluginRuntime {
+    pub(crate) fn load(
+        &mut self,
+        config: config::Config,
+        snapshot: Option<&str>,
+        permission: PermissionProbe,
+    ) -> Outcome {
+        self.config = config;
+        if let Some(raw) = snapshot {
+            if let Some(tick) = self.radar.load_snapshot(raw) {
+                self.tick = tick;
+            }
+        }
+        // Seed the notification baseline from the restored snapshot so that
+        // pre-existing completions never fire a spurious Notify effect.
+        self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
+        self.begin_permission_flow(permission)
+    }
+
+    pub(crate) fn build_rows(&self) -> Vec<TabRow> {
+        self.radar.rows()
+    }
+
+    pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
+        let change = self.radar.tabs_changed(tabs);
+        Outcome::with_effects(change.render, Vec::new())
+    }
+
+    pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
+        if let Some(theme) = update.theme.clone() {
+            self.theme = theme;
+        }
+        let change = self
+            .radar
+            .panes_changed(update, self.tick, self.config.naming);
+        let mut effects = self.effects_from_renames(change.renames);
+        if change.persist_snapshot {
+            effects.push(Effect::PersistSnapshot);
+        }
+        if !change.cwd_bootstrap.is_empty() {
+            effects.push(Effect::ResolveCwd {
+                pane_ids: change.cwd_bootstrap,
+            });
+        }
+        effects.extend(self.notify_effects());
+        Outcome::with_effects(true, effects)
+    }
+
+    pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
+        self.timer_armed = false;
+        let mut effects = Vec::new();
+        let permission_changed =
+            self.check_deferred_permission_request(permission, &mut effects);
+        self.tick += 1;
+        self.radar.timer(self.tick);
+        // Capture before re-arming: an in-flight permission request must repaint
+        // the needs_permission screen each tick until the user answers.
+        let awaiting_permission = self.sidebar_should_be_selectable();
+        self.arm_timer_if_needed(&mut effects);
+        effects.extend(self.notify_effects());
+        Outcome::with_effects(
+            permission_changed || awaiting_permission || self.radar.has_active_or_pending_work(),
+            effects,
+        )
+    }
+
+    pub(crate) fn mouse_click(&self, line: isize) -> Outcome {
+        if !self.permission_granted {
+            return Outcome::none();
+        }
+        let Some(target) = self.last_rendered.target_at_line(line) else {
+            return Outcome::none();
+        };
+        let effect = match target.pane_id {
+            Some(pane_id) => Effect::ShowPane { pane_id },
+            None => Effect::SwitchTab {
+                position: target.tab_position,
+            },
+        };
+        Outcome::with_effects(false, vec![effect])
+    }
+
+    /// Run an imperative command verb. Read-only navigation today: resolves a
+    /// deterministic target tab and emits `SwitchTab`. Inert until permission is
+    /// granted, mirroring `mouse_click`.
+    pub(crate) fn command(&self, cmd: Command) -> Outcome {
+        if !self.permission_granted {
+            return Outcome::none();
+        }
+        let dir = match cmd {
+            Command::AttentionNext => Direction::Next,
+            Command::AttentionPrev => Direction::Prev,
+        };
+        match self.radar.next_attention_tab(dir) {
+            Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
+            None => Outcome::none(),
+        }
+    }
+
+    /// Parse a `cmd.v1` payload and dispatch it. Unknown verbs are a no-op.
+    pub(crate) fn command_pipe(&self, payload: &str) -> Outcome {
+        match crate::control::parse(payload) {
+            Some(cmd) => self.command(cmd),
+            None => Outcome::none(),
+        }
+    }
+
+    pub(crate) fn permission_result(&mut self, granted: bool) -> Outcome {
+        self.record_permission_result(granted);
+        Outcome::with_effects(
+            true,
+            vec![
+                Effect::PersistPermissionMarker(if granted {
+                    PermissionMarker::Granted
+                } else {
+                    PermissionMarker::Denied
+                }),
+                Effect::SetSelectable(self.sidebar_should_be_selectable()),
+            ],
+        )
+    }
+
+    pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String) -> Outcome {
+        let change = self.radar.cwd_changed(pane_id, path, self.config.naming);
+        Outcome::with_effects(change.render, self.effects_from_renames(change.renames))
+    }
+
+    pub(crate) fn command_changed(
+        &mut self,
+        pane_id: u32,
+        command: &[String],
+        is_foreground: bool,
+    ) -> Outcome {
+        let change = self
+            .radar
+            .command_changed(pane_id, command, is_foreground, self.tick);
+        let mut effects = Vec::new();
+        self.arm_timer_if_needed(&mut effects);
+        Outcome::with_effects(change.render, effects)
+    }
+
+    pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
+        let Some(change) = self.radar.status_pipe(raw, self.tick, self.config.naming) else {
+            return Outcome::none();
+        };
+        let mut effects = self.effects_from_renames(change.renames);
+        self.arm_timer_if_needed(&mut effects);
+        if change.persist_snapshot {
+            effects.push(Effect::PersistSnapshot);
+        }
+        Outcome::with_effects(change.render, effects)
+    }
+
+    pub(crate) fn snapshot_json(&self, existing: Option<&str>) -> String {
+        self.radar.snapshot_json(existing, self.tick)
+    }
+
+    pub(crate) fn config_pipe(&mut self, raw: &str) -> Outcome {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return Outcome::none();
+        };
+        let Some(obj) = val.as_object() else {
+            return Outcome::none();
+        };
+        let kv: BTreeMap<String, String> = obj
+            .iter()
+            .filter_map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Bool(b) => {
+                        Some(if *b { "true" } else { "false" }.to_string())
+                    }
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                };
+                s.map(|s| (k.clone(), s))
+            })
+            .collect();
+        self.config.apply_overrides(&kv);
+        let renames = self.radar.recompute_renames(self.config.naming);
+        Outcome::with_effects(true, self.effects_from_renames(renames))
+    }
+
+    pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
+        self.last_render_height = rows;
+        let tabrows = self.build_rows();
+        let opts = render::RenderOpts {
+            width: cols.max(1),
+            height: rows,
+            now_tick: self.tick,
+            glyphs: self.config.glyphs,
+            header: self.config.header,
+            density: self.config.density,
+            theme: self.theme.clone(),
+        };
+        let rail = if !self.permission_granted {
+            render::needs_permission(&opts)
+        } else if tabrows.is_empty() {
+            render::onboarding(&opts)
+        } else {
+            render::render_rail(&tabrows, &opts)
+        };
+        let ansi = rail.ansi.clone();
+        self.last_rendered = rail;
+        ansi
+    }
+
+    pub(crate) fn sidebar_should_be_selectable(&self) -> bool {
+        self.permission_request_started && !self.permission_response_received
+    }
+
+    pub(crate) fn record_permission_request_started(&mut self) {
+        self.permission_request_started = true;
+    }
+
+    pub(crate) fn record_permission_result(&mut self, granted: bool) {
+        self.permission_granted = granted;
+        self.permission_response_received = true;
+        self.permission_request_started = false;
+        self.permission_waiting_for_peer = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
+        self.radar.reconcile_focus(focused, tick)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
+        let t = self.last_rendered.target_at_line(line)?;
+        Some((t.tab_position, t.pane_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tab_position_at_line(&self, line: isize) -> Option<usize> {
+        self.target_at_line(line).map(|(pos, _)| pos)
+    }
+
+    /// The single source of truth for what a probe means — shared by the load
+    /// path (`begin_permission_flow`) and the deferred timer path
+    /// (`check_deferred_permission_request`) so the two can never disagree.
+    ///
+    /// `Granted` and "no marker but we hold the lock" both mean *request now*:
+    /// either permission is already granted (the request will auto-resolve) or
+    /// we just won/reclaimed the first-run lock and own the prompt. A bare
+    /// `None` (no marker, no lock) is no decision yet — keep waiting on a peer.
+    fn permission_decision(probe: &PermissionProbe) -> Option<PermissionDecision> {
+        match probe.marker {
+            Some(PermissionMarker::Granted) => Some(PermissionDecision::Request),
+            Some(PermissionMarker::Denied) => Some(PermissionDecision::Deny),
+            None if probe.lock_acquired => Some(PermissionDecision::Request),
+            None => None,
+        }
+    }
+
+    /// Apply a resolved decision: mutate permission state and push the
+    /// request/record effect. Always clears `permission_waiting_for_peer` (a
+    /// decision ends the wait). The caller owns the trailing `SetSelectable`,
+    /// since the two entry points emit it differently (always vs. only on a
+    /// decision).
+    fn apply_permission_decision(&mut self, decision: PermissionDecision, effects: &mut Vec<Effect>) {
+        self.permission_waiting_for_peer = false;
+        match decision {
+            PermissionDecision::Request => {
+                self.record_permission_request_started();
+                effects.push(Effect::RequestPermission);
+            }
+            PermissionDecision::Deny => self.record_permission_result(false),
+        }
+    }
+
+    fn begin_permission_flow(&mut self, permission: PermissionProbe) -> Outcome {
+        let mut effects = Vec::new();
+        match Self::permission_decision(&permission) {
+            Some(decision) => self.apply_permission_decision(decision, &mut effects),
+            None => self.permission_waiting_for_peer = true,
+        }
+        // Arm a timer whenever a decision is still outstanding — either we're
+        // waiting on a peer's marker, or our own request is in-flight. Pre-grant
+        // Zellij withholds the state events that would otherwise trigger a paint
+        // (they need ReadApplicationState), so this timer is the only thing that
+        // gets the needs_permission screen onto the rail.
+        self.arm_timer_if_needed(&mut effects);
+        // Load always initializes the sidebar's selectability, every arm.
+        effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
+        Outcome::with_effects(false, effects)
+    }
+
+    fn check_deferred_permission_request(
+        &mut self,
+        probe: PermissionProbe,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
+        if !self.permission_waiting_for_peer {
+            return false;
+        }
+        match Self::permission_decision(&probe) {
+            // A decision landed (marker arrived, or we reclaimed a stale lock —
+            // see session_files): apply it and refresh selectability.
+            Some(decision) => {
+                self.apply_permission_decision(decision, effects);
+                effects.push(Effect::SetSelectable(self.sidebar_should_be_selectable()));
+                true
+            }
+            // Still no marker and no lock: keep waiting (no effect, no change).
+            None => false,
+        }
+    }
+
+    fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
+        if !self.timer_armed
+            && (self.permission_waiting_for_peer
+                || self.sidebar_should_be_selectable()
+                || self.radar.has_active_or_pending_work())
+        {
+            self.timer_armed = true;
+            effects.push(Effect::SetTimeout);
+        }
+    }
+
+    /// Diff observable pane statuses against `notify_prev` and emit `Effect::Notify`
+    /// for each attention-status transition.
+    ///
+    /// Intentionally runs regardless of `permission_granted`. Without the
+    /// `RunCommands` grant, `run_command` is a silent host no-op, so notifications
+    /// are harmlessly dropped. More importantly, gating this on `permission_granted`
+    /// would skip advancing `notify_prev` during the ungranted window, which risks a
+    /// burst of stale notifications the moment the grant arrives. The ungranted window
+    /// is startup-only and brief, so the no-op cost is negligible.
+    fn notify_effects(&mut self) -> Vec<Effect> {
+        let views = self.radar.notify_views();
+        let focused = self.radar.last_focused();
+        let notes = crate::notify_rules::diff(&self.notify_prev, &views, focused, &self.config);
+        self.notify_prev = crate::notify_rules::status_map(&views);
+        notes
+            .into_iter()
+            .map(|n| Effect::Notify { title: n.title, body: n.body })
+            .collect()
+    }
+
+    fn effects_from_renames(&self, renames: Vec<TabRename>) -> Vec<Effect> {
+        renames
+            .into_iter()
+            .map(|TabRename { position, name }| Effect::RenameTab { position, name })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,5 +1,6 @@
 ---
-source: src/render.rs
+source: crates/plugin/src/render/tests.rs
+assertion_line: 3182
 expression: tint_map(&raw)
 ---
 rail

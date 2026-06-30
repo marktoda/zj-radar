@@ -3,9 +3,8 @@
 # cdylib builds a *reactor* (no `_start`), which Zellij can't load, so this is a
 # BINARY crate: `register_plugin!`'s generated `fn main` becomes `_start`.
 #
-# All real logic lives in the `zj-radar` lib (path dep, default-features = false
-# so clap &c. never reach the wasm build); this crate is just the macro wiring
-# plus zellij-tile. Build it with: cargo build --target wasm32-wasip1 -p zj-radar-plugin
+# All real logic lives in the `zj_radar_plugin` lib; the binary (`src/main.rs`)
+# is only the macro wiring. Build with: cargo build --target wasm32-wasip1 -p zj-radar-plugin
 [package]
 name = "zj-radar-plugin"
 version = "0.1.0-rc.1"
@@ -15,10 +14,39 @@ description = "The zj-radar Zellij sidebar plugin (wasm). Companion to the zj-ra
 repository = "https://github.com/marktoda/zj-radar"
 publish = false
 
+[lib]
+name = "zj_radar_plugin"
+
 [[bin]]
 name = "zj_radar"
 path = "src/main.rs"
 
 [dependencies]
-zj-radar = { path = "../..", default-features = false }
+zj-radar-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
+
+# Zellij's plugin SDK is only used by the wasm `_start`/`load`/`render` wiring
+# (all `#[cfg(target_arch = "wasm32")]`). Scoping it to the wasm target keeps
+# its native transitive chain (zellij-utils → isahc → curl → openssl-sys) out
+# of host builds.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 zellij-tile = "0.44"
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+vt100 = { workspace = true }
+tempfile = { workspace = true }
+portable-pty = { workspace = true }
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["e2e"]
+
+[features]
+# Live end-to-end tests that drive a real Zellij in a PTY. Off by default so
+# `cargo test` stays fast and hermetic. Requires `zellij` on PATH.
+e2e = []

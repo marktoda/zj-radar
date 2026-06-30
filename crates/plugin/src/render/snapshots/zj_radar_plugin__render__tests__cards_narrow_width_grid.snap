@@ -1,5 +1,6 @@
 ---
-source: src/render.rs
+source: crates/plugin/src/render/tests.rs
+assertion_line: 3217
 expression: "grid(&raw, 16)"
 ---
  RADAR        ·1

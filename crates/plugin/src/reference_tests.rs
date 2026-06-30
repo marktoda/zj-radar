@@ -551,7 +551,7 @@ fn grid(ansi: &str, width: usize) -> String {
 
 #[test]
 fn rail_reference_matches() {
-    let doc = include_str!("../docs/rail-reference.md");
+    let doc = include_str!("../../../docs/rail-reference.md");
     let cases = parse_cases(doc);
     eprintln!("Found {} scenarios", cases.len());
     let mut failures = Vec::new();

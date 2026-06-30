@@ -1,5 +1,5 @@
 ---
-source: src/render.rs
+source: crates/plugin/src/render/tests.rs
 expression: tint_map(&raw)
 ---
 rail
