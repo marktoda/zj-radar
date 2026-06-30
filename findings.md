@@ -1,5 +1,47 @@
 # Cleanup + ship-hardening review — findings
 
+## Outcome (executed on branch `cleanup-ship-hardening`)
+
+Landed, each its own commit, `just ci` + clippy green throughout and the live
+E2E suite (now 8 tests) verified non-flaky:
+
+- **T1·1** collapse status-precedence into `RadarState::resolve()` — `982747e`
+- **T1·3** extract `radar_state/snapshot.rs` (~150 lines out of the god-ish module) — `89cb089`
+- **T2·8** hoist the duplicated panel-line closure (`push_panel_line`) — `9c97f30`
+- **T2·7** dedup paste-snippet print + reuse `write_atomic` — `4637578`
+- **T3·A8** compute `plan_layout`'s content plan once + fix the misleading comment — `07df389`
+- **T3·12** doc drift: `CONTEXT.md` ObservationStore/resolve, `permission.rs` method name — `bc332da`
+- **T1·4 + T1·5** E2E: real click-to-switch coverage + harness robustness (polling,
+  version guard, notify.sh path fix) — `1ad7d85`
+- **T3·14** core: share one `Serialize` generator; fold `Kind` serde into `wire_serde!` — `dc8feb1`
+- **T3·13** move `config_pipe` JSON flattening to `config::overrides_from_json` (+unit test) — `97eb893`
+- **T2·11 (bash half)** notify.sh git repo-resolution bats (worktree/bare/fallback) — `d64e28f`
+- **flake fix** widen `last_payload` poll budget to de-flake the bash suite under load — `4e266f7`
+
+**T1·2** (`#[cfg(test)]`-gate store accessors) was already done in the codebase —
+verified, no change needed.
+
+Verification on the final state: host suite green, `cargo clippy --workspace
+--all-targets --all-features -D warnings` clean, snapshots unchanged, 26 bats
+green, **8/8 E2E green across repeated serial runs** (click test held 8/8 over 4
+full suite runs after the retry-poll hardening).
+
+### Deferred (out of scope for this pass / needs a call)
+
+- **T2·6** unify the three `setup_*` orchestrators behind one `drive_edit` driver
+  — the biggest remaining dedup, but it reshapes printed-line ordering that bats
+  pins; wants its own test-first PR. Blast radius is documented below.
+- **T2·10** E2E onboarding/first-run-grant + new-tab `/cache` rehydration — needs
+  an ungranted-permission harness path (the harness pre-grants today); valuable
+  but a sizable harness addition.
+- **T2·11 (CLI half)** `setup --download` fetch / `--grant` exec / interactive
+  prompt integration tests.
+- **T2·9** enforce the payload `v` field — a behavior change (rejecting `v != 1`);
+  left for explicit sign-off.
+
+---
+
+
 Behavior-preserving cleanup (the externals are pinned by the suite) **plus** test
 hardening, since the owner explicitly asked for stronger coverage ahead of a
 public release. Mapped read-only across all four code slices and all five test
