@@ -161,7 +161,7 @@ enum here is pure semantics.
 
 How `zj-radar setup` learns the current state of the world. The **setup-analysis
 seam** is `analyze(&Env) -> Facts`, one per target (`analyze_zellij`,
-`analyze_codex` in `crates/cli/src/setup.rs`): a pure derivation fed a thin
+`analyze_codex` in `crates/cli/src/setup/analyze.rs`): a pure derivation fed a thin
 `Env` of already-read values (file contents, fs stat booleans) by the IO shell.
 `Facts` (`ZellijFacts`, `CodexFacts`) is the single home for every derived fact —
 "is our alias present?" (managed vs unmanaged kept distinct), has-rail, granted,
