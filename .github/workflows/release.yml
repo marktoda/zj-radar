@@ -113,6 +113,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # A semver pre-release tag (v0.1.0-rc.1, v0.2.0-beta) is marked
+          # pre-release so it never becomes `latest` — let RCs shake out the
+          # pipeline without misleading the curl|sh installer's /latest/ URL.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/zj_radar.wasm
             scripts/install.sh
