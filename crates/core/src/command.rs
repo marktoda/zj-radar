@@ -34,7 +34,7 @@ pub const AGENT_NAMES: &[&str] = &["claude", "codex"];
 struct Pending {
     command: String,
     cwd: String,
-    source: String,
+    kind: Kind,
     since_tick: u64,
 }
 
@@ -334,7 +334,7 @@ impl CommandStore {
                 // Unknown/empty argv — never surface a blank Running row.
                 return;
             }
-            let source = command_kind(command, &cmd_string).as_source().to_string();
+            let kind = command_kind(command, &cmd_string);
 
             // A genuine new run opens here: forget any prior run's exit so its
             // exit is applied fresh. The `exited` dedup only exists to absorb
@@ -350,7 +350,7 @@ impl CommandStore {
                 Pending {
                     command: cmd_string,
                     cwd: cwd_str,
-                    source,
+                    kind,
                     since_tick: tick,
                 },
             );
@@ -372,7 +372,7 @@ impl CommandStore {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
                 self.resolved.insert(
                     pane_id,
-                    TrackedObservation::command(Status::Running, repo, p.command, p.source, tick),
+                    TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick),
                 );
             }
         }
@@ -437,7 +437,7 @@ impl CommandStore {
                         new_status,
                         String::new(),
                         String::new(),
-                        "command".into(),
+                        Kind::Command,
                         tick,
                     )
                 },

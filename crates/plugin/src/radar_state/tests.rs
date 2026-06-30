@@ -445,7 +445,7 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     assert_eq!(pane.repo, "pinky");
     assert_eq!(pane.branch, "fix/x");
     assert_eq!(pane.msg, "shipped it");
-    assert_eq!(pane.source, "codex");
+    assert_eq!(pane.kind, Kind::Codex);
     assert_eq!(pane.on_focus, Some(Status::Idle));
 }
 
@@ -1132,4 +1132,86 @@ proptest! {
         seen.dedup();
         prop_assert_eq!(seen, members);
     }
+}
+
+// `PaneUpdate::from_raw` — the manifest-folding policy that used to live in the
+// wasm-only `Event::PaneUpdate` arm (host-untestable). These pin the parts that
+// decide observable behavior: plugin-skip, title sanitize, and the
+// focused-else-any terminal-color precedence.
+
+fn raw_pane(id: u32, tab_pos: usize) -> RawPane {
+    RawPane {
+        tab_pos,
+        id,
+        title: String::new(),
+        is_plugin: false,
+        is_focused: false,
+        default_bg: None,
+        default_fg: None,
+        exited: false,
+        exit_status: None,
+    }
+}
+
+#[test]
+fn from_raw_skips_plugin_panes() {
+    let update = PaneUpdate::from_raw(vec![
+        RawPane { is_plugin: true, ..raw_pane(1, 0) },
+        raw_pane(2, 0),
+    ]);
+    assert!(!update.live.contains(&1), "the plugin (rail) pane is not a live terminal");
+    assert_eq!(update.live, HashSet::from([2]));
+    assert_eq!(update.tab_panes[&0].len(), 1);
+    assert_eq!(update.tab_panes[&0][0].id, 2);
+}
+
+#[test]
+fn from_raw_sanitizes_and_truncates_titles() {
+    let update = PaneUpdate::from_raw(vec![RawPane { title: "x".repeat(100), ..raw_pane(1, 0) }]);
+    assert!(update.tab_panes[&0][0].title.chars().count() <= 40);
+}
+
+#[test]
+fn from_raw_collects_live_ids_and_exits_and_groups_by_tab() {
+    let update = PaneUpdate::from_raw(vec![
+        raw_pane(1, 0),
+        raw_pane(2, 0),
+        RawPane { exited: true, exit_status: Some(2), ..raw_pane(3, 1) },
+    ]);
+    assert_eq!(update.live, HashSet::from([1, 2, 3]));
+    assert_eq!(update.exits, vec![(3, Some(2))]);
+    assert_eq!(update.tab_panes[&0].len(), 2);
+    assert_eq!(update.tab_panes[&1].len(), 1);
+}
+
+#[test]
+fn from_raw_theme_prefers_focused_pane_over_any_regardless_of_order() {
+    // An earlier *unfocused* pane reports colors, a later *focused* pane reports
+    // different ones — the focused pane must win even though it appears second.
+    let update = PaneUpdate::from_raw(vec![
+        RawPane { default_bg: Some("#101010".into()), default_fg: Some("#aaaaaa".into()), ..raw_pane(1, 0) },
+        RawPane { is_focused: true, default_bg: Some("#202020".into()), default_fg: Some("#bbbbbb".into()), ..raw_pane(2, 0) },
+    ]);
+    // DerivedColors isn't PartialEq; rail_bg uniquely distinguishes the two inputs.
+    let focused = theme::DerivedColors::from_bg_fg((0x20, 0x20, 0x20), (0xbb, 0xbb, 0xbb));
+    let any = theme::DerivedColors::from_bg_fg((0x10, 0x10, 0x10), (0xaa, 0xaa, 0xaa));
+    let theme = update.theme.expect("a terminal pane reported colors");
+    assert_eq!(theme.rail_bg, focused.rail_bg);
+    assert_ne!(theme.rail_bg, any.rail_bg);
+}
+
+#[test]
+fn from_raw_theme_falls_back_to_any_terminal_pane_when_none_focused() {
+    let update = PaneUpdate::from_raw(vec![RawPane {
+        default_bg: Some("#101010".into()),
+        default_fg: Some("#aaaaaa".into()),
+        ..raw_pane(1, 0)
+    }]);
+    let expected = theme::DerivedColors::from_bg_fg((0x10, 0x10, 0x10), (0xaa, 0xaa, 0xaa));
+    assert_eq!(update.theme.expect("colors present").rail_bg, expected.rail_bg);
+}
+
+#[test]
+fn from_raw_theme_is_none_without_color_reports() {
+    assert!(PaneUpdate::from_raw(vec![raw_pane(1, 0)]).theme.is_none());
 }

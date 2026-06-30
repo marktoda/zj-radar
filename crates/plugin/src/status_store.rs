@@ -1,6 +1,7 @@
 //! Per-pane status-payload observations, keyed by terminal pane id.
 //! No zellij-tile dependency.
 
+use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload::StatusPayload;
 use std::collections::{HashMap, HashSet};
@@ -38,7 +39,9 @@ impl StatusStore {
                 repo: p.repo,
                 branch: p.branch,
                 msg: p.msg,
-                source: p.source,
+                // Classify the untrusted wire `source` into a Kind once, here at
+                // intake; the renderer reads `kind` directly (no re-parse).
+                kind: Kind::from_source(&p.source),
                 last_change_tick,
                 on_focus: p.on_focus,
                 ever_active,
