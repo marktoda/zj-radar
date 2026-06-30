@@ -156,3 +156,22 @@ over command" precedence across observation sources stays in `RadarState`, so
 `roll_up` never learns there is more than one store. `Outcome`'s display methods
 (`full`/`minimal`/`role` — glyphs and width-driven forms) live in `render`; the
 enum here is pure semantics.
+
+## Setup analysis
+
+How `zj-radar setup` learns the current state of the world. The **setup-analysis
+seam** is `analyze(&Env) -> Facts`, one per target (`analyze_zellij`,
+`analyze_codex` in `crates/cli/src/setup.rs`): a pure derivation fed a thin
+`Env` of already-read values (file contents, fs stat booleans) by the IO shell.
+`Facts` (`ZellijFacts`, `CodexFacts`) is the single home for every derived fact —
+"is our alias present?" (managed vs unmanaged kept distinct), has-rail, granted,
+producer-wired, the Codex hooks-feature and notify states.
+
+Both consumers project from `Facts`: `*_check_items(&Facts)` renders the
+`--check` doctor output; the install orchestrators (`setup_zellij`, `setup_codex`)
+read `Facts` for their gating decisions and pull raw config text from `Env` for
+the `edit_*` splice. The pure mutators (`edit_zellij`, `edit_codex`,
+`edit_codex_hooks` → `Outcome`) are NOT driven by `Facts` — they share only the
+low-level primitive detectors (`has_unmanaged_radar_alias`, `find_plugins_insert`,
+`config_is_managed`), so no predicate is written twice. The legacy-notify vs
+hooks choice is a flag the consumer projects on, never a fact.
