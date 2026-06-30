@@ -1164,10 +1164,13 @@ fn print_codex_hook_guidance() {
 }
 
 fn codex_hooks_disabled() -> bool {
-    let Ok(existing) = std::fs::read_to_string(codex_config_path()) else {
-        return false;
+    let env = CodexEnv {
+        codex_on_path:    false,
+        zj_radar_on_path: false,
+        config_text:      std::fs::read_to_string(codex_config_path()).ok(),
+        hooks_text:       None,
     };
-    codex_hooks_disabled_in_config(&existing).unwrap_or(false)
+    matches!(analyze_codex(&env).hooks_feature, CodexHooksFeature::Disabled)
 }
 
 #[allow(clippy::too_many_arguments)]
