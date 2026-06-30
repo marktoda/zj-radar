@@ -44,6 +44,9 @@ pub struct SetupOptions<'a> {
     /// Layout name to inject into (`<config_dir>/layouts/<name>.kdl`).
     /// `None` means `default`.
     pub layout: Option<&'a str>,
+    /// Open the plugin in a focused floating pane so Zellij can prompt for
+    /// permissions (one-time grant). Exits after launching; skips wasm/alias/inject.
+    pub grant: bool,
 }
 
 /// Decision about how to handle layout injection for a given invocation.
@@ -447,6 +450,47 @@ fn wasm_release_url(version: &str) -> String {
     format!("https://github.com/marktoda/zj-radar/releases/download/v{version}/zj_radar.wasm")
 }
 
+// ── Grant helper ──
+
+/// Pure: the argument vector for `zellij plugin --floating --width 90 --height
+/// 28 file:<wasm_path>`. Unit-tested so the exec call stays thin.
+pub(crate) fn grant_args(wasm_path: &Path) -> Vec<String> {
+    vec![
+        "plugin".to_string(),
+        "--floating".to_string(),
+        "--width".to_string(),
+        "90".to_string(),
+        "--height".to_string(),
+        "28".to_string(),
+        format!("file:{}", wasm_path.display()),
+    ]
+}
+
+/// Exec `zellij plugin --floating … file:<wasm_dest>` for the one-time
+/// permission grant. Reports the error but does not exit — callers may choose.
+fn run_grant(config_dir: &Path) {
+    use std::process::Command;
+    let wasm_dest = zellij_wasm_dest(config_dir);
+    let args = grant_args(&wasm_dest);
+    match Command::new("zellij").args(&args).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!(
+                "zj-radar: zellij plugin exited with {status}; \
+                 try running: zellij {}",
+                args.join(" ")
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "zj-radar: failed to launch zellij for grant — {e}; \
+                 try running: zellij {}",
+                args.join(" ")
+            );
+        }
+    }
+}
+
 // ── Thin IO layer (not unit-tested) ──
 
 /// Fetch the wasm matching `version` to `dest` (creating its parent dir). Shells
@@ -588,6 +632,13 @@ fn codex_installed() -> bool {
 
 /// Entry point for `zj-radar setup`.
 pub fn run(options: SetupOptions<'_>) {
+    // `--grant` is its own action: open the plugin in a focused floating pane
+    // so Zellij can surface the permissions prompt. Does not run wasm/alias/inject.
+    if options.grant {
+        run_grant(&zellij_config_dir());
+        return;
+    }
+
     let want_codex = (options.targets.is_empty() && options.wasm.is_none() && !options.download)
         || options.targets.iter().any(|a| a == "codex");
     let want_zellij = options.targets.iter().any(|a| a == "zellij")
@@ -1067,6 +1118,7 @@ fn setup_zellij(
             );
             // alias already up to date — still offer injection.
             run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+            print_grant_hint();
         }
         Outcome::Conflict => {
             eprintln!(
@@ -1130,9 +1182,17 @@ fn setup_zellij(
             } else {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
                 run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+                print_grant_hint();
             }
         }
     }
+}
+
+fn print_grant_hint() {
+    println!(
+        "zellij: grant once with `zj-radar setup zellij --grant`, \
+         or launch and press y on the rail."
+    );
 }
 
 /// Print the tailored snippet for a given layout path (empty string → default facts).
@@ -1863,5 +1923,24 @@ mod tests {
     fn prompt_when_interactive() {
         // interactive tty, no --inject, no --yes → Prompt
         assert_eq!(inject_mode(false, false, true), InjectMode::Prompt);
+    }
+
+    // ── grant_args tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn grant_args_produces_exact_zellij_plugin_command() {
+        let path = std::path::Path::new("/home/user/.config/zellij/plugins/zj_radar.wasm");
+        assert_eq!(
+            grant_args(path),
+            vec![
+                "plugin",
+                "--floating",
+                "--width",
+                "90",
+                "--height",
+                "28",
+                "file:/home/user/.config/zellij/plugins/zj_radar.wasm",
+            ]
+        );
     }
 }
