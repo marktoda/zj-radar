@@ -327,12 +327,18 @@ fn print_producer_hint_if_needed() {
 }
 
 
+/// Print the "Add the sidebar to a Zellij layout with:" paste snippet, tailored
+/// to these layout facts. Single source for the manual-add instruction shared by
+/// every snippet-only path (no layout, `--yes`/non-tty, declined prompt).
+fn print_paste_snippet(facts: &crate::layout::LayoutFacts) {
+    let snippet = crate::layout::tailored_snippet(facts);
+    println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+}
+
 /// Print the tailored snippet for a given layout path (empty string → default facts).
 fn print_snippet_for(layout_path: &Path) {
     let text = std::fs::read_to_string(layout_path).unwrap_or_default();
-    let facts = crate::layout::analyze(&text);
-    let snippet = crate::layout::tailored_snippet(&facts);
-    println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+    print_paste_snippet(&crate::layout::analyze(&text));
 }
 
 /// Handle layout injection after the alias step. Reads `layout_path`, decides
@@ -368,14 +374,12 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
     match mode {
         InjectMode::Snippet => {
             // --yes or non-tty: print snippet, never mutate.
-            let snippet = crate::layout::tailored_snippet(&facts);
-            println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+            print_paste_snippet(&facts);
         }
         InjectMode::Prompt => {
             let prompt = format!("Inject the rail into {}?", layout_path.display());
             if !confirm(&prompt) {
-                let snippet = crate::layout::tailored_snippet(&facts);
-                println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+                print_paste_snippet(&facts);
                 return;
             }
             do_inject(layout_path, &text, &facts, dry_run);
@@ -398,14 +402,8 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                 );
                 return;
             }
-            // Back up then atomically write.
-            if layout_path.exists() {
-                let _ = std::fs::copy(
-                    layout_path,
-                    path_with_suffix(layout_path, ".zj-radar.bak"),
-                );
-            }
-            match crate::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+            // Back up then atomically write (shared setup helper).
+            match write_atomic(layout_path, &new_text) {
                 Ok(()) => println!(
                     "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
                     layout_path.display(),
@@ -447,13 +445,7 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
                 );
                 return;
             }
-            if layout_path.exists() {
-                let _ = std::fs::copy(
-                    layout_path,
-                    path_with_suffix(layout_path, ".zj-radar.bak"),
-                );
-            }
-            match crate::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+            match write_atomic(layout_path, &new_text) {
                 Ok(()) => println!(
                     "zellij: rail removed from {} (backup: {}.zj-radar.bak)",
                     layout_path.display(),
