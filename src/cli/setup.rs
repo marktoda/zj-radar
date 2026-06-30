@@ -416,17 +416,28 @@ fn wasm_release_url(version: &str) -> String {
 
 // ── Thin IO layer (not unit-tested) ──
 
-/// Fetch the wasm matching `version` to a temp file and return its path. Shells
+/// Fetch the wasm matching `version` to `dest` (creating its parent dir). Shells
 /// out to curl (or wget) rather than linking a Rust TLS stack — keeping the host
 /// build free of openssl/rustls, and curl is already assumed by the install flow.
-fn download_wasm(version: &str) -> Result<PathBuf, String> {
+/// Shared by `setup zellij --download` and `run`'s first-use fallback (when the
+/// CLI shipped without an embedded wasm).
+pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
+    }
     let url = wasm_release_url(version);
-    let dest = std::env::temp_dir().join(format!("zj_radar-{version}.wasm"));
-    println!("zellij: downloading wasm {version} from {url}");
-    run_download(&url, &dest)?;
+    println!("zj-radar: downloading wasm {version} from {url}");
+    run_download(&url, dest)?;
     if !dest.is_file() {
         return Err(format!("download reported success but {} is missing", dest.display()));
     }
+    Ok(())
+}
+
+/// Fetch the wasm matching `version` to a temp file and return its path.
+fn download_wasm(version: &str) -> Result<PathBuf, String> {
+    let dest = std::env::temp_dir().join(format!("zj_radar-{version}.wasm"));
+    download_wasm_to(version, &dest)?;
     Ok(dest)
 }
 
@@ -467,7 +478,7 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
 
 /// The wasm release tag to fetch: `ZJ_RADAR_VERSION` (a leading `v` is optional)
 /// overrides, else this CLI's own version — the version-skew-safe default.
-fn wasm_download_version() -> String {
+pub(crate) fn wasm_download_version() -> String {
     std::env::var("ZJ_RADAR_VERSION")
         .ok()
         .map(|v| v.trim_start_matches('v').to_string())
