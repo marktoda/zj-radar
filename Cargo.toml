@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/cli", "crates/plugin"]
 
 [workspace.package]
-version = "0.1.0-rc.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/marktoda/zj-radar"
@@ -12,7 +12,7 @@ repository = "https://github.com/marktoda/zj-radar"
 # `version` (matching [workspace.package]) is required alongside `path` so the
 # CLI is publishable to crates.io — `cargo publish` rejects a path dep on a
 # workspace member that carries no version requirement. Local builds use `path`.
-zj-radar-core = { path = "crates/core", version = "0.1.0-rc.1" }
+zj-radar-core = { path = "crates/core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-width = "0.2"
