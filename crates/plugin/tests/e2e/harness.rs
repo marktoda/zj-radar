@@ -508,8 +508,11 @@ fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
 /// The caller must build it first (via `cargo build --release --target wasm32-wasip1`).
 #[cfg(feature = "e2e")]
 pub fn plugin_wasm_path() -> std::path::PathBuf {
-    let root = env!("CARGO_MANIFEST_DIR");
-    std::path::Path::new(root).join("target/wasm32-wasip1/release/zj_radar.wasm")
+    // In a virtual workspace every member shares the workspace-root target dir,
+    // so `cargo build -p zj-radar-plugin` writes here, not under crates/plugin.
+    // CARGO_MANIFEST_DIR is the crate dir (crates/plugin); go up two levels.
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    std::path::Path::new(manifest).join("../../target/wasm32-wasip1/release/zj_radar.wasm")
 }
 
 /// Pre-seed "granted" entries in Zellij's `permissions.kdl` for the plugin path.
