@@ -167,8 +167,11 @@ schema, and a copy-paste smoke test.
   binaries, a one-line `curl | sh` installer, and the sidebar wasm;
   `zj-radar setup zellij --download` fetches the matching wasm. See
   [`docs/install.md`](docs/install.md).
-- 📋 **Not yet built** — `cargo binstall` / crates.io publish and a fully
-  automatic layout patcher. See [`docs/distribution.md`](docs/distribution.md).
+- ✅ **`cargo binstall` / crates.io packaging** — split into a three-member
+  workspace (`zj-radar-core`, the `zj-radar` CLI, `zj-radar-plugin`) with
+  `cargo binstall` metadata and crates.io fields in place, ready to publish.
+- 📋 **Not yet built** — the crates.io publish itself and a fully automatic
+  layout patcher. See [`docs/distribution.md`](docs/distribution.md).
 
 ## Development
 

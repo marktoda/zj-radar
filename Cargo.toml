@@ -27,7 +27,7 @@ portable-pty = "0.8"
 # Size-optimize the wasm artifact (workspace-root profiles apply to all members;
 # only the wasm release build is shipped, so this is effectively plugin-only).
 [profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
+opt-level = "z"   # optimize for size
+lto = true        # cross-crate inlining + dead-code elimination
+codegen-units = 1 # better optimization at the cost of build parallelism
+strip = true      # drop symbols/debuginfo from the shipped wasm

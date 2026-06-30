@@ -25,7 +25,7 @@ just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5 live: builds wasm, drives a real Zellij in a PTY (needs zellij)
 just ci          # what every PR must pass: test + test-bash
 just review      # accept intentional insta snapshot changes (cargo insta review)
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 The `wasm32-wasip1` target is requested by `rust-toolchain.toml` and
