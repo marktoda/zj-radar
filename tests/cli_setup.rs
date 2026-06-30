@@ -109,3 +109,28 @@ fn setup_codex_hooks_is_idempotent() {
         "second setup must be a no-op (idempotent)"
     );
 }
+
+// ── Test 3: `--wasm` and `--download` are mutually exclusive ─────────────────
+// The guard must short-circuit before any download or config write.
+
+#[test]
+fn setup_zellij_refuses_wasm_and_download_together() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.kdl");
+
+    let assert = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--wasm", "/tmp/x.wasm", "--download", "--yes"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("not both"),
+        "expected a mutual-exclusion refusal; got stderr: {stderr:?}"
+    );
+
+    assert!(
+        !config_path.exists(),
+        "the conflict guard must not write config.kdl"
+    );
+}

@@ -51,6 +51,10 @@ enum Command {
         /// Wasm artifact to install when setting up Zellij.
         #[arg(long, value_name = "PATH")]
         wasm: Option<PathBuf>,
+        /// Download the wasm matching this CLI's version instead of passing --wasm
+        /// (set ZJ_RADAR_VERSION to pin a different release tag).
+        #[arg(long)]
+        download: bool,
         /// Remove our entries instead of adding them.
         #[arg(long)]
         uninstall: bool,
@@ -90,6 +94,7 @@ pub fn run() {
         Command::Setup {
             targets,
             wasm,
+            download,
             uninstall,
             dry_run,
             yes,
@@ -100,6 +105,7 @@ pub fn run() {
             setup::run(setup::SetupOptions {
                 targets: &targets,
                 wasm: wasm.as_deref(),
+                download,
                 uninstall,
                 dry_run,
                 yes,

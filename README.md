@@ -54,14 +54,13 @@ wrapping your agents. It's a status rail for the session you already run.
 ## Quick start
 
 ```sh
-# 1. Build the sidebar wasm + install the CLI
-git clone https://github.com/marktoda/zj-radar
-cd zj-radar
-cargo build --release --target wasm32-wasip1
-cargo install --path . --features cli
+# 1. Install the zj-radar CLI (Linux / macOS prebuilt binary)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
 
-# 2. Install the wasm + register the `radar` alias in config.kdl
-zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
+# 2. Install the sidebar wasm + register the `radar` alias in config.kdl
+#    (--download fetches the wasm built from this CLI's own version)
+zj-radar setup zellij --download
 
 # 3. Add the sidebar to a layout (prints a snippet to paste), then start Zellij
 ```
@@ -73,9 +72,9 @@ Then add a **producer** so the rail has something to show — for Claude Code:
 /plugin install zj-radar-claude@zj-radar
 ```
 
-Full details, manual setup, layout templates, and Nix/home-manager are in
-**[`docs/install.md`](docs/install.md)**. Codex and custom producers are in
-**[`docs/producers.md`](docs/producers.md)**.
+Prefer building from source (or using Nix / home-manager)? Full details, manual
+setup, and layout templates are in **[`docs/install.md`](docs/install.md)**.
+Codex and custom producers are in **[`docs/producers.md`](docs/producers.md)**.
 
 ## How it works
 
@@ -164,8 +163,12 @@ schema, and a copy-paste smoke test.
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
 - ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
   conflict-aware `setup`; see [`docs/producers.md`](docs/producers.md#codex-and-the-native-cli).
-- 📋 **Not yet built** — cross-platform prebuilt release binaries and a
-  fully automatic layout patcher. See [`docs/distribution.md`](docs/distribution.md).
+- ✅ **Prebuilt releases** — a tagged release ships static Linux + macOS CLI
+  binaries, a one-line `curl | sh` installer, and the sidebar wasm;
+  `zj-radar setup zellij --download` fetches the matching wasm. See
+  [`docs/install.md`](docs/install.md).
+- 📋 **Not yet built** — `cargo binstall` / crates.io publish and a fully
+  automatic layout patcher. See [`docs/distribution.md`](docs/distribution.md).
 
 ## Development
 
