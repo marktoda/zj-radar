@@ -7,11 +7,11 @@
 # is only the macro wiring. Build with: cargo build --target wasm32-wasip1 -p zj-radar-plugin
 [package]
 name = "zj-radar-plugin"
-version = "0.1.0-rc.1"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "The zj-radar Zellij sidebar plugin (wasm). Companion to the zj-radar CLI."
-repository = "https://github.com/marktoda/zj-radar"
+repository.workspace = true
 publish = false
 
 [lib]

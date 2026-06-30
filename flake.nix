@@ -52,8 +52,8 @@
         # ── wasm plugin artifact (the `zj-radar-plugin` member, → wasm32-wasip1) ──
         wasmArgs = commonArgs // {
           CARGO_BUILD_TARGET = "wasm32-wasip1";
-          # Build only the plugin member: the root `zj-radar` crate is the host
-          # CLI and its default `cli` feature can't target wasm.
+          # Build only the plugin member: the `zj-radar` CLI crate is a host
+          # binary (clap/dirs deps) that can't target wasm.
           cargoExtraArgs = "-p zj-radar-plugin";
           doCheck = false; # wasm can't execute on the host builder; see `checks` for tests
         };
