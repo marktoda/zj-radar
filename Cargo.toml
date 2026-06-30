@@ -17,10 +17,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-width = "0.2"
 clap = { version = "4", features = ["derive"] }
+# `kdl` (v1-fallback) backs the CLI's `setup`/`layout` KDL parsing. The CLI crate
+# depends on it directly; the wasm plugin never does.
+kdl = { version = "6", features = ["v1-fallback"] }
 toml_edit = "0.22"
 dirs = "5"
-proptest = "1"
 insta = { version = "1", features = ["filters"] }
+proptest = "1"
 vt100 = "0.15"
 assert_cmd = "2"
 assertables = "9"

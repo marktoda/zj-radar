@@ -178,6 +178,7 @@ impl State {
                     show_pane_with_id(PaneId::Terminal(pane_id), false, true);
                 }
                 Effect::ResolveCwd { pane_ids } => self.resolve_cwd(pane_ids),
+                Effect::CloseSelf => close_self(),
                 Effect::Notify { title, body } => {
                     let note = crate::notify_rules::Notification { title, body };
                     let argv = crate::notify_rules::osascript_command(&note);

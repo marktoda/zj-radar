@@ -34,12 +34,16 @@ zj-radar setup zellij --download
   Zellij's unstable plugin ABI
 - copies it to `~/.config/zellij/plugins/zj_radar.wasm`
 - adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
-- prints the layout snippet to paste
+- reads your default layout, then **prompts** `Inject the rail into <layout>? [y/N]`:
+  answer **y** to splice the rail in-place (backup saved as `.zj-radar.bak`), or
+  **N** (default) to print the tailored snippet to paste yourself
 
-It does **not** rewrite your layouts. Use `--dry-run` to preview, `--yes` for
-non-interactive runs, and `--force` only if you want to replace an existing
-unmanaged `radar` alias. The installer also honors `ZJ_RADAR_VERSION` (release
-tag) and `ZJ_RADAR_BIN_DIR` (install directory).
+Pass `--inject` for a non-interactive yes, `--layout <name>` to target a specific
+layout (`~/.config/zellij/layouts/<name>.kdl`), `--dry-run` to preview without
+writing, `--yes` for a fully non-interactive run (always takes the safe default —
+prints the snippet, never mutates a layout), and `--force` only if you want to
+replace an existing unmanaged `radar` alias. The installer also honors
+`ZJ_RADAR_VERSION` (release tag) and `ZJ_RADAR_BIN_DIR` (install directory).
 
 ## Build from source instead
 
@@ -90,8 +94,17 @@ templates — the same place its own tab-bar/status-bar live — so radar integr
 like [zjstatus](https://github.com/dj95/zjstatus): add one pane to your
 templates, and keep the rest of your layout yours.
 
-Paste [`examples/radar-template-snippet.kdl`](../examples/radar-template-snippet.kdl)
-into any layout:
+`setup zellij` with `--wasm <path>` or `--download` installs the wasm and alias,
+then prompts to inject the rail automatically. You can also inject or re-inject
+at any time (no wasm/alias step needed):
+
+```sh
+zj-radar setup zellij --inject              # inject into the default layout
+zj-radar setup zellij --inject --layout my  # inject into layouts/my.kdl
+zj-radar setup zellij --uninstall           # strip the injected rail
+```
+
+To do it manually, add this snippet to any layout file:
 
 ```kdl
 // Tabs defined in the layout file get their panes via `children`.
@@ -125,6 +138,21 @@ Want the column on the **right**? Put `children` (and the runtime
 `pane focus=true`) before the radar pane in each vertical split. Different
 width? Change `size`.
 
+## Grant permissions (`--grant`)
+
+Zellij requires an explicit permission grant the first time a plugin loads from a
+given path. `--grant` opens the wasm in a focused floating pane so Zellij surfaces
+the prompt without you having to open a full layout first:
+
+```sh
+zj-radar setup zellij --grant
+```
+
+This is a standalone action: it skips wasm copy, alias edit, and layout injection,
+and exits after launching the floating pane. After you approve inside the pane,
+close it and subsequent sidebar instances at the same path will use Zellij's
+cached grant.
+
 ## First-run permission prompt
 
 On first load the sidebar shows an onboarding face and requests three
@@ -133,17 +161,37 @@ press `y` to grant. The sidebar stays focusable only for that prompt, then goes
 back to passive sidebar behavior. It never runs commands; notifications stay in
 the producer.
 
-For a roomier first-run prompt, approve the same stable plugin URL once in a
-floating pane before using the sidebar layout:
+After approval, the per-tab sidebars should use the cached grant. For how the
+per-tab instances coordinate that single prompt (and what happens when session
+files aren't writable), see
+[First-run prompt coordination](troubleshooting.md#first-run-prompt-coordination).
 
-```sh
-zellij plugin --floating --width 80 --height 24 file:~/.config/zellij/plugins/zj_radar.wasm
+## Check your setup (`--check`)
+
+Run `zj-radar setup zellij --check` to get a diagnostic summary of every
+component:
+
+```
+zj-radar setup zellij --check
+zellij:
+  ok alias: radar plugin alias present in config.kdl
+  ok wasm: wasm plugin file present
+  missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
+  missing grant: wasm not granted — run `zj-radar setup zellij --grant`
+  ok producer: a producer is wired (Codex hooks or Claude plugin)
 ```
 
-After approval, close that floating pane and start your radar layout; the per-tab
-sidebars should use the cached grant. For how the per-tab instances coordinate
-that single prompt (and what happens when session files aren't writable), see
-[First-run prompt coordination](troubleshooting.md#first-run-prompt-coordination).
+Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
+modifies any file. Reported items (five always; a sixth only when applicable):
+
+- **alias** — `radar` plugin alias present in `config.kdl`; warns if it points at
+  a `/nix/store/` path (grant won't survive a rebuild).
+- **wasm** — plugin file exists at the expected stable path.
+- **layout** — default layout contains the injected radar rail.
+- **grant** — `permissions.kdl` records a grant for the wasm path.
+- **producer** — Codex hooks or Claude plugin is wired up.
+- **managed config** — emitted only when `config.kdl` is a symlink
+  (home-manager); warns that direct edits may be overwritten.
 
 ## Loading straight from a release URL (caveat)
 

@@ -38,6 +38,10 @@ detect_target() {
     arm64|aarch64) cpu="aarch64" ;;
     *) err "unsupported architecture '$arch'" ;;
   esac
+  # Intel macOS has no prebuilt binary (Apple Silicon only); fall back to source.
+  if [ "$os" = Darwin ] && [ "$cpu" = x86_64 ]; then
+    err "no prebuilt binary for Intel (x86_64) macOS — install from source instead: cargo install zj-radar"
+  fi
   printf '%s-%s' "$cpu" "$suffix"
 }
 

@@ -32,7 +32,6 @@
           src = ./.;
           filter = path: type:
             (craneLib.filterCargoSources path type)
-            || (pkgs.lib.hasSuffix "/examples/radar-template-snippet.kdl" path)
             # Pulled in at compile time via include_str! in src/reference_tests.rs.
             || (pkgs.lib.hasSuffix "/docs/rail-reference.md" path)
             # include_str!'d by the CLI's `run` command (crates/cli/src/run.rs).

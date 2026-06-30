@@ -8,15 +8,8 @@ use super::fsutil::atomic_write;
 use super::setup::CODEX_HOOK_MARKER;
 use std::path::{Path, PathBuf};
 
-// Shown only on the `--no-grant` path, where the rail must request permission
-// itself (and Zellij renders the y/n prompt in that pane).
 const GRANT_HINT: &str =
-    "First run: focus the RADAR rail (left) and press y to enable agent status.";
-// Printed once when we pre-seed the grant, so the permission write is disclosed
-// rather than silent.
-const GRANTED_NOTICE: &str = "zj-radar: granted its sidebar Zellij permissions \
-    (ReadApplicationState, ReadCliPipes, ChangeApplicationState). Revoke by removing \
-    the entry from Zellij's permissions.kdl.";
+    "First run: a permission prompt opens in the center — press y to enable agent status.";
 const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -50,14 +43,14 @@ pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
 /// doesn't exist yet. `--new-session-with-layout` always starts a new session —
 /// even when invoked from inside Zellij — using the named layout resolved from
 /// `--config-dir`'s `layouts/`.
-pub(crate) fn create_session_args(config_dir: &Path, session: &str) -> Vec<String> {
+pub(crate) fn create_session_args(config_dir: &Path, session: &str, layout: &str) -> Vec<String> {
     vec![
         "--config-dir".into(),
         config_dir.to_string_lossy().into_owned(),
         "--session".into(),
         session.into(),
         "--new-session-with-layout".into(),
-        "radar".into(),
+        layout.into(),
     ]
 }
 
@@ -77,42 +70,6 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
         .lines()
         .map(str::trim_start)
         .any(|l| l.starts_with(&needle) && l.contains('{'))
-}
-
-/// The three permissions the sidebar plugin requests (must match the wasm glue's
-/// `request_permission` call): state for tab/pane events, the status pipe, and
-/// tab/pane actions (rename, switch, show).
-const GRANT_PERMS: [&str; 3] = ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState"];
-
-/// Pure: given current `permissions.kdl` content, return the content that also
-/// grants `wasm_abs` — or `None` if it's already granted (no write needed).
-/// Purely additive: every existing entry is preserved verbatim and our block is
-/// appended, so other plugins' grants are never disturbed.
-pub(crate) fn append_grant(existing: &str, wasm_abs: &str) -> Option<String> {
-    if wasm_is_granted(existing, wasm_abs) {
-        return None;
-    }
-    let perms = GRANT_PERMS.map(|p| format!("    {p}\n")).concat();
-    let sep = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
-    Some(format!("{existing}{sep}\"{wasm_abs}\" {{\n{perms}}}\n"))
-}
-
-/// Idempotently pre-seed Zellij's permission cache so the sidebar loads granted
-/// (no in-pane prompt — illegible in the rail, Zellij #4749). Returns `Ok(true)`
-/// if it newly wrote the grant, `Ok(false)` if already present. Creates the cache
-/// dir/file if missing; writes atomically.
-pub(crate) fn ensure_wasm_granted(perm_path: &Path, wasm_abs: &str) -> std::io::Result<bool> {
-    let existing = std::fs::read_to_string(perm_path).unwrap_or_default();
-    match append_grant(&existing, wasm_abs) {
-        None => Ok(false),
-        Some(updated) => {
-            if let Some(parent) = perm_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            atomic_write(perm_path, updated.as_bytes())?;
-            Ok(true)
-        }
-    }
 }
 
 /// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
@@ -162,6 +119,9 @@ pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
 pub(crate) struct Assets {
     pub config_template: &'static str,
     pub layout: &'static str,
+    /// First-run layout: the rail plus a floating pane that hosts the grant
+    /// prompt legibly. Selected by `plan_run` only when the wasm isn't granted.
+    pub onboarding_layout: &'static str,
     /// `Some` when the wasm is baked into the binary (every prebuilt install);
     /// `None` for a from-crates.io `cargo install`, where `run` downloads it.
     pub wasm: Option<&'static [u8]>,
@@ -184,12 +144,14 @@ pub(crate) fn materialize(
     let wasm_path = dir.join("plugins").join("zj_radar.wasm");
     let config_path = dir.join("config.kdl");
     let layout_path = dir.join("layouts").join("radar.kdl");
+    let onboarding_layout_path = dir.join("layouts").join("radar-onboarding.kdl");
     let marker = dir.join(".zj-radar-version");
 
     let up_to_date = std::fs::read_to_string(&marker).is_ok_and(|v| v == version)
         && wasm_path.exists()
         && config_path.exists()
-        && layout_path.exists();
+        && layout_path.exists()
+        && onboarding_layout_path.exists();
     if up_to_date {
         return Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path });
     }
@@ -203,6 +165,7 @@ pub(crate) fn materialize(
     }
     atomic_write(&config_path, config.as_bytes())?;
     atomic_write(&layout_path, assets.layout.as_bytes())?;
+    atomic_write(&onboarding_layout_path, assets.onboarding_layout.as_bytes())?;
     atomic_write(&marker, version.as_bytes())?;
     Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path })
 }
@@ -211,6 +174,7 @@ pub(crate) fn materialize(
 
 const CONFIG_TEMPLATE: &str = include_str!("run_assets/config.kdl");
 const LAYOUT: &str = include_str!("run_assets/radar.kdl");
+const ONBOARDING_LAYOUT: &str = include_str!("run_assets/radar-onboarding.kdl");
 
 // build.rs sets `embedded_wasm` (+ ZJ_RADAR_WASM_PATH) when it has a wasm to
 // bake in — true for every prebuilt binary (curl|sh, binstall, nix) and any
@@ -222,7 +186,12 @@ const WASM: Option<&[u8]> = Some(include_bytes!(env!("ZJ_RADAR_WASM_PATH")));
 const WASM: Option<&[u8]> = None;
 
 fn embedded_assets() -> Assets {
-    Assets { config_template: CONFIG_TEMPLATE, layout: LAYOUT, wasm: WASM }
+    Assets {
+        config_template: CONFIG_TEMPLATE,
+        layout: LAYOUT,
+        onboarding_layout: ONBOARDING_LAYOUT,
+        wasm: WASM,
+    }
 }
 
 // ── Orchestration: pure plan + thin IO ───────────────────────────────────────
@@ -255,17 +224,22 @@ struct RunPlan {
 /// layout; collect the ordered advisory lines (grant hint before producer hint);
 /// surface whether we're nested.
 fn plan_run(facts: &RunFacts) -> RunPlan {
-    let args = if facts.session_exists {
-        attach_session_args(&facts.session)
-    } else {
-        create_session_args(&facts.config_dir, &facts.session)
-    };
-
-    let mut advisories = Vec::new();
     let granted = facts
         .permissions_kdl
         .as_deref()
         .is_some_and(|kdl| wasm_is_granted(kdl, &facts.wasm_path.to_string_lossy()));
+
+    let args = if facts.session_exists {
+        attach_session_args(&facts.session)
+    } else {
+        // First run (ungranted) opens the onboarding layout — its floating pane
+        // hosts Zellij's grant prompt legibly. Once granted, later runs use the
+        // plain rail layout so no transient pane ever flashes.
+        let layout = if granted { "radar" } else { "radar-onboarding" };
+        create_session_args(&facts.config_dir, &facts.session, layout)
+    };
+
+    let mut advisories = Vec::new();
     if !granted {
         advisories.push(GRANT_HINT.to_string());
     }
@@ -279,8 +253,6 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
 pub struct RunOptions {
     pub name: Option<String>,
     pub print_cmd: bool,
-    /// Skip pre-seeding Zellij's permission grant; the rail will prompt instead.
-    pub no_grant: bool,
 }
 
 /// Read `~/<rel>` if present. Producer/grant probes are strictly read-only.
@@ -331,39 +303,18 @@ pub fn run(opts: RunOptions) {
         }
     }
 
-    // Pre-seed Zellij's permission cache so the sidebar loads already granted:
-    // its consent prompt is illegible in the small rail (Zellij #4749). Additive
-    // and idempotent. `--no-grant` opts out — then plan_run shows a press-y hint.
-    let perm_path = zellij_permissions_path();
-    let mut newly_granted = false;
-    if !opts.no_grant {
-        if let Some(p) = &perm_path {
-            match ensure_wasm_granted(p, &materialized.wasm_path.to_string_lossy()) {
-                Ok(true) => newly_granted = true,
-                Ok(false) => {}
-                Err(e) => eprintln!(
-                    "zj-radar: could not pre-grant Zellij permissions ({e}); \
-                     the rail will prompt on first run instead."
-                ),
-            }
-        }
-    }
-
     let facts = RunFacts {
         session,
         config_dir: materialized.config_dir,
         wasm_path: materialized.wasm_path,
         session_exists,
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
-        permissions_kdl: perm_path.and_then(|p| std::fs::read_to_string(p).ok()),
+        permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: read_under_home(".codex/hooks.json"),
         installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
     };
     let plan = plan_run(&facts);
 
-    if newly_granted {
-        println!("{GRANTED_NOTICE}");
-    }
     for advisory in &plan.advisories {
         println!("{advisory}");
     }
@@ -402,7 +353,7 @@ mod tests {
     #[test]
     fn create_and_attach_args_are_exact() {
         assert_eq!(
-            create_session_args(Path::new("/cfg"), "foo"),
+            create_session_args(Path::new("/cfg"), "foo", "radar"),
             vec!["--config-dir", "/cfg", "--session", "foo", "--new-session-with-layout", "radar"]
         );
         assert_eq!(attach_session_args("foo"), vec!["attach", "foo"]);
@@ -432,30 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn append_grant_is_idempotent_and_additive() {
-        let p = "/x/zj_radar.wasm";
-        // Fresh/empty file → writes a full grant block for our three perms.
-        let fresh = append_grant("", p).expect("ungranted → returns content to write");
-        assert!(wasm_is_granted(&fresh, p));
-        assert!(fresh.contains("ReadApplicationState"));
-        assert!(fresh.contains("ReadCliPipes"));
-        assert!(fresh.contains("ChangeApplicationState"));
-        // Already granted → None (no write, idempotent).
-        assert!(append_grant(&fresh, p).is_none());
-        // Additive: an existing entry for another plugin is preserved verbatim.
-        let other = "\"/other/room.wasm\" {\n    ReadApplicationState\n}\n";
-        let merged = append_grant(other, p).expect("our path still ungranted");
-        assert!(merged.starts_with(other), "other plugin's entry preserved");
-        assert!(wasm_is_granted(&merged, p));
-        assert!(wasm_is_granted(&merged, "/other/room.wasm"));
-        // Missing trailing newline on existing content → a separator is inserted
-        // so the appended block doesn't fuse onto the prior node.
-        let no_nl = "\"/other/room.wasm\" {\n    ReadApplicationState\n}";
-        let merged2 = append_grant(no_nl, p).unwrap();
-        assert!(merged2.contains("}\n\""), "appended block starts on its own line");
-    }
-
-    #[test]
     fn locators_compose_expected_paths() {
         assert_eq!(owned_config_dir_in(Path::new("/data")), Path::new("/data/zj-radar/zellij"));
         assert_eq!(
@@ -472,6 +399,7 @@ mod tests {
         Assets {
             config_template: "plugins { radar location=\"file:@WASM@\" {} }\n",
             layout: "layout { default_tab_template { children } tab { pane } }\n",
+            onboarding_layout: "layout { tab { pane; floating_panes { pane { plugin location=\"radar\" { role \"onboarding\" } } } } }\n",
             wasm: Some(b"\0asm-dummy"),
         }
     }
@@ -483,6 +411,7 @@ mod tests {
         let assets = Assets {
             config_template: "plugins { radar location=\"file:@WASM@\" {} }\n",
             layout: "layout {}\n",
+            onboarding_layout: "layout {}\n",
             wasm: None,
         };
         let m = materialize(&dir, "0.1.0", &assets).unwrap();
@@ -491,6 +420,7 @@ mod tests {
         assert!(!m.wasm_path.exists(), "must not create a wasm file when none is embedded");
         assert!(dir.join("config.kdl").exists(), "config still written");
         assert!(dir.join("layouts/radar.kdl").exists(), "layout still written");
+        assert!(dir.join("layouts/radar-onboarding.kdl").exists(), "onboarding layout written");
         assert!(dir.join(".zj-radar-version").exists(), "marker still written");
     }
 
@@ -518,6 +448,7 @@ mod tests {
         let sentinel = Assets {
             config_template: "SENTINEL-CONFIG-SHOULD-NOT-BE-WRITTEN\n",
             layout: "SENTINEL-SHOULD-NOT-BE-WRITTEN\n",
+            onboarding_layout: "SENTINEL-ONBOARDING-SHOULD-NOT-BE-WRITTEN\n",
             wasm: Some(b"SENTINEL-WASM"),
         };
         materialize(&dir, "0.1.0", &sentinel).unwrap();
@@ -588,9 +519,23 @@ mod tests {
 
     #[test]
     fn plan_run_creates_new_session_when_absent() {
-        let p = plan_run(&facts(true, true, false));
-        assert_eq!(p.args, create_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
+        let p = plan_run(&facts(true, true, false)); // granted → plain rail layout
+        assert_eq!(
+            p.args,
+            create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar")
+        );
         assert!(!p.nested);
+    }
+
+    #[test]
+    fn plan_run_uses_onboarding_layout_when_ungranted() {
+        // First run: launch the onboarding layout so the floating pane hosts the
+        // grant prompt legibly.
+        let p = plan_run(&facts(false, true, false));
+        assert_eq!(
+            p.args,
+            create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar-onboarding")
+        );
     }
 
     #[test]

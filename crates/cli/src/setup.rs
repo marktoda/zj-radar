@@ -27,7 +27,6 @@ const CODEX_HOOK_EVENTS: [&str; 7] = [
 ];
 const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
-const ZELLIJ_LAYOUT_SNIPPET: &str = include_str!("../../../examples/radar-template-snippet.kdl");
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -40,8 +39,43 @@ pub struct SetupOptions<'a> {
     pub check: bool,
     pub legacy_notify: bool,
     pub force: bool,
-    /// Skip pre-seeding Zellij's permission grant for the installed sidebar wasm.
-    pub no_grant: bool,
+    /// Non-interactive consent to inject the rail into the target layout.
+    pub inject: bool,
+    /// Layout name to inject into (`<config_dir>/layouts/<name>.kdl`).
+    /// `None` means `default`.
+    pub layout: Option<&'a str>,
+    /// Open the plugin in a focused floating pane so Zellij can prompt for
+    /// permissions (one-time grant). Exits after launching; skips wasm/alias/inject.
+    pub grant: bool,
+}
+
+/// Decision about how to handle layout injection for a given invocation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum InjectMode {
+    /// Inject without prompting (`--inject` was passed).
+    Inject,
+    /// Ask the user interactively (default N — no mutation without explicit y).
+    Prompt,
+    /// Print the tailored snippet and skip injection. The safe non-mutating
+    /// default when `--yes` is in effect or when stdin is not a tty.
+    Snippet,
+}
+
+/// Pure decision: given the CLI flags and whether stdin is a tty, decide how
+/// the layout injection step should behave. The rules are:
+///
+/// 1. `--inject` → `Inject` (unconditional explicit consent).
+/// 2. `--yes` → `Snippet`  (take the safe default; never mutate silently).
+/// 3. Not a tty → `Snippet` (no way to ask).
+/// 4. Otherwise → `Prompt`  (interactive).
+pub(crate) fn inject_mode(inject_flag: bool, yes: bool, is_tty: bool) -> InjectMode {
+    if inject_flag {
+        return InjectMode::Inject;
+    }
+    if yes || !is_tty {
+        return InjectMode::Snippet;
+    }
+    InjectMode::Prompt
 }
 
 #[derive(Debug)]
@@ -416,6 +450,47 @@ fn wasm_release_url(version: &str) -> String {
     format!("https://github.com/marktoda/zj-radar/releases/download/v{version}/zj_radar.wasm")
 }
 
+// ── Grant helper ──
+
+/// Pure: the argument vector for `zellij plugin --floating --width 90 --height
+/// 28 file:<wasm_path>`. Unit-tested so the exec call stays thin.
+pub(crate) fn grant_args(wasm_path: &Path) -> Vec<String> {
+    vec![
+        "plugin".to_string(),
+        "--floating".to_string(),
+        "--width".to_string(),
+        "90".to_string(),
+        "--height".to_string(),
+        "28".to_string(),
+        format!("file:{}", wasm_path.display()),
+    ]
+}
+
+/// Exec `zellij plugin --floating … file:<wasm_dest>` for the one-time
+/// permission grant. Reports the error but does not exit — callers may choose.
+fn run_grant(config_dir: &Path) {
+    use std::process::Command;
+    let wasm_dest = zellij_wasm_dest(config_dir);
+    let args = grant_args(&wasm_dest);
+    match Command::new("zellij").args(&args).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!(
+                "zj-radar: zellij plugin exited with {status}; \
+                 try running: zellij {}",
+                args.join(" ")
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "zj-radar: failed to launch zellij for grant — {e}; \
+                 try running: zellij {}",
+                args.join(" ")
+            );
+        }
+    }
+}
+
 // ── Thin IO layer (not unit-tested) ──
 
 /// Fetch the wasm matching `version` to `dest` (creating its parent dir). Shells
@@ -536,6 +611,15 @@ fn zellij_plugin_location(path: &Path) -> String {
     format!("file:{display_path}")
 }
 
+/// Returns `true` when `path` is a symlink — the hallmark of a Nix / home-manager
+/// managed file that we must not overwrite. Uses `symlink_metadata` so the query
+/// does not follow the link (a broken symlink still returns `true`).
+pub(crate) fn config_is_managed(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file()))
@@ -548,6 +632,13 @@ fn codex_installed() -> bool {
 
 /// Entry point for `zj-radar setup`.
 pub fn run(options: SetupOptions<'_>) {
+    // `--grant` is its own action: open the plugin in a focused floating pane
+    // so Zellij can surface the permissions prompt. Does not run wasm/alias/inject.
+    if options.grant {
+        run_grant(&zellij_config_dir());
+        return;
+    }
+
     let want_codex = (options.targets.is_empty() && options.wasm.is_none() && !options.download)
         || options.targets.iter().any(|a| a == "codex");
     let want_zellij = options.targets.iter().any(|a| a == "zellij")
@@ -577,7 +668,8 @@ pub fn run(options: SetupOptions<'_>) {
             options.dry_run,
             options.yes,
             options.force,
-            options.no_grant,
+            options.inject,
+            options.layout,
         );
     }
     if want_codex {
@@ -592,14 +684,14 @@ pub fn run(options: SetupOptions<'_>) {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum CheckLevel {
+pub(crate) enum CheckLevel {
     Ok,
     Warn,
     Missing,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct CheckItem {
+pub(crate) struct CheckItem {
     level: CheckLevel,
     name: &'static str,
     detail: String,
@@ -645,22 +737,157 @@ fn check_codex(legacy_notify: bool) {
     print_check_items(&items);
 }
 
+/// Pure builder: given already-gathered inputs, emit the ordered list of
+/// Inputs to [`zellij_check_items`]. All I/O is done by the caller; the
+/// function itself is pure.
+pub(crate) struct ZellijCheckInputs<'a> {
+    pub alias_present: bool,
+    pub alias_is_store_path: bool,
+    pub wasm_present: bool,
+    pub layout_text: Option<&'a str>,
+    pub permissions_text: Option<&'a str>,
+    pub wasm_path: &'a str,
+    pub producer_wired: bool,
+    pub config_managed: bool,
+}
+
+/// `CheckItem`s for `zj-radar setup zellij --check`. No I/O inside.
+pub(crate) fn zellij_check_items(inputs: ZellijCheckInputs<'_>) -> Vec<CheckItem> {
+    let ZellijCheckInputs {
+        alias_present,
+        alias_is_store_path,
+        wasm_present,
+        layout_text,
+        permissions_text,
+        wasm_path,
+        producer_wired,
+        config_managed,
+    } = inputs;
+    let mut items = Vec::new();
+
+    // 1. alias
+    items.push(match (alias_present, alias_is_store_path) {
+        (false, _) => CheckItem::missing("alias", "radar plugin alias not found in config.kdl"),
+        (true, true) => CheckItem::warn(
+            "alias",
+            "alias points at /nix/store/ path — grant won't persist across rebuilds; run `setup zellij` after each rebuild",
+        ),
+        (true, false) => CheckItem::ok("alias", "radar plugin alias present in config.kdl"),
+    });
+
+    // 2. wasm
+    items.push(if wasm_present {
+        CheckItem::ok("wasm", "wasm plugin file present")
+    } else {
+        CheckItem::missing(
+            "wasm",
+            "wasm plugin file not found — run `zj-radar setup zellij --wasm <path>` or `--download`",
+        )
+    });
+
+    // 3. layout (rail)
+    items.push(match layout_text {
+        None => CheckItem::warn("layout", "no default layout found"),
+        Some(text) => {
+            if super::layout::analyze(text).has_rail {
+                CheckItem::ok("layout", "default layout has the radar rail")
+            } else {
+                CheckItem::missing(
+                    "layout",
+                    "default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet",
+                )
+            }
+        }
+    });
+
+    // 4. grant
+    items.push(match permissions_text {
+        None => CheckItem::warn("grant", "no permissions.kdl found"),
+        Some(text) => {
+            if super::run::wasm_is_granted(text, wasm_path) {
+                CheckItem::ok("grant", "wasm is granted in permissions.kdl")
+            } else {
+                CheckItem::missing(
+                    "grant",
+                    "wasm not granted — run `zj-radar setup zellij --grant`",
+                )
+            }
+        }
+    });
+
+    // 5. producer
+    items.push(if producer_wired {
+        CheckItem::ok("producer", "a producer is wired (Codex hooks or Claude plugin)")
+    } else {
+        CheckItem::missing(
+            "producer",
+            "no producer detected — run `zj-radar setup codex` or enable the Claude plugin",
+        )
+    });
+
+    // 6. managed config (only emit when true)
+    if config_managed {
+        items.push(CheckItem::warn(
+            "managed config",
+            "config.kdl is managed (symlink); edits may be overwritten",
+        ));
+    }
+
+    items
+}
+
 fn check_zellij() {
+    let config_dir = zellij_config_dir();
+    let config_path = zellij_config_path(&config_dir);
+    let wasm_dest = zellij_wasm_dest(&config_dir);
+    let layout_path = config_dir.join("layouts").join("default.kdl");
+    let wasm_path_str = wasm_dest.to_string_lossy().into_owned();
+
+    // Gather alias presence and nix-store detection from config.kdl
+    let config_text = std::fs::read_to_string(&config_path).ok();
+    let alias_present = config_text.as_deref().is_some_and(|t| {
+        let lines: Vec<String> = split_lines(t);
+        has_unmanaged_radar_alias(&lines)
+            || lines.iter().any(|l| l.trim() == ZELLIJ_ALIAS_BEGIN)
+    });
+    let alias_is_store_path = config_text
+        .as_deref()
+        .is_some_and(|t| t.contains("/nix/store/"));
+
+    // wasm presence
+    let wasm_present = wasm_dest.is_file();
+
+    // default layout text
+    let layout_text = std::fs::read_to_string(&layout_path).ok();
+
+    // permissions.kdl (from the platform-resolved path)
+    let permissions_text = super::run::zellij_permissions_path()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+
+    // producer detection: reuse run.rs helpers
+    let codex_hooks = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
+    let installed_plugins = dirs::home_dir()
+        .and_then(|h| {
+            std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()
+        });
+    let claude_present = super::run::claude_producer_wired(installed_plugins.as_deref());
+    let producer_wired = super::run::producer_hint(codex_hooks.as_deref(), claude_present).is_none();
+
+    // managed config
+    let config_managed = config_is_managed(&config_path);
+
+    let items = zellij_check_items(ZellijCheckInputs {
+        alias_present,
+        alias_is_store_path,
+        wasm_present,
+        layout_text: layout_text.as_deref(),
+        permissions_text: permissions_text.as_deref(),
+        wasm_path: &wasm_path_str,
+        producer_wired,
+        config_managed,
+    });
     println!("zellij:");
-    let config_path = zellij_config_path(&zellij_config_dir());
-    let wasm_path = zellij_wasm_dest(&zellij_config_dir());
-    let items = [
-        if config_path.exists() {
-            CheckItem::ok("config", config_path.display().to_string())
-        } else {
-            CheckItem::missing("config", format!("not found at {}", config_path.display()))
-        },
-        if wasm_path.exists() {
-            CheckItem::ok("wasm", wasm_path.display().to_string())
-        } else {
-            CheckItem::missing("wasm", format!("not found at {}", wasm_path.display()))
-        },
-    ];
     print_check_items(&items);
 }
 
@@ -924,12 +1151,34 @@ fn setup_zellij(
     dry_run: bool,
     yes: bool,
     force: bool,
-    no_grant: bool,
+    inject_flag: bool,
+    layout_name: Option<&str>,
 ) {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
+
+    // Resolve the target layout path up front (needed whether or not a managed
+    // config short-circuits): `--layout <name>` → `<config_dir>/layouts/<name>.kdl`,
+    // else `<config_dir>/layouts/default.kdl`.
+    let layout_path = config_dir
+        .join("layouts")
+        .join(format!("{}.kdl", layout_name.unwrap_or("default")));
+
+    // Refuse to clobber a managed (symlinked) config.kdl: print the layout snippet
+    // for guidance, then return early. A Nix/home-manager user gets the wasm + alias
+    // via their config, not from us.
+    if !uninstall && config_is_managed(&config_path) {
+        eprintln!(
+            "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
+             zj-radar will not overwrite a managed config — add the plugin alias via\n\
+             your Nix config instead. See docs/install.md for the home-manager snippet.",
+            config_path.display()
+        );
+        print_snippet_for(&layout_path);
+        return;
+    }
 
     // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
     // wasm matching this CLI's version). `downloaded` outlives the borrow in `src`.
@@ -955,6 +1204,22 @@ fn setup_zellij(
         wasm
     };
 
+    // When `--inject` is set (or `--yes` is set for a non-mutating snippet) but
+    // no wasm source is given, skip the wasm/alias step and go directly to the
+    // layout step. This makes `setup zellij --inject` and `setup zellij --yes`
+    // usable and testable without a wasm artifact while preserving the existing
+    // "refused — pass --wasm" error for bare `setup zellij` invocations.
+    let layout_only_install = src.is_none() && !uninstall && (inject_flag || yes);
+    if layout_only_install {
+        run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+        return;
+    }
+    // `--uninstall` with no wasm/config: layout-only uninstall.
+    if uninstall && src.is_none() && !config_path.exists() {
+        run_layout_uninstall(&layout_path, dry_run);
+        return;
+    }
+
     if !uninstall {
         let Some(src) = src else {
             eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm> or --download");
@@ -978,13 +1243,18 @@ fn setup_zellij(
     match outcome {
         Outcome::Unchanged if uninstall => {
             println!("zellij: already removed ({})", config_path.display());
+            // uninstall: also try to remove the injected rail from the layout.
+            run_layout_uninstall(&layout_path, dry_run);
         }
         Outcome::Unchanged => {
             println!(
                 "zellij: config already up to date ({})",
                 config_path.display()
             );
-            println_layout_snippet();
+            // alias already up to date — still offer injection.
+            run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+            print_grant_hint();
+            print_producer_hint_if_needed();
         }
         Outcome::Conflict => {
             eprintln!(
@@ -1005,8 +1275,10 @@ fn setup_zellij(
                     }
                 }
                 println!("--- {} (dry-run) ---\n{new}", config_path.display());
-                if !uninstall {
-                    println_layout_snippet();
+                if uninstall {
+                    run_layout_uninstall(&layout_path, dry_run);
+                } else {
+                    run_layout_inject(&layout_path, inject_flag, yes, dry_run);
                 }
                 return;
             }
@@ -1041,40 +1313,183 @@ fn setup_zellij(
                 if uninstall { "removed" } else { "installed" },
                 config_path.display()
             );
-            if !uninstall {
+            if uninstall {
+                run_layout_uninstall(&layout_path, dry_run);
+            } else {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
-                println_layout_snippet();
-            }
-        }
-    }
-
-    // Pre-seed the permission grant for the installed wasm so the rail loads
-    // already granted on first launch — its consent prompt is illegible in the
-    // small rail (Zellij #4749). Idempotent + additive; only when installing and
-    // the wasm is actually in place.
-    if !uninstall && !dry_run && !no_grant && wasm_dest.is_file() {
-        if let Some(perm_path) = super::run::zellij_permissions_path() {
-            match super::run::ensure_wasm_granted(&perm_path, &wasm_dest.to_string_lossy()) {
-                Ok(true) => println!(
-                    "zellij: granted the sidebar Zellij permissions \
-                     (ReadApplicationState, ReadCliPipes, ChangeApplicationState); \
-                     revoke via permissions.kdl"
-                ),
-                Ok(false) => {}
-                Err(e) => eprintln!(
-                    "zellij: could not pre-grant permissions ({e}); \
-                     focus the rail and press y on first run instead."
-                ),
+                run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+                print_grant_hint();
+                print_producer_hint_if_needed();
             }
         }
     }
 }
 
-fn println_layout_snippet() {
+fn print_grant_hint() {
+    // The rail can't show Zellij's grant prompt legibly (it's a small borderless
+    // pane — Zellij #4749). On first launch the user grants by focusing the rail
+    // and pressing y; `--grant` offers an explicit floating prompt instead. The
+    // turnkey `zj-radar run` handles this automatically. One coherent line — the
+    // merge with main's onboarding work otherwise printed two overlapping notes.
     println!(
-        "\nAdd the sidebar to a Zellij layout with:\n\n{}",
-        ZELLIJ_LAYOUT_SNIPPET.trim_end()
+        "zellij: on first launch, focus the RADAR rail (the left column) and press y to \
+         allow access — or run `zj-radar setup zellij --grant` to grant via a floating \
+         pane. Zellij asks once, then remembers."
     );
+}
+
+/// Emit a producer hint at the tail of `setup zellij` when no producer is wired.
+/// Checks Codex hooks and the Claude plugin manifest, same as `run`'s detection.
+fn print_producer_hint_if_needed() {
+    let codex_hooks = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
+    let installed_plugins = dirs::home_dir()
+        .and_then(|h| {
+            std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()
+        });
+    let claude_present = super::run::claude_producer_wired(installed_plugins.as_deref());
+    if let Some(hint) = super::run::producer_hint(codex_hooks.as_deref(), claude_present) {
+        println!("zellij: {hint}");
+    }
+}
+
+
+/// Print the tailored snippet for a given layout path (empty string → default facts).
+fn print_snippet_for(layout_path: &Path) {
+    let text = std::fs::read_to_string(layout_path).unwrap_or_default();
+    let facts = super::layout::analyze(&text);
+    let snippet = super::layout::tailored_snippet(&facts);
+    println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+}
+
+/// Handle layout injection after the alias step. Reads `layout_path`, decides
+/// the mode, and either injects (writing a `.zj-radar.bak` backup first) or
+/// prints the tailored snippet. A missing layout → snippet only (safe fallback).
+fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: bool) {
+    use std::io::IsTerminal;
+    let is_tty = std::io::stdin().is_terminal();
+    let mode = inject_mode(inject_flag, yes, is_tty);
+
+    let text = match std::fs::read_to_string(layout_path) {
+        Ok(t) => t,
+        Err(_) => {
+            // Layout not found — just print the snippet, no failure.
+            let facts = super::layout::analyze("");
+            let snippet = super::layout::tailored_snippet(&facts);
+            println!(
+                "zellij: layout not found at {} — add the rail manually:\n\n{snippet}",
+                layout_path.display()
+            );
+            return;
+        }
+    };
+
+    let facts = super::layout::analyze(&text);
+
+    // Already injected → idempotent no-op for Inject/Prompt; snippet still accurate.
+    if facts.has_rail {
+        println!("zellij: layout already has the rail ({})", layout_path.display());
+        return;
+    }
+
+    match mode {
+        InjectMode::Snippet => {
+            // --yes or non-tty: print snippet, never mutate.
+            let snippet = super::layout::tailored_snippet(&facts);
+            println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+        }
+        InjectMode::Prompt => {
+            let prompt = format!("Inject the rail into {}?", layout_path.display());
+            if !confirm(&prompt) {
+                let snippet = super::layout::tailored_snippet(&facts);
+                println!("\nAdd the sidebar to a Zellij layout with:\n\n{snippet}");
+                return;
+            }
+            do_inject(layout_path, &text, &facts, dry_run);
+        }
+        InjectMode::Inject => {
+            do_inject(layout_path, &text, &facts, dry_run);
+        }
+    }
+}
+
+/// Perform the actual inject: call `layout::inject`, write backup + new text.
+/// On `Refusal`, print the reason + tailored snippet (fail-closed).
+fn do_inject(layout_path: &Path, text: &str, facts: &super::layout::LayoutFacts, dry_run: bool) {
+    match super::layout::inject(text, facts) {
+        Ok(new_text) => {
+            if dry_run {
+                println!(
+                    "zellij: would inject rail into {} (dry-run)\n--- layout (dry-run) ---\n{new_text}",
+                    layout_path.display()
+                );
+                return;
+            }
+            // Back up then atomically write.
+            if layout_path.exists() {
+                let _ = std::fs::copy(
+                    layout_path,
+                    path_with_suffix(layout_path, ".zj-radar.bak"),
+                );
+            }
+            match super::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+                Ok(()) => println!(
+                    "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
+                    layout_path.display(),
+                    layout_path.display()
+                ),
+                Err(e) => eprintln!("zellij: write failed — {e}"),
+            }
+        }
+        Err(super::layout::Refusal::Unparseable(msg)) => {
+            eprintln!("zellij: layout could not be parsed — {msg}");
+            eprintln!("        Add the rail manually using the snippet below.");
+            let snippet = super::layout::tailored_snippet(facts);
+            println!("\n{snippet}");
+        }
+        Err(super::layout::Refusal::Unrecognized(msg)) => {
+            eprintln!("zellij: layout shape not recognized — {msg}");
+            eprintln!("        Add the rail manually using the snippet below.");
+            let snippet = super::layout::tailored_snippet(facts);
+            println!("\n{snippet}");
+        }
+    }
+}
+
+/// Handle `--uninstall` for the layout: strip the injected rail if present.
+fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
+    let text = match std::fs::read_to_string(layout_path) {
+        Ok(t) => t,
+        Err(_) => return, // layout not found — nothing to uninstall
+    };
+    match super::layout::uninstall(&text) {
+        None => {
+            // no injected rail present — nothing to do
+        }
+        Some(new_text) => {
+            if dry_run {
+                println!(
+                    "zellij: would remove rail from {} (dry-run)\n--- layout (dry-run) ---\n{new_text}",
+                    layout_path.display()
+                );
+                return;
+            }
+            if layout_path.exists() {
+                let _ = std::fs::copy(
+                    layout_path,
+                    path_with_suffix(layout_path, ".zj-radar.bak"),
+                );
+            }
+            match super::fsutil::atomic_write(layout_path, new_text.as_bytes()) {
+                Ok(()) => println!(
+                    "zellij: rail removed from {} (backup: {}.zj-radar.bak)",
+                    layout_path.display(),
+                    layout_path.display()
+                ),
+                Err(e) => eprintln!("zellij: write failed — {e}"),
+            }
+        }
+    }
 }
 
 fn confirm(prompt: &str) -> bool {
@@ -1604,6 +2019,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn detects_symlinked_config_as_managed() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.kdl");
+        std::fs::write(&real, "").unwrap();
+        let link = dir.path().join("config.kdl");
+        symlink(&real, &link).unwrap();
+        assert!(config_is_managed(&link), "symlink should be managed");
+        assert!(!config_is_managed(&real), "regular file should not be managed");
+        // non-existent path is also not managed
+        assert!(!config_is_managed(&dir.path().join("missing.kdl")));
+    }
+
+    #[test]
     fn zellij_uninstall_removes_only_managed_alias() {
         let installed = match edit_zellij(
             "plugins {\n    tab-bar location=\"zellij:tab-bar\"\n}\n",
@@ -1623,5 +2053,259 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
+    }
+
+    // ── inject_mode decision tests ───────────────────────────────────────────
+
+    #[test]
+    fn inject_flag_forces_inject() {
+        assert_eq!(inject_mode(true, false, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, false, true), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, true), InjectMode::Inject);
+    }
+
+    #[test]
+    fn yes_takes_safe_default_snippet() {
+        // --yes without --inject → Snippet regardless of tty
+        assert_eq!(inject_mode(false, true, true),  InjectMode::Snippet);
+        assert_eq!(inject_mode(false, true, false), InjectMode::Snippet);
+    }
+
+    #[test]
+    fn non_tty_takes_safe_default_snippet() {
+        // non-tty without --inject or --yes → Snippet
+        assert_eq!(inject_mode(false, false, false), InjectMode::Snippet);
+    }
+
+    #[test]
+    fn prompt_when_interactive() {
+        // interactive tty, no --inject, no --yes → Prompt
+        assert_eq!(inject_mode(false, false, true), InjectMode::Prompt);
+    }
+
+    // ── grant_args tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn grant_args_produces_exact_zellij_plugin_command() {
+        let path = std::path::Path::new("/home/user/.config/zellij/plugins/zj_radar.wasm");
+        assert_eq!(
+            grant_args(path),
+            vec![
+                "plugin",
+                "--floating",
+                "--width",
+                "90",
+                "--height",
+                "28",
+                "file:/home/user/.config/zellij/plugins/zj_radar.wasm",
+            ]
+        );
+    }
+
+    // ── zellij_check_items unit tests ────────────────────────────────────────
+
+    /// Helper: build check items with all-good inputs so tests need only override
+    /// the one dimension they care about.
+    fn all_good_check_items() -> Vec<CheckItem> {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let permissions = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n", wasm_path = wasm_path);
+        let layout = concat!(
+            "layout {\n",
+            "    default_tab_template {\n",
+            "        // zj-radar:wrap begin\n",
+            "        pane split_direction=\"vertical\" {\n",
+            "            pane size=32 borderless=true {\n",
+            "                plugin location=\"radar\"\n",
+            "            }\n",
+            "            children\n",
+            "        }\n",
+            "        // zj-radar:wrap end\n",
+            "    }\n",
+            "}\n",
+        );
+        zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some(layout),
+            permissions_text: Some(&permissions),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        })
+    }
+
+    #[test]
+    fn zellij_check_items_all_ok() {
+        let items = all_good_check_items();
+        assert!(items.iter().any(|i| i.name == "alias" && i.level == CheckLevel::Ok));
+        assert!(items.iter().any(|i| i.name == "wasm" && i.level == CheckLevel::Ok));
+        assert!(items.iter().any(|i| i.name == "layout" && i.level == CheckLevel::Ok));
+        assert!(items.iter().any(|i| i.name == "grant" && i.level == CheckLevel::Ok));
+        assert!(items.iter().any(|i| i.name == "producer" && i.level == CheckLevel::Ok));
+        // managed config not emitted when false
+        assert!(!items.iter().any(|i| i.name == "managed config"));
+    }
+
+    #[test]
+    fn zellij_check_items_nix_store_alias_warns() {
+        let wasm_path = "/nix/store/abc123-zj-radar/plugins/zj_radar.wasm";
+        let permissions = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n", wasm_path = wasm_path);
+        let layout = "layout {\n    plugin location=\"radar\"\n}\n";
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: true,
+            wasm_present: true,
+            layout_text: Some(layout),
+            permissions_text: Some(&permissions),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
+        assert_eq!(alias.level, CheckLevel::Warn, "nix-store alias must warn");
+        assert!(alias.detail.contains("nix/store"), "warn detail must mention nix/store");
+        assert!(alias.detail.contains("rebuild"), "warn detail must mention rebuild");
+    }
+
+    #[test]
+    fn zellij_check_items_rail_less_layout_is_missing() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let permissions = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n", wasm_path = wasm_path);
+        let layout = "layout {\n    default_tab_template {\n        children\n    }\n}\n";
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some(layout),
+            permissions_text: Some(&permissions),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
+        assert_eq!(layout_item.level, CheckLevel::Missing, "layout without rail must be missing");
+        assert!(layout_item.detail.contains("setup zellij"), "hint must mention setup zellij");
+    }
+
+    #[test]
+    fn zellij_check_items_ungranted_wasm_is_missing() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let other_path = "/nix/store/other.wasm";
+        let permissions = format!("\"{other_path}\" {{\n    ReadApplicationState\n}}\n", other_path = other_path);
+        let layout = "layout {\n    plugin location=\"radar\"\n}\n";
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some(layout),
+            permissions_text: Some(&permissions),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
+        assert_eq!(grant.level, CheckLevel::Missing, "ungranted wasm must be missing");
+        assert!(grant.detail.contains("--grant"), "hint must mention --grant");
+    }
+
+    #[test]
+    fn zellij_check_items_managed_config_warns() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let permissions = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n", wasm_path = wasm_path);
+        let layout = "layout {\n    plugin location=\"radar\"\n}\n";
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some(layout),
+            permissions_text: Some(&permissions),
+            wasm_path,
+            producer_wired: true,
+            config_managed: true,
+        });
+        let managed = items.iter().find(|i| i.name == "managed config").expect("managed config item");
+        assert_eq!(managed.level, CheckLevel::Warn, "managed config must warn");
+        assert!(managed.detail.contains("symlink"), "warn detail must mention symlink");
+    }
+
+    #[test]
+    fn zellij_check_items_missing_alias_is_missing() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let perms = format!("\"{wasm_path}\" {{ ReadApplicationState }}\n", wasm_path = wasm_path);
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: false,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some("layout { plugin location=\"radar\" }"),
+            permissions_text: Some(&perms),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
+        assert_eq!(alias.level, CheckLevel::Missing);
+    }
+
+    #[test]
+    fn zellij_check_items_no_layout_warns() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let perms = format!("\"{wasm_path}\" {{ ReadApplicationState }}\n", wasm_path = wasm_path);
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: None,
+            permissions_text: Some(&perms),
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
+        assert_eq!(layout_item.level, CheckLevel::Warn, "missing layout file should warn");
+    }
+
+    #[test]
+    fn zellij_check_items_no_permissions_warns() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some("layout { plugin location=\"radar\" }"),
+            permissions_text: None,
+            wasm_path,
+            producer_wired: true,
+            config_managed: false,
+        });
+        let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
+        assert_eq!(grant.level, CheckLevel::Warn, "no permissions.kdl should warn");
+    }
+
+    #[test]
+    fn zellij_check_items_no_producer_is_missing() {
+        let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
+        let perms = format!("\"{wasm_path}\" {{ ReadApplicationState }}\n", wasm_path = wasm_path);
+        let items = zellij_check_items(ZellijCheckInputs {
+            alias_present: true,
+            alias_is_store_path: false,
+            wasm_present: true,
+            layout_text: Some("layout { plugin location=\"radar\" }"),
+            permissions_text: Some(&perms),
+            wasm_path,
+            producer_wired: false,
+            config_managed: false,
+        });
+        let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
+        assert_eq!(producer.level, CheckLevel::Missing);
+        assert!(producer.detail.contains("setup codex"), "hint must mention setup codex");
+    }
+
+    #[test]
+    fn zellij_check_items_order_is_stable() {
+        let items = all_good_check_items();
+        let names: Vec<&str> = items.iter().map(|i| i.name).collect();
+        assert_eq!(names, &["alias", "wasm", "layout", "grant", "producer"]);
     }
 }

@@ -172,7 +172,7 @@ zj-radar setup --check    # verifies PATH/config/hook state
 # Codex users then run /hooks once inside Codex to trust the command hook
 # The sidebar:
 zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
-# then paste examples/radar-template-snippet.kdl into a layout
+# prompts to inject into the default layout, or use --inject to skip the prompt
 ```
 
 ---

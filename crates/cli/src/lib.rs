@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 mod agents;
 mod fsutil;
+pub(crate) mod layout;
 mod notify;
 mod run;
 mod setup;
@@ -47,9 +48,6 @@ enum Command {
         /// Print the zellij command instead of launching it.
         #[arg(long)]
         print_cmd: bool,
-        /// Don't pre-seed Zellij's permission grant; the rail prompts instead.
-        #[arg(long)]
-        no_grant: bool,
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
@@ -80,9 +78,18 @@ enum Command {
         /// Overwrite conflicting entries where supported.
         #[arg(long)]
         force: bool,
-        /// Don't pre-seed Zellij's permission grant for the installed sidebar.
+        /// Inject the rail into the target layout without prompting (consent flag).
         #[arg(long)]
-        no_grant: bool,
+        inject: bool,
+        /// Target layout name to inject into (default: default). Looks up
+        /// `<config_dir>/layouts/<name>.kdl`.
+        #[arg(long, value_name = "NAME")]
+        layout: Option<String>,
+        /// Open the plugin in a focused floating pane so Zellij can prompt for
+        /// permissions (one-time grant). Exits after launching; does not run the
+        /// wasm/alias/inject steps.
+        #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall"])]
+        grant: bool,
     },
 }
 
@@ -90,8 +97,8 @@ enum Command {
 pub fn run() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { name, print_cmd, no_grant } => {
-            run::run(run::RunOptions { name, print_cmd, no_grant });
+        Command::Run { name, print_cmd } => {
+            run::run(run::RunOptions { name, print_cmd });
         }
         Command::Notify {
             agent,
@@ -111,7 +118,9 @@ pub fn run() {
             check,
             legacy_notify,
             force,
-            no_grant,
+            inject,
+            layout,
+            grant,
         } => {
             setup::run(setup::SetupOptions {
                 targets: &targets,
@@ -123,7 +132,9 @@ pub fn run() {
                 check,
                 legacy_notify,
                 force,
-                no_grant,
+                inject,
+                layout: layout.as_deref(),
+                grant,
             });
         }
     }

@@ -525,8 +525,17 @@ pub fn plugin_wasm_path() -> std::path::PathBuf {
 ///     ReadApplicationState
 ///     ReadCliPipes
 ///     ChangeApplicationState
+///     RunCommands
 /// }
 /// ```
+///
+/// The granted set MUST be a superset of every `PermissionType` the plugin
+/// requests in `State::handle_effects` (`Effect::RequestPermission`). If even one
+/// requested permission is missing here, Zellij treats the grant as incomplete,
+/// re-prompts on load, and withholds `render()` until answered — so the plugin
+/// pane stays blank and `wait_until_ready` times out with an empty PTY. Keep this
+/// list in lockstep with `request_permission` in `src/lib.rs` (`RunCommands` was
+/// added by the notify feature and must stay listed here).
 ///
 /// If the path is already present, the file is left unchanged.
 /// Returns the temp HOME dir so the caller can pass it to `ZellijSession::start`.
@@ -550,6 +559,7 @@ pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
     ReadApplicationState
     ReadCliPipes
     ChangeApplicationState
+    RunCommands
 }}
 "#,
             wasm = wasm_str

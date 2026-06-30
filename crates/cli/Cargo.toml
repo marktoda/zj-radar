@@ -27,6 +27,7 @@ zj-radar-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
+kdl = { workspace = true }
 toml_edit = { workspace = true }
 dirs = { workspace = true }
 

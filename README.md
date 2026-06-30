@@ -62,7 +62,8 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 #    (--download fetches the wasm built from this CLI's own version)
 zj-radar setup zellij --download
 
-# 3. Add the sidebar to a layout (prints a snippet to paste), then start Zellij
+# 3. Prompts to inject the rail into your default layout; answer y or paste the
+#    printed snippet manually. Then start Zellij.
 ```
 
 Then add a **producer** so the rail has something to show — for Claude Code:
