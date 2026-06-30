@@ -3044,6 +3044,38 @@ fn color_is_purely_additive_over_a_fixed_layout() {
     }
 }
 
+proptest! {
+    /// Color additivity as a *property*, not a single layout: across arbitrary
+    /// rows, widths, densities and glyph sets, every escape the renderer emits is
+    /// a well-formed SGR (`\x1b[…m`), so stripping SGR leaves a grid with no
+    /// escape residue at all and the same number of rows. This is the structural
+    /// form of CONTEXT.md's "stripping SGR yields the exact same visible character
+    /// grid" — it catches any non-SGR escape (a cursor move, an OSC) that some row
+    /// shape might smuggle in, which the fixed-layout guard above cannot.
+    #[test]
+    fn color_additivity_leaves_no_escape_residue(
+        rows in arb_rows(),
+        width in 4usize..=120,
+        height in 1usize..=60,
+    ) {
+        for (density, glyphs) in [
+            (Density::Compact, GlyphSet::Plain),
+            (Density::Comfortable, GlyphSet::Nerd),
+            (Density::Cards, GlyphSet::Plain),
+        ] {
+            let out = render(&rows, &ro_full(width, height, density, glyphs));
+            let stripped = strip_sgr(&out);
+            prop_assert!(
+                !stripped.contains('\x1b'),
+                "non-SGR escape residue after strip (density {:?}, glyphs {:?}): {:?}",
+                density, glyphs, stripped
+            );
+            // Stripping color removes no rows: the visible grid keeps its height.
+            prop_assert_eq!(out.lines().count(), stripped.lines().count());
+        }
+    }
+}
+
 // ── Stage 3b: snapshot / proptest / overflow / color-glyph-axis tests ──────
 
 /// Render raw output into the visible character grid (ANSI stripped via a real

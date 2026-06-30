@@ -191,6 +191,20 @@ pub fn run(options: SetupOptions<'_>) {
     }
 }
 
+/// The shared preamble for every `setup_*` step: turn an editor's
+/// `Result<Outcome, String>` into an `Option<Outcome>`, reporting a refusal as the
+/// standard `{label}: refused — {e}` line and yielding `None` so the caller bails.
+/// Centralizes the one diagnostic all three orchestrators printed by hand.
+pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Option<Outcome> {
+    match edit {
+        Ok(outcome) => Some(outcome),
+        Err(e) => {
+            eprintln!("{label}: refused — {e}");
+            None
+        }
+    }
+}
+
 pub(crate) fn confirm(prompt: &str) -> bool {
     use std::io::Write;
     print!("{prompt} [y/N] ");

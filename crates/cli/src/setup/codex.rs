@@ -39,12 +39,8 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
         return;
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let outcome = match edit_codex_hooks(&existing, !uninstall) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("codex: refused — {e}");
-            return;
-        }
+    let Some(outcome) = edit_or_report("codex", edit_codex_hooks(&existing, !uninstall)) else {
+        return;
     };
     match outcome {
         Outcome::Unchanged if uninstall => {
@@ -86,12 +82,8 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
         return;
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let outcome = match edit_codex(&existing, !uninstall, force) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("codex: refused — {e}");
-            return;
-        }
+    let Some(outcome) = edit_or_report("codex", edit_codex(&existing, !uninstall, force)) else {
+        return;
     };
     match outcome {
         Outcome::Unchanged => println!(

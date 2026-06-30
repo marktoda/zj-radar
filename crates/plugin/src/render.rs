@@ -8,7 +8,11 @@ use crate::theme::DerivedColors;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod layout;
-pub(crate) use layout::*;
+// Layout planning (overflow folding, card spacing, multi-pane expansion) is
+// implementation *behind* the rail seam — only `render.rs` drives it. Import it
+// privately here rather than re-exporting crate-wide so the planning
+// intermediates (`RowMeta`, `plan_layout`, …) can't leak into new callers.
+use layout::*;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";

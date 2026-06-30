@@ -2,7 +2,7 @@
 //! No `zellij-tile` dependency — pure logic, host-testable.
 
 use crate::kind::Kind;
-use crate::observation::TrackedObservation;
+use crate::observation::{ObservationStore, TrackedObservation};
 use crate::payload::{sanitize, MAX_MSG_CHARS};
 use crate::status::Status;
 use std::collections::{HashMap, HashSet};
@@ -43,8 +43,10 @@ struct Pending {
 /// consumed uniformly by the downstream aggregator.
 #[derive(Default)]
 pub struct CommandStore {
-    /// Resolved displayable state, ready for aggregation.
-    resolved: HashMap<u32, TrackedObservation>,
+    /// Resolved displayable state, ready for aggregation. The map and its focus
+    /// lifecycle are shared with `StatusStore` via `ObservationStore`; only the
+    /// command-specific debounce maps below are unique to this store.
+    store: ObservationStore,
     /// Pending fg commands awaiting debounce promotion.
     pending: HashMap<u32, Pending>,
     /// Panes whose Running command has *left* the foreground, awaiting debounce
@@ -317,8 +319,8 @@ impl CommandStore {
             // the row to Done and straight back.
             self.pending.remove(&pane_id);
             if self
-                .resolved
-                .get(&pane_id)
+                .store
+                .get(pane_id)
                 .is_some_and(|s| s.status == Status::Running)
             {
                 self.pending_done.entry(pane_id).or_insert(tick);
@@ -370,7 +372,7 @@ impl CommandStore {
         for pane_id in to_promote {
             if let Some(p) = self.pending.remove(&pane_id) {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
-                self.resolved.insert(
+                self.store.insert(
                     pane_id,
                     TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick),
                 );
@@ -388,7 +390,7 @@ impl CommandStore {
             .collect();
         for pane_id in to_finish {
             self.pending_done.remove(&pane_id);
-            if let Some(s) = self.resolved.get_mut(&pane_id) {
+            if let Some(s) = self.store.get_mut(pane_id) {
                 if s.status == Status::Running {
                     s.status = Status::Done;
                     s.on_focus = Some(Status::Idle);
@@ -422,13 +424,13 @@ impl CommandStore {
             None => Status::Done,
         };
 
-        if let Some(s) = self.resolved.get_mut(&pane_id) {
+        if let Some(s) = self.store.get_mut(pane_id) {
             s.status = new_status;
             s.on_focus = Some(Status::Idle);
             s.last_change_tick = tick;
             s.exit_code = exit_status;
         } else {
-            self.resolved.insert(
+            self.store.insert(
                 pane_id,
                 TrackedObservation {
                     on_focus: Some(Status::Idle),
@@ -448,9 +450,7 @@ impl CommandStore {
     /// Clear-on-focus: apply a pending `on_focus` transition for this pane via
     /// the shared `TrackedObservation::apply_on_focus` (same semantics as `StatusStore`).
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
-        if let Some(s) = self.resolved.get_mut(&pane_id) {
-            s.apply_on_focus(tick);
-        }
+        self.store.on_pane_focused(pane_id, tick);
     }
 
     /// Recede this pane's completion the instant it finishes under focus (Done
@@ -459,14 +459,12 @@ impl CommandStore {
     /// `cargo build` that finishes in the focused pane recede without waiting for
     /// a leave-and-return.
     pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
-        if let Some(s) = self.resolved.get_mut(&pane_id) {
-            s.recede_on_focus(tick);
-        }
+        self.store.recede_if_focused(pane_id, tick);
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
     pub fn prune(&mut self, live: &HashSet<u32>) {
-        self.resolved.retain(|id, _| live.contains(id));
+        self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
@@ -474,13 +472,11 @@ impl CommandStore {
 
     /// Resolved displayable state for a pane, or None.
     pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {
-        self.resolved.get(&pane_id)
+        self.store.get(pane_id)
     }
 
     pub fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
-        self.resolved
-            .iter()
-            .map(|(&pane_id, observation)| (pane_id, observation))
+        self.store.observations()
     }
 
     /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
@@ -491,7 +487,7 @@ impl CommandStore {
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        self.resolved.insert(pane_id, observation);
+        self.store.insert(pane_id, observation);
     }
 
     /// True if any pane is Running or has a pending fg command. Used by the wasm
@@ -500,7 +496,7 @@ impl CommandStore {
     /// finished command is terminal and needs no further ticking, so only
     /// `Running` (plus a not-yet-promoted pending command) counts as live here.
     pub fn has_pending_or_active(&self) -> bool {
-        !self.pending.is_empty() || self.resolved.values().any(|s| s.status == Status::Running)
+        !self.pending.is_empty() || self.store.any(|s| s.status == Status::Running)
     }
 }
 
