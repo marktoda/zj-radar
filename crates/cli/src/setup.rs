@@ -1155,10 +1155,24 @@ fn setup_zellij(
         .join("layouts")
         .join(format!("{}.kdl", layout_name.unwrap_or("default")));
 
+    // One derivation, shared with `check`: read current state into Facts. The
+    // config text is reused below for the `edit_zellij` splice.
+    let config_text = std::fs::read_to_string(&config_path).ok();
+    let facts = analyze_zellij(&ZellijEnv {
+        config_text:            config_text.clone(),
+        layout_text:            std::fs::read_to_string(&layout_path).ok(),
+        permissions_text:       None,
+        codex_hooks_text:       None,
+        installed_plugins_text: None,
+        wasm_present:           wasm_dest.is_file(),
+        config_managed:         config_is_managed(&config_path),
+        wasm_path:              wasm_dest.to_string_lossy().into_owned(),
+    });
+
     // Refuse to clobber a managed (symlinked) config.kdl: print the layout snippet
     // for guidance, then return early. A Nix/home-manager user gets the wasm + alias
     // via their config, not from us.
-    if !uninstall && config_is_managed(&config_path) {
+    if !uninstall && facts.config_managed {
         eprintln!(
             "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
              zj-radar will not overwrite a managed config — add the plugin alias via\n\
@@ -1220,7 +1234,7 @@ fn setup_zellij(
         }
     }
 
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let existing = config_text.unwrap_or_default();
     let outcome = match edit_zellij(&existing, &location, !uninstall, force) {
         Ok(o) => o,
         Err(e) => {
