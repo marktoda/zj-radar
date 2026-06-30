@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod agents;
+mod fsutil;
 mod notify;
 mod run;
 mod setup;

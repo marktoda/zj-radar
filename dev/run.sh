@@ -29,10 +29,18 @@ EOF
 }
 
 target_has_std() {
-    local libdir
+    local libdir rlib
 
     libdir="$(rustc --print target-libdir --target "$target" 2>/dev/null)" || return 1
-    [[ -d "$libdir" ]] && compgen -G "$libdir/libstd-*.rlib" >/dev/null
+    [[ -d "$libdir" ]] || return 1
+    # Avoid `compgen -G`: it lives in bash's optional progcomp module and is
+    # absent from minimal bash builds (e.g. the Nix `bash` used as
+    # /usr/bin/env bash inside the devenv shell). A literal glob loop works
+    # everywhere — an unmatched glob stays literal, so `[[ -e ]]` is false.
+    for rlib in "$libdir"/libstd-*.rlib; do
+        [[ -e "$rlib" ]] && return 0
+    done
+    return 1
 }
 
 build_wasm() {
