@@ -49,6 +49,40 @@ pub struct SetupOptions<'a> {
     pub grant: bool,
 }
 
+/// Where the wasm artifact comes from. A total type so "both --wasm and
+/// --download" is a refusal at one place, not a runtime check inside the
+/// orchestrator.
+pub(crate) enum WasmSource {
+    None,
+    Path(PathBuf),
+    Download,
+}
+
+pub(crate) fn wasm_source(wasm: Option<&Path>, download: bool) -> Result<WasmSource, String> {
+    match (wasm, download) {
+        (Some(_), true) => Err("pass either --wasm <path> or --download, not both".to_string()),
+        (Some(p), false) => Ok(WasmSource::Path(p.to_path_buf())),
+        (None, true)     => Ok(WasmSource::Download),
+        (None, false)    => Ok(WasmSource::None),
+    }
+}
+
+struct ZellijSetupOpts<'a> {
+    wasm_source: WasmSource,
+    force:       bool,
+    inject:      bool,
+    layout:      Option<&'a str>,
+    dry_run:     bool,
+    yes:         bool,
+}
+
+struct CodexSetupOpts {
+    legacy_notify: bool,
+    force:         bool,
+    dry_run:       bool,
+    yes:           bool,
+}
+
 /// Decision about how to handle layout injection for a given invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InjectMode {
@@ -687,24 +721,38 @@ pub fn run(options: SetupOptions<'_>) {
 
     let uninstall = mode == Mode::Uninstall;
     if want_zellij {
+        let wasm_source = if uninstall {
+            WasmSource::None
+        } else {
+            match wasm_source(options.wasm, options.download) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("zellij: refused — {e}");
+                    return;
+                }
+            }
+        };
         setup_zellij(
-            options.wasm,
-            options.download,
             uninstall,
-            options.dry_run,
-            options.yes,
-            options.force,
-            options.inject,
-            options.layout,
+            ZellijSetupOpts {
+                wasm_source,
+                force:   options.force,
+                inject:  options.inject,
+                layout:  options.layout,
+                dry_run: options.dry_run,
+                yes:     options.yes,
+            },
         );
     }
     if want_codex {
         setup_codex(
             uninstall,
-            options.dry_run,
-            options.yes,
-            options.legacy_notify,
-            options.force,
+            CodexSetupOpts {
+                legacy_notify: options.legacy_notify,
+                force:         options.force,
+                dry_run:       options.dry_run,
+                yes:           options.yes,
+            },
         );
     }
 }
@@ -1080,11 +1128,11 @@ fn codex_hooks_disabled_in_config(existing: &str) -> Result<bool, String> {
         == Some(false))
 }
 
-fn setup_codex(uninstall: bool, dry_run: bool, yes: bool, legacy_notify: bool, force: bool) {
-    if legacy_notify {
-        setup_codex_notify(uninstall, dry_run, yes, force);
+fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
+    if opts.legacy_notify {
+        setup_codex_notify(uninstall, opts.dry_run, opts.yes, opts.force);
     } else {
-        setup_codex_hooks(uninstall, dry_run, yes);
+        setup_codex_hooks(uninstall, opts.dry_run, opts.yes);
     }
 }
 
@@ -1199,17 +1247,17 @@ fn codex_hooks_disabled() -> bool {
     matches!(analyze_codex(&env).hooks_feature, CodexHooksFeature::Disabled)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn setup_zellij(
-    wasm: Option<&Path>,
-    download: bool,
-    uninstall: bool,
-    dry_run: bool,
-    yes: bool,
-    force: bool,
-    inject_flag: bool,
-    layout_name: Option<&str>,
-) {
+fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
+    let (wasm, download): (Option<&Path>, bool) = match &opts.wasm_source {
+        WasmSource::Path(p) => (Some(p.as_path()), false),
+        WasmSource::Download => (None, true),
+        WasmSource::None    => (None, false),
+    };
+    let dry_run     = opts.dry_run;
+    let yes         = opts.yes;
+    let force       = opts.force;
+    let inject_flag = opts.inject;
+    let layout_name = opts.layout;
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
@@ -1256,10 +1304,6 @@ fn setup_zellij(
     let src: Option<&Path> = if uninstall {
         None
     } else if download {
-        if wasm.is_some() {
-            eprintln!("zellij: refused — pass either --wasm <path> or --download, not both");
-            return;
-        }
         match download_wasm(&wasm_download_version()) {
             Ok(path) => {
                 downloaded = path;
@@ -1622,6 +1666,15 @@ fn path_with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wasm_source_rejects_both_path_and_download() {
+        let p = std::path::Path::new("/x.wasm");
+        assert!(matches!(wasm_source(Some(p), false), Ok(WasmSource::Path(_))));
+        assert!(matches!(wasm_source(None, true), Ok(WasmSource::Download)));
+        assert!(matches!(wasm_source(None, false), Ok(WasmSource::None)));
+        assert!(wasm_source(Some(p), true).is_err(), "both --wasm and --download must refuse");
+    }
 
     #[test]
     fn wasm_release_url_points_at_versioned_asset() {
