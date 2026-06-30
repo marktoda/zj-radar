@@ -453,3 +453,103 @@ fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
 
     eprintln!("[e2e] PASS: focused card rendered with correct text + a distinct surface tint");
 }
+
+/// Behavior: a completion the user is WATCHING recedes. CONTEXT.md's
+/// `reconcile_focus` "focus held" rule — "if they were looking at it when it
+/// finished, don't flag it" — carried end-to-end by the timer, not just pinned in
+/// unit tests. Pipe a running agent to the focused pane (its activity shows), then
+/// pipe `done` with `on_focus:"idle"`. The terminal pane stays focused throughout,
+/// so once a timer tick reconciles the held focus, the fresh `Done` recedes and the
+/// activity disappears from the final rendered frame.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn focused_done_recedes_from_the_rendered_rail() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
+        wasm
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_recede_{}", std::process::id());
+    let layout = sidebar_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+    let pane_id = session.discover_terminal_pane_id();
+    eprintln!("[e2e] terminal pane_id={}", pane_id);
+
+    // Running agent on the focused pane → its activity renders.
+    let running = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","repo":"web","msg":"deploying"}}"#
+    );
+    session.pipe_status(&running);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    assert!(
+        sidebar_region(&session.screen(), 32).contains("deploying"),
+        "precondition: the running agent's activity must render before we test recede;\nsidebar:\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
+
+    // Now it finishes while the pane is still focused. `done` queues on_focus=idle;
+    // status_pipe deliberately does NOT reconcile (a pipe can outrun the focus
+    // update), so the recede is carried by the next timer tick.
+    let done = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"done","repo":"web","msg":"deploying","on_focus":"idle"}}"#
+    );
+    session.pipe_status(&done);
+    // Give the 1s timer several ticks to fire the held-focus recede.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] post-recede sidebar (32 cols):\n{}", sidebar);
+    assert!(
+        !sidebar.contains("deploying"),
+        "a Done watched under focus must recede from the rail (no lingering activity);\nsidebar:\n{}",
+        sidebar
+    );
+    eprintln!("[e2e] PASS: focused completion receded to idle");
+}
+
+/// Behavior: an error the user is watching must NOT recede — CONTEXT.md's hard
+/// rule "an Error or a 'needs you' Pending stays lit even while watched". The
+/// mirror of `focused_done_recedes_from_the_rendered_rail`: same focused-pane
+/// setup, same timer ticks, but an `error` (even with on_focus=idle queued) stays
+/// on the rail. Together the two pin both arms of the focus-held branch so a
+/// regression that recedes everything — or nothing — is caught end-to-end.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn focused_error_stays_lit_on_the_rendered_rail() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {:?}. Build it first:\n  cargo build --release --target wasm32-wasip1",
+        wasm
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_errstay_{}", std::process::id());
+    let layout = sidebar_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+    let pane_id = session.discover_terminal_pane_id();
+    eprintln!("[e2e] terminal pane_id={}", pane_id);
+
+    // An error finishes on the focused pane, with on_focus=idle queued exactly as a
+    // Done would carry — only the status differs. The recede guard keys on Done, so
+    // this must persist.
+    let error = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"error","repo":"web","msg":"tests failed","on_focus":"idle"}}"#
+    );
+    session.pipe_status(&error);
+    // Same generous settle as the recede test — if anything were going to recede it,
+    // it would have happened within these ticks.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] post-settle sidebar (32 cols):\n{}", sidebar);
+    assert!(
+        sidebar.contains("tests failed"),
+        "an Error watched under focus must stay lit on the rail (no recede);\nsidebar:\n{}",
+        sidebar
+    );
+    eprintln!("[e2e] PASS: focused error stayed lit");
+}
