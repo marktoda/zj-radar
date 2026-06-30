@@ -32,6 +32,8 @@ const ZELLIJ_LAYOUT_SNIPPET: &str = include_str!("../../examples/radar-template-
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
     pub wasm: Option<&'a Path>,
+    /// Fetch the wasm matching this CLI's version instead of passing `--wasm`.
+    pub download: bool,
     pub uninstall: bool,
     pub dry_run: bool,
     pub yes: bool,
@@ -402,7 +404,87 @@ pub fn edit_zellij(
     }
 }
 
+/// The release URL for the wasm artifact built from a given crate version.
+/// `setup zellij --download` fetches the wasm matching the CLI's own version so
+/// the two halves shipped from one tag can't drift across Zellij's unstable
+/// plugin ABI (a CLI and a hand-downloaded wasm of different versions otherwise
+/// can). Pure so the version→asset mapping is unit-tested; the fetch itself is
+/// thin IO below.
+fn wasm_release_url(version: &str) -> String {
+    format!("https://github.com/marktoda/zj-radar/releases/download/v{version}/zj_radar.wasm")
+}
+
 // ── Thin IO layer (not unit-tested) ──
+
+/// Fetch the wasm matching `version` to `dest` (creating its parent dir). Shells
+/// out to curl (or wget) rather than linking a Rust TLS stack — keeping the host
+/// build free of openssl/rustls, and curl is already assumed by the install flow.
+/// Shared by `setup zellij --download` and `run`'s first-use fallback (when the
+/// CLI shipped without an embedded wasm).
+pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
+    }
+    let url = wasm_release_url(version);
+    println!("zj-radar: downloading wasm {version} from {url}");
+    run_download(&url, dest)?;
+    if !dest.is_file() {
+        return Err(format!("download reported success but {} is missing", dest.display()));
+    }
+    Ok(())
+}
+
+/// Fetch the wasm matching `version` to a temp file and return its path.
+fn download_wasm(version: &str) -> Result<PathBuf, String> {
+    let dest = std::env::temp_dir().join(format!("zj_radar-{version}.wasm"));
+    download_wasm_to(version, &dest)?;
+    Ok(dest)
+}
+
+/// HTTPS-only download via curl, falling back to wget only when curl is absent
+/// (so a curl HTTP error surfaces as itself rather than a confusing wget retry).
+fn run_download(url: &str, dest: &Path) -> Result<(), String> {
+    use std::process::Command;
+    if which("curl") {
+        let status = Command::new("curl")
+            .args(["--proto", "=https", "--tlsv1.2", "-fL", url, "-o"])
+            .arg(dest)
+            .status()
+            .map_err(|e| format!("failed to run curl — {e}"))?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "curl failed for {url} — is v{} released? See https://github.com/marktoda/zj-radar/releases",
+                env!("CARGO_PKG_VERSION")
+            ))
+        };
+    }
+    if which("wget") {
+        let status = Command::new("wget")
+            .args(["--https-only", "-O"])
+            .arg(dest)
+            .arg(url)
+            .status()
+            .map_err(|e| format!("failed to run wget — {e}"))?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!("wget failed for {url}"))
+        };
+    }
+    Err("need curl or wget on PATH to --download".to_string())
+}
+
+/// The wasm release tag to fetch: `ZJ_RADAR_VERSION` (a leading `v` is optional)
+/// overrides, else this CLI's own version — the version-skew-safe default.
+pub(crate) fn wasm_download_version() -> String {
+    std::env::var("ZJ_RADAR_VERSION")
+        .ok()
+        .map(|v| v.trim_start_matches('v').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
 
 fn codex_config_path() -> PathBuf {
     codex_home_dir().join("config.toml")
@@ -464,9 +546,11 @@ fn codex_installed() -> bool {
 
 /// Entry point for `zj-radar setup`.
 pub fn run(options: SetupOptions<'_>) {
-    let want_codex = (options.targets.is_empty() && options.wasm.is_none())
+    let want_codex = (options.targets.is_empty() && options.wasm.is_none() && !options.download)
         || options.targets.iter().any(|a| a == "codex");
-    let want_zellij = options.targets.iter().any(|a| a == "zellij") || options.wasm.is_some();
+    let want_zellij = options.targets.iter().any(|a| a == "zellij")
+        || options.wasm.is_some()
+        || options.download;
     for a in options
         .targets
         .iter()
@@ -486,6 +570,7 @@ pub fn run(options: SetupOptions<'_>) {
     if want_zellij {
         setup_zellij(
             options.wasm,
+            options.download,
             options.uninstall,
             options.dry_run,
             options.yes,
@@ -828,15 +913,46 @@ fn codex_hooks_disabled() -> bool {
     codex_hooks_disabled_in_config(&existing).unwrap_or(false)
 }
 
-fn setup_zellij(wasm: Option<&Path>, uninstall: bool, dry_run: bool, yes: bool, force: bool) {
+fn setup_zellij(
+    wasm: Option<&Path>,
+    download: bool,
+    uninstall: bool,
+    dry_run: bool,
+    yes: bool,
+    force: bool,
+) {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
 
+    // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
+    // wasm matching this CLI's version). `downloaded` outlives the borrow in `src`.
+    let downloaded: PathBuf;
+    let src: Option<&Path> = if uninstall {
+        None
+    } else if download {
+        if wasm.is_some() {
+            eprintln!("zellij: refused — pass either --wasm <path> or --download, not both");
+            return;
+        }
+        match download_wasm(&wasm_download_version()) {
+            Ok(path) => {
+                downloaded = path;
+                Some(downloaded.as_path())
+            }
+            Err(e) => {
+                eprintln!("zellij: refused — {e}");
+                return;
+            }
+        }
+    } else {
+        wasm
+    };
+
     if !uninstall {
-        let Some(src) = wasm else {
-            eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm>");
+        let Some(src) = src else {
+            eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm> or --download");
             return;
         };
         if !src.is_file() {
@@ -875,7 +991,7 @@ fn setup_zellij(wasm: Option<&Path>, uninstall: bool, dry_run: bool, yes: bool, 
         Outcome::Changed(new) => {
             if dry_run {
                 if !uninstall {
-                    if let Some(src) = wasm {
+                    if let Some(src) = src {
                         println!(
                             "zellij: would copy {} -> {}",
                             src.display(),
@@ -908,7 +1024,7 @@ fn setup_zellij(wasm: Option<&Path>, uninstall: bool, dry_run: bool, yes: bool, 
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("create plugin dir failed — {e}"))?;
                 }
-                let src = wasm.ok_or("refused — pass --wasm <path-to-zj_radar.wasm>")?;
+                let src = src.ok_or("refused — pass --wasm <path-to-zj_radar.wasm> or --download")?;
                 std::fs::copy(src, &wasm_dest).map_err(|e| format!("wasm copy failed — {e}"))?;
                 Ok(())
             };
@@ -995,6 +1111,14 @@ fn path_with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wasm_release_url_points_at_versioned_asset() {
+        assert_eq!(
+            wasm_release_url("0.1.0"),
+            "https://github.com/marktoda/zj-radar/releases/download/v0.1.0/zj_radar.wasm"
+        );
+    }
 
     fn assert_top_level_notify_is_ours(toml: &str) {
         let doc = toml.parse::<toml_edit::DocumentMut>().expect("valid toml");

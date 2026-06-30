@@ -1,3 +1,11 @@
+// The `cli` feature pulls clap/toml_edit/dirs, which don't build for wasm. The
+// wasm plugin depends on this crate with `default-features = false`, so this
+// only fires on a stray bare wasm build (e.g. `cargo build --target
+// wasm32-wasip1` with no `-p`), turning a confusing clap-on-wasm error into a
+// pointer at the right command.
+#[cfg(all(target_arch = "wasm32", feature = "cli"))]
+compile_error!("build the wasm plugin with `-p zj-radar-plugin` (the `cli` feature can't target wasm)");
+
 // On a plain host build (`cargo build`, not wasm, not test) the only consumers
 // of the pure modules are the wasm glue (cfg'd out) and the unit tests (cfg'd
 // out), so every public item appears dead. The pure modules stay warning-free

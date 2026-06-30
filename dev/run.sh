@@ -45,19 +45,19 @@ target_has_std() {
 
 build_wasm() {
     if target_has_std; then
-        cargo build --target "$target"
+        cargo build --target "$target" -p zj-radar-plugin
         return
     fi
 
     if command -v nix >/dev/null 2>&1 && [[ "${ZJ_RADAR_DEV_NO_NIX:-}" != "1" ]]; then
         echo "dev: $target std is missing from the current Rust toolchain; building via nix develop" >&2
-        nix develop -c cargo build --target "$target"
+        nix develop -c cargo build --target "$target" -p zj-radar-plugin
         return
     fi
 
     echo "dev: $target std is missing from the current Rust toolchain" >&2
     echo "dev: run in 'nix develop', or install it with 'rustup target add $target'" >&2
-    cargo build --target "$target"
+    cargo build --target "$target" -p zj-radar-plugin
 }
 
 generate_layout() {

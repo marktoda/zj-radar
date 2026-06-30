@@ -13,9 +13,38 @@ There are two jobs to get a working radar:
 2. **Send agent status to the sidebar** — install the Claude plugin or wire an
    agent to call `zj-radar notify`. *(See [`producers.md`](producers.md).)*
 
-## Build the wasm from source
+## Recommended: install the CLI, then `setup zellij --download`
 
-There is no pre-built release yet, so build the wasm from source:
+A tagged release ships a prebuilt `zj-radar` CLI for Linux and macOS. Install it
+with the one-line script, then let it fetch the matching sidebar wasm and manage
+the Zellij plugin alias:
+
+```sh
+# Static Linux + macOS binary; installs to ~/.local/bin by default.
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
+
+zj-radar setup zellij --download
+```
+
+`setup zellij --download`:
+
+- downloads the wasm **built from this CLI's own version** (set `ZJ_RADAR_VERSION`
+  to pin a different release tag) — so the CLI and wasm can't drift apart across
+  Zellij's unstable plugin ABI
+- copies it to `~/.config/zellij/plugins/zj_radar.wasm`
+- adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
+- prints the layout snippet to paste
+
+It does **not** rewrite your layouts. Use `--dry-run` to preview, `--yes` for
+non-interactive runs, and `--force` only if you want to replace an existing
+unmanaged `radar` alias. The installer also honors `ZJ_RADAR_VERSION` (release
+tag) and `ZJ_RADAR_BIN_DIR` (install directory).
+
+## Build from source instead
+
+No prebuilt binary for your platform, or hacking on zj-radar? Build the wasm and
+install the CLI from a checkout, then point `setup zellij` at the local wasm:
 
 ```sh
 git clone https://github.com/marktoda/zj-radar
@@ -23,32 +52,16 @@ cd zj-radar
 
 # Needs the wasm32-wasip1 target; rust-toolchain.toml requests it (rustup
 # auto-installs it). See docs/TOOLCHAIN.md.
-cargo build --release --target wasm32-wasip1
-```
-
-## Recommended: use the CLI
-
-Install the native CLI from this checkout, then let it copy the wasm and manage
-the Zellij plugin alias:
-
-```sh
+cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
 cargo install --path . --features cli
+
 zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 ```
 
-`setup zellij`:
-
-- copies the wasm to `~/.config/zellij/plugins/zj_radar.wasm`
-- adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
-- prints the layout snippet to paste
-
-It does **not** rewrite your layouts. Use `--dry-run` to preview, `--yes` for
-non-interactive runs, and `--force` only if you want to replace an existing
-unmanaged `radar` alias.
-
 ## Manual setup
 
-If you are not using the CLI, copy the wasm to the same stable path yourself:
+If you are not using the CLI, copy the wasm to the same stable path yourself
+(from a source build, or a `zj_radar.wasm` downloaded from a release):
 
 ```sh
 mkdir -p ~/.config/zellij/plugins

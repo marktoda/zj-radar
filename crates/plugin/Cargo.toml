@@ -1,0 +1,24 @@
+# The Zellij sidebar plugin (wasm32-wasip1). Zellij loads plugins as WASI
+# *command* modules — it calls the wasm `_start` export, then `load`/`render`. A
+# cdylib builds a *reactor* (no `_start`), which Zellij can't load, so this is a
+# BINARY crate: `register_plugin!`'s generated `fn main` becomes `_start`.
+#
+# All real logic lives in the `zj-radar` lib (path dep, default-features = false
+# so clap &c. never reach the wasm build); this crate is just the macro wiring
+# plus zellij-tile. Build it with: cargo build --target wasm32-wasip1 -p zj-radar-plugin
+[package]
+name = "zj-radar-plugin"
+version = "0.1.0-rc.1"
+edition = "2021"
+license = "MIT"
+description = "The zj-radar Zellij sidebar plugin (wasm). Companion to the zj-radar CLI."
+repository = "https://github.com/marktoda/zj-radar"
+publish = false
+
+[[bin]]
+name = "zj_radar"
+path = "src/main.rs"
+
+[dependencies]
+zj-radar = { path = "../..", default-features = false }
+zellij-tile = "0.44"

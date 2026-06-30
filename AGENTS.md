@@ -19,7 +19,7 @@ plus a host-side `zj-radar` CLI and a Claude Code producer plugin.
 
 ```sh
 cargo build                                    # host library + CLI checks
-cargo build --release --target wasm32-wasip1   # the wasm plugin Zellij loads
+cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the wasm plugin Zellij loads
 just test        # L1–L4 deterministic host suite (unit, insta, proptest, vt100)
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5 live: builds wasm, drives a real Zellij in a PTY (needs zellij)

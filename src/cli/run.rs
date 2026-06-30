@@ -119,7 +119,9 @@ pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
 pub(crate) struct Assets {
     pub config_template: &'static str,
     pub layout: &'static str,
-    pub wasm: &'static [u8],
+    /// `Some` when the wasm is baked into the binary (every prebuilt install);
+    /// `None` for a from-crates.io `cargo install`, where `run` downloads it.
+    pub wasm: Option<&'static [u8]>,
 }
 
 pub(crate) struct Materialized {
@@ -150,7 +152,12 @@ pub(crate) fn materialize(
     }
 
     let config = assets.config_template.replace("@WASM@", &wasm_path.to_string_lossy());
-    atomic_write(&wasm_path, assets.wasm)?;
+    // Write the embedded wasm if we have it; otherwise leave wasm_path for the
+    // caller to populate (download). The `up_to_date` check above already gates
+    // on wasm_path.exists(), so a not-yet-downloaded wasm never short-circuits.
+    if let Some(bytes) = assets.wasm {
+        atomic_write(&wasm_path, bytes)?;
+    }
     atomic_write(&config_path, config.as_bytes())?;
     atomic_write(&layout_path, assets.layout.as_bytes())?;
     atomic_write(&marker, version.as_bytes())?;
@@ -161,7 +168,15 @@ pub(crate) fn materialize(
 
 const CONFIG_TEMPLATE: &str = include_str!("run_assets/config.kdl");
 const LAYOUT: &str = include_str!("run_assets/radar.kdl");
-const WASM: &[u8] = include_bytes!(env!("ZJ_RADAR_WASM_PATH"));
+
+// build.rs sets `embedded_wasm` (+ ZJ_RADAR_WASM_PATH) when it has a wasm to
+// bake in — true for every prebuilt binary (curl|sh, binstall, nix) and any
+// in-workspace build. A from-crates.io `cargo install` has no wasm to embed, so
+// WASM is None and `run` downloads the matching release on first use.
+#[cfg(embedded_wasm)]
+const WASM: Option<&[u8]> = Some(include_bytes!(env!("ZJ_RADAR_WASM_PATH")));
+#[cfg(not(embedded_wasm))]
+const WASM: Option<&[u8]> = None;
 
 fn embedded_assets() -> Assets {
     Assets { config_template: CONFIG_TEMPLATE, layout: LAYOUT, wasm: WASM }
@@ -256,6 +271,21 @@ pub fn run(opts: RunOptions) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let session = session_name(&cwd, opts.name.as_deref());
     let session_exists = session_is_live(&session);
+
+    // No embedded wasm (a from-crates.io `cargo install`) and none cached yet —
+    // fetch the matching release once. Prebuilt binaries embed the wasm, so this
+    // path is inert for them.
+    if !materialized.wasm_path.exists() {
+        let version = super::setup::wasm_download_version();
+        if let Err(e) = super::setup::download_wasm_to(&version, &materialized.wasm_path) {
+            eprintln!(
+                "zj-radar: no embedded wasm and the download failed — {e}\n\
+                 Fetch it once while online with: zj-radar setup zellij --download"
+            );
+            return;
+        }
+    }
+
     let facts = RunFacts {
         session,
         config_dir: materialized.config_dir,
@@ -352,8 +382,26 @@ mod tests {
         Assets {
             config_template: "plugins { radar location=\"file:@WASM@\" {} }\n",
             layout: "layout { default_tab_template { children } tab { pane } }\n",
-            wasm: b"\0asm-dummy",
+            wasm: Some(b"\0asm-dummy"),
         }
+    }
+
+    #[test]
+    fn materialize_without_embedded_wasm_writes_config_but_not_wasm() {
+        let d = tempdir().unwrap();
+        let dir = d.path().join("c");
+        let assets = Assets {
+            config_template: "plugins { radar location=\"file:@WASM@\" {} }\n",
+            layout: "layout {}\n",
+            wasm: None,
+        };
+        let m = materialize(&dir, "0.1.0", &assets).unwrap();
+        // No embedded wasm → materialize must not fabricate the file; `run`
+        // downloads it. Config/layout/marker are still written.
+        assert!(!m.wasm_path.exists(), "must not create a wasm file when none is embedded");
+        assert!(dir.join("config.kdl").exists(), "config still written");
+        assert!(dir.join("layouts/radar.kdl").exists(), "layout still written");
+        assert!(dir.join(".zj-radar-version").exists(), "marker still written");
     }
 
     #[test]
@@ -380,7 +428,7 @@ mod tests {
         let sentinel = Assets {
             config_template: "SENTINEL-CONFIG-SHOULD-NOT-BE-WRITTEN\n",
             layout: "SENTINEL-SHOULD-NOT-BE-WRITTEN\n",
-            wasm: b"SENTINEL-WASM",
+            wasm: Some(b"SENTINEL-WASM"),
         };
         materialize(&dir, "0.1.0", &sentinel).unwrap();
         let after_layout = std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();

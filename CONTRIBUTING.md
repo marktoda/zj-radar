@@ -39,7 +39,7 @@ core:
 
 ```sh
 cargo build                                          # host library + CLI checks
-cargo build --release --target wasm32-wasip1         # the wasm plugin Zellij loads
+cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the wasm plugin Zellij loads
 ```
 
 ## Test

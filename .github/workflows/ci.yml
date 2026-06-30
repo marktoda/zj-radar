@@ -49,7 +49,7 @@ jobs:
       - name: deterministic suite (L1-L4)
         run: nix develop -c cargo test --all-features
       - name: wasm plugin compiles
-        run: nix develop -c cargo build --target wasm32-wasip1
+        run: nix develop -c cargo build --target wasm32-wasip1 -p zj-radar-plugin
       - name: bash hook tests (L3, runs shellcheck + bats)
         run: nix develop -c just test-bash
 
