@@ -25,7 +25,8 @@ pub(crate) struct PermissionProbe {
 
 /// The caller's permission stance, collapsed from `(role, defer_permission)` so
 /// the three mutually-exclusive policies are explicit and this module never
-/// imports `Config`. The runtime computes it once via `PermissionPolicy::of`.
+/// imports `Config`. The runtime collapses it once in
+/// `PluginRuntime::permission_policy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PermissionPolicy {
     /// The onboarding floating pane: always request, regardless of the lock —

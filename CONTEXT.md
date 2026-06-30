@@ -38,12 +38,20 @@ idle-strip lines have no `RailTarget`. The runtime turns a `RailTarget` into a
 ## RadarState
 
 The plugin's session-state module: the current radar view of tabs, live terminal
-panes, pane observations, focus transitions, and snapshot serialization.
-`RadarState` is not a replacement for the source-specific stores; it composes
-`StatusStore` (status-payload observations) and `CommandStore` (command-derived
-observations) with live pane topology, then produces `TabRow`s for the rail. It
-also composes `TabNamer` for tab naming — assembling the resolved facts that seam
-consumes, the same way it hands `roll_up` a `resolve` closure.
+panes, pane observations, focus transitions, and snapshot serialization (the
+last delegated to `radar_state::snapshot`). `RadarState` is not a replacement for
+the source-specific stores; it composes `StatusStore` (status-payload
+observations) and `CommandStore` (command-derived observations) with live pane
+topology, then produces `TabRow`s for the rail. Both stores are thin wrappers
+over one shared `ObservationStore` (in `crates/core`) that owns the pane-id map
+and the focus lifecycle (`on_pane_focused`, `recede_if_focused`, `prune`); the
+per-source split is only their intake and their resting-state predicate. The
+"status wins over command" precedence *between* the two stores lives in exactly
+one place — `RadarState::resolve` — which both `tab_display` and `notify_views`
+read through, so the rule can never drift and `roll_up` never learns there is
+more than one store. `RadarState` also composes `TabNamer` for tab naming —
+assembling the resolved facts that seam consumes, the same way it hands `roll_up`
+a `resolve` closure.
 
 A single operation, `reconcile_focus`, governs when a finished pane stops showing
 in the rail; `RadarState` owns it because it is the only place that knows both the
@@ -153,8 +161,9 @@ vocabulary (`TabDisplay`, `PaneDisplay`,
 `PrimaryDetail`, `ProgressCounts`, `Outcome`) — the renderer *consumes* these, so
 presentation depends on the roll-up, not the reverse. `resolve(pane_id) ->
 Option<&TrackedObservation>` is the only thing crossing in: the "status pipe wins
-over command" precedence across observation sources stays in `RadarState`, so
-`roll_up` never learns there is more than one store. `Outcome`'s display methods
+over command" precedence across observation sources stays in `RadarState`
+(`RadarState::resolve`), so `roll_up` never learns there is more than one store.
+`Outcome`'s display methods
 (`full`/`minimal`/`role` — glyphs and width-driven forms) live in `render`; the
 enum here is pure semantics.
 
