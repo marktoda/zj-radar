@@ -111,9 +111,10 @@ the emitted ANSI and the click-target map cannot drift.
 
 The real external seam between producers and the plugin: the versioned
 `zj_radar.status.v1` pipe payload (`{v, source, pane, status, repo, branch, msg,
-on_focus, seq}`). Producers (the Claude plugin, the Codex CLI) are adapters that
+on_focus}`). Producers (the Claude plugin, the Codex CLI) are adapters that
 broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
-oversized/out-of-order).
+oversized/malformed). Ordering is latest-wins — the pipe delivers in order and no
+producer stamps a sequence, so there is nothing to reorder.
 
 ## Information source
 
@@ -130,7 +131,7 @@ a `Kind`-keyed `Status`:
   `Kind::from_source`, pinned by the `source_round_trips_through_kind` guard test.
 - **Observed** — uninstrumented commands (e.g. `cargo test`) that Radar watches
   from outside. The plugin classifies the observed argv via
-  `crates/core/src/command.rs::command_source` and infers status from the process
+  `crates/core/src/command.rs::command_kind` and infers status from the process
   lifecycle. No wire, no CLI. `cargo test` lives here, **not** in `agents/`.
 
 Both modalities emit a `source` string that must be a subset of `Kind`

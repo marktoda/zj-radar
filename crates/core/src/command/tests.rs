@@ -675,13 +675,15 @@
 
     #[test]
     fn on_pane_focused_same_status_does_not_update_tick() {
-        let mut store = CommandStore::default();
+        let mut commands = CommandStore::default();
         // Place pane in Done with on_focus=Some(Done) (same status → no tick update)
-        store.on_exit(1, Some(0), 5);
-        // Manually set on_focus to Done (same as current status) to test tick stability
-        store.store.get_mut(1).unwrap().on_focus = Some(Status::Done);
-        store.on_pane_focused(1, 10);
-        assert_eq!(store.get(1).unwrap().status, Status::Done);
+        commands.on_exit(1, Some(0), 5);
+        // Manually set on_focus to Done (same as current status) to test tick stability.
+        // Reaches the shared ObservationStore directly — a test-only poke, so no
+        // production accessor is added just to support it.
+        commands.store.get_mut(1).unwrap().on_focus = Some(Status::Done);
+        commands.on_pane_focused(1, 10);
+        assert_eq!(commands.get(1).unwrap().status, Status::Done);
         // last_change_tick should NOT be updated (status did not change)
-        assert_eq!(store.get(1).unwrap().last_change_tick, 5);
+        assert_eq!(commands.get(1).unwrap().last_change_tick, 5);
     }

@@ -124,10 +124,6 @@ impl ObservationStore {
         self.map.insert(pane_id, observation);
     }
 
-    pub fn remove(&mut self, pane_id: u32) {
-        self.map.remove(&pane_id);
-    }
-
     /// One-shot clear-on-*visit*: adopt and clear this pane's queued `on_focus`.
     pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
         if let Some(s) = self.map.get_mut(&pane_id) {
