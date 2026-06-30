@@ -4,15 +4,37 @@
 # `cargo install zj-radar` / `cargo binstall zj-radar` resolve to exactly one
 # binary — the CLI — instead of also building the plugin's empty host stub.
 [workspace]
-members = ["crates/plugin"]
+members = ["crates/core", "crates/plugin"]
 
-[package]
-name = "zj-radar"
+[workspace.package]
 version = "0.1.0-rc.1"
 edition = "2021"
 license = "MIT"
-description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
 repository = "https://github.com/marktoda/zj-radar"
+
+[workspace.dependencies]
+zj-radar-core = { path = "crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+clap = { version = "4", features = ["derive"] }
+toml_edit = "0.22"
+dirs = "5"
+proptest = "1"
+insta = { version = "1", features = ["filters"] }
+vt100 = "0.15"
+assert_cmd = "2"
+assertables = "9"
+tempfile = "3"
+portable-pty = "0.8"
+
+[package]
+name = "zj-radar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
 readme = "README.md"
 keywords = ["zellij", "claude", "agent", "cli", "tui"]
 categories = ["command-line-utilities", "development-tools"]
@@ -36,12 +58,13 @@ name = "zj-radar"
 path = "src/bin/cli.rs"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-unicode-width = "0.2"
-clap = { version = "4", features = ["derive"], optional = true }
-toml_edit = { version = "0.22", optional = true }
-dirs = { version = "5", optional = true }
+zj-radar-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
+clap = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
 
 # Zellij's plugin SDK is only used by the wasm `_start`/`load`/`render` wiring in
 # lib.rs/main.rs (all `#[cfg(target_arch = "wasm32")]`). Scoping it to the wasm
@@ -63,13 +86,13 @@ cli = ["dep:clap", "dep:toml_edit", "dep:dirs"]
 e2e = []
 
 [dev-dependencies]
-insta = { version = "1", features = ["filters"] }
-proptest = "1"
-vt100 = "0.15"
-assert_cmd = "2"
-assertables = "9"
-tempfile = "3"
-portable-pty = "0.8"
+insta = { workspace = true }
+proptest = { workspace = true }
+vt100 = { workspace = true }
+assert_cmd = { workspace = true }
+assertables = { workspace = true }
+tempfile = { workspace = true }
+portable-pty = { workspace = true }
 
 [[test]]
 name = "e2e"

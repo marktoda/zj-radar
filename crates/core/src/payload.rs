@@ -158,7 +158,6 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
 /// the `Raw` parse struct. `status` / `on_focus` serialize through `Status`'s
 /// own wire vocabulary (so the two directions share one token set), and
 /// `on_focus` is dropped entirely when `None` via `skip_serializing_if`.
-#[cfg(any(feature = "cli", test))]
 #[derive(serde::Serialize)]
 struct Wire<'a> {
     v: u32,
@@ -172,7 +171,6 @@ struct Wire<'a> {
     on_focus: Option<Status>,
 }
 
-#[cfg(any(feature = "cli", test))]
 #[derive(serde::Serialize)]
 struct WirePane {
     #[serde(rename = "type")]
@@ -183,7 +181,6 @@ struct WirePane {
 /// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). `on_focus` is
 /// omitted entirely when `None`. Shared by the CLI producer and tested against
 /// `parse` so the two can never drift.
-#[cfg(any(feature = "cli", test))]
 pub fn to_wire(
     pane_id: u32,
     status: Status,

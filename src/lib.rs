@@ -6,6 +6,11 @@
 #[cfg(all(target_arch = "wasm32", feature = "cli"))]
 compile_error!("build the wasm plugin with `-p zj-radar-plugin` (the `cli` feature can't target wasm)");
 
+// Re-export the shared core so the plugin glue and CLI keep addressing these as
+// `crate::status`, `crate::payload`, … with no per-reference churn. (A `use`
+// item is itself path-addressable as `crate::<name>`.)
+pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
+
 // On a plain host build (`cargo build`, not wasm, not test) the only consumers
 // of the pure modules are the wasm glue (cfg'd out) and the unit tests (cfg'd
 // out), so every public item appears dead. The pure modules stay warning-free
@@ -13,11 +18,6 @@ compile_error!("build the wasm plugin with `-p zj-radar-plugin` (the `cli` featu
 // non-test host build and leaves the module sources untouched.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod config;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod kind;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod observation;
-mod payload;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod radar_state;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
@@ -31,17 +31,9 @@ mod runtime;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod session_files;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod status;
-// Shared wire-enum macros (wire_serde! / wire_enum!) used by `status` and
-// `observation`. Path-imported (`use crate::wire::…`), so declaration order
-// among the modules doesn't matter.
-mod wire;
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod status_store;
 // `theme` is only consumed by the wasm glue; on a non-wasm non-test host build
 // everything in it appears dead. Its own unit tests exercise it on the host.
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
-mod command;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 mod cmd;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]

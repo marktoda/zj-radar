@@ -1,0 +1,18 @@
+[package]
+name = "zj-radar-core"
+description = "Shared wire/classification core for zj-radar: status payloads, agent/command kinds, and the versioned pipe schema."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "zj_radar_core"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
