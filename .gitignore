@@ -9,3 +9,4 @@ result
 
 # Superpowers SDD process artifacts (plans/specs) — working exhaust, not docs
 docs/superpowers/
+.env
