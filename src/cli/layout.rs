@@ -119,7 +119,8 @@ pub(crate) fn analyze(layout: &str) -> LayoutFacts {
         has_default_template: layout.contains("default_tab_template"),
         has_swaps: layout.contains("swap_tiled_layout"),
         has_top_bar: layout.contains("zellij:tab-bar") || layout.contains("zellij:compact-bar"),
-        has_rail: layout.contains("// zj-radar: begin")
+        has_rail: layout.contains(WRAP_BEGIN)
+            || layout.contains(BLOCK_BEGIN)
             || layout.contains("plugin location=\"radar\""),
         has_children_anchor: layout
             .split_whitespace()
@@ -162,8 +163,24 @@ pub(crate) fn tailored_snippet(facts: &LayoutFacts) -> String {
     lines.join("\n")
 }
 
+/// Marker pair fencing the rail split that *replaces* the `children` anchor.
+/// `uninstall` COLLAPSES a wrap region back to a bare `children` token, so the
+/// original anchor is restored exactly. Distinct from the block markers so the
+/// two regions can be reversed differently.
+const WRAP_BEGIN: &str = "// zj-radar:wrap begin";
+const WRAP_END:   &str = "// zj-radar:wrap end";
+
+/// Marker pair fencing the *appended* additions (the `ui` template, the swap
+/// blocks, and any added `new_tab_template`). `uninstall` DELETES a block region
+/// entirely — these are pure insertions with no original content underneath.
+const BLOCK_BEGIN: &str = "// zj-radar:block begin";
+const BLOCK_END:   &str = "// zj-radar:block end";
+
 /// The rail vertical-split that wraps a tab's `children` anchor. Single source
-/// of truth for the wrap shape — matches the body of `DEFAULT_TAB_TEMPLATE`.
+/// of truth for the wrap shape — the radar pane plus the `children` anchor it
+/// guards. It contains EXACTLY one `children` token and adds no sibling panes,
+/// so the splice replaces only the anchor (never engulfing a user's status bar)
+/// and `uninstall` can collapse the whole region back to that lone `children`.
 /// Lines are joined and re-indented to the anchor's column at splice time.
 const RAIL_PANE_WRAP: &[&str] = &[
     "pane split_direction=\"vertical\" {",
@@ -171,9 +188,6 @@ const RAIL_PANE_WRAP: &[&str] = &[
     "        plugin location=\"radar\"",
     "    }",
     "    children",
-    "}",
-    "pane size=2 borderless=true {",
-    "    plugin location=\"zellij:status-bar\"",
     "}",
 ];
 
@@ -192,9 +206,12 @@ pub(crate) enum Refusal {
 /// Conservatively inject the rail into a user's Zellij layout.
 ///
 /// Strategy: locate the `children` anchor via the KDL parser, then splice text
-/// by byte offset so the rest of the file keeps its exact formatting. The
-/// injected additions are fenced with `// zj-radar: begin`/`// zj-radar: end`
-/// markers so they round-trip through idempotency and Task 7's uninstall.
+/// by byte offset so the rest of the file keeps its exact formatting. Two
+/// distinct marker kinds let `uninstall` be a true inverse:
+///   * WRAP markers (`// zj-radar:wrap …`) fence the split that *replaces* the
+///     `children` anchor — `uninstall` collapses them back to a bare `children`.
+///   * BLOCK markers (`// zj-radar:block …`) fence the *appended* additions —
+///     `uninstall` deletes them entirely.
 ///
 /// Fail-closed: an unparseable layout or an unrecognized shape returns a
 /// `Refusal`; we never edit on uncertainty.
@@ -260,13 +277,17 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     debug_assert_eq!(&layout[close_brace..close_brace + 1], "}");
 
     // 1. Wrap the `children` anchor in the rail vertical split, re-indented to
-    //    the anchor's column. Reuses the canonical `RAIL_PANE_WRAP`. The fence
-    //    markers and body are indented to the anchor; the first line replaces
-    //    the anchor in place (already at the right column).
-    let wrap = indent_block(&fenced_lines(RAIL_PANE_WRAP), &indent);
+    //    the anchor's column. Reuses the canonical `RAIL_PANE_WRAP`, which holds
+    //    exactly one `children` token and no sibling panes — so this replaces
+    //    only the anchor and never engulfs an adjacent user pane (e.g. a status
+    //    bar). Fenced with WRAP markers so `uninstall` can collapse it back to a
+    //    bare `children`. The first line replaces the anchor in place (already at
+    //    the right column); the rest are indented to the anchor.
+    let wrap = indent_block(&wrap_fenced_lines(RAIL_PANE_WRAP), &indent);
 
     // 2. Assemble the additions appended before the closing brace: the `ui`
-    //    template, the swap blocks, and a `new_tab_template` when absent.
+    //    template, the swap blocks, and a `new_tab_template` when absent. Fenced
+    //    with BLOCK markers (pure insertions; `uninstall` deletes them whole).
     let mut additions = format!("{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}");
     if !body
         .nodes()
@@ -275,7 +296,7 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     {
         additions = format!("{NEW_TAB_TEMPLATE}\n\n{additions}");
     }
-    let additions = fence(&additions);
+    let additions = block_fence(&additions);
 
     // Rebuild the source around the two edit points: replace the anchor with
     // the wrap, and insert the additions just before the closing brace. Both
@@ -291,68 +312,86 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     Ok(out)
 }
 
-/// Remove all `// zj-radar: begin` … `// zj-radar: end` fenced blocks from a
-/// layout string. Returns `Some(cleaned)` when any blocks were removed, `None`
-/// when no marker fences were found (nothing to do).
+/// Reverse `inject`: a true inverse, not a blunt strip. Two marker kinds are
+/// handled differently so the original layout comes back byte-for-byte:
+///   * a WRAP region (`// zj-radar:wrap begin` … `// zj-radar:wrap end`) is
+///     COLLAPSED back to a lone `children` token at the region's indentation —
+///     restoring exactly the anchor that `inject` replaced;
+///   * a BLOCK region (`// zj-radar:block begin` … `// zj-radar:block end`) is
+///     DELETED entirely, since it was a pure insertion with nothing underneath.
 ///
-/// Only complete begin/end pairs are stripped; an unmatched begin or end is left
-/// in place (fail-safe: better to leave a stale comment than to corrupt the file).
+/// Returns `Some(cleaned)` when any region was reversed, `None` when no markers
+/// were found (nothing to do). Only complete begin/end pairs are touched; an
+/// unmatched begin or end is left in place (fail-safe: better a stale comment
+/// than a corrupted file). The two kinds never nest in `inject`'s output.
 pub(crate) fn uninstall(layout: &str) -> Option<String> {
-    const BEGIN: &str = "// zj-radar: begin";
-    const END:   &str = "// zj-radar: end";
-
     let mut out = String::with_capacity(layout.len());
     let mut changed = false;
     let mut i = 0;
-    let bytes = layout.as_bytes();
-    let len = bytes.len();
+    let len = layout.len();
 
     while i < len {
-        // Scan for a BEGIN marker at the start of a (possibly-indented) line.
-        // We look for BEGIN as a substring; the indentation before it is also
-        // consumed so we don't leave a blank-indented line behind.
-        let remaining = &layout[i..];
-        if let Some(rel) = remaining.find(BEGIN) {
-            let abs_begin_marker = i + rel;
-            // Walk back to the start of this line to capture leading whitespace.
-            let line_start = layout[..abs_begin_marker]
-                .rfind('\n')
-                .map_or(0, |pos| pos + 1);
-            // The whitespace before BEGIN must be only spaces/tabs (no content).
-            let before_marker = &layout[line_start..abs_begin_marker];
-            if !before_marker.chars().all(|c| c == ' ' || c == '\t') {
-                // BEGIN appears mid-line (inside a string? unusual). Emit up to
-                // and including this point, advance past it, and keep scanning.
-                out.push_str(&layout[i..abs_begin_marker + BEGIN.len()]);
-                i = abs_begin_marker + BEGIN.len();
-                continue;
-            }
-
-            // Look for the matching END.
-            let search_from = abs_begin_marker + BEGIN.len();
-            if let Some(rel_end) = layout[search_from..].find(END) {
-                let abs_end_marker = search_from + rel_end;
-                // Consume through the end of the END marker's line (including \n).
-                let after_end = abs_end_marker + END.len();
-                let end_of_line = layout[after_end..]
-                    .find('\n')
-                    .map_or(layout.len(), |pos| after_end + pos + 1);
-
-                // Emit everything from current position up to (but not including)
-                // the leading whitespace of the BEGIN line.
-                out.push_str(&layout[i..line_start]);
-                i = end_of_line;
-                changed = true;
-            } else {
-                // No matching END — leave everything as-is from here.
+        // Find the next region begin of either kind, whichever comes first.
+        let wrap_at = layout[i..].find(WRAP_BEGIN).map(|r| i + r);
+        let block_at = layout[i..].find(BLOCK_BEGIN).map(|r| i + r);
+        let (abs_begin, begin_marker, end_marker, is_wrap) = match (wrap_at, block_at) {
+            (Some(w), Some(b)) if w <= b => (w, WRAP_BEGIN, WRAP_END, true),
+            (Some(_), Some(b)) => (b, BLOCK_BEGIN, BLOCK_END, false),
+            (Some(w), None) => (w, WRAP_BEGIN, WRAP_END, true),
+            (None, Some(b)) => (b, BLOCK_BEGIN, BLOCK_END, false),
+            (None, None) => {
+                // No more markers — append the rest verbatim.
                 out.push_str(&layout[i..]);
-                i = len;
+                break;
             }
-        } else {
-            // No more BEGIN markers — append the rest verbatim.
-            out.push_str(&layout[i..]);
-            i = len;
+        };
+
+        // Walk back to the start of this line to capture leading whitespace.
+        let line_start = layout[..abs_begin].rfind('\n').map_or(0, |pos| pos + 1);
+        let indent = &layout[line_start..abs_begin];
+        // The whitespace before the marker must be only spaces/tabs (no content).
+        if !indent.chars().all(|c| c == ' ' || c == '\t') {
+            // Marker appears mid-line (unusual). Emit up to and past it, continue.
+            out.push_str(&layout[i..abs_begin + begin_marker.len()]);
+            i = abs_begin + begin_marker.len();
+            continue;
         }
+
+        // Look for the matching END of the same kind.
+        let search_from = abs_begin + begin_marker.len();
+        let Some(rel_end) = layout[search_from..].find(end_marker) else {
+            // No matching END — leave everything as-is from here.
+            out.push_str(&layout[i..]);
+            break;
+        };
+        let abs_end_marker = search_from + rel_end;
+        // Consume through the end of the END marker's line (including its \n).
+        let after_end = abs_end_marker + end_marker.len();
+        let end_of_line = layout[after_end..]
+            .find('\n')
+            .map_or(len, |pos| after_end + pos + 1);
+
+        // Emit everything from current position up to the BEGIN line's indent.
+        out.push_str(&layout[i..line_start]);
+        if is_wrap {
+            // Collapse the wrap region back to the bare `children` anchor it
+            // replaced: re-emit the captured indentation + `children` + newline.
+            // `end_of_line` already includes the trailing newline of the region's
+            // last line, so this leaves the surrounding lines untouched.
+            out.push_str(indent);
+            out.push_str("children");
+            out.push('\n');
+        } else {
+            // Block region: a pure insertion, deleted whole. `inject` prefixes the
+            // block with one blank separator line; drop it too so the surrounding
+            // text is restored byte-for-byte. Only a *blank* line is consumed —
+            // a line with content (the user's own pane) is preserved.
+            if out.ends_with("\n\n") {
+                out.pop();
+            }
+        }
+        i = end_of_line;
+        changed = true;
     }
 
     if changed { Some(out) } else { None }
@@ -380,14 +419,14 @@ fn line_indent(src: &str, offset: usize) -> String {
         .collect()
 }
 
-/// Wrap the canonical wrap lines in the `// zj-radar:` marker fence so the
-/// injected block can be recognized for idempotency and cleanly removed on
-/// uninstall. Returns the fenced block as individual lines for re-indentation.
-fn fenced_lines<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+/// Fence the canonical wrap lines in the WRAP marker pair so the injected split
+/// is recognized for idempotency and collapsed back to `children` on uninstall.
+/// Returns the fenced block as individual lines for re-indentation.
+fn wrap_fenced_lines<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     let mut out = Vec::with_capacity(lines.len() + 2);
-    out.push("// zj-radar: begin");
+    out.push(WRAP_BEGIN);
     out.extend_from_slice(lines);
-    out.push("// zj-radar: end");
+    out.push(WRAP_END);
     out
 }
 
@@ -408,10 +447,10 @@ fn indent_block(lines: &[&str], indent: &str) -> String {
     out
 }
 
-/// Wrap a block of injected text in the `// zj-radar:` marker fence so it can be
-/// recognized for idempotency and cleanly removed on uninstall.
-fn fence(block: &str) -> String {
-    format!("// zj-radar: begin\n{block}\n// zj-radar: end")
+/// Fence a block of appended text in the BLOCK marker pair so it is recognized
+/// for idempotency and deleted whole on uninstall.
+fn block_fence(block: &str) -> String {
+    format!("{BLOCK_BEGIN}\n{block}\n{BLOCK_END}")
 }
 
 #[cfg(test)]
@@ -453,7 +492,7 @@ mod tests {
         let with_bar = "layout {\n    default_tab_template {\n        pane size=1 { plugin location=\"zellij:compact-bar\" }\n        children\n    }\n}\n";
         assert!(analyze(with_bar).has_top_bar);
 
-        let injected = format!("layout {{\n// zj-radar: begin\n{}\n// zj-radar: end\n}}\n", super::RAIL_UI_TEMPLATE);
+        let injected = format!("layout {{\n{}\n{}\n{}\n}}\n", super::BLOCK_BEGIN, super::RAIL_UI_TEMPLATE, super::BLOCK_END);
         assert!(analyze(&injected).has_rail);
     }
 
@@ -461,7 +500,8 @@ mod tests {
     fn inject_wraps_children_and_adds_marked_swaps() {
         let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
         let out = inject(clean, &analyze(clean)).unwrap();
-        assert!(out.contains("// zj-radar: begin") && out.contains("// zj-radar: end"));
+        assert!(out.contains(WRAP_BEGIN) && out.contains(WRAP_END), "must fence the wrap");
+        assert!(out.contains(BLOCK_BEGIN) && out.contains(BLOCK_END), "must fence the additions");
         assert!(out.contains("plugin location=\"radar\""));
         assert!(out.contains("swap_tiled_layout"));
         // re-analyze the output: now has the rail.
@@ -519,8 +559,8 @@ layout {
 
         let out = inject(input, &facts).expect("inject must succeed on a realistic Zellij layout");
 
-        assert!(out.contains("// zj-radar: begin"), "must contain begin marker");
-        assert!(out.contains("// zj-radar: end"), "must contain end marker");
+        assert!(out.contains(WRAP_BEGIN), "must contain wrap begin marker");
+        assert!(out.contains(BLOCK_BEGIN), "must contain block begin marker");
         assert!(out.contains("plugin location=\"radar\""), "must inject radar plugin");
         assert!(out.contains("swap_tiled_layout"), "must inject swap layouts");
 
@@ -556,23 +596,77 @@ layout {
         );
     }
 
-    /// `uninstall` removes the marker-fenced blocks and returns `Some` when any
-    /// were found; when no markers are present it returns `None`.
+    /// `uninstall` is a *true inverse* of `inject`: for a clean template it
+    /// restores the original byte-for-byte (the wrap collapses back to the lone
+    /// `children` anchor, the appended block is deleted with its separator line).
     #[test]
-    fn uninstall_round_trip() {
+    fn uninstall_round_trips_to_original() {
         let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
         let injected = inject(clean, &analyze(clean)).unwrap();
-        assert!(injected.contains("// zj-radar: begin"), "inject must add markers");
+        assert!(injected.contains(WRAP_BEGIN), "inject must add wrap markers");
+        assert!(injected.contains(BLOCK_BEGIN), "inject must add block markers");
 
-        let restored = uninstall(&injected).expect("uninstall must find and strip markers");
-        // The restored layout must parse as KDL (it may differ from `clean` in
-        // whitespace or ordering, but must be valid).
-        restored.parse::<kdl::KdlDocument>()
-            .expect("restored layout must be valid KDL");
-        // Must no longer contain our markers or the radar plugin.
-        assert!(!restored.contains("// zj-radar: begin"));
-        assert!(!restored.contains("// zj-radar: end"));
+        let restored = uninstall(&injected).expect("uninstall must find and reverse markers");
+        assert_eq!(restored, clean, "uninstall(inject(x)) must equal x byte-for-byte");
+        // And the anchor must survive — not be deleted by a blunt strip.
+        assert!(
+            restored.split_whitespace().any(|t| t == "children"),
+            "restored layout must still contain a `children` anchor"
+        );
+        // No markers or radar plugin remain.
+        assert!(!restored.contains(WRAP_BEGIN) && !restored.contains(BLOCK_BEGIN));
         assert!(!restored.contains("plugin location=\"radar\""));
+    }
+
+    /// A realistic template with a top bar, `children`, and a bottom bar (bare
+    /// booleans, as real users write them). `inject` must wrap ONLY the
+    /// `children` anchor — never engulf the sibling bars — and `uninstall` must
+    /// restore the original byte-for-byte, both bars intact.
+    #[test]
+    fn uninstall_preserves_user_panes() {
+        let original = "\
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location=\"zellij:compact-bar\"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location=\"zellij:status-bar\"
+        }
+    }
+    tab focus=true {
+        pane
+    }
+}
+";
+        let injected = inject(original, &analyze(original)).expect("inject must succeed");
+        // Both user bars survive injection (the wrap replaced only `children`).
+        assert!(injected.contains("zellij:compact-bar"), "top bar must survive inject");
+        assert!(injected.contains("zellij:status-bar"), "bottom bar must survive inject");
+        assert!(injected.contains("plugin location=\"radar\""), "rail must be injected");
+
+        let restored = uninstall(&injected).expect("uninstall must reverse injection");
+        assert!(restored.contains("zellij:compact-bar"), "top bar must survive uninstall");
+        assert!(restored.contains("zellij:status-bar"), "bottom bar must survive uninstall");
+        assert!(
+            restored.split_whitespace().any(|t| t == "children"),
+            "a `children` anchor must remain after uninstall"
+        );
+        assert_eq!(restored, original, "uninstall must restore the original byte-for-byte");
+    }
+
+    /// inject → uninstall → inject must succeed (no `Unrecognized` from a broken
+    /// intermediate) and reproduce the first inject's output. This is the exact
+    /// failure the old blunt-strip uninstall caused: it deleted the `children`
+    /// anchor, so the second inject had nothing to wrap.
+    #[test]
+    fn inject_uninstall_inject_is_idempotent() {
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let first = inject(clean, &analyze(clean)).expect("first inject");
+        let restored = uninstall(&first).expect("uninstall");
+        let again = inject(&restored, &analyze(&restored)).expect("re-inject must not fail Unrecognized");
+        assert_eq!(first, again, "inject→uninstall→inject must equal the first inject");
     }
 
     #[test]

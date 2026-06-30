@@ -186,8 +186,8 @@ fn setup_zellij_inject_writes_rail_and_bak() {
 
     let injected = fs::read_to_string(&layout_path).unwrap();
     assert!(
-        injected.contains("// zj-radar: begin"),
-        "--inject must add the begin marker; got:\n{injected}"
+        injected.contains("// zj-radar:wrap begin"),
+        "--inject must add the wrap begin marker; got:\n{injected}"
     );
     assert!(
         injected.contains("plugin location=\"radar\""),
@@ -261,7 +261,7 @@ fn setup_zellij_uninstall_reverses_injection() {
 
     let injected = fs::read_to_string(&layout_path).unwrap();
     assert!(
-        injected.contains("// zj-radar: begin"),
+        injected.contains("// zj-radar:wrap begin"),
         "prerequisite: inject must have written the rail"
     );
 
@@ -275,8 +275,8 @@ fn setup_zellij_uninstall_reverses_injection() {
 
     let after = fs::read_to_string(&layout_path).unwrap();
     assert!(
-        !after.contains("// zj-radar: begin"),
-        "--uninstall must remove the begin marker"
+        !after.contains("// zj-radar:wrap begin") && !after.contains("// zj-radar:block begin"),
+        "--uninstall must remove the begin markers"
     );
     assert!(
         !after.contains("plugin location=\"radar\""),
