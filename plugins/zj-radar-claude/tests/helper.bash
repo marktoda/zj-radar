@@ -41,10 +41,16 @@ teardown_fakes() { rm -rf "$FAKEBIN"; }
 # notify.sh invokes: zellij pipe --name zj_radar.status.v1 -- "$payload"
 # The payload is passed as a positional arg (after --), so it appears in
 # field 1 of the tab-separated log record.  We extract everything after "-- ".
-# The script backgrounds the zellij call with `&`, so we wait briefly for it.
+# The script backgrounds the zellij call with `&`, so we poll for the record to
+# appear. The budget is generous (up to ~3s) because under load — e.g. `just ci`
+# runs this right after cargo test+clippy — the backgrounded pipe can take well
+# over the old 0.5s, which surfaced as a flaky empty `$output` and a jq parse
+# error downstream. We return the instant the record is written, so a fast run
+# pays nothing for the larger ceiling. Callers that expect NO broadcast assert on
+# `[ ! -s "$RECORD" ]` directly and never call this.
 last_payload() {
   local i
-  for i in 1 2 3 4 5; do
+  for i in $(seq 1 30); do
     [ -s "$RECORD" ] && break
     sleep 0.1
   done
