@@ -3338,6 +3338,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zj-radar-plugin"
+version = "0.1.0"
+dependencies = [
+ "zellij-tile",
+ "zj-radar",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

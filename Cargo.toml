@@ -1,23 +1,29 @@
+# Two products share one core: this crate is the host **CLI** (`zj-radar`) plus
+# the shared library; the Zellij **wasm plugin** lives in `crates/plugin` (its
+# `register_plugin!` bin links this lib's wasm adapter). Splitting them means
+# `cargo install zj-radar` / `cargo binstall zj-radar` resolve to exactly one
+# binary — the CLI — instead of also building the plugin's empty host stub.
+[workspace]
+members = ["crates/plugin"]
+
 [package]
 name = "zj-radar"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "A native Zellij sidebar that shows live AI-agent status (working/waiting/done) per tab."
+description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
 repository = "https://github.com/marktoda/zj-radar"
 readme = "README.md"
 
-# Zellij loads plugins as WASI *command* modules (it calls `_start` then `load`
-# directly). A cdylib builds a *reactor* whose exports are `.command_export`
-# shims with no `_start`, which Zellij can't load. So the wasm artifact is a
-# BINARY crate (the `register_plugin!` macro's `fn main` becomes `_start`); the
-# library target holds the pure, host-testable logic.
+# The pure, host-testable core. The wasm host adapter (`State`, render glue) also
+# lives here behind `#[cfg(target_arch = "wasm32")]`, so `crates/plugin` links it
+# when building for wasm; on the host it compiles away.
 [lib]
 name = "zj_radar"
 
 [[bin]]
-name = "zj_radar"
-path = "src/main.rs"
+name = "zj-radar"
+path = "src/bin/cli.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -36,6 +42,11 @@ dirs = { version = "5", optional = true }
 zellij-tile = "0.44"
 
 [features]
+# `cli` is on by default so `cargo install zj-radar` builds the CLI bin. The
+# wasm plugin depends on this crate with `default-features = false`, so clap &c.
+# never reach the wasm build (a lib.rs guard turns a stray wasm+cli build into a
+# clear error instead of a confusing clap-on-wasm failure).
+default = ["cli"]
 cli = ["dep:clap", "dep:toml_edit", "dep:dirs"]
 # Live end-to-end tests that drive a real Zellij in a PTY. Off by default so
 # `cargo test` stays fast and hermetic. Requires `zellij` on PATH.
@@ -49,11 +60,6 @@ assert_cmd = "2"
 assertables = "9"
 tempfile = "3"
 portable-pty = "0.8"
-
-[[bin]]
-name = "zj-radar"
-path = "src/bin/cli.rs"
-required-features = ["cli"]
 
 [[test]]
 name = "e2e"

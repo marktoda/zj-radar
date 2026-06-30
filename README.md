@@ -192,7 +192,8 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 
 | Path | What it is |
 |------|------------|
-| `src/` | The Zellij sidebar plugin (Rust → `wasm32-wasip1`). Thin Zellij adapter, pure runtime, stores, model, and renderer. |
+| `src/` | The shared library (pure runtime, stores, model, renderer, wasm adapter) **and** the host `zj-radar` CLI (`src/cli/`, `src/bin/cli.rs`). |
+| `crates/plugin/` | The Zellij sidebar **wasm plugin** (Rust → `wasm32-wasip1`) — `register_plugin!` wiring over the shared lib. Built with `-p zj-radar-plugin`. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |

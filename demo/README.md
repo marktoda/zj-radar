@@ -36,7 +36,7 @@ Outputs:
 ## Try it live (no recording)
 
 ```sh
-cargo build --target wasm32-wasip1
+cargo build --target wasm32-wasip1 -p zj-radar-plugin
 ./demo/record.sh --release   # builds + records, or just run zellij yourself:
 zellij --config target/demo/config.kdl --layout target/demo/layout.kdl
 ```

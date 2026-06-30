@@ -9,16 +9,41 @@ permissions:
   contents: write # required to create the GitHub Release
 
 jobs:
+  # ── The wasm, built once on nix ────────────────────────────────────────────
+  # nix cleanly handles zellij-tile's openssl-sys build dep (plain cargo would
+  # need apt libssl-dev/pkg-config), and every CLI build embeds THIS artifact
+  # (build.rs picks it up via ZJ_RADAR_WASM_PATH), so the CLI runners need no
+  # wasm target and no inline wasm compile.
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - name: Build wasm
+        run: nix build .#zj-radar -L
+      - name: Stage wasm
+        run: cp result/bin/zj_radar.wasm zj_radar.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: zj_radar.wasm
+
   # ── Portable CLI binaries (plain cargo, NOT nix) ───────────────────────────
-  # The CLI is shipped to non-nix machines via the curl|sh installer, so the
-  # binaries must be portable. A nix-built Linux binary bakes a /nix/store ELF
-  # interpreter path and fails to exec anywhere else, so Linux builds use the
-  # fully-static `*-musl` target (the CLI's deps are pure Rust — no C, no
-  # openssl — so musl links self-contained without musl-gcc). macOS links only
-  # the always-present libSystem, so a native cargo build is already portable.
-  # Asset names are the Rust target triple so `cargo binstall` and the installer
-  # share one mapping. (wasm stays on nix in the `release` job — see below.)
+  # The CLI ships to non-nix machines via the curl|sh installer, so the binaries
+  # must be portable. A nix-built Linux binary bakes a /nix/store ELF interpreter
+  # path and fails to exec anywhere else, so Linux builds use the fully-static
+  # `*-musl` target. macOS links only the always-present libSystem. Asset names
+  # are the Rust target triple so `cargo binstall` and the installer share one
+  # mapping. The wasm built above is embedded via ZJ_RADAR_WASM_PATH.
   build-cli:
+    needs: build-wasm
     strategy:
       fail-fast: false
       matrix:
@@ -42,12 +67,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: .
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build CLI
-        run: cargo build --release --locked --features cli --bin zj-radar --target ${{ matrix.target }}
+        env:
+          ZJ_RADAR_WASM_PATH: ${{ github.workspace }}/zj_radar.wasm
+        run: cargo build --release --locked --bin zj-radar --target ${{ matrix.target }}
 
       - name: Stage CLI artifact
         run: tar -czf "zj-radar-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" zj-radar
@@ -58,7 +90,7 @@ jobs:
           path: zj-radar-${{ matrix.target }}.tar.gz
 
   release:
-    needs: build-cli
+    needs: [build-wasm, build-cli]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,26 +105,6 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME matches Cargo.toml version $manifest"
 
-      - uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      # Reuse the same /nix cache CI populates so a release isn't a cold build.
-      - uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-
-      # wasm stays on nix: it cleanly handles zellij-tile's openssl-sys build dep
-      # (plain cargo would need apt libssl-dev/pkg-config), and wasm portability
-      # is a non-issue since Zellij loads it.
-      - name: Build wasm
-        run: nix build .#zj-radar -L
-
-      - name: Stage wasm artifact
-        run: cp result/bin/zj_radar.wasm zj_radar.wasm
-
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -102,8 +114,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            zj_radar.wasm
+            dist/zj_radar.wasm
             scripts/install.sh
-            dist/*.tar.gz
+            dist/zj-radar-*.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: true

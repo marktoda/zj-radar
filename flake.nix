@@ -34,7 +34,9 @@
             (craneLib.filterCargoSources path type)
             || (pkgs.lib.hasSuffix "/examples/radar-template-snippet.kdl" path)
             # Pulled in at compile time via include_str! in src/reference_tests.rs.
-            || (pkgs.lib.hasSuffix "/docs/rail-reference.md" path);
+            || (pkgs.lib.hasSuffix "/docs/rail-reference.md" path)
+            # include_str!'d by the CLI's `run` command (src/cli/run.rs).
+            || (pkgs.lib.hasInfix "/src/cli/run_assets/" path);
         };
         commonArgs = {
           inherit src;
@@ -47,9 +49,12 @@
           nativeBuildInputs = [ pkgs.pkg-config ];
         };
 
-        # ── wasm plugin artifact (cross-compiled to wasm32-wasip1) ──
+        # ── wasm plugin artifact (the `zj-radar-plugin` member, → wasm32-wasip1) ──
         wasmArgs = commonArgs // {
           CARGO_BUILD_TARGET = "wasm32-wasip1";
+          # Build only the plugin member: the root `zj-radar` crate is the host
+          # CLI and its default `cli` feature can't target wasm.
+          cargoExtraArgs = "-p zj-radar-plugin";
           doCheck = false; # wasm can't execute on the host builder; see `checks` for tests
         };
         cargoArtifactsWasm = craneLib.buildDepsOnly wasmArgs;
@@ -68,13 +73,19 @@
         # ── host-target deps shared by the test/clippy checks ──
         cargoArtifactsHost = craneLib.buildDepsOnly commonArgs;
 
-        # ── native CLI (host target, `cli` feature) ──
-        cliArgs = commonArgs // { cargoExtraArgs = "--features cli"; };
-        cargoArtifactsCli = craneLib.buildDepsOnly cliArgs;
+        # ── native CLI (host target; `cli` is now a default feature) ──
+        # The CLI embeds the wasm (build.rs → include_bytes!). Feed it the wasm
+        # built above via ZJ_RADAR_WASM_PATH so the build doesn't recurse into a
+        # nested wasm compile (which the crane sandbox can't do).
+        cliArgs = commonArgs // {
+          cargoExtraArgs = "--features cli";
+          ZJ_RADAR_WASM_PATH = "${zj-radar}/bin/zj_radar.wasm";
+        };
+        cargoArtifactsCli = craneLib.buildDepsOnly (commonArgs // { cargoExtraArgs = "--features cli"; });
         zj-radar-cli = craneLib.buildPackage (cliArgs // {
           pname = "zj-radar-cli";
           cargoArtifacts = cargoArtifactsCli;
-          cargoExtraArgs = "--features cli --bin zj-radar";
+          cargoExtraArgs = "--bin zj-radar";
           doCheck = false;
         });
       in {

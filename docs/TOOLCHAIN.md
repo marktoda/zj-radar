@@ -7,7 +7,7 @@ target) covers the pure-logic modules and needs nothing extra.
 
 ```sh
 cargo test                                          # host tests
-cargo build --release --target wasm32-wasip1        # the WASM plugin
+cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the WASM plugin
 # → target/wasm32-wasip1/release/zj_radar.wasm
 ```
 
@@ -27,7 +27,7 @@ target to that toolchain, or use the repo's Nix dev shell, which pins a Rust wit
 the target:
 
 ```sh
-nix develop -c cargo build --release --target wasm32-wasip1
+nix develop -c cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
 ```
 
 ## Dev loop

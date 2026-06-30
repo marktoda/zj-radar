@@ -13,7 +13,7 @@ test-bash:
 # header times out intermittently (harness.rs `wait_until_ready`). Serial is
 # the reliable mode — a flaky E2E suite is worse than none.
 test-e2e:
-    cargo build --release --target wasm32-wasip1
+    cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
     cargo test --features e2e --test e2e -- --include-ignored --test-threads=1
 
 # Review/accept snapshot changes after intentional render edits.

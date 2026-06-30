@@ -28,9 +28,19 @@ fn main() {
         println!("cargo:rustc-env=ZJ_RADAR_WASM_PATH={}", prebuilt.display());
         return;
     }
-    // 3. Build it (self-contained `cargo install`). Requires the wasm target.
+    // 3. Build it from the sibling plugin crate (self-contained workspace
+    //    builds). Requires the wasm target AND the workspace (so this path is
+    //    NOT taken on a from-crates.io install — release builds instead supply
+    //    ZJ_RADAR_WASM_PATH via step 1, the prebuilt fast path).
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(["build", "--release", "--target", "wasm32-wasip1", "--bin", "zj_radar"])
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "wasm32-wasip1",
+            "-p",
+            "zj-radar-plugin",
+        ])
         .current_dir(&manifest)
         .status()
         .expect("failed to spawn cargo for wasm build");

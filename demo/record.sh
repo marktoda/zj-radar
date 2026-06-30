@@ -27,7 +27,7 @@ done
 
 echo "==> building $profile wasm"
 if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
-    cargo build "${cargo_flags[@]}" --target wasm32-wasip1
+    cargo build "${cargo_flags[@]}" --target wasm32-wasip1 -p zj-radar-plugin
 elif command -v nix >/dev/null 2>&1; then
     echo "    (wasm32-wasip1 target missing; building via nix)"
     nix build .#zj-radar -L && wasm="$root/result/bin/zj_radar.wasm"
