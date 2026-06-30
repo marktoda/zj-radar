@@ -11,8 +11,6 @@
 //! guard inside setup.rs accepts a pre-existing hooks.json, so we seed the
 //! tempdir with an empty `{}` to satisfy it without needing a fake binary on PATH.
 
-#![cfg(feature = "cli")]
-
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;

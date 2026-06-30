@@ -2,16 +2,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Declare the cfg unconditionally so a `cli` build never trips the
+    // Declare the cfg unconditionally so clippy never trips the
     // unexpected-cfg lint, whether or not we end up embedding the wasm.
     println!("cargo:rustc-check-cfg=cfg(embedded_wasm)");
 
     // The wasm build itself must not recurse into this logic.
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
-        return;
-    }
-    // Only the cli build embeds the wasm.
-    if std::env::var("CARGO_FEATURE_CLI").is_err() {
         return;
     }
     println!("cargo:rerun-if-env-changed=ZJ_RADAR_WASM_PATH");
@@ -37,7 +33,7 @@ fn locate_wasm() -> Option<PathBuf> {
         }
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let prebuilt = manifest.join("target/wasm32-wasip1/release/zj_radar.wasm");
+    let prebuilt = manifest.join("../../target/wasm32-wasip1/release/zj_radar.wasm");
     // 2. Prebuilt artifact (fast path for `just test` / dev).
     if prebuilt.is_file() {
         return Some(prebuilt);
@@ -45,7 +41,7 @@ fn locate_wasm() -> Option<PathBuf> {
     // 3. Build it from the sibling plugin crate — only in the workspace. A
     //    from-crates.io install has no plugin crate, so skip silently and let
     //    `run` download the wasm at first use.
-    if !manifest.join("crates/plugin/Cargo.toml").is_file() {
+    if !manifest.join("../plugin/Cargo.toml").is_file() {
         return None;
     }
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))

@@ -3,7 +3,6 @@
 //! never touches the developer's real config. The precise attach-vs-create shape
 //! is covered by `plan_run` unit tests; this smoke test only asserts the binary
 //! runs end to end and prints a session-scoped `zellij` command.
-#![cfg(feature = "cli")]
 use assert_cmd::Command;
 use tempfile::tempdir;
 

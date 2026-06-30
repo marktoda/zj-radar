@@ -1,5 +1,9 @@
-//! Native CLI (`zj-radar`): `notify` + `setup`. Host-only; gated behind the
-//! `cli` feature so the wasm plugin build never pulls clap/toml_edit.
+//! Native CLI (`zj-radar`): `notify` + `setup` + `run`.
+
+// Re-export the shared core so the CLI submodules keep addressing these as
+// `crate::status`, `crate::payload`, … with no per-reference churn.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use zj_radar_core::{command, kind, payload, status};
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -82,7 +86,7 @@ enum Command {
     },
 }
 
-/// CLI entry point (called by `src/bin/cli.rs`).
+/// CLI entry point (called by `src/main.rs`).
 pub fn run() {
     let cli = Cli::parse();
     match cli.command {

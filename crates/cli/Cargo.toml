@@ -1,0 +1,36 @@
+[package]
+name = "zj-radar"
+description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["zellij", "claude", "agent", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+build = "build.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/zj-radar-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[lib]
+name = "zj_radar_cli"
+
+[[bin]]
+name = "zj-radar"
+path = "src/main.rs"
+
+[dependencies]
+zj-radar-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+toml_edit = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+assertables = { workspace = true }
+tempfile = { workspace = true }

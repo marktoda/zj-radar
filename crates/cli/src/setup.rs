@@ -27,7 +27,7 @@ const CODEX_HOOK_EVENTS: [&str; 7] = [
 ];
 const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
-const ZELLIJ_LAYOUT_SNIPPET: &str = include_str!("../../examples/radar-template-snippet.kdl");
+const ZELLIJ_LAYOUT_SNIPPET: &str = include_str!("../../../examples/radar-template-snippet.kdl");
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],

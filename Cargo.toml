@@ -1,10 +1,6 @@
-# Two products share one core: this crate is the host **CLI** (`zj-radar`) plus
-# the shared library; the Zellij **wasm plugin** lives in `crates/plugin` (its
-# `register_plugin!` bin links this lib's wasm adapter). Splitting them means
-# `cargo install zj-radar` / `cargo binstall zj-radar` resolve to exactly one
-# binary — the CLI — instead of also building the plugin's empty host stub.
 [workspace]
-members = ["crates/core", "crates/plugin"]
+resolver = "2"
+members = ["crates/core", "crates/cli", "crates/plugin"]
 
 [workspace.package]
 version = "0.1.0-rc.1"
@@ -28,61 +24,10 @@ assertables = "9"
 tempfile = "3"
 portable-pty = "0.8"
 
-[package]
-name = "zj-radar"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Host CLI for the zj-radar Zellij sidebar: broadcast AI-agent status (working/waiting/done) and wire agents up."
-readme = "README.md"
-keywords = ["zellij", "claude", "agent", "cli", "tui"]
-categories = ["command-line-utilities", "development-tools"]
-
-# `cargo binstall zj-radar` fetches the prebuilt CLI from the matching GitHub
-# release instead of compiling. The URL + naming must match release.yml's CLI
-# assets (zj-radar-<target-triple>.tar.gz, each containing the `zj-radar` bin).
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/zj-radar-{ target }.tar.gz"
-pkg-fmt = "tgz"
-bin-dir = "{ bin }{ binary-ext }"
-
-# The host CLI library. The wasm host adapter (`State`, render glue) now lives
-# in `crates/plugin`, which depends on `zj-radar-core` directly.
-[lib]
-name = "zj_radar"
-
-[[bin]]
-name = "zj-radar"
-path = "src/bin/cli.rs"
-
-[dependencies]
-zj-radar-core = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-unicode-width = { workspace = true }
-clap = { workspace = true, optional = true }
-toml_edit = { workspace = true, optional = true }
-dirs = { workspace = true, optional = true }
-
-[features]
-# `cli` is on by default so `cargo install zj-radar` builds the CLI bin. The
-# wasm plugin depends on this crate with `default-features = false`, so clap &c.
-# never reach the wasm build (a lib.rs guard turns a stray wasm+cli build into a
-# clear error instead of a confusing clap-on-wasm failure).
-default = ["cli"]
-cli = ["dep:clap", "dep:toml_edit", "dep:dirs"]
-
-[dev-dependencies]
-assert_cmd = { workspace = true }
-tempfile = { workspace = true }
-
-# Size-optimize the wasm artifact Zellij loads. A Zellij plugin is read from
-# disk and instantiated on every session/layout load, so a smaller module loads
-# faster. These flags are behavior-preserving (the code is panic-free in
-# production); they typically cut the artifact roughly in half.
+# Size-optimize the wasm artifact (workspace-root profiles apply to all members;
+# only the wasm release build is shipped, so this is effectively plugin-only).
 [profile.release]
-opt-level = "z"   # optimize for size
-lto = true        # cross-crate inlining + dead-code elimination
-codegen-units = 1 # better optimization at the cost of build parallelism
-strip = true      # drop symbols/debuginfo from the shipped wasm
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
