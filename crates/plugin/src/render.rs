@@ -558,7 +558,11 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
 
 /// Rail face shown when permission has NOT been granted. Distinct from
 /// `onboarding` (which is the granted-but-idle face) so a blocked install is
-/// never mistaken for a working one.
+/// never mistaken for a working one. Points at the `Ctrl-y` keybind (baked into
+/// the owned `config.kdl`) rather than "press y here": the borderless rail can't
+/// host Zellij's prompt legibly (Zellij #4749), and on an attached session no
+/// onboarding float was ever opened — `Ctrl-y` summons that legible float from
+/// any session state.
 pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
     fn line(out: &mut String, role: &str, text: &str, w: usize) {
         out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
@@ -572,9 +576,9 @@ pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
     line(&mut out, accent, &"═".repeat(w), w);
     line(&mut out, needs, " ⚠ needs permission", w);
     out.push('\n');
-    line(&mut out, muted, " focus this pane", w);
-    line(&mut out, muted, " and press y to", w);
-    line(&mut out, muted, " enable agent status.", w);
+    line(&mut out, muted, " press Ctrl-y to", w);
+    line(&mut out, muted, " open the grant", w);
+    line(&mut out, muted, " prompt.", w);
     RenderedRail::from_ansi_without_targets(out)
 }
 
