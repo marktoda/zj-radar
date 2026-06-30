@@ -757,7 +757,7 @@ pub(crate) fn zellij_check_items(
         (false, _) => CheckItem::missing("alias", "radar plugin alias not found in config.kdl"),
         (true, true) => CheckItem::warn(
             "alias",
-            "alias points at /nix/store/ path — grant won't persist across rebuilds;              run `setup zellij` after each rebuild",
+            "alias points at /nix/store/ path — grant won't persist across rebuilds; run `setup zellij` after each rebuild",
         ),
         (true, false) => CheckItem::ok("alias", "radar plugin alias present in config.kdl"),
     });
@@ -781,7 +781,7 @@ pub(crate) fn zellij_check_items(
             } else {
                 CheckItem::missing(
                     "layout",
-                    "default layout does not have the radar rail —                      run `zj-radar setup zellij` or paste the snippet",
+                    "default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet",
                 )
             }
         }
@@ -855,10 +855,7 @@ fn check_zellij() {
             std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()
         });
     let claude_present = super::run::claude_producer_wired(installed_plugins.as_deref());
-    let codex_wired = codex_hooks
-        .as_deref()
-        .is_some_and(|h| h.contains(CODEX_HOOK_MARKER));
-    let producer_wired = codex_wired || claude_present;
+    let producer_wired = super::run::producer_hint(codex_hooks.as_deref(), claude_present).is_none();
 
     // managed config
     let config_managed = config_is_managed(&config_path);
@@ -1328,11 +1325,8 @@ fn print_producer_hint_if_needed() {
             std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()
         });
     let claude_present = super::run::claude_producer_wired(installed_plugins.as_deref());
-    let no_producer = super::run::producer_hint(codex_hooks.as_deref(), claude_present).is_some();
-    if no_producer {
-        println!(
-            "zellij: no producer detected — run `zj-radar setup codex` or enable the              Claude plugin to feed status into the radar."
-        );
+    if let Some(hint) = super::run::producer_hint(codex_hooks.as_deref(), claude_present) {
+        println!("zellij: {hint}");
     }
 }
 
