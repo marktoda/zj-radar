@@ -10,7 +10,9 @@ use toml_edit::{Array, DocumentMut, Item};
 
 /// Our legacy Codex notify invocation — also the idempotency/uninstall marker.
 const CODEX_NOTIFY_MARKER: [&str; 3] = ["zj-radar", "notify", "codex"];
-const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
+// Also used by `run`'s producer detection so the two agree on what marks a wired
+// Codex producer (shared single source of truth).
+pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
 const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
@@ -972,17 +974,14 @@ fn confirm_and_write(
     true
 }
 
-/// Back up the existing file, then write atomically (temp file + rename).
+/// Back up the existing file, then write atomically (temp file + rename via the
+/// shared `fsutil::atomic_write`). The `.bak` is specific to `setup` editing the
+/// user's own files; `run` writes its owned dir without one.
 fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if path.exists() {
         let _ = std::fs::copy(path, path_with_suffix(path, ".zj-radar.bak"));
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path_with_suffix(path, ".zj-radar.tmp");
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path)
+    super::fsutil::atomic_write(path, contents.as_bytes())
 }
 
 fn path_with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
