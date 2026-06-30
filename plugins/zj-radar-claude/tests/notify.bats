@@ -75,3 +75,30 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.status' <<<"$output")" = idle ]
   [ "$(jq -r '.msg' <<<"$output")" = "" ]
 }
+
+# ── adversarial input: the hook runs on EVERY tool use, so hostile or malformed
+#    stdin must never hang or crash the user's shell ──────────────────────────
+
+@test "oversized hook payload completes promptly (no hang/OOM)" {
+  # A pathological 200 KB payload must not wedge the shell. `timeout` fires exit
+  # 124 if the hook hangs; we require a clean, prompt exit instead.
+  local big; big="$(printf 'x%.0s' {1..200000})"
+  run timeout 10 bash -c \
+    "printf '{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"%s\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"a.rs\"}}' '$big' | '$SCRIPT' running"
+  [ "$status" -eq 0 ]
+}
+
+@test "malformed (non-JSON) stdin exits cleanly" {
+  # Garbage on stdin (a truncated or non-JSON hook payload) must degrade through
+  # the jq `// empty` guards to a clean exit, never a crash.
+  run bash -c "printf 'not json at all{{' | '$SCRIPT' running"
+  [ "$status" -eq 0 ]
+}
+
+@test "raw control bytes in stdin do not crash the hook" {
+  # A raw BEL (0x07) inside a JSON string makes the input invalid JSON; jq's
+  # guarded reads fall back to empty and the hook must still exit 0, never error
+  # out or emit a corrupt broadcast.
+  run bash -c "printf '{\"hook_event_name\":\"Stop\",\"cwd\":\"/home/u/my\007repo\"}' | '$SCRIPT' done"
+  [ "$status" -eq 0 ]
+}
