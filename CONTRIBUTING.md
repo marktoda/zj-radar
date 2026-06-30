@@ -6,10 +6,13 @@ plugin. This guide covers how to build, test, and propose changes.
 
 ## Project shape
 
+zj-radar is a three-member Cargo workspace:
+
 | Path | What it is |
 |------|------------|
-| `src/` | The Zellij sidebar plugin. A thin Zellij adapter (`lib.rs`/`main.rs`, wasm-only) over a pure, host-testable core (runtime, stores, model, renderer). |
-| `src/cli/` | The native `zj-radar` CLI (`notify`, `setup`), behind the `cli` feature. |
+| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema and status/command classification (`command`, `kind`, `observation`, `payload`, `status`, `wire`). No `clap`, no `zellij-tile`. |
+| `crates/cli/` | The native `zj-radar` CLI (`notify`, `setup`, `run`). `build.rs` embeds the wasm via `include_bytes!`. |
+| `crates/plugin/` | The Zellij sidebar wasm plugin (`zj_radar_plugin`, Rust → `wasm32-wasip1`). A thin Zellij adapter (`lib.rs`/`main.rs`, wasm-only) over host-testable modules (runtime, stores, model, renderer). |
 | `plugins/zj-radar-claude/` | The Claude Code producer plugin (hooks + bundled `notify.sh`). |
 | `docs/` | Living design docs. Start with [`CONTEXT.md`](CONTEXT.md) (domain glossary) and [`docs/design.md`](docs/design.md). |
 
@@ -53,10 +56,11 @@ just test-e2e    # L5: live — builds the wasm and drives a real Zellij in a PT
 just ci          # what every PR must pass locally: test + test-bash
 ```
 
-- The host-testable core (`status`, `payload`, `render`, `rollup`,
-  `radar_state`, `config`, `theme`, `session_files`, …) carries no
-  `zellij-tile` dependency and runs on the native target — no wasm needed for
-  most work.
+- The shared core (`status`, `payload`, `command`, `kind`, `observation`,
+  `wire`) lives in `crates/core`; the sidebar's own modules (`render`, `rollup`,
+  `radar_state`, `config`, `theme`, `session_files`, …) live in
+  `crates/plugin/src`. Neither carries a `zellij-tile` dependency on the native
+  target, so both run host-side — no wasm needed for most work.
 - **Snapshot tests** use [`insta`](https://insta.rs). After an *intentional*
   render change, review and accept with `just review` (`cargo insta review`).
   CI fails on unreviewed snapshot drift.
@@ -103,10 +107,11 @@ section for the inside-Zellij caveats.
 
 The plugin's only real external interface is the versioned `zj_radar.status.v1`
 pipe payload (see the README's *Writing your own producer*). To add a new
-instrumented agent to the CLI, add an `enum Agent` variant in `src/cli/agents/`
-and implement `Agent::derive`; the `source_round_trips_through_kind` guard test
-will tell you what else to wire. Observed (uninstrumented) commands like
-`cargo test` are classified in `src/command.rs`, not in `agents/`.
+instrumented agent to the CLI, add an `enum Agent` variant in
+`crates/cli/src/agents/` and implement `Agent::derive`; the
+`source_round_trips_through_kind` guard test will tell you what else to wire.
+Observed (uninstrumented) commands like `cargo test` are classified in
+`crates/core/src/command.rs`, not in `agents/`.
 
 ## License
 

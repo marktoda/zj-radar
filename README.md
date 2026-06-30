@@ -204,11 +204,14 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |
 | `dev/dev.kdl` | A dev layout for dogfooding the debug plugin while building. |
 
-The host-testable modules (`status`, `payload`, `radar_state`, `rollup`, `render`,
-`tab_namer`, `command`, `config`, `theme`, `session_files`) live in `crates/core`
-and carry no `zellij-tile` dependency. Only `crates/plugin/src/lib.rs` touches the
-Zellij host API and is gated behind `#[cfg(target_arch = "wasm32")]`. See
-[`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
+The shared wire/classification core (`command`, `kind`, `observation`, `payload`,
+`status`, `wire`) lives in `crates/core`. The sidebar's own modules (`radar_state`,
+`rollup`, `render`, `tab_namer`, `config`, `theme`, `session_files`, `runtime`,
+`status_store`, `notify_rules`) live in `crates/plugin/src` — but they too carry no
+`zellij-tile` dependency and are fully host-testable. Only `crates/plugin/src/lib.rs`
+touches the Zellij host API, and that surface is gated behind
+`#[cfg(target_arch = "wasm32")]` (the dependency itself is scoped to the wasm target
+in `crates/plugin/Cargo.toml`). See [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
 
 ## Contributing
 

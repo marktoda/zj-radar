@@ -1,3 +1,19 @@
+//! The Zellij sidebar wasm plugin: per-tab agent-status rail.
+//!
+//! # Shape
+//! - [`State`] is the per-tab plugin instance Zellij loads. It owns a
+//!   [`runtime::PluginRuntime`] (the pure, host-testable state machine) and a
+//!   [`session_files::SessionFiles`] (snapshot + permission-marker persistence).
+//! - The `#[cfg(target_arch = "wasm32")] impl ZellijPlugin for State` block is the
+//!   only code that touches the Zellij host API; everything it calls is pure logic
+//!   in the modules below. Host tests exercise that logic without a wasm build.
+//! - The `#[cfg(test)] impl State` block holds test-only fixtures (`build_rows`,
+//!   `reconcile_focus`, …) that are never linked into the shipped wasm.
+//!
+//! The shared wire/classification types are re-exported from [`zj_radar_core`]
+//! (see below) so the modules here address them as `crate::status`,
+//! `crate::payload`, … with no per-reference churn at the crate boundary.
+
 // On a plain host build (`cargo build`, not wasm, not test) the only consumers
 // of the pure modules are the wasm glue (cfg'd out) and the unit tests (cfg'd
 // out), so every public item appears dead. One crate-level allow covers all

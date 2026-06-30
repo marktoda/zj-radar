@@ -14,7 +14,7 @@ cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the WASM plu
 To dogfood that release build through the normal install path:
 
 ```sh
-cargo install --path . --features cli
+cargo install --path crates/cli
 zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 ```
 

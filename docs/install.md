@@ -57,7 +57,7 @@ cd zj-radar
 # Needs the wasm32-wasip1 target; rust-toolchain.toml requests it (rustup
 # auto-installs it). See docs/TOOLCHAIN.md.
 cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
-cargo install --path . --features cli
+cargo install --path crates/cli
 
 zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 ```

@@ -1,5 +1,33 @@
 //! Deep runtime module: repo-owned events in, ordered host effects out.
 //! No zellij-tile dependency.
+//!
+//! [`PluginRuntime`] is the pure state machine behind the wasm glue in
+//! `lib.rs`. The glue translates each Zellij host event into one method call
+//! here, and every mutating call returns an [`Outcome`] (a render flag plus an
+//! ordered list of [`Effect`]s the glue replays against the host). Because the
+//! mapping is total and side-effect-free, host tests drive these entry points
+//! directly and assert on the returned `Outcome` — no Zellij needed.
+//!
+//! # Event entry points
+//! - [`load`](PluginRuntime::load) — first run: seed config/snapshot, begin the
+//!   permission flow.
+//! - [`tabs_changed`](PluginRuntime::tabs_changed) /
+//!   [`panes_changed`](PluginRuntime::panes_changed) /
+//!   [`cwd_changed`](PluginRuntime::cwd_changed) — Zellij topology updates.
+//! - [`command_changed`](PluginRuntime::command_changed) — a pane's foreground
+//!   process changed (the *observed* information source).
+//! - [`status_pipe`](PluginRuntime::status_pipe) — a `zj_radar.status.v1`
+//!   broadcast from an agent hook (the *pushed* information source).
+//! - [`config_pipe`](PluginRuntime::config_pipe) /
+//!   [`command`](PluginRuntime::command) /
+//!   [`command_pipe`](PluginRuntime::command_pipe) — runtime config + remote
+//!   commands.
+//! - [`timer`](PluginRuntime::timer) — periodic tick (animation +
+//!   permission-flow coordination).
+//! - [`mouse_click`](PluginRuntime::mouse_click) — resolved against the cached
+//!   [`RenderedRail`] for click-to-switch.
+//! - [`permission_result`](PluginRuntime::permission_result) — Zellij's grant /
+//!   deny verdict.
 
 use crate::control::Command;
 use crate::config;

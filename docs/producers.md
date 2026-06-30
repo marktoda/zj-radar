@@ -37,7 +37,7 @@ A native binary that drops the `jq`/`bash` dependency and wires non-plugin agent
 # Nix:
 nix build github:marktoda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
 # Cargo:
-cargo install --git https://github.com/marktoda/zj-radar --features cli
+cargo install --git https://github.com/marktoda/zj-radar zj-radar
 ```
 
 - **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude
