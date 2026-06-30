@@ -53,6 +53,7 @@ pub(crate) enum Effect {
     /// effect's full consequences are realized in that second pass, not in the
     /// `Outcome` that carried it.
     ResolveCwd { pane_ids: Vec<u32> },
+    Notify { title: String, body: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub(crate) struct PluginRuntime {
     pub(crate) permission_waiting_for_peer: bool,
     pub(crate) theme: theme::DerivedColors,
     last_rendered: RenderedRail,
+    notify_prev: BTreeMap<u32, crate::status::Status>,
 }
 
 impl PluginRuntime {
@@ -99,6 +101,9 @@ impl PluginRuntime {
                 self.tick = tick;
             }
         }
+        // Seed the notification baseline from the restored snapshot so that
+        // pre-existing completions never fire a spurious Notify effect.
+        self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
         self.begin_permission_flow(permission)
     }
 
@@ -127,6 +132,7 @@ impl PluginRuntime {
                 pane_ids: change.cwd_bootstrap,
             });
         }
+        effects.extend(self.notify_effects());
         Outcome::with_effects(true, effects)
     }
 
@@ -138,6 +144,7 @@ impl PluginRuntime {
         self.tick += 1;
         self.radar.timer(self.tick);
         self.arm_timer_if_needed(&mut effects);
+        effects.extend(self.notify_effects());
         Outcome::with_effects(
             permission_changed || self.radar.has_active_or_pending_work(),
             effects,
@@ -391,6 +398,17 @@ impl PluginRuntime {
             self.timer_armed = true;
             effects.push(Effect::SetTimeout);
         }
+    }
+
+    fn notify_effects(&mut self) -> Vec<Effect> {
+        let views = self.radar.notify_views();
+        let focused = self.radar.last_focused();
+        let notes = crate::notify_rules::diff(&self.notify_prev, &views, focused, &self.config);
+        self.notify_prev = crate::notify_rules::status_map(&views);
+        notes
+            .into_iter()
+            .map(|n| Effect::Notify { title: n.title, body: n.body })
+            .collect()
     }
 
     fn effects_from_renames(&self, renames: Vec<TabRename>) -> Vec<Effect> {
@@ -863,6 +881,93 @@ mod tests {
         };
         assert_eq!(runtime.command_pipe("attention-top"), Outcome::default());
         assert_eq!(runtime.command_pipe(""), Outcome::default());
+    }
+
+    // ── Effect::Notify integration ─────────────────────────────────────────────
+
+    /// Helper: two tabs; pane 5 focused in active tab 0, pane 7 in background
+    /// tab 1. Both panes have a Running command promoted via a prior timer tick.
+    fn two_tab_runtime_with_running_commands() -> PluginRuntime {
+        let mut rt = runtime_with_config(config());
+        rt.tabs_changed(vec![tab(0, "active", true), tab(1, "bg", false)]);
+        // Place panes in their tabs.
+        rt.radar.set_tab_panes_for_position(0, vec![TerminalPane {
+            id: 5,
+            focused_in_tab: true,
+            ..Default::default()
+        }]);
+        rt.radar.set_tab_panes_for_position(1, vec![pane(7)]);
+        // Register foreground commands on both panes.
+        rt.command_changed(5, &["make".into()], true);
+        rt.command_changed(7, &["cargo".into(), "test".into()], true);
+        // Promote pending → Running via a timer tick.
+        rt.timer(PermissionProbe::default());
+        // Seed notify_prev so the baseline reflects Running, not Idle-default.
+        // (Not strictly required for the Notify tests, but makes the baseline
+        // explicit and mirrors what would happen in production after the timer.)
+        rt
+    }
+
+    #[test]
+    fn backgrounded_done_emits_notify_effect() {
+        let mut rt = two_tab_runtime_with_running_commands();
+        // Pane 7 is in the background tab. Pane 5 stays focused in the active tab.
+        let out = rt.panes_changed(PaneUpdate {
+            tab_panes: HashMap::from([
+                (0, vec![TerminalPane { id: 5, focused_in_tab: true, ..Default::default() }]),
+                (1, vec![pane(7)]),
+            ]),
+            live: HashSet::from([5, 7]),
+            theme: None,
+            exits: vec![(7, Some(0))], // pane 7 exits 0 → Done in background
+        });
+        assert!(
+            out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "a background Done should emit Effect::Notify; effects = {:?}", out.effects
+        );
+    }
+
+    #[test]
+    fn focused_done_emits_no_notify_effect() {
+        let mut rt = two_tab_runtime_with_running_commands();
+        // Pane 5 is focused and exits 0. reconcile_focus recedes Done → Idle
+        // before notify_effects runs, so no notification must be emitted.
+        let out = rt.panes_changed(PaneUpdate {
+            tab_panes: HashMap::from([
+                (0, vec![TerminalPane { id: 5, focused_in_tab: true, ..Default::default() }]),
+                (1, vec![pane(7)]),
+            ]),
+            live: HashSet::from([5, 7]),
+            theme: None,
+            exits: vec![(5, Some(0))], // pane 5 exits 0 while focused
+        });
+        assert!(
+            !out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "a focused Done recedes to Idle and must not emit Effect::Notify; effects = {:?}",
+            out.effects
+        );
+    }
+
+    #[test]
+    fn restored_snapshot_does_not_notify() {
+        // Build a snapshot containing an already-Done command pane.
+        let mut seeded = crate::radar_state::RadarState::default();
+        seeded.command_mut().on_exit(7, Some(0), 1);
+        // Confirm the observation is present as Done.
+        assert_eq!(seeded.command(7).unwrap().status, Status::Done);
+        let snapshot = seeded.snapshot_json(None, 2);
+
+        // Restore the snapshot via load; the seed must silence the pre-existing Done.
+        let mut rt = runtime_with_config(config());
+        rt.load(config(), Some(&snapshot), PermissionProbe::default());
+
+        // A subsequent timer tick must not emit any Notify for the pre-existing pane.
+        let out = rt.timer(PermissionProbe::default());
+        assert!(
+            !out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "a pre-existing Done loaded from snapshot must not fire a notification; \
+             effects = {:?}", out.effects
+        );
     }
 
     #[test]

@@ -421,9 +421,23 @@ impl RadarState {
         changed
     }
 
-    #[cfg(test)]
     pub(crate) fn last_focused(&self) -> Option<u32> {
         self.last_focused
+    }
+
+    /// Union of both stores' observations, keyed by pane id, for the notifier.
+    /// A pane is tracked by exactly one store, so keys never collide.
+    pub(crate) fn notify_views(
+        &self,
+    ) -> std::collections::BTreeMap<u32, &crate::observation::TrackedObservation> {
+        let mut m = std::collections::BTreeMap::new();
+        for (id, o) in self.status.observations() {
+            m.insert(id, o);
+        }
+        for (id, o) in self.command.observations() {
+            m.insert(id, o);
+        }
+        m
     }
 
     #[cfg(test)]
