@@ -724,15 +724,13 @@ impl CheckItem {
 }
 
 fn check_codex(legacy_notify: bool) {
-    let config = std::fs::read_to_string(codex_config_path()).ok();
-    let hooks = std::fs::read_to_string(codex_hooks_path()).ok();
-    let items = codex_check_items(
-        which("codex"),
-        which("zj-radar"),
-        config.as_deref(),
-        hooks.as_deref(),
-        legacy_notify,
-    );
+    let env = CodexEnv {
+        codex_on_path:    which("codex"),
+        zj_radar_on_path: which("zj-radar"),
+        config_text:      std::fs::read_to_string(codex_config_path()).ok(),
+        hooks_text:       std::fs::read_to_string(codex_hooks_path()).ok(),
+    };
+    let items = codex_check_items(&analyze_codex(&env), legacy_notify);
     println!("codex:");
     print_check_items(&items);
 }
@@ -892,7 +890,6 @@ fn print_check_items(items: &[CheckItem]) {
 }
 
 /// Derived state of Codex's `[features].hooks` switch.
-#[allow(dead_code)] // wired in Task 5
 pub(crate) enum CodexHooksFeature {
     EnabledOrUnset,
     Disabled,
@@ -900,7 +897,6 @@ pub(crate) enum CodexHooksFeature {
 }
 
 /// Derived state of the legacy `notify` slot in Codex `config.toml`.
-#[allow(dead_code)] // wired in Task 5
 pub(crate) enum CodexNotifyState {
     ConfigAbsent,
     NotInstalled,
@@ -910,7 +906,6 @@ pub(crate) enum CodexNotifyState {
 }
 
 /// Raw, already-read environment for Codex setup. The only IO layer.
-#[allow(dead_code)] // wired in Task 5
 pub(crate) struct CodexEnv {
     pub codex_on_path:    bool,
     pub zj_radar_on_path: bool,
@@ -920,7 +915,6 @@ pub(crate) struct CodexEnv {
 
 /// Every derived fact about Codex setup state. The legacy-vs-hooks choice is a
 /// flag the consumer projects on — NOT a fact — so both surfaces are observed.
-#[allow(dead_code)] // wired in Task 5
 pub(crate) struct CodexFacts {
     pub codex_on_path:     bool,
     pub zj_radar_on_path:  bool,
@@ -931,7 +925,6 @@ pub(crate) struct CodexFacts {
 }
 
 /// Pure: derive every Codex setup fact from already-read inputs. No I/O.
-#[allow(dead_code)] // wired in Task 5
 pub(crate) fn analyze_codex(env: &CodexEnv) -> CodexFacts {
     let hooks_feature = match env.config_text.as_deref().map(codex_hooks_disabled_in_config) {
         Some(Ok(true)) => CodexHooksFeature::Disabled,
@@ -944,7 +937,7 @@ pub(crate) fn analyze_codex(env: &CodexEnv) -> CodexFacts {
             Ok(doc) if notify_is_ours(doc.get("notify")) => CodexNotifyState::Ours,
             Ok(doc) if doc.get("notify").is_some() => CodexNotifyState::Foreign,
             Ok(_) => CodexNotifyState::NotInstalled,
-            Err(e) => CodexNotifyState::ConfigError(format!("config.toml is not valid TOML: {e}")),
+            Err(e) => CodexNotifyState::ConfigError(e.to_string()),
         },
     };
     let owned_hook_events = env.hooks_text.as_deref().map(codex_owned_hook_event_count);
@@ -957,47 +950,62 @@ pub(crate) fn analyze_codex(env: &CodexEnv) -> CodexFacts {
     }
 }
 
-fn codex_check_items(
-    codex_on_path: bool,
-    zj_radar_on_path: bool,
-    config: Option<&str>,
-    hooks: Option<&str>,
-    legacy_notify: bool,
-) -> Vec<CheckItem> {
+pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<CheckItem> {
     let mut items = Vec::new();
-    items.push(if codex_on_path {
+    items.push(if f.codex_on_path {
         CheckItem::ok("codex binary", "found on PATH")
     } else {
         CheckItem::missing("codex binary", "not found on PATH")
     });
-    items.push(if zj_radar_on_path {
+    items.push(if f.zj_radar_on_path {
         CheckItem::ok("zj-radar binary", "found on PATH")
     } else {
         CheckItem::missing("zj-radar binary", "not found on PATH")
     });
 
-    match config.map(codex_hooks_disabled_in_config).transpose() {
-        Ok(Some(true)) => items.push(CheckItem::warn(
-            "hooks feature",
-            "`[features].hooks = false` disables Codex hooks",
-        )),
-        Ok(_) => items.push(CheckItem::ok(
-            "hooks feature",
-            "enabled or unset in config.toml",
-        )),
-        Err(e) => items.push(CheckItem::warn("config.toml", e)),
-    }
+    items.push(match &f.hooks_feature {
+        CodexHooksFeature::Disabled => {
+            CheckItem::warn("hooks feature", "`[features].hooks = false` disables Codex hooks")
+        }
+        CodexHooksFeature::EnabledOrUnset => {
+            CheckItem::ok("hooks feature", "enabled or unset in config.toml")
+        }
+        CodexHooksFeature::ConfigError(e) => CheckItem::warn("config.toml", e.clone()),
+    });
 
     if legacy_notify {
-        items.push(check_legacy_notify(config));
+        items.push(match &f.notify {
+            CodexNotifyState::ConfigAbsent => {
+                CheckItem::missing("legacy notify", "config.toml not found")
+            }
+            CodexNotifyState::Ours => CheckItem::ok("legacy notify", "zj-radar owns Codex notify"),
+            CodexNotifyState::Foreign => {
+                CheckItem::warn("legacy notify", "another command owns Codex notify")
+            }
+            CodexNotifyState::NotInstalled => {
+                CheckItem::missing("legacy notify", "Codex notify is not installed")
+            }
+            CodexNotifyState::ConfigError(e) => CheckItem::warn(
+                "config.toml",
+                format!("config.toml is not valid TOML: {e}"),
+            ),
+        });
     } else {
-        items.push(check_hooks_json(hooks));
-        if config
-            .and_then(|text| text.parse::<DocumentMut>().ok())
-            .as_ref()
-            .and_then(|doc| doc.get("notify"))
-            .is_some_and(|notify| !notify_is_ours(Some(notify)))
-        {
+        items.push(match &f.owned_hook_events {
+            None => CheckItem::missing("hooks.json", "zj-radar Codex hooks are not installed"),
+            Some(Ok(count)) if *count == CODEX_HOOK_EVENTS.len() => {
+                CheckItem::ok("hooks.json", "all zj-radar Codex hooks installed")
+            }
+            Some(Ok(count)) if *count > 0 => CheckItem::warn(
+                "hooks.json",
+                format!("partial zj-radar hook install ({count}/{})", CODEX_HOOK_EVENTS.len()),
+            ),
+            Some(Ok(_)) => {
+                CheckItem::missing("hooks.json", "zj-radar Codex hooks are not installed")
+            }
+            Some(Err(e)) => CheckItem::warn("hooks.json", e.clone()),
+        });
+        if matches!(f.notify, CodexNotifyState::Foreign) {
             items.push(CheckItem::ok(
                 "legacy notify",
                 "foreign notify is preserved; hooks do not use the notify slot",
@@ -1012,42 +1020,6 @@ fn codex_check_items(
         ));
     }
     items
-}
-
-fn check_hooks_json(hooks: Option<&str>) -> CheckItem {
-    let Some(hooks) = hooks else {
-        return CheckItem::missing("hooks.json", "zj-radar Codex hooks are not installed");
-    };
-    match codex_owned_hook_event_count(hooks) {
-        Ok(count) if count == CODEX_HOOK_EVENTS.len() => {
-            CheckItem::ok("hooks.json", "all zj-radar Codex hooks installed")
-        }
-        Ok(count) if count > 0 => CheckItem::warn(
-            "hooks.json",
-            format!(
-                "partial zj-radar hook install ({count}/{})",
-                CODEX_HOOK_EVENTS.len()
-            ),
-        ),
-        Ok(_) => CheckItem::missing("hooks.json", "zj-radar Codex hooks are not installed"),
-        Err(e) => CheckItem::warn("hooks.json", e),
-    }
-}
-
-fn check_legacy_notify(config: Option<&str>) -> CheckItem {
-    let Some(config) = config else {
-        return CheckItem::missing("legacy notify", "config.toml not found");
-    };
-    match config.parse::<DocumentMut>() {
-        Ok(doc) if notify_is_ours(doc.get("notify")) => {
-            CheckItem::ok("legacy notify", "zj-radar owns Codex notify")
-        }
-        Ok(doc) if doc.get("notify").is_some() => {
-            CheckItem::warn("legacy notify", "another command owns Codex notify")
-        }
-        Ok(_) => CheckItem::missing("legacy notify", "Codex notify is not installed"),
-        Err(e) => CheckItem::warn("config.toml", format!("config.toml is not valid TOML: {e}")),
-    }
 }
 
 fn codex_owned_hook_event_count(existing: &str) -> Result<usize, String> {
@@ -1920,7 +1892,13 @@ mod tests {
             Outcome::Changed(s) => s,
             o => panic!("{o:?}"),
         };
-        let items = codex_check_items(true, true, Some("model = \"x\"\n"), Some(&hooks), false);
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some("model = \"x\"\n".to_string()),
+            hooks_text:       Some(hooks.to_string()),
+        });
+        let items = codex_check_items(&facts, false);
         assert!(items.contains(&CheckItem::ok("codex binary", "found on PATH")));
         assert!(items.contains(&CheckItem::ok("zj-radar binary", "found on PATH")));
         assert!(items.contains(&CheckItem::ok(
@@ -1942,13 +1920,13 @@ mod tests {
             Outcome::Changed(s) => s,
             o => panic!("{o:?}"),
         };
-        let items = codex_check_items(
-            true,
-            true,
-            Some("[features]\nhooks = false\n"),
-            Some(&hooks),
-            false,
-        );
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some("[features]\nhooks = false\n".to_string()),
+            hooks_text:       Some(hooks.to_string()),
+        });
+        let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks feature"
             && item.level == CheckLevel::Warn
             && item.detail.contains("hooks = false")));
@@ -1970,12 +1948,24 @@ mod tests {
             ]
           }
         }"#;
-        let items = codex_check_items(true, true, None, Some(partial), false);
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      None,
+            hooks_text:       Some(partial.to_string()),
+        });
+        let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks.json"
             && item.level == CheckLevel::Warn
             && item.detail.contains("partial")));
 
-        let items = codex_check_items(true, true, None, Some("not json"), false);
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      None,
+            hooks_text:       Some("not json".to_string()),
+        });
+        let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks.json"
             && item.level == CheckLevel::Warn
             && item.detail.contains("not valid JSON")));
@@ -1988,7 +1978,13 @@ mod tests {
             o => panic!("{o:?}"),
         };
         let config = "notify = [\"/other\", \"turn-ended\"]\n";
-        let items = codex_check_items(true, true, Some(config), Some(&hooks), false);
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some(config.to_string()),
+            hooks_text:       Some(hooks.to_string()),
+        });
+        let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "legacy notify"
             && item.level == CheckLevel::Ok
             && item.detail.contains("preserved")));
@@ -1996,19 +1992,25 @@ mod tests {
 
     #[test]
     fn codex_check_legacy_notify_mode_reports_notify_slot() {
-        let items = codex_check_items(
-            true,
-            true,
-            Some("notify = [\"zj-radar\", \"notify\", \"codex\"]\n"),
-            None,
-            true,
-        );
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some("notify = [\"zj-radar\", \"notify\", \"codex\"]\n".to_string()),
+            hooks_text:       None,
+        });
+        let items = codex_check_items(&facts, true);
         assert!(items.contains(&CheckItem::ok(
             "legacy notify",
             "zj-radar owns Codex notify"
         )));
 
-        let items = codex_check_items(true, true, Some("notify = [\"/other\"]\n"), None, true);
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some("notify = [\"/other\"]\n".to_string()),
+            hooks_text:       None,
+        });
+        let items = codex_check_items(&facts, true);
         assert!(items.iter().any(|item| item.name == "legacy notify"
             && item.level == CheckLevel::Warn
             && item.detail.contains("another command")));
