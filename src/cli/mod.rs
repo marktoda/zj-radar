@@ -43,9 +43,6 @@ enum Command {
         /// Print the zellij command instead of launching it.
         #[arg(long)]
         print_cmd: bool,
-        /// Don't pre-seed Zellij's permission grant; the rail prompts instead.
-        #[arg(long)]
-        no_grant: bool,
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
@@ -76,9 +73,6 @@ enum Command {
         /// Overwrite conflicting entries where supported.
         #[arg(long)]
         force: bool,
-        /// Don't pre-seed Zellij's permission grant for the installed sidebar.
-        #[arg(long)]
-        no_grant: bool,
     },
 }
 
@@ -86,8 +80,8 @@ enum Command {
 pub fn run() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { name, print_cmd, no_grant } => {
-            run::run(run::RunOptions { name, print_cmd, no_grant });
+        Command::Run { name, print_cmd } => {
+            run::run(run::RunOptions { name, print_cmd });
         }
         Command::Notify {
             agent,
@@ -107,7 +101,6 @@ pub fn run() {
             check,
             legacy_notify,
             force,
-            no_grant,
         } => {
             setup::run(setup::SetupOptions {
                 targets: &targets,
@@ -119,7 +112,6 @@ pub fn run() {
                 check,
                 legacy_notify,
                 force,
-                no_grant,
             });
         }
     }
