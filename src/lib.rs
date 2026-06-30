@@ -184,6 +184,7 @@ impl State {
                     PermissionType::ReadApplicationState,
                     PermissionType::ReadCliPipes,
                     PermissionType::ChangeApplicationState,
+                    PermissionType::RunCommands,
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout => set_timeout(1.0),
@@ -201,6 +202,12 @@ impl State {
                     show_pane_with_id(PaneId::Terminal(pane_id), false, true);
                 }
                 Effect::ResolveCwd { pane_ids } => self.resolve_cwd(pane_ids),
+                Effect::Notify { title, body } => {
+                    let note = crate::notify_rules::Notification { title, body };
+                    let argv = crate::notify_rules::osascript_command(&note);
+                    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+                    run_command(&args, std::collections::BTreeMap::new());
+                }
             }
         }
     }
