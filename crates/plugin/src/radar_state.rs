@@ -266,6 +266,10 @@ impl RadarState {
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> RadarChange {
         self.tabs = tabs;
+        // Drop naming state for tabs that closed (the update carries the full
+        // current set), so `applied` doesn't accrete gone tabs.
+        let live: HashSet<TabId> = self.tabs.iter().map(|t| t.id).collect();
+        self.namer.retain_tabs(&live);
         RadarChange {
             render: true,
             settle: false,

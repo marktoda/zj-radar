@@ -98,6 +98,15 @@ impl TabNamer {
         out
     }
 
+    /// Forget applied-name state for tabs no longer present. `TabId` is Zellij's
+    /// *stable* (non-recycled) tab id, so a stale entry could never mis-apply to
+    /// a new tab — this just keeps `applied` from accreting closed tabs over the
+    /// life of the (per-tab) plugin instance. Called on every `tabs_changed`,
+    /// which always carries the full current tab set.
+    pub(crate) fn retain_tabs(&mut self, live: &std::collections::HashSet<TabId>) {
+        self.applied.retain(|id, _| live.contains(id));
+    }
+
     #[cfg(test)]
     pub(crate) fn applied_name(&self, id: TabId) -> Option<&str> {
         self.applied.get(&id).map(String::as_str)
@@ -435,6 +444,32 @@ mod tests {
         )];
         assert!(namer.rename(&tabs, NamingMode::Managed).is_empty());
         assert_eq!(namer.applied_name(TabId::new(1)), Some("alpha"));
+    }
+
+    #[test]
+    fn retain_tabs_forgets_closed_tabs_and_keeps_live_ones() {
+        let mut namer = TabNamer::default();
+        let tabs = vec![
+            tab(1, "Tab #1", vec![repo_pane("alpha", true)]),
+            tab(2, "Tab #2", vec![repo_pane("beta", true)]),
+        ];
+        namer.rename(&tabs, NamingMode::Managed);
+        assert_eq!(namer.applied_name(TabId::new(1)), Some("alpha"));
+        assert_eq!(namer.applied_name(TabId::new(2)), Some("beta"));
+
+        // Tab 1 closes; only tab 2 remains in the live set.
+        let live = std::collections::HashSet::from([TabId::new(2)]);
+        namer.retain_tabs(&live);
+        assert_eq!(
+            namer.applied_name(TabId::new(1)),
+            None,
+            "a closed tab's applied name is dropped"
+        );
+        assert_eq!(
+            namer.applied_name(TabId::new(2)),
+            Some("beta"),
+            "a live tab's applied name is kept"
+        );
     }
 
     #[test]

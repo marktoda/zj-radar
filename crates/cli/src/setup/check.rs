@@ -44,8 +44,8 @@ pub(crate) fn check_codex(legacy_notify: bool) {
     let env = CodexEnv {
         codex_on_path:    which("codex"),
         zj_radar_on_path: which("zj-radar"),
-        config_text:      std::fs::read_to_string(codex_config_path()).ok(),
-        hooks_text:       std::fs::read_to_string(codex_hooks_path()).ok(),
+        config_text:      codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        hooks_text:       codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok()),
     };
     let items = codex_check_items(&analyze_codex(&env), legacy_notify);
     println!("codex:");

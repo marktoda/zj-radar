@@ -25,6 +25,14 @@ if command -v zj-radar >/dev/null 2>&1; then
     exec zj-radar notify claude --status "$status"
 fi
 
+# The bash fallback needs jq to build the payload. The final `jq -nc` below has
+# no `|| true`, so under `set -euo pipefail` a missing jq would abort mid-hook
+# (exit 127) into Claude's output instead of no-op'ing — violating the "never
+# block/error Claude" contract. If jq is absent, do nothing, same as when we're
+# outside Zellij. (The earlier `jq ... || true` calls already tolerate this; this
+# makes the whole script consistent.)
+command -v jq >/dev/null 2>&1 || exit 0
+
 [[ -n "${ZELLIJ:-}" && -n "${ZELLIJ_PANE_ID:-}" ]] || exit 0
 pane_num="${ZELLIJ_PANE_ID#terminal_}"
 [[ "$pane_num" =~ ^[0-9]+$ ]] || exit 0

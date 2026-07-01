@@ -38,6 +38,18 @@ teardown() { teardown_fakes; }
   [ ! -s "$RECORD" ]
 }
 
+@test "jq unavailable: clean exit, no broadcast (never errors into Claude)" {
+  rm -f "$RECORD"
+  # In Zellij (setup_fakes exports ZELLIJ/ZELLIJ_PANE_ID) but with neither
+  # zj-radar nor jq resolvable: the bash fallback must no-op (exit 0), not abort
+  # under `set -e`. Run through an absolute bash with an empty PATH so `command
+  # -v jq` fails; the guard fires before any external tool is needed.
+  local bash_abs; bash_abs="$(command -v bash)"
+  PATH="" run "$bash_abs" "$SCRIPT" running <<<'{"hook_event_name":"Stop","cwd":"/tmp"}'
+  [ "$status" -eq 0 ]
+  [ ! -s "$RECORD" ]
+}
+
 @test "done sets on_focus=idle (clear-on-focus)" {
   echo '{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}' | "$SCRIPT" done
   run last_payload
