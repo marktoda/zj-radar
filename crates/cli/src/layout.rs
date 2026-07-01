@@ -304,11 +304,31 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     let mut out = String::with_capacity(layout.len() + wrap.len() + additions.len() + 32);
     out.push_str(&layout[..anchor_start]);
     out.push_str(&wrap);
-    out.push_str(&layout[anchor_end..close_brace]);
+    // The wrap ends with the `// zj-radar:wrap end` marker comment, so any text
+    // still on the anchor's own line (e.g. the closing `}` of an inline
+    // `default_tab_template { children }`) would be commented out. Break it
+    // onto its own line at the anchor's indentation.
+    let rest = &layout[anchor_end..close_brace];
+    let rest_first_line = rest.split('\n').next().unwrap_or("");
+    if !rest_first_line.trim().is_empty() {
+        out.push('\n');
+        out.push_str(&indent);
+    }
+    out.push_str(rest);
     out.push('\n');
     out.push_str(&additions);
     out.push('\n');
     out.push_str(&layout[close_brace..]);
+
+    // Fail-closed backstop: the splice is text-level, so any layout shape the
+    // offsets above mis-model must surface as a refusal, never as a corrupt
+    // file. Re-parse with the same (v1-fallback) parser Zellij's dialect needs.
+    if let Err(e) = out.parse::<kdl::KdlDocument>() {
+        return Err(Refusal::Unrecognized(format!(
+            "injected result failed to re-parse ({e}); refusing to write — \
+             add the rail pane manually (see docs/install.md)"
+        )));
+    }
     Ok(out)
 }
 
@@ -484,7 +504,7 @@ mod tests {
 
     #[test]
     fn analyze_detects_shape() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let f = analyze(clean);
         assert!(f.has_default_template && f.has_children_anchor);
         assert!(!f.has_swaps && !f.has_rail);
@@ -498,7 +518,7 @@ mod tests {
 
     #[test]
     fn inject_wraps_children_and_adds_marked_swaps() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let out = inject(clean, &analyze(clean)).unwrap();
         assert!(out.contains(WRAP_BEGIN) && out.contains(WRAP_END), "must fence the wrap");
         assert!(out.contains(BLOCK_BEGIN) && out.contains(BLOCK_END), "must fence the additions");
@@ -510,7 +530,7 @@ mod tests {
 
     #[test]
     fn inject_is_idempotent() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let once = inject(clean, &analyze(clean)).unwrap();
         let twice = inject(&once, &analyze(&once)).unwrap();
         assert_eq!(once, twice, "re-injecting must be a no-op");
@@ -569,6 +589,45 @@ layout {
             .expect("injected output must be valid KDL");
     }
 
+    /// Regression: an INLINE anchor (`default_tab_template { children }`, valid
+    /// KDL v2) used to append the template's closing `}` onto the trailing
+    /// `// zj-radar:wrap end` comment line, commenting it out and writing an
+    /// unparseable layout. The splice must now break the trailing text onto its
+    /// own line — and whatever inject returns, the output must re-parse.
+    #[test]
+    fn inject_inline_children_anchor_produces_valid_kdl() {
+        let input = "layout {\n    default_tab_template { children }\n}\n";
+        let facts = analyze(input);
+        let out = inject(input, &facts)
+            .expect("inline anchor is a recognized shape and must inject");
+        out.parse::<kdl::KdlDocument>()
+            .expect("injected output must be valid KDL");
+        assert!(out.contains(WRAP_BEGIN), "must contain wrap begin marker");
+        assert!(out.contains("plugin location=\"radar\""), "must inject radar plugin");
+    }
+
+    /// The reparse backstop: inject must never RETURN text that fails the same
+    /// parser it used to read the input — a mis-modeled shape must surface as a
+    /// `Refusal`, not a corrupt Ok. Exercised over a grab-bag of odd-but-valid
+    /// shapes; each either injects to valid KDL or refuses.
+    #[test]
+    fn inject_output_always_reparses_or_refuses() {
+        let shapes = [
+            "layout {\n    default_tab_template { children }\n}\n",
+            "layout { default_tab_template { children } }\n",
+            "layout {\n    children\n}\n",
+            "layout {\n    default_tab_template {\n        children\n    }\n}\n",
+        ];
+        for input in shapes {
+            let facts = analyze(input);
+            if let Ok(out) = inject(input, &facts) {
+                out.parse::<kdl::KdlDocument>().unwrap_or_else(|e| {
+                    panic!("inject returned unparseable output for {input:?}: {e}")
+                });
+            }
+        }
+    }
+
     /// A layout whose only `children` anchor is nested inside a user-defined
     /// split pane — not a direct child of `default_tab_template` or `layout`.
     /// Injection must refuse with `Unrecognized` (fail-closed: wrapping the wrong
@@ -601,7 +660,7 @@ layout {
     /// `children` anchor, the appended block is deleted with its separator line).
     #[test]
     fn uninstall_round_trips_to_original() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let injected = inject(clean, &analyze(clean)).unwrap();
         assert!(injected.contains(WRAP_BEGIN), "inject must add wrap markers");
         assert!(injected.contains(BLOCK_BEGIN), "inject must add block markers");
@@ -662,7 +721,7 @@ layout {
     /// anchor, so the second inject had nothing to wrap.
     #[test]
     fn inject_uninstall_inject_is_idempotent() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab { pane }\n}\n";
+        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let first = inject(clean, &analyze(clean)).expect("first inject");
         let restored = uninstall(&first).expect("uninstall");
         let again = inject(&restored, &analyze(&restored)).expect("re-inject must not fail Unrecognized");
