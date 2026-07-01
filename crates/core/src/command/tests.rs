@@ -281,6 +281,35 @@
         assert!(store.get(1).is_none(), "no resolved state expected");
     }
 
+    // direnv's per-prompt `direnv export <shell>` hook is back-to-the-prompt
+    // machinery (like starship), not a tracked command: it must neither open its
+    // own lifecycle nor clobber the real command that just finished on the pane.
+    #[test]
+    fn direnv_export_hook_is_ignored_like_a_prompt() {
+        let mut store = CommandStore::default();
+
+        // A real command runs and is promoted to Running.
+        store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/repo"), 1);
+        store.on_timer(2);
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+        assert_eq!(store.get(1).unwrap().msg, "cargo test");
+
+        // The shell prompt hook fires `direnv export zsh` as the next foreground
+        // command. Being prompt machinery, it must confirm the prior command's
+        // completion — NOT open a fresh "direnv" lifecycle that clobbers it.
+        store.on_command_changed(1, &argv(&["direnv", "export", "zsh"]), true, Some("/repo"), 3);
+        assert!(
+            !store.pending.contains_key(&1),
+            "direnv export must not open a new command lifecycle"
+        );
+
+        // Debounce → Done, still identified as the cargo test, not direnv.
+        store.on_timer(4);
+        let s = store.get(1).unwrap();
+        assert_eq!(s.status, Status::Done);
+        assert_eq!(s.msg, "cargo test", "the finished command is cargo test, not direnv");
+    }
+
     #[test]
     fn recede_if_focused_clears_done_command_but_not_error() {
         let mut store = CommandStore::default();
