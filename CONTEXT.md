@@ -182,6 +182,8 @@ Both consumers project from `Facts`: `*_check_items(&Facts)` renders the
 read `Facts` for their gating decisions and pull raw config text from `Env` for
 the `edit_*` splice. The pure mutators (`edit_zellij`, `edit_codex`,
 `edit_codex_hooks` → `Outcome`) are NOT driven by `Facts` — they share only the
-low-level primitive detectors (`has_unmanaged_radar_alias`, `find_plugins_insert`,
-`config_is_managed`), so no predicate is written twice. The legacy-notify vs
-hooks choice is a flag the consumer projects on, never a fact.
+low-level primitive detectors (`notify_is_ours`, `has_unmanaged_radar_alias`,
+`strip_managed_zellij_alias`, `codex_hook_handler_is_ours`), which live in
+`crates/cli/src/setup/detect.rs`, a neutral module that both `analyze` and `edit`
+depend on. The legacy-notify vs hooks choice is a flag the consumer projects on,
+never a fact.
