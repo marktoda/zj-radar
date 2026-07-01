@@ -437,15 +437,16 @@ fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
 }
 
 /// Behavior: a completion the user is WATCHING recedes. CONTEXT.md's
-/// `reconcile_focus` "focus held" rule — "if they were looking at it when it
-/// finished, don't flag it" — carried end-to-end by the timer, not just pinned in
-/// unit tests. Pipe a running agent to the focused pane (its activity shows), then
-/// pipe `done` with `on_focus:"idle"`. The terminal pane stays focused throughout,
-/// so once a timer tick reconciles the held focus, the fresh `Done` recedes and the
-/// activity disappears from the final rendered frame.
+/// Focus does NOT drive rail state (CONTEXT.md's convergence rule): a `done` on
+/// the pane you are watching stays lit — focus-driven recede was removed because
+/// focus is per-client and never reaches background instances, so it desynced
+/// tabs. A finished status clears only via *shared* signals every instance
+/// receives; here we exercise the broadcast one end-to-end: `done` persists
+/// through several timer ticks, then an `idle` broadcast (the `/clear` reset
+/// path) recedes it.
 #[test]
 #[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
-fn focused_done_recedes_from_the_rendered_rail() {
+fn focused_done_stays_lit_until_a_shared_clear() {
     let wasm = plugin_wasm_path();
     assert!(
         wasm.exists(),
@@ -468,39 +469,49 @@ fn focused_done_recedes_from_the_rendered_rail() {
     std::thread::sleep(std::time::Duration::from_millis(800));
     assert!(
         sidebar_region(&session.screen(), 32).contains("deploying"),
-        "precondition: the running agent's activity must render before we test recede;\nsidebar:\n{}",
+        "precondition: the running agent's activity must render first;\nsidebar:\n{}",
         sidebar_region(&session.screen(), 32)
     );
 
-    // Now it finishes while the pane is still focused. `done` queues on_focus=idle;
-    // status_pipe deliberately does NOT reconcile (a pipe can outrun the focus
-    // update), so the recede is carried by the next timer tick.
+    // It finishes while the pane is still focused. Focus must not clear it:
+    // the row (still carrying its message) stays lit through the settle ticks.
     let done = format!(
-        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"done","repo":"web","msg":"deploying","on_focus":"idle"}}"#
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"done","repo":"web","msg":"deploying"}}"#
     );
     session.pipe_status(&done);
-    // The recede rides a timer tick (status_pipe deliberately does not reconcile).
-    // Poll up to 6s for the activity to disappear instead of a fixed sleep — this
-    // returns the instant the tick fires and tolerates a slow runner.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] post-done sidebar (32 cols):\n{}", sidebar);
+    assert!(
+        sidebar.contains("deploying"),
+        "a Done must stay lit even while watched (focus never clears state);\nsidebar:\n{}",
+        sidebar
+    );
+
+    // A shared signal — a fresh broadcast for the pane (the `/clear` → idle
+    // reset) — is what recedes it, on every instance alike.
+    let idle = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"idle","repo":"web","msg":""}}"#
+    );
+    session.pipe_status(&idle);
     let receded = session.wait_until(std::time::Duration::from_secs(6), |s| {
         !sidebar_region(&s.screen(), 32).contains("deploying")
     });
     let sidebar = sidebar_region(&session.screen(), 32);
-    eprintln!("[e2e] post-recede sidebar (32 cols):\n{}", sidebar);
+    eprintln!("[e2e] post-idle sidebar (32 cols):\n{}", sidebar);
     assert!(
         receded,
-        "a Done watched under focus must recede from the rail (no lingering activity);\nsidebar:\n{}",
+        "an idle broadcast must recede the finished row;\nsidebar:\n{}",
         sidebar
     );
-    eprintln!("[e2e] PASS: focused completion receded to idle");
+    eprintln!("[e2e] PASS: done stayed lit under focus, receded on the idle broadcast");
 }
 
 /// Behavior: an error the user is watching must NOT recede — CONTEXT.md's hard
 /// rule "an Error or a 'needs you' Pending stays lit even while watched". The
-/// mirror of `focused_done_recedes_from_the_rendered_rail`: same focused-pane
-/// setup, same timer ticks, but an `error` (even with on_focus=idle queued) stays
-/// on the rail. Together the two pin both arms of the focus-held branch so a
-/// regression that recedes everything — or nothing — is caught end-to-end.
+/// sibling of `focused_done_stays_lit_until_a_shared_clear`: same focused-pane
+/// setup, same timer ticks; a legacy `on_focus` hint riding the payload is
+/// tolerated on the wire but inert, so the error stays on the rail.
 #[test]
 #[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
 fn focused_error_stays_lit_on_the_rendered_rail() {
@@ -518,9 +529,9 @@ fn focused_error_stays_lit_on_the_rendered_rail() {
     let pane_id = session.discover_terminal_pane_id();
     eprintln!("[e2e] terminal pane_id={}", pane_id);
 
-    // An error finishes on the focused pane, with on_focus=idle queued exactly as a
-    // Done would carry — only the status differs. The recede guard keys on Done, so
-    // this must persist.
+    // An error finishes on the focused pane. The payload deliberately carries a
+    // legacy `on_focus:"idle"` hint: older producers may still send it, and it
+    // must be tolerated on the wire yet change nothing — the error persists.
     let error = format!(
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"error","repo":"web","msg":"tests failed","on_focus":"idle"}}"#
     );
