@@ -172,6 +172,10 @@ pub(crate) struct RadarChange {
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
     /// for a freshly-opened tab that has not emitted a `CwdChanged` yet.
     pub cwd_bootstrap: Vec<u32>,
+    /// Whether this event's focus is trustworthy enough to reconcile + notify
+    /// together — see `CONTEXT.md`'s `## Settle` entry. `false` defers both to
+    /// the timer.
+    pub settle: bool,
 }
 
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
@@ -264,6 +268,7 @@ impl RadarState {
         self.tabs = tabs;
         RadarChange {
             render: true,
+            settle: false,
             ..RadarChange::default()
         }
     }
@@ -284,28 +289,38 @@ impl RadarState {
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
-        // Reconcile against this update's fresh focus: an entry visit-clears the
-        // entered pane, or — if focus stayed put — a command that just exited in
-        // it recedes. One call; see `reconcile_focus`.
-        self.reconcile_focus(self.focused_terminal_in_active_tab(), tick);
+        // This update's focus is fresh, so it settles: reconcile — an entry
+        // visit-clears the entered pane, or — if focus stayed put — a command
+        // that just exited in it recedes — and stamp the same `settle` below.
+        // One flag, not two facts that happen to agree; see `reconcile_focus`.
+        let settle = true;
+        if settle {
+            self.reconcile_focus(self.focused_terminal_in_active_tab(), tick);
+        }
 
         RadarChange {
             render: true,
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
+            settle,
         }
     }
 
     pub(crate) fn timer(&mut self, tick: u64) {
         self.command.on_timer(tick);
-        // Reconcile against the (unchanged) focus on the cadence tick. This is the
-        // recede path for a *watched* agent turn (whose Done arrived on the pipe,
-        // which deliberately does not reconcile) and for a return-to-shell command
-        // confirmed Done this tick. By the time a tick fires, any focus `PaneUpdate`
-        // has been processed, so `last_focused` is settled — passing it means
-        // `changed == false`, i.e. the recede branch. See `reconcile_focus`.
-        self.reconcile_focus(self.last_focused, tick);
+        // The cadence tick always settles: by the time it fires, any focus
+        // `PaneUpdate` has been processed, so `last_focused` is settled. Reconcile
+        // against it — the recede path for a *watched* agent turn (whose Done
+        // arrived on the pipe, which deliberately does not reconcile) and for a
+        // return-to-shell command confirmed Done this tick — passing the settled
+        // focus means `changed == false`, i.e. the recede branch. The runtime
+        // stamps this same `settle` on the `RadarChange` it synthesizes for this
+        // call; see `reconcile_focus`.
+        let settle = true;
+        if settle {
+            self.reconcile_focus(self.last_focused, tick);
+        }
     }
 
     pub(crate) fn cwd_changed(
@@ -318,6 +333,7 @@ impl RadarState {
         RadarChange {
             render: true,
             renames: self.rename_tabs(naming),
+            settle: false,
             ..RadarChange::default()
         }
     }
@@ -334,6 +350,7 @@ impl RadarState {
             .on_command_changed(pane_id, command, is_foreground, cwd, tick);
         RadarChange {
             render: true,
+            settle: false,
             ..RadarChange::default()
         }
     }
@@ -360,6 +377,7 @@ impl RadarState {
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: Vec::new(),
+            settle: false,
         })
     }
 
