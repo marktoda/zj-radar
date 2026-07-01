@@ -452,6 +452,18 @@ impl ZellijSession {
     pub fn run_action(&self, args: &[&str]) {
         let _ = self.action(args);
     }
+
+    /// Write raw bytes to the PTY master. Used to answer Zellij's native
+    /// permission prompt — a client-side modal, NOT a pane's terminal, so it must
+    /// go through the PTY (the same path `wait_until_ready` uses to auto-grant),
+    /// not `action write-chars` (which targets the focused pane's shell).
+    #[allow(dead_code)]
+    pub fn press(&self, keys: &str) {
+        if let Ok(mut w) = self.pty_writer.lock() {
+            let _ = w.write_all(keys.as_bytes());
+            let _ = w.flush();
+        }
+    }
 }
 
 /// Fail fast (with a clear message) if `zellij` is missing, and warn loudly if it
@@ -659,6 +671,43 @@ pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
     }
 
     temp_home
+}
+
+/// An isolated temp HOME with NO permission grant — the ungranted first-run
+/// state. Mirrors `pre_grant_permissions` minus the grant, so a session started
+/// with it reproduces "attached but never granted" (nothing in `permissions.kdl`).
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn isolated_temp_home() -> tempfile::TempDir {
+    tempfile::TempDir::new().expect("failed to create temp HOME dir")
+}
+
+/// A rail layout whose plugin DEFERS permission (`defer_permission "true"`) and
+/// carries NO onboarding float — reproducing an attached, ungranted session
+/// (attach applies no layout, so the float never auto-opens). The deferring rail
+/// renders `needs_permission` without ever calling `request_permission`, so it
+/// never triggers the harness's auto-grant; the ungranted state stays put until a
+/// test dispatches the grant float itself.
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
+    let wasm_abs = plugin_wasm
+        .canonicalize()
+        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    format!(
+        r#"layout {{
+    cwd "/tmp"
+    pane split_direction="vertical" {{
+        pane size=32 borderless=true {{
+            plugin location="file:{wasm}" {{
+                defer_permission "true"
+            }}
+        }}
+        pane
+    }}
+}}"#,
+        wasm = wasm_abs.display()
+    )
 }
 
 /// Return the Zellij cache dir inside `home` (same logic Zellij uses for HOME).

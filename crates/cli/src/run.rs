@@ -8,16 +8,15 @@ use super::fsutil::atomic_write;
 use super::setup::CODEX_HOOK_MARKER;
 use std::path::{Path, PathBuf};
 
-/// Shown when CREATING a new ungranted session: the onboarding layout opens a
-/// centered floating pane that hosts Zellij's grant prompt legibly.
-const GRANT_HINT_CREATE: &str =
-    "First run: a permission prompt opens in the center — press y to enable agent status.";
-/// Shown when ATTACHING to an existing ungranted session. Attach applies no
-/// layout, so the onboarding float never auto-opens; the baked-in Ctrl-y keybind
-/// summons it instead. (Without this distinction `run` told users a prompt would
-/// open in the center even when it was only attaching — a dead-end.)
-const GRANT_HINT_ATTACH: &str =
-    "This session isn't enabled yet — focus a pane and press Ctrl-y to open the grant prompt.";
+/// Shown on first run (create OR attach) when the wasm isn't granted. The grant
+/// float auto-opens in the common cases — the onboarding layout carries it on
+/// CREATE, and `plan_run` dispatches a `launch-or-focus-plugin` action on attach
+/// to a LIVE session (see `grant_float_args`). Only a cold resurrect (dead
+/// session, no running server to dispatch to) can't auto-open it, so the single
+/// honest line names the baked-in Ctrl-y keybind as the fallback rather than
+/// branching into a second, dead-end message.
+const GRANT_HINT: &str = "First run: a permission prompt opens — press y to enable agent status \
+    (if it doesn't appear, press Ctrl-y in the session).";
 pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -66,6 +65,31 @@ pub(crate) fn create_session_args(config_dir: &Path, session: &str, layout: &str
 /// at creation, so no layout/config-dir flags are needed.
 pub(crate) fn attach_session_args(session: &str) -> Vec<String> {
     vec!["attach".into(), session.into()]
+}
+
+/// Args to summon the grant float on a LIVE session before we attach:
+/// `zellij --session <s> action launch-or-focus-plugin file:<wasm> --floating
+/// --move-to-focused-tab --configuration role=onboarding`.
+///
+/// Mirrors the baked-in Ctrl-y keybind (`run_assets/config.kdl`) but is triggered
+/// by `run` itself, so the common re-run-while-live case needs no keypress. The
+/// concrete `file:<wasm>` URL (not the `radar` alias) means it works even on a
+/// session whose frozen config lacks our alias; `role=onboarding` makes it a
+/// distinct instance from the rail, so it opens a new float instead of focusing
+/// the rail pane. Requires a running server — a dead/resurrectable session has
+/// none, which is why `plan_run` gates this on liveness (keybind covers the rest).
+pub(crate) fn grant_float_args(session: &str, wasm_path: &Path) -> Vec<String> {
+    vec![
+        "--session".into(),
+        session.into(),
+        "action".into(),
+        "launch-or-focus-plugin".into(),
+        format!("file:{}", wasm_path.to_string_lossy()),
+        "--floating".into(),
+        "--move-to-focused-tab".into(),
+        "--configuration".into(),
+        "role=onboarding".into(),
+    ]
 }
 
 /// True iff `permissions.kdl` contains a top-level grant block whose quoted key
@@ -213,6 +237,9 @@ struct RunFacts {
     wasm_path: PathBuf,
     /// Whether a Zellij session of this name already exists (attach vs create).
     session_exists: bool,
+    /// Whether that session has a RUNNING server (not merely resurrectable). Only
+    /// a running server can receive the pre-attach grant-float dispatch.
+    session_running: bool,
     /// Whether we're invoked from inside a Zellij session (`run` can't nest).
     inside_zellij: bool,
     permissions_kdl: Option<String>,
@@ -223,6 +250,9 @@ struct RunFacts {
 /// What to launch and what to advise — the pure result of `plan_run`.
 struct RunPlan {
     args: Vec<String>,
+    /// When `Some`, a `zellij` action to dispatch (best-effort) BEFORE `args`,
+    /// to summon the grant float on a live session so no keypress is needed.
+    pre_attach: Option<Vec<String>>,
     advisories: Vec<String>,
     /// When set, the caller must NOT launch (we're nested) — show guidance.
     nested: bool,
@@ -247,19 +277,22 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
         create_session_args(&facts.config_dir, &facts.session, layout)
     };
 
+    // Attaching to an existing LIVE ungranted session: summon the grant float
+    // ourselves (no keypress). Creation carries the float in its layout; a
+    // dead/resurrectable session has no server to dispatch to, so it falls back
+    // to the baked-in Ctrl-y keybind (named in GRANT_HINT).
+    let pre_attach = (!granted && facts.session_exists && facts.session_running)
+        .then(|| grant_float_args(&facts.session, &facts.wasm_path));
+
     let mut advisories = Vec::new();
     if !granted {
-        // Create vs attach differ in whether the onboarding float auto-opens:
-        // creation applies the layout (float appears); attach does not (point at
-        // the Ctrl-y keybind that summons it).
-        let hint = if facts.session_exists { GRANT_HINT_ATTACH } else { GRANT_HINT_CREATE };
-        advisories.push(hint.to_string());
+        advisories.push(GRANT_HINT.to_string());
     }
     let claude = claude_producer_wired(facts.installed_plugins.as_deref());
     if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude) {
         advisories.push(hint);
     }
-    RunPlan { args, advisories, nested: facts.inside_zellij }
+    RunPlan { args, pre_attach, advisories, nested: facts.inside_zellij }
 }
 
 pub struct RunOptions {
@@ -284,6 +317,25 @@ fn session_is_live(name: &str) -> bool {
         .is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == name))
 }
 
+/// True iff a session named `name` has a RUNNING server right now (not merely
+/// resurrectable). `--short` can't tell the two apart, so we parse the full
+/// listing: a resurrectable session's line contains `EXITED`, a live one does
+/// not (it may carry `(current)`). Only a running server can receive the
+/// `grant_float_args` action, so this gates the pre-attach dispatch. Any error is
+/// "not running" → fall back to the keybind.
+fn session_is_running(name: &str) -> bool {
+    std::process::Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().any(|l| {
+                l.split_whitespace().next() == Some(name) && !l.contains("EXITED")
+            })
+        })
+}
+
 pub fn run(opts: RunOptions) {
     let Some(dir) = owned_config_dir() else {
         eprintln!("zj-radar: could not resolve a data directory");
@@ -300,6 +352,7 @@ pub fn run(opts: RunOptions) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let session = session_name(&cwd, opts.name.as_deref());
     let session_exists = session_is_live(&session);
+    let session_running = session_exists && session_is_running(&session);
 
     // No embedded wasm (a from-crates.io `cargo install`) and none cached yet —
     // fetch the matching release once. Prebuilt binaries embed the wasm, so this
@@ -320,6 +373,7 @@ pub fn run(opts: RunOptions) {
         config_dir: materialized.config_dir,
         wasm_path: materialized.wasm_path,
         session_exists,
+        session_running,
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
         permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: read_under_home(".codex/hooks.json"),
@@ -331,6 +385,9 @@ pub fn run(opts: RunOptions) {
         println!("{advisory}");
     }
     if opts.print_cmd {
+        if let Some(dispatch) = &plan.pre_attach {
+            println!("zellij {}", dispatch.join(" "));
+        }
         println!("zellij {}", plan.args.join(" "));
         return;
     }
@@ -341,6 +398,12 @@ pub fn run(opts: RunOptions) {
              current Zellij config."
         );
         return;
+    }
+    // Best-effort: summon the grant float on the live session before we hand the
+    // terminal to `attach`. Failure is non-fatal — the Ctrl-y keybind and the
+    // rail's own grant prompt remain as fallbacks — so we ignore the result.
+    if let Some(dispatch) = &plan.pre_attach {
+        let _ = std::process::Command::new("zellij").args(dispatch).status();
     }
     if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
         eprintln!("zj-radar: failed to launch zellij: {e}");
@@ -514,10 +577,12 @@ mod tests {
 
     #[test]
     fn bundled_config_has_grant_keybind() {
-        // The Ctrl-y escape hatch is the only legible grant path on an attached
-        // session (no layout applies on attach, so the onboarding float can't
-        // auto-open). Baked into the owned config so it lives with every session's
-        // server. It must launch the radar plugin floating in the onboarding role.
+        // The Ctrl-y escape hatch is the resurrection-safe grant path: `run`
+        // auto-dispatches the float on a LIVE attach, but a dead/resurrectable
+        // session has no server to dispatch to, and attach applies no layout — so
+        // the baked-in keybind (living with every session's server) is the only
+        // thing that can summon the float after a cold resurrect. It must launch
+        // the radar plugin floating in the onboarding role.
         assert!(CONFIG_TEMPLATE.contains("bind \"Ctrl y\""), "config must bind the grant escape hatch");
         assert!(
             CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""),
@@ -532,7 +597,7 @@ mod tests {
 
     // ── plan_run decision matrix ──
     // `granted`/`codex`/`claude` toggle whether each input signals "already set up".
-    // Defaults: session "proj", does not exist (create path), not nested.
+    // Defaults: session "proj", does not exist (create path), not running, not nested.
     fn facts(granted: bool, codex: bool, claude: bool) -> RunFacts {
         let wasm = "/data/zj-radar/zellij/plugins/zj_radar.wasm";
         RunFacts {
@@ -540,6 +605,7 @@ mod tests {
             config_dir: PathBuf::from("/data/zj-radar/zellij"),
             wasm_path: PathBuf::from(wasm),
             session_exists: false,
+            session_running: false,
             inside_zellij: false,
             permissions_kdl: granted.then(|| format!("\"{wasm}\" {{\n}}\n")),
             codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
@@ -560,12 +626,14 @@ mod tests {
     #[test]
     fn plan_run_uses_onboarding_layout_when_ungranted() {
         // First run: launch the onboarding layout so the floating pane hosts the
-        // grant prompt legibly.
+        // grant prompt legibly. The layout carries the float, so there's no
+        // pre-attach dispatch on the create path.
         let p = plan_run(&facts(false, true, false));
         assert_eq!(
             p.args,
             create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar-onboarding")
         );
+        assert!(p.pre_attach.is_none(), "create path carries the float in its layout, not a dispatch");
     }
 
     #[test]
@@ -591,17 +659,54 @@ mod tests {
     }
 
     #[test]
-    fn plan_run_advises_keybind_not_center_float_when_attaching_ungranted() {
-        // Attaching to an existing ungranted session applies no layout, so the
-        // onboarding float never auto-opens — the advisory must point at the
-        // Ctrl-y keybind, NOT promise a prompt "in the center" (the old dead-end).
+    fn plan_run_dispatches_grant_float_on_live_ungranted_attach() {
+        // Attaching to an existing LIVE ungranted session: `run` summons the grant
+        // float itself (no keypress) by dispatching the launch-or-focus action to
+        // the running server, then attaches.
         let mut f = facts(false, true, false); // ungranted, producer wired
         f.session_exists = true;
+        f.session_running = true;
         let p = plan_run(&f);
         assert_eq!(p.args, attach_session_args("proj"), "ungranted + existing session still attaches");
+        assert_eq!(
+            p.pre_attach.as_deref(),
+            Some(grant_float_args("proj", Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")).as_slice()),
+            "live attach dispatches the grant float before attaching"
+        );
+    }
+
+    #[test]
+    fn plan_run_no_dispatch_on_dead_ungranted_attach() {
+        // A dead/resurrectable session has no running server to receive the
+        // action — dispatch would fail — so `plan_run` emits none and the baked-in
+        // Ctrl-y keybind (named in the advisory) is the fallback after resurrect.
+        let mut f = facts(false, true, false); // ungranted
+        f.session_exists = true;
+        f.session_running = false; // resurrectable, not running
+        let p = plan_run(&f);
+        assert_eq!(p.args, attach_session_args("proj"));
+        assert!(p.pre_attach.is_none(), "no live server → no dispatch; keybind covers resurrect");
+    }
+
+    #[test]
+    fn plan_run_no_dispatch_when_granted_even_if_live() {
+        // Already granted: nothing to grant, so a live attach never dispatches.
+        let mut f = facts(true, true, false);
+        f.session_exists = true;
+        f.session_running = true;
+        assert!(plan_run(&f).pre_attach.is_none());
+    }
+
+    #[test]
+    fn plan_run_grant_hint_is_unified_and_names_the_keybind_fallback() {
+        // One honest message for every ungranted path: promises the prompt (it
+        // auto-opens on create + live-attach) and names Ctrl-y as the fallback for
+        // the cold-resurrect case. No second, "center"-promising dead-end message.
+        let p = plan_run(&facts(false, true, false));
         assert_eq!(p.advisories.len(), 1);
-        assert!(p.advisories[0].contains("Ctrl-y"), "attach hint points at the keybind");
-        assert!(!p.advisories[0].contains("center"), "attach hint must not promise a center float");
+        assert!(p.advisories[0].contains("press y"), "names the grant key");
+        assert!(p.advisories[0].contains("Ctrl-y"), "names the resurrect fallback");
+        assert!(!p.advisories[0].contains("center"), "no stale center-float promise");
     }
 
     #[test]
