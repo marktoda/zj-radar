@@ -39,6 +39,13 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
         return;
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let env = CodexEnv {
+        codex_on_path:    which("codex"),
+        zj_radar_on_path: which("zj-radar"),
+        config_text:      std::fs::read_to_string(codex_config_path()).ok(),
+        hooks_text:       Some(existing.clone()),
+    };
+    let facts = analyze_codex(&env);
     let Some(outcome) = edit_or_report("codex", edit_codex_hooks(&existing, !uninstall)) else {
         return;
     };
@@ -48,14 +55,14 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
         }
         Outcome::Unchanged => {
             println!("codex: hooks already up to date ({})", path.display());
-            print_codex_hook_guidance();
+            print_codex_hook_guidance(&facts);
         }
         Outcome::Conflict => unreachable!("codex hooks editor has no conflict outcome"),
         Outcome::Changed(new) => {
             if dry_run {
                 println!("--- {} (dry-run) ---\n{new}", path.display());
                 if !uninstall {
-                    print_codex_hook_guidance();
+                    print_codex_hook_guidance(&facts);
                 }
                 return;
             }
@@ -69,7 +76,7 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
                 path.display()
             );
             if !uninstall {
-                print_codex_hook_guidance();
+                print_codex_hook_guidance(&facts);
             }
         }
     }
@@ -115,22 +122,12 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
     }
 }
 
-fn print_codex_hook_guidance() {
-    if codex_hooks_disabled() {
+fn print_codex_hook_guidance(facts: &CodexFacts) {
+    if matches!(facts.hooks_feature, CodexHooksFeature::Disabled) {
         eprintln!(
             "codex: warning — hooks appear disabled in {} (`[features].hooks = false`)",
             codex_config_path().display()
         );
     }
     println!("codex: run `/hooks` in Codex to review and trust the zj-radar command hook.");
-}
-
-fn codex_hooks_disabled() -> bool {
-    let env = CodexEnv {
-        codex_on_path:    false,
-        zj_radar_on_path: false,
-        config_text:      std::fs::read_to_string(codex_config_path()).ok(),
-        hooks_text:       None,
-    };
-    matches!(analyze_codex(&env).hooks_feature, CodexHooksFeature::Disabled)
 }
