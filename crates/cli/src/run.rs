@@ -337,7 +337,7 @@ pub fn run(opts: RunOptions) {
     if plan.nested {
         eprintln!(
             "zj-radar: you're already inside Zellij. `run` starts a NEW session — detach first \
-             (Ctrl-q by default) and re-run, or use `zj-radar setup` to add the rail to your \
+             (Ctrl-o d by default) and re-run, or use `zj-radar setup` to add the rail to your \
              current Zellij config."
         );
         return;

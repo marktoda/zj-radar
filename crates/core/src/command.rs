@@ -243,6 +243,24 @@ fn display_command(command: &[String]) -> String {
     sanitize(&raw, MAX_MSG_CHARS)
 }
 
+/// Whole-word containment: is `word` present in `haystack` bounded by non
+/// `[a-z0-9]` characters (or string edges)? Used instead of a bare substring so
+/// classification keys on the *verb* a target names, not an incidental
+/// substring — `make rebuild` is not a `build`, `make latest` is not a `test`,
+/// `make observer` is not a `serve`/`server` — while `make build-all` /
+/// `deploy-prod` still match (`-`/`_` are boundary chars). `haystack` is assumed
+/// lowercased; `word` is a lowercase literal (a phrase like `git push` works —
+/// its inner space is a boundary char). The single home for this rule, shared by
+/// the observed-command classifier here and the pushed-agent adapters in the CLI
+/// (`agents::bash_activity`); the bash producer's `contains_word` mirrors it.
+pub fn contains_word(haystack: &str, word: &str) -> bool {
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
+    haystack.match_indices(word).any(|(i, _)| {
+        boundary(haystack[..i].chars().next_back())
+            && boundary(haystack[i + word.len()..].chars().next())
+    })
+}
+
 /// Classify a foreground command into the `Kind` that owns its pane. The
 /// resulting kind's `as_source()` token is what gets stored as the
 /// observation's `source` and later round-tripped back through
@@ -261,27 +279,27 @@ fn command_kind(command: &[String], display: &str) -> Kind {
         "cargo" if display.starts_with("cargo build") || display.starts_with("cargo check") => {
             Kind::Build
         }
-        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" test") => Kind::Test,
-        "npm" | "pnpm" | "yarn" | "bun" if display.contains(" build") => Kind::Build,
+        "npm" | "pnpm" | "yarn" | "bun" if contains_word(display, "test") => Kind::Test,
+        "npm" | "pnpm" | "yarn" | "bun" if contains_word(display, "build") => Kind::Build,
         "npm" | "pnpm" | "yarn" | "bun"
-            if display.contains(" dev")
-                || display.contains(" start")
-                || display.contains(" serve") =>
+            if contains_word(display, "dev")
+                || contains_word(display, "start")
+                || contains_word(display, "serve") =>
         {
             Kind::Server
         }
         "go" if display.starts_with("go test") => Kind::Test,
         "go" if display.starts_with("go build") => Kind::Build,
         "make" | "just" | "ruff" => {
-            if display.contains("test") {
+            if contains_word(display, "test") {
                 Kind::Test
-            } else if display.contains("build") {
+            } else if contains_word(display, "build") {
                 Kind::Build
-            } else if display.contains("deploy") || display.contains("push") {
+            } else if contains_word(display, "deploy") || contains_word(display, "push") {
                 Kind::Deploy
-            } else if display.contains("serve")
-                || display.contains("server")
-                || display.contains("dev")
+            } else if contains_word(display, "serve")
+                || contains_word(display, "server")
+                || contains_word(display, "dev")
             {
                 Kind::Server
             } else {

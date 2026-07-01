@@ -40,6 +40,23 @@ a floating pane — see
 [First-run permission prompt](install.md#first-run-permission-prompt) — gives
 every later per-tab sidebar a cached grant to reuse.
 
+## Cards look flat — no colored row backgrounds
+
+**Symptom:** the rail renders and the status dots are colored, but the per-row
+"card" surface tints (focused row brighter, agent rows mid, idle dimmest) are
+missing — every row shares the terminal's default background.
+
+**Why:** the card surfaces and the recessed idle/dim text are emitted as
+**truecolor (24-bit)** SGR escapes. A terminal without truecolor support (e.g.
+macOS Terminal.app, the Linux VT console, or a `tmux` not configured with
+`Tc`/`RGB`) silently ignores those escapes — they are well-formed SGR, so
+nothing breaks: the character grid, click targeting, and the ANSI-16 status
+hues are all unaffected. Only the surface shading is absent.
+
+**Fix:** use a truecolor-capable terminal (Alacritty, Kitty, WezTerm, iTerm2,
+foot, most modern emulators). Inside `tmux`, enable truecolor passthrough
+(`set -as terminal-features ',*:RGB'`). There is no functional loss without it.
+
 ## Zellij plugin-reload quirks
 
 **Symptom:** during development, reloading the plugin opens an extra tiled plugin

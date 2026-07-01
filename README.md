@@ -68,8 +68,9 @@ zellij
 ```
 
 > **Just want to see it?** `zj-radar run` launches a throwaway Zellij session
-> with the rail already wired in — its own config, no edits to yours. It
-> downloads the matching wasm on first use.
+> with the rail already wired in — its own config, no edits to yours. It uses
+> the wasm bundled into the binary (or, if you installed via `cargo install`,
+> downloads the matching wasm on first use).
 
 Then add a **producer** so the rail has something to show. For Claude Code, run
 these **inside Claude Code** (they're `/plugin` slash commands, not shell):

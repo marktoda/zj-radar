@@ -173,6 +173,51 @@
     }
 
     #[test]
+    fn contains_word_matches_whole_words_only() {
+        // The shared lexical primitive (core home for the rule the bash producer
+        // and the CLI agent adapters also ride). Matches on non-`[a-z0-9]`
+        // boundaries and string edges; a keyword inside a larger token does not.
+        assert!(contains_word("make test", "test"));
+        assert!(contains_word("test", "test")); // both edges
+        assert!(contains_word("build-all", "build")); // `-` is a boundary
+        assert!(contains_word("run_test", "test")); // `_` is a boundary
+        assert!(contains_word("git push origin", "git push")); // phrase; inner space is a boundary
+        assert!(!contains_word("latest", "test")); // embedded → no match
+        assert!(!contains_word("rebuild", "build"));
+        assert!(!contains_word("tests", "test")); // trailing `s` is alphanumeric
+        assert!(!contains_word("observer", "serve"));
+        assert!(!contains_word("", "test")); // empty haystack
+    }
+
+    #[test]
+    fn make_and_npm_classification_is_word_bounded() {
+        use crate::kind::Kind;
+        // A keyword embedded in a larger target token must NOT classify: these
+        // are the false positives an unanchored `contains` produced.
+        let plain: &[(&[&str], &str)] = &[
+            (&["make", "latest"], "make latest"),     // not `test`
+            (&["make", "rebuild"], "make rebuild"),   // not `build`
+            (&["make", "observer"], "make observer"), // not `serve`/`server`
+            (&["just", "codev"], "just codev"),       // not `dev`
+            (&["npm", "run", "latest"], "npm run latest"),
+        ];
+        for (argv_, display) in plain {
+            assert_eq!(command_kind(&argv(argv_), display), Kind::Command, "classify {display:?}");
+        }
+        // A keyword as a whole token — including across `-`/`_` boundaries —
+        // still classifies.
+        let routed: &[(&[&str], &str, Kind)] = &[
+            (&["make", "build-all"], "make build-all", Kind::Build),
+            (&["make", "deploy-prod"], "make deploy-prod", Kind::Deploy),
+            (&["just", "unit-test"], "just unit-test", Kind::Test),
+            (&["make", "server"], "make server", Kind::Server),
+        ];
+        for (argv_, display, want) in routed {
+            assert_eq!(command_kind(&argv(argv_), display), *want, "classify {display:?}");
+        }
+    }
+
+    #[test]
     fn command_source_round_trips_through_kind() {
         // Twin of the agent-side `source_round_trips_through_kind` (see
         // CONTEXT.md "Information source"). The command path stores

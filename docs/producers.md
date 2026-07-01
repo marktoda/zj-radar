@@ -36,9 +36,10 @@ A native binary that drops the `jq`/`bash` dependency and wires non-plugin agent
 > the first `v*` tag.
 
 ```sh
-# Release tarballs (published on tagged releases):
-#   zj-radar-linux-x86_64.tar.gz
-#   zj-radar-macos-aarch64.tar.gz
+# Release tarballs (published on tagged releases; named by Rust target triple):
+#   zj-radar-x86_64-unknown-linux-musl.tar.gz
+#   zj-radar-aarch64-unknown-linux-musl.tar.gz
+#   zj-radar-aarch64-apple-darwin.tar.gz
 # Nix:
 nix build github:marktoda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
 # Cargo:

@@ -387,13 +387,6 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // cue — the accent spine + brighter card — so the two stay independent.)
     let label_bold = st != Status::Idle;
 
-    // bell marker just before the (removed) slot.
-    let bell = if row.has_bell {
-        format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
-    } else {
-        String::new()
-    };
-
     // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
     // `pad_len` is the Cards-only internal left pad (1 col, else 0).
     // Bare minimum: bar(1 if active, 0 if not) + glyph(1) + sp(1) + num. Clamp pad first, then num.
@@ -408,7 +401,19 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let has_trailing_sp = bare_min + pad_len + num_w < width;
     let pad = " ".repeat(pad_len);
     let prefix_len = bare_min + pad_len + num_w + if has_trailing_sp { 1 } else { 0 };
-    let bell_len = if row.has_bell { 2 } else { 0 };
+    // Trailing bell marker (⚑ + space, 2 cols). The prefix
+    // clamp only guarantees the prefix itself fits `width`; suppress the bell at
+    // extreme-narrow widths where it wouldn't fit beside the prefix, or it would
+    // be emitted past the column edge — breaking the "no line exceeds width"
+    // invariant and the card-padding math (name_budget would still saturate to 0).
+    const BELL_W: usize = 2; // ⚑ + trailing space
+    let show_bell = row.has_bell && prefix_len + BELL_W <= width;
+    let bell_len = if show_bell { BELL_W } else { 0 };
+    let bell = if show_bell {
+        format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
+    } else {
+        String::new()
+    };
     // At extreme-narrow widths name_budget saturates to 0 → name = ""; no
     // .max(1) so we never force an extra `…` that would push past `width`.
     let name_budget = width.saturating_sub(prefix_len + bell_len);
@@ -719,7 +724,10 @@ fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
     tc_bg(rgb)
 }
 
-/// Paint a single content line with a 256-color surface background band (`bg`).
+/// Paint a single content line with a truecolor (24-bit) surface background
+/// band (`bg`). Terminals without truecolor silently ignore the `48;2;…m`
+/// escape (it is well-formed SGR), so the card surface tint is simply absent
+/// there — the character grid and status hues (ANSI-16) are unaffected.
 ///
 /// Steps:
 /// 1. Replace every `RESET` (`\x1b[0m`) in the line with `RESET + bg` so that

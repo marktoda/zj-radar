@@ -35,10 +35,13 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
 
-# Whole-word containment (mirrors agents.rs::contains_word): is $2 present in $1
-# bounded by non-[a-z0-9] chars or string edges? $1 is assumed lowercased; $2 is
-# a literal (a phrase like "git push" works — its space is a boundary char). Used
-# so "latest"/"uninstall"/"rebuild" don't trip the test/install/build verbs.
+# Whole-word containment (mirrors zj_radar_core::command::contains_word): is $2
+# present in $1 bounded by non-[a-z0-9] chars or string edges? $1 is assumed
+# lowercased; $2 is a literal (a phrase like "git push" works — its space is a
+# boundary char). Used so "latest"/"uninstall"/"rebuild" don't trip the
+# test/install/build verbs. NOTE: $2 is interpolated raw into an ERE, so it must
+# stay regex-metachar-free (no . * + ? ( [ etc.) to match the Rust `match_indices`
+# version literally — every current verb is a plain word, keep it that way.
 contains_word() {
     local re="(^|[^a-z0-9])$2([^a-z0-9]|$)"
     [[ "$1" =~ $re ]]

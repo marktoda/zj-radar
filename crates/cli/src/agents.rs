@@ -14,6 +14,7 @@ mod codex;
 
 use crate::status::Status;
 use serde_json::Value;
+use zj_radar_core::command::contains_word;
 
 /// Everything an adapter needs to derive an update. Gathered by `run()` so the
 /// adapters stay pure — no stdin/env/IO lives behind the seam, which keeps each
@@ -115,20 +116,6 @@ fn basename(path: &str) -> Option<&str> {
         return None;
     }
     path.rsplit('/').next().filter(|base| !base.is_empty())
-}
-
-/// Whole-word containment: is `word` present in `haystack` bounded by non
-/// `[a-z0-9]` characters (or string edges)? Used instead of a bare substring so
-/// `latest`/`uninstall`/`fastest`/`rebuild` don't trip the test/install/build
-/// verbs. `haystack` is assumed already lowercased; `word` is a lowercase
-/// literal (a multi-word phrase like `git push` works — its inner space is a
-/// boundary char, not a `[a-z0-9]`). Mirrors `contains_word` in notify.sh.
-fn contains_word(haystack: &str, word: &str) -> bool {
-    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
-    haystack.match_indices(word).any(|(i, _)| {
-        boundary(haystack[..i].chars().next_back())
-            && boundary(haystack[i + word.len()..].chars().next())
-    })
 }
 
 fn bash_activity(tool_input: &Value) -> Option<String> {

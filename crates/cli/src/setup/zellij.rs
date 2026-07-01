@@ -150,17 +150,25 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
     });
 
-    // Refuse to clobber a managed (symlinked) config.kdl: print the layout snippet
-    // for guidance, then return early. A Nix/home-manager user gets the wasm + alias
-    // via their config, not from us.
-    if !uninstall && facts.config_managed {
+    // Refuse to touch a managed (symlinked) config.kdl. On install we print the
+    // layout snippet for guidance; on uninstall we skip the config rewrite (the
+    // alias lives in the user's Nix config, so removal is their Nix concern) but
+    // still strip the injected rail from the (separate) layout file. Either way a
+    // Nix/home-manager user's managed config is never overwritten.
+    if facts.config_managed {
         eprintln!(
             "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
-             zj-radar will not overwrite a managed config — add the plugin alias via\n\
+             zj-radar will not {} a managed config — {} the plugin alias via\n\
              your Nix config instead. See docs/install.md for the home-manager snippet.",
-            config_path.display()
+            config_path.display(),
+            if uninstall { "modify" } else { "overwrite" },
+            if uninstall { "remove" } else { "add" },
         );
-        print_snippet_for(&layout_path);
+        if uninstall {
+            run_layout_uninstall(&layout_path, dry_run);
+        } else {
+            print_snippet_for(&layout_path);
+        }
         return;
     }
 

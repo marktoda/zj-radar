@@ -537,6 +537,40 @@ fn pending_detail_lines_never_exceed_width() {
 }
 
 #[test]
+fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
+    // Regression: the bell marker (⚑ + space, 2 cols) is appended after the
+    // prefix clamp, so at widths where the prefix already fills the column the
+    // bell used to spill 2 cells past the edge — breaking the width invariant
+    // and the card-padding math. Every width down to 1 must still fit.
+    for active in [true, false] {
+        let rows = vec![TabRow {
+            number: 7,
+            name: "infra".into(),
+            active,
+            has_bell: true,
+            display: display(Status::Running, 0, 1, None),
+        }];
+        // From width 4 up: the bell bug reproduced here (prefix fits but the
+        // 2-col bell spilled past the edge). Widths 1–3 are a separate,
+        // pre-existing degenerate case (the spine+glyph alone can't fit a
+        // 1–2-col column) and are unreachable in any real layout.
+        for width in 4usize..=16 {
+            let s = render(&rows, &ro(width, 3));
+            for line in s.lines() {
+                assert!(
+                    visible_len(line) <= width,
+                    "bell row exceeds width {} (active={}): {:?} (visible {})",
+                    width,
+                    active,
+                    line,
+                    visible_len(line)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn running_has_no_warning_glyph() {
     let detail = PrimaryDetail {
         repo: "r".into(),
