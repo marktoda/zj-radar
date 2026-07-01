@@ -37,6 +37,7 @@ pub struct PrimaryDetail {
     pub repo: String,
     pub branch: String,
     pub msg: String,
+    pub task: String,
     pub since_tick: u64,
     pub status: Status,
     pub kind: Kind,
@@ -51,6 +52,7 @@ pub enum PaneDisplay {
         kind: Kind,
         status: Status,
         msg: String,
+        task: String,
         outcome: Option<Outcome>,
     },
     Untracked {
@@ -65,6 +67,7 @@ impl PaneDisplay {
         kind: Kind,
         status: Status,
         msg: String,
+        task: String,
         outcome: Option<Outcome>,
     ) -> Self {
         Self::Tracked {
@@ -72,6 +75,7 @@ impl PaneDisplay {
             kind,
             status,
             msg,
+            task,
             outcome,
         }
     }
@@ -117,6 +121,13 @@ impl PaneDisplay {
         match self {
             Self::Tracked { msg, .. } => msg,
             Self::Untracked { title, .. } => title,
+        }
+    }
+
+    pub(crate) fn task(&self) -> &str {
+        match self {
+            Self::Tracked { task, .. } => task,
+            Self::Untracked { .. } => "",
         }
     }
 
@@ -184,6 +195,7 @@ pub fn roll_up<'a>(
                 s.kind,
                 s.status,
                 s.msg.clone(),
+                s.task.clone(),
                 pane_outcome(s),
             ));
         } else {
@@ -202,6 +214,7 @@ pub fn roll_up<'a>(
                     repo: s.repo.clone(),
                     branch: s.branch.clone(),
                     msg: s.msg.clone(),
+                    task: s.task.clone(),
                     since_tick: s.last_change_tick,
                     status: s.status,
                     kind: s.kind,

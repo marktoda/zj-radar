@@ -152,6 +152,23 @@ fn pane_outcome_maps_finished_commands_only() {
     assert_eq!(pane_outcome(&agent), None);
 }
 
+#[test]
+fn task_threads_through_to_pane_display_and_primary_detail() {
+    let panes = [pane(1, "shell")];
+    let mut obs = TrackedObservation::command(Status::Pending, "r".into(), "approve?".into(), Kind::Claude, 3);
+    obs.origin = ObservationOrigin::StatusPipe;
+    obs.task = "fix flaky e2e".into();
+    let display = roll_up(&panes, |id| (id == 1).then_some(&obs));
+    match &display.panes[0] {
+        PaneDisplay::Tracked { task, msg, .. } => {
+            assert_eq!(task, "fix flaky e2e");
+            assert_eq!(msg, "approve?");
+        }
+        other => panic!("expected tracked pane, got {other:?}"),
+    }
+    assert_eq!(display.detail.as_ref().unwrap().task, "fix flaky e2e");
+}
+
 // ── Property tests ────────────────────────────────────────────────────────
 //
 // `roll_up` is a pure fold over a tab's panes. These properties pin the
