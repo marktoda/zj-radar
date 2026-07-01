@@ -1,27 +1,20 @@
 use super::*;
 
+use crate::setup::detect::{
+    codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours,
+    strip_managed_zellij_alias,
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use toml_edit::{Array, DocumentMut, Item};
+use toml_edit::{Array, DocumentMut};
 
 #[derive(Debug)]
 pub enum Outcome {
     Changed(String),
     Unchanged,
     Conflict,
-}
-
-/// True iff `notify` exists and equals our exact marker array.
-pub fn notify_is_ours(item: Option<&Item>) -> bool {
-    item.and_then(|i| i.as_array())
-        .map(|a| {
-            a.len() == CODEX_NOTIFY_MARKER.len()
-                && a.iter()
-                    .zip(CODEX_NOTIFY_MARKER)
-                    .all(|(v, m)| v.as_str() == Some(m))
-        })
-        .unwrap_or(false)
 }
 
 fn our_array() -> Array {
@@ -143,17 +136,6 @@ fn strip_codex_hooks(file: &mut HooksFile) {
     file.hooks.retain(|_, groups| !groups.is_empty());
 }
 
-pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
-    handler
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
-        || handler
-            .get("commandWindows")
-            .and_then(Value::as_str)
-            .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
-}
-
 fn add_codex_hooks(file: &mut HooksFile) {
     for event in CODEX_HOOK_EVENTS {
         file.hooks
@@ -215,40 +197,6 @@ fn join_lines(lines: &[String]) -> String {
     } else {
         format!("{}\n", lines.join("\n"))
     }
-}
-
-pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {
-    let mut changed = false;
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim() != ZELLIJ_ALIAS_BEGIN {
-            i += 1;
-            continue;
-        }
-        let end = lines[i + 1..]
-            .iter()
-            .position(|line| line.trim() == ZELLIJ_ALIAS_END)
-            .map(|offset| i + 1 + offset)
-            .unwrap_or(lines.len().saturating_sub(1));
-        lines.drain(i..=end);
-        changed = true;
-    }
-    changed
-}
-
-fn is_unmanaged_radar_alias_line(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") || trimmed.starts_with("/-") {
-        return false;
-    }
-    trimmed == "radar"
-        || trimmed.starts_with("radar ")
-        || trimmed.starts_with("radar\t")
-        || trimmed.starts_with("radar{")
-}
-
-pub(crate) fn has_unmanaged_radar_alias(lines: &[String]) -> bool {
-    lines.iter().any(|line| is_unmanaged_radar_alias_line(line))
 }
 
 fn brace_delta(line: &str) -> isize {

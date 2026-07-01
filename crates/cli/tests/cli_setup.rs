@@ -108,6 +108,71 @@ fn setup_codex_hooks_is_idempotent() {
     );
 }
 
+// ── Test 2b: codex hook guidance mentions disabled hooks when config says so ──
+//
+// `print_codex_hook_guidance` writes the `hooks appear disabled` warning to
+// STDERR (it's a warning) and the `run \`/hooks\`` line to STDOUT — always,
+// disabled or not. Both cases reach it via the same `--yes` install (a fresh
+// hooks.json install still lands on the guidance-printing tail).
+
+#[test]
+fn setup_codex_guidance_warns_when_hooks_feature_disabled() {
+    let codex_home = isolated_codex_home();
+    fs::write(
+        codex_home.path().join("config.toml"),
+        "[features]\nhooks = false\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("CODEX_HOME", codex_home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stderr.contains("hooks appear disabled"),
+        "config.toml with [features]\\nhooks = false must warn on stderr; got stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("run `/hooks`"),
+        "guidance must still print the /hooks reminder on stdout; got stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn setup_codex_guidance_silent_on_disabled_warning_when_hooks_enabled() {
+    // No config.toml at all: `[features].hooks` is unset, so hooks are
+    // enabled-or-unset — the disabled warning must not appear, but the
+    // `/hooks` reminder still must.
+    let codex_home = isolated_codex_home();
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("CODEX_HOME", codex_home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        !stderr.contains("hooks appear disabled"),
+        "no config.toml means hooks are not disabled; got stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("run `/hooks`"),
+        "guidance must print the /hooks reminder on stdout; got stdout: {stdout:?}"
+    );
+}
+
 // ── Test 3: `--wasm` and `--download` are mutually exclusive ─────────────────
 // The guard must short-circuit before any download or config write.
 
@@ -318,5 +383,104 @@ fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     assert!(
         stdout.contains("dry-run"),
         "dry-run output must mention dry-run; stdout:\n{stdout}"
+    );
+}
+
+// ── Test 5: zellij producer hint on the success tail ─────────────────────────
+//
+// `print_producer_hint_if_needed` runs at the tail of a successful `setup
+// zellij` install, on both the `Outcome::Unchanged` arm (config already up to
+// date) and the `Outcome::Changed` arm (fresh install). Reaching `Unchanged`
+// by hand-authoring a byte-identical `config.kdl` fixture is delicate: the
+// managed-alias location string embeds the absolute wasm destination path (or
+// a `~/`-relative one when it falls under `HOME`), so any mismatch in that
+// string flips `edit_zellij` from `Unchanged` to `Changed`. Rather than guess
+// the exact rendering, we prime the `Unchanged` arm for real: run the same
+// `setup zellij --wasm <dummy> --yes` invocation twice against the same
+// `ZELLIJ_CONFIG_DIR` — the first run performs the real install (`Changed`),
+// the second hits `Unchanged` because `edit_zellij` now compares against the
+// config that install itself wrote. Both arms print the hint via the same
+// `print_producer_hint_if_needed` call, so asserting on the second (`Unchanged`)
+// run's output pins that arm specifically.
+
+/// Seed a `ZELLIJ_CONFIG_DIR` tempdir and a dummy (empty, but existing) wasm
+/// file so `setup zellij --wasm <path>` passes the `src.is_file()` gate.
+fn isolated_zellij_install_env() -> (TempDir, TempDir) {
+    let config_dir = TempDir::new().unwrap();
+    let wasm_dir = TempDir::new().unwrap();
+    fs::write(wasm_dir.path().join("zj_radar.wasm"), b"").unwrap();
+    (config_dir, wasm_dir)
+}
+
+#[test]
+fn setup_zellij_unchanged_arm_hints_producer_when_not_wired() {
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap(); // empty HOME: no producer files at all
+
+    let run = || {
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+
+    // First run: real install (Changed arm) — establishes the config that the
+    // second run will compare against.
+    run();
+    // Second run: config.kdl now matches what `edit_zellij` would produce ->
+    // Unchanged arm, which still calls `print_producer_hint_if_needed`.
+    let output = run();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("zellij: config already up to date"),
+        "second identical run must hit the Unchanged arm; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Agent status off — no producer wired"),
+        "no producer wired -> the hint must print; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    let plugins_dir = home.path().join(".claude/plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    fs::write(
+        plugins_dir.join("installed_plugins.json"),
+        r#"{"plugins":["zj-radar-claude"]}"#,
+    )
+    .unwrap();
+
+    let run = || {
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+
+    run(); // first: real install (Changed arm)
+    let output = run(); // second: Unchanged arm
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("zellij: config already up to date"),
+        "second identical run must hit the Unchanged arm; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Agent status off — no producer wired"),
+        "claude producer wired -> the hint must not print; stdout:\n{stdout}"
     );
 }
