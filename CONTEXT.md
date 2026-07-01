@@ -93,9 +93,12 @@ instead arms the timer, which carries the recede + notify once focus has settled
 (`cwd_changed`, `command_changed`, `config_pipe`, `tabs_changed`) are not
 completion edges, so they never settle either. This "act where focus is
 trustworthy, defer where it is stale" rule is why the reconcile and notify call
-sites line up across every handler: each handler gates its `reconcile_focus`
-call on the same `settle` value it stamps on the `RadarChange`, so the two
-literally cannot drift apart — one decision, not two that happen to agree.
+sites line up across every handler. `panes_changed` gates its `reconcile_focus`
+call on the very `settle` binding it then stamps on the `RadarChange` — one value
+feeds both, so they cannot drift. `timer` returns no change, so its gate and the
+`settle: true` the runtime stamps on its behalf are two literals held in step by
+construction (the cadence tick always settles). Either way the coupling is
+structural, not two facts left to happen to agree.
 
 ## Tab naming
 
