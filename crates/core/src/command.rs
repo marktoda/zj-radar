@@ -310,6 +310,21 @@ fn command_kind(command: &[String], display: &str) -> Kind {
     }
 }
 
+/// Whether a `CommandChanged` means the pane is back at a shell prompt rather
+/// than running something we (or an agent) own. True when there is no foreground
+/// command, or the foreground is a shell/prompt program (`IGNORE_NAMES`). An
+/// agent (`AGENT_NAMES`) in the foreground is deliberately NOT "at the prompt" —
+/// the agent still owns the pane and drives it via the push pipe. Peels
+/// env-prefixes/wrappers first, mirroring `on_command_changed`.
+pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
+    if !is_foreground {
+        return true;
+    }
+    let command = effective_command(command);
+    let name = command.first().map(|s| basename(s)).unwrap_or("");
+    IGNORE_NAMES.contains(&name)
+}
+
 impl CommandStore {
     /// Handle a `CommandChanged` event for a terminal pane.
     ///

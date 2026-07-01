@@ -41,6 +41,41 @@ fn payload_for(pane_id: u32, status: Status, repo: &str) -> StatusPayload {
 }
 
 #[test]
+fn command_changed_to_shell_clears_a_pushed_done() {
+    let mut radar = RadarState::default();
+    // A pushed `done` sits on pane 7 — an agent finished a turn, then the user
+    // quit it (no producer hook fires on quit).
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Done, "pinky"), 1);
+    assert_eq!(radar.status(7).unwrap().status, Status::Done);
+
+    // The pane returns to a shell prompt → the producer is gone.
+    let change = radar.command_changed(7, &["zsh".into()], true, 5);
+
+    // The stale `done` is cleared to idle, repo kept for tab naming. This rides
+    // the shared CommandChanged signal, so every tab's instance clears alike.
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+    assert_eq!(radar.status(7).unwrap().repo, "pinky");
+    assert!(
+        change.persist_snapshot,
+        "the clear is snapshotted so a newly-opened tab rehydrates idle, not done"
+    );
+}
+
+#[test]
+fn command_changed_to_shell_does_not_clear_a_running_status() {
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), 1);
+    // A mid-turn foreground flicker to a shell must NOT be read as an exit.
+    let change = radar.command_changed(7, &["bash".into()], true, 5);
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
+    assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
+}
+
+#[test]
 fn rows_sort_tabs_by_position_and_aggregate_panes() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![

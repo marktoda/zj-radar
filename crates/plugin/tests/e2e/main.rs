@@ -638,3 +638,91 @@ fn click_on_a_tab_row_switches_the_active_tab() {
 
     eprintln!("[e2e] PASS: a real rail click switched the active tab end-to-end");
 }
+
+/// Pins the load-bearing property behind the exit-clear fix: per-pane
+/// `CommandChanged` activity is delivered to the plugin instance in *every* tab,
+/// not just the tab whose pane it happened in. (Contrast focus, which is
+/// per-client and is NOT delivered to background instances — the root of the
+/// stale-status desync.) A command run in tab one must appear in tab two's rail
+/// too; since the exit-clear rides this same `CommandChanged` signal, this proves
+/// it converges across tabs without a producer-side hook.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn command_activity_reaches_background_tab_instances() {
+    use std::time::Duration;
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {wasm:?}. Build it:\n  cargo build --release --target wasm32-wasip1 -p zj-radar-plugin"
+    );
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_xclear_{}", std::process::id());
+    let layout = two_sidebar_tabs_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+
+    // Discover each tab's terminal pane id. The rail lists ALL tab names on every
+    // tab, so switches are confirmed by the per-tab `ZPID` echo (unique per pane),
+    // not by rail text. go-to-tab is fire-and-forget, so retry until discovery
+    // returns tab two's (distinct) pane id.
+    let pane1 = session.discover_terminal_pane_id();
+    let mut pane2 = pane1;
+    for _ in 0..10 {
+        session.run_action(&["go-to-tab", "2"]);
+        std::thread::sleep(Duration::from_millis(500));
+        let p = session.discover_terminal_pane_id();
+        if p != pane1 && p != 0 {
+            pane2 = p;
+            break;
+        }
+    }
+    eprintln!("[e2e] pane1(tab one)={pane1}  pane2(tab two)={pane2}");
+    assert_ne!(pane1, pane2, "could not switch to tab two to discover its pane");
+
+    // Back to tab one, then run a plain foreground command in its terminal. This
+    // exercises the *observed-command* path (`CommandChanged`) — no pipe, no pane
+    // id matching — which is exactly the signal the exit-clear rides. `sleep 30`
+    // stays foreground long enough to observe from the other tab.
+    let back1 = session.wait_until(Duration::from_secs(8), |s| {
+        s.run_action(&["go-to-tab", "1"]);
+        s.dump_screen().contains(&format!("ZPID={pane1}"))
+    });
+    assert!(back1, "could not return to tab one to run the command");
+    session.run_action(&["write-chars", "sleep 30"]);
+    session.run_action(&["write", "13"]);
+
+    // Tab one's OWN instance must show the running command (baseline: the
+    // command path works in-instance).
+    let seen_on_1 = session.wait_for_sidebar(32, "sleep", Duration::from_secs(10));
+    eprintln!(
+        "[e2e] tab-one rail WHILE running:\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
+    assert!(
+        seen_on_1,
+        "tab one's own rail should show the running command;\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
+
+    // THE QUESTION: switch to tab two and read ITS rail. Does the background
+    // instance also see tab one's command? That answers whether `CommandChanged`
+    // (and thus the exit-clear) reaches instances in other tabs.
+    let on2 = session.wait_until(Duration::from_secs(8), |s| {
+        s.run_action(&["go-to-tab", "2"]);
+        s.dump_screen().contains(&format!("ZPID={pane2}"))
+    });
+    assert!(on2, "could not switch to tab two to read its rail");
+    // Give tab two's instance time to process + promote (debounce) if it got it.
+    let converged = session.wait_until(Duration::from_secs(6), |s| {
+        sidebar_region(&s.screen(), 32).contains("sleep")
+    });
+    let tab2 = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] tab-two rail (background instance):\n{tab2}");
+    eprintln!("[e2e] RESULT: background instance sees the command (converges) = {converged}");
+    assert!(
+        converged,
+        "CONVERGENCE: tab two's background instance does NOT show tab one's \
+         running command — CommandChanged did not reach the background instance, \
+         so the exit-clear converges only for newly-opened tabs (snapshot). The \
+         SessionEnd→idle broadcast would be needed to converge live. tab-two rail:\n{tab2}"
+    );
+}

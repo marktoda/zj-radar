@@ -163,6 +163,16 @@ a `Kind`-keyed `Status`:
   `crates/core/src/command.rs::command_kind` and infers status from the process
   lifecycle. No wire, no CLI. `cargo test` lives here, **not** in `agents/`.
 
+The two modalities also interact at *exit*: a pushed producer (an agent) fires no
+hook when it quits, so its last status (`done`/`pending`/`error`) would otherwise
+linger forever. When the observed layer sees that pane return to a shell prompt
+(`command::is_shell_prompt` — no foreground command, or a shell/prompt program),
+`RadarState` clears the stale pushed status to idle (`StatusStore::clear_on_prompt_return`).
+The clear ignores a `Running` status — a live turn re-asserts `Running` via its
+hooks, so a transient foreground flicker can't be mistaken for the agent exiting.
+Because it rides the shared `CommandChanged` signal (not per-client focus), every
+tab's instance clears in lockstep.
+
 Both modalities emit a `source` string that must be a subset of `Kind`
 (`Kind::from_source`). Both halves are guarded: the agent half by
 `source_round_trips_through_kind` (in `crates/cli/src/agents`), the command half by

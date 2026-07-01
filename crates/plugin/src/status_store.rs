@@ -56,6 +56,45 @@ impl StatusStore {
         self.store.recede_if_focused(pane_id, tick);
     }
 
+    /// Clear a pane's pushed status to idle because its producer is gone — the
+    /// pane returned to a shell prompt (`command::is_shell_prompt`). No-op if the
+    /// pane isn't tracked, is already Idle, or is currently Running: a live agent
+    /// turn re-asserts Running via its hooks, so a transient foreground flicker to
+    /// a shell must never be mistaken for the agent exiting. Keeps repo/branch so
+    /// the tab keeps its name; drops the message and any queued on_focus. Returns
+    /// whether it changed anything. Unlike the focus-driven recede, this rides the
+    /// shared `CommandChanged` signal, so every tab's instance clears in lockstep.
+    pub fn clear_on_prompt_return(&mut self, pane_id: u32, tick: u64) -> bool {
+        let Some(prev) = self.store.get(pane_id) else {
+            return false;
+        };
+        if matches!(
+            prev.status,
+            crate::status::Status::Running | crate::status::Status::Idle
+        ) {
+            return false;
+        }
+        let repo = prev.repo.clone();
+        let branch = prev.branch.clone();
+        let kind = prev.kind;
+        self.store.insert(
+            pane_id,
+            TrackedObservation {
+                origin: ObservationOrigin::StatusPipe,
+                status: crate::status::Status::Idle,
+                repo,
+                branch,
+                msg: String::new(),
+                kind,
+                last_change_tick: tick,
+                on_focus: None,
+                ever_active: true,
+                exit_code: None,
+            },
+        );
+        true
+    }
+
     pub fn prune(&mut self, live: &HashSet<u32>) {
         self.store.prune(live);
     }
@@ -156,6 +195,39 @@ mod tests {
         assert_eq!(s.get(2).unwrap().status, Status::Error, "Error persists");
         // An unknown pane id is a no-op (never panics).
         s.recede_if_focused(999, 5);
+    }
+
+    #[test]
+    fn clear_on_prompt_return_clears_terminal_but_not_running() {
+        let mut s = StatusStore::default();
+        // Done → cleared to Idle (agent exited after finishing), repo kept.
+        let mut done = payload(1, Status::Done);
+        done.on_focus = Some(Status::Idle);
+        s.apply(done, 1);
+        assert!(s.clear_on_prompt_return(1, 5));
+        assert_eq!(s.get(1).unwrap().status, Status::Idle);
+        assert_eq!(s.get(1).unwrap().msg, "", "message dropped");
+        assert_eq!(s.get(1).unwrap().on_focus, None, "queued on_focus dropped");
+        assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
+
+        // Error and Pending also clear (the producer is gone).
+        s.apply(payload(2, Status::Error), 1);
+        s.apply(payload(3, Status::Pending), 1);
+        assert!(s.clear_on_prompt_return(2, 6));
+        assert!(s.clear_on_prompt_return(3, 6));
+        assert_eq!(s.get(2).unwrap().status, Status::Idle);
+        assert_eq!(s.get(3).unwrap().status, Status::Idle);
+
+        // Running is NOT cleared — a live turn's foreground flicker to a shell
+        // must not be mistaken for the agent exiting.
+        s.apply(payload(4, Status::Running), 1);
+        assert!(!s.clear_on_prompt_return(4, 7));
+        assert_eq!(s.get(4).unwrap().status, Status::Running);
+
+        // Already-idle and unknown panes are no-ops (never panic).
+        s.apply(payload(5, Status::Idle), 1);
+        assert!(!s.clear_on_prompt_return(5, 8));
+        assert!(!s.clear_on_prompt_return(999, 8));
     }
 
     #[test]

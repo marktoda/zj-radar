@@ -5,6 +5,24 @@
     }
 
     #[test]
+    fn is_shell_prompt_detects_return_to_prompt_not_agents_or_commands() {
+        // A shell/prompt program in the foreground = back at the prompt.
+        assert!(is_shell_prompt(&argv(&["zsh"]), true));
+        assert!(is_shell_prompt(&argv(&["/bin/bash"]), true));
+        assert!(is_shell_prompt(&argv(&["fish"]), true));
+        // No foreground command at all = at the prompt.
+        assert!(is_shell_prompt(&argv(&["anything"]), false));
+        // An agent in the foreground still owns the pane — NOT the prompt.
+        assert!(!is_shell_prompt(&argv(&["claude"]), true));
+        assert!(!is_shell_prompt(&argv(&["codex"]), true));
+        // A real foreground command is not the prompt.
+        assert!(!is_shell_prompt(&argv(&["cargo", "test"]), true));
+        // Env/wrapper prefixes are peeled before classifying.
+        assert!(is_shell_prompt(&argv(&["env", "FOO=1", "zsh"]), true));
+        assert!(!is_shell_prompt(&argv(&["sudo", "make"]), true));
+    }
+
+    #[test]
     fn display_command_keeps_useful_subcommands_and_drops_flags() {
         assert_eq!(
             display_command(&argv(&[

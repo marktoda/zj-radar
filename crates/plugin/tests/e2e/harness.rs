@@ -727,6 +727,41 @@ pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
     )
 }
 
+/// Build a KDL layout with TWO tabs, each carrying its own zj-radar sidebar +
+/// terminal. This gives two live plugin *instances* (one per tab) so a test can
+/// observe what a *background* tab's instance renders — the setup needed to probe
+/// cross-instance convergence (does a per-pane `CommandChanged`/exit reach the
+/// instance in another tab?).
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
+    let wasm_abs = plugin_wasm
+        .canonicalize()
+        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let w = wasm_abs.display();
+    // The rail lives in `default_tab_template` so Zellij applies it to *every*
+    // tab (each gets its own plugin instance); each `tab` block just declares the
+    // terminal `pane` that fills the template's `children`.
+    format!(
+        r#"layout {{
+    default_tab_template {{
+        pane split_direction="vertical" {{
+            pane size=32 borderless=true {{
+                plugin location="file:{w}"
+            }}
+            children
+        }}
+    }}
+    tab name="one" focus=true {{
+        pane focus=true cwd="/tmp"
+    }}
+    tab name="two" {{
+        pane focus=true cwd="/tmp"
+    }}
+}}"#
+    )
+}
+
 /// Extract all visible text from a vt100 Screen (rows x cols grid),
 /// joining rows with newlines.
 #[cfg(feature = "e2e")]

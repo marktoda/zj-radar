@@ -352,9 +352,21 @@ impl RadarState {
         let cwd = self.pane_cwd.get(&pane_id).map(String::as_str);
         self.command
             .on_command_changed(pane_id, command, is_foreground, cwd, tick);
+        // A pane back at its shell prompt means the agent that was pushing status
+        // has exited (no producer hook fires on quit), so clear the now-stale
+        // pushed status → idle. This rides the shared `CommandChanged` signal, so
+        // every tab's instance clears in lockstep — unlike the focus-driven
+        // recede, which each instance derives locally. `clear_on_prompt_return`
+        // ignores a Running status, so a mid-turn foreground flicker to a shell
+        // can't be mistaken for the agent exiting.
+        let cleared = crate::command::is_shell_prompt(command, is_foreground)
+            && self.status.clear_on_prompt_return(pane_id, tick);
         RadarChange {
             render: true,
             settle: false,
+            // Persist only when we actually cleared, so a newly-opened tab
+            // rehydrates the idle from the snapshot rather than the stale status.
+            persist_snapshot: cleared,
             ..RadarChange::default()
         }
     }
