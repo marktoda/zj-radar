@@ -309,8 +309,11 @@ impl RadarState {
         }
     }
 
-    pub(crate) fn timer(&mut self, tick: u64) {
-        self.command.on_timer(tick);
+    /// Timer tick. Returns whether an observation changed (a debounced
+    /// promotion or Done-flip) — the runtime persists the snapshot on it so
+    /// timer-driven mutations reach late-spawned instances too.
+    pub(crate) fn timer(&mut self, tick: u64) -> bool {
+        self.command.on_timer(tick)
     }
 
     pub(crate) fn cwd_changed(

@@ -925,7 +925,9 @@ proptest! {
                         tick,
                     );
                 }
-                Op::Timer => st.timer(tick),
+                Op::Timer => {
+                    st.timer(tick);
+                }
                 Op::Cwd(pane) => {
                     st.cwd_changed(*pane, "/home/u/proj".into(), config::NamingMode::Off);
                 }

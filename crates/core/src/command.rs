@@ -414,8 +414,14 @@ impl CommandStore {
     }
 
     /// Timer tick: promote any pending fg command that has survived the
-    /// debounce window to Running.
-    pub fn on_timer(&mut self, tick: u64) {
+    /// debounce window to Running. Returns whether any *observation* changed —
+    /// the caller persists the shared snapshot on it, so a timer-promoted
+    /// Running (or debounce-confirmed Done) reaches tabs opened later, keeping
+    /// every instance's rail convergent (the same guarantee pushed statuses
+    /// already have). Debounce-map bookkeeping alone does not count: it is not
+    /// snapshotted.
+    pub fn on_timer(&mut self, tick: u64) -> bool {
+        let mut changed = false;
         let to_promote: Vec<u32> = self
             .pending
             .iter()
@@ -430,6 +436,7 @@ impl CommandStore {
                     pane_id,
                     TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick),
                 );
+                changed = true;
             }
         }
 
@@ -448,9 +455,11 @@ impl CommandStore {
                 if s.status == Status::Running {
                     s.status = Status::Done;
                     s.last_change_tick = tick;
+                    changed = true;
                 }
             }
         }
+        changed
     }
 
     /// Apply a pane's exit status. Deduped: a repeated identical

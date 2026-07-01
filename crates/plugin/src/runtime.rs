@@ -138,16 +138,22 @@ impl PluginRuntime {
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
         self.tick += 1;
-        self.radar.timer(self.tick);
+        // A tick can mutate the command store (debounced promotion to Running,
+        // Running→Done confirm). Persist the snapshot when it does, or a tab
+        // opened in that window would seed a rail missing the change — the same
+        // cross-instance convergence pushed statuses get from `status_pipe`.
+        let store_changed = self.radar.timer(self.tick);
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
-        let render =
-            permission_changed || awaiting_permission || self.timer_should_continue();
+        let render = permission_changed
+            || awaiting_permission
+            || store_changed
+            || self.timer_should_continue();
         let change = RadarChange {
             render,
             settle: true,
-            persist_snapshot: false,
+            persist_snapshot: store_changed,
             renames: vec![],
             cwd_bootstrap: vec![],
         };
@@ -757,6 +763,42 @@ mod tests {
     }
 
     #[test]
+    fn timer_promotion_persists_snapshot_for_late_spawned_instances() {
+        // A tick that promotes a debounced command to Running (or confirms a
+        // Done) MUTATES the command store, so it must persist the shared
+        // snapshot exactly like `status_pipe` does — otherwise a tab opened in
+        // that window seeds a rail missing the command and diverges until the
+        // command's next lifecycle event.
+        let mut runtime = runtime_with_config(config());
+        let argv: Vec<String> = vec!["cargo".into(), "test".into()];
+        runtime.command_changed(7, &argv, true);
+
+        // First tick past the debounce window promotes → must persist.
+        let promoted = runtime.timer(PermissionProbe::default());
+        assert!(
+            promoted.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
+            "promotion tick must persist the snapshot, got {:?}",
+            promoted.effects
+        );
+        let json = runtime.snapshot_json(None);
+        let mut restored = RadarState::default();
+        restored.load_snapshot(&json).expect("valid snapshot");
+        assert_eq!(
+            restored.command_store().get(7).unwrap().status,
+            Status::Running,
+            "a late-spawned instance must see the promoted command"
+        );
+
+        // A quiet tick (no store mutation) must NOT persist.
+        let quiet = runtime.timer(PermissionProbe::default());
+        assert!(
+            !quiet.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
+            "a no-change tick must not churn the snapshot, got {:?}",
+            quiet.effects
+        );
+    }
+
+    #[test]
     fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
         let mut runtime = runtime_with_config(config());
         let raw = payload::to_wire(
@@ -884,7 +926,9 @@ mod tests {
 
         let timer = runtime.timer(PermissionProbe::default());
         assert!(timer.render);
-        assert_eq!(timer.effects, vec![Effect::SetTimeout]);
+        // The promotion mutates the command store, so this tick persists the
+        // snapshot too (late-spawned instances must see the Running command).
+        assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout]);
         let state = runtime
             .radar
             .command_store()

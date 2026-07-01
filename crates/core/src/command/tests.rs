@@ -338,6 +338,26 @@
         );
     }
 
+    #[test]
+    fn on_timer_reports_observation_changes_for_snapshot_persistence() {
+        // The return value drives snapshot persistence in the plugin runtime:
+        // true exactly when an observation mutated (promotion or Done-flip),
+        // false on a quiet tick — so late-spawned instances converge without
+        // per-tick snapshot churn.
+        let mut store = CommandStore::default();
+        let cmd = vec!["cargo".to_string(), "test".to_string()];
+
+        assert!(!store.on_timer(1), "empty store: quiet tick");
+
+        store.on_command_changed(1, &cmd, true, Some("/w/repo"), 1);
+        assert!(store.on_timer(2), "debounced promotion mutates the store");
+        assert!(!store.on_timer(3), "already Running: quiet tick");
+
+        store.on_command_changed(1, &[], false, None, 4); // leaves foreground
+        assert!(store.on_timer(5), "confirmed Done-flip mutates the store");
+        assert!(!store.on_timer(6), "terminal Done: quiet tick");
+    }
+
     // ── Test 2: fg blip filtered (real command then is_foreground=false before timer)
 
     #[test]
