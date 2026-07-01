@@ -711,7 +711,7 @@ width <n>            # optional, default 32
 height <n>           # optional, default = enough to fit (no overflow)
 glyphs plain|nerd    # optional, default plain
 tab <pos> "<name>" [active]
-  <kind> <status> "<msg>"     # one line per pane, indented
+  <kind> <status> "<msg>" [task "<text>"] [exit <N>|?]     # one line per pane, indented
   ...
 ```
 

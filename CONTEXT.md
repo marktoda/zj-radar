@@ -126,13 +126,15 @@ the emitted ANSI and the click-target map cannot drift.
 
 The real external seam between producers and the plugin: the versioned
 `zj_radar.status.v1` pipe payload (`{v, source, pane, status, repo, branch,
-msg}`). Producers (the Claude plugin, the Codex CLI) are adapters that broadcast
-it; the plugin defends itself at parse time (sanitize, truncate, drop
+msg, task}`). Producers (the Claude plugin, the Codex CLI) are adapters that
+broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
 oversized/malformed). Ordering is latest-wins — the pipe delivers in order and no
 producer stamps a sequence, so there is nothing to reorder. Unknown fields are
 tolerated and ignored, so older producers still parse: a legacy `seq` and the
 former `on_focus` clear-on-focus hint (dropped when focus stopped driving state)
-both round-trip harmlessly.
+both round-trip harmlessly. `task` (optional): sticky task label — empty/absent
+leaves the stored label unchanged, non-empty replaces it; the plugin clears it
+on idle and on return-to-shell.
 
 ## Information source
 

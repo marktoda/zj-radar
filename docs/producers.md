@@ -78,12 +78,16 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
   "status": "running",
   "repo": "pinky",
   "branch": "fix/x",
-  "msg": "running tests…" }
+  "msg": "running tests…",
+  "task": "fix the flaky auth test" }
 ```
 
 - `status`: `running` → working · `pending` → needs-you · `done` · `error` ·
   `idle`/unknown → plain.
 - `pane.id`: strip any `terminal_` prefix from `$ZELLIJ_PANE_ID`.
+- `task` (optional, sent only on `UserPromptSubmit`): sticky task label —
+  empty/absent leaves the stored label unchanged, non-empty replaces it; the
+  plugin clears it on idle and on return-to-shell.
 - Unknown fields are ignored, so it's safe to send extras. (A former `on_focus`
   clear-on-focus hint is no longer used — the plugin clears a finished status when
   the pane returns to its shell prompt instead — but sending it does no harm.)

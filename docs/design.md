@@ -203,7 +203,8 @@ unaffected.
   "status": "running",                // running | pending | done | error | idle
   "repo": "pinky",
   "branch": "fix/x",
-  "msg": "running tests…" }           // truncated last assistant message
+  "msg": "running tests…",           // truncated last assistant message
+  "task": "fix the flaky auth test" } // optional, sent only on UserPromptSubmit
 ```
 
 **Plugin-side handling (defensive — the renderer/store, not the adapter, enforces these):**
@@ -212,6 +213,9 @@ unaffected.
 - Tolerate malformed/older/partial payloads: unknown fields ignored (including a
   legacy `seq` from older producers), missing fields default, unknown `status` →
   treated as `idle`.
+- `task` (optional): sticky task label — empty/absent leaves the stored label
+  unchanged, non-empty replaces it; the plugin clears it on idle and on
+  return-to-shell.
 - Ordering is latest-wins: the pipe delivers in order and no producer stamps a
   sequence, so a payload simply overwrites the pane's prior state.
 - Sanitize `repo`/`branch`/`msg`: strip ANSI/control chars, convert newlines to spaces, cap
