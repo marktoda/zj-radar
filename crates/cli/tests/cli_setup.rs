@@ -233,12 +233,20 @@ fn interrupted_download_leaves_no_partial_wasm() {
         .assert()
         .failure();
 
-    let leftovers: Vec<_> = fs::read_dir(tmp.path())
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("zj_radar-"))
-        .collect();
+    // Downloads stage in a per-user `zj-radar-<user>/` subdir of the temp root;
+    // sweep the whole tree so a leftover wasm/.part/.sha256 anywhere is caught.
+    fn sweep(dir: &std::path::Path, hits: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                sweep(&path, hits);
+            } else {
+                hits.push(path.display().to_string());
+            }
+        }
+    }
+    let mut leftovers = Vec::new();
+    sweep(tmp.path(), &mut leftovers);
     assert!(
         leftovers.is_empty(),
         "a failed download must leave neither the wasm nor a .part behind, found {leftovers:?}"

@@ -113,15 +113,18 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Publish a `.sha256` sidecar next to the wasm so `zj-radar setup zellij
-      # --download` (and `run`'s first-use fetch) can verify integrity, not just
-      # trust TLS. The CLI parses the first token, so the standard sha256sum
-      # "<hex>  <name>" line works as-is.
-      - name: Checksum the wasm
+      # Publish a `.sha256` sidecar next to EVERY binary artifact — the wasm
+      # (verified by `zj-radar setup zellij --download` and `run`'s first-use
+      # fetch) and each CLI tarball (verified by scripts/install.sh) — so
+      # installs check integrity, not just TLS. Consumers parse the first
+      # token, so the standard sha256sum "<hex>  <name>" line works as-is.
+      - name: Checksum the artifacts
         run: |
           cd dist
-          sha256sum zj_radar.wasm > zj_radar.wasm.sha256
-          cat zj_radar.wasm.sha256
+          for f in zj_radar.wasm zj-radar-*.tar.gz; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          cat ./*.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -135,5 +138,6 @@ jobs:
             dist/zj_radar.wasm.sha256
             scripts/install.sh
             dist/zj-radar-*.tar.gz
+            dist/zj-radar-*.tar.gz.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true

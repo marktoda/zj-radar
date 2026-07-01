@@ -9,7 +9,9 @@
 # Design contract (matches the sidebar plugin's pipe schema):
 #   - BROADCAST by name (never --plugin): reaches every sidebar instance and
 #     never force-launches a plugin if the sidebar isn't loaded.
-#   - Backgrounded: a slow/absent pipe must never block Claude's hook.
+#   - In-order and non-erroring: the pipe is sent synchronously (hooks fire in
+#     order, so the producer must not reorder its own broadcasts) and every
+#     failure path degrades to a silent no-op — never an error into Claude.
 #   - No-op outside Zellij, or on a non-terminal pane id.
 #
 # Dependency: jq (used to parse the hook payload + build JSON). The productized
@@ -177,4 +179,10 @@ if [[ "${ZJ_RADAR_DEBUG:-}" == "1" ]]; then
     exit 0
 fi
 
-( zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true ) &
+# Synchronous, matching the Rust CLI: hooks fire in order, so an in-order
+# producer is what makes the plugin's latest-wins contract hold. An earlier
+# version backgrounded this with `( … ) &`, which let a Stop→done pipe be
+# overtaken by the preceding PostToolUse→running — the stale spinner stuck
+# until the next event. `zellij pipe` is a fast local write; `|| true` keeps
+# a dead/absent server from erroring into Claude.
+zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true

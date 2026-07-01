@@ -85,7 +85,13 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
 /// storage remain the floor, and every new release publishes the sidecar (see
 /// `.github/workflows/release.yml`), so absence is the exception, not the norm.
 fn verify_checksum(version: &str, wasm: &Path) -> Result<(), String> {
-    let sidecar = std::env::temp_dir().join(format!("zj_radar-{version}.wasm.sha256"));
+    // The sidecar stages NEXT TO the wasm being verified (a user-owned dir on
+    // every call path: the private download dir, or the owned config dir), not
+    // at a predictable shared-temp path another local user could pre-plant.
+    let Some(name) = wasm.file_name().and_then(|n| n.to_str()) else {
+        return Err(format!("invalid wasm path {}", wasm.display()));
+    };
+    let sidecar = wasm.with_file_name(format!("{name}.sha256"));
     let _ = std::fs::remove_file(&sidecar); // clear any stale sidecar first
     if !try_download(&wasm_checksum_url(version), &sidecar) {
         eprintln!(
@@ -149,9 +155,35 @@ fn compute_sha256(path: &Path) -> Option<String> {
 
 /// Fetch the wasm matching `version` to a temp file and return its path.
 pub(crate) fn download_wasm(version: &str) -> Result<PathBuf, String> {
-    let dest = std::env::temp_dir().join(format!("zj_radar-{version}.wasm"));
+    let dest = private_download_dir()?.join(format!("zj_radar-{version}.wasm"));
     download_wasm_to(version, &dest)?;
     Ok(dest)
+}
+
+/// A per-user, mode-0700 staging dir for downloads. The shared temp root is
+/// world-writable, so a predictable path there can be pre-planted (a symlink
+/// makes curl clobber an arbitrary file) or swapped between checksum
+/// verification and the install copy (TOCTOU) by another local user. Fails
+/// closed: if the dir can't be made ours-only (someone else owns the name, or
+/// it's a symlink), we refuse rather than stage downloads in it.
+fn private_download_dir() -> Result<PathBuf, String> {
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let dir = std::env::temp_dir().join(format!("zj-radar-{user}"));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create download dir failed — {e}"))?;
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|e| format!("stat download dir failed — {e}"))?;
+    if !meta.is_dir() {
+        return Err(format!("{} exists but is not a directory — refusing to stage downloads there", dir.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+            format!("could not make {} private (chmod 700: {e}) — refusing to stage downloads there", dir.display())
+        })?;
+    }
+    Ok(dir)
 }
 
 /// HTTPS-only download via curl, falling back to wget only when curl is absent

@@ -56,16 +56,52 @@ asset_url() {
   fi
 }
 
-# Download $1 to $2 over HTTPS only, failing hard on HTTP errors.
+# Download $1 to $2 over HTTPS only (redirects included), failing hard on HTTP errors.
 download() {
   url="$1"; dest="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -fL "$url" -o "$dest"
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL "$url" -o "$dest"
   elif command -v wget >/dev/null 2>&1; then
     wget --https-only -O "$dest" "$url"
   else
     err "need curl or wget to download"
   fi
+}
+
+# Best-effort quiet fetch of an OPTIONAL asset (the checksum sidecar): returns
+# nonzero instead of erroring, since releases predating checksums lack it.
+try_download() {
+  url="$1"; dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "$url" -o "$dest" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget --https-only -qO "$dest" "$url" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# Verify $1 against its sha256 sidecar file $2 (sha256sum "<hex>  <name>" form).
+# Strict on mismatch — a tarball that doesn't match its published digest must
+# never be installed. A missing local sha256 tool downgrades to a warning,
+# matching `zj-radar setup zellij --download`'s policy (TLS stays the floor).
+verify_sha256() {
+  file="$1"; sidecar="$2"
+  expected=""
+  read -r expected _ < "$sidecar" || true
+  [ -n "$expected" ] || { say "warning: checksum file unreadable; skipping integrity check"; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$file")"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$file")"
+  else
+    say "warning: no sha256 tool (sha256sum/shasum) on PATH; skipping integrity check"
+    return 0
+  fi
+  actual="${actual%% *}" # keep the leading hex, drop the filename column
+  [ "$actual" = "$expected" ] \
+    || err "checksum mismatch for $file (expected $expected, got $actual) — refusing to install"
+  say "checksum verified"
 }
 
 main() {
@@ -82,6 +118,12 @@ main() {
 
   if ! download "$url" "$tmp/zj-radar.tar.gz"; then
     err "download failed — is $VERSION released for $triple? See https://github.com/$REPO/releases"
+  fi
+
+  if try_download "$url.sha256" "$tmp/zj-radar.tar.gz.sha256"; then
+    verify_sha256 "$tmp/zj-radar.tar.gz" "$tmp/zj-radar.tar.gz.sha256"
+  else
+    say "warning: no checksum published for this release; installing TLS-verified only"
   fi
 
   tar -xzf "$tmp/zj-radar.tar.gz" -C "$tmp"
