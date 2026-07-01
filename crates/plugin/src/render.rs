@@ -351,6 +351,23 @@ pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
     RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 
+/// Split an agent pane's text into its identity-line text and an optional
+/// subordinate detail line. The identity is the sticky task when one is known
+/// (falling back to the msg — so task-less panes, i.e. commands and old
+/// producers, render bit-identically to the pre-task rail). The detail is the
+/// actionable question, emitted only for Pending/Error when a distinct,
+/// non-blank msg exists — calm states never spend a second line.
+fn identity_and_detail<'a>(status: Status, task: &'a str, msg: &'a str) -> (&'a str, Option<&'a str>) {
+    if task.trim().is_empty() {
+        return (msg, None);
+    }
+    let detail = match status {
+        Status::Pending | Status::Error if !msg.trim().is_empty() && msg.trim() != task.trim() => Some(msg),
+        _ => None,
+    };
+    (task, detail)
+}
+
 /// Emit one row's body into `out`, respecting `max_lines`.
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
@@ -484,12 +501,18 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             } else {
                 Branch::Tee
             };
-            let text = emit_pane_line(pane, opts, row.active, st, &dim_strong, &idle_color, branch);
-            lines.push(Line {
-                text,
-                target: Some(RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) }),
-                bg: if row.active { LineBg::ActiveChild } else { LineBg::Card },
-            });
+            let (identity, detail) =
+                identity_and_detail(pane.render_status(), pane.task(), pane.msg());
+            let text = emit_pane_line(pane, identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
+            let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
+            let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
+            lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+            if let Some(q) = detail {
+                let text = emit_pane_detail_line(
+                    q, row.active, st, pane.render_status(), branch, &idle_color, opts.width,
+                );
+                lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+            }
         }
 
         if remaining > 0 {
@@ -517,7 +540,8 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // outcome tag to show. For Pending (the question), the command is colored in
     // attention (loud); others dim. The outcome tag carries its own role hue.
     if let Some(d) = &row.display.detail {
-        if !d.msg.trim().is_empty() || d.outcome.is_some() {
+        let (identity, detail) = identity_and_detail(st, &d.task, &d.msg);
+        if !identity.trim().is_empty() || d.outcome.is_some() {
             match st {
                 Status::Idle => {}
                 Status::Done | Status::Running | Status::Error | Status::Pending => {
@@ -531,12 +555,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                     // col 1 after the bar/spine column), matching the design.
                     let prefix_vis = 2 + mark_width + 1;
                     let avail = width.saturating_sub(prefix_vis);
-                    let cmd_color = if st == Status::Pending {
+                    let cmd_color = if st == Status::Pending && detail.is_none() {
                         hue(Role::Attention)
                     } else {
                         dim_strong.clone()
                     };
-                    let activity = compose_activity(&d.msg, d.outcome, avail, &cmd_color);
+                    let activity = compose_activity(identity, d.outcome, avail, &cmd_color);
                     lines.push(Line {
                         text: format!(
                             "  {} {}\n",
@@ -546,6 +570,15 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                         target: Some(tab_target),
                         bg: LineBg::Card,
                     });
+                    if let Some(q) = detail {
+                        // "    ↳ q" — 4-space indent aligns ↳ under the mark; 6 visible prefix cols.
+                        let budget = width.saturating_sub(6);
+                        lines.push(Line {
+                            text: format!("    {}\n", Seg::new(&hue(st.role()), format!("↳ {}", truncate(q, budget)))),
+                            target: Some(tab_target),
+                            bg: LineBg::Card,
+                        });
+                    }
                 }
             }
         }
@@ -604,8 +637,14 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
 /// Emit one pane line in the line-per-pane / tree design:
 /// Inactive: ` {connector} {glyph} {mark} {msg}` (space + `├`/`└` + space)
 /// Active:   `▌{connector} {glyph} {mark} {msg}` (spine + `├`/`└` + space)
+// `identity`/`has_detail` (Task 4) pushed this past clippy's 7-arg default; the
+// params are tightly coupled render-context pieces (no natural sub-struct)
+// shared with `emit_pane_detail_line`'s sibling call in `render_row`.
+#[allow(clippy::too_many_arguments)]
 fn emit_pane_line(
     pane: &PaneDisplay,
+    identity: &str,
+    has_detail: bool,
     opts: &RenderOpts,
     tab_active: bool,
     tab_status: Status,
@@ -631,7 +670,7 @@ fn emit_pane_line(
     // single plain line clamped to `width` so nothing exceeds the band.
     if width < prefix_vis {
         let spine = if tab_active { "▌" } else { " " };
-        let plain = format!("{spine}{} {glyph} {mark} {}", branch.glyph(), pane.msg());
+        let plain = format!("{spine}{} {glyph} {mark} {}", branch.glyph(), identity);
         return format!("{}\n", truncate(&plain, width));
     }
     let avail = width.saturating_sub(prefix_vis);
@@ -639,12 +678,12 @@ fn emit_pane_line(
     // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
     // (vendor-neutral, heavier than the faint idle_text).
     let glyph_color = role_ansi(status.role());
-    let cmd_color = if status == Status::Pending {
+    let cmd_color = if status == Status::Pending && !has_detail {
         role_ansi(Role::Attention).to_string()
     } else {
         dim_strong.to_string()
     };
-    let activity = compose_activity(pane.msg(), pane.outcome(), avail, &cmd_color);
+    let activity = compose_activity(identity, pane.outcome(), avail, &cmd_color);
     // The glyph carries the status color (bold on non-idle, matching line 1); the
     // mark is the vendor-neutral stronger dim, always bold.
     let glyph_seg = Seg {
@@ -659,6 +698,42 @@ fn emit_pane_line(
         glyph_seg,
         mark_seg,
         activity,
+    )
+}
+
+/// Emit the subordinate `↳ question` line under a Pending/Error pane line.
+/// Prefix (7 cols): spine/space + connector continuation (`│` when siblings
+/// follow, space under the last child) + 3 spaces + `↳` + space. The question
+/// reads in the pane's status hue (attention/error), not bold — subordinate to
+/// the identity line above it.
+fn emit_pane_detail_line(
+    question: &str,
+    tab_active: bool,
+    tab_status: Status,
+    pane_status: Status,
+    branch: Branch,
+    conn_color: &str,
+    width: usize,
+) -> String {
+    let cont = match branch {
+        Branch::Tee => "│",
+        Branch::Elbow => " ",
+    };
+    const PREFIX_VIS: usize = 7; // spine + cont + 3 spaces + ↳ + space
+    if width < PREFIX_VIS {
+        let spine = if tab_active { "▌" } else { " " };
+        return format!("{}\n", truncate(&format!("{spine}{cont}   ↳ {question}"), width));
+    }
+    let spine = if tab_active {
+        Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
+    } else {
+        " ".to_string()
+    };
+    format!(
+        "{}{}   {}\n",
+        spine,
+        Seg::new(conn_color, cont),
+        Seg::new(pane_status.role().ansi(), format!("↳ {}", truncate(question, width - PREFIX_VIS))),
     )
 }
 

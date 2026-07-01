@@ -4053,3 +4053,52 @@ fn needs_permission_face_is_distinct_and_actionable() {
     assert!(plain.contains("Ctrl-y"), "must tell the user the grant keybind:\n{needs}");
     assert!(plain.to_lowercase().contains("permission"), "must mention permission");
 }
+
+#[test]
+fn identity_and_detail_rules() {
+    use super::identity_and_detail;
+    // Task-less panes: today's behavior, no detail line — bit-identical rail.
+    assert_eq!(identity_and_detail(Status::Running, "", "editing x.rs"), ("editing x.rs", None));
+    assert_eq!(identity_and_detail(Status::Pending, "", "approve?"), ("approve?", None));
+    // Task is the identity in every state.
+    assert_eq!(identity_and_detail(Status::Running, "fix e2e", "editing x.rs"), ("fix e2e", None));
+    assert_eq!(identity_and_detail(Status::Done, "fix e2e", "All tests pass"), ("fix e2e", None));
+    // Actionable states get the question as a subordinate detail…
+    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "approve?"), ("fix e2e", Some("approve?")));
+    assert_eq!(identity_and_detail(Status::Error, "fix e2e", "boom"), ("fix e2e", Some("boom")));
+    // …unless it would duplicate the identity or is blank.
+    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "fix e2e"), ("fix e2e", None));
+    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "  "), ("fix e2e", None));
+}
+
+#[test]
+fn pending_pane_with_task_renders_identity_plus_question_line() {
+    // Multi-pane tab: pending pane shows task on its line and the question on
+    // a `↳` line that carries the SAME pane click target (lockstep).
+    let row = TabRow {
+        number: 1,
+        name: "review".into(),
+        active: false,
+        has_bell: false,
+        display: TabDisplay {
+            status: Status::Pending,
+            progress: ProgressCounts { done: 0, total: 2, pending: 1 },
+            detail: None,
+            panes: vec![
+                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), None),
+                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), None),
+            ],
+        },
+    };
+    let rendered = render_rail(&[row], &ro_comfortable(32, 40));
+    let grid = strip_ansi_local(&rendered.ansi); // use the file's existing ANSI-strip helper
+    assert!(grid.contains("├ ◆ ✳ migrate schema"), "task is the identity line:\n{grid}");
+    assert!(grid.contains("│   ↳ approve git push?"), "question is subordinate:\n{grid}");
+    assert!(grid.contains("└ ⠋ ❉ write tests"), "running pane shows task only:\n{grid}");
+    // Lockstep: the ↳ line click-jumps to the pending pane.
+    let q_line = grid.lines().position(|l| l.contains('↳')).unwrap();
+    assert_eq!(
+        rendered.target_at_line(q_line as isize),
+        Some(RailTarget { tab_position: 0, pane_id: Some(10) }),
+    );
+}
