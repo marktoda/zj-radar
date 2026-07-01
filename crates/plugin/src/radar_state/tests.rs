@@ -35,6 +35,7 @@ fn payload_for(pane_id: u32, status: Status, repo: &str) -> StatusPayload {
         repo: repo.into(),
         branch: "main".into(),
         msg: "working".into(),
+        task: String::new(),
         source: "claude".into(),
     }
 }

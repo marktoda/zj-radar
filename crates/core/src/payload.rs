@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 pub const MAX_PAYLOAD_BYTES: usize = 65536;
 pub const MAX_MSG_CHARS: usize = 60;
+pub const MAX_TASK_CHARS: usize = 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusPayload {
@@ -13,6 +14,10 @@ pub struct StatusPayload {
     pub repo: String,
     pub branch: String,
     pub msg: String,
+    /// Sticky task label (first line of the user's prompt). Wire semantics:
+    /// empty/absent = leave the pane's stored task unchanged; non-empty =
+    /// replace. Clearing is a plugin lifecycle rule, never a wire signal.
+    pub task: String,
     pub source: String,
 }
 
@@ -33,6 +38,8 @@ struct Raw {
     branch: String,
     #[serde(default)]
     msg: String,
+    #[serde(default)]
+    task: String,
     #[serde(default)]
     source: String,
 }
@@ -176,6 +183,7 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
         repo: sanitize(&r.repo, 40),
         branch: sanitize(&r.branch, 40),
         msg: sanitize(&r.msg, MAX_MSG_CHARS),
+        task: sanitize(&r.task, MAX_TASK_CHARS),
         source: sanitize(&r.source, 16),
     })
 }
@@ -192,6 +200,7 @@ struct Wire<'a> {
     repo: &'a str,
     branch: &'a str,
     msg: &'a str,
+    task: &'a str,
 }
 
 #[derive(serde::Serialize)]
@@ -209,6 +218,7 @@ pub fn to_wire(
     repo: &str,
     branch: &str,
     msg: &str,
+    task: &str,
     source: &str,
 ) -> String {
     serde_json::to_string(&Wire {
@@ -222,6 +232,7 @@ pub fn to_wire(
         repo,
         branch,
         msg,
+        task,
     })
     .expect("status payload of plain fields always serializes")
 }
@@ -379,6 +390,29 @@ mod tests {
     }
 
     #[test]
+    fn task_field_round_trips_and_defaults_empty() {
+        // Absent task defaults to "" (old producers).
+        let got = p(r#"{"pane":{"type":"terminal","id":3},"status":"running"}"#).unwrap();
+        assert_eq!(got.task, "");
+        // Present task survives to_wire → parse.
+        let json = to_wire(9, Status::Running, "r", "b", "editing x.rs", "fix flaky e2e", "claude");
+        let got = parse(&json).expect("to_wire output must parse");
+        assert_eq!(got.task, "fix flaky e2e");
+        assert_eq!(got.msg, "editing x.rs");
+    }
+
+    #[test]
+    fn task_is_sanitized_and_capped() {
+        let json = format!(
+            r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","task":"\u001b[31m{}"}}"#,
+            "t".repeat(100),
+        );
+        let got = p(&json).unwrap();
+        assert_eq!(got.task.chars().count(), MAX_TASK_CHARS);
+        assert!(!got.task.contains('\u{1b}'));
+    }
+
+    #[test]
     fn to_wire_round_trips_through_parse() {
         use crate::status::Status;
         let json = to_wire(
@@ -387,6 +421,7 @@ mod tests {
             "pinky",
             "fix/x",
             "running tests",
+            "",
             "claude",
         );
         let got = parse(&json).expect("to_wire output must parse");
@@ -453,6 +488,7 @@ mod tests {
             repo in "[a-z]{0,15}",
             branch in "[a-z/]{0,15}",
             msg in "[a-zA-Z0-9 ]{0,40}",
+            task in "[a-zA-Z0-9 ]{0,40}",
             source in "[a-z]{0,12}",
         ) {
             // to_wire and parse must be inverses: a round-trip through the wire
@@ -460,13 +496,14 @@ mod tests {
             // the full pane-id range, and msg/source (the fields the old version
             // silently dropped). Only printable ASCII within each field's cap is
             // generated, so sanitize does not alter any field.
-            let wire = to_wire(pane, status, &repo, &branch, &msg, &source);
+            let wire = to_wire(pane, status, &repo, &branch, &msg, &task, &source);
             let got = parse(&wire).expect("our own wire output must parse");
             prop_assert_eq!(got.pane_id, pane);
             prop_assert_eq!(got.status, status);
             prop_assert_eq!(got.repo, repo);
             prop_assert_eq!(got.branch, branch);
             prop_assert_eq!(got.msg, msg);
+            prop_assert_eq!(got.task, task);
             prop_assert_eq!(got.source, source);
         }
 

@@ -402,6 +402,7 @@ mod tests {
                 repo: "repo".into(),
                 branch: "branch".into(),
                 msg: msg.into(),
+                task: String::new(),
                 source: "test".into(),
             },
             tick,

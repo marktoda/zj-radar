@@ -142,7 +142,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     // the plugin's 60-char display cap so its sanitizer still has content after
     // control-char stripping.
     let msg: String = update.msg.chars().take(512).collect();
-    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, agent.source());
+    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, "", agent.source());
 
     if dry_run {
         eprintln!("{payload}");

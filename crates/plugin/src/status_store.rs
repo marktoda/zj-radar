@@ -128,6 +128,7 @@ mod tests {
             repo: "r".into(),
             branch: "b".into(),
             msg: "m".into(),
+            task: String::new(),
             source: "test".into(),
         }
     }
