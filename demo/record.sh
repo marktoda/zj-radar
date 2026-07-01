@@ -30,7 +30,11 @@ if rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
     cargo build "${cargo_flags[@]}" --target wasm32-wasip1 -p zj-radar-plugin
 elif command -v nix >/dev/null 2>&1; then
     echo "    (wasm32-wasip1 target missing; building via nix)"
-    nix build .#zj-radar -L && wasm="$root/result/bin/zj_radar.wasm"
+    # Two statements, not `nix build … && wasm=…`: a non-final `&&` member
+    # suppresses errexit, so a failed build would fall through and record a
+    # broken demo against a stale/missing wasm path.
+    nix build .#zj-radar -L
+    wasm="$root/result/bin/zj_radar.wasm"
 else
     echo "record.sh: install the wasm32-wasip1 target (rustup target add wasm32-wasip1) or nix" >&2
     exit 1
