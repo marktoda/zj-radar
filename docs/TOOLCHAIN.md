@@ -44,9 +44,12 @@ Nix flake when it does not.
 
 Zellij 0.44 does not safely hot-reload plugins that were created by a layout:
 `start-or-reload-plugin` opens a second pane instead. `./dev/run.sh` builds the
-debug wasm, writes a generated layout with an absolute plugin path, and restarts
-the disposable `zj-radar-dev` session when run from a normal terminal. Inside
-Zellij, it finds the existing zj-radar sidebar panes in the current session and
-replaces each one with `launch-plugin --in-place`, closing replaced panes and
-skipping the plugin cache while preserving the rest of the session. Use
-`./dev/run.sh --fresh-session` when you want the older clean-session behavior.
+debug wasm and writes a generated layout with an absolute plugin path, then:
+
+- **From a normal terminal** it (re)starts the disposable `zj-radar-dev` session
+  against that layout — the full clean-slate dev surface.
+- **Inside an existing Zellij session** it leaves the current session untouched
+  (it will not hot-swap panes in a session you're working in) and prints a hint
+  to use `--fresh-session`. Pass `./dev/run.sh --fresh-session` to switch your
+  client to a fresh disposable dev session (it refuses to replace the session
+  you're currently in). Re-run to pick up a new build.

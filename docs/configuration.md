@@ -5,14 +5,16 @@ pipe. For a minimal example, see [Configuration in the README](../README.md#conf
 
 ## Options
 
-With the recommended alias setup, defaults live in
-`~/.config/zellij/config.kdl`:
+With the recommended alias setup, options go on the `radar` alias in
+`~/.config/zellij/config.kdl`. Every key is optional and takes the default from
+the table below when omitted; the block below shows two keys set to **non-default**
+values purely to illustrate the syntax:
 
 ```kdl
 plugins {
     radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
-        density "comfortable"
-        naming "off"
+        density "comfortable"   // default is "cards"
+        naming "off"            // default is "managed"
     }
 }
 ```

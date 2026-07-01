@@ -54,7 +54,8 @@ wrapping your agents. It's a status rail for the session you already run.
 ## Quick start
 
 ```sh
-# 1. Install the zj-radar CLI (Linux / macOS prebuilt binary)
+# 1. Install the zj-radar CLI (prebuilt: Linux x86_64/aarch64, Apple Silicon macOS;
+#    Intel macOS installs from source — see docs/install.md)
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
 

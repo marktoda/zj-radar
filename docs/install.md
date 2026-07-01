@@ -15,9 +15,12 @@ There are two jobs to get a working radar:
 
 ## Recommended: install the CLI, then `setup zellij --download`
 
-A tagged release ships a prebuilt `zj-radar` CLI for Linux and macOS. Install it
-with the one-line script, then let it fetch the matching sidebar wasm and manage
-the Zellij plugin alias:
+A tagged release ships a prebuilt `zj-radar` CLI for Linux (x86_64 and aarch64,
+static musl) and **Apple Silicon** macOS (aarch64). Intel (x86_64) macOS has no
+prebuilt binary — the installer detects it and points you at the source install
+(`cargo install zj-radar`); see [Build from source](#build-from-source-instead).
+Install with the one-line script, then let it fetch the matching sidebar wasm and
+manage the Zellij plugin alias:
 
 ```sh
 # Static Linux + macOS binary; installs to ~/.local/bin by default.

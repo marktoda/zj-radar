@@ -213,8 +213,11 @@ unaffected.
 ## 6. Plugin ↔ Zellij wiring
 
 - **Permissions:** `ReadApplicationState` (tab/pane state), `ReadCliPipes` (broadcast),
-  `ChangeApplicationState` (`switch_tab_to`). **No `RunCommands`** — notifications stay in the
-  adapters. Keep the pane selectable only until `PermissionRequestResult` arrives so the first-run
+  `ChangeApplicationState` (`switch_tab_to`, `rename_tab`), and `RunCommands` — the plugin now
+  owns OS desktop notifications and hands each one to the host via `run_command` (see §12; a
+  reversal of the original "notifications stay in the adapters, no `RunCommands`" stance). When
+  the grant is absent, `run_command` is a silent host no-op, so notifications simply don't fire.
+  Keep the pane selectable only until `PermissionRequestResult` arrives so the first-run
   permission prompt is reachable; then call `set_selectable(false)` so the pane never steals focus
   from pane keybinds.
   - **Per-tab prompt coordination:** the sidebar is instantiated once per tab. On an uncached
