@@ -147,7 +147,6 @@ impl PluginRuntime {
         let change = RadarChange {
             render,
             settle: true,
-            arm_timer: true,
             persist_snapshot: false,
             renames: vec![],
             cwd_bootstrap: vec![],
@@ -253,7 +252,6 @@ impl PluginRuntime {
             render: true,
             renames,
             settle: false,
-            arm_timer: false,
             persist_snapshot: false,
             cwd_bootstrap: vec![],
         };
@@ -409,9 +407,11 @@ impl PluginRuntime {
     /// effects come first, without a post-hoc splice. Canonical order: renames
     /// → snapshot → cwd → `SetTimeout` → notify — identical to today's
     /// `panes_changed`, so that handler is byte-for-byte unchanged. `settle`
-    /// and `arm_timer` are the per-handler stamps described in `## Settle`
-    /// (`CONTEXT.md`): this is the only place either `notify_effects` or
-    /// `arm_timer_if_needed` is called.
+    /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
+    /// is the only place either `notify_effects` or `arm_timer_if_needed` is
+    /// called. `arm_timer_if_needed` self-guards on `timer_armed` and on
+    /// whether there's anything to arm for, so calling it unconditionally
+    /// here is a no-op wherever a handler has no pending work to arm for.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
         fx.extend(self.effects_from_renames(c.renames));
         if c.persist_snapshot {
@@ -420,9 +420,7 @@ impl PluginRuntime {
         if !c.cwd_bootstrap.is_empty() {
             fx.push(Effect::ResolveCwd { pane_ids: c.cwd_bootstrap });
         }
-        if c.arm_timer {
-            self.arm_timer_if_needed(&mut fx);
-        }
+        self.arm_timer_if_needed(&mut fx);
         if c.settle {
             fx.extend(self.notify_effects());
         }
@@ -1020,8 +1018,8 @@ mod tests {
         let mut rt = two_tab_runtime_with_running_commands();
         rt.radar.command_mut().on_exit(7, Some(0), rt.tick);
         // `arm_timer_if_needed` self-guards on `timer_armed`; the setup helper's
-        // timer tick already armed it, so reset to let this change's `arm_timer`
-        // actually produce a `SetTimeout` effect.
+        // timer tick already armed it, so reset to let `project`'s unconditional
+        // arm call actually produce a `SetTimeout` effect.
         rt.timer_armed = false;
 
         let change = RadarChange {
@@ -1030,7 +1028,6 @@ mod tests {
             renames: vec![TabRename { position: 0, name: "renamed".into() }],
             cwd_bootstrap: vec![7],
             settle: true,
-            arm_timer: true,
         };
         let outcome = rt.project(vec![], change);
 

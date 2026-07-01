@@ -176,8 +176,6 @@ pub(crate) struct RadarChange {
     /// together — see `CONTEXT.md`'s `## Settle` entry. `false` defers both to
     /// the timer.
     pub settle: bool,
-    /// Whether the runtime should arm its heartbeat timer for this event.
-    pub arm_timer: bool,
 }
 
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
@@ -271,7 +269,6 @@ impl RadarState {
         RadarChange {
             render: true,
             settle: false,
-            arm_timer: false,
             ..RadarChange::default()
         }
     }
@@ -303,7 +300,6 @@ impl RadarState {
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
             settle: true,
-            arm_timer: false,
         }
     }
 
@@ -329,7 +325,6 @@ impl RadarState {
             render: true,
             renames: self.rename_tabs(naming),
             settle: false,
-            arm_timer: false,
             ..RadarChange::default()
         }
     }
@@ -347,7 +342,6 @@ impl RadarState {
         RadarChange {
             render: true,
             settle: false,
-            arm_timer: true,
             ..RadarChange::default()
         }
     }
@@ -375,7 +369,6 @@ impl RadarState {
             renames: self.rename_tabs(naming),
             cwd_bootstrap: Vec::new(),
             settle: false,
-            arm_timer: true,
         })
     }
 
