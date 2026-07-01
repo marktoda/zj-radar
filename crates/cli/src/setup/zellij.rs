@@ -324,7 +324,6 @@ fn print_producer_hint_if_needed(facts: &ZellijFacts) {
     }
 }
 
-
 /// Print the "Add the sidebar to a Zellij layout with:" paste snippet, tailored
 /// to these layout facts. Single source for the manual-add instruction shared by
 /// every snippet-only path (no layout, `--yes`/non-tty, declined prompt).
