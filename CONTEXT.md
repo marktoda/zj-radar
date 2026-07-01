@@ -79,6 +79,23 @@ The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and
 click-target lockstep. `RadarState` owns the domain facts between those seams.
 
+## Settle
+
+Whether a completion is acted on *now* or deferred to the timer. Radar reconciles
+focus and fires notifications — the two always move together — only on events
+whose focus is *trustworthy*: `panes_changed` (this update *carries* the fresh
+focus) and the `timer` tick (any focus `PaneUpdate` has been processed by the time
+it fires, so `last_focused` is settled). A `status_pipe` payload is a raw
+completion edge that can arrive *before* the focus `PaneUpdate` reflecting the user
+leaving, so its focus may be stale; it deliberately does **not** settle, and
+instead arms the timer, which carries the recede + notify once focus has settled
+(see the `reconcile_focus` discussion above). The remaining intake events
+(`cwd_changed`, `command_changed`, `config_pipe`, `tabs_changed`) are not
+completion edges, so they never settle either. This "act where focus is
+trustworthy, defer where it is stale" rule is the single reason the reconcile and
+notify call sites line up across every handler — they are one decision, not two
+that happen to agree.
+
 ## Tab naming
 
 The policy that decides what each tab is called, and remembers what it last
