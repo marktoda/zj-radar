@@ -338,12 +338,14 @@ fn session_is_running(name: &str) -> bool {
 
 pub fn run(opts: RunOptions) {
     let Some(dir) = owned_config_dir() else {
+        crate::exit::fail();
         eprintln!("zj-radar: could not resolve a data directory");
         return;
     };
     let materialized = match materialize(&dir, env!("CARGO_PKG_VERSION"), &embedded_assets()) {
         Ok(m) => m,
         Err(e) => {
+            crate::exit::fail();
             eprintln!("zj-radar: failed to set up config dir {}: {e}", dir.display());
             return;
         }
@@ -360,6 +362,7 @@ pub fn run(opts: RunOptions) {
     if !materialized.wasm_path.exists() {
         let version = super::setup::wasm_download_version();
         if let Err(e) = super::setup::download_wasm_to(&version, &materialized.wasm_path) {
+            crate::exit::fail();
             eprintln!(
                 "zj-radar: no embedded wasm and the download failed — {e}\n\
                  Fetch it once while online with: zj-radar setup zellij --download"
@@ -392,6 +395,7 @@ pub fn run(opts: RunOptions) {
         return;
     }
     if plan.nested {
+        crate::exit::fail();
         eprintln!(
             "zj-radar: you're already inside Zellij. `run` starts a NEW session — detach first \
              (Ctrl-o d by default) and re-run, or use `zj-radar setup` to add the rail to your \
@@ -406,6 +410,7 @@ pub fn run(opts: RunOptions) {
         let _ = std::process::Command::new("zellij").args(dispatch).status();
     }
     if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
+        crate::exit::fail();
         eprintln!("zj-radar: failed to launch zellij: {e}");
     }
 }

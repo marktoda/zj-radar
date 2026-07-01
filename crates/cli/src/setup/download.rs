@@ -46,12 +46,33 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
     }
     let url = wasm_release_url(version);
     println!("zj-radar: downloading wasm {version} from {url}");
-    run_download(&url, dest)?;
-    if !dest.is_file() {
-        return Err(format!("download reported success but {} is missing", dest.display()));
+    // Download to a `.part` sibling and rename into place only after the
+    // transfer AND checksum both succeed. curl/wget write `dest` incrementally,
+    // so an interrupted transfer straight to `dest` would leave a partial file
+    // that the `exists()`/up-to-date gates treat as a valid wasm forever after —
+    // and Zellij would then load it with permissions.
+    let part = match dest.file_name().and_then(|n| n.to_str()) {
+        Some(name) => dest.with_file_name(format!("{name}.part")),
+        None => return Err(format!("invalid download destination {}", dest.display())),
+    };
+    let fetched = run_download(&url, &part)
+        .and_then(|()| {
+            if !part.is_file() {
+                return Err(format!(
+                    "download reported success but {} is missing",
+                    part.display()
+                ));
+            }
+            verify_checksum(version, &part)
+        })
+        .and_then(|()| {
+            std::fs::rename(&part, dest)
+                .map_err(|e| format!("moving the download into place failed — {e}"))
+        });
+    if fetched.is_err() {
+        let _ = std::fs::remove_file(&part);
     }
-    verify_checksum(version, dest)?;
-    Ok(())
+    fetched
 }
 
 /// Verify the freshly-downloaded wasm against its published `.sha256` sidecar.
@@ -139,7 +160,9 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
     use std::process::Command;
     if which("curl") {
         let status = Command::new("curl")
-            .args(["--proto", "=https", "--tlsv1.2", "-fL", url, "-o"])
+            // `--proto-redir =https` too: `--proto` alone doesn't constrain
+            // redirect targets, and `-L` follows them.
+            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fL", url, "-o"])
             .arg(dest)
             .status()
             .map_err(|e| format!("failed to run curl — {e}"))?;
@@ -177,7 +200,7 @@ fn try_download(url: &str, dest: &Path) -> bool {
     use std::process::Command;
     if which("curl") {
         return Command::new("curl")
-            .args(["--proto", "=https", "--tlsv1.2", "-fsSL", url, "-o"])
+            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fsSL", url, "-o"])
             .arg(dest)
             .status()
             .map(|s| s.success())

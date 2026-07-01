@@ -26,6 +26,26 @@ mod notify;
 mod run;
 mod setup;
 
+/// Process-wide failure flag. The setup/run orchestrators report refusals and
+/// write failures by printing a diagnostic and returning early through several
+/// layers; they mark the invocation failed here instead of threading a Result
+/// through every signature. [`run`] maps it to the process exit code, so
+/// `zj-radar setup … && next` composes correctly in scripts and installers.
+/// A user *declining* a confirmation prompt is not a failure.
+pub(crate) mod exit {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static FAILED: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) fn fail() {
+        FAILED.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn failed() -> bool {
+        FAILED.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "zj-radar",
@@ -104,8 +124,9 @@ enum Command {
     },
 }
 
-/// CLI entry point (called by `src/main.rs`).
-pub fn run() {
+/// CLI entry point (called by `src/main.rs`). Returns the process exit code:
+/// failure when any orchestrator flagged a refusal/error via [`exit::fail`].
+pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run { name, print_cmd } => {
@@ -148,5 +169,10 @@ pub fn run() {
                 grant,
             });
         }
+    }
+    if exit::failed() {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
     }
 }

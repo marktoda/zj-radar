@@ -54,6 +54,7 @@ pub(crate) fn run_grant(config_dir: &Path) {
     match Command::new("zellij").args(&args).status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
+            crate::exit::fail();
             eprintln!(
                 "zj-radar: zellij plugin exited with {status}; \
                  try running: zellij {}",
@@ -61,6 +62,7 @@ pub(crate) fn run_grant(config_dir: &Path) {
             );
         }
         Err(e) => {
+            crate::exit::fail();
             eprintln!(
                 "zj-radar: failed to launch zellij for grant — {e}; \
                  try running: zellij {}",
@@ -202,6 +204,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 Some(downloaded.as_path())
             }
             Err(e) => {
+                crate::exit::fail();
                 eprintln!("zellij: refused — {e}");
                 return;
             }
@@ -228,10 +231,12 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
 
     if !uninstall {
         let Some(src) = src else {
+            crate::exit::fail();
             eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm> or --download");
             return;
         };
         if !src.is_file() {
+            crate::exit::fail();
             eprintln!("zellij: refused — wasm not found at {}", src.display());
             return;
         }
@@ -436,12 +441,14 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
             }
         }
         Err(crate::layout::Refusal::Unparseable(msg)) => {
+            crate::exit::fail();
             eprintln!("zellij: layout could not be parsed — {msg}");
             eprintln!("        Add the rail manually using the snippet below.");
             let snippet = crate::layout::tailored_snippet(facts);
             println!("\n{snippet}");
         }
         Err(crate::layout::Refusal::Unrecognized(msg)) => {
+            crate::exit::fail();
             eprintln!("zellij: layout shape not recognized — {msg}");
             eprintln!("        Add the rail manually using the snippet below.");
             let snippet = crate::layout::tailored_snippet(facts);

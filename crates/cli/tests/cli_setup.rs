@@ -198,6 +198,53 @@ fn setup_zellij_refuses_wasm_and_download_together() {
     );
 }
 
+// ── Test: an interrupted download never leaves a partial wasm behind ─────────
+// curl/wget write the destination incrementally, so a killed transfer used to
+// leave a partial file that the exists()/up-to-date gates then treated as a
+// valid wasm forever after (and Zellij would load it with permissions). The
+// download must stage to a `.part` sibling and clean it up on failure.
+
+#[test]
+fn interrupted_download_leaves_no_partial_wasm() {
+    let fakebin = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+
+    // A fake `curl` that mimics an interrupted transfer: writes partial bytes
+    // to the `-o` target, then fails.
+    let curl = fakebin.path().join("curl");
+    fs::write(
+        &curl,
+        "#!/bin/sh\nprev=\"\"\nfor a in \"$@\"; do\n  [ \"$prev\" = \"-o\" ] && printf 'PARTIAL' > \"$a\"\n  prev=\"$a\"\ndone\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--download", "--yes"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("PATH", fakebin.path()) // only the fake curl is resolvable
+        .env("TMPDIR", tmp.path()) // std::env::temp_dir() lands here
+        .assert()
+        .failure();
+
+    let leftovers: Vec<_> = fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("zj_radar-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a failed download must leave neither the wasm nor a .part behind, found {leftovers:?}"
+    );
+}
+
 // ── Layout injection tests ────────────────────────────────────────────────────
 //
 // `setup zellij --inject` (no --wasm / --download) takes the inject-only path:

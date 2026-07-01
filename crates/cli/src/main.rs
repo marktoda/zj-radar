@@ -1,1 +1,1 @@
-fn main() { zj_radar_cli::run(); }
+fn main() -> std::process::ExitCode { zj_radar_cli::run() }
