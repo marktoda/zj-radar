@@ -1,15 +1,15 @@
 # Rail rendering reference — spec by example (executable)
 
-> **Status:** PROPOSED target design (2026-06-28), revised per review. This file
-> is the **test oracle**: each scenario carries a `rail-input` block (the state)
-> and a `rail-expect` block (the exact ANSI-stripped grid). A crate test parses
-> them, runs the real `aggregate` + `render_rail`, and asserts the grid matches
-> (see *Using this as tests* at the end). Edit a block → edit the test.
+> **Status:** SHIPPED — the executable spec for the rendered rail (originally
+> proposed 2026-06-28). This file is the **test oracle**: each scenario carries
+> a `rail-input` block (the state) and a `rail-expect` block (the exact
+> ANSI-stripped grid). A crate test (`crates/plugin/src/reference_tests.rs`)
+> parses them, runs the real `aggregate` + `render_rail`, and asserts the grid
+> matches (see *Using this as tests* at the end). Edit a block → edit the test.
 
 ## Design rules (this revision)
 
-1. **Width 32 columns.** (Was 24.) The layout snippet's `size=24` should bump to
-   `size=32` to match. ⟦D8⟧
+1. **Width 32 columns.** The layout snippets all use `size=32` to match. ⟦D8⟧
 2. **No elapsed/timer, for now.** Removed from tab and pane lines entirely.
    Per-pane elapsed is the eventual right answer but adds width pressure; revisit
    later. ⟦D-timer⟧

@@ -53,6 +53,10 @@ wrapping your agents. It's a status rail for the session you already run.
 
 ## Quick start
 
+> **Requires Zellij 0.44.x.** Zellij's plugin ABI is not yet stable across
+> versions; the sidebar is built and tested against 0.44 (`zellij --version`
+> to check). On another version the wasm may simply fail to load.
+
 ```sh
 # 1. Install the zj-radar CLI (prebuilt: Linux x86_64/aarch64, Apple Silicon macOS;
 #    Intel macOS installs from source — see docs/install.md)

@@ -3,6 +3,40 @@
 The sidebar lives in your tab templates and exists once per tab, which bumps
 into a few sharp edges in Zellij itself. Here is what they look like and why.
 
+## Sidebar renders, but no status ever appears
+
+**Symptom:** the rail draws your tabs, but agents work and finish invisibly —
+every row stays idle.
+
+The rail and the status feed are separate installs (sidebar vs
+[producer](producers.md)), so a rendering rail says nothing about the feed.
+Diagnose in order:
+
+1. **`zj-radar setup zellij --check`** — the `producer` item says whether a
+   producer (the Claude plugin or Codex hooks) is wired at all; the `grant`
+   item catches a missing permission grant.
+2. **Bypass the producers with the smoke test** — broadcast a fake status
+   straight from a shell *inside* the session (see
+   [Writing your own producer](producers.md#writing-your-own-producer) for the
+   full command):
+
+   ```sh
+   zellij pipe --name zj_radar.status.v1 -- \
+     '{"v":1,"source":"test","pane":{"type":"terminal","id":0},"status":"running","repo":"demo","msg":"hello"}'
+   ```
+
+   If a row lights up, the sidebar is fine and the producer is the problem; if
+   nothing happens, re-check the grant and that the sidebar pane is actually
+   this session's (reload after `--download` updates the wasm).
+3. **Producer prerequisites.** The agent must run *inside* the Zellij session
+   (the hooks no-op without `$ZELLIJ_PANE_ID`, e.g. in a plain terminal or
+   over ssh without Zellij). The Claude plugin's bash fallback additionally
+   needs `jq` — without it the hook silently no-ops; installing the `zj-radar`
+   CLI removes that dependency.
+4. **Version skew.** The sidebar requires Zellij 0.44.x (unstable plugin ABI);
+   on other versions the wasm can fail to load entirely, which presents as a
+   blank or missing rail rather than an idle one.
+
 ## Can't open a new tab (the two-template rule)
 
 **Symptom:** new tabs created at runtime (`Ctrl+t n`) contain only the sidebar

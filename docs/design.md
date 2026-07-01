@@ -1,8 +1,8 @@
 # zj-radar — a native Zellij sidebar for AI-agent status
 
-**Status:** design / approved for spec-review (revised after external review; reconciled
-after the smart-tabs removal — see `smart-tabs-postmortem.md`)
-**Date:** 2026-06-26
+**Status:** living design — shipped; kept current as the implementation evolves
+(originally approved 2026-06-26; revised after external review, the smart-tabs
+removal — see `smart-tabs-postmortem.md` — and the focus-removal refactor)
 **Author:** Mark Toda (with Claude)
 
 > **Update (post-postmortem):** `zellij-smart-tabs` has been **removed entirely** from the
@@ -68,8 +68,10 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
  NORMAL  <p>ane <t>ab …   ← existing status-bar, untouched
 ```
 
-- `✗` red = error · `◑` orange = waiting-for-you · `◐` yellow = working · `●` green = done ·
-  `○` dim = plain terminal (no agent).
+- `✗` red = error · `◆` orange = waiting-for-you (pending) · `⠋` spinner = working ·
+  `●` green = done · `○` dim = plain terminal (no agent). (The shipped glyph set —
+  the sketch above shows the layout, not final glyphs; `docs/rail-reference.md` is
+  the executable spec for the rendered rail.)
 - **Status vocabulary:** the pipe sends raw values `running`/`pending`/`done`/`error`/`idle`;
   the renderer maps `running`→working, `pending`→waiting-for-you, `idle`/absent→plain.
 - Per-tab rows are **two lines**: line 1 = state dot + **display tab number** + name (+
@@ -94,7 +96,7 @@ runtime.
 │ Claude → plugin hook / native CLI  (running/pending/done) │
 │ Codex  → native CLI via hooks.json (running/pending/done) │
 └───────────────────────────┬───────────────────────────────┘
-   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,on_focus}
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg}
    (BROADCAST by name — not --plugin: see §6)
                             │
                             ▼
@@ -201,8 +203,7 @@ unaffected.
   "status": "running",                // running | pending | done | error | idle
   "repo": "pinky",
   "branch": "fix/x",
-  "msg": "running tests…",            // truncated last assistant message
-  "on_focus": "idle" }                // optional: status to apply when this exact pane is next focused
+  "msg": "running tests…" }           // truncated last assistant message
 ```
 
 **Plugin-side handling (defensive — the renderer/store, not the adapter, enforces these):**
@@ -368,7 +369,8 @@ the host target):
 4. **Payload safety:** huge messages, embedded newlines, ANSI escapes, invalid-UTF-8-ish input,
    unknown `status`, oversized payloads — all handled without panic.
 5. **Unicode width:** dots/ellipsis, branch names with emoji/CJK, narrow widths.
-6. **Focus clear:** `on_focus` clears only the intended pane (not merely its tab becoming active).
+6. **Focus inertness:** a legacy `on_focus` field (or `seq`) riding a payload is
+   tolerated on the wire and changes nothing — focus never drives rail state.
 7. **Aggregation severity:** `error > pending > running > done > idle`.
 8. **Count semantics:** `done/total` over panes that ever reported non-idle and still exist.
 9. **Idle rendering:** a tab whose agent went idle does not look like an active agent tab.
@@ -440,7 +442,7 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
 - Moving notification logic into the plugin. **Update:** the plugin now owns OS desktop
-  notifications (macOS, this version). Rationale: single plugin install provides a standard,
+  notifications (macOS `osascript`, Linux `notify-send`). Rationale: single plugin install provides a standard,
   user-configurable notification surface (via `notify*` KDL keys) that survives across agent
   adapters — reversing the prior assumption that notifications belong in shell adapters alone.
   This trade-off is stable: adapters delegate OS delivery to the plugin while owning their own

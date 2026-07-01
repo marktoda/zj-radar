@@ -5,6 +5,11 @@ to your Zellij layout. For the **producer** (whatever broadcasts agent status),
 see [`producers.md`](producers.md). For a copy-paste fast path, see
 [Quick start](../README.md#quick-start).
 
+**Requirements:** Zellij **0.44.x** — the plugin ABI is not yet stable across
+Zellij versions, so a sidebar built against 0.44 may fail to load elsewhere
+(check with `zellij --version`). `--download` additionally needs `curl` or
+`wget` on PATH.
+
 There are two jobs to get a working radar:
 
 1. **Show the sidebar in Zellij** — install the wasm at a stable path, define a
