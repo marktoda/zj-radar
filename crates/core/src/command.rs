@@ -12,8 +12,11 @@ use std::collections::{HashMap, HashSet};
 pub const DEBOUNCE_TICKS: u64 = 1;
 
 /// Shell/prompt programs that signal "back to the prompt" rather than a real
-/// foreground command.
-const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship"];
+/// foreground command. `direnv` is here because its `direnv export <shell>`
+/// hook runs on *every* prompt to sync the environment — tracking it would open
+/// a spurious command lifecycle after each real command and notify "direnv"
+/// instead of the command that just finished.
+const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship", "direnv"];
 
 /// Binaries of the *push*-instrumented agents. These report via the
 /// `zj_radar.status.v1` pipe from their hooks, so the command observer must
