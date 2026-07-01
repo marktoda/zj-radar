@@ -149,6 +149,12 @@ msg="${msg:0:512}"
 # for git < 2.31 (no --path-format), then to the cwd basename.
 common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 common="${common%/}"
+# git < 2.31 doesn't know --path-format: rev-parse ECHOES the unknown flag to
+# stdout and exits 0, so $common would be the flag text plus a relative `.git`
+# on a second line — and the `*.git` arm below would then hand basename a
+# `--`-leading argument, aborting the whole hook under `set -e`. Require a
+# single-line absolute path; anything else falls to --show-toplevel below.
+[[ "$common" == /* && "$common" != *$'\n'* ]] || common=""
 case "$common" in
     */.git) repo="$(basename "$(dirname "$common")")" ;;   # .../pinky/.git → pinky
     *.git)  repo="$(basename "${common%.git}")" ;;          # bare repo acme.git → acme

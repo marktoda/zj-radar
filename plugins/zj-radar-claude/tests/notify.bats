@@ -149,13 +149,16 @@ EOF
   [[ "$output" == *'"repo":"acme"'* ]]
 }
 
-@test "git fallback: old git (no --git-common-dir) uses --show-toplevel basename" {
-  # git < 2.31 lacks --path-format/--git-common-dir; the script falls back to
-  # --show-toplevel and uses its basename.
+@test "git fallback: old git ECHOES --path-format and must not crash the hook" {
+  # git < 2.31 doesn't know --path-format. Crucially it does NOT exit 1: rev-parse
+  # ECHOES the unknown flag to stdout (exit 0), followed by the relative common
+  # dir. Un-guarded, that string fell into the `*.git` case arm and `basename`
+  # aborted the whole hook under `set -e` — erroring into Claude on every event.
+  # The guard must reject it and fall back to --show-toplevel's basename.
   cat >"$FAKEBIN/git" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"--git-common-dir"*)      exit 1 ;;
+  *"--path-format="*)        printf -- '--path-format=absolute\n.git\n' ;;
   *"--show-toplevel"*)       echo /home/u/legacy-repo ;;
   *"branch --show-current"*) echo main ;;
   *) exit 0 ;;
@@ -165,4 +168,17 @@ EOF
   echo '{"hook_event_name":"Stop","cwd":"/home/u/legacy-repo/src"}' | "$SCRIPT" done
   run last_payload
   [[ "$output" == *'"repo":"legacy-repo"'* ]]
+}
+
+@test "git fallback: rev-parse hard failure still resolves repo from cwd" {
+  # No git repo at all (every rev-parse fails): the repo falls back to the cwd
+  # basename and the hook still broadcasts rather than erroring.
+  cat >"$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$FAKEBIN/git"
+  echo '{"hook_event_name":"Stop","cwd":"/home/u/scratch"}' | "$SCRIPT" done
+  run last_payload
+  [[ "$output" == *'"repo":"scratch"'* ]]
 }

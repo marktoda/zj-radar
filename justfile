@@ -2,8 +2,10 @@
 test:
     cargo test --all-features
 
-# Bash hook tests (requires bats + shellcheck + jq on PATH).
+# Bash hook tests (requires bats + shellcheck + jq on PATH). Builds the CLI
+# first: parity.bats compares the bash producer against target/debug/zj-radar.
 test-bash:
+    cargo build -p zj-radar
     shellcheck plugins/zj-radar-claude/scripts/notify.sh
     bats plugins/zj-radar-claude/tests
 

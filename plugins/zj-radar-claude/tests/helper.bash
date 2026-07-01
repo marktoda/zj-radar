@@ -23,13 +23,31 @@ esac
 EOF
   chmod +x "$FAKEBIN/zellij" "$FAKEBIN/git"
   # Keep the REAL jq (we want real JSON building); only fake zellij/git.
-  # Ensure zj-radar is NOT on the test PATH so the bash fallback runs.
-  export PATH="$FAKEBIN:$PATH"
-  # Hard-fail if a real zj-radar binary is resolvable by name. If it were
-  # present, notify.sh would `exec zj-radar notify ...` and bypass the fake
-  # zellij recorder — every test that checks $RECORD would pass vacuously.
+  # A real zj-radar on PATH would make notify.sh `exec zj-radar notify …` and
+  # bypass the fake zellij recorder — every $RECORD assertion would then pass
+  # vacuously. Dogfooding machines DO have one installed, so don't refuse: drop
+  # any PATH dir that resolves it, keeping every other real tool available.
+  local orig_path="$PATH" filtered="" dir
+  local IFS=':'
+  for dir in $PATH; do
+    [[ -z "$dir" || -x "$dir/zj-radar" ]] && continue
+    filtered="${filtered:+$filtered:}$dir"
+  done
+  unset IFS
+  export PATH="$FAKEBIN:$filtered"
+  # A filtered dir may have ALSO held a tool the suite needs (e.g. jq next to
+  # zj-radar) — re-link any that went missing into the fake bin.
+  local tool src
+  for tool in jq timeout; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      src="$(PATH="$orig_path" command -v "$tool" 2>/dev/null || true)"
+      [[ -n "$src" && "$src" != */zj-radar ]] && ln -s "$src" "$FAKEBIN/$tool"
+    fi
+  done
+  # Belt-and-braces: if one is somehow still resolvable, fail loudly rather
+  # than let the suite go vacuous.
   if command -v zj-radar >/dev/null 2>&1; then
-    echo "ERROR: a real zj-radar is on PATH; bats must test the bash fallback" >&2
+    echo "ERROR: a real zj-radar is still on PATH; bats must test the bash fallback" >&2
     return 1
   fi
   export ZELLIJ=1 ZELLIJ_PANE_ID=terminal_7

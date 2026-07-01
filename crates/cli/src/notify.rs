@@ -31,7 +31,11 @@ fn pane_id_from_env() -> Option<u32> {
 ///   .git                           → None         (relative — caller falls back)
 fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
     let trimmed = common_dir.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
+    // git < 2.31 doesn't know `--path-format`; rev-parse ECHOES the unknown
+    // flag to stdout (exit 0), so the captured "dir" is the flag text plus a
+    // relative `.git` on a second line. Require a single-line absolute path —
+    // anything else falls back to `--show-toplevel` in the caller.
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.contains('\n') {
         return None;
     }
     let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
@@ -193,6 +197,21 @@ mod tests {
         assert_eq!(repo_name_from_common_dir(".git"), None);
         assert_eq!(repo_name_from_common_dir(""), None);
         assert_eq!(repo_name_from_common_dir("   "), None);
+    }
+
+    #[test]
+    fn common_dir_old_git_flag_echo_is_none() {
+        // git < 2.31 doesn't know `--path-format`: rev-parse ECHOES the unknown
+        // flag to stdout and exits 0, so this exact string is what git_output
+        // hands us. It must be rejected (→ --show-toplevel fallback), not
+        // surfaced as a repo named "--path-format=absolute".
+        assert_eq!(
+            repo_name_from_common_dir("--path-format=absolute\n.git"),
+            None
+        );
+        // And any other multi-line or non-absolute output is equally untrusted.
+        assert_eq!(repo_name_from_common_dir("/a/.git\n/b/.git"), None);
+        assert_eq!(repo_name_from_common_dir("relative/.git"), None);
     }
 
     // --- bounded stdin read ---
