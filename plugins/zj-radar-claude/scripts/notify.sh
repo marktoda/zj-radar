@@ -44,6 +44,7 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 [[ -n "$cwd" ]] || cwd="$PWD"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
+task=""
 
 # Whole-word containment (mirrors zj_radar_core::command::contains_word): is $2
 # present in $1 bounded by non-[a-z0-9] chars or string edges? $1 is assumed
@@ -61,6 +62,24 @@ contains_word() {
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
     hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
+    # UserPromptSubmit: capture the first non-empty prompt line as the sticky
+    # task label (mirrors task_from_prompt in agents.rs). Slash commands and
+    # bare acks send no task — the plugin keeps the previous label.
+    if [[ "$hook_event" == "UserPromptSubmit" ]]; then
+        prompt="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
+        task="$(printf '%s\n' "$prompt" \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | grep -m1 . || true)"
+        case "$task" in "/"*) task="" ;; esac
+        # Ack filter: lowercase, strip trailing punctuation (parity with the
+        # Rust ACK_PROMPTS list — keep the two lists identical).
+        t_norm="$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]' | sed -e 's/[.!?,]*$//' -e 's/[[:space:]]*$//')"
+        case "$t_norm" in
+            y|yes|yep|yeah|n|no|ok|okay|k|sure|go|"go ahead"|proceed|continue|"do it"|lgtm|"sounds good"|approved|thanks|ty|"thank you")
+                task="" ;;
+        esac
+        task="${task:0:512}"
+    fi
     if [[ "$hook_event" == "PreToolUse" || "$hook_event" == "PostToolUse" ]]; then
         tool_name="$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null || true)"
         tool_activity=""
@@ -171,8 +190,9 @@ payload="$(jq -nc \
     --arg repo "$repo" \
     --arg branch "$branch" \
     --arg msg "$msg" \
+    --arg task "$task" \
     '{v: 1, source: "claude", pane: {type: "terminal", id: $id},
-      status: $status, repo: $repo, branch: $branch, msg: $msg}')"
+      status: $status, repo: $repo, branch: $branch, msg: $msg, task: $task}')"
 
 if [[ "${ZJ_RADAR_DEBUG:-}" == "1" ]]; then
     printf 'zj-radar payload: %s\n' "$payload" >&2

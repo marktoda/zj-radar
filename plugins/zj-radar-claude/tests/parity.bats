@@ -75,6 +75,35 @@ teardown() { teardown_fakes; }
   parity_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo"}' running
 }
 
+payload_task() { last_payload | jq -r '.task'; }
+
+parity_task_case() { # $1 = hook JSON
+  rm -f "$RECORD"
+  echo "$1" | "$SCRIPT" running
+  local bash_task; bash_task="$(payload_task)"
+  rm -f "$RECORD"
+  echo "$1" | "$CLI" notify claude --status running
+  local rust_task; rust_task="$(payload_task)"
+  echo "bash=[$bash_task] rust=[$rust_task]"
+  [ "$bash_task" = "$rust_task" ]
+}
+
+@test "parity: UserPromptSubmit task label" {
+  parity_task_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"fix the flaky e2e retries\ndetails follow"}'
+}
+
+@test "parity: slash-command prompt sends no task" {
+  parity_task_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"/clear"}'
+}
+
+@test "parity: ack prompt sends no task" {
+  parity_task_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"Yes."}'
+}
+
+@test "parity: tool event sends no task" {
+  parity_task_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Grep","tool_input":{"pattern":"x"},"prompt":"stray"}'
+}
+
 @test "parity: idle clears the message in both producers" {
   # `parity_case` asserts a NON-empty msg, so idle (intentionally blank) needs
   # its own check: both producers must agree on status=idle AND an empty msg,

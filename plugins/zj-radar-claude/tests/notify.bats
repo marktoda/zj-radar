@@ -50,6 +50,12 @@ teardown() { teardown_fakes; }
   [ ! -s "$RECORD" ]
 }
 
+@test "UserPromptSubmit broadcasts the first prompt line as task" {
+  echo '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp","prompt":"  fix flaky e2e  \nrest"}' | "$SCRIPT" running
+  [ "$(last_payload | jq -r '.task')" = "fix flaky e2e" ]
+  [ "$(last_payload | jq -r '.msg')" = "working" ]
+}
+
 @test "Stop broadcasts status=done" {
   echo '{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}' | "$SCRIPT" done
   run last_payload
