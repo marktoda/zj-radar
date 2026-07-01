@@ -33,7 +33,9 @@ impl StatusStore {
         } else {
             p.task
         };
-        self.store.insert(
+        // Displaced observation ignored here; Task 6 ledgers a Done/Error that
+        // recedes on overwrite.
+        let _ = self.store.insert(
             p.pane_id,
             TrackedObservation {
                 origin: ObservationOrigin::StatusPipe,
@@ -73,7 +75,8 @@ impl StatusStore {
         let repo = prev.repo.clone();
         let branch = prev.branch.clone();
         let kind = prev.kind;
-        self.store.insert(
+        // Displaced observation ignored here; see `apply`.
+        let _ = self.store.insert(
             pane_id,
             TrackedObservation {
                 origin: ObservationOrigin::StatusPipe,
@@ -92,7 +95,8 @@ impl StatusStore {
     }
 
     pub fn prune(&mut self, live: &HashSet<u32>) {
-        self.store.prune(live);
+        // Dropped entries ignored here; Task 6/8 ledger them.
+        let _ = self.store.prune(live);
     }
 
     pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {
@@ -123,7 +127,7 @@ impl StatusStore {
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        self.store.insert(pane_id, observation);
+        let _ = self.store.insert(pane_id, observation);
     }
 }
 

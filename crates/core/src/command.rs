@@ -432,7 +432,9 @@ impl CommandStore {
         for pane_id in to_promote {
             if let Some(p) = self.pending.remove(&pane_id) {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
-                self.store.insert(
+                // Displaced observation ignored here; Task 6 ledgers a Done/Error
+                // that recedes on overwrite.
+                let _ = self.store.insert(
                     pane_id,
                     TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick),
                 );
@@ -501,7 +503,8 @@ impl CommandStore {
             // shell that exits is removed from the manifest (never reported
             // `exited=true`), so it never reaches here. Do not "guard to tracked
             // panes" — that would drop legitimate run-pane completions.
-            self.store.insert(
+            // Displaced observation ignored here; see the promotion path above.
+            let _ = self.store.insert(
                 pane_id,
                 TrackedObservation {
                     exit_code: exit_status,
@@ -519,7 +522,8 @@ impl CommandStore {
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
     pub fn prune(&mut self, live: &HashSet<u32>) {
-        self.store.prune(live);
+        // Dropped entries ignored here; Task 6/8 ledger them.
+        let _ = self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
@@ -542,7 +546,7 @@ impl CommandStore {
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        self.store.insert(pane_id, observation);
+        let _ = self.store.insert(pane_id, observation);
     }
 
     /// True if any pane is Running or has a pending fg command. Used (alongside

@@ -98,12 +98,23 @@ impl ObservationStore {
         self.map.get_mut(&pane_id)
     }
 
-    pub fn insert(&mut self, pane_id: u32, observation: TrackedObservation) {
-        self.map.insert(pane_id, observation);
+    /// Insert, returning the observation this one displaced (if any) — the hook
+    /// recede edges ride: a Done/Error coming back out of `insert`/`prune` is a
+    /// completion leaving the card, which `RadarState` may ledger.
+    pub fn insert(&mut self, pane_id: u32, observation: TrackedObservation) -> Option<TrackedObservation> {
+        self.map.insert(pane_id, observation)
     }
 
-    pub fn prune(&mut self, live: &HashSet<u32>) {
+    /// Prune, returning the dropped entries (see `insert`).
+    pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+        let dropped: Vec<(u32, TrackedObservation)> = self
+            .map
+            .iter()
+            .filter(|(id, _)| !live.contains(id))
+            .map(|(&id, obs)| (id, obs.clone()))
+            .collect();
         self.map.retain(|id, _| live.contains(id));
+        dropped
     }
 
     pub fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
@@ -156,6 +167,18 @@ mod tests {
         assert!(json.contains(r#""status":"error""#), "status token: {json}");
         assert!(json.contains(r#""task":"fix e2e""#), "task persists in snapshots: {json}");
         assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+    }
+
+    #[test]
+    fn insert_returns_displaced_and_prune_returns_dropped() {
+        let mut s = ObservationStore::default();
+        assert!(s.insert(1, sample()).is_none());
+        let displaced = s.insert(1, TrackedObservation { status: Status::Done, ..sample() });
+        assert_eq!(displaced.unwrap().status, Status::Error, "old entry comes back out");
+        s.insert(2, sample());
+        let dropped = s.prune(&[2].into_iter().collect());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].0, 1);
     }
 
     #[test]
