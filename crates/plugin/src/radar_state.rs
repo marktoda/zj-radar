@@ -172,6 +172,12 @@ pub(crate) struct RadarChange {
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
     /// for a freshly-opened tab that has not emitted a `CwdChanged` yet.
     pub cwd_bootstrap: Vec<u32>,
+    /// Whether this event's focus is trustworthy enough to reconcile + notify
+    /// together — see `CONTEXT.md`'s `## Settle` entry. `false` defers both to
+    /// the timer.
+    pub settle: bool,
+    /// Whether the runtime should arm its heartbeat timer for this event.
+    pub arm_timer: bool,
 }
 
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
@@ -264,6 +270,8 @@ impl RadarState {
         self.tabs = tabs;
         RadarChange {
             render: true,
+            settle: false,
+            arm_timer: false,
             ..RadarChange::default()
         }
     }
@@ -294,6 +302,8 @@ impl RadarState {
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
+            settle: true,
+            arm_timer: false,
         }
     }
 
@@ -318,6 +328,8 @@ impl RadarState {
         RadarChange {
             render: true,
             renames: self.rename_tabs(naming),
+            settle: false,
+            arm_timer: false,
             ..RadarChange::default()
         }
     }
@@ -334,6 +346,8 @@ impl RadarState {
             .on_command_changed(pane_id, command, is_foreground, cwd, tick);
         RadarChange {
             render: true,
+            settle: false,
+            arm_timer: true,
             ..RadarChange::default()
         }
     }
@@ -360,6 +374,8 @@ impl RadarState {
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: Vec::new(),
+            settle: false,
+            arm_timer: true,
         })
     }
 

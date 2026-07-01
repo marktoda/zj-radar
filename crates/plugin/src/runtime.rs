@@ -32,7 +32,7 @@
 use crate::control::Command;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
-use crate::radar_state::{Direction, PaneUpdate, RadarState, RadarTab};
+use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
 use crate::render::{self, RenderedRail, TabRow};
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -119,7 +119,7 @@ impl PluginRuntime {
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
         let change = self.radar.tabs_changed(tabs);
-        Outcome::with_effects(change.render, Vec::new())
+        self.project(vec![], change)
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
@@ -129,17 +129,7 @@ impl PluginRuntime {
         let change = self
             .radar
             .panes_changed(update, self.tick, self.config.naming);
-        let mut effects = self.effects_from_renames(change.renames);
-        if change.persist_snapshot {
-            effects.push(Effect::PersistSnapshot);
-        }
-        if !change.cwd_bootstrap.is_empty() {
-            effects.push(Effect::ResolveCwd {
-                pane_ids: change.cwd_bootstrap,
-            });
-        }
-        effects.extend(self.notify_effects());
-        Outcome::with_effects(true, effects)
+        self.project(vec![], change)
     }
 
     pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
@@ -152,12 +142,17 @@ impl PluginRuntime {
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
-        self.arm_timer_if_needed(&mut effects);
-        effects.extend(self.notify_effects());
-        Outcome::with_effects(
-            permission_changed || awaiting_permission || self.radar.has_active_or_pending_work(),
-            effects,
-        )
+        let render =
+            permission_changed || awaiting_permission || self.radar.has_active_or_pending_work();
+        let change = RadarChange {
+            render,
+            settle: true,
+            arm_timer: true,
+            persist_snapshot: false,
+            renames: vec![],
+            cwd_bootstrap: vec![],
+        };
+        self.project(effects, change)
     }
 
     pub(crate) fn mouse_click(&self, line: isize) -> Outcome {
@@ -222,7 +217,7 @@ impl PluginRuntime {
 
     pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String) -> Outcome {
         let change = self.radar.cwd_changed(pane_id, path, self.config.naming);
-        Outcome::with_effects(change.render, self.effects_from_renames(change.renames))
+        self.project(vec![], change)
     }
 
     pub(crate) fn command_changed(
@@ -234,21 +229,14 @@ impl PluginRuntime {
         let change = self
             .radar
             .command_changed(pane_id, command, is_foreground, self.tick);
-        let mut effects = Vec::new();
-        self.arm_timer_if_needed(&mut effects);
-        Outcome::with_effects(change.render, effects)
+        self.project(vec![], change)
     }
 
     pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
         let Some(change) = self.radar.status_pipe(raw, self.tick, self.config.naming) else {
             return Outcome::none();
         };
-        let mut effects = self.effects_from_renames(change.renames);
-        self.arm_timer_if_needed(&mut effects);
-        if change.persist_snapshot {
-            effects.push(Effect::PersistSnapshot);
-        }
-        Outcome::with_effects(change.render, effects)
+        self.project(vec![], change)
     }
 
     pub(crate) fn snapshot_json(&self, existing: Option<&str>) -> String {
@@ -261,7 +249,15 @@ impl PluginRuntime {
         };
         self.config.apply_overrides(&kv);
         let renames = self.radar.recompute_renames(self.config.naming);
-        Outcome::with_effects(true, self.effects_from_renames(renames))
+        let change = RadarChange {
+            render: true,
+            renames,
+            settle: false,
+            arm_timer: false,
+            persist_snapshot: false,
+            cwd_bootstrap: vec![],
+        };
+        self.project(vec![], change)
     }
 
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
@@ -406,6 +402,31 @@ impl PluginRuntime {
             .into_iter()
             .map(|TabRename { position, name }| Effect::RenameTab { position, name })
             .collect()
+    }
+
+    /// The sole projection from a domain [`RadarChange`] to host [`Effect`]s.
+    /// `fx` is a caller-supplied seed so the `timer` handler's permission
+    /// effects come first, without a post-hoc splice. Canonical order: renames
+    /// → snapshot → cwd → `SetTimeout` → notify — identical to today's
+    /// `panes_changed`, so that handler is byte-for-byte unchanged. `settle`
+    /// and `arm_timer` are the per-handler stamps described in `## Settle`
+    /// (`CONTEXT.md`): this is the only place either `notify_effects` or
+    /// `arm_timer_if_needed` is called.
+    fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
+        fx.extend(self.effects_from_renames(c.renames));
+        if c.persist_snapshot {
+            fx.push(Effect::PersistSnapshot);
+        }
+        if !c.cwd_bootstrap.is_empty() {
+            fx.push(Effect::ResolveCwd { pane_ids: c.cwd_bootstrap });
+        }
+        if c.arm_timer {
+            self.arm_timer_if_needed(&mut fx);
+        }
+        if c.settle {
+            fx.extend(self.notify_effects());
+        }
+        Outcome::with_effects(c.render, fx)
     }
 }
 
@@ -732,11 +753,15 @@ mod tests {
 
         assert!(outcome.render);
         assert!(runtime.radar.status_store().any_active());
+        // Canonical `project` order is renames → snapshot → cwd → SetTimeout →
+        // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
+        // not position — the order contract has its own dedicated test.
         assert_eq!(outcome.effects.len(), 2);
-        assert_eq!(outcome.effects[0], Effect::SetTimeout);
-        let Effect::PersistSnapshot = &outcome.effects[1] else {
-            panic!("expected persisted snapshot");
-        };
+        assert!(outcome.effects.contains(&Effect::SetTimeout));
+        assert!(outcome
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistSnapshot)));
         let json = runtime.snapshot_json(None);
         let mut restored = RadarState::default();
         let tick = restored.load_snapshot(&json).expect("valid snapshot");
@@ -985,6 +1010,73 @@ mod tests {
         // Idle default. In production the same happens on every timer fire; here
         // it means test assertions only see the transition edge under test.
         rt
+    }
+
+    #[test]
+    fn project_emits_effects_in_canonical_order() {
+        // Sole home of the order contract: renames → snapshot → cwd →
+        // SetTimeout → notify. Seed a background Done so `settle` actually
+        // produces a Notify, exercising all five effect kinds in one change.
+        let mut rt = two_tab_runtime_with_running_commands();
+        rt.radar.command_mut().on_exit(7, Some(0), rt.tick);
+        // `arm_timer_if_needed` self-guards on `timer_armed`; the setup helper's
+        // timer tick already armed it, so reset to let this change's `arm_timer`
+        // actually produce a `SetTimeout` effect.
+        rt.timer_armed = false;
+
+        let change = RadarChange {
+            render: true,
+            persist_snapshot: true,
+            renames: vec![TabRename { position: 0, name: "renamed".into() }],
+            cwd_bootstrap: vec![7],
+            settle: true,
+            arm_timer: true,
+        };
+        let outcome = rt.project(vec![], change);
+
+        let kind = |e: &Effect| match e {
+            Effect::RenameTab { .. } => 0,
+            Effect::PersistSnapshot => 1,
+            Effect::ResolveCwd { .. } => 2,
+            Effect::SetTimeout => 3,
+            Effect::Notify { .. } => 4,
+            other => panic!("unexpected effect in canonical-order test: {other:?}"),
+        };
+        let kinds: Vec<i32> = outcome.effects.iter().map(kind).collect();
+        let mut sorted = kinds.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            kinds, sorted,
+            "effects must appear in canonical order (renames < snapshot < cwd < timer < notify); got {:?}",
+            outcome.effects
+        );
+        // All five kinds must actually be present, otherwise the ordering
+        // assertion above is vacuous.
+        for expected in 0..=4 {
+            assert!(
+                kinds.contains(&expected),
+                "expected effect kind {expected} to be present; got {:?}",
+                outcome.effects
+            );
+        }
+    }
+
+    #[test]
+    fn cwd_changed_never_bootstraps_cwd() {
+        // Guards the bound documented on `Effect::ResolveCwd`: `cwd_changed`'s
+        // `RadarChange` must never carry a `cwd_bootstrap`, or the
+        // `ResolveCwd` → `cwd_changed` re-entry could recurse.
+        let mut runtime = runtime_with_config(config::Config {
+            naming: NamingMode::Managed,
+            density: Density::Compact,
+            ..config::Config::default()
+        });
+        runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
+        runtime.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+        let change = runtime.radar.cwd_changed(7, "/work/myrepo".into(), NamingMode::Managed);
+
+        assert!(change.cwd_bootstrap.is_empty());
     }
 
     #[test]
