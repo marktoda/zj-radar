@@ -214,6 +214,38 @@ mod tests {
     }
 
     #[test]
+    fn analyze_zellij_producer_wired_when_claude_plugin_present() {
+        let env = ZellijEnv {
+            config_text: None,
+            layout_text: None,
+            permissions_text: None,
+            codex_hooks_text: None,
+            installed_plugins_text: Some(r#"{"plugins":["zj-radar-claude"]}"#.to_string()),
+            wasm_present: false,
+            config_managed: false,
+            wasm_path: "/x.wasm".to_string(),
+        };
+        let f = analyze_zellij(&env);
+        assert!(f.producer_wired, "claude producer plugin present -> wired");
+    }
+
+    #[test]
+    fn analyze_zellij_producer_wired_when_codex_hooks_marked() {
+        let env = ZellijEnv {
+            config_text: None,
+            layout_text: None,
+            permissions_text: None,
+            codex_hooks_text: Some(format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
+            installed_plugins_text: None,
+            wasm_present: false,
+            config_managed: false,
+            wasm_path: "/x.wasm".to_string(),
+        };
+        let f = analyze_zellij(&env);
+        assert!(f.producer_wired, "codex hooks text containing the marker -> wired");
+    }
+
+    #[test]
     fn analyze_codex_classifies_notify_states() {
         let ours = "notify = [\"zj-radar\", \"notify\", \"codex\"]\n";
         let foreign = "notify = [\"other\"]\n";
