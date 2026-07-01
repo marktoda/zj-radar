@@ -109,6 +109,26 @@ agent message containing an emoji with an explicit presentation selector
 iTerm2 *Prefs → Profiles → Text → “Treat ambiguous-width characters as double width” off*).
 This is the width contract the rail assumes.
 
+## Focused card's highlight looks short of the pane edge (ghostty)
+
+**Symptom:** in ghostty, the focused card's bright background band appears to
+stop 1-2 columns short of the rail pane's right edge, as if the last couple of
+columns were left unpainted.
+
+**Why:** investigated end-to-end — unit-level `vt100` checks, a real-PTY probe
+(`rail_paints_every_column_of_its_pane` in
+`crates/plugin/tests/e2e/main.rs`), a 41-outer-width sweep, and live
+mid-session resizes all show the rail painting every column Zellij hands it,
+with zero gap between the painted band and the neighboring pane's frame. The
+plugin-output → outer-terminal seam is provably gap-free, so the visible
+shortfall is not a zj-radar under-paint bug; it's suspected to be a
+ghostty-side presentation artifact (window padding drawn over the pane's
+trailing columns).
+
+**Fix:** in ghostty's config, set `window-padding-color = extend` so padding
+extends the adjacent cell's background instead of overpainting it with the
+window background. There is no rail-side workaround needed.
+
 ## Zellij plugin-reload quirks
 
 **Symptom:** during development, reloading the plugin opens an extra tiled plugin

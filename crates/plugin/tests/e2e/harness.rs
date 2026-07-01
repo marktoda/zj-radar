@@ -61,6 +61,9 @@ pub struct ZellijSession {
     pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     _reader: std::thread::JoinHandle<()>,
     buf: Arc<Mutex<Vec<u8>>>,
+    /// (rows, cols) of the PTY at session start; `screen()` sizes its vt100
+    /// parser from this.
+    size: Mutex<(u16, u16)>,
     /// Isolated temp HOME for this session. Kept alive so Zellij's cache dir
     /// survives for the session duration and is auto-cleaned on Drop.
     _temp_home: tempfile::TempDir,
@@ -80,8 +83,22 @@ impl ZellijSession {
     pub fn start(
         name: &str,
         layout_kdl: &str,
+        plugin_wasm: &Path,
+        temp_home: tempfile::TempDir,
+    ) -> Self {
+        Self::start_with_size(name, layout_kdl, plugin_wasm, temp_home, 40, 100)
+    }
+
+    /// `start`, but at an explicit outer PTY size. `start` delegates here with
+    /// the historical 40x100; exposed separately so a test can start at a
+    /// non-default outer terminal size when it needs one.
+    pub fn start_with_size(
+        name: &str,
+        layout_kdl: &str,
         _plugin_wasm: &Path,
         temp_home: tempfile::TempDir,
+        rows: u16,
+        cols: u16,
     ) -> Self {
         assert_zellij_version();
         let temp_home_path = temp_home.path().to_path_buf();
@@ -106,8 +123,8 @@ impl ZellijSession {
         // Open a PTY pair. Zellij needs a real TTY to start.
         let pty = NativePtySystem::default()
             .openpty(PtySize {
-                rows: 40,
-                cols: 100,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -157,6 +174,7 @@ impl ZellijSession {
             pty_writer,
             _reader,
             buf,
+            size: Mutex::new((rows, cols)),
             _temp_home: temp_home,
         };
         s.wait_until_ready();
@@ -393,7 +411,8 @@ impl ZellijSession {
     #[allow(dead_code)]
     pub fn screen(&self) -> vt100::Screen {
         let raw = self.buf.lock().unwrap().clone();
-        let mut p = vt100::Parser::new(40, 100, 0);
+        let (rows, cols) = *self.size.lock().unwrap();
+        let mut p = vt100::Parser::new(rows, cols, 0);
         p.process(&raw);
         p.screen().clone()
     }
