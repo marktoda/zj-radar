@@ -511,19 +511,21 @@ tab 1 "af" active
 
 ---
 
-## X. Command-origin end-result tag — done (`✓`)
+## X. Command-origin end-result tag — done (no tag)
 
 **Author-from-intent.** A single build pane that exited successfully (exit 0) via the
 Command-origin path. The `pane_outcome()` function fires only for Command-origin panes;
-status-pipe panes never get an outcome tag. Single-pane path: tab glyph `●` (Done),
-pane line 2 = `  ⚙ cargo build ✓`.
+status-pipe panes never get an outcome tag. `Outcome::Ok` renders as no tag at all — the
+line-1 status glyph (`●`, green) is the one done signal, so a second `✓` on line 2 would
+double-mark the same fact. Single-pane path: tab glyph `●` (Done), pane line 2 =
+`  ⚙ cargo build`.
 
 Grid reasoning at width 32, prefix 6 (`"  ⚙ "` = indent 2 + mark 1 + space 1 = 4 cols;
 pane line 2 uses single-pane path with `prefix_vis = 2 + 1 + 1 = 4` cols):
 - Tab line: ` ● 1 work` (5 chars prefix — col-0 spine/space + glyph + sp + num + sp —
   + `work` = 9 chars total).
-- Pane line 2: `  ⚙ cargo build ✓` = 4-col prefix + `cargo build ✓` (13 chars) = 17 cols total.
-  No truncation (17 ≤ 32).
+- Pane line 2: `  ⚙ cargo build` = 4-col prefix + `cargo build` (11 chars) = 15 cols total.
+  No truncation (15 ≤ 32).
 
 ```rail-input
 width 32
@@ -534,24 +536,26 @@ tab 1 "work"
  RADAR                        ·1
 ════════════════════════════════
  ● 1 work
-  ⚙ cargo build ✓
+  ⚙ cargo build
 ```
 
 > `exit 0` routes through `command_changed` → `timer` → `panes_changed(exits)` so the
 > CommandStore sets `origin = Command` and `status = Done`. `pane_outcome()` returns
-> `Outcome::Ok` → `✓` tag appended after the command string.
+> `Outcome::Ok`, whose `full()`/`minimal()` forms are both empty — `compose_activity`
+> treats an empty tag as no tag: no separator space, no empty SGR pair.
 
-## Y. Command-origin end-result tag — failed (`(exit 1)`)
+## Y. Command-origin end-result tag — failed (`exit 1`)
 
 **Author-from-intent.** A single build pane that exited with code 1 via the Command-origin
 path. `on_exit(Some(1))` sets `status = Error` and `exit_code = Some(1)`; `pane_outcome()`
-returns `Outcome::Failed(Some(1))` → tag `(exit 1)`. Tab glyph `✗` (Error); pane line 2
-= `  ⚙ cargo build (exit 1)`.
+returns `Outcome::Failed(Some(1))` → tag `exit 1`. Tab glyph `✗` (Error) already carries the
+failure signal; the tag adds the one thing the glyph can't: the exit code. Pane line 2 =
+`  ⚙ cargo build exit 1`.
 
 Grid reasoning at width 32:
 - Tab line: ` ✗ 1 work` (col 0 is the reserved, blank spine column since this tab isn't active).
 - Pane line 2 prefix (single-pane path): `  ⚙ ` = 4 cols; avail = 28.
-  `cargo build (exit 1)` = 21 chars, fits without truncation.
+  `cargo build exit 1` = 19 chars, fits without truncation.
 
 ```rail-input
 width 32
@@ -562,11 +566,12 @@ tab 1 "work"
  RADAR                        ·1
 ════════════════════════════════
  ✗ 1 work
-  ⚙ cargo build (exit 1)
+  ⚙ cargo build exit 1
 ```
 
-> `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `(exit 1)`.
-> The full form is shown because 21 cols fits within the 28-col avail budget.
+> `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `exit 1`
+> (no parens — the exit code is the whole tag now that `Ok` carries none). The full form is
+> shown because 19 cols fits within the 28-col avail budget.
 
 ---
 

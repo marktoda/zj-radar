@@ -82,19 +82,21 @@ pub struct TabRow {
 /// `rollup` (pure semantics); these methods encode the glyphs and the
 /// width-driven roomy/tight forms, which are the renderer's concern.
 impl Outcome {
-    /// The roomy form: `✓` / `(exit N)` (or `✗` when the code is unknown).
+    /// The roomy form. `Ok` is EMPTY — the line-1 status glyph (green ●) is the
+    /// one done signal; a tag would double-mark it. Errors carry the info the
+    /// line-1 `✗` can't: the exit code.
     fn full(self) -> String {
         match self {
-            Outcome::Ok => "✓".to_string(),
-            Outcome::Failed(Some(code)) => format!("(exit {})", code),
+            Outcome::Ok => String::new(),
+            Outcome::Failed(Some(code)) => format!("exit {}", code),
             Outcome::Failed(None) => "✗".to_string(),
         }
     }
 
-    /// The irreducible 1-column form, shown when width is too tight for `full`.
+    /// The irreducible short form, shown when width is too tight for `full`.
     fn minimal(self) -> &'static str {
         match self {
-            Outcome::Ok => "✓",
+            Outcome::Ok => "",
             Outcome::Failed(_) => "✗",
         }
     }
@@ -597,16 +599,23 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 }
 
 /// Compose the styled activity segment for a detail/pane line: the command text
-/// (in `cmd_color`) plus, when the pane has finished, its outcome tag in the
-/// outcome's role hue. The tag is reserved FIRST so it always survives — the
-/// command absorbs any truncation (degrading to `…`, then vanishing), while the
-/// outcome shrinks only from its full form (`(exit 1)`) to the irreducible
-/// 1-column glyph (`✓`/`✗`). The returned string fits within `avail` columns and
-/// carries its own color escapes (each segment RESET-terminated).
+/// (in `cmd_color`) plus, when the pane has finished with a nonempty tag, its
+/// outcome tag in the outcome's role hue. `Ok` renders no tag at all — the
+/// line-1 status glyph is the one done signal. The tag is reserved FIRST so it
+/// always survives — the command absorbs any truncation (degrading to `…`,
+/// then vanishing), while the outcome shrinks only from its full form
+/// (`exit 1`) to the irreducible glyph (`✗`). The returned string fits within
+/// `avail` columns and carries its own color escapes (each segment
+/// RESET-terminated).
 fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
     let Some(oc) = outcome else {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
+    // An outcome whose tag renders empty (Ok) is "no tag at all": no separator
+    // space, no empty SGR pair — the status glyph already carries the signal.
+    if oc.full().is_empty() {
+        return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
+    }
     let role = oc.role().ansi();
     let cmd = cmd.trim();
     // Outcome with no command (e.g. an exit with no recorded command string):

@@ -1324,7 +1324,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     // Wide: command and full tag both intact.
     let wide = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, cmd_color);
     assert!(wide.contains("cargo build"), "command shown: {:?}", wide);
-    assert!(wide.contains("(exit 1)"), "full tag shown: {:?}", wide);
+    assert!(wide.contains("exit 1"), "full tag shown: {:?}", wide);
     assert!(wide.contains(Role::Error.ansi()), "tag is red: {:?}", wide);
 
     // Narrow: command is squeezed but the outcome survives in full.
@@ -1334,7 +1334,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
         14,
         cmd_color,
     );
-    assert!(narrow.contains("(exit 1)"), "tag must survive truncation: {:?}", narrow);
+    assert!(narrow.contains("exit 1"), "tag must survive truncation: {:?}", narrow);
     assert!(
         narrow.contains('…') && !narrow.contains("integration"),
         "command is the part that truncates: {:?}",
@@ -1365,6 +1365,22 @@ fn compose_activity_reserves_outcome_against_truncation() {
 }
 
 #[test]
+fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
+    let s = compose_activity("cargo build", Some(Outcome::Ok), 30, "\x1b[90m");
+    let plain = strip_sgr(&s);
+    assert_eq!(plain, "cargo build", "no ✓ and no trailing space: {plain:?}");
+    assert!(!s.contains("\x1b[32m\x1b[0m"), "no empty green SGR pair: {s:?}");
+}
+
+#[test]
+fn error_tag_is_exit_n_without_duplicate_cross() {
+    let s = strip_sgr(&compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, "\x1b[90m"));
+    assert_eq!(s, "cargo build exit 1");
+    let unknown = strip_sgr(&compose_activity("make", Some(Outcome::Failed(None)), 30, "\x1b[90m"));
+    assert_eq!(unknown, "make ✗");
+}
+
+#[test]
 fn finished_command_line2_shows_role_colored_tag() {
     let mk = |status, outcome, msg: &str| {
         let d = PrimaryDetail {
@@ -1387,7 +1403,11 @@ fn finished_command_line2_shows_role_colored_tag() {
     };
     let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
-    assert!(dline.contains('✓') && dline.contains(Role::Success.ansi()), "done tag green ✓: {:?}", dline);
+    assert!(
+        !dline.contains('✓') && strip_sgr(dline).trim() == "⚙ cargo build",
+        "done line carries no tag — the line-1 glyph is the one done signal: {:?}",
+        dline
+    );
 
     let err = render(
         &[mk(Status::Error, Some(Outcome::Failed(Some(2))), "cargo build")],
@@ -1395,8 +1415,8 @@ fn finished_command_line2_shows_role_colored_tag() {
     );
     let eline = err.lines().find(|l| l.contains("cargo build")).unwrap();
     assert!(
-        eline.contains("(exit 2)") && eline.contains(Role::Error.ansi()),
-        "error tag red (exit 2): {:?}",
+        eline.contains("exit 2") && eline.contains(Role::Error.ansi()),
+        "error tag red exit 2: {:?}",
         eline
     );
 }
@@ -1416,7 +1436,14 @@ fn multi_pane_finished_command_shows_outcome_tag() {
     };
     let s = render(&[row], &ro(30, 0));
     let line = s.lines().find(|l| l.contains("cargo test")).unwrap();
-    assert!(line.contains('✓') && line.contains(Role::Success.ansi()), "pane tag green ✓: {:?}", line);
+    // No outcome tag for Ok — the pane's own status glyph (still green, from
+    // Role::Success) is the one done signal; the line ends at the command.
+    assert!(
+        !line.contains('✓') && strip_sgr(line).trim_end().ends_with("cargo test"),
+        "no outcome tag on a done pane line: {:?}",
+        line
+    );
+    assert!(line.contains(Role::Success.ansi()), "pane glyph still green: {:?}", line);
 }
 
 #[test]

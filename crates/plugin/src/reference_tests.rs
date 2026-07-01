@@ -390,7 +390,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     //      then apply Idle (tick=1). This preserves scenario J's idle-but-tracked behavior.
     //
     //   b) command-origin path (exit_code == Some(code)): drives the CommandStore path
-    //      so that pane_outcome() fires and end-result tags (✓ / (exit N) / ✗) render.
+    //      so that pane_outcome() fires and end-result tags (no tag / exit N / ✗) render.
     //      Sequence:
     //        1. command_changed(tick=0) — registers a pending command with the msg as argv.
     //        2. timer(tick=1) — promotes pending→Running (debounce window = 1 tick).

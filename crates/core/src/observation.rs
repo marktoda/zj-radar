@@ -48,7 +48,7 @@ pub struct TrackedObservation {
     /// Exit code of a finished command pane, when known. Set by
     /// `CommandStore::on_exit` from a `zellij run`-style pane exit; `None` for
     /// agents (status pipe) and for commands that finish by returning to the
-    /// shell prompt (no exit code is reported). Drives the `(exit N)` outcome
+    /// shell prompt (no exit code is reported). Drives the `exit N` outcome
     /// tag on error rows.
     #[serde(default)]
     pub exit_code: Option<i32>,

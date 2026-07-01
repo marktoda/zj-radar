@@ -17,8 +17,9 @@ use crate::radar_state::TerminalPane;
 use crate::status::Status;
 
 /// The end-result of a finished *command* pane, shown as a tag after the
-/// activity (`cargo build ✓`, `cargo build (exit 1)`). Built in
-/// `rollup::roll_up`; agents never carry one. Kept structured (not baked into
+/// activity (`cargo build exit 1`; `Ok` renders no tag — the line-1 status
+/// glyph is the one done signal). Built in `rollup::roll_up`; agents never
+/// carry one. Kept structured (not baked into
 /// `msg`) so the renderer can reserve its width — the outcome survives
 /// truncation while the command absorbs the squeeze — and color it
 /// independently of the (dim) command text. The display methods
@@ -238,8 +239,9 @@ pub fn roll_up<'a>(
 
 /// Derive the end-result outcome tag for a pane, scoped to *command-origin*
 /// panes — agents (status pipe) keep their hook msg with no tag. Done → `Ok`
-/// (`✓`); Error → `Failed(exit_code)` (`(exit N)`, or `✗` when the code is
-/// unknown). Returns `None` for active/idle panes and all agents.
+/// (no tag; the line-1 status glyph is the one done signal); Error →
+/// `Failed(exit_code)` (`exit N`, or `✗` when the code is unknown). Returns
+/// `None` for active/idle panes and all agents.
 fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
     if s.origin != ObservationOrigin::Command {
         return None;
