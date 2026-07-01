@@ -23,6 +23,23 @@
     }
 
     #[test]
+    fn is_shell_prompt_covers_non_posix_shells_and_login_argv0() {
+        // Regression: missing shells here made the shell itself track as a
+        // perpetual Running command AND broke the agent exit-clear (the two
+        // degradations documented on IGNORE_NAMES).
+        for shell in ["nu", "nushell", "pwsh", "tcsh", "csh", "ksh", "mksh", "ash", "elvish", "xonsh"] {
+            assert!(is_shell_prompt(&argv(&[shell]), true), "{shell} is a prompt");
+        }
+        // A login shell's argv0 carries a leading dash.
+        assert!(is_shell_prompt(&argv(&["-zsh"]), true));
+        assert!(is_shell_prompt(&argv(&["-bash"]), true));
+        // The dash-strip must not misread ordinary dashed commands as shells:
+        // there is no binary named e.g. `-nu` in practice, but a real command
+        // with a dashed basename stays a command.
+        assert!(!is_shell_prompt(&argv(&["my-tool"]), true));
+    }
+
+    #[test]
     fn display_command_keeps_useful_subcommands_and_drops_flags() {
         assert_eq!(
             display_command(&argv(&[
@@ -187,6 +204,21 @@
     fn command_kind_classifies_every_emitted_kind() {
         for (cmd, display, expected) in kind_classification_cases() {
             assert_eq!(command_kind(&cmd, display), expected, "classify {display:?}");
+        }
+    }
+
+    #[test]
+    fn command_kind_is_case_insensitive_over_verbs() {
+        // `contains_word` requires a lowercased haystack; command_kind owns the
+        // lowering, so uppercase targets/scripts must still classify.
+        let cases: &[(&[&str], &str, Kind)] = &[
+            (&["make", "TEST"], "make TEST", Kind::Test),
+            (&["npm", "run", "BUILD"], "npm run BUILD", Kind::Build),
+            (&["just", "Serve"], "just Serve", Kind::Server),
+            (&["make", "Deploy-Prod"], "make Deploy-Prod", Kind::Deploy),
+        ];
+        for (cmd, display, expected) in cases {
+            assert_eq!(command_kind(&argv(cmd), display), *expected, "classify {display:?}");
         }
     }
 

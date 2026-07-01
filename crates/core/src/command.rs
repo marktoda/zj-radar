@@ -12,11 +12,17 @@ use std::collections::{HashMap, HashSet};
 pub const DEBOUNCE_TICKS: u64 = 1;
 
 /// Shell/prompt programs that signal "back to the prompt" rather than a real
-/// foreground command. `direnv` is here because its `direnv export <shell>`
+/// foreground command. Missing a shell here degrades that shell's users twice:
+/// their prompt tracks as a perpetual Running command, AND `is_shell_prompt`
+/// never fires, so a finished agent's pushed status is never exit-cleared —
+/// hence the broad list. `direnv` is here because its `direnv export <shell>`
 /// hook runs on *every* prompt to sync the environment — tracking it would open
 /// a spurious command lifecycle after each real command and notify "direnv"
 /// instead of the command that just finished.
-const IGNORE_NAMES: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "starship", "direnv"];
+const IGNORE_NAMES: &[&str] = &[
+    "zsh", "bash", "fish", "sh", "dash", "ash", "ksh", "mksh", "tcsh", "csh",
+    "nu", "nushell", "pwsh", "elvish", "xonsh", "starship", "direnv",
+];
 
 /// Binaries of the *push*-instrumented agents. These report via the
 /// `zj_radar.status.v1` pipe from their hooks, so the command observer must
@@ -67,6 +73,13 @@ pub struct CommandStore {
 /// non-empty segment; empty string if input is empty).
 fn basename(s: &str) -> &str {
     s.rsplit('/').find(|seg| !seg.is_empty()).unwrap_or("")
+}
+
+/// Basename with any login-shell `-` prefix stripped: a login shell's argv0 is
+/// reported as e.g. `-zsh`, which must still hit the shell/agent ignore sets.
+/// Used ONLY for those membership checks — display strings keep the raw name.
+fn program_name(s: &str) -> &str {
+    basename(s).trim_start_matches('-')
 }
 
 fn is_option_arg(s: &str) -> bool {
@@ -267,6 +280,11 @@ pub fn contains_word(haystack: &str, word: &str) -> bool {
 /// `Kind::from_source` at roll-up — so classification flows through the `Kind`
 /// seam as a type, never a loose string.
 fn command_kind(command: &[String], display: &str) -> Kind {
+    // `contains_word` requires a lowercased haystack (its documented
+    // precondition); argv case must not defeat classification (`make TEST`,
+    // `npm run BUILD`). Exe names stay case-sensitive — they name binaries.
+    let display = display.to_lowercase();
+    let display = display.as_str();
     let exe = command.first().map(|s| basename(s)).unwrap_or("");
     match exe {
         "claude" => Kind::Claude,
@@ -321,7 +339,7 @@ pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
         return true;
     }
     let command = effective_command(command);
-    let name = command.first().map(|s| basename(s)).unwrap_or("");
+    let name = command.first().map(|s| program_name(s)).unwrap_or("");
     IGNORE_NAMES.contains(&name)
 }
 
@@ -341,7 +359,7 @@ impl CommandStore {
         // Peel env-prefixes/wrappers once at intake so the ignore check, the
         // display string, and the Kind all classify the real command.
         let command = effective_command(command);
-        let name = command.first().map(|s| basename(s)).unwrap_or("");
+        let name = command.first().map(|s| program_name(s)).unwrap_or("");
         // Shells and agents are both "not a real command we track here": shells
         // mean back-to-the-prompt; agents are owned by the push pipe (see
         // AGENT_NAMES). Either way we never open a command lifecycle for them.
