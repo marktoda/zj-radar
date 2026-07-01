@@ -907,6 +907,14 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         flat.push(line);
     }
 
+    // Final height clamp. The body is budgeted against `height - header_lines`, so
+    // this only bites when the header ALONE exceeds `height` (e.g. height 1 with a
+    // 2-line Compact/Comfortable header) — a degenerate size Zellij would clip
+    // anyway. Truncating the single `flat` Vec keeps ansi/targets/line-count in
+    // lockstep (they all derive from it), so the "no rail exceeds `height` lines"
+    // invariant now holds at every density, not just Cards (1-line header).
+    flat.truncate(opts.height);
+
     RenderedRail::from_lines(flat)
 }
 

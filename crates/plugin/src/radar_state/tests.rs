@@ -767,6 +767,48 @@ fn command_error_while_focused_persists() {
 }
 
 #[test]
+fn error_survives_focus_bounce_through_a_non_terminal_pane() {
+    // "Errors persist even when you were watching" must survive focus momentarily
+    // resolving to None — the active tab's focused pane is a plugin/floating pane,
+    // so there is no focused TERMINAL (`focused_terminal_in_active_tab() == None`).
+    // A None reading must NOT be read as "focus left the pane", which would turn
+    // the next refocus of the same pane into a fresh VISIT that clears an error the
+    // user never acknowledged.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
+    radar.timer(3);
+    radar.panes_changed(focused_pane_update(0, 5, vec![(5, Some(1))]), 4, config::NamingMode::Off);
+    assert_eq!(
+        radar.command(5).unwrap().status,
+        Status::Error,
+        "precondition: error lit while watched"
+    );
+
+    // Focus moves to a non-terminal pane in the same tab: pane 5 is still present
+    // but no pane is `focused_in_tab`, so the focus reading is None.
+    radar.panes_changed(
+        PaneUpdate {
+            tab_panes: HashMap::from([(0, vec![pane(5)])]),
+            live: HashSet::from([5]),
+            theme: None,
+            exits: Vec::new(),
+        },
+        5,
+        config::NamingMode::Off,
+    );
+    // Focus returns to pane 5 (the floating/plugin pane was dismissed).
+    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 6, config::NamingMode::Off);
+
+    assert_eq!(
+        radar.command(5).unwrap().status,
+        Status::Error,
+        "a focus bounce through a None reading must not visit-clear a watched error"
+    );
+}
+
+#[test]
 fn agent_done_while_focused_recedes_on_timer_not_on_the_pipe_edge() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "agent", true)]);
@@ -957,8 +999,11 @@ fn arb_status() -> impl Strategy<Value = Status> {
 enum Op {
     /// Replace the tab set with tabs at these positions (deduped; first active).
     Tabs(Vec<usize>),
-    /// Set the live pane layout (position → pane ids) plus command exits.
-    Panes(Vec<(usize, Vec<u32>)>, Vec<(u32, Option<i32>)>),
+    /// Set the live pane layout (position → pane ids) plus command exits and an
+    /// optional focused pane id (marks that pane `focused_in_tab`, driving real
+    /// focus transitions through the store — including bounces to a None reading
+    /// when the focus id isn't present).
+    Panes(Vec<(usize, Vec<u32>)>, Vec<(u32, Option<i32>)>, Option<u32>),
     /// Deliver a status-pipe payload for a pane.
     Status(u32, Status),
     /// Register a foreground/background command on a pane.
@@ -978,8 +1023,9 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 0..4
             ),
             proptest::collection::vec((1u32..6, proptest::option::of(any::<i32>())), 0..2),
+            proptest::option::of(1u32..6),
         )
-            .prop_map(|(layout, exits)| Op::Panes(layout, exits)),
+            .prop_map(|(layout, exits, focus)| Op::Panes(layout, exits, focus)),
         (1u32..6, arb_status()).prop_map(|(p, s)| Op::Status(p, s)),
         (1u32..6, any::<bool>()).prop_map(|(p, fg)| Op::Command(p, fg)),
         Just(Op::Timer),
@@ -1013,7 +1059,7 @@ proptest! {
                         .collect();
                     st.tabs_changed(tabs);
                 }
-                Op::Panes(layout, exits) => {
+                Op::Panes(layout, exits, focus) => {
                     let mut tab_panes: HashMap<usize, Vec<TerminalPane>> = HashMap::new();
                     for (pos, ids) in layout {
                         let panes = ids
@@ -1021,7 +1067,10 @@ proptest! {
                             .map(|&id| TerminalPane {
                                 id,
                                 title: format!("p{id}"),
-                                focused_in_tab: false,
+                                // Mark the drawn focus pane focused_in_tab. When the
+                                // focus id isn't present the reading is None — so the
+                                // sequence also exercises focus bounces off a terminal.
+                                focused_in_tab: Some(id) == *focus,
                             })
                             .collect();
                         tab_panes.insert(*pos, panes);

@@ -715,6 +715,7 @@ fn idle_row(n: u32) -> TabRow {
     }
 }
 
+
 #[test]
 fn overflow_folds_idle_into_strip_and_marks_header() {
     // 20 idle tabs, height only fits a few → fold.
@@ -3677,6 +3678,18 @@ proptest! {
         ] {
             let opts = ro_full(width, height, density, glyphs);
             let s = render(&rows, &opts); // must not panic
+            // Height budget holds for EVERY density — not just Cards (whose
+            // 1-line header always fit). The 2-line Compact/Comfortable header
+            // used to overflow at height 1; the final clamp in `render_rail`
+            // fixes it. (Regression: `render_rail` height clamp.)
+            prop_assert!(
+                s.lines().count() <= height,
+                "lines {} > height {} (density {:?}, glyphs {:?})",
+                s.lines().count(),
+                height,
+                density,
+                glyphs
+            );
             for line in s.lines() {
                 prop_assert!(
                     visible_width(line) <= width,

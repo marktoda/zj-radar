@@ -40,6 +40,23 @@ struct Raw {
     source: String,
 }
 
+/// Unicode bidi format/override characters. These can visually reorder or hide
+/// surrounding text (the "Trojan Source" class) — e.g. an RLO (U+202E) in a
+/// `repo`/`branch`/`msg` field could make a rail row read differently than its
+/// bytes. They have no legitimate use in the short display strings we render, so
+/// they are dropped. `is_control()` does NOT cover them (they are `Cf`, format
+/// characters, not `Cc`). The zero-width JOINER (U+200D) is deliberately NOT here:
+/// it is load-bearing for emoji sequences, and `render::truncate` already handles
+/// a stranded trailing ZWJ.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c,
+        '\u{202A}'..='\u{202E}'   // LRE RLE PDF LRO RLO (embeddings + overrides)
+        | '\u{2066}'..='\u{2069}' // LRI RLI FSI PDI (isolates)
+        | '\u{200E}' | '\u{200F}' // LRM RLM (marks)
+        | '\u{061C}'              // ALM (Arabic letter mark)
+    )
+}
+
 /// Strip control/ANSI chars, fold newlines/tabs/CR to spaces, truncate to `max_chars`.
 ///
 /// Stripped sequences:
@@ -70,16 +87,28 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
                     }
                 }
                 Some(b']') => {
-                    // OSC: consume until BEL (0x07) or ST (ESC \)
+                    // OSC: consume until BEL (0x07) or ST (ESC \). A well-formed
+                    // OSC string is text + terminator with no bare control bytes,
+                    // so ANY other C0 control (newline, a fresh ESC, …) ends a
+                    // malformed/unterminated OSC WITHOUT being consumed — the outer
+                    // loop reprocesses it. This bounds an unterminated OSC: it used
+                    // to run to end-of-input and swallow the whole field, blanking
+                    // it. (A fully-printable OSC with no terminator anywhere still
+                    // consumes to the end — matching how a real terminal waits for a
+                    // terminator — but that is the only remaining swallow case.)
                     i += 2;
                     while i < bytes.len() {
-                        if bytes[i] == 0x07 {
-                            i += 1;
+                        let b = bytes[i];
+                        if b == 0x07 {
+                            i += 1; // BEL terminator consumed
                             break;
                         }
-                        if bytes[i] == 0x1b && bytes.get(i + 1).copied() == Some(b'\\') {
-                            i += 2;
+                        if b == 0x1b && bytes.get(i + 1).copied() == Some(b'\\') {
+                            i += 2; // ST terminator consumed
                             break;
+                        }
+                        if b < 0x20 {
+                            break; // stray control ends the OSC; leave it for the outer loop
                         }
                         i += 1;
                     }
@@ -106,10 +135,12 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
             // "\x1b" + lead-byte of a 2-byte char consumed as "ESC + one byte").
             // If `i` is not on a char boundary we skip the stray continuation byte.
             // Also drop Unicode C1 control chars (U+0080–U+009F) whose lead byte
-            // (0xC2) passes the ASCII-range check above but are still control chars.
+            // (0xC2) passes the ASCII-range check above but are still control chars,
+            // and bidi format/override chars (`is_bidi_control`) that could visually
+            // reorder or hide rail text (Trojan-Source-style spoofing).
             match s.get(i..) {
                 Some(remaining) => match remaining.chars().next() {
-                    Some(c) if !c.is_control() => {
+                    Some(c) if !c.is_control() && !is_bidi_control(c) => {
                         cleaned.push(c);
                         i += c.len_utf8();
                     }
@@ -322,6 +353,38 @@ mod tests {
         let out = sanitize(&input, 50);
         assert_eq!(out.chars().count(), 50);
         assert_eq!(out, "x".repeat(50));
+    }
+
+    #[test]
+    fn sanitize_unterminated_osc_is_bounded_by_a_control() {
+        // An OSC with no BEL/ST terminator used to run to end-of-input and swallow
+        // the whole field. A stray control (here a newline) now ends it, so the
+        // trailing text survives (the newline folds to a space).
+        assert_eq!(sanitize("\x1b]0;title\nreal text", 100), " real text");
+        // A fresh ESC-introduced CSI inside an unterminated OSC also ends it; the
+        // CSI is then stripped and its trailing text survives.
+        assert_eq!(sanitize("\x1b]0;title\x1b[0mkept", 100), "kept");
+    }
+
+    #[test]
+    fn sanitize_fully_printable_unterminated_osc_still_drops() {
+        // The one remaining swallow case: an OSC with no terminator AND no control
+        // byte anywhere. A real terminal also waits indefinitely for a terminator,
+        // so dropping (rather than emitting the raw OSC payload as text) is the
+        // defensive choice. Pinned so the bound above isn't mistaken for a full fix.
+        assert_eq!(sanitize("\x1b]0;title with no terminator", 100), "");
+    }
+
+    #[test]
+    fn sanitize_strips_bidi_controls_but_keeps_zwj() {
+        // Trojan-Source-style bidi overrides/marks/isolates are dropped so a
+        // producer can't visually reorder a rail row (e.g. spoof "error" as "done").
+        assert_eq!(sanitize("abc\u{202e}def", 100), "abcdef"); // RLO
+        assert_eq!(sanitize("a\u{200f}b\u{200e}c", 100), "abc"); // RLM / LRM
+        assert_eq!(sanitize("x\u{2066}y\u{2069}z", 100), "xyz"); // LRI / PDI isolates
+        // The zero-width JOINER is preserved — it is load-bearing for emoji.
+        let zwj = "👩\u{200d}💻";
+        assert_eq!(sanitize(zwj, 100), zwj);
     }
 
     #[test]

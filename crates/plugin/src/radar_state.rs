@@ -424,16 +424,25 @@ impl RadarState {
     /// does NOT call this — its focus could be stale; see the note there. Returns
     /// whether focus changed.
     pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        let changed = focused != self.last_focused;
-        self.last_focused = focused;
-        if let Some(id) = focused {
-            if changed {
-                self.status.on_pane_focused(id, tick);
-                self.command.on_pane_focused(id, tick);
-            } else {
-                self.status.recede_if_focused(id, tick);
-                self.command.recede_if_focused(id, tick);
-            }
+        // A `None` reading carries no focus information: the active tab's focused
+        // pane is a plugin/floating (non-terminal) pane, or topology is mid-churn
+        // (no active tab yet). Treat it as "no change" and PRESERVE `last_focused`
+        // rather than clobbering it to None — otherwise a focus bounce off a
+        // terminal and back reads as `None → Some(P)`, i.e. a fresh *visit*, which
+        // would visit-clear a watched error the user never acknowledged (the
+        // hard "errors persist even when watched" rule). See
+        // `error_survives_focus_bounce_through_a_non_terminal_pane`.
+        let Some(id) = focused else {
+            return false;
+        };
+        let changed = Some(id) != self.last_focused;
+        self.last_focused = Some(id);
+        if changed {
+            self.status.on_pane_focused(id, tick);
+            self.command.on_pane_focused(id, tick);
+        } else {
+            self.status.recede_if_focused(id, tick);
+            self.command.recede_if_focused(id, tick);
         }
         changed
     }

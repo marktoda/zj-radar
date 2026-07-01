@@ -451,6 +451,16 @@ impl CommandStore {
             s.last_change_tick = tick;
             s.exit_code = exit_status;
         } else {
+            // Untracked pane: insert a fresh completion row. This is the
+            // held-command-pane path — Zellij only reports `exited` for a pane
+            // that stays open after its command finished (`zellij run`, or a
+            // layout pane with `close_on_exit false`). Such a pane can exit
+            // without ever emitting a foreground `CommandChanged` (fast command,
+            // or the manifest exit arriving first), so this fallback is what makes
+            // its Done/Error visible. It is NOT a ghost for plain shells: a plain
+            // shell that exits is removed from the manifest (never reported
+            // `exited=true`), so it never reaches here. Do not "guard to tracked
+            // panes" — that would drop legitimate run-pane completions.
             self.store.insert(
                 pane_id,
                 TrackedObservation {
