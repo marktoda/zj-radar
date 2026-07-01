@@ -2348,6 +2348,81 @@ fn cards_band_fills_full_width() {
 }
 
 #[test]
+fn active_card_bg_spans_full_width_on_every_line() {
+    // Repro for a live-build report: the focused card's background highlight
+    // appeared to stop short of the rail's right edge. `cards_band_fills_full_width`
+    // above only checks the *raw* line's visible width, which is guaranteed by
+    // `paint_card_line`'s own padding math and so can't catch a bug that only
+    // shows up once a real terminal parses the escapes — e.g. the bell slot
+    // landing after the width-filling pad, or a glyph (`⚑`, `▌`) whose real
+    // column count disagrees with `visible_width`'s count. This test goes one
+    // level deeper: feed the ANSI through a real vt100 grid and assert the
+    // background color of *every* cell, column by column, on every line of an
+    // active 2-line card — with and without the bell — at several widths.
+    let theme = crate::theme::DerivedColors::default();
+    let expected = vt100::Color::Rgb(
+        theme.surface_active.0,
+        theme.surface_active.1,
+        theme.surface_active.2,
+    );
+
+    for width in [20usize, 24, 30] {
+        for has_bell in [false, true] {
+            let detail = PrimaryDetail {
+                repo: "repo".into(),
+                branch: "main".into(),
+                msg: "working".into(),
+                kind: Kind::Claude,
+                since_tick: 0,
+                outcome: None,
+                status: Status::Running,
+            };
+            let rows = vec![TabRow {
+                number: 1,
+                name: "focus".into(),
+                active: true,
+                has_bell,
+                display: display(Status::Running, 0, 1, Some(detail)),
+            }];
+            let raw = render(&rows, &ro_cards(width, 100));
+            let lines: Vec<&str> = raw.lines().collect();
+            let active_rows: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| surface_of(l) == Surface::Active)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                active_rows.len(),
+                2,
+                "expected a 2-line active card (label + detail) at width {width} bell {has_bell}: {:?}",
+                lines
+            );
+
+            // +1 row of headroom, matching the `grid()` helper's convention, so a
+            // trailing gap row can't scroll content off the top of the parsed screen.
+            let height = (lines.len().max(1) + 1) as u16;
+            let mut parser = vt100::Parser::new(height, width as u16, 0);
+            parser.process(raw.replace('\n', "\r\n").as_bytes());
+            let screen = parser.screen();
+            for &row in &active_rows {
+                for col in 0..width as u16 {
+                    let cell = screen.cell(row as u16, col).unwrap_or_else(|| {
+                        panic!("missing vt100 cell at row {row} col {col} (width {width} bell {has_bell})")
+                    });
+                    assert_eq!(
+                        cell.bgcolor(),
+                        expected,
+                        "active card bg gap at width {width} bell {has_bell}, row {row} col {col}\nrow text: {:?}",
+                        lines[row]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn cards_rearm_bg_after_resets() {
     // Active working tab (line has multiple role-colored tokens with \x1b[0m
     // resets) under Cards: the active truecolor tint must re-arm after every reset,
