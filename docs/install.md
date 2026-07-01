@@ -161,11 +161,20 @@ cached grant.
 
 ## First-run permission prompt
 
-On first load the sidebar shows an onboarding face and requests three
-permissions (`ReadApplicationState`, `ReadCliPipes`, `ChangeApplicationState`) —
-press `y` to grant. The sidebar stays focusable only for that prompt, then goes
-back to passive sidebar behavior. It never runs commands; notifications stay in
-the producer.
+On first load the sidebar shows an onboarding face and requests four
+permissions — press `y` to grant:
+
+- `ReadApplicationState` — read tab/pane state to draw the rail.
+- `ReadCliPipes` — receive the `zj_radar.status.v1` broadcasts from producers.
+- `ChangeApplicationState` — switch tabs on click and apply managed tab names.
+- `RunCommands` — deliver desktop notifications (`osascript` on macOS,
+  `notify-send` on Linux). This is the only thing the plugin runs commands
+  for; turn notifications off with `notify false` (see
+  [configuration](configuration.md)), and without this grant they are
+  silently skipped while everything else keeps working.
+
+The sidebar stays focusable only for that prompt, then goes back to passive
+sidebar behavior.
 
 After approval, the per-tab sidebars should use the cached grant. For how the
 per-tab instances coordinate that single prompt (and what happens when session
