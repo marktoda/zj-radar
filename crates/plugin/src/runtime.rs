@@ -408,8 +408,9 @@ impl PluginRuntime {
     /// → snapshot → cwd → `SetTimeout` → notify — identical to today's
     /// `panes_changed`, so that handler is byte-for-byte unchanged. `settle`
     /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
-    /// is the only place either `notify_effects` or `arm_timer_if_needed` is
-    /// called. `arm_timer_if_needed` self-guards on `timer_armed` and on
+    /// is the sole caller of `notify_effects`, and the only *domain-change* path
+    /// that arms the timer (the permission flow arms it separately in
+    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `timer_armed` and on
     /// whether there's anything to arm for, so calling it unconditionally
     /// here is a no-op wherever a handler has no pending work to arm for.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
