@@ -18,7 +18,7 @@ const GRANT_HINT_CREATE: &str =
 /// open in the center even when it was only attaching — a dead-end.)
 const GRANT_HINT_ATTACH: &str =
     "This session isn't enabled yet — focus a pane and press Ctrl-y to open the grant prompt.";
-const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
+pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 

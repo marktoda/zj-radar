@@ -135,12 +135,16 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     // One derivation, shared with `check`: read current state into Facts. The
     // config text is reused below for the `edit_zellij` splice.
     let config_text = std::fs::read_to_string(&config_path).ok();
+    let codex_hooks_text = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
+    let installed_plugins_text = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok());
     let facts = analyze_zellij(&ZellijEnv {
         config_text:            config_text.clone(),
         layout_text:            None, // install only consults `config_managed`; the layout is read later by the inject flow
         permissions_text:       None,
-        codex_hooks_text:       None,
-        installed_plugins_text: None,
+        codex_hooks_text,
+        installed_plugins_text,
         wasm_present:           wasm_dest.is_file(),
         config_managed:         config_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
@@ -227,7 +231,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             // alias already up to date — still offer injection.
             run_layout_inject(&layout_path, inject_flag, yes, dry_run);
             print_grant_hint();
-            print_producer_hint_if_needed();
+            print_producer_hint_if_needed(&facts);
         }
         Outcome::Conflict => {
             eprintln!(
@@ -292,7 +296,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
                 run_layout_inject(&layout_path, inject_flag, yes, dry_run);
                 print_grant_hint();
-                print_producer_hint_if_needed();
+                print_producer_hint_if_needed(&facts);
             }
         }
     }
@@ -311,18 +315,12 @@ fn print_grant_hint() {
     );
 }
 
-/// Emit a producer hint at the tail of `setup zellij` when no producer is wired.
-/// Checks Codex hooks and the Claude plugin manifest, same as `run`'s detection.
-fn print_producer_hint_if_needed() {
-    let codex_hooks = dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
-    let installed_plugins = dirs::home_dir()
-        .and_then(|h| {
-            std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()
-        });
-    let claude_present = crate::run::claude_producer_wired(installed_plugins.as_deref());
-    if let Some(hint) = crate::run::producer_hint(codex_hooks.as_deref(), claude_present) {
-        println!("zellij: {hint}");
+/// Emit a producer hint at the tail of `setup zellij` when no producer is wired,
+/// per `facts.producer_wired` (derived from Codex hooks + the Claude plugin
+/// manifest, same as `run`'s detection — see `analyze_zellij`).
+fn print_producer_hint_if_needed(facts: &ZellijFacts) {
+    if !facts.producer_wired {
+        println!("zellij: {}", crate::run::PRODUCER_HINT);
     }
 }
 
