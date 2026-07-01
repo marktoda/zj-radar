@@ -78,15 +78,15 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
   "status": "running",
   "repo": "pinky",
   "branch": "fix/x",
-  "msg": "running tests…",
-  "on_focus": "idle" }
+  "msg": "running tests…" }
 ```
 
 - `status`: `running` → working · `pending` → needs-you · `done` · `error` ·
   `idle`/unknown → plain.
 - `pane.id`: strip any `terminal_` prefix from `$ZELLIJ_PANE_ID`.
-- `on_focus` (optional): the status to apply when you next focus that exact pane
-  (lets `done` persist on other tabs, then auto-clear).
+- Unknown fields are ignored, so it's safe to send extras. (A former `on_focus`
+  clear-on-focus hint is no longer used — the plugin clears a finished status when
+  the pane returns to its shell prompt instead — but sending it does no harm.)
 
 The plugin applies the latest broadcast per pane (the pipe delivers in order, so
 there is no sequence number). It also defends itself: it ignores oversized

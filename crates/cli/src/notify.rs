@@ -5,7 +5,6 @@
 
 use super::agents::{Agent, Intake};
 use crate::payload::to_wire;
-use crate::status::Status;
 use std::io::Read;
 use std::process::Command;
 
@@ -132,11 +131,6 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
     let (repo, branch) = git_repo_branch(&cwd);
-    let on_focus = if update.status == Status::Done {
-        Some(Status::Idle)
-    } else {
-        None
-    };
     // Bound the message client-side so a pathologically long final assistant
     // message can't push the whole payload past the plugin's MAX_PAYLOAD_BYTES
     // cap — which would drop the *entire* status update (e.g. losing a `done`
@@ -144,15 +138,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     // the plugin's 60-char display cap so its sanitizer still has content after
     // control-char stripping.
     let msg: String = update.msg.chars().take(512).collect();
-    let payload = to_wire(
-        pane_id,
-        update.status,
-        &repo,
-        &branch,
-        &msg,
-        on_focus,
-        agent.source(),
-    );
+    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, agent.source());
 
     if dry_run {
         eprintln!("{payload}");

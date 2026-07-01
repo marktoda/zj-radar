@@ -50,11 +50,10 @@ teardown() { teardown_fakes; }
   [ ! -s "$RECORD" ]
 }
 
-@test "done sets on_focus=idle (clear-on-focus)" {
+@test "Stop broadcasts status=done" {
   echo '{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}' | "$SCRIPT" done
   run last_payload
-  [[ "$output" == *"on_focus"* ]]
-  [[ "$output" == *"idle"* ]]
+  [ "$(jq -r '.status' <<<"$output")" = done ]
 }
 
 @test "hooks.json wires SessionStart{clear} to notify.sh idle" {
@@ -67,15 +66,13 @@ teardown() { teardown_fakes; }
   [[ "$cmd" == *"notify.sh idle"* ]]
 }
 
-@test "SessionStart clear broadcasts idle with blank msg and no on_focus" {
+@test "SessionStart clear broadcasts idle with blank msg" {
   # `/clear` fires SessionStart{source:clear}; the plugin wires it to `idle`.
-  # The broadcast resets the pane: status idle, no message, and (unlike done)
-  # no on_focus — there is nothing left to clear on the next visit.
+  # The broadcast resets the pane: status idle and no message.
   echo '{"hook_event_name":"SessionStart","source":"clear","cwd":"/home/u/myrepo"}' | "$SCRIPT" idle
   run last_payload
   [ "$(jq -r '.status' <<<"$output")" = idle ]
   [ "$(jq -r '.msg' <<<"$output")" = "" ]
-  [ "$(jq 'has("on_focus")' <<<"$output")" = false ]
 }
 
 @test "idle drops any stale message" {

@@ -13,7 +13,6 @@ pub struct StatusPayload {
     pub repo: String,
     pub branch: String,
     pub msg: String,
-    pub on_focus: Option<Status>,
     pub source: String,
 }
 
@@ -35,10 +34,11 @@ struct Raw {
     #[serde(default)]
     msg: String,
     #[serde(default)]
-    on_focus: Option<String>,
-    #[serde(default)]
     source: String,
 }
+// Note: the retired clear-on-focus hint key is silently ignored (serde drops
+// unknown fields) — no longer consumed, kept tolerated on the wire for back-compat
+// with older producers, exactly like the legacy `seq`.
 
 /// Unicode bidi format/override characters. These can visually reorder or hide
 /// surrounding text (the "Trojan Source" class) — e.g. an RLO (U+202E) in a
@@ -176,15 +176,13 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
         repo: sanitize(&r.repo, 40),
         branch: sanitize(&r.branch, 40),
         msg: sanitize(&r.msg, MAX_MSG_CHARS),
-        on_focus: r.on_focus.as_deref().map(Status::from_wire),
         source: sanitize(&r.source, 16),
     })
 }
 
 /// Serialized form of the `zj_radar.status.v1` payload — the producer mirror of
-/// the `Raw` parse struct. `status` / `on_focus` serialize through `Status`'s
-/// own wire vocabulary (so the two directions share one token set), and
-/// `on_focus` is dropped entirely when `None` via `skip_serializing_if`.
+/// the `Raw` parse struct. `status` serializes through `Status`'s own wire
+/// vocabulary, so the produce and parse directions share one token set.
 #[derive(serde::Serialize)]
 struct Wire<'a> {
     v: u32,
@@ -194,8 +192,6 @@ struct Wire<'a> {
     repo: &'a str,
     branch: &'a str,
     msg: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    on_focus: Option<Status>,
 }
 
 #[derive(serde::Serialize)]
@@ -205,16 +201,14 @@ struct WirePane {
     id: u32,
 }
 
-/// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). `on_focus` is
-/// omitted entirely when `None`. Shared by the CLI producer and tested against
-/// `parse` so the two can never drift.
+/// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). Shared by the
+/// CLI producer and tested against `parse` so the two can never drift.
 pub fn to_wire(
     pane_id: u32,
     status: Status,
     repo: &str,
     branch: &str,
     msg: &str,
-    on_focus: Option<Status>,
     source: &str,
 ) -> String {
     serde_json::to_string(&Wire {
@@ -228,7 +222,6 @@ pub fn to_wire(
         repo,
         branch,
         msg,
-        on_focus,
     })
     .expect("status payload of plain fields always serializes")
 }
@@ -246,11 +239,10 @@ mod tests {
     fn parses_full_payload() {
         // The trailing "seq":42 is an unknown field now (seq was removed) — it
         // must be ignored, not rejected, so older producers stay compatible.
-        let got = p(r#"{"v":1,"source":"claude","pane":{"type":"terminal","id":12},"status":"running","repo":"pinky","branch":"fix/x","msg":"running tests","on_focus":"idle","seq":42}"#).unwrap();
+        let got = p(r#"{"v":1,"source":"claude","pane":{"type":"terminal","id":12},"status":"running","repo":"pinky","branch":"fix/x","msg":"running tests","seq":42}"#).unwrap();
         assert_eq!(got.pane_id, 12);
         assert_eq!(got.status, Status::Running);
         assert_eq!(got.repo, "pinky");
-        assert_eq!(got.on_focus, Some(Status::Idle));
     }
 
     #[test]
@@ -259,7 +251,6 @@ mod tests {
         assert_eq!(got.pane_id, 3);
         assert_eq!(got.status, Status::Done);
         assert_eq!(got.repo, "");
-        assert_eq!(got.on_focus, None);
     }
 
     #[test]
@@ -396,7 +387,6 @@ mod tests {
             "pinky",
             "fix/x",
             "running tests",
-            Some(Status::Idle),
             "claude",
         );
         let got = parse(&json).expect("to_wire output must parse");
@@ -405,16 +395,7 @@ mod tests {
         assert_eq!(got.repo, "pinky");
         assert_eq!(got.branch, "fix/x");
         assert_eq!(got.msg, "running tests");
-        assert_eq!(got.on_focus, Some(Status::Idle));
         assert_eq!(got.source, "claude");
-    }
-
-    #[test]
-    fn to_wire_omits_on_focus_when_none() {
-        use crate::status::Status;
-        let json = to_wire(3, Status::Done, "r", "b", "m", None, "codex");
-        assert!(!json.contains("on_focus"));
-        assert_eq!(parse(&json).unwrap().on_focus, None);
     }
 
     #[test]
@@ -469,7 +450,6 @@ mod tests {
         fn parse_to_wire_round_trip(
             pane in any::<u32>(),
             status in proptest::sample::select(Status::ALL.to_vec()),
-            on_focus in proptest::option::of(proptest::sample::select(Status::ALL.to_vec())),
             repo in "[a-z]{0,15}",
             branch in "[a-z/]{0,15}",
             msg in "[a-zA-Z0-9 ]{0,40}",
@@ -477,14 +457,13 @@ mod tests {
         ) {
             // to_wire and parse must be inverses: a round-trip through the wire
             // format must preserve EVERY field parse surfaces — across all statuses,
-            // both on_focus arms, the full pane-id range, and msg/source (the fields
-            // the old version silently dropped). Only printable ASCII within each
-            // field's cap is generated, so sanitize does not alter any field.
-            let wire = to_wire(pane, status, &repo, &branch, &msg, on_focus, &source);
+            // the full pane-id range, and msg/source (the fields the old version
+            // silently dropped). Only printable ASCII within each field's cap is
+            // generated, so sanitize does not alter any field.
+            let wire = to_wire(pane, status, &repo, &branch, &msg, &source);
             let got = parse(&wire).expect("our own wire output must parse");
             prop_assert_eq!(got.pane_id, pane);
             prop_assert_eq!(got.status, status);
-            prop_assert_eq!(got.on_focus, on_focus);
             prop_assert_eq!(got.repo, repo);
             prop_assert_eq!(got.branch, branch);
             prop_assert_eq!(got.msg, msg);

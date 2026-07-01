@@ -18,7 +18,6 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         msg: "msg".into(),
         kind: Kind::Build,
         last_change_tick: tick,
-        on_focus: None,
         ever_active: true,
         exit_code: None,
     }
@@ -203,7 +202,6 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     msg: "m".into(),
                     kind: Kind::Build,
                     last_change_tick: tick,
-                    on_focus: None,
                     ever_active,
                     exit_code,
                 },

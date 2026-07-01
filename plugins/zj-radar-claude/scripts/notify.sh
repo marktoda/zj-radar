@@ -157,20 +157,14 @@ case "$common" in
 esac
 branch="$(git -C "$cwd" branch --show-current 2>/dev/null || true)"
 
-# done clears itself when you focus the tab
-on_focus=""
-[[ "$status" == "done" ]] && on_focus="idle"
-
 payload="$(jq -nc \
     --argjson id "$pane_num" \
     --arg status "$status" \
     --arg repo "$repo" \
     --arg branch "$branch" \
     --arg msg "$msg" \
-    --arg on_focus "$on_focus" \
     '{v: 1, source: "claude", pane: {type: "terminal", id: $id},
-      status: $status, repo: $repo, branch: $branch, msg: $msg}
-     + (if $on_focus == "" then {} else {on_focus: $on_focus} end)')"
+      status: $status, repo: $repo, branch: $branch, msg: $msg}')"
 
 if [[ "${ZJ_RADAR_DEBUG:-}" == "1" ]]; then
     printf 'zj-radar payload: %s\n' "$payload" >&2

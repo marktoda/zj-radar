@@ -35,7 +35,6 @@ fn payload_for(pane_id: u32, status: Status, repo: &str) -> StatusPayload {
         repo: repo.into(),
         branch: "main".into(),
         msg: "working".into(),
-        on_focus: None,
         source: "claude".into(),
     }
 }
@@ -464,7 +463,6 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
         .status_mut()
         .apply(payload_for(1, Status::Running, "repo"), 3);
     let mut done = payload_for(2, Status::Done, "pinky");
-    done.on_focus = Some(Status::Idle);
     done.branch = "fix/x".into();
     done.msg = "shipped it".into();
     done.source = "codex".into();
@@ -482,7 +480,6 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     assert_eq!(pane.branch, "fix/x");
     assert_eq!(pane.msg, "shipped it");
     assert_eq!(pane.kind, Kind::Codex);
-    assert_eq!(pane.on_focus, Some(Status::Idle));
 }
 
 #[test]
@@ -505,7 +502,7 @@ fn snapshot_round_trip_preserves_command_observations() {
 fn snapshot_load_migrates_legacy_status_snapshot() {
     // The legacy record still carries a `"seq":3` — now an unknown field that
     // must be ignored, not rejected, so old snapshots keep loading.
-    let legacy = r#"{"v":1,"tick":7,"panes":[{"pane_id":9,"status":"running","repo":"repo","branch":"main","msg":"work","source":"claude","last_change_tick":6,"seq":3,"on_focus":"idle","ever_active":true}]}"#;
+    let legacy = r#"{"v":1,"tick":7,"panes":[{"pane_id":9,"status":"running","repo":"repo","branch":"main","msg":"work","source":"claude","last_change_tick":6,"seq":3,"ever_active":true}]}"#;
     let mut radar = RadarState::default();
 
     let tick = radar.load_snapshot(legacy).expect("legacy snapshot loads");
@@ -514,7 +511,6 @@ fn snapshot_load_migrates_legacy_status_snapshot() {
     let pane = radar.status(9).expect("legacy pane restored");
     assert_eq!(pane.origin, ObservationOrigin::StatusPipe);
     assert_eq!(pane.status, Status::Running);
-    assert_eq!(pane.on_focus, Some(Status::Idle));
 }
 
 #[test]
@@ -699,9 +695,8 @@ fn mutating_events_request_a_render() {
 #[test]
 fn focus_does_not_change_rail_status() {
     let mut radar = RadarState::default();
-    // A completed agent turn: Done with the (now inert) queued clear-on-focus.
-    let mut done = payload_for(5, Status::Done, "repo");
-    done.on_focus = Some(Status::Idle);
+    // A completed agent turn: a pushed Done.
+    let done = payload_for(5, Status::Done, "repo");
     radar.status_mut().apply(done, 1);
 
     // Focusing the pane must NOT clear the Done — focus no longer recedes status.

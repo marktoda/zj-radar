@@ -38,8 +38,6 @@ pub struct TrackedObservation {
     #[serde(rename = "source")]
     pub kind: Kind,
     pub last_change_tick: u64,
-    #[serde(default)]
-    pub on_focus: Option<Status>,
     pub ever_active: bool,
     /// Exit code of a finished command pane, when known. Set by
     /// `CommandStore::on_exit` from a `zellij run`-style pane exit; `None` for
@@ -53,8 +51,8 @@ pub struct TrackedObservation {
 impl TrackedObservation {
     /// A freshly-resolved command-origin observation. Command panes carry no VCS
     /// branch, and are active by definition, so those fields take fixed defaults;
-    /// callers pass only what varies and override `on_focus` / `exit_code` via
-    /// struct-update when a command exits.
+    /// callers pass only what varies and override `exit_code` via struct-update
+    /// when a command exits.
     pub fn command(status: Status, repo: String, msg: String, kind: Kind, tick: u64) -> Self {
         Self {
             origin: ObservationOrigin::Command,
@@ -64,12 +62,10 @@ impl TrackedObservation {
             msg,
             kind,
             last_change_tick: tick,
-            on_focus: None,
             ever_active: true,
             exit_code: None,
         }
     }
-
 }
 
 /// A map of pane id → resolved observation, plus the lifecycle every source
@@ -137,7 +133,6 @@ mod tests {
             msg: "cargo build".into(),
             kind: Kind::Build,
             last_change_tick: 7,
-            on_focus: Some(Status::Idle),
             ever_active: true,
             exit_code: Some(1),
         }
@@ -151,7 +146,6 @@ mod tests {
         // variant names — so the snapshot format is stable and human-legible.
         assert!(json.contains(r#""origin":"command""#), "origin token: {json}");
         assert!(json.contains(r#""status":"error""#), "status token: {json}");
-        assert!(json.contains(r#""on_focus":"idle""#), "on_focus token: {json}");
         assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
     }
 

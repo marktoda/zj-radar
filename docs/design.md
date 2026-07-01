@@ -138,11 +138,11 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 |-----------------------------------------------|-----------|
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running` |
 | Claude `Notification` (permission/idle/elicitation)      | `pending` |
-| Claude `Stop`                                 | `done` (with `on_focus:"idle"`) |
+| Claude `Stop`                                 | `done`    |
 | Claude `SessionStart` (`source:"clear"` only) | `idle` (resets a stale row on `/clear`) |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
 | Codex `PermissionRequest`                     | `pending` |
-| Codex `Stop`                                  | `done` (with `on_focus:"idle"`) |
+| Codex `Stop`                                  | `done`    |
 | Codex legacy `agent-turn-complete`            | `done`    |
 | Adapter parse/hook failure (optional)         | `error`   |
 | Agent pane returns to its shell prompt (observed exit) | `idle` (clears a stale pushed status; see §6.2) |

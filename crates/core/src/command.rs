@@ -429,7 +429,6 @@ impl CommandStore {
             if let Some(s) = self.store.get_mut(pane_id) {
                 if s.status == Status::Running {
                     s.status = Status::Done;
-                    s.on_focus = Some(Status::Idle);
                     s.last_change_tick = tick;
                 }
             }
@@ -462,7 +461,6 @@ impl CommandStore {
 
         if let Some(s) = self.store.get_mut(pane_id) {
             s.status = new_status;
-            s.on_focus = Some(Status::Idle);
             s.last_change_tick = tick;
             s.exit_code = exit_status;
         } else {
@@ -479,7 +477,6 @@ impl CommandStore {
             self.store.insert(
                 pane_id,
                 TrackedObservation {
-                    on_focus: Some(Status::Idle),
                     exit_code: exit_status,
                     ..TrackedObservation::command(
                         new_status,

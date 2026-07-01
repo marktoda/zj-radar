@@ -35,7 +35,6 @@ impl StatusStore {
                 // intake; the renderer reads `kind` directly (no re-parse).
                 kind: Kind::from_source(&p.source),
                 last_change_tick,
-                on_focus: p.on_focus,
                 ever_active,
                 exit_code: None,
             },
@@ -47,9 +46,9 @@ impl StatusStore {
     /// pane isn't tracked, is already Idle, or is currently Running: a live agent
     /// turn re-asserts Running via its hooks, so a transient foreground flicker to
     /// a shell must never be mistaken for the agent exiting. Keeps repo/branch so
-    /// the tab keeps its name; drops the message and any queued on_focus. Returns
-    /// whether it changed anything. Unlike the focus-driven recede, this rides the
-    /// shared `CommandChanged` signal, so every tab's instance clears in lockstep.
+    /// the tab keeps its name; drops the message. Returns whether it changed
+    /// anything. Unlike the (removed) focus-driven recede, this rides the shared
+    /// `CommandChanged` signal, so every tab's instance clears in lockstep.
     pub fn clear_on_prompt_return(&mut self, pane_id: u32, tick: u64) -> bool {
         let Some(prev) = self.store.get(pane_id) else {
             return false;
@@ -73,7 +72,6 @@ impl StatusStore {
                 msg: String::new(),
                 kind,
                 last_change_tick: tick,
-                on_focus: None,
                 ever_active: true,
                 exit_code: None,
             },
@@ -130,7 +128,6 @@ mod tests {
             repo: "r".into(),
             branch: "b".into(),
             msg: "m".into(),
-            on_focus: None,
             source: "test".into(),
         }
     }
@@ -154,13 +151,11 @@ mod tests {
     fn clear_on_prompt_return_clears_terminal_but_not_running() {
         let mut s = StatusStore::default();
         // Done → cleared to Idle (agent exited after finishing), repo kept.
-        let mut done = payload(1, Status::Done);
-        done.on_focus = Some(Status::Idle);
+        let done = payload(1, Status::Done);
         s.apply(done, 1);
         assert!(s.clear_on_prompt_return(1, 5));
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "message dropped");
-        assert_eq!(s.get(1).unwrap().on_focus, None, "queued on_focus dropped");
         assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
 
         // Error and Pending also clear (the producer is gone).

@@ -413,7 +413,6 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     "",
                     &pane.msg,
-                    None,
                     source,
                 );
                 radar.status_pipe(&wire_running, 0, NamingMode::Off);
@@ -424,7 +423,6 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     "",
                     &pane.msg,
-                    None,
                     source,
                 );
                 radar.status_pipe(&wire_idle, 1, NamingMode::Off);
@@ -435,7 +433,6 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     "",
                     &pane.msg,
-                    None,
                     source,
                 );
                 radar.status_pipe(&wire, 0, NamingMode::Off);

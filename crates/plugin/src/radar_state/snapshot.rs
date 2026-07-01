@@ -52,8 +52,6 @@ struct LegacyPaneSnapshot {
     msg: String,
     source: String,
     last_change_tick: u64,
-    #[serde(default)]
-    on_focus: Option<String>,
     ever_active: bool,
 }
 
@@ -139,7 +137,6 @@ fn load_legacy_status(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObse
                     msg: pane.msg,
                     kind: Kind::from_source(&pane.source),
                     last_change_tick: pane.last_change_tick,
-                    on_focus: pane.on_focus.as_deref().map(Status::from_wire),
                     ever_active: pane.ever_active,
                     exit_code: None,
                 },

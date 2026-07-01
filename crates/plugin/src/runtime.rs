@@ -484,7 +484,6 @@ mod tests {
             repo: "repo".into(),
             branch: "main".into(),
             msg: "working".into(),
-            on_focus: None,
             source: "claude".into(),
         }
     }
@@ -766,7 +765,6 @@ mod tests {
             "repo",
             "main",
             "cargo test",
-            Some(Status::Idle),
             "claude",
         );
 
@@ -1171,7 +1169,7 @@ mod tests {
         // deferred notify/recede — then quiesces.
         let mut rt = runtime_with_config(config());
         let raw = payload::to_wire(
-            7, Status::Done, "repo", "main", "shipped", Some(Status::Idle), "claude",
+            7, Status::Done, "repo", "main", "shipped", "claude",
         );
 
         // The edge arms the timer but does not itself settle (focus could be stale).

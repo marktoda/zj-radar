@@ -373,7 +373,7 @@
         assert_eq!(s.msg, "cargo test", "the finished command is cargo test, not direnv");
     }
 
-    // ── Test 4: Running → return-to-shell → Done with on_focus
+    // ── Test 4: Running → return-to-shell → Done
 
     #[test]
     fn running_to_return_to_shell_sets_done() {
@@ -389,11 +389,10 @@
         // t=3: return-to-shell (is_foreground=false) → tentative, still Running
         store.on_command_changed(1, &[], false, None, 3);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
-        // t=4: timer past debounce → Done with on_focus=Some(Idle)
+        // t=4: timer past debounce → Done
         store.on_timer(4);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
-        assert_eq!(s.on_focus, Some(Status::Idle));
         assert_eq!(s.last_change_tick, 4);
     }
 
@@ -403,13 +402,12 @@
     fn on_exit_sets_status_and_dedupes() {
         let mut store = CommandStore::default();
 
-        // Exit 0 → Done with on_focus=Some(Idle)
+        // Exit 0 → Done
         store.on_exit(1, Some(0), 5);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
-        assert_eq!(s.on_focus, Some(Status::Idle));
 
-        // Repeated identical exit → no-op (on_focus unchanged, tick unchanged)
+        // Repeated identical exit → no-op (tick unchanged)
         store.on_exit(1, Some(0), 10);
         let s = store.get(1).unwrap();
         assert_eq!(
@@ -421,7 +419,6 @@
         store.on_exit(2, Some(3), 6);
         let s = store.get(2).unwrap();
         assert_eq!(s.status, Status::Error);
-        assert_eq!(s.on_focus, Some(Status::Idle));
 
         // Repeated identical exit for pane 2 → no-op
         store.on_exit(2, Some(3), 99);
@@ -583,24 +580,19 @@
         }
     }
 
-    // ── Test: on_exit(None) → Done with on_focus=Some(Idle), ever_active=true
+    // ── Test: on_exit(None) → Done, ever_active=true
 
     #[test]
     fn on_exit_none_yields_done_and_ever_active() {
         let mut store = CommandStore::default();
 
         // A pane that exited without a recorded code (e.g. killed by signal)
-        // → Done (not Error), with on_focus=Some(Idle) so it clears when focused.
+        // → Done (not Error).
         store.on_exit(1, None, 5);
         let s = store
             .get(1)
             .expect("must have a resolved entry after on_exit(None)");
         assert_eq!(s.status, Status::Done, "None exit_status must yield Done");
-        assert_eq!(
-            s.on_focus,
-            Some(Status::Idle),
-            "on_focus must be set to Idle"
-        );
         // A fast `zellij run -- false` that never reached Running must still
         // render as active (✗), so ever_active must be true even for a pane
         // with no prior resolved entry.
@@ -698,7 +690,6 @@
         store.on_timer(4);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
-        assert_eq!(s.on_focus, Some(Status::Idle));
         assert_eq!(s.last_change_tick, 4);
     }
 

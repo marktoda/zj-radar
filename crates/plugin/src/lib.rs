@@ -402,7 +402,6 @@ mod tests {
                 repo: "repo".into(),
                 branch: "branch".into(),
                 msg: msg.into(),
-                on_focus: None,
                 source: "test".into(),
             },
             tick,
