@@ -2459,10 +2459,11 @@ fn cards_left_chrome_is_single_column() {
     // detail row, line between is the idle gap). Find by name.
     let idle = lines.iter().find(|l| l.contains("idle")).unwrap();
     let active = lines.iter().find(|l| l.contains("work")).unwrap();
-    // Idle: no leading space (inactive bar is empty), glyph at col 0.
+    // Idle: col 0 is the reserved (blank) spine column, glyph at col 1 — same
+    // fixed columns as an active row, just without the `▌`.
     assert!(
-        idle.starts_with("○"),
-        "idle row must be '○…' (no leading space): {:?}",
+        idle.starts_with(" ○"),
+        "idle row must be ' ○…' (reserved spine column, blank): {:?}",
         idle
     );
     // Active: the spine in col 0 immediately followed by the glyph at col 1 —
@@ -4121,4 +4122,29 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
         rendered.target_at_line(q_line as isize),
         Some(RailTarget { tab_position: 0, pane_id: Some(10) }),
     );
+}
+
+#[test]
+fn tab_name_column_is_fixed_across_active_and_inactive() {
+    // One active, one inactive row; strip SGR and compare name columns.
+    let mut active = idle_row(1);
+    active.name = "alpha".into();
+    active.active = true;
+    let mut idle = idle_row(2);
+    idle.name = "beta".into();
+    let opts = ro(24, 0);
+    let ansi = render(&[active, idle], &opts);
+    // `.find()` returns a BYTE offset; the spine glyph `▌` is a multi-byte
+    // UTF-8 char while its inactive stand-in `' '` is one byte, so byte
+    // offsets diverge by encoding width even when the visual COLUMN matches.
+    // Count chars up to the match to get the actual column.
+    let cols: Vec<usize> = ansi
+        .lines()
+        .map(strip_sgr)
+        .filter_map(|l| {
+            let byte_idx = l.find("alpha").or_else(|| l.find("beta"))?;
+            Some(l[..byte_idx].chars().count())
+        })
+        .collect();
+    assert_eq!(cols[0], cols[1], "active and inactive tab names must start at the same column:\n{ansi}");
 }

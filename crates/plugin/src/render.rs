@@ -390,12 +390,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // derived), so those match the terminal's theme too.
     let hue = |r: Role| -> String { r.ansi().to_string() };
 
-    // col 0: active spine — accent (mauve) normally, attention (peach) when the
-    // active row is also waiting/error.
+    // col 0: spine column — ALWAYS reserved so every row's glyph/number/name
+    // start at fixed columns; `▌` when active, plain space otherwise.
     let bar = if row.active {
         Seg::new(&hue(spine_role(st)), "▌").to_string()
     } else {
-        String::new()
+        " ".to_string()
     };
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
@@ -426,9 +426,9 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
     // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    // Bare minimum: bar(1 if active, 0 if not) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. Clamp pad first, then num.
     let num_full = row.number.to_string();
-    let bar_width = if row.active { 1 } else { 0 };
+    let bar_width = 1;
     let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
     let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
     let num_budget = width.saturating_sub(bare_min + pad_len);

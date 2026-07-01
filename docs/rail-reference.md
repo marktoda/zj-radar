@@ -52,7 +52,11 @@
 ▌└ ● ⚙ activity message            ← last pane row uses the └ elbow connector
 ```
 
-`▌` = active-tab spine (focused tab only). Tab **glyph** = dominant status.
+**Col 0 is always the spine column** — reserved on every line, active or not:
+`▌` for the focused tab, a plain space otherwise. This holds line 1 (the tab
+row) and every pane/child row to the same fixed columns regardless of focus,
+so the glyph/number/name never shift left by a column just because a row is
+inactive. Tab **glyph** = dominant status.
 **Multi-pane** tabs (>1 tracked pane) join their pane lines to the tab with a
 tree connector at column 1: `├` for every child that has a sibling (or a
 `+N more` line) below it, `└` for the last visible child. The connector sits one
@@ -71,7 +75,7 @@ tab 1 "shell"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 shell
+ ○ 1 shell
 ```
 
 > No legend, no permission marketing. Just the tab list. An unnamed tab renders
@@ -86,7 +90,7 @@ tab 4 "notes"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 4 notes
+ ○ 4 notes
 ```
 
 ## C. Single agent — working
@@ -99,7 +103,7 @@ tab 1 "pinky"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 pinky
+ ⠋ 1 pinky
   ✳ running tests…
 ```
 
@@ -113,7 +117,7 @@ tab 3 "api"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◆ 3 api
+ ◆ 3 api
   ✳ approve edit?
 ```
 
@@ -127,7 +131,7 @@ tab 1 "dotfiles"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-● 1 dotfiles
+ ● 1 dotfiles
   ✳ refactored the dotfiles
 ```
 
@@ -141,7 +145,7 @@ tab 2 "build-svc"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-✗ 2 build-svc
+ ✗ 2 build-svc
   ✳ exit 1: cargo test failed
 ```
 
@@ -155,7 +159,7 @@ tab 1 "web"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 web
+ ⠋ 1 web
   ⚙ cargo build
 ```
 
@@ -172,7 +176,7 @@ tab 2 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 2 af
+ ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ● ⚙ cargo build
 ```
@@ -191,7 +195,7 @@ tab 4 "review"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◆ 4 review
+ ◆ 4 review
  ├ ◆ ✳ approve diff?
  └ ⠋ ❉ writing tests
 ```
@@ -211,7 +215,7 @@ tab 2 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 2 af
+ ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ○ $ ./deploy.sh
 ```
@@ -236,7 +240,7 @@ tab 2 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 2 swarm
+ ⠋ 2 swarm
  ├ ⠋ ❉ planning api
  ├ ⠋ ❉ writing tests
  ├ ⠋ ❉ refactoring
@@ -266,11 +270,11 @@ tab 6 "logs"
 ```rail-expect
  RADAR                        6▲
 ════════════════════════════════
-◆ 1 review
+ ◆ 1 review
   ✳ approve diff?
-⠋ 2 af
+ ⠋ 2 af
   ❉ exploring render
-● 3 dotfiles
+ ● 3 dotfiles
   ✳ refactored auth
 +3 idle ▾
 ```
@@ -315,7 +319,7 @@ tab 1 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 swarm
+ ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
  ├ ⠋ ❉ pane three
@@ -345,7 +349,7 @@ tab 1 "swarm"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 swarm
+ ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
  ├ ⠋ ❉ pane three
@@ -370,7 +374,7 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 work
+ ⠋ 1 work
  ├ ⠋ ✳ this message is quite lo…
  └ ● ⚙ ok
 ```
@@ -390,7 +394,7 @@ tab 1 "cjk"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 cjk
+ ⠋ 1 cjk
  ├ ⠋ ✳ 処理中のメッセージが長す…
  └ ● ⚙ ok
 ```
@@ -399,7 +403,7 @@ tab 1 "cjk"
 
 ## R. Bell marker in tab line
 
-**Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=4, bell_len=2, name_budget=26, gap=32-4-6-2=20 → `○ 1 alerts` + 20 spaces + `⚑`.
+**Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=5 (col-0 spine/space + glyph + sp + num + sp), bell_len=2, name_budget=25, gap=32-5-6-2=19 → ` ○ 1 alerts` + 19 spaces + `⚑`.
 
 ```rail-input
 width 32
@@ -408,7 +412,7 @@ tab 1 "alerts" bell
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 alerts                    ⚑
+ ○ 1 alerts                   ⚑
 ```
 
 > Bell token on the `tab` line sets `has_bell=true`; the `⚑` glyph appears right-aligned. Tab-line trailing space after `⚑` is trimmed by the vt100 grid helper.
@@ -425,7 +429,7 @@ tab 1 "pinky" bell
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 pinky                     ⚑
+ ⠋ 1 pinky                    ⚑
   ✳ running tests
 ```
 
@@ -441,7 +445,7 @@ tab 1 "shell"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 shell
+ ○ 1 shell
 ```
 
 > Untracked pane gets no line. Tab status = Idle (no tracked panes). ⟦D4 ✓⟧
@@ -459,7 +463,7 @@ tab 1 "af"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-⠋ 1 af
+ ⠋ 1 af
   ✳ exploring render
 ```
 
@@ -478,7 +482,7 @@ tab 1 "pinky"
 ```
 ```rail-expect
  RADAR                        ·1
-⠋ 1 pinky
+ ⠋ 1 pinky
   ✳ running tests
 ```
 
@@ -516,7 +520,8 @@ pane line 2 = `  ⚙ cargo build ✓`.
 
 Grid reasoning at width 32, prefix 6 (`"  ⚙ "` = indent 2 + mark 1 + space 1 = 4 cols;
 pane line 2 uses single-pane path with `prefix_vis = 2 + 1 + 1 = 4` cols):
-- Tab line: `● 1 work` (3 chars prefix + `1 work` = 8 chars total).
+- Tab line: ` ● 1 work` (5 chars prefix — col-0 spine/space + glyph + sp + num + sp —
+  + `work` = 9 chars total).
 - Pane line 2: `  ⚙ cargo build ✓` = 4-col prefix + `cargo build ✓` (13 chars) = 17 cols total.
   No truncation (17 ≤ 32).
 
@@ -528,7 +533,7 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-● 1 work
+ ● 1 work
   ⚙ cargo build ✓
 ```
 
@@ -544,7 +549,7 @@ returns `Outcome::Failed(Some(1))` → tag `(exit 1)`. Tab glyph `✗` (Error); 
 = `  ⚙ cargo build (exit 1)`.
 
 Grid reasoning at width 32:
-- Tab line: `✗ 1 work`.
+- Tab line: ` ✗ 1 work` (col 0 is the reserved, blank spine column since this tab isn't active).
 - Pane line 2 prefix (single-pane path): `  ⚙ ` = 4 cols; avail = 28.
   `cargo build (exit 1)` = 21 chars, fits without truncation.
 
@@ -556,7 +561,7 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-✗ 1 work
+ ✗ 1 work
   ⚙ cargo build (exit 1)
 ```
 
@@ -582,10 +587,10 @@ tab 2 "notes"
 ```rail-expect
  RADAR                        ·2
 ════════════════════════════════
-⠋ 1 web
+ ⠋ 1 web
   ✳ building
 
-○ 2 notes
+ ○ 2 notes
 ```
 
 > Comfortable density: header rule present; a blank line separates each tab. ⟦Comfortable density⟧
@@ -609,13 +614,13 @@ tab 3 "notes"
 ```
 ```rail-expect
  RADAR                        ·3
-⠋ 1 web
+ ⠋ 1 web
   ✳ building
 
-● 2 worker
+ ● 2 worker
   ✳ shipped
 
-○ 3 notes
+ ○ 3 notes
 ```
 
 > Cards density: title-only header (no `═`); each card followed by a blank gap row. ⟦Cards density⟧
