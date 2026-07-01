@@ -141,9 +141,17 @@ fn header_absent_for_empty_rows() {
 #[test]
 fn rendered_rail_tracks_targets_for_each_emitted_line() {
     assert_eq!(RenderedRail::empty().line_count(), 0);
-    let untargeted = RenderedRail::from_ansi_without_targets("a\nb\n".to_string());
+    let untargeted = RenderedRail::from_ansi_without_targets("a\nb\n", 100);
     assert_eq!(untargeted.line_count(), 2);
     assert_eq!(untargeted.target_at_line(0), None);
+    assert!(
+        !untargeted.ansi.ends_with('\n'),
+        "trailing newline popped, like from_lines"
+    );
+    // Clamp: only `height` lines survive.
+    let clamped = RenderedRail::from_ansi_without_targets("a\nb\nc\n", 2);
+    assert_eq!(clamped.line_count(), 2);
+    assert_eq!(clamped.ansi, "a\nb");
 
     let detail = PrimaryDetail {
         repo: "repo".into(),
@@ -1116,6 +1124,43 @@ fn onboarding_never_exceeds_width() {
                 "onboarding line exceeds width {width}: {line:?} (visible {})",
                 visible_len(line)
             );
+        }
+    }
+}
+
+#[test]
+fn panel_faces_never_exceed_height() {
+    // Regression: both first-run faces used to ignore `opts.height` and keep a
+    // trailing newline, so a short rail pane scrolled the " RADAR" header (and
+    // the "needs permission" warning) off the top — on exactly the screens a
+    // brand-new user sees. Clamp discipline must match the rail's.
+    for height in [0usize, 1, 2, 3, 5, 7, 12, 100] {
+        for (name, face) in [
+            ("onboarding", onboarding(&RenderOpts { height, ..ro(24, 0) })),
+            ("needs_permission", needs_permission(&RenderOpts { height, ..ro(24, 0) })),
+        ] {
+            assert!(
+                face.line_count() <= height,
+                "{name} at height {height} emits {} lines",
+                face.line_count()
+            );
+            // vt100 scrolls when the newline COUNT reaches the pane height
+            // (an LF on the bottom row scrolls; content after it doesn't
+            // matter). A clamped face must therefore stay strictly under.
+            if height > 0 {
+                let newlines = face.ansi.matches('\n').count();
+                assert!(
+                    newlines < height,
+                    "{name} at height {height} emits {newlines} newlines (vt100 scroll)"
+                );
+            }
+            if height >= 1 {
+                let first = face.ansi.lines().next().unwrap_or("");
+                assert!(
+                    first.contains("RADAR"),
+                    "{name} at height {height} lost its header: {first:?}"
+                );
+            }
         }
     }
 }
@@ -3784,7 +3829,9 @@ fn onboarding_returns_rail_with_no_targets_but_matching_line_count() {
     let opts = ro(24, 0);
     let rail = onboarding(&opts);
     assert!(rail.line_count() > 0, "onboarding paints a panel");
-    assert_eq!(rail.line_count(), rail.ansi.matches('\n').count());
+    // Trailing newline popped (like from_lines), so a face ending on a
+    // non-blank line has line_count == lines().
+    assert_eq!(rail.line_count(), rail.ansi.lines().count());
     for line in 0..rail.line_count() {
         assert_eq!(
             rail.target_at_line(line as isize),

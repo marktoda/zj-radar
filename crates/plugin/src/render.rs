@@ -208,9 +208,21 @@ impl RenderedRail {
         RenderedRail { ansi, targets }
     }
 
-    fn from_ansi_without_targets(ansi: String) -> Self {
-        let targets = ansi.lines().map(|_| None).collect();
-        RenderedRail { ansi, targets }
+    /// Build a targetless panel face from raw ANSI, clamped to `height` lines
+    /// and with the final newline popped — the same discipline `from_lines`
+    /// applies to the rail. Without the clamp+pop a face taller than the pane
+    /// scrolls its header (" RADAR", the permission warning) off the top.
+    fn from_ansi_without_targets(ansi: &str, height: usize) -> Self {
+        let mut clamped = String::new();
+        let mut targets = Vec::new();
+        for line in ansi.split_inclusive('\n').take(height) {
+            clamped.push_str(line);
+            targets.push(None);
+        }
+        if clamped.ends_with('\n') {
+            clamped.pop();
+        }
+        RenderedRail { ansi: clamped, targets }
     }
 
     pub fn target_at_line(&self, line: isize) -> Option<RailTarget> {
@@ -313,7 +325,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     }
     out.push('\n');
     push_panel_line(&mut out, muted, " click a row to jump", w);
-    RenderedRail::from_ansi_without_targets(out)
+    RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 
 /// Rail face shown when permission has NOT been granted. Distinct from
@@ -336,7 +348,7 @@ pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
     push_panel_line(&mut out, muted, " press Ctrl-y to", w);
     push_panel_line(&mut out, muted, " open the grant", w);
     push_panel_line(&mut out, muted, " prompt.", w);
-    RenderedRail::from_ansi_without_targets(out)
+    RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 
 /// Emit one row's body into `out`, respecting `max_lines`.
