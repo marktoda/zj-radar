@@ -20,8 +20,8 @@ fn codex_home_dir() -> PathBuf {
     home.join(".codex")
 }
 
-fn codex_installed() -> bool {
-    which("codex") || codex_config_path().exists() || codex_hooks_path().exists()
+fn codex_installed(codex_on_path: bool) -> bool {
+    codex_on_path || codex_config_path().exists() || codex_hooks_path().exists()
 }
 
 pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
@@ -34,13 +34,14 @@ pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
 
 fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
     let path = codex_hooks_path();
-    if !uninstall && !codex_installed() {
+    let codex_on_path = which("codex");
+    if !uninstall && !codex_installed(codex_on_path) {
         println!("codex: skipped (binary/config not found)");
         return;
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let env = CodexEnv {
-        codex_on_path:    which("codex"),
+        codex_on_path,
         zj_radar_on_path: which("zj-radar"),
         config_text:      std::fs::read_to_string(codex_config_path()).ok(),
         hooks_text:       Some(existing.clone()),
@@ -84,7 +85,7 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
 
 fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
     let path = codex_config_path();
-    if !uninstall && !codex_installed() {
+    if !uninstall && !codex_installed(which("codex")) {
         println!("codex: skipped (binary/config not found)");
         return;
     }
