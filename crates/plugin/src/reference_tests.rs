@@ -110,12 +110,12 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 /// Parse a `rail-input` DSL block into `(Vec<TabRow>, RenderOpts)` by routing
 /// through the real `RadarState` aggregator.
 ///
-/// DSL grammar (unchanged):
+/// DSL grammar:
 ///   width N
 ///   height N
 ///   glyphs plain|nerd
 ///   tab <pos> "<name>" [active]
-///     <kind> <status> "<msg>"   ← indented; one line per pane
+///     <kind> <status> "<msg>" [task "<text>"] [exit <N>|?]   ← indented; one line per pane
 ///
 /// For idle panes: Running is applied first (tick=0, same msg) to set
 /// `ever_active=true`, then Idle (tick=1, same msg). This preserves the
@@ -136,6 +136,8 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         kind: Kind,
         status: Status,
         msg: String,
+        /// Sticky task label (empty = no task). Set via the `task "<text>"` trailer.
+        task: String,
         /// true = register pane but send NO status (→ PaneDisplay::Untracked)
         untracked: bool,
         /// Some(code) → command-origin path: command_changed + timer + on_exit.
@@ -239,6 +241,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                         kind: Kind::Other,
                         status: Status::Idle,
                         msg: title.to_string(),
+                        task: String::new(),
                         untracked: true,
                         exit_code: None,
                     });
@@ -289,31 +292,31 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 panic!("reference DSL: unknown status '{}' in scenario", status_str);
             }
 
-            // Parse optional `exit <N>|?` trailer (appears after the closing quote).
-            // Presence of this trailer routes the pane through the command-origin
-            // path (command_changed + timer + on_exit) instead of status_pipe.
-            let exit_code: Option<Option<i32>> = if let Some(trailer) = exit_trailer {
-                if let Some(code_str) = trailer.strip_prefix("exit ") {
+            // Trailers after the closing quote: `task "<text>"` and/or `exit <N>|?`.
+            let mut task = String::new();
+            let mut exit_code: Option<Option<i32>> = None;
+            let mut trailer = exit_trailer.unwrap_or("").trim();
+            while !trailer.is_empty() {
+                if let Some(rest) = trailer.strip_prefix("task \"") {
+                    let close = rest.find('"').unwrap_or_else(|| {
+                        panic!("reference DSL: unterminated task trailer '{trailer}'")
+                    });
+                    task = rest[..close].to_string();
+                    trailer = rest[close + 1..].trim();
+                } else if let Some(code_str) = trailer.strip_prefix("exit ") {
                     let code_str = code_str.trim();
                     if code_str == "?" {
-                        Some(None)
+                        exit_code = Some(None);
                     } else if let Ok(n) = code_str.parse::<i32>() {
-                        Some(Some(n))
+                        exit_code = Some(Some(n));
                     } else {
-                        panic!(
-                            "reference DSL: bad exit code '{}' — must be an integer or '?'",
-                            code_str
-                        );
+                        panic!("reference DSL: bad exit code '{code_str}' — must be an integer or '?'");
                     }
+                    trailer = "";
                 } else {
-                    panic!(
-                        "reference DSL: unknown pane trailer '{}' — only 'exit <N>|?' is supported",
-                        trailer
-                    );
+                    panic!("reference DSL: unknown pane trailer '{trailer}' — only 'task \"<text>\"' and 'exit <N>|?' are supported");
                 }
-            } else {
-                None
-            };
+            }
 
             let kind = Kind::from_source(kind_str);
             let status = Status::from_wire(status_str);
@@ -326,6 +329,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     kind,
                     status,
                     msg: msg.to_string(),
+                    task,
                     untracked: false,
                     exit_code,
                 });
@@ -406,14 +410,16 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             let source = pane.kind.as_source();
 
             if pane.status == Status::Idle {
-                // First prime ever_active with Running, then switch to Idle
+                // First prime ever_active (and the task) with Running, then switch
+                // to Idle with task="" — the idle apply clears it, matching real
+                // `/clear` semantics.
                 let wire_running = to_wire(
                     pane.pane_id,
                     Status::Running,
                     "",
                     "",
                     &pane.msg,
-                    "",
+                    &pane.task,
                     source,
                 );
                 radar.status_pipe(&wire_running, 0, NamingMode::Off);
@@ -435,7 +441,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     "",
                     &pane.msg,
-                    "",
+                    &pane.task,
                     source,
                 );
                 radar.status_pipe(&wire, 0, NamingMode::Off);

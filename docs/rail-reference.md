@@ -622,6 +622,69 @@ tab 3 "notes"
 
 ---
 
+## T1 — sticky task: identity line + pending question line
+
+A pane with a known task shows the task as its line text in every state; the
+pending pane spends one extra `↳` line on the actionable question. Calm panes
+(running) stay single-line.
+
+```rail-input
+width 32
+tab 1 "review"
+  claude pending "approve git push?" task "migrate schema"
+  codex running "editing retry.rs" task "write insta tests"
+```
+
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◆ 1 review
+ ├ ◆ ✳ migrate schema
+ │   ↳ approve git push?
+ └ ⠋ ❉ write insta tests
+```
+
+## T2 — sticky task: fallback and calm done
+
+No task ⇒ exactly the pre-task rail (msg as the line text, no `↳` line even
+when pending). A done pane with a task shows the task alone — no second line.
+
+```rail-input
+width 32
+tab 1 "work"
+  claude pending "approve?"
+  claude done "All 47 tests pass" task "fix flaky e2e"
+```
+
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◆ 1 work
+ ├ ◆ ✳ approve?
+ └ ● ✳ fix flaky e2e
+```
+
+## T3 — sticky task: single-pane question line
+
+A single-tracked-pane tab keeps its 2-line block (tab row + identity) and adds
+the `↳` question line when pending.
+
+```rail-input
+width 32
+tab 1 "review"
+  claude pending "approve git push?" task "migrate schema"
+```
+
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+◆ 1 review
+  ✳ migrate schema
+    ↳ approve git push?
+```
+
+---
+
 ## Open decisions
 
 - **⟦D1⟧** right-slot: keep dropped, or re-add `done/total` for multi-pane?
