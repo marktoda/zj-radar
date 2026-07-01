@@ -34,11 +34,18 @@ pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {
             i += 1;
             continue;
         }
-        let end = lines[i + 1..]
+        let Some(end) = lines[i + 1..]
             .iter()
             .position(|line| line.trim() == ZELLIJ_ALIAS_END)
             .map(|offset| i + 1 + offset)
-            .unwrap_or(lines.len().saturating_sub(1));
+        else {
+            // Malformed block: a BEGIN with no matching END (a hand-edited or
+            // truncated config). Skip it — draining to EOF here would delete
+            // every user line below the stray marker. Fail closed: a destructive
+            // op defaults to removing *nothing*, never *everything*.
+            i += 1;
+            continue;
+        };
         lines.drain(i..=end);
         changed = true;
     }
@@ -118,6 +125,24 @@ mod tests {
         assert!(changed);
         assert!(!lines.iter().any(|l| l.contains("radar location")));
         assert!(lines.iter().any(|l| l.contains("tab-bar")));
+    }
+
+    #[test]
+    fn strip_managed_zellij_alias_leaves_unmatched_begin_and_content_intact() {
+        // A BEGIN marker with no matching END (hand-edited / truncated config)
+        // must NOT drain to EOF — every user line below the stray marker stays.
+        let mut lines: Vec<String> = vec![
+            "plugins {".to_string(),
+            ZELLIJ_ALIAS_BEGIN.to_string(),
+            "    radar location=\"file:/x.wasm\"".to_string(),
+            "    tab-bar location=\"zellij:tab-bar\"".to_string(),
+            "}".to_string(),
+            "keybinds {}".to_string(),
+        ];
+        let before = lines.clone();
+        let changed = strip_managed_zellij_alias(&mut lines);
+        assert!(!changed, "an unmatched BEGIN is malformed → no change");
+        assert_eq!(lines, before, "no user content is deleted");
     }
 
     #[test]

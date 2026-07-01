@@ -71,7 +71,7 @@ just ci          # what every PR must pass locally: test + clippy + test-bash
 ## Lint & formatting
 
 ```sh
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 > **This project does not use `rustfmt`.** The code is intentionally

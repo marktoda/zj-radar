@@ -252,7 +252,13 @@ fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
 fn find_plugins_insert(lines: &[String]) -> Option<(usize, String)> {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("//") || !trimmed.starts_with("plugins") || !line.contains('{') {
+        // Match the KDL `plugins` block only — not a sibling node whose name
+        // merely starts with "plugins" (e.g. `plugins_extra {`). The node name
+        // must be followed by whitespace or the opening brace.
+        let is_plugins_node = trimmed
+            .strip_prefix("plugins")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['{', ' ', '\t']));
+        if trimmed.starts_with("//") || !is_plugins_node || !line.contains('{') {
             continue;
         }
         let base_indent_len = line.len() - trimmed.len();

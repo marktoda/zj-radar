@@ -71,13 +71,31 @@ pub(crate) fn run_grant(config_dir: &Path) {
 }
 
 pub(crate) fn zellij_config_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("ZELLIJ_CONFIG_DIR") {
+    resolve_config_dir(
+        std::env::var_os("ZELLIJ_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Mirror Zellij's own config-dir resolution so `setup` writes where Zellij reads:
+/// `ZELLIJ_CONFIG_DIR` wins, then `$XDG_CONFIG_HOME/zellij`, then `~/.config/zellij`.
+/// Skipping `XDG_CONFIG_HOME` would install the alias/wasm into `~/.config` while a
+/// Linux XDG user's Zellij reads elsewhere — the rail never appears and `--check`
+/// reports everything missing. Pure (env read by the caller) so the precedence is
+/// unit-testable without mutating process-global environment.
+fn resolve_config_dir(
+    zellij_config_dir: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(dir) = zellij_config_dir.filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".config").join("zellij")
+    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
+        return PathBuf::from(xdg).join("zellij");
+    }
+    PathBuf::from(home.unwrap_or_default()).join(".config").join("zellij")
 }
 
 pub(crate) fn zellij_config_path(config_dir: &Path) -> PathBuf {
@@ -465,6 +483,38 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    // ── config-dir resolution (matches Zellij's own precedence) ──────────────
+    fn os(s: &str) -> Option<OsString> {
+        Some(OsString::from(s))
+    }
+
+    #[test]
+    fn resolve_config_dir_prefers_zellij_config_dir() {
+        let got = resolve_config_dir(os("/explicit"), os("/xdg"), os("/home"));
+        assert_eq!(got, PathBuf::from("/explicit"));
+    }
+
+    #[test]
+    fn resolve_config_dir_falls_back_to_xdg_then_home() {
+        // No ZELLIJ_CONFIG_DIR → XDG_CONFIG_HOME/zellij (the bug: this used to be
+        // skipped, so XDG users got a silently-ineffective setup).
+        assert_eq!(
+            resolve_config_dir(None, os("/xdg"), os("/home")),
+            PathBuf::from("/xdg/zellij"),
+        );
+        // No ZELLIJ_CONFIG_DIR, no XDG → ~/.config/zellij.
+        assert_eq!(
+            resolve_config_dir(None, None, os("/home")),
+            PathBuf::from("/home/.config/zellij"),
+        );
+        // Empty env values are ignored, not treated as "" paths.
+        assert_eq!(
+            resolve_config_dir(os(""), os(""), os("/home")),
+            PathBuf::from("/home/.config/zellij"),
+        );
+    }
 
     // ── inject_mode decision tests ───────────────────────────────────────────
 

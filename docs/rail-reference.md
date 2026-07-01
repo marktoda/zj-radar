@@ -657,11 +657,11 @@ tab <pos> "<name>" [active]
 - Omit a tab's panes for a plain/idle tab. Prompt-only panes are never listed
   (they're untracked by rule 4).
 
-### Test sketch (`src/reference_tests.rs`, `#[cfg(test)]`)
+### Test sketch (`crates/plugin/src/reference_tests.rs`, `#[cfg(test)]`)
 
 ```rust
 // pseudocode — lives in-crate so it can call aggregate()/render_rail()
-const DOC: &str = include_str!("../docs/rail-reference.md");
+const DOC: &str = include_str!("../../../docs/rail-reference.md");
 
 #[test]
 fn rail_reference_matches() {

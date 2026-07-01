@@ -2,6 +2,23 @@ use super::*;
 use crate::kind::Kind;
 use crate::rollup::{PrimaryDetail, ProgressCounts};
 
+#[test]
+fn truncate_does_not_strand_a_zwj_before_the_ellipsis() {
+    // A ZWJ family emoji cut mid-cluster must not leave a dangling U+200D that
+    // fuses with the appended '…'. The result ends in a clean ellipsis.
+    let out = truncate("👨\u{200d}👩\u{200d}👧 done", 5);
+    assert!(out.ends_with('…'), "ends in a clean ellipsis: {out:?}");
+    let before_ellipsis = out.strip_suffix('…').unwrap();
+    assert!(
+        !before_ellipsis.ends_with('\u{200d}'),
+        "no joiner strands right before the ellipsis: {out:?}"
+    );
+    // Plain ASCII still truncates by display width with a reserved ellipsis col.
+    assert_eq!(truncate("abcdef", 3), "ab…");
+    // Fits untouched.
+    assert_eq!(truncate("abc", 3), "abc");
+}
+
 fn display(
     status: Status,
     done: usize,

@@ -381,8 +381,16 @@ impl RadarState {
         })
     }
 
-    pub(crate) fn has_active_or_pending_work(&self) -> bool {
-        self.status.any_active() || self.command.has_pending_or_active()
+    /// True while any tracked pane is actively *working* — a status-pipe agent
+    /// reporting `Running`, or an observed foreground command still live. This is
+    /// the animated set (the spinner), so it wants a per-tick repaint. Deliberately
+    /// narrow: a finished `Done`/`Error` or a waiting `Pending` is not "work" for
+    /// tick purposes (it doesn't animate, and its notify/recede is the one-shot the
+    /// settle carries), mirroring `CommandStore::has_pending_or_active`. The runtime
+    /// keeps the timer alive on this OR an un-carried completion edge; see
+    /// `PluginRuntime::timer_should_continue`.
+    pub(crate) fn has_running_work(&self) -> bool {
+        self.status.any_running() || self.command.has_pending_or_active()
     }
 
     pub(crate) fn recompute_renames(&mut self, naming: config::NamingMode) -> Vec<TabRename> {

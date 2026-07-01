@@ -122,12 +122,19 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     } else {
         None
     };
+    // Bound the message client-side so a pathologically long final assistant
+    // message can't push the whole payload past the plugin's MAX_PAYLOAD_BYTES
+    // cap — which would drop the *entire* status update (e.g. losing a `done`
+    // edge and leaving the tab stuck "working"). The cap is generous relative to
+    // the plugin's 60-char display cap so its sanitizer still has content after
+    // control-char stripping.
+    let msg: String = update.msg.chars().take(512).collect();
     let payload = to_wire(
         pane_id,
         update.status,
         &repo,
         &branch,
-        &update.msg,
+        &msg,
         on_focus,
         agent.source(),
     );

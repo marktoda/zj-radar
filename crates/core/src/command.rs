@@ -511,9 +511,8 @@ impl CommandStore {
         self.store.insert(pane_id, observation);
     }
 
-    /// True if any pane is Running or has a pending fg command. Used by the wasm
-    /// glue to keep the timer armed. Deliberately narrower than
-    /// `StatusStore::any_active` (which counts any non-idle, Done included): a
+    /// True if any pane is Running or has a pending fg command. Used (alongside
+    /// `StatusStore::any_running`) to keep the timer armed while work animates: a
     /// finished command is terminal and needs no further ticking, so only
     /// `Running` (plus a not-yet-promoted pending command) counts as live here.
     pub fn has_pending_or_active(&self) -> bool {

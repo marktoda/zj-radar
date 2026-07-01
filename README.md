@@ -45,7 +45,7 @@ wrapping your agents. It's a status rail for the session you already run.
 ## Highlights
 
 - See which Claude Code / Codex tabs are **working, done, errored, or waiting for you**.
-- **Jump directly** to the tab that needs attention (`attention-next` keybind).
+- **Jump directly** to the tab that needs attention (bind `attention-next` — see [Configuration](#configuration)).
 - Keep your existing Zellij workflow — **no new terminal, no tmux wrapper, no agent orchestrator**.
 - **Push-driven** updates via `zellij pipe`; no pane polling, no blocking host queries.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
@@ -113,13 +113,14 @@ orchestrator, not a new terminal.**
 
 ## Configuration
 
-With the recommended alias setup, defaults live in `~/.config/zellij/config.kdl`:
+With the recommended alias setup, options live in `~/.config/zellij/config.kdl`.
+The values below are the built-in defaults — you only need a key to override it:
 
 ```kdl
 plugins {
     radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
-        density "comfortable"   // cards · comfortable · compact
-        naming "off"            // off · managed · force
+        density "cards"         // cards · comfortable · compact
+        naming "managed"        // off · managed · force
         notify true             // desktop notifications (macOS)
         notify_done true        // per-status toggles (done · error · pending)
         notify_error true

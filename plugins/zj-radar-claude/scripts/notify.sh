@@ -129,6 +129,12 @@ fi
 # recedes cleanly on /clear. Mirrors derive_claude's idle branch.
 [[ "$status" == "idle" ]] && msg=""
 
+# Bound the message so a pathologically long final assistant message can't push
+# the payload past the plugin's 64 KB cap (which would drop the whole update,
+# e.g. losing a `done` edge). 512 is generous vs the plugin's 60-char display cap
+# yet far under 64 KB whether the shell counts this substring in chars or bytes.
+msg="${msg:0:512}"
+
 # Resolve the repo name from the COMMON git dir so worktrees report the main
 # repo (e.g. "pinky"), not the worktree directory (e.g. "reply-register", which
 # is what --show-toplevel returns inside a worktree). Fall back to --show-toplevel

@@ -126,6 +126,13 @@ fn truncate(s: &str, max: usize) -> String {
             kept.push(c);
             used += w;
         }
+        // A cut mid-cluster can strand a trailing zero-width joiner, which would
+        // try to fuse with the following '…' into mojibake. Drop trailing ZWJs so
+        // the ellipsis stands alone. (Combining marks on the last kept base char
+        // are harmless and left in place.)
+        while kept.ends_with('\u{200d}') {
+            kept.pop();
+        }
         format!("{}…", kept)
     }
 }

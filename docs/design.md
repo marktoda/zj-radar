@@ -242,8 +242,13 @@ unaffected.
   // load():   set_timeout(1.0);
   // update(Event::Timer(_)):  tick_elapsed(); set_timeout(1.0); return true;
   ```
-  Optimization: only keep re-arming while ≥1 visible non-idle agent exists; otherwise stop the
-  loop until the next pipe/PaneUpdate.
+  Optimization: only keep re-arming while there is something to tick *for* — either
+  animating work (a `Running` agent/command whose glyph spins) or an un-carried
+  completion edge (a `status_pipe` payload defers its recede + notification to the
+  timer). A backgrounded `done`/`error`/`pending` row is terminal: once its one-shot
+  settle has run it does **not** keep the loop alive, so an idle-but-lit rail stops
+  waking every second. The loop re-arms on the next pipe/PaneUpdate. (See
+  `PluginRuntime::timer_should_continue`.)
 - **Layout — the integration seam.** The sidebar is a pinned, borderless left column *inside* a
   vertical split, *outside* `children`, so `swap_tiled_layout` cycling never disturbs it (same
   mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
@@ -309,10 +314,10 @@ replacement is push-only and tiered:
 
 ## 7. Agent adapters (v1: Claude + Codex)
 
-- **Claude Code** — extend the existing `claude-zellij-notify.sh` to *also* broadcast the rich
-  `zj_radar.status.v1` payload (it already computes repo/branch/msg/pane). Claude supports the
-  full state set (`running` via UserPromptSubmit/Pre/PostToolUse, `pending` via Notification,
-  `done` via Stop). Keep its desktop notification + click-to-focus behavior unchanged.
+- **Claude Code** — a Claude plugin (`plugins/zj-radar-claude/`) whose `scripts/notify.sh`
+  broadcasts the rich `zj_radar.status.v1` payload (computing repo/branch/msg/pane). Claude
+  supports the full state set (`running` via UserPromptSubmit/Pre/PostToolUse, `pending` via
+  Notification, `done` via Stop). The bundled hooks auto-register — no `settings.json` editing.
 - **Codex CLI** — `zj-radar setup codex` installs marker-owned command hooks in
   `~/.codex/hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
   maps lifecycle events to `running`/`pending`/`done`. The legacy single-slot

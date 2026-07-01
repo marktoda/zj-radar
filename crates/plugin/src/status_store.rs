@@ -64,14 +64,16 @@ impl StatusStore {
         self.store.get(pane_id)
     }
 
-    /// True if any observation is non-idle (`is_active`: Running/Pending/Done/Error).
-    /// Deliberately broader than `CommandStore::has_pending_or_active` (which keys
-    /// on `Running` only): a *finished* agent row stays "active" here so the timer
-    /// keeps re-arming to refresh its elapsed-time display. Keep the two predicates
-    /// distinct — they answer "should the timer tick?" for sources with different
-    /// resting behaviour.
-    pub fn any_active(&self) -> bool {
-        self.store.any(|s| s.status.is_active())
+    /// True if any observation is currently `Running` — the one *animated* state
+    /// (its glyph spins each tick). Matches `CommandStore::has_pending_or_active`'s
+    /// narrowness on purpose: a finished `Done`/`Error` or a waiting `Pending` is
+    /// terminal for tick purposes — it doesn't animate, and its notification/recede
+    /// is a one-shot the settle carries — so it must NOT pin the timer awake. (An
+    /// earlier version counted every non-idle status here to "refresh elapsed
+    /// time," but elapsed time isn't rendered, so a backgrounded `Done` just spun
+    /// the timer forever — see the timer-arming discussion in `runtime`.)
+    pub fn any_running(&self) -> bool {
+        self.store.any(|s| s.status == crate::status::Status::Running)
     }
 
     pub(crate) fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
@@ -173,7 +175,7 @@ mod tests {
         s.apply(payload(1, Status::Running), 1);
         s.apply(payload(1, Status::Idle), 2);
         assert!(s.get(1).unwrap().ever_active);
-        assert!(!s.any_active());
+        assert!(!s.any_running());
     }
 
     #[test]
@@ -187,7 +189,7 @@ mod tests {
         done.msg = "shipped the feature".into();
         s.apply(done, 1);
         assert_eq!(s.get(1).unwrap().msg, "shipped the feature");
-        assert!(s.any_active());
+        assert_eq!(s.get(1).unwrap().status, Status::Done);
 
         let mut idle = payload(1, Status::Idle);
         idle.msg = String::new();
@@ -195,6 +197,5 @@ mod tests {
 
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
-        assert!(!s.any_active(), "a cleared pane no longer drives tab status");
     }
 }

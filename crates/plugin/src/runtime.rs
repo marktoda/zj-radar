@@ -143,7 +143,7 @@ impl PluginRuntime {
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
         let render =
-            permission_changed || awaiting_permission || self.radar.has_active_or_pending_work();
+            permission_changed || awaiting_permission || self.timer_should_continue();
         let change = RadarChange {
             render,
             settle: true,
@@ -368,11 +368,38 @@ impl PluginRuntime {
         if !self.timer_armed
             && (self.permission.is_waiting()
                 || self.permission.selectable()
-                || self.radar.has_active_or_pending_work())
+                || self.timer_should_continue())
         {
             self.timer_armed = true;
             effects.push(Effect::SetTimeout);
         }
+    }
+
+    /// Whether the one-shot timer should (re-)arm for *domain* reasons — the
+    /// "tick only while there's something to do" rule that keeps an idle rail from
+    /// waking every second. Two triggers:
+    ///
+    /// - **animating work** — a `Running` agent/command whose glyph spins each
+    ///   tick (`RadarState::has_running_work`); and
+    /// - **an un-carried completion edge** — a `status_pipe` payload defers its
+    ///   recede + notification to the timer (it can't trust its own focus, see
+    ///   `RadarState::status_pipe`), so we must keep ticking until the settle has
+    ///   run. [`has_unsettled_notifications`] goes false the moment that settle
+    ///   advances the baseline, so a *backgrounded* `Done`/`Error`/`Pending` stops
+    ///   pinning the timer awake once notified — a later focus change or broadcast
+    ///   re-arms it. (The pre-settle baseline read costs at most one extra tick.)
+    ///
+    /// [`has_unsettled_notifications`]: Self::has_unsettled_notifications
+    fn timer_should_continue(&self) -> bool {
+        self.radar.has_running_work() || self.has_unsettled_notifications()
+    }
+
+    /// True while the notification baseline lags the live per-pane statuses — i.e.
+    /// an attention edge has landed that a settle tick hasn't carried yet. Reads
+    /// the exact baseline [`notify_effects`](Self::notify_effects) advances, so it
+    /// goes quiet precisely when the deferred recede + notify are done.
+    fn has_unsettled_notifications(&self) -> bool {
+        crate::notify_rules::status_map(&self.radar.notify_views()) != self.notify_prev
     }
 
     /// Diff observable pane statuses against `notify_prev` and emit `Effect::Notify`
@@ -751,7 +778,7 @@ mod tests {
         let outcome = runtime.status_pipe(&raw);
 
         assert!(outcome.render);
-        assert!(runtime.radar.status_store().any_active());
+        assert!(runtime.radar.status_store().any_running());
         // Canonical `project` order is renames → snapshot → cwd → SetTimeout →
         // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
         // not position — the order contract has its own dedicated test.
@@ -1140,6 +1167,51 @@ mod tests {
             "a pre-existing Done loaded from snapshot must not fire a notification; \
              effects = {:?}", out.effects
         );
+    }
+
+    #[test]
+    fn backgrounded_done_via_status_pipe_notifies_once_then_timer_quiesces() {
+        // The headline of the timer-arming rule: a finished agent in a background
+        // tab must NOT keep the 1 Hz timer alive forever. The Done arrives on the
+        // non-settling status pipe, so the runtime arms the timer once to carry the
+        // deferred notify/recede — then quiesces.
+        let mut rt = runtime_with_config(config());
+        let raw = payload::to_wire(
+            7, Status::Done, "repo", "main", "shipped", Some(Status::Idle), "claude",
+        );
+
+        // The edge arms the timer but does not itself settle (focus could be stale).
+        let edge = rt.status_pipe(&raw);
+        assert!(edge.effects.contains(&Effect::SetTimeout), "status-pipe edge arms the timer");
+        assert!(
+            !edge.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "the edge itself does not notify (settle is deferred to the timer)"
+        );
+
+        // The first tick carries the deferred completion notification exactly once.
+        let tick1 = rt.timer(PermissionProbe::default());
+        assert_eq!(
+            tick1.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
+            1,
+            "the settle tick fires the done notification once; effects = {:?}", tick1.effects,
+        );
+
+        // Then the timer quiesces within a bounded number of ticks — a backgrounded
+        // Done no longer pins it awake, and no further notifications fire.
+        let mut extra = 0;
+        while rt.timer_armed {
+            let t = rt.timer(PermissionProbe::default());
+            assert!(
+                !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+                "no repeat notification after the first settle",
+            );
+            extra += 1;
+            assert!(extra < 4, "timer must quiesce for a backgrounded Done, not tick forever");
+        }
+        assert!(!rt.timer_should_continue(), "quiesced: nothing left to tick for");
+
+        // The Done stays lit (it recedes only when focused, via a later PaneUpdate).
+        assert_eq!(rt.radar.status_store().get(7).unwrap().status, Status::Done);
     }
 
     #[test]

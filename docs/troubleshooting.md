@@ -57,6 +57,24 @@ hues are all unaffected. Only the surface shading is absent.
 foot, most modern emulators). Inside `tmux`, enable truecolor passthrough
 (`set -as terminal-features ',*:RGB'`). There is no functional loss without it.
 
+## Rail glyphs spill past the sidebar edge
+
+**Symptom:** on some terminals a status glyph (`●`, `◆`, `✗`, the `═` rule, the
+tree connectors) pushes a row one column too wide, so its tail bleeds into the
+pane next to the rail.
+
+**Why:** the rail budgets its status glyphs as **one column** each. Several of
+them are Unicode *East-Asian-Width Ambiguous* codepoints, which a terminal
+configured with **ambiguous width = double** (common in CJK setups) renders as
+two columns — so the layout under-counts and the line overruns. Likewise, an
+agent message containing an emoji with an explicit presentation selector
+(`⚠️`, base + U+FE0F) may be measured one column narrower than it draws.
+
+**Fix:** set your terminal's ambiguous-character width to **narrow/single**
+(Kitty `narrow_symbols` / default; WezTerm `treat_east_asian_ambiguous_width_as_narrow = true`;
+iTerm2 *Prefs → Profiles → Text → “Treat ambiguous-width characters as double width” off*).
+This is the width contract the rail assumes.
+
 ## Zellij plugin-reload quirks
 
 **Symptom:** during development, reloading the plugin opens an extra tiled plugin
