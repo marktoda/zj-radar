@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, notify_is_ours, strip_managed_zellij_alias};
+
 use toml_edit::{DocumentMut, Item};
 
 /// Raw, already-read environment for Zellij setup. The ONLY layer that touched

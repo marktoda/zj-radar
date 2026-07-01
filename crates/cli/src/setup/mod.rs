@@ -5,6 +5,7 @@
 mod analyze;
 mod check;
 mod codex;
+mod detect;
 mod download;
 mod edit;
 mod zellij;
