@@ -298,11 +298,6 @@ impl PluginRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        self.radar.reconcile_focus(focused, tick)
-    }
-
-    #[cfg(test)]
     pub(crate) fn target_at_line(&self, line: isize) -> Option<(usize, Option<u32>)> {
         let t = self.last_rendered.target_at_line(line)?;
         Some((t.tab_position, t.pane_id))
@@ -1126,11 +1121,10 @@ mod tests {
     #[test]
     fn focused_done_emits_no_notify_effect() {
         let mut rt = two_tab_runtime_with_running_commands();
-        // Pane 5 is focused and exits 0. The helper never calls panes_changed, so
-        // last_focused is None; panes_changed here transitions focus None→Some(5),
-        // which is a change, so reconcile_focus takes the visit-clear branch
-        // (on_pane_focused) and clears the Done before notify_effects runs.
-        // No notification must be emitted.
+        // Pane 5 is focused and exits 0. panes_changed records last_focused=Some(5)
+        // via note_focus; the notifier then suppresses a Notify for the focused
+        // pane. The Done stays lit on the rail (focus no longer recedes it), but
+        // no notification must be emitted for the pane the user is watching.
         let out = rt.panes_changed(PaneUpdate {
             tab_panes: HashMap::from([
                 (0, vec![TerminalPane { id: 5, focused_in_tab: true, ..Default::default() }]),
@@ -1142,7 +1136,7 @@ mod tests {
         });
         assert!(
             !out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
-            "a focused Done recedes to Idle and must not emit Effect::Notify; effects = {:?}",
+            "a focused Done must not emit Effect::Notify (the user is watching it); effects = {:?}",
             out.effects
         );
     }

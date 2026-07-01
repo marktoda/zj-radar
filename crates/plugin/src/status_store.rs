@@ -42,20 +42,6 @@ impl StatusStore {
         );
     }
 
-    /// One-shot: when the exact pane is focused, apply its pending on_focus status.
-    pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
-        self.store.on_pane_focused(pane_id, tick);
-    }
-
-    /// Recede this pane's completion the instant it finishes under focus (Done
-    /// only — see `TrackedObservation::recede_on_focus`). Focus-agnostic: the
-    /// caller passes the focused pane id; the store just forwards. Distinct from
-    /// `on_pane_focused`, which clears any state on a *visit* — this one is "you
-    /// watched it finish".
-    pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
-        self.store.recede_if_focused(pane_id, tick);
-    }
-
     /// Clear a pane's pushed status to idle because its producer is gone — the
     /// pane returned to a shell prompt (`command::is_shell_prompt`). No-op if the
     /// pane isn't tracked, is already Idle, or is currently Running: a live agent
@@ -162,39 +148,6 @@ mod tests {
         assert_eq!(s.get(1).unwrap().repo, "r");
         assert_eq!(s.get(1).unwrap().branch, "b");
         assert_eq!(s.get(1).unwrap().msg, "m");
-    }
-
-    #[test]
-    fn on_focus_applies_once_then_clears() {
-        let mut s = StatusStore::default();
-        let mut p = payload(1, Status::Done);
-        p.on_focus = Some(Status::Idle);
-        s.apply(p, 1);
-        s.on_pane_focused(1, 7);
-        assert_eq!(s.get(1).unwrap().status, Status::Idle);
-        assert_eq!(s.get(1).unwrap().on_focus, None);
-        // focusing again does nothing
-        s.on_pane_focused(1, 9);
-        assert_eq!(s.get(1).unwrap().status, Status::Idle);
-    }
-
-    #[test]
-    fn recede_if_focused_clears_done_but_not_error() {
-        let mut s = StatusStore::default();
-        let mut done = payload(1, Status::Done);
-        done.on_focus = Some(Status::Idle);
-        s.apply(done, 1);
-        let mut err = payload(2, Status::Error);
-        err.on_focus = Some(Status::Idle);
-        s.apply(err, 1);
-
-        s.recede_if_focused(1, 5);
-        s.recede_if_focused(2, 5);
-
-        assert_eq!(s.get(1).unwrap().status, Status::Idle, "Done recedes");
-        assert_eq!(s.get(2).unwrap().status, Status::Error, "Error persists");
-        // An unknown pane id is a no-op (never panics).
-        s.recede_if_focused(999, 5);
     }
 
     #[test]

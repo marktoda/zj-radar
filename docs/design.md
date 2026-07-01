@@ -145,7 +145,16 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 | Codex `Stop`                                  | `done` (with `on_focus:"idle"`) |
 | Codex legacy `agent-turn-complete`            | `done`    |
 | Adapter parse/hook failure (optional)         | `error`   |
-| User focuses the exact pane with `on_focus` set | value of `on_focus` (e.g. `idle`) |
+| Agent pane returns to its shell prompt (observed exit) | `idle` (clears a stale pushed status; see §6.2) |
+
+> **Update (focus no longer drives state):** an earlier design cleared a pushed
+> completion when you *focused* the pane (`on_focus`). Focus is per-client and is
+> not delivered to background plugin instances, so that cleared the row only on the
+> tab you were viewing and left every other tab stale. A finished status now clears
+> only via shared signals — a new broadcast, the observed return-to-shell exit-clear
+> (`command::is_shell_prompt` → `StatusStore::clear_on_prompt_return`), or a prune —
+> which every tab's instance receives, so all tabs converge. The `on_focus` wire
+> field is still accepted for back-compat but is inert.
 
 ### 4.2 Per-pane → per-tab aggregation
 
@@ -207,8 +216,9 @@ unaffected.
 - Sanitize `repo`/`branch`/`msg`: strip ANSI/control chars, convert newlines to spaces, cap
   `msg` to a fixed length before rendering.
 - Ignore payloads over a fixed size cap (e.g. 64 KB).
-- `on_focus` lets `done` persist while you're on other tabs and auto-clear when you focus the
-  pane (a convention carried over from the old smart-tabs status hooks, now owned here).
+- `on_focus` is accepted for back-compat but **inert** (see §4.1 update): `done` no longer
+  auto-clears on focus. A finished status persists until a new broadcast, the observed
+  return-to-shell exit-clear, or a prune — all shared signals, so all tabs converge.
 
 ## 6. Plugin ↔ Zellij wiring
 

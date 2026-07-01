@@ -493,21 +493,6 @@ impl CommandStore {
         }
     }
 
-    /// Clear-on-focus: apply a pending `on_focus` transition for this pane via
-    /// the shared `TrackedObservation::apply_on_focus` (same semantics as `StatusStore`).
-    pub fn on_pane_focused(&mut self, pane_id: u32, tick: u64) {
-        self.store.on_pane_focused(pane_id, tick);
-    }
-
-    /// Recede this pane's completion the instant it finishes under focus (Done
-    /// only — see `TrackedObservation::recede_on_focus`). Twin of `StatusStore`'s
-    /// method: the caller passes the focused pane id, the store forwards. Lets a
-    /// `cargo build` that finishes in the focused pane recede without waiting for
-    /// a leave-and-return.
-    pub fn recede_if_focused(&mut self, pane_id: u32, tick: u64) {
-        self.store.recede_if_focused(pane_id, tick);
-    }
-
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
     pub fn prune(&mut self, live: &HashSet<u32>) {
         self.store.prune(live);

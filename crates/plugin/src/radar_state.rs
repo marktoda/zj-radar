@@ -172,9 +172,10 @@ pub(crate) struct RadarChange {
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
     /// for a freshly-opened tab that has not emitted a `CwdChanged` yet.
     pub cwd_bootstrap: Vec<u32>,
-    /// Whether this event's focus is trustworthy enough to reconcile + notify
-    /// together — see `CONTEXT.md`'s `## Settle` entry. `false` defers both to
-    /// the timer.
+    /// Whether this event's focus is trustworthy enough to fire notifications now
+    /// (the notifier suppresses the focused pane) — see `CONTEXT.md`'s `## Settle`
+    /// entry. `false` defers notification to the timer. (It no longer gates any
+    /// rail-state change; focus stopped driving state in the drop-focus refactor.)
     pub settle: bool,
 }
 
@@ -293,38 +294,23 @@ impl RadarState {
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
-        // This update's focus is fresh, so it settles: reconcile — an entry
-        // visit-clears the entered pane, or — if focus stayed put — a command
-        // that just exited in it recedes — and stamp the same `settle` below.
-        // One flag, not two facts that happen to agree; see `reconcile_focus`.
-        let settle = true;
-        if settle {
-            self.reconcile_focus(self.focused_terminal_in_active_tab(), tick);
-        }
+        // Track this update's fresh focus for notification suppression. It no
+        // longer drives rail state (no focus recede) — see `note_focus`. `settle`
+        // still gates the notifier: `panes_changed` carries trustworthy focus, so
+        // it fires notifications now rather than deferring to the timer.
+        self.note_focus(self.focused_terminal_in_active_tab());
 
         RadarChange {
             render: true,
             persist_snapshot: true,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
-            settle,
+            settle: true,
         }
     }
 
     pub(crate) fn timer(&mut self, tick: u64) {
         self.command.on_timer(tick);
-        // The cadence tick always settles: by the time it fires, any focus
-        // `PaneUpdate` has been processed, so `last_focused` is settled. Reconcile
-        // against it — the recede path for a *watched* agent turn (whose Done
-        // arrived on the pipe, which deliberately does not reconcile) and for a
-        // return-to-shell command confirmed Done this tick — passing the settled
-        // focus means `changed == false`, i.e. the recede branch. The runtime
-        // stamps this same `settle` on the `RadarChange` it synthesizes for this
-        // call; see `reconcile_focus`.
-        let settle = true;
-        if settle {
-            self.reconcile_focus(self.last_focused, tick);
-        }
     }
 
     pub(crate) fn cwd_changed(
@@ -355,8 +341,7 @@ impl RadarState {
         // A pane back at its shell prompt means the agent that was pushing status
         // has exited (no producer hook fires on quit), so clear the now-stale
         // pushed status → idle. This rides the shared `CommandChanged` signal, so
-        // every tab's instance clears in lockstep — unlike the focus-driven
-        // recede, which each instance derives locally. `clear_on_prompt_return`
+        // every tab's instance clears in lockstep. `clear_on_prompt_return`
         // ignores a Running status, so a mid-turn foreground flicker to a shell
         // can't be mistaken for the agent exiting.
         let cleared = crate::command::is_shell_prompt(command, is_foreground)
@@ -379,15 +364,10 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         self.status.apply(p, tick);
-        // NOTE: we deliberately do NOT settle here. A status-pipe payload is a raw
-        // completion edge that can arrive in the gap between the user switching
-        // away from this pane and the focus `PaneUpdate` landing — so `last_focused`
-        // may still name this pane even though the user has already left. Receding
-        // on that stale focus would silently drop a completion the user *should*
-        // see. Instead the recede rides the timer (armed by the runtime on this
-        // event), which fires on a cadence by which point focus has settled — so a
-        // genuinely-watched agent turn still recedes within a tick, while one you
-        // navigated away from stays lit. See `reconcile_focus`.
+        // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
+        // focus no longer recedes or clears it. A completion clears only via a new
+        // broadcast for the pane, the return-to-shell exit-clear
+        // (`command_changed` → `clear_on_prompt_return`), or a prune.
         Some(RadarChange {
             render: true,
             persist_snapshot: true,
@@ -413,50 +393,22 @@ impl RadarState {
         self.rename_tabs(naming)
     }
 
-    /// Reconcile a pane gaining or holding focus against its queued completion.
-    /// One operation, two cases derived from whether focus actually moved:
+    /// Track the focused terminal pane, for the notifier's "don't ding the pane
+    /// you're looking at" suppression only. Focus **no longer drives any rail
+    /// state**: `done`/`error`/`pending` rows clear only via a new broadcast, the
+    /// return-to-shell exit-clear (`command_changed`), or prune — all *shared*
+    /// inputs Zellij delivers to every tab's instance. So the rail renders
+    /// identically on every tab regardless of which pane is focused (focus is
+    /// per-client and is NOT delivered to background instances — deriving rail
+    /// state from it was the source of the cross-tab desync).
     ///
-    /// - **focus CHANGED** (an entry / "visit") → clear the entered pane's queued
-    ///   state entirely, `Done` *or* `Error`: entering a pane acknowledges whatever
-    ///   it shows ("seen, even errors").
-    /// - **focus UNCHANGED** (you are sitting on it) → recede a *fresh `Done`* only:
-    ///   you watched it finish, so it should not light the rail; an `Error` or a
-    ///   "needs you" `Pending` stays lit even while watched (`recede_if_focused`
-    ///   skips them).
-    ///
-    /// Background panes are never touched here — their completion persists until a
-    /// later focus entry recurs through the CHANGED branch. Recede is monotonic
-    /// (`Done → Idle` once, `on_focus` then `None`), so calling this on every event
-    /// and timer tick cannot oscillate — that is what keeps it free of the
-    /// direction-dependent flicker an earlier "clear on every update" version had.
-    ///
-    /// Callers pass whatever focus they can trust: `panes_changed` passes this
-    /// update's fresh focus; `timer` passes the (settled) `last_focused`, which
-    /// makes `changed == false` → the recede branch. `status_pipe` deliberately
-    /// does NOT call this — its focus could be stale; see the note there. Returns
-    /// whether focus changed.
-    pub(crate) fn reconcile_focus(&mut self, focused: Option<u32>, tick: u64) -> bool {
-        // A `None` reading carries no focus information: the active tab's focused
-        // pane is a plugin/floating (non-terminal) pane, or topology is mid-churn
-        // (no active tab yet). Treat it as "no change" and PRESERVE `last_focused`
-        // rather than clobbering it to None — otherwise a focus bounce off a
-        // terminal and back reads as `None → Some(P)`, i.e. a fresh *visit*, which
-        // would visit-clear a watched error the user never acknowledged (the
-        // hard "errors persist even when watched" rule). See
-        // `error_survives_focus_bounce_through_a_non_terminal_pane`.
-        let Some(id) = focused else {
-            return false;
-        };
-        let changed = Some(id) != self.last_focused;
-        self.last_focused = Some(id);
-        if changed {
-            self.status.on_pane_focused(id, tick);
-            self.command.on_pane_focused(id, tick);
-        } else {
-            self.status.recede_if_focused(id, tick);
-            self.command.recede_if_focused(id, tick);
+    /// A `None` reading carries no focus information (the active tab's focused
+    /// pane is a plugin/float, or topology is mid-churn), so preserve the last
+    /// known focus rather than clobbering it.
+    pub(crate) fn note_focus(&mut self, focused: Option<u32>) {
+        if let Some(id) = focused {
+            self.last_focused = Some(id);
         }
-        changed
     }
 
     pub(crate) fn last_focused(&self) -> Option<u32> {
@@ -518,11 +470,6 @@ impl RadarState {
     #[cfg(test)]
     pub(crate) fn command_store(&self) -> &CommandStore {
         &self.command
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_last_focused(&mut self, pane_id: Option<u32>) {
-        self.last_focused = pane_id;
     }
 
     #[cfg(test)]

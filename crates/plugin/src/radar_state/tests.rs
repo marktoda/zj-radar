@@ -593,22 +593,6 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
 }
 
 #[test]
-fn snapshot_seeded_done_pane_still_clears_on_focus() {
-    let mut radar = RadarState::default();
-    let mut done = payload_for(5, Status::Done, "repo");
-    done.on_focus = Some(Status::Idle);
-    radar.status_mut().apply(done, 1);
-    let json = radar.snapshot_json(None, 2);
-
-    let mut restored = RadarState::default();
-    restored.load_snapshot(&json).unwrap();
-    restored.reconcile_focus(Some(5), 9);
-
-    assert_eq!(restored.status(5).unwrap().status, Status::Idle);
-    assert_eq!(restored.status(5).unwrap().on_focus, None);
-}
-
-#[test]
 fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
@@ -706,234 +690,28 @@ fn mutating_events_request_a_render() {
     );
 }
 
-// ── Recede-while-focused ───────────────────────────────────────────────────
+// ── Focus no longer changes rail status ─────────────────────────────────────
 //
-// "If they were looking at it when it finished, don't flag it." A completion
-// that lands on the FOCUSED pane recedes; a background completion persists
-// until visited; errors and pending never recede. `reconcile_focus` carries
-// this from `panes_changed` (command exit, fresh focus) and `timer` (the
-// cadence path for a watched agent turn). `status_pipe` deliberately defers
-// to the timer rather than reconciling on its possibly-stale focus.
-
-fn focused_pane_update(
-    active_pos: usize,
-    pane_id: u32,
-    exits: Vec<(u32, Option<i32>)>,
-) -> PaneUpdate {
-    PaneUpdate {
-        tab_panes: HashMap::from([(active_pos, vec![focused_pane(pane_id)])]),
-        live: HashSet::from([pane_id]),
-        theme: None,
-        exits,
-    }
-}
+// The focus-driven recede is gone. A pushed completion stays lit until a new
+// broadcast, the return-to-shell exit-clear, or a prune — never because the
+// pane gained focus. `note_focus` only tracks `last_focused` for the notifier.
 
 #[test]
-fn command_done_while_focused_recedes_immediately() {
+fn focus_does_not_change_rail_status() {
     let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-    // Establish focus on pane 5 FIRST, so the later exit update is not itself
-    // a focus transition — isolating settle from the visit-clear path.
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
-    radar.timer(3); // promote to Running
-    // Pane 5 exits 0 while still focused (focus unchanged this update).
-    radar.panes_changed(
-        focused_pane_update(0, 5, vec![(5, Some(0))]),
-        4,
-        config::NamingMode::Off,
-    );
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Idle,
-        "a Done that lands on the focused pane recedes immediately"
-    );
-}
+    // A completed agent turn: Done with the (now inert) queued clear-on-focus.
+    let mut done = payload_for(5, Status::Done, "repo");
+    done.on_focus = Some(Status::Idle);
+    radar.status_mut().apply(done, 1);
 
-#[test]
-fn command_done_in_background_persists_then_clears_on_visit() {
-    let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "active", true), tab(20, 1, "bg", false)]);
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2);
-    // Focus is on pane 2 (active tab); pane 5 exits in the background tab.
-    radar.panes_changed(
-        PaneUpdate {
-            tab_panes: HashMap::from([(0, vec![focused_pane(2)]), (1, vec![pane(5)])]),
-            live: HashSet::from([2, 5]),
-            theme: None,
-            exits: vec![(5, Some(0))],
-        },
-        3,
-        config::NamingMode::Off,
-    );
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Done,
-        "a background completion persists — you weren't looking"
-    );
-    radar.reconcile_focus(Some(5), 4);
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Idle,
-        "visiting the pane clears the persisted Done"
-    );
-}
+    // Focusing the pane must NOT clear the Done — focus no longer recedes status.
+    radar.note_focus(Some(5));
 
-#[test]
-fn command_error_while_focused_persists() {
-    let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-    // Focus established first, so the failing exit is not a focus transition:
-    // settle is what runs (and must skip the error), not the visit-clear.
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
-    radar.timer(3);
-    radar.panes_changed(
-        focused_pane_update(0, 5, vec![(5, Some(1))]),
-        4,
-        config::NamingMode::Off,
-    );
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Error,
-        "errors persist even when you were watching"
-    );
-}
-
-#[test]
-fn error_survives_focus_bounce_through_a_non_terminal_pane() {
-    // "Errors persist even when you were watching" must survive focus momentarily
-    // resolving to None — the active tab's focused pane is a plugin/floating pane,
-    // so there is no focused TERMINAL (`focused_terminal_in_active_tab() == None`).
-    // A None reading must NOT be read as "focus left the pane", which would turn
-    // the next refocus of the same pane into a fresh VISIT that clears an error the
-    // user never acknowledged.
-    let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 2);
-    radar.timer(3);
-    radar.panes_changed(focused_pane_update(0, 5, vec![(5, Some(1))]), 4, config::NamingMode::Off);
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Error,
-        "precondition: error lit while watched"
-    );
-
-    // Focus moves to a non-terminal pane in the same tab: pane 5 is still present
-    // but no pane is `focused_in_tab`, so the focus reading is None.
-    radar.panes_changed(
-        PaneUpdate {
-            tab_panes: HashMap::from([(0, vec![pane(5)])]),
-            live: HashSet::from([5]),
-            theme: None,
-            exits: Vec::new(),
-        },
-        5,
-        config::NamingMode::Off,
-    );
-    // Focus returns to pane 5 (the floating/plugin pane was dismissed).
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 6, config::NamingMode::Off);
-
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Error,
-        "a focus bounce through a None reading must not visit-clear a watched error"
-    );
-}
-
-#[test]
-fn agent_done_while_focused_recedes_on_timer_not_on_the_pipe_edge() {
-    let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "agent", true)]);
-    // Establish focus on the agent's pane 5.
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
-    // Agent turn completes: Done with a queued clear-on-focus.
-    let raw = crate::payload::to_wire(
-        5,
-        Status::Done,
-        "repo",
-        "main",
-        "shipped",
-        Some(Status::Idle),
-        "claude",
-    );
-    radar.status_pipe(&raw, 2, config::NamingMode::Off);
-    // The raw pipe edge must NOT recede — `last_focused` could be stale there
-    // (focus-change PaneUpdate not yet processed), so receding now could drop a
-    // completion the user already navigated away from.
     assert_eq!(
         radar.status(5).unwrap().status,
         Status::Done,
-        "the pipe edge defers the recede (focus may be stale)"
+        "focus no longer clears a pushed Done"
     );
-    // The recede rides the next timer tick, by which point focus has settled.
-    radar.timer(3);
-    assert_eq!(
-        radar.status(5).unwrap().status,
-        Status::Idle,
-        "a watched agent turn recedes on the confirming timer tick"
-    );
-}
-
-#[test]
-fn command_return_to_shell_while_focused_recedes_on_timer() {
-    let mut radar = RadarState::default();
-    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-    radar.panes_changed(focused_pane_update(0, 5, Vec::new()), 1, config::NamingMode::Off);
-    radar.command_changed(5, &["make".into()], true, 1);
-    radar.timer(2); // promote to Running
-    assert_eq!(radar.command(5).unwrap().status, Status::Running);
-    // Command leaves the foreground; the confirming timer flips it to Done and
-    // settle recedes it because pane 5 is still focused.
-    radar.command_changed(5, &[], false, 3);
-    radar.timer(4);
-    assert_eq!(
-        radar.command(5).unwrap().status,
-        Status::Idle,
-        "a command finishing in the focused pane recedes on the confirming timer"
-    );
-}
-
-#[test]
-fn done_finishing_while_focused_recedes_regardless_of_next_focus_direction() {
-    // The original reported bug was a direction-dependent Done↔Idle flicker.
-    // With recede-at-completion the pane clears the instant it finishes (in
-    // the exit's own update), so the outcome is deterministic — Idle —
-    // whichever pane focus moves to next. Drives the real `panes_changed`
-    // flow so `reconcile_focus` actually runs.
-    let run = |next_focus: u32| {
-        let mut radar = RadarState::default();
-        radar.tabs_changed(vec![tab(10, 0, "work", true)]);
-        let update = |focused: u32, exits: Vec<(u32, Option<i32>)>| PaneUpdate {
-            tab_panes: HashMap::from([(
-                0,
-                [1u32, 2, 3]
-                    .into_iter()
-                    .map(|id| TerminalPane {
-                        id,
-                        focused_in_tab: id == focused,
-                        ..TerminalPane::default()
-                    })
-                    .collect(),
-            )]),
-            live: HashSet::from([1, 2, 3]),
-            theme: None,
-            exits,
-        };
-        // Focus pane 2 and promote a command there to Running.
-        radar.panes_changed(update(2, vec![]), 1, config::NamingMode::Off);
-        radar.command_changed(2, &["cargo".into(), "build".into()], true, 2);
-        radar.timer(3);
-        // Pane 2 exits 0 while focused → recedes via settle (same update).
-        radar.panes_changed(update(2, vec![(2, Some(0))]), 4, config::NamingMode::Off);
-        // Then focus moves to the next pane (higher or lower).
-        radar.panes_changed(update(next_focus, vec![]), 5, config::NamingMode::Off);
-        radar.command(2).map(|s| s.status)
-    };
-    assert_eq!(run(3), Some(Status::Idle), "moving 2→3 leaves pane 2 receded");
-    assert_eq!(run(1), Some(Status::Idle), "moving 2→1 leaves pane 2 receded");
 }
 
 // ── next_attention_tab integration tests ─────────────────────────────────

@@ -43,9 +43,9 @@ last delegated to `radar_state::snapshot`). `RadarState` is not a replacement fo
 the source-specific stores; it composes `StatusStore` (status-payload
 observations) and `CommandStore` (command-derived observations) with live pane
 topology, then produces `TabRow`s for the rail. Both stores are thin wrappers
-over one shared `ObservationStore` (in `crates/core`) that owns the pane-id map
-and the focus lifecycle (`on_pane_focused`, `recede_if_focused`, `prune`); the
-per-source split is only their intake and their resting-state predicate. The
+over one shared `ObservationStore` (in `crates/core`) that owns the pane-id map,
+`prune`, and snapshot insert; the per-source split is only their intake and their
+resting-state predicate. The
 "status wins over command" precedence *between* the two stores lives in exactly
 one place — `RadarState::resolve` — which both `tab_display` and `notify_views`
 read through, so the rule can never drift and `roll_up` never learns there is
@@ -53,27 +53,17 @@ more than one store. `RadarState` also composes `TabNamer` for tab naming —
 assembling the resolved facts that seam consumes, the same way it hands `roll_up`
 a `resolve` closure.
 
-A single operation, `reconcile_focus`, governs when a finished pane stops showing
-in the rail; `RadarState` owns it because it is the only place that knows both the
-completion and which pane is focused. It reconciles the focused pane against its
-queued `on_focus`, with two cases derived from whether focus actually moved:
-
-- **focus entry (a visit)** — clears the entered pane's queued state entirely,
-  `Done` *or* `Error`: entering acknowledges whatever it shows ("seen, even
-  errors"). This is the background-completion case (something finished while you
-  weren't looking, stays lit until you focus in).
-- **focus held** — recedes a fresh `Done` only ("if they were looking at it when
-  it finished, don't flag it"); an `Error` or a "needs you" `Pending` stays lit
-  even while watched.
-
-Callers pass whatever focus they can trust: `panes_changed` passes this update's
-fresh focus (the command-exit path), and `timer` passes the settled `last_focused`
-(the watched-agent path). `status_pipe` deliberately does *not* reconcile: a pipe
-payload can arrive before the focus `PaneUpdate` that reflects the user leaving, so
-its focus could be stale and receding there would drop a completion the user should
-still see — the timer carries that recede once focus has settled. Recede is
-monotonic (`Done → Idle` once), so reconciling on every update and tick cannot
-oscillate.
+Focus does **not** drive rail state. A finished pane's `done`/`error`/`pending`
+clears only via a *shared* input — a new broadcast for that pane, the
+return-to-shell exit-clear (`command_changed` → `StatusStore::clear_on_prompt_return`),
+or a prune. This is the load-bearing convergence property: the plugin runs one
+instance per tab, and Zellij delivers pipe broadcasts and per-pane `CommandChanged`
+to *every* instance, so all tabs render the same rail. Focus is per-client and is
+*not* delivered to background instances — an earlier design that cleared a
+completion on focus ("seen it, recede it") therefore cleared it only on the tab you
+were looking at, leaving every other tab stale. That focus-driven recede is gone.
+`RadarState::note_focus` still records the focused terminal, but *only* so the
+notifier can suppress the pane you're watching — it never mutates a status.
 
 The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and
@@ -81,24 +71,20 @@ click-target lockstep. `RadarState` owns the domain facts between those seams.
 
 ## Settle
 
-Whether a completion is acted on *now* or deferred to the timer. Radar reconciles
-focus and fires notifications — the two always move together — only on events
-whose focus is *trustworthy*: `panes_changed` (this update *carries* the fresh
-focus) and the `timer` tick (any focus `PaneUpdate` has been processed by the time
-it fires, so `last_focused` is settled). A `status_pipe` payload is a raw
-completion edge that can arrive *before* the focus `PaneUpdate` reflecting the user
-leaving, so its focus may be stale; it deliberately does **not** settle, and
-instead arms the timer, which carries the recede + notify once focus has settled
-(see the `reconcile_focus` discussion above). The remaining intake events
-(`cwd_changed`, `command_changed`, `config_pipe`, `tabs_changed`) are not
-completion edges, so they never settle either. This "act where focus is
-trustworthy, defer where it is stale" rule is why the reconcile and notify call
-sites line up across every handler. `panes_changed` gates its `reconcile_focus`
-call on the very `settle` binding it then stamps on the `RadarChange` — one value
-feeds both, so they cannot drift. `timer` returns no change, so its gate and the
-`settle: true` the runtime stamps on its behalf are two literals held in step by
-construction (the cadence tick always settles). Either way the coupling is
-structural, not two facts left to happen to agree.
+Whether *notifications* are fired *now* or deferred to the timer. (Since the
+focus-driven recede was removed, `settle` gates only the notifier — not any rail
+state.) Radar fires notifications only on events whose focus is *trustworthy* for
+the "don't ding the pane you're watching" suppression: `panes_changed` (this update
+*carries* the fresh focus) and the `timer` tick (any focus `PaneUpdate` has been
+processed by the time it fires, so `last_focused` is settled). A `status_pipe`
+payload is a raw completion edge that can arrive *before* the focus `PaneUpdate`
+reflecting the user leaving, so its focus may be stale; it deliberately does **not**
+settle, and instead arms the timer, which carries the notify once focus has settled.
+The remaining intake events (`cwd_changed`, `command_changed`, `config_pipe`,
+`tabs_changed`) are not completion edges, so they never settle either. `panes_changed`
+and the `timer` each stamp `settle: true` on their `RadarChange`; `project` fires
+`notify_effects` exactly on that flag, so the notify call sites line up across every
+handler by construction.
 
 ## Tab naming
 

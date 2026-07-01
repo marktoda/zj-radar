@@ -373,24 +373,10 @@
         assert_eq!(s.msg, "cargo test", "the finished command is cargo test, not direnv");
     }
 
-    #[test]
-    fn recede_if_focused_clears_done_command_but_not_error() {
-        let mut store = CommandStore::default();
-        store.on_exit(1, Some(0), 1); // Done, on_focus = Some(Idle)
-        store.on_exit(2, Some(3), 1); // Error, on_focus = Some(Idle)
-
-        store.recede_if_focused(1, 5);
-        store.recede_if_focused(2, 5);
-
-        assert_eq!(store.get(1).unwrap().status, Status::Idle, "Done recedes");
-        assert_eq!(store.get(2).unwrap().status, Status::Error, "Error persists");
-        store.recede_if_focused(999, 5); // unknown id is a no-op
-    }
-
-    // ── Test 4: Running → return-to-shell → Done with on_focus; on_pane_focused → Idle
+    // ── Test 4: Running → return-to-shell → Done with on_focus
 
     #[test]
-    fn running_to_return_to_shell_sets_done_then_focused_sets_idle() {
+    fn running_to_return_to_shell_sets_done() {
         let mut store = CommandStore::default();
         let cmd = vec!["make".to_string()];
 
@@ -409,13 +395,6 @@
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.on_focus, Some(Status::Idle));
         assert_eq!(s.last_change_tick, 4);
-
-        // t=5: pane focused → Idle, on_focus cleared
-        store.on_pane_focused(1, 5);
-        let s = store.get(1).unwrap();
-        assert_eq!(s.status, Status::Idle);
-        assert_eq!(s.on_focus, None);
-        assert_eq!(s.last_change_tick, 5);
     }
 
     // ── Test 5: on_exit(Some(0)) → Done; on_exit(Some(3)) → Error; dedupe
@@ -565,10 +544,6 @@
             !store.has_pending_or_active(),
             "false once Done (no pending, no Running)"
         );
-
-        // Focus to clear to Idle
-        store.on_pane_focused(1, 5);
-        assert!(!store.has_pending_or_active(), "false when Idle");
     }
 
     // ── Additional edge cases ──
@@ -765,17 +740,3 @@
         );
     }
 
-    #[test]
-    fn on_pane_focused_same_status_does_not_update_tick() {
-        let mut commands = CommandStore::default();
-        // Place pane in Done with on_focus=Some(Done) (same status → no tick update)
-        commands.on_exit(1, Some(0), 5);
-        // Manually set on_focus to Done (same as current status) to test tick stability.
-        // Reaches the shared ObservationStore directly — a test-only poke, so no
-        // production accessor is added just to support it.
-        commands.store.get_mut(1).unwrap().on_focus = Some(Status::Done);
-        commands.on_pane_focused(1, 10);
-        assert_eq!(commands.get(1).unwrap().status, Status::Done);
-        // last_change_tick should NOT be updated (status did not change)
-        assert_eq!(commands.get(1).unwrap().last_change_tick, 5);
-    }
