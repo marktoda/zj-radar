@@ -36,7 +36,14 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
         "Stop" => (Status::Done, last_assistant_message(v).unwrap_or_default()),
         _ => return None,
     };
-    Some(AgentUpdate { status, msg, cwd })
+    let task = if event == "UserPromptSubmit" {
+        v.get("prompt")
+            .and_then(|x| x.as_str())
+            .and_then(super::task_from_prompt)
+    } else {
+        None
+    };
+    Some(AgentUpdate { status, msg, cwd, task })
 }
 
 fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
@@ -52,6 +59,7 @@ fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
             .unwrap_or("")
             .to_string(),
         cwd: string_field(v, "cwd"),
+        task: None,
     })
 }
 
@@ -102,6 +110,13 @@ mod tests {
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "working");
         assert_eq!(u.cwd.as_deref(), Some("/repo"));
+        assert_eq!(u.task.as_deref(), Some("fix it"));
+    }
+
+    #[test]
+    fn only_prompt_submit_carries_a_task() {
+        let u = update(r#"{"hook_event_name":"Stop","last_assistant_message":"implemented"}"#);
+        assert_eq!(u.task, None);
     }
 
     #[test]

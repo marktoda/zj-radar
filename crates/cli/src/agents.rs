@@ -35,6 +35,9 @@ pub struct AgentUpdate {
     pub msg: String,
     /// Session cwd from the payload, if present. `run()` applies the fallback.
     pub cwd: Option<String>,
+    /// Sticky task label from `UserPromptSubmit` (first line of the prompt).
+    /// `None` = don't touch the plugin's stored label (the wire sends "").
+    pub task: Option<String>,
 }
 
 /// The closed set of push-reporter agents. A variant's [`Agent::source`] string
@@ -109,6 +112,31 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Bare acknowledgements that must not clobber a real task label when sent as
+/// a follow-up prompt. Compared lowercased with trailing punctuation stripped.
+const ACK_PROMPTS: &[&str] = &[
+    "y", "yes", "yep", "yeah", "n", "no", "ok", "okay", "k", "sure", "go",
+    "go ahead", "proceed", "continue", "do it", "lgtm", "sounds good",
+    "approved", "thanks", "ty", "thank you",
+];
+
+/// Extract a sticky task label from a submitted prompt: the first non-empty
+/// line, trimmed, capped at 512 chars (the same producer-side bound as `msg`,
+/// protecting the 64 KiB wire cap). `None` — meaning "keep the previous
+/// label" — for empty prompts, slash commands, and bare acknowledgements.
+pub fn task_from_prompt(prompt: &str) -> Option<String> {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty())?;
+    if line.starts_with('/') {
+        return None;
+    }
+    let normalized = line.to_lowercase();
+    let normalized = normalized.trim_end_matches(['.', '!', '?', ',']).trim();
+    if ACK_PROMPTS.contains(&normalized) {
+        return None;
+    }
+    Some(line.chars().take(512).collect())
 }
 
 fn basename(path: &str) -> Option<&str> {
@@ -369,5 +397,40 @@ mod tests {
     #[test]
     fn tool_edit_missing_file_path_returns_none() {
         assert!(tool_activity("Edit", &json("{}")).is_none());
+    }
+
+    // ── task_from_prompt ─────────────────────────────────────────────────────
+
+    #[test]
+    fn task_from_prompt_takes_first_nonempty_line_trimmed() {
+        assert_eq!(
+            task_from_prompt("  fix the flaky e2e retries\nhere's the log:\n…"),
+            Some("fix the flaky e2e retries".to_string())
+        );
+        assert_eq!(task_from_prompt("\n\n  migrate the schema  "), Some("migrate the schema".to_string()));
+    }
+
+    #[test]
+    fn task_from_prompt_skips_slash_commands_and_empty() {
+        assert_eq!(task_from_prompt("/clear"), None);
+        assert_eq!(task_from_prompt("/review the last diff"), None);
+        assert_eq!(task_from_prompt(""), None);
+        assert_eq!(task_from_prompt("   \n  "), None);
+    }
+
+    #[test]
+    fn task_from_prompt_skips_bare_acknowledgements() {
+        // Follow-up acks must not clobber the real task label.
+        for ack in ["yes", "Yes.", "y", "ok", "OK!", "continue", "go ahead", "do it", "lgtm", "sounds good", "thanks"] {
+            assert_eq!(task_from_prompt(ack), None, "ack {ack:?} must be skipped");
+        }
+        // Short REAL tasks are kept — the filter is a list, not a length rule.
+        assert_eq!(task_from_prompt("fix CI"), Some("fix CI".to_string()));
+    }
+
+    #[test]
+    fn task_from_prompt_caps_at_512_chars() {
+        let long = "x".repeat(600);
+        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), 512);
     }
 }

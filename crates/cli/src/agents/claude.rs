@@ -65,10 +65,18 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     }
 
     let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
+    let task = if event == Some("UserPromptSubmit") {
+        v.get("prompt")
+            .and_then(|x| x.as_str())
+            .and_then(super::task_from_prompt)
+    } else {
+        None
+    };
     Some(AgentUpdate {
         status,
         msg: out_msg,
         cwd,
+        task,
     })
 }
 
@@ -228,5 +236,29 @@ mod tests {
         .unwrap();
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "shipped");
+    }
+
+    #[test]
+    fn user_prompt_submit_captures_the_task() {
+        let u = derive(&intake(
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix the flaky e2e retries\ndetails…"}"#,
+            Some("running"),
+        ))
+        .unwrap();
+        assert_eq!(u.task.as_deref(), Some("fix the flaky e2e retries"));
+        assert_eq!(u.msg, "working");
+    }
+
+    #[test]
+    fn non_prompt_events_never_carry_a_task() {
+        // A tool hook or Stop must send task=None (wire: empty = keep stored).
+        let u = derive(&intake(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/p/x.rs"},"prompt":"stray"}"#,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(u.task, None);
+        let u = derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None)).unwrap();
+        assert_eq!(u.task, None);
     }
 }
