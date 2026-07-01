@@ -145,16 +145,19 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
 
-    // Resolve the target layout path up front (needed whether or not a managed
-    // config short-circuits): `--layout <name>` → `<config_dir>/layouts/<name>.kdl`,
-    // else `<config_dir>/layouts/default.kdl`.
-    let layout_path = config_dir
-        .join("layouts")
-        .join(format!("{}.kdl", layout_name.unwrap_or("default")));
-
     // One derivation, shared with `check`: read current state into Facts. The
-    // config text is reused below for the `edit_zellij` splice.
+    // config text is reused below for the `edit_zellij` splice and for the
+    // layout-name resolution.
     let config_text = std::fs::read_to_string(&config_path).ok();
+
+    // Resolve the target layout path up front (needed whether or not a managed
+    // config short-circuits): `--layout <name>` wins, else the config's own
+    // `default_layout "name"` (the layout Zellij actually loads), else
+    // `default`. Always `<config_dir>/layouts/<name>.kdl`.
+    let layout_path = config_dir.join("layouts").join(format!(
+        "{}.kdl",
+        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref())
+    ));
     let codex_hooks_text = dirs::home_dir()
         .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
     let installed_plugins_text = dirs::home_dir()

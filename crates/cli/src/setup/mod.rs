@@ -147,7 +147,7 @@ pub fn run(options: SetupOptions<'_>) {
 
     if mode == Mode::Check {
         if want_zellij {
-            check_zellij();
+            check_zellij(options.layout);
         }
         if want_codex {
             check_codex(options.legacy_notify);

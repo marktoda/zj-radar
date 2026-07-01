@@ -112,8 +112,9 @@ enum Command {
         /// Inject the rail into the target layout without prompting (consent flag).
         #[arg(long)]
         inject: bool,
-        /// Target layout name to inject into (default: default). Looks up
-        /// `<config_dir>/layouts/<name>.kdl`.
+        /// Target layout name (default: the config's `default_layout`, else
+        /// "default"). Looks up `<config_dir>/layouts/<name>.kdl`; honored by
+        /// install, --uninstall, and --check alike.
         #[arg(long, value_name = "NAME")]
         layout: Option<String>,
         /// Open the plugin in a focused floating pane so Zellij can prompt for

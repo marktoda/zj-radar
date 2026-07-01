@@ -26,6 +26,49 @@ pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
             .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
 }
 
+/// The layout name a `config.kdl` selects via `default_layout "name"`, or
+/// `None` when unset. Line-scan like the other config detectors: the node at
+/// line start (not commented out), its first argument quoted or bare. This is
+/// what makes `setup`/`--check` operate on the layout Zellij will actually
+/// load — hardcoding `default.kdl` injected the rail into a file a
+/// `default_layout "main"` user never sees.
+pub(crate) fn default_layout_name(config_text: &str) -> Option<String> {
+    for line in config_text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with("/-") {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("default_layout") else {
+            continue;
+        };
+        // Node name must end here (not e.g. `default_layout_x`).
+        if !rest.starts_with([' ', '\t']) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let name = if let Some(quoted) = rest.strip_prefix('"') {
+            quoted.split('"').next().unwrap_or("")
+        } else {
+            rest.split(|c: char| c.is_whitespace() || c == '{' || c == '/')
+                .next()
+                .unwrap_or("")
+        };
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// The layout name `setup`/`--check` should operate on: an explicit `--layout`
+/// wins, else the config's `default_layout`, else Zellij's built-in `default`.
+pub(crate) fn resolve_layout_name(explicit: Option<&str>, config_text: Option<&str>) -> String {
+    explicit
+        .map(str::to_string)
+        .or_else(|| config_text.and_then(default_layout_name))
+        .unwrap_or_else(|| "default".to_string())
+}
+
 pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {
     let mut changed = false;
     let mut i = 0;
@@ -166,5 +209,34 @@ mod tests {
         assert!(!has_unmanaged_radar_alias(&["// radar".to_string()]));
         assert!(!has_unmanaged_radar_alias(&["/- radar".to_string()]));
         assert!(!has_unmanaged_radar_alias(&["tab-bar location=\"zellij:tab-bar\"".to_string()]));
+    }
+
+    #[test]
+    fn default_layout_name_parses_quoted_bare_and_ignores_comments() {
+        assert_eq!(
+            default_layout_name("theme \"nord\"\ndefault_layout \"main\"\n"),
+            Some("main".to_string())
+        );
+        assert_eq!(default_layout_name("default_layout compact\n"), Some("compact".to_string()));
+        // Commented-out (both KDL comment forms) and absent → None.
+        assert_eq!(default_layout_name("// default_layout \"main\"\n"), None);
+        assert_eq!(default_layout_name("/- default_layout \"main\"\n"), None);
+        assert_eq!(default_layout_name("theme \"nord\"\n"), None);
+        // A different node whose name merely starts with it doesn't match.
+        assert_eq!(default_layout_name("default_layout_dir \"/tmp\"\n"), None);
+        // Trailing comment after a bare name is not part of the name.
+        assert_eq!(
+            default_layout_name("default_layout main // my layout\n"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_layout_name_precedence_is_flag_config_default() {
+        let config = Some("default_layout \"main\"\n");
+        assert_eq!(resolve_layout_name(Some("mine"), config), "mine");
+        assert_eq!(resolve_layout_name(None, config), "main");
+        assert_eq!(resolve_layout_name(None, Some("theme \"nord\"\n")), "default");
+        assert_eq!(resolve_layout_name(None, None), "default");
     }
 }

@@ -253,6 +253,54 @@ fn interrupted_download_leaves_no_partial_wasm() {
     );
 }
 
+// ── Test: setup/check operate on the layout Zellij actually loads ────────────
+// The layout name resolves --layout → config's `default_layout` → "default".
+// Before this, both hardcoded default.kdl: a `default_layout "main"` user got
+// the rail injected into a file Zellij never reads, and --check contradicted a
+// successful `--inject --layout my` install.
+
+#[test]
+fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
+    let config_dir = TempDir::new().unwrap();
+    fs::write(
+        config_dir.path().join("config.kdl"),
+        "default_layout \"main\"\n",
+    )
+    .unwrap();
+    let layouts = config_dir.path().join("layouts");
+    fs::create_dir_all(&layouts).unwrap();
+    // main.kdl HAS the rail; other.kdl does not.
+    fs::write(layouts.join("main.kdl"), "layout {\n    pane\n    // zj-radar:wrap begin\n}\n").unwrap();
+    fs::write(layouts.join("other.kdl"), "layout {\n    pane\n}\n").unwrap();
+
+    let check = |extra: &[&str]| {
+        let mut args = vec!["setup", "zellij", "--check"];
+        args.extend_from_slice(extra);
+        let assert = Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(&args)
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .assert()
+            .success();
+        String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+    };
+
+    // No --layout: the doctor must inspect main.kdl (the default_layout), which
+    // has the rail — not default.kdl (absent, would report missing).
+    let out = check(&[]);
+    assert!(
+        out.contains("ok layout"),
+        "check must inspect the config's default_layout (main.kdl, has rail); got:\n{out}"
+    );
+
+    // --layout other: the doctor must inspect other.kdl, which lacks the rail.
+    let out = check(&["--layout", "other"]);
+    assert!(
+        !out.contains("ok layout"),
+        "check --layout other must inspect other.kdl (no rail); got:\n{out}"
+    );
+}
+
 // ── Layout injection tests ────────────────────────────────────────────────────
 //
 // `setup zellij --inject` (no --wasm / --download) takes the inject-only path:

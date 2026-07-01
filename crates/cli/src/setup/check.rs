@@ -116,13 +116,20 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
     items
 }
 
-pub(crate) fn check_zellij() {
+pub(crate) fn check_zellij(layout_name: Option<&str>) {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
-    let layout_path = config_dir.join("layouts").join("default.kdl");
+    let config_text = std::fs::read_to_string(&config_path).ok();
+    // Same resolution as the install path: --layout, else the config's
+    // `default_layout`, else `default` — so the doctor inspects the layout
+    // Zellij actually loads (and the one a `--layout` install just wrote).
+    let layout_path = config_dir.join("layouts").join(format!(
+        "{}.kdl",
+        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref())
+    ));
     let env = ZellijEnv {
-        config_text: std::fs::read_to_string(&config_path).ok(),
+        config_text,
         layout_text: std::fs::read_to_string(&layout_path).ok(),
         permissions_text: crate::run::zellij_permissions_path()
             .and_then(|p| std::fs::read_to_string(p).ok()),
