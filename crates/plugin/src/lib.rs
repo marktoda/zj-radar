@@ -202,7 +202,7 @@ impl State {
                 Effect::CloseSelf => close_self(),
                 Effect::Notify { title, body } => {
                     let note = crate::notify_rules::Notification { title, body };
-                    let argv = crate::notify_rules::osascript_command(&note);
+                    let argv = crate::notify_rules::notify_command(&note);
                     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
                     run_command(&args, std::collections::BTreeMap::new());
                 }

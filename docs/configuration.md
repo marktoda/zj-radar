@@ -26,7 +26,7 @@ ignored and invalid values fall back to the default (parsing never fails):
 | `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
-| `notify` | `true` · `false` | `true` | Master switch for OS desktop notifications (macOS this version). |
+| `notify` | `true` · `false` | `true` | Master switch for OS desktop notifications (macOS `osascript`, Linux `notify-send`). |
 | `notify_done` | `true` · `false` | `true` | Notify when a pane transitions into `done`. |
 | `notify_error` | `true` · `false` | `true` | Notify when a pane transitions into `error`. |
 | `notify_pending` | `true` · `false` | `true` | Notify when a pane transitions into `pending` (needs input). |
@@ -34,8 +34,10 @@ ignored and invalid values fall back to the default (parsing never fails):
 
 Notifications fire only on transitions **into** an attention status and, by
 default, only for **background** panes — the focused pane is suppressed unless
-`notify_when_focused` is `true`. macOS only in this version; other platforms are
-silent no-ops.
+`notify_when_focused` is `true`. Delivery is best-effort: the plugin runs
+`osascript` on macOS, else `notify-send` (libnotify) on Linux; if neither is on
+`PATH` it is a silent no-op. This is why the plugin requests Zellij's
+`RunCommands` permission — solely to hand the notification to the OS.
 
 ## Runtime config
 

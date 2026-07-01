@@ -83,19 +83,36 @@ pub fn status_map(current: &BTreeMap<u32, &TrackedObservation>) -> BTreeMap<u32,
     current.iter().map(|(&id, &o)| (id, o.status)).collect()
 }
 
-/// `run_command` argv that fires a macOS notification. AppleScript string
-/// literals escape `\` and `"`; everything else passes through.
-pub fn osascript_command(n: &Notification) -> Vec<String> {
-    fn quote(s: &str) -> String {
-        let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("\"{escaped}\"")
-    }
-    let script = format!(
-        "display notification {} with title {}",
-        quote(&n.body),
-        quote(&n.title)
+/// `run_command` argv that shows a desktop notification on the host — portably,
+/// without the plugin (wasm) knowing which OS it runs on: the host `sh` does the
+/// dispatch. Prefer macOS `osascript` (so existing macOS behaviour is unchanged),
+/// else Linux `notify-send` (libnotify). If neither is on `PATH` the command is a
+/// silent no-op, matching the best-effort-cosmetic contract.
+///
+/// Title and body ride as the shell's positional parameters (`$1`/`$2`), never
+/// interpolated into the script, so arbitrary notification text needs no escaping
+/// and cannot break out of the command. `osascript` receives them as its own
+/// `argv` (`on run argv`) for the same reason — retiring the old hand-rolled
+/// AppleScript string escaper. The `--` guards a title/body that begins with `-`.
+pub fn notify_command(n: &Notification) -> Vec<String> {
+    // $0 is a label; $1 = title, $2 = body.
+    const DISPATCH: &str = concat!(
+        "if command -v osascript >/dev/null 2>&1; then ",
+        "exec osascript -e 'on run argv' ",
+        "-e 'display notification (item 2 of argv) with title (item 1 of argv)' ",
+        "-e 'end run' -- \"$1\" \"$2\"; ",
+        "elif command -v notify-send >/dev/null 2>&1; then ",
+        "exec notify-send -- \"$1\" \"$2\"; ",
+        "fi",
     );
-    vec!["osascript".to_string(), "-e".to_string(), script]
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        DISPATCH.to_string(),
+        "zj-radar".to_string(), // $0
+        n.title.clone(),        // $1
+        n.body.clone(),         // $2
+    ]
 }
 
 #[cfg(test)]
@@ -234,12 +251,35 @@ mod tests {
     }
 
     #[test]
-    fn osascript_command_quotes_and_escapes() {
-        let n = Notification { title: "re\"po".to_string(), body: "a\\b".to_string() };
-        let argv = osascript_command(&n);
-        assert_eq!(argv[0], "osascript");
-        assert_eq!(argv[1], "-e");
-        // body and title become AppleScript double-quoted literals with \ and " escaped
-        assert_eq!(argv[2], "display notification \"a\\\\b\" with title \"re\\\"po\"");
+    fn notify_command_dispatches_both_backends_with_positional_args() {
+        let n = Notification { title: "pinky · main".to_string(), body: "done — build".to_string() };
+        let argv = notify_command(&n);
+        assert_eq!(argv[0], "sh");
+        assert_eq!(argv[1], "-c");
+        // The host script tries macOS first, then the Linux fallback.
+        assert!(argv[2].contains("osascript"), "macOS branch present: {}", argv[2]);
+        assert!(argv[2].contains("notify-send"), "Linux fallback present: {}", argv[2]);
+        // Title/body ride as $1/$2 — argv[4]/argv[5], after the $0 label.
+        assert_eq!(argv[3], "zj-radar");
+        assert_eq!(argv[4], "pinky · main");
+        assert_eq!(argv[5], "done — build");
+    }
+
+    #[test]
+    fn notify_command_passes_hostile_text_verbatim_without_escaping() {
+        // Quotes, backslashes, `$(…)`, `;`, and a leading dash are passed as argv,
+        // never spliced into the script, so nothing can inject into or break out
+        // of the command (the reason the old string-literal escaper is gone). The
+        // `--` in the script is what protects a leading-dash title/body.
+        let n = Notification {
+            title: "-rf \"$(reboot)\"".to_string(),
+            body: "a\\b\" ; rm -rf /".to_string(),
+        };
+        let argv = notify_command(&n);
+        assert_eq!(argv[4], "-rf \"$(reboot)\"");
+        assert_eq!(argv[5], "a\\b\" ; rm -rf /");
+        // The payload text never appears in the script body itself.
+        assert!(!argv[2].contains("reboot"));
+        assert!(!argv[2].contains("rm -rf"));
     }
 }

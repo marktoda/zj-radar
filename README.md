@@ -121,7 +121,7 @@ plugins {
     radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
         density "cards"         // cards · comfortable · compact
         naming "managed"        // off · managed · force
-        notify true             // desktop notifications (macOS)
+        notify true             // desktop notifications (macOS + Linux)
         notify_done true        // per-status toggles (done · error · pending)
         notify_error true
         notify_pending true
