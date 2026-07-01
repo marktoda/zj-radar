@@ -83,9 +83,24 @@ fn git_repo_branch(cwd: &str) -> (String, String) {
     (repo, branch)
 }
 
+/// Bytes of stdin we're willing to buffer. Generous — 8 MiB dwarfs any real hook
+/// payload (even a Write tool's full file `content`) — so it never truncates a
+/// legitimate input; it only bounds a degenerate multi-MB/GB stream. Note this is
+/// the *input* cap, distinct from the plugin's 64 KB *wire* cap on the broadcast
+/// payload the CLI produces.
+const MAX_STDIN_BYTES: u64 = 8 << 20;
+
 fn read_stdin() -> String {
+    read_capped(std::io::stdin().lock(), MAX_STDIN_BYTES)
+}
+
+/// Read up to `cap` bytes as UTF-8, ignoring IO/UTF-8 errors (the caller derives
+/// from whatever parses; a truncated or non-UTF-8 payload just fails to parse and
+/// no-ops — the safe degradation for a fire-and-forget hook). Split out so the
+/// bound is unit-tested without a real stdin.
+fn read_capped<R: Read>(reader: R, cap: u64) -> String {
     let mut s = String::new();
-    let _ = std::io::stdin().read_to_string(&mut s);
+    let _ = reader.take(cap).read_to_string(&mut s);
     s
 }
 
@@ -192,5 +207,21 @@ mod tests {
         assert_eq!(repo_name_from_common_dir(".git"), None);
         assert_eq!(repo_name_from_common_dir(""), None);
         assert_eq!(repo_name_from_common_dir("   "), None);
+    }
+
+    // --- bounded stdin read ---
+
+    #[test]
+    fn read_capped_reads_small_input_whole() {
+        assert_eq!(read_capped(std::io::Cursor::new(b"hello".to_vec()), 1024), "hello");
+        assert_eq!(read_capped(std::io::Cursor::new(Vec::new()), 1024), "");
+    }
+
+    #[test]
+    fn read_capped_bounds_oversized_input() {
+        // A stream larger than the cap is truncated to the cap, never buffered
+        // whole — the guard against a pathological producer.
+        let big = vec![b'x'; 10_000];
+        assert_eq!(read_capped(std::io::Cursor::new(big), 64).len(), 64);
     }
 }

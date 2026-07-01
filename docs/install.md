@@ -32,6 +32,9 @@ zj-radar setup zellij --download
 - downloads the wasm **built from this CLI's own version** (set `ZJ_RADAR_VERSION`
   to pin a different release tag) — so the CLI and wasm can't drift apart across
   Zellij's unstable plugin ABI
+- verifies it against the release's published `.sha256` checksum before installing
+  (a mismatch aborts; releases without a checksum fall back to TLS-only with a
+  warning) — needs `sha256sum` or `shasum` on `PATH`
 - copies it to `~/.config/zellij/plugins/zj_radar.wasm`
 - adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
 - reads your default layout, then **prompts** `Inject the rail into <layout>? [y/N]`:

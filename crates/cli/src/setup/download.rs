@@ -12,6 +12,12 @@ fn wasm_release_url(version: &str) -> String {
     format!("https://github.com/{}/releases/download/v{version}/zj_radar.wasm", repo_slug())
 }
 
+/// The `.sha256` sidecar published next to the wasm asset (same release, same
+/// version). Generated and uploaded by `.github/workflows/release.yml`.
+fn wasm_checksum_url(version: &str) -> String {
+    format!("{}.sha256", wasm_release_url(version))
+}
+
 /// The `owner/repo` slug release assets are fetched from. Defaults to the
 /// repository baked in at build time (`CARGO_PKG_REPOSITORY`), so a fork only has
 /// to set `repository` in Cargo.toml — no source edit and no drift between the
@@ -44,7 +50,80 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
     if !dest.is_file() {
         return Err(format!("download reported success but {} is missing", dest.display()));
     }
+    verify_checksum(version, dest)?;
     Ok(())
+}
+
+/// Verify the freshly-downloaded wasm against its published `.sha256` sidecar.
+///
+/// Strict when the sidecar is fetchable: a mismatch is a hard error and the bad
+/// wasm is removed — Zellij runs this wasm with permissions, so a payload that
+/// doesn't match its published digest must never be installed. When the sidecar
+/// is absent (a release predating checksums) or no local sha256 tool is on PATH,
+/// this warns and continues rather than blocking install — TLS + GitHub release
+/// storage remain the floor, and every new release publishes the sidecar (see
+/// `.github/workflows/release.yml`), so absence is the exception, not the norm.
+fn verify_checksum(version: &str, wasm: &Path) -> Result<(), String> {
+    let sidecar = std::env::temp_dir().join(format!("zj_radar-{version}.wasm.sha256"));
+    let _ = std::fs::remove_file(&sidecar); // clear any stale sidecar first
+    if !try_download(&wasm_checksum_url(version), &sidecar) {
+        eprintln!(
+            "zj-radar: warning — no checksum published for v{version}; \
+             installed wasm is TLS-verified only (integrity not checked)"
+        );
+        return Ok(());
+    }
+    let expected = std::fs::read_to_string(&sidecar).ok().and_then(|s| parse_sha256(&s));
+    let _ = std::fs::remove_file(&sidecar);
+    let Some(expected) = expected else {
+        eprintln!("zj-radar: warning — checksum for v{version} was unreadable; skipping integrity check");
+        return Ok(());
+    };
+    let Some(actual) = compute_sha256(wasm) else {
+        eprintln!(
+            "zj-radar: warning — no sha256 tool (sha256sum/shasum) on PATH; \
+             skipping integrity check for v{version}"
+        );
+        return Ok(());
+    };
+    if actual.eq_ignore_ascii_case(&expected) {
+        println!("zj-radar: wasm checksum verified");
+        Ok(())
+    } else {
+        let _ = std::fs::remove_file(wasm); // don't leave a mismatched wasm staged
+        Err(format!(
+            "checksum mismatch for zj_radar.wasm v{version}\n  expected {expected}\n  got      {actual}\n\
+             Refusing to install a wasm that does not match its published checksum."
+        ))
+    }
+}
+
+/// Extract a 64-char lowercase hex digest from a `sha256sum`/`shasum` line (`<hex>
+/// <name>`) or a bare digest: the first whitespace-delimited token, validated as
+/// exactly 64 hex chars. `None` for anything malformed.
+fn parse_sha256(raw: &str) -> Option<String> {
+    let token = raw.split_whitespace().next()?;
+    let is_hex = token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit());
+    is_hex.then(|| token.to_ascii_lowercase())
+}
+
+/// Compute a file's SHA-256 as lowercase hex via the system tool — `sha256sum`
+/// (Linux/coreutils), else `shasum -a 256` (macOS). `None` when neither is on
+/// PATH. Shelling out keeps the host build free of a crypto dependency, the same
+/// reason the download itself uses curl/wget rather than a Rust TLS stack.
+fn compute_sha256(path: &Path) -> Option<String> {
+    use std::process::Command;
+    let out = if which("sha256sum") {
+        Command::new("sha256sum").arg(path).output().ok()?
+    } else if which("shasum") {
+        Command::new("shasum").args(["-a", "256"]).arg(path).output().ok()?
+    } else {
+        return None;
+    };
+    if !out.status.success() {
+        return None;
+    }
+    parse_sha256(&String::from_utf8(out.stdout).ok()?)
 }
 
 /// Fetch the wasm matching `version` to a temp file and return its path.
@@ -90,6 +169,32 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
     Err("need curl or wget on PATH to --download".to_string())
 }
 
+/// Best-effort HTTPS fetch for *optional* assets (the checksum sidecar): returns
+/// whether it landed, swallowing the reason. A 404 for a release without the asset
+/// is expected, not an error, so — unlike `run_download` — this reports absence as
+/// a plain `false` rather than a user-facing message.
+fn try_download(url: &str, dest: &Path) -> bool {
+    use std::process::Command;
+    if which("curl") {
+        return Command::new("curl")
+            .args(["--proto", "=https", "--tlsv1.2", "-fsSL", url, "-o"])
+            .arg(dest)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+    if which("wget") {
+        return Command::new("wget")
+            .args(["--https-only", "-qO"])
+            .arg(dest)
+            .arg(url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+    false
+}
+
 /// The wasm release tag to fetch: `ZJ_RADAR_VERSION` (a leading `v` is optional)
 /// overrides, else this CLI's own version — the version-skew-safe default.
 pub(crate) fn wasm_download_version() -> String {
@@ -110,5 +215,34 @@ mod tests {
             wasm_release_url("0.1.0"),
             "https://github.com/marktoda/zj-radar/releases/download/v0.1.0/zj_radar.wasm"
         );
+    }
+
+    #[test]
+    fn wasm_checksum_url_is_the_wasm_url_plus_sha256() {
+        assert_eq!(
+            wasm_checksum_url("0.1.0"),
+            "https://github.com/marktoda/zj-radar/releases/download/v0.1.0/zj_radar.wasm.sha256"
+        );
+    }
+
+    #[test]
+    fn parse_sha256_takes_the_digest_token_and_lowercases() {
+        let digest = "a".repeat(64);
+        // `sha256sum` line format: "<hex>  <name>".
+        assert_eq!(parse_sha256(&format!("{digest}  zj_radar.wasm")), Some(digest.clone()));
+        // A bare digest with surrounding whitespace/newline.
+        assert_eq!(parse_sha256(&format!("  {digest}\n")), Some(digest.clone()));
+        // Uppercase hex is normalized to lowercase for comparison.
+        assert_eq!(parse_sha256(&"A".repeat(64)), Some("a".repeat(64)));
+    }
+
+    #[test]
+    fn parse_sha256_rejects_malformed() {
+        assert_eq!(parse_sha256(""), None);
+        assert_eq!(parse_sha256("   "), None);
+        assert_eq!(parse_sha256("not-a-hash  file"), None); // non-hex chars
+        assert_eq!(parse_sha256(&"a".repeat(63)), None); // too short
+        assert_eq!(parse_sha256(&"a".repeat(65)), None); // too long
+        assert_eq!(parse_sha256(&format!("{}g", "a".repeat(63))), None); // 64 chars, one non-hex
     }
 }
