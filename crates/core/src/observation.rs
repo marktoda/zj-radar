@@ -31,6 +31,12 @@ pub struct TrackedObservation {
     pub repo: String,
     pub branch: String,
     pub msg: String,
+    /// Sticky task label for agent panes (first line of the user's prompt).
+    /// Carried across the whole turn by `StatusStore::apply`'s merge; always
+    /// empty for command-origin panes. Serde-defaulted so pre-task snapshots
+    /// still load.
+    #[serde(default)]
+    pub task: String,
     /// The source kind that produced this observation. Classified once at intake
     /// (`StatusStore::apply` / `command_kind`); the renderer reads it directly
     /// rather than re-parsing a string. Serializes under the `source` wire key as
@@ -60,6 +66,7 @@ impl TrackedObservation {
             repo,
             branch: String::new(),
             msg,
+            task: String::new(),
             kind,
             last_change_tick: tick,
             ever_active: true,
@@ -131,6 +138,7 @@ mod tests {
             repo: "zj-radar".into(),
             branch: "main".into(),
             msg: "cargo build".into(),
+            task: "fix e2e".into(),
             kind: Kind::Build,
             last_change_tick: 7,
             ever_active: true,
@@ -146,6 +154,7 @@ mod tests {
         // variant names — so the snapshot format is stable and human-legible.
         assert!(json.contains(r#""origin":"command""#), "origin token: {json}");
         assert!(json.contains(r#""status":"error""#), "status token: {json}");
+        assert!(json.contains(r#""task":"fix e2e""#), "task persists in snapshots: {json}");
         assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
     }
 
@@ -157,6 +166,7 @@ mod tests {
         let obs: TrackedObservation = serde_json::from_str(json).unwrap();
         assert_eq!(obs.status, Status::Idle);
         assert_eq!(obs.exit_code, None);
+        assert_eq!(obs.task, "", "pre-task snapshots load with an empty label");
         // An unknown origin is rejected so a corrupt entry can't masquerade as a
         // valid one — the snapshot loader drops the whole snapshot instead.
         let bad = json.replace(r#""origin":"command""#, r#""origin":"???""#);

@@ -23,6 +23,16 @@ impl StatusStore {
             prev.map(|s| s.last_change_tick).unwrap_or(tick)
         };
         let ever_active = p.status.is_active() || prev.is_some_and(|s| s.ever_active);
+        // Sticky task label: a new prompt replaces it, taskless events (the
+        // overwhelming majority — every tool hook) carry it forward, and idle
+        // (`/clear`) resets it along with the msg.
+        let task = if p.status == crate::status::Status::Idle {
+            String::new()
+        } else if p.task.is_empty() {
+            prev.map(|s| s.task.clone()).unwrap_or_default()
+        } else {
+            p.task
+        };
         self.store.insert(
             p.pane_id,
             TrackedObservation {
@@ -31,6 +41,7 @@ impl StatusStore {
                 repo: p.repo,
                 branch: p.branch,
                 msg: p.msg,
+                task,
                 // Classify the untrusted wire `source` into a Kind once, here at
                 // intake; the renderer reads `kind` directly (no re-parse).
                 kind: Kind::from_source(&p.source),
@@ -70,6 +81,7 @@ impl StatusStore {
                 repo,
                 branch,
                 msg: String::new(),
+                task: String::new(),
                 kind,
                 last_change_tick: tick,
                 ever_active: true,
@@ -131,6 +143,43 @@ mod tests {
             task: String::new(),
             source: "test".into(),
         }
+    }
+
+    fn payload_with_task(pane_id: u32, status: Status, task: &str) -> StatusPayload {
+        StatusPayload { task: task.into(), ..payload(pane_id, status) }
+    }
+
+    #[test]
+    fn task_is_sticky_across_taskless_updates_and_replaced_by_a_new_one() {
+        let mut s = StatusStore::default();
+        // UserPromptSubmit carries the task…
+        s.apply(payload_with_task(1, Status::Running, "fix flaky e2e"), 1);
+        assert_eq!(s.get(1).unwrap().task, "fix flaky e2e");
+        // …PreToolUse / Stop broadcasts don't (empty task) — the label sticks.
+        s.apply(payload(1, Status::Running), 2);
+        s.apply(payload(1, Status::Done), 3);
+        assert_eq!(s.get(1).unwrap().task, "fix flaky e2e", "sticky through the turn");
+        // A new prompt replaces it.
+        s.apply(payload_with_task(1, Status::Running, "now migrate the schema"), 4);
+        assert_eq!(s.get(1).unwrap().task, "now migrate the schema");
+    }
+
+    #[test]
+    fn idle_clears_the_task_like_it_clears_the_message() {
+        // `/clear` fires SessionStart{clear} → an idle broadcast; the row must
+        // fully recede — stale task text is as bad as a stale msg.
+        let mut s = StatusStore::default();
+        s.apply(payload_with_task(1, Status::Running, "old work"), 1);
+        s.apply(payload(1, Status::Idle), 2);
+        assert_eq!(s.get(1).unwrap().task, "", "idle resets the task");
+    }
+
+    #[test]
+    fn clear_on_prompt_return_drops_the_task() {
+        let mut s = StatusStore::default();
+        s.apply(payload_with_task(1, Status::Done, "shipped thing"), 1);
+        assert!(s.clear_on_prompt_return(1, 5));
+        assert_eq!(s.get(1).unwrap().task, "", "producer gone — label gone");
     }
 
     #[test]

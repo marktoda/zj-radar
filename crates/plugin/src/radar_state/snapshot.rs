@@ -135,6 +135,7 @@ fn load_legacy_status(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObse
                     repo: pane.repo,
                     branch: pane.branch,
                     msg: pane.msg,
+                    task: String::new(),
                     kind: Kind::from_source(&pane.source),
                     last_change_tick: pane.last_change_tick,
                     ever_active: pane.ever_active,
