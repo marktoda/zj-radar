@@ -140,6 +140,7 @@ fn load_legacy_status(value: serde_json::Value) -> Option<(Vec<(u32, TrackedObse
                     last_change_tick: pane.last_change_tick,
                     ever_active: pane.ever_active,
                     exit_code: None,
+                    completed_epoch_s: None,
                 },
             )
         })

@@ -285,12 +285,16 @@ impl RadarState {
         naming: config::NamingMode,
     ) -> RadarChange {
         for (pane_id, exit_status) in update.exits {
-            self.command.on_exit(pane_id, exit_status, tick);
+            // TODO(Task 9): thread the real wall-clock epoch through; 0 is a
+            // placeholder until PaneUpdate carries it.
+            let _ = self.command.on_exit(pane_id, exit_status, tick, 0);
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
         self.status.prune(&update.live);
-        self.command.prune(&update.live);
+        // Dropped completions ignored here; Task 8 ledgers a pane closing with
+        // an unreceded Done/Error still on it.
+        let _ = self.command.prune(&update.live);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
@@ -312,8 +316,11 @@ impl RadarState {
     /// Timer tick. Returns whether an observation changed (a debounced
     /// promotion or Done-flip) — the runtime persists the snapshot on it so
     /// timer-driven mutations reach late-spawned instances too.
+    ///
+    /// TODO(Task 9): thread the real wall-clock epoch through instead of `0`.
+    /// TODO(Task 11): consume `TimerReport::receded` into the ledger.
     pub(crate) fn timer(&mut self, tick: u64) -> bool {
-        self.command.on_timer(tick)
+        self.command.on_timer(tick, 0).changed
     }
 
     pub(crate) fn cwd_changed(

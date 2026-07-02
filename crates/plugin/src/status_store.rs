@@ -50,6 +50,7 @@ impl StatusStore {
                 last_change_tick,
                 ever_active,
                 exit_code: None,
+                completed_epoch_s: None,
             },
         );
     }
@@ -89,6 +90,7 @@ impl StatusStore {
                 last_change_tick: tick,
                 ever_active: true,
                 exit_code: None,
+                completed_epoch_s: None,
             },
         );
         true

@@ -21,6 +21,7 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         last_change_tick: tick,
         ever_active: true,
         exit_code: None,
+        completed_epoch_s: None,
     }
 }
 
@@ -223,6 +224,7 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     last_change_tick: tick,
                     ever_active,
                     exit_code,
+                    completed_epoch_s: None,
                 },
             );
         }

@@ -847,7 +847,7 @@ mod tests {
             .radar
             .status_mut()
             .apply(payload_for(11, Status::Running), 1);
-        runtime.radar.command_mut().on_exit(12, Some(0), 1);
+        runtime.radar.command_mut().on_exit(12, Some(0), 1, 0);
 
         let mut live = HashSet::new();
         live.insert(10);
@@ -1083,7 +1083,7 @@ mod tests {
         // SetTimeout → notify. Seed a background Done so `settle` actually
         // produces a Notify, exercising all five effect kinds in one change.
         let mut rt = two_tab_runtime_with_running_commands();
-        rt.radar.command_mut().on_exit(7, Some(0), rt.tick);
+        rt.radar.command_mut().on_exit(7, Some(0), rt.tick, 0);
         // `arm_timer_if_needed` self-guards on `timer_armed`; the setup helper's
         // timer tick already armed it, so reset to let `project`'s unconditional
         // arm call actually produce a `SetTimeout` effect.
@@ -1189,7 +1189,7 @@ mod tests {
     fn restored_snapshot_does_not_notify() {
         // Build a snapshot containing an already-Done command pane.
         let mut seeded = crate::radar_state::RadarState::default();
-        seeded.command_mut().on_exit(7, Some(0), 1);
+        seeded.command_mut().on_exit(7, Some(0), 1, 0);
         // Confirm the observation is present as Done.
         assert_eq!(seeded.command(7).unwrap().status, Status::Done);
         let snapshot = seeded.snapshot_json(None, 2);

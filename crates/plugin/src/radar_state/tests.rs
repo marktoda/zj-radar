@@ -432,7 +432,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
     radar.timer(2); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
-    radar.command_mut().on_exit(1, Some(2), 3);
+    radar.command_mut().on_exit(1, Some(2), 3, 0);
 
     let row = radar.rows().remove(0);
     assert_eq!(row.display.status, Status::Error);
@@ -446,7 +446,7 @@ fn snapshot_round_trip_preserves_command_exit_code() {
     let mut radar = RadarState::default();
     radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
     radar.timer(2);
-    radar.command_mut().on_exit(7, Some(3), 3);
+    radar.command_mut().on_exit(7, Some(3), 3, 0);
     assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
 
     let json = radar.snapshot_json(None, 3);

@@ -990,7 +990,7 @@ mod tests {
             tick,
         );
         tick += 1;
-        state.runtime.radar.command_mut().on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick, 0);
         assert!(
             state.runtime.radar.command_store().get(5).is_none(),
             "shell prompt must leave pane idle"
@@ -1009,7 +1009,7 @@ mod tests {
         );
         // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
         tick += DEBOUNCE_TICKS;
-        state.runtime.radar.command_mut().on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick, 0);
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Running),
@@ -1020,7 +1020,7 @@ mod tests {
 
         // 3) pane exits with code 0 → Done (and stays Done; focus no longer clears it)
         tick += 1;
-        state.runtime.radar.command_mut().on_exit(5, Some(0), tick);
+        state.runtime.radar.command_mut().on_exit(5, Some(0), tick, 0);
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Done),

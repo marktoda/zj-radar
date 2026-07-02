@@ -52,6 +52,12 @@ pub struct TrackedObservation {
     /// tag on error rows.
     #[serde(default)]
     pub exit_code: Option<i32>,
+    /// Wall-clock second (Unix epoch) at which this observation first became
+    /// `Done`/`Error`. `None` while live/idle. Rides the snapshot so a
+    /// rehydrating instance ledgers the completion with the ORIGINAL stamp —
+    /// without it, merged ledgers diverge (spec §4.3).
+    #[serde(default)]
+    pub completed_epoch_s: Option<u64>,
 }
 
 impl TrackedObservation {
@@ -71,6 +77,7 @@ impl TrackedObservation {
             last_change_tick: tick,
             ever_active: true,
             exit_code: None,
+            completed_epoch_s: None,
         }
     }
 }
@@ -154,6 +161,7 @@ mod tests {
             last_change_tick: 7,
             ever_active: true,
             exit_code: Some(1),
+            completed_epoch_s: None,
         }
     }
 
