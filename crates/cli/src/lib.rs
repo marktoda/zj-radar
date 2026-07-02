@@ -37,8 +37,14 @@ pub(crate) mod exit {
 
     static FAILED: AtomicBool = AtomicBool::new(false);
 
-    pub(crate) fn fail() {
+    /// Report a failure as `{label}: {msg}` on stderr AND mark the invocation
+    /// failed. This is the only way to set the flag, so a failure diagnostic
+    /// can never print without the exit code following it. Raw `eprintln!` is
+    /// reserved for warnings, guidance, and continuation lines — anything that
+    /// reports a *failure* goes through here.
+    pub(crate) fn fail_report(label: &str, msg: impl std::fmt::Display) {
         FAILED.store(true, Ordering::Relaxed);
+        eprintln!("{label}: {msg}");
     }
 
     pub(crate) fn failed() -> bool {

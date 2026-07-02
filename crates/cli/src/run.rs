@@ -455,15 +455,13 @@ fn dispatch_when_running(session: String, dispatch: Vec<String>) {
 
 pub fn run(opts: RunOptions) {
     let Some(dir) = owned_config_dir() else {
-        crate::exit::fail();
-        eprintln!("zj-radar: could not resolve a data directory");
+        crate::exit::fail_report("zj-radar", "could not resolve a data directory");
         return;
     };
     let materialized = match materialize(&dir, env!("CARGO_PKG_VERSION"), &embedded_assets()) {
         Ok(m) => m,
         Err(e) => {
-            crate::exit::fail();
-            eprintln!("zj-radar: failed to set up config dir {}: {e}", dir.display());
+            crate::exit::fail_report("zj-radar", format!("failed to set up config dir {}: {e}", dir.display()));
             return;
         }
     };
@@ -478,10 +476,9 @@ pub fn run(opts: RunOptions) {
     // build under test — never the embedded or downloaded release wasm.
     if let Some(wasm) = std::env::var_os("ZJ_RADAR_WASM").filter(|w| !w.is_empty()) {
         if let Err(e) = std::fs::copy(&wasm, &materialized.wasm_path) {
-            crate::exit::fail();
-            eprintln!(
-                "zj-radar: copying ZJ_RADAR_WASM ({}) failed — {e}",
-                Path::new(&wasm).display()
+            crate::exit::fail_report(
+                "zj-radar",
+                format!("copying ZJ_RADAR_WASM ({}) failed — {e}", Path::new(&wasm).display()),
             );
             return;
         }
@@ -493,10 +490,12 @@ pub fn run(opts: RunOptions) {
     if !materialized.wasm_path.exists() {
         let version = super::setup::wasm_download_version();
         if let Err(e) = super::setup::download_wasm_to(&version, &materialized.wasm_path) {
-            crate::exit::fail();
-            eprintln!(
-                "zj-radar: no embedded wasm and the download failed — {e}\n\
-                 Fetch it once while online with: zj-radar setup zellij --download"
+            crate::exit::fail_report(
+                "zj-radar",
+                format!(
+                    "no embedded wasm and the download failed — {e}\n\
+                     Fetch it once while online with: zj-radar setup zellij --download"
+                ),
             );
             return;
         }
@@ -532,11 +531,11 @@ pub fn run(opts: RunOptions) {
         return;
     }
     if plan.nested {
-        crate::exit::fail();
-        eprintln!(
-            "zj-radar: you're already inside Zellij. `run` starts a NEW session — detach first \
+        crate::exit::fail_report(
+            "zj-radar",
+            "you're already inside Zellij. `run` starts a NEW session — detach first \
              (Ctrl-o d by default) and re-run, or use `zj-radar setup` to add the rail to your \
-             current Zellij config."
+             current Zellij config.",
         );
         return;
     }
@@ -553,8 +552,7 @@ pub fn run(opts: RunOptions) {
         dispatch_when_running(facts.session.clone(), dispatch);
     }
     if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
-        crate::exit::fail();
-        eprintln!("zj-radar: failed to launch zellij: {e}");
+        crate::exit::fail_report("zj-radar", format!("failed to launch zellij: {e}"));
     }
 }
 
