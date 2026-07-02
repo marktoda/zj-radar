@@ -785,25 +785,26 @@ mod tests {
 
     #[test]
     fn bundled_config_binds_alt_n_tab_jumps() {
-        // The footer hint (`footer_hint` in render.rs: " alt-[n] jump") promises a
-        // chord the rail itself can't bind — Zellij owns keybinds, not the plugin —
-        // so the owned config.kdl must supply it for the promise to be real.
+        // The rail numbers its rows after tabs, so the owned config supplies
+        // Alt-1..9 → GoToTab as an unadvertised nicety (Zellij owns keybinds,
+        // not the plugin).
         for n in 1..=9 {
             assert!(
                 CONFIG_TEMPLATE.contains(&format!("bind \"Alt {n}\"")),
-                "config must bind Alt {n} → GoToTab (the rail's footer hint promises it)"
+                "config must bind Alt {n} → GoToTab (the rail numbers rows after tabs)"
             );
         }
         assert!(CONFIG_TEMPLATE.contains("GoToTab 1"));
-        // And the converse: the hint is config-gated (`JumpHint`, default
-        // hidden), so this config — the one place the binds actually exist —
-        // must claim it on the alias, or run-launched rails would hide a hint
-        // that IS true. The alias covers layout rails, the Ctrl-y float, and
-        // resurrection snapshots alike (Zellij merges alias config into every
-        // launch), mirroring grant_hint one line up.
+        // Deliberately NOT advertised: no `jump_hint` on the alias, so the
+        // footer never renders ` alt-[n] jump`. Alt+digit is commonly claimed
+        // upstream of Zellij (window-manager workspace hotkeys, macOS Option
+        // typing `¡`), and the rail can't detect interception — a promise the
+        // binds alone can't keep. `JumpHint` stays config-gated (default
+        // hidden) for users whose setups do deliver the chord.
         assert!(
-            CONFIG_TEMPLATE.contains("jump_hint \"alt-n\""),
-            "the alias must claim the alt-[n] hint this config's binds make true"
+            CONFIG_TEMPLATE.lines().all(|l| !l.trim_start().starts_with("jump_hint")),
+            "the alias must not advertise the alt-[n] chord — interception \
+             upstream of Zellij makes the hint machine-dependent"
         );
     }
 
@@ -824,16 +825,10 @@ mod tests {
             "bump the workspace version so the .zj-radar-version marker changes \
              and existing owned configs re-materialize with the new alt-n binds"
         );
-        // Same gate for the jump_hint addition: configs materialized at 0.1.1
-        // have the alt-n binds but not `jump_hint "alt-n"`, so their footers
-        // would go silent about a chord that DOES work. Force one more
-        // re-materialization.
-        assert_ne!(
-            env!("CARGO_PKG_VERSION"),
-            "0.1.1",
-            "bump the workspace version so owned configs re-materialize with \
-             the jump_hint key (the footer's alt-[n] hint is config-gated now)"
-        );
+        // (A second gate briefly lived here for the `jump_hint "alt-n"` alias
+        // key, but that key was added and removed entirely within unreleased
+        // 0.1.2 — no released binary ever materialized it, so there is no
+        // stale-marker population to force past.)
     }
 
     // ── plan_run decision matrix ──

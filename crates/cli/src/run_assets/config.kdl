@@ -13,10 +13,13 @@ plugins {
         // line covers all of them. Setup-injected rails (user-owned configs,
         // no such bind) never see this key and get the generic wording.
         grant_hint "ctrl-y"
-        // Same honesty contract for the footer: this config binds Alt-1..9
-        // (below), so rails launched through it may advertise ` alt-[n] jump`.
-        // Everywhere else the footer omits the hint line entirely.
-        jump_hint "alt-n"
+        // No `jump_hint` here, deliberately: this config DOES bind Alt-1..9
+        // (below), but the chord only reaches Zellij when nothing upstream
+        // claims it first — window managers commonly own Alt+digit system-wide
+        // (AeroSpace workspaces, most tiling WMs), and macOS terminals type `¡`
+        // unless option-as-alt is on. The rail can't detect interception, so
+        // the footer stays quiet rather than promise a chord that may never
+        // arrive. The binds themselves stay for keyboards where it does.
     }
 }
 
@@ -41,8 +44,9 @@ keybinds {
             }
         }
 
-        // alt-[n]: jump straight to tab n — the rail shows the numbers, the
-        // footer hint promises the chord. Additive like Ctrl-y (defaults keep
+        // alt-[n]: jump straight to tab n — the rail shows the numbers. The
+        // footer does NOT advertise this chord (see the plugins block above);
+        // it's an unadvertised nicety. Additive like Ctrl-y (defaults keep
         // working); only sessions created by `zj-radar run` get these binds.
         bind "Alt 1" { GoToTab 1; }
         bind "Alt 2" { GoToTab 2; }
