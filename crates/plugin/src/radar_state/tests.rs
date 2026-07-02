@@ -89,7 +89,7 @@ fn rows_sort_tabs_by_position_and_aggregate_panes() {
         .status_mut()
         .apply(payload_for(42, Status::Running, "repo"), 1, 0);
 
-    let rows = radar.rows();
+    let rows = radar.rows(1);
 
     assert_eq!(
         rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -394,7 +394,7 @@ fn same_pane_status_observation_wins_over_command() {
         .status_mut()
         .apply(payload_for(5, Status::Running, "from-status"), 3, 0);
 
-    let row = radar.rows().remove(0);
+    let row = radar.rows(3).remove(0);
     let detail = row.display.detail.as_ref().expect("active pane sets detail");
     assert_eq!(
         detail.repo, "from-status",
@@ -444,7 +444,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
 
     radar.command_mut().on_exit(1, Some(2), 3, 0);
 
-    let row = radar.rows().remove(0);
+    let row = radar.rows(3).remove(0);
     assert_eq!(row.display.status, Status::Error);
     let detail = row.display.detail.as_ref().unwrap();
     assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
@@ -1099,7 +1099,7 @@ proptest! {
             }
 
             // `rows()` is total (never panics) and well-formed after every op.
-            let rows = st.rows();
+            let rows = st.rows(tick);
             for w in rows.windows(2) {
                 prop_assert!(
                     w[0].number < w[1].number,
@@ -1511,4 +1511,58 @@ fn ledger_lines_resolve_live_tab_position_or_none() {
     let lines = radar.ledger_lines();
     assert_eq!(lines.len(), 1, "the ledger itself never forgets an entry");
     assert_eq!(lines[0].tab_position, None, "a gone tab resolves to a click-inert row");
+}
+
+// ── Ping flash on flip-to-pending (Task 19) ──
+
+#[test]
+fn pipe_flip_to_pending_flashes_for_two_ticks() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    // A live not-Pending → Pending edge at tick 5 arms a flash through tick 6
+    // (`flash_until = tick + 2`, and `rows` reads `now_tick < flash_until`).
+    let wire = payload::to_wire(7, Status::Pending, "repo", "main", "approve?", "", "claude");
+    radar.status_pipe(&wire, 5, 0, config::NamingMode::Off);
+
+    assert!(radar.rows(5).remove(0).flash, "flips to Pending at tick 5 — flashes immediately");
+    assert!(radar.rows(6).remove(0).flash, "still inside the two-tick window");
+    assert!(!radar.rows(7).remove(0).flash, "the window (tick+2) has elapsed");
+
+    // A re-broadcast of an already-Pending status (still inside the window) is
+    // NOT a flip — it must not extend or re-arm the flash.
+    let wire_again = payload::to_wire(7, Status::Pending, "repo", "main", "approve still?", "", "claude");
+    radar.status_pipe(&wire_again, 6, 0, config::NamingMode::Off);
+    assert!(
+        !radar.rows(7).remove(0).flash,
+        "re-broadcasting an already-Pending status must not re-flash"
+    );
+}
+
+#[test]
+fn snapshot_load_never_flashes() {
+    // A Pending observation that arrives via `load_snapshot` (a plugin instance
+    // starting up onto pre-existing state) is not a live pipe edge — spec §8's
+    // ping is for the flip a user actually watches happen, so a rehydrated
+    // Pending must never flash.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    radar.status_mut().apply(payload_for(7, Status::Pending, "repo"), 5, 0);
+
+    let json = radar.snapshot_json(None, 5);
+
+    let mut restored = RadarState::default();
+    let tick = restored.load_snapshot(&json).expect("valid snapshot");
+    // `load_snapshot` restores observations only; topology arrives separately
+    // via the host's own `tabs_changed`/`panes_changed` broadcasts.
+    restored.tabs_changed(vec![tab(10, 0, "work", true)]);
+    restored.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    assert_eq!(restored.status(7).unwrap().status, Status::Pending);
+    assert!(
+        !restored.rows(tick).remove(0).flash,
+        "a snapshot-loaded Pending must never flash"
+    );
 }

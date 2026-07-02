@@ -121,7 +121,7 @@ fn is_painted(line: &str) -> bool {
 
 #[test]
 fn header_is_title_then_rule_two_lines() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "a".into(),
         active: false,
@@ -188,7 +188,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         status: Status::Pending,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "team".into(),
             active: false,
@@ -207,7 +207,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 ],
             },
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "plain".into(),
             active: false,
@@ -253,7 +253,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
 
 #[test]
 fn plain_tab_renders_name_only_no_second_line() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 4,
         name: "notes".into(),
         active: false,
@@ -269,7 +269,7 @@ fn plain_tab_renders_name_only_no_second_line() {
 #[test]
 fn render_row_lines_by_state() {
     let opts = ro(40, 0);
-    let mk_row = |d: TabDisplay, active: bool| TabRow {
+    let mk_row = |d: TabDisplay, active: bool| TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active,
@@ -324,14 +324,14 @@ fn render_row_lines_by_state() {
 #[test]
 fn active_row_has_accent_bar_idle_does_not() {
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "a".into(),
             active: true,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "b".into(),
             active: false,
@@ -358,7 +358,7 @@ fn active_and_waiting_row_bar_is_attention_not_accent() {
         outcome: None,
         status: Status::Pending,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 3,
         name: "pinky".into(),
         active: true,
@@ -387,7 +387,7 @@ fn right_slot_per_state() {
             outcome: None,
             status,
         };
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "n".into(),
             active: false,
@@ -416,7 +416,7 @@ fn working_slot_is_dim_not_role_colored() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "n".into(),
         active: false,
@@ -441,7 +441,7 @@ fn working_glyph_spins_with_tick() {
         outcome: None,
         status: Status::Running,
     };
-    let row = |_t| TabRow {
+    let row = |_t| TabRow { flash: false,
         number: 1,
         name: "n".into(),
         active: false,
@@ -482,7 +482,7 @@ fn working_glyph_spins_with_tick() {
 
 #[test]
 fn idle_row_is_single_line_with_no_right_slot_text() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 7,
         name: "logs".into(),
         active: false,
@@ -497,7 +497,7 @@ fn idle_row_is_single_line_with_no_right_slot_text() {
 
 #[test]
 fn narrow_width_truncates_with_ellipsis() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "a-very-long-tab-name-indeed".into(),
         active: false,
@@ -542,7 +542,7 @@ fn no_emitted_line_exceeds_width() {
         kind: Kind::Claude,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 2,
         name: "a-very-long-tab-name-indeed".into(),
         active: true, // exercises BOLD escapes too
@@ -576,7 +576,7 @@ fn pending_detail_lines_never_exceed_width() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 3,
         name: "a-long-tab-name".into(),
         active: true,
@@ -604,7 +604,7 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
     // bell used to spill 2 cells past the edge — breaking the width invariant
     // and the card-padding math. Every width down to 1 must still fit.
     for active in [true, false] {
-        let rows = vec![TabRow {
+        let rows = vec![TabRow { flash: false,
             number: 7,
             name: "infra".into(),
             active,
@@ -643,7 +643,7 @@ fn running_has_no_warning_glyph() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active: false,
@@ -665,7 +665,7 @@ fn done_has_no_warning_glyph() {
         outcome: None,
         status: Status::Done,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active: false,
@@ -677,7 +677,7 @@ fn done_has_no_warning_glyph() {
 
 #[test]
 fn bell_renders_marker() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active: false,
@@ -689,7 +689,7 @@ fn bell_renders_marker() {
 
 #[test]
 fn no_bell_no_marker() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active: false,
@@ -712,7 +712,7 @@ fn error_word_narrows_when_tight() {
         outcome: None,
         status: Status::Error,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 5,
         name: "infra".into(),
         active: false,
@@ -738,7 +738,7 @@ fn working_detail_drops_branch_before_message_when_narrow() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "api".into(),
         active: false,
@@ -754,7 +754,7 @@ fn working_detail_drops_branch_before_message_when_narrow() {
 }
 
 fn idle_row(n: u32) -> TabRow {
-    TabRow {
+    TabRow { flash: false,
         number: n,
         name: format!("t{}", n),
         active: false,
@@ -803,7 +803,7 @@ fn overflow_keeps_non_idle_rows_visible() {
         outcome: None,
         status: Status::Pending,
     };
-    rows.push(TabRow {
+    rows.push(TabRow { flash: false,
         number: 19,
         name: "pinky".into(),
         active: false,
@@ -870,7 +870,7 @@ fn render_glyph_role_colors_are_present() {
 
     let rows = vec![
         // idle — one line, no detail
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle-tab".into(),
             active: false,
@@ -878,7 +878,7 @@ fn render_glyph_role_colors_are_present() {
             display: display(Status::Idle, 0, 0, None),
         },
         // running — two lines, with detail
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "run-tab".into(),
             active: true,
@@ -886,7 +886,7 @@ fn render_glyph_role_colors_are_present() {
             display: display(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
         },
         // pending with msg — three lines
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "pend-tab".into(),
             active: false,
@@ -894,7 +894,7 @@ fn render_glyph_role_colors_are_present() {
             display: display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
         },
         // done — one line
-        TabRow {
+        TabRow { flash: false,
             number: 4,
             name: "done-tab".into(),
             active: false,
@@ -902,7 +902,7 @@ fn render_glyph_role_colors_are_present() {
             display: display(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
         },
         // error — two lines
-        TabRow {
+        TabRow { flash: false,
             number: 5,
             name: "err-tab".into(),
             active: false,
@@ -978,7 +978,7 @@ fn pending_line2_shows_mark_and_activity() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "agents".into(),
         active: false,
@@ -1032,7 +1032,7 @@ fn pending_line2_shows_mark_and_activity() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows2 = [TabRow {
+    let rows2 = [TabRow { flash: false,
         number: 2,
         name: "solo".into(),
         active: false,
@@ -1062,7 +1062,7 @@ fn pending_line2_shows_mark_and_activity() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows3 = vec![TabRow {
+    let rows3 = vec![TabRow { flash: false,
         number: 3,
         name: "multi".into(),
         active: false,
@@ -1114,7 +1114,7 @@ fn multi_pending_detail_never_exceeds_width() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "m".into(),
         active: false,
@@ -1262,7 +1262,7 @@ fn cjk_and_emoji_names_never_exceed_width() {
         kind: Kind::Claude,
         status: Status::Pending,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "作業中デプロイ".into(),
         active: true,
@@ -1285,7 +1285,7 @@ fn cjk_and_emoji_names_never_exceed_width() {
 
 #[test]
 fn header_false_emits_no_header_lines() {
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "a".into(),
         active: false,
@@ -1426,7 +1426,7 @@ fn finished_command_line2_shows_role_colored_tag() {
             kind: Kind::Build,
             outcome,
         };
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "web".into(),
             active: false,
@@ -1460,7 +1460,7 @@ fn multi_pane_finished_command_shows_outcome_tag() {
         pe(1, Kind::Build, Status::Running, "cargo build"),
         pe_outcome(2, Kind::Test, Status::Done, "cargo test", Outcome::Ok),
     ]);
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "ci".into(),
         active: false,
@@ -1491,7 +1491,7 @@ fn nerd_set_renders_robot_mark_for_claude() {
         kind: Kind::Claude,
         outcome: None,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "agent".into(),
         active: false,
@@ -1564,8 +1564,8 @@ fn multi_pane_render_row_counts_header_and_children() {
         pe(3, Kind::Claude, Status::Running, "y"),
         pe(4, Kind::Claude, Status::Running, "z"),
     ]);
-    let row_inactive = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a.clone() };
-    let row_active = TabRow { number: 1, name: "t".into(), active: true, has_bell: false, display: a };
+    let row_inactive = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a.clone() };
+    let row_active = TabRow { flash: false, number: 1, name: "t".into(), active: true, has_bell: false, display: a };
     assert_eq!(render_row(&row_inactive, &opts).len(), 5, "header + 4 pane lines");
     assert_eq!(render_row(&row_active, &opts).len(), 5, "same regardless of active");
 }
@@ -1579,7 +1579,7 @@ fn multi_pane_render_emits_header_child_and_collapse_lines() {
         pe(3, Kind::Claude, Status::Running, "y"),
         pe(4, Kind::Claude, Status::Running, "z"),
     ]);
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 7,
         name: "monorepo".into(),
         active: false,
@@ -1626,7 +1626,7 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
         pe(1, Kind::Claude, Status::Running, "x"),
         pe(2, Kind::Codex, Status::Running, "y"),
     ]);
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: false,
@@ -1649,7 +1649,7 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
 fn multi_pane_untracked_only_summary_names_panes() {
     // New design: 0 tracked panes → is_multi_pane = false → single-pane path.
     // Idle status → 1 line only (no detail line).
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "shells".into(),
         active: false,
@@ -1680,7 +1680,7 @@ fn multi_pane_untracked_only_summary_names_panes() {
 
 #[test]
 fn multi_pane_mixed_untracked_summary_names_panes() {
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "mixed".into(),
         active: false,
@@ -1730,7 +1730,7 @@ fn multi_pane_active_expands_all_no_collapse() {
         pe(1, Kind::Claude, Status::Running, "a"),
         pe(2, Kind::Claude, Status::Done, "b"),
     ]);
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: true,
@@ -1771,7 +1771,7 @@ fn multi_pane_child_and_collapse_lines_never_exceed_width() {
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
         ]);
-        let row = TabRow {
+        let row = TabRow { flash: false,
             number: 1,
             name: "tab".into(),
             active: false,
@@ -1800,13 +1800,13 @@ fn single_pane_tab_unchanged_no_tree() {
     let a = display_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
     assert!(!is_multi_pane(&a), "one pane is not multi-pane");
     let opts = ro(30, 0);
-    let row_check = TabRow { number: 1, name: "solo".into(), active: false, has_bell: false, display: a.clone() };
+    let row_check = TabRow { flash: false, number: 1, name: "solo".into(), active: false, has_bell: false, display: a.clone() };
     assert_eq!(
         render_row(&row_check, &opts).len(),
         2,
         "single-pane pending+msg = 2 lines (chunk-1)"
     );
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "solo".into(),
         active: false,
@@ -1860,28 +1860,28 @@ fn overflow_compresses_calm_before_urgent() {
     };
 
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "r1".into(),
             active: false,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(detail_running(1))),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "r2".into(),
             active: false,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(detail_running(2))),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "r3".into(),
             active: false,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(detail_running(3))),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 4,
             name: "urgent".into(),
             active: false,
@@ -1969,14 +1969,14 @@ fn overflow_all_one_line_when_extreme() {
         status: Status::Pending,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "pending".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, Some(detail.clone())),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "run".into(),
             active: false,
@@ -2121,7 +2121,7 @@ fn cards_content_lines_differ_from_comfortable() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "work".into(),
             active: false,
@@ -2280,14 +2280,14 @@ fn cards_paint_content_lines_with_bg() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "work".into(),
             active: true,
@@ -2375,7 +2375,7 @@ fn cards_band_fills_full_width() {
         outcome: None,
         status: Status::Done,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "x".into(),
         active: false,
@@ -2432,7 +2432,7 @@ fn active_card_bg_spans_full_width_on_every_line() {
                 outcome: None,
                 status: Status::Running,
             };
-            let rows = vec![TabRow {
+            let rows = vec![TabRow { flash: false,
                 number: 1,
                 name: "focus".into(),
                 active: true,
@@ -2492,7 +2492,7 @@ fn cards_rearm_bg_after_resets() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "agent".into(),
         active: true,
@@ -2526,14 +2526,14 @@ fn cards_use_truecolor_not_256color() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "work".into(),
             active: true,
@@ -2595,14 +2595,14 @@ fn cards_left_chrome_is_single_column() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "work".into(),
             active: true,
@@ -2643,7 +2643,7 @@ fn child_line_status_glyph_precedes_spaced_mark() {
         pe(1, Kind::Claude, Status::Running, "searching web"),
         pe(2, Kind::Claude, Status::Done, "done thing"),
     ]);
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "t".into(),
         active: true,
@@ -2699,14 +2699,14 @@ fn comfortable_and_compact_emit_no_bg() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "work".into(),
             active: true,
@@ -2755,7 +2755,7 @@ fn no_emitted_line_exceeds_width_cards() {
         kind: Kind::Claude,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 2,
         name: "a-very-long-tab-name-indeed".into(),
         active: true,
@@ -2808,7 +2808,7 @@ fn card_spacing_per_density() {
 fn card_block_lines_is_pad_y_plus_content_plus_gap() {
     // The single footprint source: pad_y + full_lines + gap.
     let opts = ro(40, 0);
-    let idle_row_val = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: display(Status::Idle, 0, 0, None) };
+    let idle_row_val = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: display(Status::Idle, 0, 0, None) };
     let full_lines = render_row(&idle_row_val, &opts).len();
     assert_eq!(full_lines, 1);
     // Cards: 0 pad_y + 1 content + 1 gap = 2.
@@ -2832,7 +2832,7 @@ fn card_block_lines_is_pad_y_plus_content_plus_gap() {
 fn cards_have_rail_gap_row() {
     // A cards-rendered tab emits a TRAILING gap row painted with the dark
     // rail panel base (rail_bg), and that row is blank once ANSI is stripped.
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "idle".into(),
         active: false,
@@ -2938,21 +2938,21 @@ fn cards_tint_per_row_class() {
         status: Status::Running,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "idle".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "agent".into(),
             active: false,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(detail.clone())),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "focus".into(),
             active: true,
@@ -2989,7 +2989,7 @@ fn cards_active_multi_pane_children_use_subordinate_tint() {
     // Active multi-pane tabs should not paint every child row as selected:
     // the parent header owns the active tint; child rows step down to the
     // normal agent tint so the hierarchy remains legible.
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: true,
@@ -3054,35 +3054,35 @@ fn cards_3tint_layout_snapshot() {
         status: Status::Done,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "Claude".into(),
             active: true,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(running)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "api".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, Some(pending)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "worker".into(),
             active: false,
             has_bell: false,
             display: display(Status::Done, 1, 1, Some(done)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 4,
             name: "Pane #1".into(),
             active: false,
             has_bell: false,
             display: display(Status::Idle, 0, 0, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 5,
             name: "Pane #1".into(),
             active: false,
@@ -3151,14 +3151,14 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
         status: Status::Error,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "pinky".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, Some(pending)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "infra".into(),
             active: false,
@@ -3237,7 +3237,7 @@ fn header_shows_radar_and_urgent_count() {
         status: Status::Pending,
     };
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "pinky".into(),
             active: false,
@@ -3291,28 +3291,28 @@ fn header_badge_counts_pending_and_error_tabs_only() {
     // Done, Pending, Error, Running → census ·4, badge counts only the two
     // needs-you rows (Pending + Error) — Done and Running don't count.
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "a".into(),
             active: false,
             has_bell: false,
             display: display(Status::Done, 1, 1, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "b".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "c".into(),
             active: false,
             has_bell: false,
             display: display(Status::Error, 0, 1, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 4,
             name: "d".into(),
             active: false,
@@ -3334,7 +3334,7 @@ fn header_badge_absent_at_zero() {
     // All Running/Idle rows → no needs-you row at all, so no badge — just
     // the plain census, same as before Task 16.
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "a".into(),
             active: false,
@@ -3355,14 +3355,14 @@ fn header_badge_survives_narrow_width_over_census() {
     // 2) can't join the badge in that budget, so it's dropped entirely and
     // the bare badge stands alone — no leftover "·2 2!" truncation debris.
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "a".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "b".into(),
             active: false,
@@ -3412,14 +3412,14 @@ fn strip_sgr(s: &str) -> String {
 #[test]
 fn color_is_purely_additive_over_a_fixed_layout() {
     let rows = vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "agent".into(),
             active: true,
             has_bell: false,
             display: display(Status::Pending, 0, 1, None),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "idle".into(),
             active: false,
@@ -3538,28 +3538,28 @@ fn scenario_canonical() -> Vec<TabRow> {
         status: Status::Done,
     };
     vec![
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name: "web".into(),
             active: true,
             has_bell: false,
             display: display(Status::Running, 0, 1, Some(running)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 2,
             name: "api".into(),
             active: false,
             has_bell: false,
             display: display(Status::Pending, 0, 1, Some(pending)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 3,
             name: "worker".into(),
             active: false,
             has_bell: false,
             display: display(Status::Done, 1, 1, Some(done)),
         },
-        TabRow {
+        TabRow { flash: false,
             number: 4,
             name: "notes".into(),
             active: false,
@@ -3640,7 +3640,7 @@ fn snapshot_cards_narrow_width_grid() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "payments-service".into(),
         active: true,
@@ -3682,7 +3682,7 @@ fn snapshot_overflow_fold_grid() {
         outcome: None,
         status: Status::Pending,
     };
-    rows.push(TabRow {
+    rows.push(TabRow { flash: false,
         number: 15,
         name: "pinky".into(),
         active: false,
@@ -3708,7 +3708,7 @@ fn snapshot_cards_multi_pane() {
         pe(2, Kind::Codex, Status::Pending, "approve?"),
         pe(3, Kind::Test, Status::Done, "cargo test"),
     ];
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: true,
@@ -3771,7 +3771,7 @@ fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
     // At width=8, height=6 overflow mode: count+urgent combined can exceed width.
     // The renderer must clamp the assembled header line to width.
     let mut rows: Vec<TabRow> = (1u32..=5)
-        .map(|n| TabRow {
+        .map(|n| TabRow { flash: false,
             number: n,
             name: format!("t{}", n),
             active: false,
@@ -3790,7 +3790,7 @@ fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
             outcome: None,
             status: Status::Pending,
         };
-        rows.push(TabRow {
+        rows.push(TabRow { flash: false,
             number: n,
             name: format!("t{}", n),
             active: false,
@@ -3858,7 +3858,7 @@ fn wide_and_combining_chars_do_not_break_alignment() {
         outcome: None,
         status: Status::Running,
     };
-    let rows = vec![TabRow {
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "测试caf\u{00e9}\u{1f680}".into(),
         active: true,
@@ -3963,9 +3963,9 @@ fn budget_table_boundaries() {
 #[test]
 fn tally_counts_running_and_needs_you_not_done() {
     let rows = vec![
-        TabRow { number: 1, name: "a".into(), active: false, has_bell: false, display: display(Status::Running, 0, 1, None) },
-        TabRow { number: 2, name: "b".into(), active: false, has_bell: false, display: display(Status::Done, 1, 1, None) },
-        TabRow { number: 3, name: "c".into(), active: false, has_bell: false, display: display(Status::Error, 0, 1, None) },
+        TabRow { flash: false, number: 1, name: "a".into(), active: false, has_bell: false, display: display(Status::Running, 0, 1, None) },
+        TabRow { flash: false, number: 2, name: "b".into(), active: false, has_bell: false, display: display(Status::Done, 1, 1, None) },
+        TabRow { flash: false, number: 3, name: "c".into(), active: false, has_bell: false, display: display(Status::Error, 0, 1, None) },
     ];
     let content_height = tight(&rows, ro(30, 0)).height;
     let opts = RenderOpts { height: content_height + 3, ..ro(30, 0) };
@@ -4082,7 +4082,7 @@ fn cards_never_lose_budget_to_the_bottom_region() {
     // headroom for the bottom region (leftover 0). The plan renders exactly
     // as it did before Task 13 — no footer squeezed in over dropped rows.
     let rows: Vec<TabRow> = (1..=20)
-        .map(|n| TabRow {
+        .map(|n| TabRow { flash: false,
             number: n,
             name: format!("t{}", n),
             active: false,
@@ -4207,7 +4207,7 @@ prop_compose! {
             };
             display(status, 0, total, detail)
         };
-        TabRow {
+        TabRow { flash: false,
             number: 1,
             name,
             active,
@@ -4397,7 +4397,7 @@ prop_compose! {
                 .collect();
             display_multi(panes)
         };
-        TabRow { number: 1, name, active, has_bell: false, display }
+        TabRow { flash: false, number: 1, name, active, has_bell: false, display }
     }
 }
 
@@ -4459,7 +4459,7 @@ fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
         pe(11, Kind::Claude, Status::Running, "building"),
         pe(12, Kind::Claude, Status::Running, "testing"),
     ]);
-    let row = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+    let row = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a };
     assert_eq!(render_row(&row, &opts).len(), 4, "header + 3 pane lines");
 }
 
@@ -4470,7 +4470,7 @@ fn single_running_pane_with_detail_is_two_content_lines() {
     // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
     let opts = ro(40, 0);
     let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
-    let row = TabRow { number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+    let row = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a };
     assert_eq!(render_row(&row, &opts).len(), 2, "tab 0 should be 2 content lines");
 }
 
@@ -4516,7 +4516,7 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
     let panes: Vec<PaneDisplay> = (1u32..=8)
         .map(|id| pe(id, Kind::Claude, Status::Running, "working"))
         .collect();
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: true,
@@ -4555,7 +4555,7 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
 fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
-    let active_row = TabRow {
+    let active_row = TabRow { flash: false,
         number: 1,
         name: "a".into(),
         active: true,
@@ -4633,7 +4633,7 @@ fn identity_and_detail_rules() {
 fn pending_pane_with_task_renders_identity_plus_question_line() {
     // Multi-pane tab: pending pane shows task on its line and the question on
     // a `↳` line that carries the SAME pane click target (lockstep).
-    let row = TabRow {
+    let row = TabRow { flash: false,
         number: 1,
         name: "review".into(),
         active: false,

@@ -559,7 +559,11 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     // 4. Build RenderOpts
     let theme = DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
-    let rows = radar.rows();
+    // Fixtures render a settled state, not the instant a pane just flipped to
+    // Pending — pass a tick well past any flash window armed during setup
+    // above (which uses small hardcoded ticks like 0/1/DEBOUNCE_TICKS) so a
+    // `claude pending ...` scenario never spuriously renders the flash tint.
+    let rows = radar.rows(10_000);
     let mut opts = RenderOpts {
         width,
         height,

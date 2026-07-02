@@ -56,6 +56,10 @@ pub struct DerivedColors {
     pub surface_agent: (u8, u8, u8),
     /// Card surface when the row is active/focused (the only one brighter than bg).
     pub surface_active: (u8, u8, u8),
+    /// Card surface for the one-shot "ping" flash on a not-Pending → Pending
+    /// flip — one step brighter than `surface_active`, so the glance-catcher
+    /// outranks the focus tint for its brief window.
+    pub surface_flash: (u8, u8, u8),
     /// Strong dim: detail location / spinner line
     pub dim_strong: (u8, u8, u8),
     /// Idle text dim: row name when idle
@@ -83,6 +87,7 @@ impl DerivedColors {
             surface_idle: blend(rail_bg, bg, 0.30),
             surface_agent: blend(rail_bg, bg, 0.72),
             surface_active: blend(bg, fg, 0.18),
+            surface_flash: blend(bg, fg, 0.30),
             dim_strong: blend(fg, bg, 0.28),
             idle_text: blend(fg, bg, 0.45),
         }
@@ -224,6 +229,12 @@ mod tests {
             "active {:?} must be brighter than terminal bg {:?}",
             d.surface_active,
             FALLBACK_BG
+        );
+        assert!(
+            lum(d.surface_flash) > lum(d.surface_active),
+            "flash {:?} must be one step brighter than active {:?} — it's the glance-catcher",
+            d.surface_flash,
+            d.surface_active
         );
     }
 

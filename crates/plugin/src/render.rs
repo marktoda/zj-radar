@@ -83,6 +83,10 @@ pub struct TabRow {
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
+    /// True for the two ticks after this tab's pane flipped from not-Pending
+    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
+    /// outranks the active tint in `card_tint`, below.
+    pub flash: bool,
     pub display: TabDisplay,
 }
 
@@ -816,11 +820,14 @@ fn tc_fg(c: (u8, u8, u8)) -> String {
     format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
-/// The truecolor surface tint for a card, by class: the focused tab is
-/// brightest, agent rows (active status) are mid, idle/plain panes are
-/// the dimmest surface. Returns an owned ANSI escape string.
+/// The truecolor surface tint for a card, by class: a flashing row (the
+/// flip-to-pending ping) outranks everything else — it's the glance-catcher —
+/// then the focused tab, then agent rows (active status), then idle/plain
+/// panes as the dimmest surface. Returns an owned ANSI escape string.
 fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
-    let rgb = if row.active {
+    let rgb = if row.flash {
+        theme.surface_flash
+    } else if row.active {
         theme.surface_active
     } else if row.display.status.is_active() {
         theme.surface_agent

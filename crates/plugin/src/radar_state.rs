@@ -222,6 +222,15 @@ pub(crate) struct RadarState {
     /// Done/Error from a card (TTL recede, prompt-return clear, an overwrite,
     /// or a prune) hands its observation here (spec §4.2).
     ledger: Ledger,
+    /// Tab ids currently mid-flash, mapped to the tick their flash expires at
+    /// (exclusive — `rows` reads `now_tick < expiry`). Set ONLY by `status_pipe`
+    /// on a live not-Pending → Pending edge for one of the tab's panes (checked
+    /// BEFORE `StatusStore::apply` runs, so a re-broadcast of an already-Pending
+    /// status never re-flashes); a snapshot load never flashes (spec §8) since
+    /// `load_snapshot` never touches this map. Expired entries are pruned
+    /// lazily by `timer` — `rows` stays `&self` so it can be called freely from
+    /// render paths without needing `&mut`.
+    flash_until: HashMap<TabId, u64>,
 }
 
 impl RadarState {
@@ -280,7 +289,7 @@ impl RadarState {
         cycle_attention(&pairs, active, dir)
     }
 
-    pub(crate) fn rows(&self) -> Vec<TabRow> {
+    pub(crate) fn rows(&self, now_tick: u64) -> Vec<TabRow> {
         let mut rows = Vec::new();
         let mut sorted = self.tabs.clone();
         sorted.sort_by_key(|t| t.position);
@@ -290,10 +299,18 @@ impl RadarState {
                 name: t.name.clone(),
                 active: t.active,
                 has_bell: t.has_bell,
+                flash: self.flash_until.get(&t.id).is_some_and(|&u| now_tick < u),
                 display: self.tab_display_for(t.position),
             });
         }
         rows
+    }
+
+    /// True while any tab is still mid-flash at `now_tick` — ORed into
+    /// `PluginRuntime::timer_should_continue` so the ping's full window renders
+    /// even though nothing else may be animating (see `flash_until`'s doc).
+    pub(crate) fn has_active_flash(&self, now_tick: u64) -> bool {
+        self.flash_until.values().any(|&u| now_tick < u)
     }
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> RadarChange {
@@ -365,6 +382,10 @@ impl RadarState {
     /// completion the tick receded (TTL recede, or a promotion displacing a
     /// still-lit Done/Error) hands off to the ledger.
     pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
+        // Lazy expiry: `rows`/`has_active_flash` stay `&self` (read paths), so
+        // the map itself is only ever pruned here, on the one `&mut self` tick
+        // that already runs regardless of flash state.
+        self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(tick, now_epoch_s);
         let index = self.pane_tab_index();
         // All-command-origin recedes here; no pruning is in flight on this
@@ -450,6 +471,12 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         let pane_id = p.pane_id;
+        // Captured BEFORE `apply` overwrites the store: the ping flash fires
+        // only on a LIVE not-Pending → Pending edge, never on a re-broadcast of
+        // an already-Pending status (spec's "flip", not "is"). Snapshot load
+        // never touches this map at all, so a restored Pending never flashes.
+        let was_pending = self.status.get(pane_id).map(|o| o.status) == Some(Status::Pending);
+        let flips_to_pending = p.status == Status::Pending && !was_pending;
         // A Done/Error that recedes on overwrite (a new broadcast for the same
         // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
         if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
@@ -458,6 +485,11 @@ impl RadarState {
             // matching call site).
             let status_tracked = self.status_tracked_pane_ids();
             self.ledger_receded(vec![(pane_id, displaced)], &index, &status_tracked);
+        }
+        if flips_to_pending {
+            if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
+                self.flash_until.insert(*tab_id, tick + 2);
+            }
         }
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new

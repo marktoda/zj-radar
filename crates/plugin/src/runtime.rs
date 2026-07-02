@@ -140,7 +140,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn build_rows(&self) -> Vec<TabRow> {
-        self.radar.rows()
+        self.radar.rows(self.tick)
     }
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
@@ -469,7 +469,7 @@ impl PluginRuntime {
 
     /// Whether the one-shot timer should (re-)arm for *domain* reasons — the
     /// "tick only while there's something to do" rule that keeps an idle rail from
-    /// waking every second. Three triggers:
+    /// waking every second. Four triggers:
     ///
     /// - **animating work** — a `Running` agent/command whose glyph spins each
     ///   tick (`RadarState::has_running_work`);
@@ -485,12 +485,16 @@ impl PluginRuntime {
     ///   fired), but the ledger handoff at `DONE_TTL_TICKS` still needs a tick to
     ///   land on schedule, so it keeps this armed even though `has_running_work`
     ///   stays narrow (see that method's doc for the arming split).
+    /// - **an active ping flash** (`RadarState::has_active_flash`) — the
+    ///   flip-to-pending glance-catcher is a two-tick visual, not a card fact,
+    ///   so nothing else here would otherwise keep the timer awake for it.
     ///
     /// [`has_unsettled_notifications`]: Self::has_unsettled_notifications
     fn timer_should_continue(&self) -> bool {
         self.radar.has_running_work()
             || self.has_unsettled_notifications()
             || self.radar.command_awaiting_recede()
+            || self.radar.has_active_flash(self.tick)
     }
 
     /// True while the notification baseline lags the live per-pane statuses — i.e.
@@ -1439,6 +1443,53 @@ mod tests {
 
         // The Done stays lit (it recedes only when focused, via a later PaneUpdate).
         assert_eq!(rt.radar.status_store().get(7).unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn flash_keeps_fast_timer_until_cleared() {
+        // A flip-to-pending pipe edge arms a two-tick ping flash — even once the
+        // deferred notify settle has fired and nothing else is running, the
+        // timer must keep ticking Fast until the flash itself clears. Mirrors
+        // `backgrounded_done_via_status_pipe_notifies_once_then_timer_quiesces`,
+        // which quiesces right after its one settle tick; the flash pins the
+        // timer open for its own extra window on top of that.
+        let mut rt = runtime_with_config(config());
+        rt.tabs_changed(vec![tab(0, "work", true)]);
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+        let raw = payload::to_wire(7, Status::Pending, "repo", "main", "approve?", "", "claude");
+        let edge = rt.status_pipe(&raw);
+        assert!(
+            edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "the flip-to-pending edge arms the timer"
+        );
+
+        // Tick 1 carries the deferred notify settle; the flash (armed through
+        // tick 2) is still active, so the timer must not disarm yet.
+        rt.timer(PermissionProbe::default());
+        assert_eq!(rt.tick, 1);
+        assert!(
+            rt.armed_cadence.is_some(),
+            "flash still active at tick 1 — timer must stay armed"
+        );
+
+        // Tick 2: the flash window has just elapsed (`now_tick < flash_until`,
+        // and `flash_until == 2`).
+        rt.timer(PermissionProbe::default());
+        assert_eq!(rt.tick, 2);
+        assert!(
+            !rt.radar.has_active_flash(rt.tick),
+            "flash window has elapsed by tick 2"
+        );
+
+        // With nothing else running, the timer now quiesces.
+        let mut extra = 0;
+        while rt.armed_cadence.is_some() {
+            rt.timer(PermissionProbe::default());
+            extra += 1;
+            assert!(extra < 4, "timer must quiesce once the flash clears");
+        }
+        assert!(!rt.timer_should_continue(), "quiesced: nothing left to tick for");
     }
 
     #[test]
