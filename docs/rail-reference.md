@@ -760,7 +760,11 @@ leaves ≥2 spare lines, a footer (`─` rule, working/need-you tally, `alt-[n]
 jump` hint) pins to the floor of the pane. With ≥5 spare and a non-empty
 completion ledger, an `─ earlier` section of receded completions (newest
 first, per the `ledger` directive below) fills the space between the content
-and the footer; a tab name past 12 columns truncates with `…`.
+and the footer; a tab name past 12 columns truncates with `…`. The section
+shows at most **10** entries regardless of pane height (`LEDGER_DISPLAY_CAP`)
+— the rail is a status surface, not a log, so spare height past that stays
+blank filler above the rule rather than ever-deeper history (the ring still
+*stores* 32 for cross-instance merging).
 
 ```rail-input
 width 32

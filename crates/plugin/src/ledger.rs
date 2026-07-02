@@ -18,6 +18,8 @@ use crate::status::Status;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+/// Storage cap for the ring — bounds the snapshot and the merge work, NOT what
+/// the rail shows (`render::LEDGER_DISPLAY_CAP` caps that at 10 rows).
 pub(crate) const LEDGER_CAP: usize = 32;
 /// Two entries within this many seconds and equal (pane, outcome, label) are
 /// the same event observed by different instances (spec §4.3).

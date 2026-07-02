@@ -4235,6 +4235,63 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
 }
 
 #[test]
+fn ledger_display_caps_at_ten_entries_with_filler_above() {
+    // Spec §9: the rail is a status surface, not a log — no matter how tall
+    // the pane, at most LEDGER_DISPLAY_CAP (10) `─ earlier` rows render, and
+    // the reclaimed spare height stays blank filler ABOVE the rule. The ring
+    // may hold up to 32 (`ledger::LEDGER_CAP`); the cut is display-only.
+    let rows = vec![idle_row(1)];
+    let ledger: Vec<crate::radar_state::LedgerLine> = (0..12)
+        .map(|i| crate::radar_state::LedgerLine {
+            at_epoch_s: 1000 - i as u64, // newest first, like `Ledger::entries`
+            error: false,
+            tab_name: "web".into(),
+            label: format!("job{i}"),
+            tab_position: Some(0),
+        })
+        .collect();
+    let content_height = tight(&rows, ro(30, 0)).height;
+    let leftover = 20; // without the cap, leftover−4 = 16 entries would fit
+    let opts = RenderOpts {
+        height: content_height + leftover,
+        ledger,
+        now_epoch_s: 1000,
+        ..ro(30, 0)
+    };
+    let s = render(&rows, &opts);
+    let lines: Vec<String> = s.lines().map(strip_sgr).collect();
+    assert_eq!(
+        lines.len(),
+        content_height + leftover,
+        "exact-fill invariant holds under the cap: {lines:?}"
+    );
+    let rule_idx = lines
+        .iter()
+        .position(|l| l.contains("─ earlier"))
+        .expect("earlier rule renders");
+    // filler_n = leftover − 4 − 10 = 6 blank lines between content and rule.
+    assert_eq!(
+        rule_idx,
+        content_height + 6,
+        "capped-out spare height becomes filler above the rule: {lines:?}"
+    );
+    assert!(
+        lines[content_height..rule_idx].iter().all(|l| l.is_empty()),
+        "the reclaimed lines are blank filler: {lines:?}"
+    );
+    let shown = lines.iter().filter(|l| l.contains("job")).count();
+    assert_eq!(shown, 10, "exactly LEDGER_DISPLAY_CAP entries: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("job0 ") || l.ends_with("job0")),
+        "newest entry survives the cut: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("job10") || l.contains("job11")),
+        "the two oldest entries are cut, not the newest: {lines:?}"
+    );
+}
+
+#[test]
 fn ledger_entry_line_clamps_at_extreme_narrow_widths() {
     // The fixed age+glyph prefix is 6 cols; below that the line must clamp,
     // like every other fixed-prefix renderer in this file (see

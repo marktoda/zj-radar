@@ -1283,6 +1283,13 @@ fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -
     }
 }
 
+/// Most `─ earlier` entries the rail ever shows, no matter how tall the pane
+/// is. The rail is a status surface, not a log: past this, spare height reads
+/// better as blank filler than as ever-deeper history (the sidebar should
+/// never be more history than not-history). Display-only — the storage ring
+/// keeps `ledger::LEDGER_CAP` (32) entries for cross-instance merge/dedup.
+const LEDGER_DISPLAY_CAP: usize = 10;
+
 /// The bottom region per the spec §9 budget table. `leftover` = height minus
 /// everything already in `flat` (i.e. `render_body`'s footprint). Returns
 /// lines ordered top→bottom (filler … ledger rule, entries newest-first …
@@ -1296,7 +1303,7 @@ fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -
 /// | 3 | rule + tally + hint |
 /// | 4 | 1 filler + footer(3) |
 /// | ≥5, ledger empty | (leftover−3) filler + footer(3) |
-/// | ≥5, ledger non-empty | filler + ledger rule + `min(len, leftover−4)` entries + footer(3) |
+/// | ≥5, ledger non-empty | filler + ledger rule + `min(len, leftover−4, LEDGER_DISPLAY_CAP)` entries + footer(3) |
 fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
     match leftover {
         0 | 1 => vec![],
@@ -1310,7 +1317,7 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
                     v.push(bottom_filler());
                 }
             } else {
-                let entries_n = opts.ledger.len().min(n - 4);
+                let entries_n = opts.ledger.len().min(n - 4).min(LEDGER_DISPLAY_CAP);
                 let filler_n = n - 4 - entries_n;
                 for _ in 0..filler_n {
                     v.push(bottom_filler());
