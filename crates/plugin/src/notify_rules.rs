@@ -10,8 +10,32 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notification {
+    pub pane_id: u32,
+    pub status: Status,
     pub title: String,
     pub body: String,
+}
+
+/// Filesystem-safe identity of one notification *event*, identical across
+/// per-tab plugin instances: every instance sees the same broadcast, computes
+/// the same edge, and builds the same key — which is what lets a shared claim
+/// file elect exactly one dispatcher (`SessionFiles::claim_notification`).
+/// The text hash keeps two different messages on the same pane+status (e.g. a
+/// second question) as distinct events.
+pub fn claim_key(n: &Notification) -> String {
+    format!("p{}.{}.{:08x}", n.pane_id, n.status.as_wire(), fnv1a(&n.title, &n.body))
+}
+
+/// FNV-1a over title+body. Stability across *builds* is irrelevant — every
+/// instance in a session runs the same wasm — it only has to be deterministic
+/// within one, which a hand-rolled FNV is (unlike `DefaultHasher`'s seeds).
+fn fnv1a(title: &str, body: &str) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for b in title.bytes().chain([0u8]).chain(body.bytes()) {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
 }
 
 /// User-facing phrase per attention status. `Pending` reads as "needs input"
@@ -36,7 +60,7 @@ fn enabled(status: Status, cfg: &Config) -> bool {
         }
 }
 
-fn build(o: &TrackedObservation, status: Status) -> Notification {
+fn build(pane_id: u32, o: &TrackedObservation, status: Status) -> Notification {
     let title = if o.branch.is_empty() {
         o.repo.clone()
     } else {
@@ -48,7 +72,7 @@ fn build(o: &TrackedObservation, status: Status) -> Notification {
     } else {
         format!("{phrase} — {}", o.msg)
     };
-    Notification { title, body }
+    Notification { pane_id, status, title, body }
 }
 
 /// Emit a notification for each pane that transitioned INTO an attention status
@@ -73,7 +97,7 @@ pub fn diff(
         if focused == Some(pane_id) && !cfg.notify_when_focused {
             continue;
         }
-        out.push(build(o, new));
+        out.push(build(pane_id, o, new));
     }
     out
 }
@@ -94,7 +118,7 @@ pub fn status_map(current: &BTreeMap<u32, &TrackedObservation>) -> BTreeMap<u32,
 /// and cannot break out of the command. `osascript` receives them as its own
 /// `argv` (`on run argv`) for the same reason — retiring the old hand-rolled
 /// AppleScript string escaper. The `--` guards a title/body that begins with `-`.
-pub fn notify_command(n: &Notification) -> Vec<String> {
+pub fn notify_command(title: &str, body: &str) -> Vec<String> {
     // $0 is a label; $1 = title, $2 = body.
     const DISPATCH: &str = concat!(
         "if command -v osascript >/dev/null 2>&1; then ",
@@ -110,8 +134,8 @@ pub fn notify_command(n: &Notification) -> Vec<String> {
         "-c".to_string(),
         DISPATCH.to_string(),
         "zj-radar".to_string(), // $0
-        n.title.clone(),        // $1
-        n.body.clone(),         // $2
+        title.to_string(),      // $1
+        body.to_string(),       // $2
     ]
 }
 
@@ -251,9 +275,30 @@ mod tests {
     }
 
     #[test]
+    fn claim_key_is_deterministic_and_distinguishes_events() {
+        let o = obs(Status::Pending, "pinky", "main", "approve git push?");
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let n = diff(&prev, &cur, None, &Config::default());
+        let key = claim_key(&n[0]);
+        // Deterministic (what makes the cross-instance election work) and
+        // filesystem-safe (it becomes a /cache claim filename).
+        assert_eq!(key, claim_key(&n[0]));
+        assert!(key.starts_with("p7.pending."));
+        assert!(key.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'));
+
+        // A different question on the same pane+status is a different event.
+        let o2 = obs(Status::Pending, "pinky", "main", "approve rm -rf?");
+        let pairs2 = [(7, &o2)];
+        let cur2 = current(&pairs2);
+        let n2 = diff(&prev, &cur2, None, &Config::default());
+        assert_ne!(key, claim_key(&n2[0]));
+    }
+
+    #[test]
     fn notify_command_dispatches_both_backends_with_positional_args() {
-        let n = Notification { title: "pinky · main".to_string(), body: "done — build".to_string() };
-        let argv = notify_command(&n);
+        let argv = notify_command("pinky · main", "done — build");
         assert_eq!(argv[0], "sh");
         assert_eq!(argv[1], "-c");
         // The host script tries macOS first, then the Linux fallback.
@@ -271,11 +316,7 @@ mod tests {
         // never spliced into the script, so nothing can inject into or break out
         // of the command (the reason the old string-literal escaper is gone). The
         // `--` in the script is what protects a leading-dash title/body.
-        let n = Notification {
-            title: "-rf \"$(reboot)\"".to_string(),
-            body: "a\\b\" ; rm -rf /".to_string(),
-        };
-        let argv = notify_command(&n);
+        let argv = notify_command("-rf \"$(reboot)\"", "a\\b\" ; rm -rf /");
         assert_eq!(argv[4], "-rf \"$(reboot)\"");
         assert_eq!(argv[5], "a\\b\" ; rm -rf /");
         // The payload text never appears in the script body itself.

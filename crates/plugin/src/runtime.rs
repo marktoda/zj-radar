@@ -96,7 +96,12 @@ pub(crate) enum Effect {
     /// prompt — `reclaim_if_stale` (and with it the deferring rails' patience
     /// escalation) only ever fires once the prompt-owner is actually gone.
     HeartbeatPermissionLock,
-    Notify { title: String, body: String },
+    /// Show a desktop notification. `key` is the event's cross-instance
+    /// identity (`notify_rules::claim_key`): every per-tab instance computes
+    /// the same edge and emits this same effect, and the host layer uses the
+    /// key to elect exactly one dispatcher (`SessionFiles::claim_notification`)
+    /// so N visited tabs don't produce N identical toasts.
+    Notify { key: String, title: String, body: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -587,7 +592,7 @@ impl PluginRuntime {
         self.notify_prev = crate::notify_rules::status_map(&views);
         notes
             .into_iter()
-            .map(|n| Effect::Notify { title: n.title, body: n.body })
+            .map(|n| Effect::Notify { key: crate::notify_rules::claim_key(&n), title: n.title, body: n.body })
             .collect()
     }
 

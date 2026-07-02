@@ -196,11 +196,15 @@ impl State {
                 }
                 Effect::ResolveCwd { pane_ids } => self.resolve_cwd(pane_ids),
                 Effect::CloseSelf => close_self(),
-                Effect::Notify { title, body } => {
-                    let note = crate::notify_rules::Notification { title, body };
-                    let argv = crate::notify_rules::notify_command(&note);
-                    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-                    run_command(&args, std::collections::BTreeMap::new());
+                Effect::Notify { key, title, body } => {
+                    // Every per-tab instance emits this same effect for the
+                    // same event; the shared claim file elects exactly one
+                    // dispatcher so N visited tabs ≠ N identical toasts.
+                    if self.session_files.claim_notification(&key) {
+                        let argv = crate::notify_rules::notify_command(&title, &body);
+                        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+                        run_command(&args, std::collections::BTreeMap::new());
+                    }
                 }
             }
         }

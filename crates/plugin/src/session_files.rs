@@ -25,6 +25,14 @@ const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// the owner is gone and reclaims the lock rather than waiting forever. Generous
 /// so a user slowly answering a live prompt is never preempted.
 const PERMISSION_LOCK_TTL: Duration = Duration::from_secs(120);
+/// A notify claim older than this no longer identifies the same event: the
+/// per-tab instances that would duplicate a toast all settle within ~a tick of
+/// each other, so a later arrival with the same key is a genuine repeat (e.g.
+/// the same question asked again) and may claim anew.
+const NOTIFY_CLAIM_TTL: Duration = Duration::from_secs(30);
+/// Sweep horizon for spent notify claims — generous multiple of the TTL so a
+/// slow peer never watches its evidence get deleted mid-election.
+const NOTIFY_CLAIM_SWEEP_AGE: Duration = Duration::from_secs(300);
 const PERMISSION_GRANTED_MARKER: &str = "granted";
 const PERMISSION_DENIED_MARKER: &str = "denied";
 
@@ -184,26 +192,87 @@ impl SessionFiles {
         {
             Ok(_) => true,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                reclaim_if_stale(&paths.permission_lock, now)
+                reclaim_if_stale(&paths.permission_lock, now, PERMISSION_LOCK_TTL)
             }
             // If coordination itself fails, prefer one reachable prompt over a
             // session where every instance waits forever.
             Err(_) => true,
         }
     }
+
+    /// Elect this instance to dispatch the notification identified by `key`
+    /// (`notify_rules::claim_key`). Every per-tab instance computes the same
+    /// edge from the same shared signals and calls this with the same key; the
+    /// first to atomically create the claim file dispatches, the rest skip —
+    /// one toast per event instead of one per visited tab. A claim past
+    /// `NOTIFY_CLAIM_TTL` is a *previous* event that happens to share the key
+    /// (same pane, status, and text), so it is reclaimed and fires again.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn claim_notification(&self, key: &str) -> bool {
+        self.claim_notification_at(key, SystemTime::now())
+    }
+
+    fn claim_notification_at(&self, key: &str, now: SystemTime) -> bool {
+        let Some(paths) = &self.paths else {
+            // No writable root → no peers to coordinate with either (they
+            // could not have opened it); dispatch rather than go silent.
+            return true;
+        };
+        prune_stale_claims(paths, now);
+        let claim = paths.notify_claim(key);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&claim)
+        {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                reclaim_if_stale(&claim, now, NOTIFY_CLAIM_TTL)
+            }
+            // Coordination failed: prefer a duplicate toast over a missed
+            // "needs input" — same trade the permission election makes.
+            Err(_) => true,
+        }
+    }
 }
 
-/// A peer found the permission lock already held. If it has outlived
-/// `PERMISSION_LOCK_TTL` its owner likely died with the prompt unanswered, so
-/// remove it and try to take it. Best-effort: if another peer wins the recreate
-/// race we defer to it (returns false) — consistent with preferring at least one
-/// reachable prompt over a deadlock.
-fn reclaim_if_stale(lock: &Path, now: SystemTime) -> bool {
+/// Remove spent notify claims so a long-lived session doesn't accrete one file
+/// per notification event forever. Runs on each claim attempt — notifications
+/// are edge-rate (not output-rate), so the readdir is negligible.
+fn prune_stale_claims(paths: &SessionPaths, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(&paths.root) else {
+        return;
+    };
+    let prefix = format!("{}.notify.", paths.session_prefix);
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > NOTIFY_CLAIM_SWEEP_AGE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// A peer found the lock already held. If it has outlived `ttl` its owner is
+/// no longer relevant (a dead prompt owner, or a notify claim from a previous
+/// event), so remove it and try to take it. Best-effort: if another peer wins
+/// the recreate race we defer to it (returns false) — consistent with
+/// preferring at least one reachable prompt/toast over a deadlock.
+fn reclaim_if_stale(lock: &Path, now: SystemTime, ttl: Duration) -> bool {
     let stale = std::fs::metadata(lock)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|modified| now.duration_since(modified).ok())
-        .is_some_and(|age| age > PERMISSION_LOCK_TTL);
+        .is_some_and(|age| age > ttl);
     if !stale {
         return false;
     }
@@ -237,6 +306,11 @@ impl SessionPaths {
         }
     }
 
+    fn notify_claim(&self, key: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.notify.{key}", self.session_prefix))
+    }
+
     fn is_current_session_file(&self, name: &str) -> bool {
         name == format!("{}.json", self.session_prefix)
             || name == format!("{}.permissions", self.session_prefix)
@@ -245,6 +319,7 @@ impl SessionPaths {
                 && name.ends_with(".tmp"))
             || (name.starts_with(&format!("{}.permissions.", self.session_prefix))
                 && name.ends_with(".tmp"))
+            || name.starts_with(&format!("{}.notify.", self.session_prefix))
     }
 }
 
@@ -315,6 +390,7 @@ fn is_owned_session_file(name: &str) -> bool {
             .strip_prefix("permissions.")
             .and_then(|rest| rest.strip_suffix(".tmp"))
             .is_some_and(is_digits)
+        || suffix.starts_with("notify.")
 }
 
 fn is_digits(raw: &str) -> bool {
@@ -543,6 +619,76 @@ mod tests {
             std::fs::read_to_string(fallback.join("zj-radar.42.json")).unwrap(),
             "seed"
         );
+    }
+
+    #[test]
+    fn notify_claim_elects_exactly_one_dispatcher() {
+        let dir = TempDir::new("notify-claim");
+        let now = SystemTime::now();
+        let a = open(dir.path(), ids(1, 42)).files;
+        let b = open(dir.path(), ids(2, 42)).files;
+
+        // Both instances compute the same event key; only the first fires.
+        assert!(a.claim_notification_at("p7.done.a1b2c3d4", now));
+        assert!(!b.claim_notification_at("p7.done.a1b2c3d4", now));
+        // A different event on the same pane claims independently.
+        assert!(b.claim_notification_at("p7.pending.99887766", now));
+    }
+
+    #[test]
+    fn notify_claim_past_ttl_is_a_genuine_repeat_and_fires_again() {
+        let dir = TempDir::new("notify-ttl");
+        let now = SystemTime::now();
+        let files = open(dir.path(), ids(1, 42)).files;
+
+        assert!(files.claim_notification_at("p7.pending.aa", now));
+        // Within the TTL the key still identifies the already-fired event.
+        let soon = now + Duration::from_secs(5);
+        assert!(!files.claim_notification_at("p7.pending.aa", soon));
+        // Past the TTL the same key is a new event (same question re-asked).
+        let later = now + NOTIFY_CLAIM_TTL + Duration::from_secs(1);
+        assert!(files.claim_notification_at("p7.pending.aa", later));
+    }
+
+    #[test]
+    fn spent_notify_claims_are_swept_on_later_claims() {
+        let dir = TempDir::new("notify-sweep");
+        let now = SystemTime::now();
+        let files = open(dir.path(), ids(1, 42)).files;
+
+        assert!(files.claim_notification_at("old", now));
+        assert!(dir.join("zj-radar.42.notify.old").exists());
+        let later = now + NOTIFY_CLAIM_SWEEP_AGE + Duration::from_secs(1);
+        assert!(files.claim_notification_at("new", later));
+        assert!(
+            !dir.join("zj-radar.42.notify.old").exists(),
+            "spent claim swept so a long session doesn't accrete files"
+        );
+    }
+
+    #[test]
+    fn notify_claim_without_writable_root_prefers_duplicate_over_silence() {
+        let dir = TempDir::new("notify-disabled");
+        let broken = dir.join("cache-as-file");
+        std::fs::write(&broken, b"not a dir").unwrap();
+        let opened = SessionFiles::open_with_roots_at(
+            ids(3, 42),
+            [broken.clone(), broken],
+            SystemTime::now(),
+            SNAPSHOT_MAX_AGE,
+        );
+        // No coordination possible → every instance dispatches (the pre-claim
+        // behavior), because a missed "needs input" is worse than a dup toast.
+        assert!(opened.files.claim_notification_at("k", SystemTime::now()));
+    }
+
+    #[test]
+    fn stale_session_sweep_owns_notify_claims_but_spares_current_session() {
+        let dir = TempDir::new("notify-owned");
+        // A dead session's claim (pid 41) is prunable; ours (pid 42) is not.
+        assert!(is_owned_session_file("zj-radar.41.notify.p7.done.aa"));
+        let paths = SessionPaths::new(dir.path().to_path_buf(), ids(1, 42));
+        assert!(paths.is_current_session_file("zj-radar.42.notify.p7.done.aa"));
     }
 
     #[test]
