@@ -395,7 +395,7 @@ mod tests {
         tick: u64,
         msg: &str,
     ) {
-        state.runtime.radar.status_mut().apply(
+        let _ = state.runtime.radar.status_mut().apply(
             StatusPayload {
                 pane_id,
                 status,
@@ -406,6 +406,7 @@ mod tests {
                 source: "test".into(),
             },
             tick,
+            0,
         );
     }
 

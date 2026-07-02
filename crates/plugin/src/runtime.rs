@@ -516,7 +516,7 @@ mod tests {
         let mut seeded = RadarState::default();
         seeded
             .status_mut()
-            .apply(payload_for(9, Status::Running), 7);
+            .apply(payload_for(9, Status::Running), 7, 0);
         let snapshot = seeded.snapshot_json(None, 7);
 
         let mut runtime = PluginRuntime::default();
@@ -853,11 +853,11 @@ mod tests {
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(10, Status::Running), 1);
+            .apply(payload_for(10, Status::Running), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(11, Status::Running), 1);
+            .apply(payload_for(11, Status::Running), 1, 0);
         runtime.radar.command_mut().on_exit(12, Some(0), 1, 0);
 
         let mut live = HashSet::new();
@@ -990,15 +990,15 @@ mod tests {
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(20, Status::Pending), 1);
+            .apply(payload_for(20, Status::Pending), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(21, Status::Running), 1);
+            .apply(payload_for(21, Status::Running), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(22, Status::Running), 1);
+            .apply(payload_for(22, Status::Running), 1, 0);
 
         let ansi = runtime.render(100, 80);
         assert!(ansi.contains("team"));
@@ -1032,8 +1032,8 @@ mod tests {
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         let out = runtime.command(Command::AttentionNext);
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
@@ -1044,7 +1044,7 @@ mod tests {
         let mut runtime = PluginRuntime { config: config(), ..Default::default() };
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         assert_eq!(runtime.command(Command::AttentionNext), Outcome::default());
     }
@@ -1285,9 +1285,9 @@ mod tests {
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
         runtime.radar.set_tab_panes_for_position(2, vec![pane(12)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
-        runtime.radar.status_mut().apply(payload_for(12, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(12, Status::Pending), 1, 0);
 
         let out = runtime.command(Command::AttentionPrev);
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 2 }]);
@@ -1304,8 +1304,8 @@ mod tests {
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         // Exercises the full parse → command → effect path through the pipe entry.
         let out = runtime.command_pipe("attention-next");

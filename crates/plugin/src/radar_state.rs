@@ -291,8 +291,10 @@ impl RadarState {
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
-        self.status.prune(&update.live);
-        // Dropped completions ignored here; Task 8 ledgers a pane closing with
+        // Dropped completions ignored here; Task 11 ledgers a pane closing with
+        // an unreceded Done/Error still on it.
+        let _ = self.status.prune(&update.live);
+        // Dropped completions ignored here; Task 11 ledgers a pane closing with
         // an unreceded Done/Error still on it.
         let _ = self.command.prune(&update.live);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
@@ -355,7 +357,7 @@ impl RadarState {
         // ignores a Running status, so a mid-turn foreground flicker to a shell
         // can't be mistaken for the agent exiting.
         let cleared = crate::command::is_shell_prompt(command, is_foreground)
-            && self.status.clear_on_prompt_return(pane_id, tick);
+            && self.status.clear_on_prompt_return(pane_id, tick).is_some();
         RadarChange {
             render: true,
             settle: false,
@@ -373,7 +375,10 @@ impl RadarState {
         naming: config::NamingMode,
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
-        self.status.apply(p, tick);
+        // TODO(Task 9): thread the real wall-clock epoch through instead of `0`.
+        // Displaced completion ignored here; Task 11 ledgers a Done/Error that
+        // recedes on overwrite.
+        let _ = self.status.apply(p, tick, 0);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear

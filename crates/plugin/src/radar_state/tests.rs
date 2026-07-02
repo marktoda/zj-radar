@@ -48,7 +48,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     // quit it (no producer hook fires on quit).
     radar
         .status_mut()
-        .apply(payload_for(7, Status::Done, "pinky"), 1);
+        .apply(payload_for(7, Status::Done, "pinky"), 1, 0);
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
@@ -69,7 +69,7 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(7, Status::Running, "pinky"), 1);
+        .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
     // A mid-turn foreground flicker to a shell must NOT be read as an exit.
     let change = radar.command_changed(7, &["bash".into()], true, 5);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
@@ -87,7 +87,7 @@ fn rows_sort_tabs_by_position_and_aggregate_panes() {
     radar.set_tab_panes_for_position(0, vec![pane(42)]);
     radar
         .status_mut()
-        .apply(payload_for(42, Status::Running, "repo"), 1);
+        .apply(payload_for(42, Status::Running, "repo"), 1, 0);
 
     let rows = radar.rows();
 
@@ -151,7 +151,7 @@ fn observation_origin_is_source_specific() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(1, Status::Running, "status"), 1);
+        .apply(payload_for(1, Status::Running, "status"), 1, 0);
     radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS);
 
@@ -383,7 +383,7 @@ fn same_pane_status_observation_wins_over_command() {
     // A status-pipe observation on the SAME pane 5, with a distinct repo.
     radar
         .status_mut()
-        .apply(payload_for(5, Status::Running, "from-status"), 3);
+        .apply(payload_for(5, Status::Running, "from-status"), 3, 0);
 
     let row = radar.rows().remove(0);
     let detail = row.display.detail.as_ref().expect("active pane sets detail");
@@ -410,7 +410,7 @@ fn notify_views_status_wins_over_command_for_same_pane() {
     // the two sources are distinguishable.
     radar
         .status_mut()
-        .apply(payload_for(5, Status::Done, "from-status"), 3);
+        .apply(payload_for(5, Status::Done, "from-status"), 3, 0);
 
     let views = radar.notify_views();
     let obs = views.get(&5).expect("pane 5 must appear in notify_views");
@@ -463,12 +463,12 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(1, Status::Running, "repo"), 3);
+        .apply(payload_for(1, Status::Running, "repo"), 3, 0);
     let mut done = payload_for(2, Status::Done, "pinky");
     done.branch = "fix/x".into();
     done.msg = "shipped it".into();
     done.source = "codex".into();
-    radar.status_mut().apply(done, 5);
+    radar.status_mut().apply(done, 5, 0);
 
     let json = radar.snapshot_json(None, 42);
     let mut restored = RadarState::default();
@@ -542,13 +542,13 @@ fn snapshot_merge_preserves_existing_when_live_panes_are_unknown() {
     let mut existing = RadarState::default();
     existing
         .status_mut()
-        .apply(payload_for(1, Status::Running, "old"), 1);
+        .apply(payload_for(1, Status::Running, "old"), 1, 0);
     let existing_json = existing.snapshot_json(None, 5);
 
     let mut current = RadarState::default();
     current
         .status_mut()
-        .apply(payload_for(2, Status::Running, "new"), 2);
+        .apply(payload_for(2, Status::Running, "new"), 2, 0);
     let merged = current.snapshot_json(Some(&existing_json), 3);
 
     let mut restored = RadarState::default();
@@ -563,14 +563,14 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
     let mut existing = RadarState::default();
     existing
         .status_mut()
-        .apply(payload_for(1, Status::Running, "dead"), 1);
+        .apply(payload_for(1, Status::Running, "dead"), 1, 0);
     let existing_json = existing.snapshot_json(None, 5);
 
     let mut current = RadarState::default();
     current.tabs_changed(vec![tab(10, 0, "work", true)]);
     current
         .status_mut()
-        .apply(payload_for(2, Status::Running, "live"), 2);
+        .apply(payload_for(2, Status::Running, "live"), 2, 0);
     current.panes_changed(
         PaneUpdate {
             tab_panes: HashMap::from([(0, vec![focused_pane(2)])]),
@@ -699,7 +699,7 @@ fn focus_does_not_change_rail_status() {
     let mut radar = RadarState::default();
     // A completed agent turn: a pushed Done.
     let done = payload_for(5, Status::Done, "repo");
-    radar.status_mut().apply(done, 1);
+    radar.status_mut().apply(done, 1, 0);
 
     // Focusing the pane must NOT clear the Done — focus no longer recedes status.
     radar.note_focus(Some(5));
@@ -725,8 +725,8 @@ fn next_attention_tab_skips_running_and_idle() {
     // tab 0: running (not attention); tab 1: pending (attention); tab 2: idle.
     st.set_tab_panes_for_position(0, vec![pane(10)]);
     st.set_tab_panes_for_position(1, vec![pane(11)]);
-    st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
-    st.status_mut().apply(payload_for(11, Status::Pending, ""), 1);
+    st.status_mut().apply(payload_for(10, Status::Running, ""), 1, 0);
+    st.status_mut().apply(payload_for(11, Status::Pending, ""), 1, 0);
 
     assert_eq!(st.next_attention_tab(Direction::Next), Some(1));
     assert_eq!(st.next_attention_tab(Direction::Prev), Some(1));
@@ -739,7 +739,7 @@ fn next_attention_tab_none_when_no_attention() {
         RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false },
     ]);
     st.set_tab_panes_for_position(0, vec![pane(10)]);
-    st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+    st.status_mut().apply(payload_for(10, Status::Running, ""), 1, 0);
     assert_eq!(st.next_attention_tab(Direction::Next), None);
     assert_eq!(st.next_attention_tab(Direction::Prev), None);
 }
