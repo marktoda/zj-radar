@@ -683,6 +683,28 @@ tab 1 "review"
     ↳ approve git push?
 ```
 
+## T4 — sticky task: error pane with `↳` and a sibling running pane
+
+An error-status pane with a task shows the task as identity plus the `↳`
+line for its error message; a sibling running pane keeps the multi-pane tree
+connectors correct (the `│` continuation under the error pane's `↳` line).
+
+```rail-input
+width 32
+tab 1 "release"
+  claude error "boom" task "fix the deploy"
+  codex running "editing retry.rs" task "write insta tests"
+```
+
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+✗ 1 release
+ ├ ✗ ✳ fix the deploy
+ │   ↳ boom
+ └ ⠋ ❉ write insta tests
+```
+
 ---
 
 ## Open decisions

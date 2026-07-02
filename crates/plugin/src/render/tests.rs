@@ -3650,15 +3650,34 @@ prop_compose! {
 }
 
 prop_compose! {
+    /// A sticky task label: empty (task-less panes, the pre-task shape), a
+    /// short ASCII phrase, or a wide/CJK string — so detail-line generation
+    /// (which is gated on a non-empty task) and wide-glyph width both get
+    /// exercised by every proptest that draws panes/rows.
+    fn arb_task()(
+        t in prop_oneof![
+            Just(String::new()),
+            "[a-z ]{1,30}",
+            Just("修复端到端测试".to_string()),
+        ],
+    ) -> String {
+        t
+    }
+}
+
+prop_compose! {
     /// An arbitrary pane: ~15% untracked, else a tracked pane with an
-    /// arbitrary Kind/Status and a short / long / CJK message so truncation,
-    /// wide-glyph width, and the narrow-width plain fallback all get hit.
+    /// arbitrary Kind/Status, a short / long / CJK message, and a fuzzed
+    /// sticky task so truncation, wide-glyph width, and the narrow-width
+    /// plain fallback all get hit — including the `↳` detail line, which
+    /// only appears when the task is non-empty and status is Pending/Error.
     fn arb_pane()(
         id in 1u32..100,
         kind in arb_kind(),
         status in arb_status(),
         untracked in 0u8..100,
         msg_pick in 0u8..3,
+        task in arb_task(),
     ) -> PaneDisplay {
         if untracked < 15 {
             PaneDisplay::untracked(id, "term")
@@ -3668,7 +3687,7 @@ prop_compose! {
                 1 => "running a fairly long migration command across the cluster now",
                 _ => "日本語のメッセージ表示テスト中です", // CJK wide glyphs
             };
-            PaneDisplay::tracked(id, kind, status, msg.to_string(), String::new(), None)
+            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, None)
         }
     }
 }
@@ -3680,6 +3699,7 @@ prop_compose! {
         active in any::<bool>(),
         total in 0usize..4,
         panes in proptest::collection::vec(arb_pane(), 0..=8),
+        task in arb_task(),
     ) -> TabRow {
         // With >1 tracked pane, render as a multi-pane row (line-per-pane +
         // `+N more`); otherwise keep the single-/zero-pane chunk-1 shape so
@@ -3693,7 +3713,7 @@ prop_compose! {
                     repo: "r".into(),
                     branch: "".into(),
                     msg: "m".into(),
-                    task: String::new(),
+                    task,
                     kind: Kind::Claude,
                     since_tick: 0,
                     outcome: None,

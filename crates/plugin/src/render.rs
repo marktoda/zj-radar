@@ -361,8 +361,9 @@ fn identity_and_detail<'a>(status: Status, task: &'a str, msg: &'a str) -> (&'a 
     if task.trim().is_empty() {
         return (msg, None);
     }
+    let trimmed_msg = msg.trim();
     let detail = match status {
-        Status::Pending | Status::Error if !msg.trim().is_empty() && msg.trim() != task.trim() => Some(msg),
+        Status::Pending | Status::Error if !trimmed_msg.is_empty() && trimmed_msg != task.trim() => Some(trimmed_msg),
         _ => None,
     };
     (task, detail)
@@ -572,9 +573,18 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                     });
                     if let Some(q) = detail {
                         // "    ↳ q" — 4-space indent aligns ↳ under the mark; 6 visible prefix cols.
-                        let budget = width.saturating_sub(6);
+                        const PREFIX_VIS: usize = 6;
+                        let text = if width < PREFIX_VIS {
+                            // Extreme-narrow: no room for the styled prefix — fall
+                            // back to a plain clamped line, mirroring
+                            // `emit_pane_detail_line`'s `width < PREFIX_VIS` guard.
+                            format!("{}\n", truncate(&format!("    ↳ {q}"), width))
+                        } else {
+                            let budget = width - PREFIX_VIS;
+                            format!("    {}\n", Seg::new(&hue(st.role()), format!("↳ {}", truncate(q, budget))))
+                        };
                         lines.push(Line {
-                            text: format!("    {}\n", Seg::new(&hue(st.role()), format!("↳ {}", truncate(q, budget)))),
+                            text,
                             target: Some(tab_target),
                             bg: LineBg::Card,
                         });
