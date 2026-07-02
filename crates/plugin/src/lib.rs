@@ -29,6 +29,7 @@ pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
 mod clock;
 mod config;
 mod control;
+mod ledger;
 mod notify_rules;
 mod permission;
 mod radar_state;

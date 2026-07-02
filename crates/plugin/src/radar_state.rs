@@ -11,6 +11,7 @@ use crate::status::Status;
 use crate::status_store::StatusStore;
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Direction for attention-tab cycling.
@@ -63,7 +64,7 @@ fn cycle_attention(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct TabId(usize);
 
 impl TabId {
