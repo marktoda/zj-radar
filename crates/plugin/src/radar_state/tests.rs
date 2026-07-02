@@ -1319,7 +1319,7 @@ fn ledger_any_unsaturated_reflects_the_saturate_window() {
 
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![pane(1)]);
-    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "claude");
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "", "claude");
     radar.status_pipe(&wire, 1, 1000, config::NamingMode::Off);
     radar.command_changed(1, &["zsh".into()], true, 5, 9999); // recedes → ledgers at epoch 1000
 
@@ -1333,7 +1333,7 @@ fn prompt_return_clear_ledgers_the_agent_completion() {
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
-    let wire = payload::to_wire(7, Status::Done, "pinky", "main", "shipped it", "claude");
+    let wire = payload::to_wire(7, Status::Done, "pinky", "main", "shipped it", "", "claude");
     radar.status_pipe(&wire, 1, 100, config::NamingMode::Off);
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
@@ -1360,7 +1360,7 @@ fn prune_ledgers_completions_with_the_pre_close_tab_name() {
 
     // A Done sits on pane 3, in tab "web", right before the tab (and its
     // pane) close in a single PaneUpdate.
-    let wire = payload::to_wire(3, Status::Done, "repo", "main", "built", "claude");
+    let wire = payload::to_wire(3, Status::Done, "repo", "main", "built", "", "claude");
     radar.status_pipe(&wire, 1, 50, config::NamingMode::Off);
 
     let update = PaneUpdate {
@@ -1392,7 +1392,7 @@ fn pending_and_running_never_ledger() {
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
     // pane 2: a Pending status-pipe observation (queued, not yet started).
-    let wire = payload::to_wire(2, Status::Pending, "repo", "main", "queued", "claude");
+    let wire = payload::to_wire(2, Status::Pending, "repo", "main", "queued", "", "claude");
     radar.status_pipe(&wire, 1, 0, config::NamingMode::Off);
     assert_eq!(radar.status(2).unwrap().status, Status::Pending);
 
@@ -1497,7 +1497,7 @@ fn ledger_lines_resolve_live_tab_position_or_none() {
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![pane(1)]);
 
-    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "claude");
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "", "claude");
     radar.status_pipe(&wire, 1, 42, config::NamingMode::Off);
     radar.command_changed(1, &["zsh".into()], true, 5, 100); // recedes → ledgers
 

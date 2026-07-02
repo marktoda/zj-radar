@@ -2426,6 +2426,7 @@ fn active_card_bg_spans_full_width_on_every_line() {
                 repo: "repo".into(),
                 branch: "main".into(),
                 msg: "working".into(),
+                task: String::new(),
                 kind: Kind::Claude,
                 since_tick: 0,
                 outcome: None,

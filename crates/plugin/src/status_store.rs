@@ -181,14 +181,14 @@ mod tests {
     fn task_is_sticky_across_taskless_updates_and_replaced_by_a_new_one() {
         let mut s = StatusStore::default();
         // UserPromptSubmit carries the task…
-        s.apply(payload_with_task(1, Status::Running, "fix flaky e2e"), 1);
+        s.apply(payload_with_task(1, Status::Running, "fix flaky e2e"), 1, 0);
         assert_eq!(s.get(1).unwrap().task, "fix flaky e2e");
         // …PreToolUse / Stop broadcasts don't (empty task) — the label sticks.
-        s.apply(payload(1, Status::Running), 2);
-        s.apply(payload(1, Status::Done), 3);
+        s.apply(payload(1, Status::Running), 2, 0);
+        s.apply(payload(1, Status::Done), 3, 0);
         assert_eq!(s.get(1).unwrap().task, "fix flaky e2e", "sticky through the turn");
         // A new prompt replaces it.
-        s.apply(payload_with_task(1, Status::Running, "now migrate the schema"), 4);
+        s.apply(payload_with_task(1, Status::Running, "now migrate the schema"), 4, 0);
         assert_eq!(s.get(1).unwrap().task, "now migrate the schema");
     }
 
@@ -197,16 +197,16 @@ mod tests {
         // `/clear` fires SessionStart{clear} → an idle broadcast; the row must
         // fully recede — stale task text is as bad as a stale msg.
         let mut s = StatusStore::default();
-        s.apply(payload_with_task(1, Status::Running, "old work"), 1);
-        s.apply(payload(1, Status::Idle), 2);
+        s.apply(payload_with_task(1, Status::Running, "old work"), 1, 0);
+        s.apply(payload(1, Status::Idle), 2, 0);
         assert_eq!(s.get(1).unwrap().task, "", "idle resets the task");
     }
 
     #[test]
     fn clear_on_prompt_return_drops_the_task() {
         let mut s = StatusStore::default();
-        s.apply(payload_with_task(1, Status::Done, "shipped thing"), 1);
-        assert!(s.clear_on_prompt_return(1, 5));
+        s.apply(payload_with_task(1, Status::Done, "shipped thing"), 1, 0);
+        assert!(s.clear_on_prompt_return(1, 5).is_some());
         assert_eq!(s.get(1).unwrap().task, "", "producer gone — label gone");
     }
 

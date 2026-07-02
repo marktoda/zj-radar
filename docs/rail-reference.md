@@ -662,7 +662,7 @@ tab 1 "review"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◆ 1 review
+ ◆ 1 review
  ├ ◆ ✳ migrate schema
  │   ↳ approve git push?
  └ ⠋ ❉ write insta tests
@@ -683,7 +683,7 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◆ 1 work
+ ◆ 1 work
  ├ ◆ ✳ approve?
  └ ● ✳ fix flaky e2e
 ```
@@ -702,7 +702,7 @@ tab 1 "review"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-◆ 1 review
+ ◆ 1 review
   ✳ migrate schema
     ↳ approve git push?
 ```
@@ -723,7 +723,7 @@ tab 1 "release"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-✗ 1 release
+ ✗ 1 release
  ├ ✗ ✳ fix the deploy
  │   ↳ boom
  └ ⠋ ❉ write insta tests

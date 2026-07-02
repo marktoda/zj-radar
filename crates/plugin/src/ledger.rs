@@ -202,6 +202,7 @@ mod tests {
             repo: "repo".into(),
             branch: "main".into(),
             msg: msg.to_string(),
+            task: String::new(),
             kind: crate::kind::Kind::Claude,
             last_change_tick: 1,
             ever_active: true,
