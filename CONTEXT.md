@@ -88,6 +88,69 @@ and the `timer` each stamp `settle: true` on their `RadarChange`; `project` fire
 `notify_effects` exactly on that flag, so the notify call sites line up across every
 handler by construction.
 
+**Cadence** is a related but distinct axis — how often the one-shot timer
+re-fires, not whether it notifies. Two speeds (`PluginRuntime::desired_cadence`):
+Fast (1 Hz) while there's tick-windowed work — `has_running_work` (a spinning
+glyph), an un-carried completion edge (a status-pipe recede/notify deferred to
+the timer because its own focus can't be trusted), a command `Done` awaiting
+its `DONE_TTL_TICKS` recede, or an active ping flash. Slow (1/60 Hz — once a
+minute) once none of that holds but a ledger entry is still un-saturated
+(`ledger_any_unsaturated`): nothing is animating, but a displayed age is still
+changing. Fully disarmed (`None`) once every ledger age has hit `1h+` — the
+saturation cutoff (`## Ledger`) is exactly what lets the timer stop for good
+instead of ticking forever to redraw an age that will never change again.
+
+## Ledger
+
+The completion history: a fixed-cap ring (`LEDGER_CAP` = 32, newest at front)
+that a Done/Error hands off to the moment it stops being shown as a card fact
+— rendered as the rail's trailing `─ earlier ─` region beneath the live tab
+list. `crates/plugin/src/ledger.rs`'s `Ledger` is pure data + policy
+(`push`/`replace`/`merge`/`any_unsaturated`/`format_age`); `RadarState` wires
+every edge that can retire a card into it (`ledger_receded`) and prepares
+`LedgerLine`s for the renderer (`ledger_lines`) — the renderer only ever
+consumes what it's handed, never reaches into the ring itself.
+
+**Entry rule.** An observation enters at the edge where it stops being a card
+fact, never before: TTL recede (a command-origin `Done` past
+`DONE_TTL_TICKS`), the prompt-return clear (`StatusStore::clear_on_prompt_return`),
+an overwrite (a new status-pipe broadcast displacing a still-lit `Done`/`Error`
+— including the `/clear` idle-overwrite), or a prune (`panes_changed`'s
+exit/prune paths, captured against the pre-close topology so the entry ledgers
+under the tab it was actually shown on). `Pending`/`Running` never enter —
+`LedgerEntry::from_observation` returns `None` for anything but a stamped
+`Done`/`Error` (one without a `completed_epoch_s` is a pre-v3 snapshot
+transient, also skipped). A command completion **shadowed** by a status
+observation for the same pane never enters either: `resolve`'s
+status-wins-over-command precedence means that command fact was never actually
+on the card, so its recede must not ghost a row into history —
+`ledger_receded`'s `status_tracked` filter cites `resolve` directly. A
+status-origin recede is never filtered; only `resolve` and this one check know
+there are two stores at all.
+
+**Convergence.** Every entry edge is a signal every tab's plugin instance
+receives — broadcast, `PaneUpdate`, the shared timer tick — the same
+convergence property the rail card itself relies on (see `RadarState`).
+Snapshot v3 carries the ledger; on load, `Ledger::merge` unions two rings by
+nearest-neighbor match on `(pane, outcome, label)` within `MERGE_WINDOW_S`
+(4s), keeping the later stamp, so two instances observing the same completion
+a beat apart collapse to one row instead of duplicating it.
+
+**Timestamps.** Entries stamp completion-time epoch seconds (`at_epoch_s`,
+from `completed_epoch_s`), not ticks — ticks are per-instance and reset,
+epochs aren't. Rendered age is relative (`format_age`: `<1m`, `Nm`, frozen at
+`1h+` past `SATURATE_S`), and that saturation is load-bearing, not cosmetic:
+once every entry's age has stopped changing, `any_unsaturated` goes false and
+the idle timer can fully disarm (the cadence note above) instead of ticking
+once a minute forever to redraw an age nothing will ever change again.
+
+**Seams.** `ledger.rs` is the pure ring — no knowledge of tabs, panes, or
+rendering. `RadarState` owns the recede-edge wiring and `LedgerLine` prep
+(each line's tab position is a *live* lookup against `self.tabs`, `None` once
+that tab has closed — click-inert, not forgotten; the ring never forgets an
+entry just because its tab went away). The renderer consumes prepared lines
+only.
+
 ## Tab naming
 
 The policy that decides what each tab is called, and remembers what it last
