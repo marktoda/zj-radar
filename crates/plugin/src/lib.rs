@@ -295,9 +295,13 @@ impl ZellijPlugin for State {
             Event::Timer(elapsed_s) => {
                 // Re-probe (marker + lock) each tick so a waiting peer can take
                 // over a prompt whose owner died holding a now-stale lock.
-                // `elapsed_s` is the duration the fired `set_timeout` was armed
-                // with — the runtime uses it to identify (and swallow) a stale
-                // slow fire after a Slow→Fast top-up.
+                // Upstream documents `elapsed_s` only as the timer-expiry
+                // payload: elapsed seconds since the `set_timeout` call, which
+                // for a fired one-shot is ~= the duration it was armed with —
+                // not a guaranteed-exact echo of it. That's all the runtime
+                // needs: its 5s stale-fire threshold discriminates a ~1s (Fast)
+                // arm from a ~60s (Slow) one with wide margin either way, so
+                // scheduler jitter can't flip the classification.
                 let probe = self.session_files.refresh_permission_probe();
                 let outcome = self.runtime.timer(probe, elapsed_s);
                 self.handle_outcome(outcome)

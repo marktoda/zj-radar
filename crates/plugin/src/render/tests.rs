@@ -2930,6 +2930,38 @@ fn cards_have_rail_gap_row() {
     );
 }
 
+#[test]
+fn flash_outranks_active_in_card_tint() {
+    // `card_tint`'s priority ladder puts a flashing row above even the
+    // focused row — the one-shot ping must never be masked by the steadier
+    // active tint. A row that is BOTH `active` and `flash` must paint with
+    // `surface_flash`, not `surface_active`. The `Surface` oracle enum (used
+    // by `tint_map`) has no `Flash` variant, so assert directly on the raw
+    // ANSI background escape instead.
+    let rows = vec![TabRow { flash: true,
+        number: 1,
+        name: "a".into(),
+        active: true,
+        has_bell: false,
+        display: display(Status::Running, 0, 1, None),
+    }];
+    let s = render(&rows, &ro_cards(24, 100));
+    let lines: Vec<&str> = s.lines().collect();
+    // line 0 = header (rail); line 1 = this row's card content.
+    let content_row = lines[1];
+    let theme = crate::theme::DerivedColors::default();
+    assert!(
+        content_row.contains(&bg_sgr(theme.surface_flash)),
+        "active+flash row must carry the flash surface: {:?}",
+        content_row
+    );
+    assert!(
+        !content_row.contains(&bg_sgr(theme.surface_active)),
+        "active tint must not win over flash: {:?}",
+        content_row
+    );
+}
+
 // ── 3-tint cards: every tab is a card, idle dim / agent mid / active bright ──
 
 /// Classify each rendered line for a tint-map snapshot by which surface band
@@ -3425,6 +3457,40 @@ fn header_badge_survives_narrow_width_over_census() {
     );
 }
 
+#[test]
+fn header_overflow_marker_survives_over_badge_when_combined_does_not_fit() {
+    // The overflow marker always outranks the badge (doc comment on
+    // `render_header`): when "{n}▲ {m}!" together don't fit but the marker
+    // alone does, the badge is dropped and `{n}▲` survives — the mirror image
+    // of `header_badge_survives_narrow_width_over_census`, which drops the
+    // plain census (not the marker) to keep the badge.
+    let rows = vec![TabRow { flash: false,
+        number: 1,
+        name: "a".into(),
+        active: false,
+        has_bell: false,
+        display: display(Status::Pending, 0, 1, None),
+    }];
+    // width 10: avail = 10 - len(" RADAR") = 4; combined "1▲ 1!" needs 5.
+    let lines = render_header(&rows, &ro(10, 0), true, true, false);
+    let header = strip_sgr(&lines[0].text);
+    assert!(
+        header.contains("1▲"),
+        "overflow marker survives the clash: {:?}",
+        header
+    );
+    assert!(
+        !header.contains('!'),
+        "badge is dropped when it can't share room with the marker: {:?}",
+        header
+    );
+    assert!(
+        UnicodeWidthStr::width(header.trim_end()) <= 10,
+        "line must not exceed width: {:?}",
+        header
+    );
+}
+
 // ── Header heartbeat sweep ─────────────────────────────────────────────────
 
 #[test]
@@ -3708,10 +3774,11 @@ fn ro_full(
 #[test]
 fn snapshot_canonical_cards_grid() {
     let rows = scenario_canonical();
-    let raw = render(
+    let opts = tight(
         &rows,
-        &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
     );
+    let raw = render(&rows, &opts);
     insta::assert_snapshot!("canonical_cards_grid", grid(&raw, 30));
 }
 
@@ -3726,10 +3793,11 @@ fn snapshot_canonical_cards_grid() {
 #[test]
 fn snapshot_canonical_tint_map() {
     let rows = scenario_canonical();
-    let raw = render(
+    let opts = tight(
         &rows,
-        &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
     );
+    let raw = render(&rows, &opts);
     insta::assert_snapshot!("canonical_tint_map", tint_map(&raw));
 }
 
@@ -3762,10 +3830,11 @@ fn snapshot_cards_narrow_width_grid() {
         has_bell: false,
         display: display(Status::Running, 0, 1, Some(detail)),
     }];
-    let raw = render(
+    let opts = tight(
         &rows,
-        &ro_full(16, 100, crate::config::Density::Cards, GlyphSet::Plain),
+        ro_full(16, 100, crate::config::Density::Cards, GlyphSet::Plain),
     );
+    let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_narrow_width_grid", grid(&raw, 16));
 }
 
@@ -3774,10 +3843,11 @@ fn snapshot_cards_narrow_width_grid() {
 #[test]
 fn snapshot_cards_nerd_glyphs_grid() {
     let rows = scenario_canonical();
-    let raw = render(
+    let opts = tight(
         &rows,
-        &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Nerd),
+        ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Nerd),
     );
+    let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_nerd_glyphs_grid", grid(&raw, 30));
 }
 
@@ -3823,14 +3893,15 @@ fn snapshot_cards_multi_pane() {
         pe(2, Kind::Codex, Status::Pending, "approve?"),
         pe(3, Kind::Test, Status::Done, "cargo test"),
     ];
-    let row = TabRow { flash: false,
+    let rows = vec![TabRow { flash: false,
         number: 1,
         name: "team".into(),
         active: true,
         has_bell: false,
         display: display_multi(panes),
-    };
-    let raw = render(&[row], &ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain));
+    }];
+    let opts = tight(&rows, ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain));
+    let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_multi_pane_grid", grid(&raw, 30));
     insta::assert_snapshot!("cards_multi_pane_tint", tint_map(&raw));
 }
@@ -3847,6 +3918,7 @@ fn snapshot_cards_light_theme() {
         theme: light.clone(),
         ..ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain)
     };
+    let opts = tight(&rows, opts);
     let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_light_theme_grid", grid(&raw, 30));
     insta::assert_snapshot!("cards_light_theme_tint", tint_map_for(&raw, &light));
@@ -4811,6 +4883,25 @@ fn spinner_eases_after_ten_minutes() {
     assert_eq!(spin_glyph(t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
     assert_ne!(spin_glyph(t, 0), spin_glyph(t + 4, 0), "still blinks — alive, just calm");
     assert_eq!(spin_glyph(t, 0), spin_glyph(t + 1, 0), "but not every tick");
+}
+
+#[test]
+fn spin_glyph_ease_boundary_is_strictly_greater_than() {
+    // The condition is `now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS`
+    // — strict, not `>=`. So a run exactly EASE_AFTER_TICKS old is still
+    // "younger than" the threshold and gets the full-speed spinner; only the
+    // very next tick crosses into the eased two-frame blink. This pins the
+    // spec's "older than" reading of the threshold, not "at least as old as".
+    assert_eq!(
+        spin_glyph(EASE_AFTER_TICKS, 0),
+        crate::status::working_spin(EASE_AFTER_TICKS as usize),
+        "exactly at the threshold is still full speed"
+    );
+    assert_eq!(
+        spin_glyph(EASE_AFTER_TICKS + 1, 0),
+        crate::status::working_spin((((EASE_AFTER_TICKS + 1) / 4) % 2) as usize),
+        "one tick past the threshold is already eased"
+    );
 }
 
 #[test]
