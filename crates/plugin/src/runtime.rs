@@ -39,18 +39,13 @@ use crate::theme;
 use std::collections::BTreeMap;
 
 /// How urgently the one-shot timer should re-fire. `Fast` is the 1 Hz tick
-/// that drives animation and debounce/TTL bookkeeping; `Slow` (Task 15) will
-/// back off to a once-a-minute heartbeat when nothing needs per-second
-/// resolution. `arm_timer_if_needed` always arms `Fast` until Task 15 adds the
-/// cadence *selection* — this enum exists now so `Effect::SetTimeout` carries
-/// its argument from the start rather than churning every call site twice.
+/// that drives animation and debounce/TTL bookkeeping; `Slow` backs off to a
+/// once-a-minute heartbeat when nothing needs per-second resolution but a
+/// ledger age is still changing. `desired_cadence` selects between the two
+/// (or `None` to fully disarm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cadence {
     Fast,
-    /// Unconstructed until Task 15 wires `arm_timer_if_needed`'s cadence
-    /// *selection*; a host test exercises `seconds()` over it in the
-    /// meantime, but the shipped wasm build has no production caller yet.
-    #[allow(dead_code)]
     Slow,
 }
 
@@ -110,7 +105,13 @@ impl Outcome {
 pub(crate) struct PluginRuntime {
     pub(crate) radar: RadarState,
     pub(crate) tick: u64,
-    pub(crate) timer_armed: bool,
+    /// The cadence the last-scheduled `SetTimeout` was armed with, or `None`
+    /// if the timer is fully disarmed. `arm_timer_if_needed` compares this
+    /// against `desired_cadence()` on every call — not just an "is anything
+    /// armed" bool — so a Slow-armed timer can be topped up with a fresh
+    /// `SetTimeout(Fast)` the moment fast-worthy work arrives, without
+    /// waiting for the (harmless, spurious) slow fire first.
+    pub(crate) armed_cadence: Option<Cadence>,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission: PermissionState,
@@ -161,7 +162,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
-        self.timer_armed = false;
+        self.armed_cadence = None;
         let mut effects = Vec::new();
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
@@ -177,7 +178,10 @@ impl PluginRuntime {
         let render = permission_changed
             || awaiting_permission
             || store_changed
-            || self.timer_should_continue();
+            || self.timer_should_continue()
+            // A Slow tick exists precisely to repaint ledger ages — even
+            // when nothing else changed, `format_age` output may have moved.
+            || self.desired_cadence() == Some(Cadence::Slow);
         let change = RadarChange {
             render,
             settle: true,
@@ -428,16 +432,38 @@ impl PluginRuntime {
         true
     }
 
+    /// Spec §10 cadence function. Fast (1s) while anything tick-windowed is
+    /// live; Slow (60s) while ledger ages are still changing; None once every
+    /// age is saturated ("1h+") — the battery property's full-disarm state.
+    fn desired_cadence(&self) -> Option<Cadence> {
+        if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
+            Some(Cadence::Fast)
+        } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s()) {
+            Some(Cadence::Slow)
+        } else {
+            None
+        }
+    }
+
+    /// Arm (or re-arm) the one-shot timer at `desired_cadence()`. Unlike a
+    /// plain "already armed?" bool, this compares the *cadence* the previous
+    /// arm used against what's desired now: a Slow-armed timer that should
+    /// now be Fast gets a fresh `SetTimeout(Fast)` pushed immediately, rather
+    /// than waiting for the (harmless, spurious) slow fire to notice. Every
+    /// other transition — first arm, already-correct cadence, or nothing
+    /// desired — is a no-op.
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
-        if !self.timer_armed
-            && (self.permission.is_waiting()
-                || self.permission.selectable()
-                || self.timer_should_continue())
-        {
-            self.timer_armed = true;
-            // Always Fast today: cadence *selection* (backing off to Slow when
-            // nothing needs per-second resolution) lands in Task 15.
-            effects.push(Effect::SetTimeout(Cadence::Fast));
+        let desired = self.desired_cadence();
+        match (self.armed_cadence, desired) {
+            (Some(Cadence::Slow), Some(Cadence::Fast)) => {
+                self.armed_cadence = Some(Cadence::Fast);
+                effects.push(Effect::SetTimeout(Cadence::Fast));
+            }
+            (None, Some(cadence)) => {
+                self.armed_cadence = Some(cadence);
+                effects.push(Effect::SetTimeout(cadence));
+            }
+            _ => {}
         }
     }
 
@@ -510,7 +536,7 @@ impl PluginRuntime {
     /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
     /// is the sole caller of `notify_effects`, and the only *domain-change* path
     /// that arms the timer (the permission flow arms it separately in
-    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `timer_armed` and on
+    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `armed_cadence` and on
     /// whether there's anything to arm for, so calling it unconditionally
     /// here is a no-op wherever a handler has no pending work to arm for.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
@@ -1217,10 +1243,10 @@ mod tests {
         // produces a Notify, exercising all five effect kinds in one change.
         let mut rt = two_tab_runtime_with_running_commands();
         rt.radar.command_mut().on_exit(7, Some(0), rt.tick, 0);
-        // `arm_timer_if_needed` self-guards on `timer_armed`; the setup helper's
+        // `arm_timer_if_needed` self-guards on `armed_cadence`; the setup helper's
         // timer tick already armed it, so reset to let `project`'s unconditional
         // arm call actually produce a `SetTimeout` effect.
-        rt.timer_armed = false;
+        rt.armed_cadence = None;
 
         let change = RadarChange {
             render: true,
@@ -1370,7 +1396,7 @@ mod tests {
         // Then the timer quiesces within a bounded number of ticks — a backgrounded
         // Done no longer pins it awake, and no further notifications fire.
         let mut extra = 0;
-        while rt.timer_armed {
+        while rt.armed_cadence.is_some() {
             let t = rt.timer(PermissionProbe::default());
             assert!(
                 !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
@@ -1446,12 +1472,150 @@ mod tests {
         rt.timer(PermissionProbe::default());
         rt.timer(PermissionProbe::default());
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
-        assert!(rt.timer_armed, "a Done awaiting TTL must keep the timer armed");
-        // Tick past the TTL: the Done recedes and the timer quiesces.
+        assert!(rt.armed_cadence.is_some(), "a Done awaiting TTL must keep the timer armed");
+        // Tick past the TTL: the Done recedes and the timer quiesces. No tab
+        // topology is registered for pane 7, so the recede has no tab to
+        // ledger under and is silently dropped (`ledger_receded`) — the
+        // ledger stays empty and cadence fully disarms.
         for _ in 0..=crate::command::DONE_TTL_TICKS {
             rt.timer(PermissionProbe::default());
         }
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
-        assert!(!rt.timer_armed, "receded: nothing left to tick for");
+        assert!(rt.radar.ledger_is_empty(), "setup: no tab topology, so the recede has nowhere to ledger");
+        assert!(rt.armed_cadence.is_none(), "receded: nothing left to tick for");
+    }
+
+    #[test]
+    fn command_ttl_recede_rearms_slow_not_fast_when_ledgered() {
+        // The subtle Fast→Slow handoff: when the LAST fast-worthy signal (a
+        // Done awaiting its TTL) finally recedes, `arm_timer_if_needed`
+        // re-arms from scratch on that very tick's `project` call. This time
+        // the pane has real tab topology, so the recede lands a fresh entry
+        // in the ledger — the freshly re-armed cadence must be Slow (there's
+        // an age to repaint), not None (nothing left) and not Fast (nothing
+        // tick-windowed remains).
+        let mut rt = runtime_with_config(config());
+        rt.tabs_changed(vec![tab(0, "work", true)]);
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+        rt.command_changed(7, &["make".into()], true);
+        rt.timer(PermissionProbe::default()); // debounce tick 1
+        rt.timer(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
+        rt.command_changed(7, &["zsh".into()], true);
+        rt.timer(PermissionProbe::default());
+        rt.timer(PermissionProbe::default());
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
+        assert_eq!(
+            rt.armed_cadence,
+            Some(Cadence::Fast),
+            "a Done awaiting TTL needs Fast resolution"
+        );
+
+        for _ in 0..=crate::command::DONE_TTL_TICKS {
+            rt.timer(PermissionProbe::default());
+        }
+
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
+        assert!(!rt.radar.ledger_is_empty(), "the TTL recede must hand the completion to the ledger");
+        assert_eq!(
+            rt.armed_cadence,
+            Some(Cadence::Slow),
+            "receded: nothing fast-worthy remains, but the fresh ledger entry keeps a Slow heartbeat armed"
+        );
+    }
+
+    #[test]
+    fn idle_with_fresh_history_arms_slow_and_repaints() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        assert!(rt.armed_cadence.is_none(), "setup: nothing has armed a timer yet");
+
+        // Any event that runs `project` (here, a no-op topology update) must
+        // arm the Slow heartbeat — nothing is tick-windowed, but the ledger
+        // age is still changing.
+        let outcome = rt.tabs_changed(vec![]);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+            "idle with unsaturated history must arm Slow, got {:?}",
+            outcome.effects
+        );
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow));
+
+        // The slow tick itself must render — it exists precisely to repaint
+        // the ledger's ages.
+        let tick = rt.timer(PermissionProbe::default());
+        assert!(tick.render, "a slow tick renders to repaint ledger ages");
+    }
+
+    #[test]
+    fn saturated_history_fully_disarms() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        // Any epoch older than SATURATE_S relative to the real wall clock —
+        // 0 trivially qualifies.
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: 0,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        assert_eq!(rt.desired_cadence(), None, "a saturated ledger has nothing left worth ticking for");
+
+        let outcome = rt.tabs_changed(vec![]);
+        assert!(
+            !outcome.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+            "a fully-saturated idle rail must not arm any timer, got {:?}",
+            outcome.effects
+        );
+        assert!(rt.armed_cadence.is_none());
+    }
+
+    #[test]
+    fn fast_work_arriving_during_slow_rearms_fast() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        rt.tabs_changed(vec![]);
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+
+        // New fast-worthy work (a Running status) arrives while Slow-armed.
+        // The earlier-scheduled slow fire is a harmless spurious tick, but a
+        // fresh `SetTimeout(Fast)` must also be pushed so the 1s resolution
+        // returns promptly.
+        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let outcome = rt.status_pipe(&raw);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "fast work arriving during a slow arm must re-arm Fast, got {:?}",
+            outcome.effects
+        );
+        assert_eq!(rt.armed_cadence, Some(Cadence::Fast));
     }
 }

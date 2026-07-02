@@ -11,18 +11,13 @@
 //! `load_snapshot`), so they're reachable from production wasm too. `entries`
 //! and `format_age` are consumed by the Task 13 bottom region
 //! (`render::render_bottom` via `RadarState::ledger_lines`), so they're
-//! reachable from production wasm too now. `is_empty` and `any_unsaturated`
-//! are consumed only by `RadarState`'s own `ledger_is_empty`/
-//! `ledger_any_unsaturated` wrappers, which aren't wired into the rendered
-//! rail or the timer until Task 14/15, so this module's
-//! `is_empty`/`any_unsaturated`/`SATURATE_S` and their `radar_state.rs`
-//! callers stay unreachable from production wasm until then. Those keep a
-//! targeted per-item allow for the production (non-test) wasm build,
-//! mirroring the `RenderedRail::empty`/`line_count` precedent in `render.rs`,
-//! rather than the module-wide allow this used to carry. Remove each
-//! remaining allow as its consuming task wires it in. `cargo test` (host or
-//! wasm) stays fully linted: the tests below call every `pub(crate)` item
-//! directly, so real dead code would still be caught there.
+//! reachable from production wasm too now. `any_unsaturated`/`SATURATE_S` are
+//! consumed via `RadarState::ledger_any_unsaturated` by
+//! `PluginRuntime::desired_cadence` (Task 15's cadence selection), so they're
+//! reachable too. `is_empty` still carries a per-item allow pending its own
+//! cleanup (see its doc). `cargo test` (host or wasm) stays fully linted: the
+//! tests below call every `pub(crate)` item directly, so real dead code would
+//! still be caught there.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::radar_state::TabId;
@@ -36,10 +31,6 @@ pub(crate) const LEDGER_CAP: usize = 32;
 pub(crate) const MERGE_WINDOW_S: u64 = 4;
 /// Ages ≥ this render as the frozen "1h+" — the display never changes again,
 /// which is what lets the idle timer fully disarm (spec §4.4/§10).
-///
-/// TODO(Task 15): drop this allow once `RadarState::ledger_any_unsaturated`
-/// (its only consumer) is wired into timer arming.
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 pub(crate) const SATURATE_S: u64 = 3600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,10 +144,6 @@ impl Ledger {
     }
 
     /// Any entry still younger than SATURATE_S? (Drives the Slow cadence.)
-    ///
-    /// TODO(Task 15): drop this allow once `RadarState::ledger_any_unsaturated`
-    /// (its only consumer) is wired into timer arming.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn any_unsaturated(&self, now_epoch_s: u64) -> bool {
         self.entries.iter().any(|e| now_epoch_s.saturating_sub(e.at_epoch_s) < SATURATE_S)
     }

@@ -572,11 +572,7 @@ impl RadarState {
 
     /// Any ledger entry still younger than the saturate window — drives the
     /// Slow cadence (spec §4.4/§10) so the timer stays armed only while a row's
-    /// displayed age can still change.
-    ///
-    /// TODO(Task 15): wired into timer arming; drop the allow below once that
-    /// lands.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    /// displayed age can still change. Consumed by `PluginRuntime::desired_cadence`.
     pub(crate) fn ledger_any_unsaturated(&self, now_epoch_s: u64) -> bool {
         self.ledger.any_unsaturated(now_epoch_s)
     }
@@ -683,6 +679,14 @@ impl RadarState {
     #[cfg(test)]
     pub(crate) fn ledger(&self) -> &Ledger {
         &self.ledger
+    }
+
+    /// Test-only: build a ledger entry directly (bypassing the recede path) so
+    /// cadence tests can pin an exact `at_epoch_s` without driving a whole
+    /// pane lifecycle.
+    #[cfg(test)]
+    pub(crate) fn ledger_mut(&mut self) -> &mut Ledger {
+        &mut self.ledger
     }
 
     #[cfg(test)]
