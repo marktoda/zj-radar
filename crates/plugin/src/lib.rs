@@ -292,11 +292,14 @@ impl ZellijPlugin for State {
                     .panes_changed(radar_state::PaneUpdate::from_raw(raw));
                 self.handle_outcome(outcome)
             }
-            Event::Timer(_) => {
+            Event::Timer(elapsed_s) => {
                 // Re-probe (marker + lock) each tick so a waiting peer can take
                 // over a prompt whose owner died holding a now-stale lock.
+                // `elapsed_s` is the duration the fired `set_timeout` was armed
+                // with — the runtime uses it to identify (and swallow) a stale
+                // slow fire after a Slow→Fast top-up.
                 let probe = self.session_files.refresh_permission_probe();
-                let outcome = self.runtime.timer(probe);
+                let outcome = self.runtime.timer(probe, elapsed_s);
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
