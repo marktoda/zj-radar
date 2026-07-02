@@ -38,11 +38,36 @@ use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
 
+/// How urgently the one-shot timer should re-fire. `Fast` is the 1 Hz tick
+/// that drives animation and debounce/TTL bookkeeping; `Slow` (Task 15) will
+/// back off to a once-a-minute heartbeat when nothing needs per-second
+/// resolution. `arm_timer_if_needed` always arms `Fast` until Task 15 adds the
+/// cadence *selection* — this enum exists now so `Effect::SetTimeout` carries
+/// its argument from the start rather than churning every call site twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cadence {
+    Fast,
+    /// Unconstructed until Task 15 wires `arm_timer_if_needed`'s cadence
+    /// *selection*; a host test exercises `seconds()` over it in the
+    /// meantime, but the shipped wasm build has no production caller yet.
+    #[allow(dead_code)]
+    Slow,
+}
+
+impl Cadence {
+    pub(crate) fn seconds(self) -> f64 {
+        match self {
+            Cadence::Fast => 1.0,
+            Cadence::Slow => 60.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
     SetSelectable(bool),
-    SetTimeout,
+    SetTimeout(Cadence),
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
     RenameTab { position: usize, name: String },
@@ -126,9 +151,12 @@ impl PluginRuntime {
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        let change = self
-            .radar
-            .panes_changed(update, self.tick, self.config.naming);
+        let change = self.radar.panes_changed(
+            update,
+            self.tick,
+            crate::clock::now_epoch_s(),
+            self.config.naming,
+        );
         self.project(vec![], change)
     }
 
@@ -142,7 +170,7 @@ impl PluginRuntime {
         // Running→Done confirm). Persist the snapshot when it does, or a tab
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
-        let store_changed = self.radar.timer(self.tick);
+        let store_changed = self.radar.timer(self.tick, crate::clock::now_epoch_s());
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
@@ -231,14 +259,23 @@ impl PluginRuntime {
         command: &[String],
         is_foreground: bool,
     ) -> Outcome {
-        let change = self
-            .radar
-            .command_changed(pane_id, command, is_foreground, self.tick);
+        let change = self.radar.command_changed(
+            pane_id,
+            command,
+            is_foreground,
+            self.tick,
+            crate::clock::now_epoch_s(),
+        );
         self.project(vec![], change)
     }
 
     pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
-        let Some(change) = self.radar.status_pipe(raw, self.tick, self.config.naming) else {
+        let Some(change) = self.radar.status_pipe(
+            raw,
+            self.tick,
+            crate::clock::now_epoch_s(),
+            self.config.naming,
+        ) else {
             return Outcome::none();
         };
         self.project(vec![], change)
@@ -372,16 +409,18 @@ impl PluginRuntime {
                 || self.timer_should_continue())
         {
             self.timer_armed = true;
-            effects.push(Effect::SetTimeout);
+            // Always Fast today: cadence *selection* (backing off to Slow when
+            // nothing needs per-second resolution) lands in Task 15.
+            effects.push(Effect::SetTimeout(Cadence::Fast));
         }
     }
 
     /// Whether the one-shot timer should (re-)arm for *domain* reasons — the
     /// "tick only while there's something to do" rule that keeps an idle rail from
-    /// waking every second. Two triggers:
+    /// waking every second. Three triggers:
     ///
     /// - **animating work** — a `Running` agent/command whose glyph spins each
-    ///   tick (`RadarState::has_running_work`); and
+    ///   tick (`RadarState::has_running_work`);
     /// - **an un-carried completion edge** — a `status_pipe` payload defers its
     ///   recede + notification to the timer (it can't trust its own focus, see
     ///   `RadarState::status_pipe`), so we must keep ticking until the settle has
@@ -389,10 +428,17 @@ impl PluginRuntime {
     ///   advances the baseline, so a *backgrounded* `Done`/`Error`/`Pending` stops
     ///   pinning the timer awake once notified — a later focus change or broadcast
     ///   re-arms it. (The pre-settle baseline read costs at most one extra tick.)
+    /// - **a command `Done` awaiting its TTL recede** (`RadarState::command_awaiting_recede`)
+    ///   — the row itself is static (it doesn't animate and its notify already
+    ///   fired), but the ledger handoff at `DONE_TTL_TICKS` still needs a tick to
+    ///   land on schedule, so it keeps this armed even though `has_running_work`
+    ///   stays narrow (see that method's doc for the arming split).
     ///
     /// [`has_unsettled_notifications`]: Self::has_unsettled_notifications
     fn timer_should_continue(&self) -> bool {
-        self.radar.has_running_work() || self.has_unsettled_notifications()
+        self.radar.has_running_work()
+            || self.has_unsettled_notifications()
+            || self.radar.command_awaiting_recede()
     }
 
     /// True while the notification baseline lags the live per-pane statuses — i.e.
@@ -544,7 +590,7 @@ mod tests {
                 // Zellij sends no state events to trigger a render).
                 effects: vec![
                     Effect::RequestPermission,
-                    Effect::SetTimeout,
+                    Effect::SetTimeout(Cadence::Fast),
                     Effect::SetSelectable(true),
                 ],
             }
@@ -649,7 +695,7 @@ mod tests {
         assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
         assert_eq!(
             load.effects,
-            vec![Effect::SetTimeout, Effect::SetSelectable(false)]
+            vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(false)]
         );
 
         let timer = runtime.timer(PermissionProbe {
@@ -667,7 +713,7 @@ mod tests {
             vec![
                 Effect::RequestPermission,
                 Effect::SetSelectable(true),
-                Effect::SetTimeout,
+                Effect::SetTimeout(Cadence::Fast),
             ]
         );
     }
@@ -689,7 +735,7 @@ mod tests {
             },
         );
         assert!(
-            load.effects.contains(&Effect::SetTimeout),
+            load.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
             "owner must arm a timer so the needs_permission screen gets a paint trigger",
         );
 
@@ -713,7 +759,7 @@ mod tests {
             lock_acquired: false,
         });
         assert!(!after.render, "granted idle rail must not keep repainting");
-        assert!(!after.effects.contains(&Effect::SetTimeout));
+        assert!(!after.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
     }
 
     #[test]
@@ -831,7 +877,7 @@ mod tests {
         // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
         // not position — the order contract has its own dedicated test.
         assert_eq!(outcome.effects.len(), 2);
-        assert!(outcome.effects.contains(&Effect::SetTimeout));
+        assert!(outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
         assert!(outcome
             .effects
             .iter()
@@ -935,13 +981,13 @@ mod tests {
 
         let command = vec!["cargo".to_string(), "test".to_string()];
         let command_outcome = runtime.command_changed(7, &command, true);
-        assert_eq!(command_outcome.effects, vec![Effect::SetTimeout]);
+        assert_eq!(command_outcome.effects, vec![Effect::SetTimeout(Cadence::Fast)]);
 
         for _ in 1..DEBOUNCE_TICKS {
             let quiet = runtime.timer(PermissionProbe::default());
             assert_eq!(
                 quiet.effects,
-                vec![Effect::SetTimeout],
+                vec![Effect::SetTimeout(Cadence::Fast)],
                 "still pending short of the debounce window"
             );
         }
@@ -950,7 +996,7 @@ mod tests {
         assert!(timer.render);
         // The promotion mutates the command store, so this tick persists the
         // snapshot too (late-spawned instances must see the Running command).
-        assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout]);
+        assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]);
         let state = runtime
             .radar
             .command_store()
@@ -1122,7 +1168,7 @@ mod tests {
             Effect::RenameTab { .. } => 0,
             Effect::PersistSnapshot => 1,
             Effect::ResolveCwd { .. } => 2,
-            Effect::SetTimeout => 3,
+            Effect::SetTimeout(_) => 3,
             Effect::Notify { .. } => 4,
             other => panic!("unexpected effect in canonical-order test: {other:?}"),
         };
@@ -1240,7 +1286,7 @@ mod tests {
 
         // The edge arms the timer but does not itself settle (focus could be stale).
         let edge = rt.status_pipe(&raw);
-        assert!(edge.effects.contains(&Effect::SetTimeout), "status-pipe edge arms the timer");
+        assert!(edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)), "status-pipe edge arms the timer");
         assert!(
             !edge.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
             "the edge itself does not notify (settle is deferred to the timer)"
@@ -1310,5 +1356,35 @@ mod tests {
         // Exercises the full parse → command → effect path through the pipe entry.
         let out = runtime.command_pipe("attention-next");
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
+    }
+
+    #[test]
+    fn cadence_seconds_maps_fast_and_slow() {
+        // Fast is the only cadence `arm_timer_if_needed` selects today; `Slow`
+        // is Task 15's back-off target. Both are exercised here (rather than
+        // only via the wasm-only glue) so this pure mapping is host-testable
+        // and neither variant reads as dead code under `cargo test`.
+        assert_eq!(Cadence::Fast.seconds(), 1.0);
+        assert_eq!(Cadence::Slow.seconds(), 60.0);
+    }
+
+    #[test]
+    fn command_done_keeps_fast_timer_armed_until_ttl_recede() {
+        let mut rt = runtime_with_config(config());
+        rt.command_changed(7, &["make".into()], true);
+        rt.timer(PermissionProbe::default()); // debounce tick 1
+        rt.timer(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
+        // Command leaves the foreground → tentative done → confirmed next tick.
+        rt.command_changed(7, &["zsh".into()], true);
+        rt.timer(PermissionProbe::default());
+        rt.timer(PermissionProbe::default());
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
+        assert!(rt.timer_armed, "a Done awaiting TTL must keep the timer armed");
+        // Tick past the TTL: the Done recedes and the timer quiesces.
+        for _ in 0..=crate::command::DONE_TTL_TICKS {
+            rt.timer(PermissionProbe::default());
+        }
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
+        assert!(!rt.timer_armed, "receded: nothing left to tick for");
     }
 }

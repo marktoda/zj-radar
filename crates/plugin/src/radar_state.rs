@@ -282,12 +282,13 @@ impl RadarState {
         &mut self,
         update: PaneUpdate,
         tick: u64,
+        now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> RadarChange {
         for (pane_id, exit_status) in update.exits {
-            // TODO(Task 9): thread the real wall-clock epoch through; 0 is a
-            // placeholder until PaneUpdate carries it.
-            let _ = self.command.on_exit(pane_id, exit_status, tick, 0);
+            // Displaced completion ignored here (a prior Done/Error still on
+            // the pane when a fresh exit lands); Task 11 ledgers it.
+            let _ = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s);
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
@@ -319,10 +320,9 @@ impl RadarState {
     /// promotion or Done-flip) — the runtime persists the snapshot on it so
     /// timer-driven mutations reach late-spawned instances too.
     ///
-    /// TODO(Task 9): thread the real wall-clock epoch through instead of `0`.
     /// TODO(Task 11): consume `TimerReport::receded` into the ledger.
-    pub(crate) fn timer(&mut self, tick: u64) -> bool {
-        self.command.on_timer(tick, 0).changed
+    pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
+        self.command.on_timer(tick, now_epoch_s).changed
     }
 
     pub(crate) fn cwd_changed(
@@ -346,6 +346,7 @@ impl RadarState {
         command: &[String],
         is_foreground: bool,
         tick: u64,
+        now_epoch_s: u64,
     ) -> RadarChange {
         let cwd = self.pane_cwd.get(&pane_id).map(String::as_str);
         self.command
@@ -356,6 +357,13 @@ impl RadarState {
         // every tab's instance clears in lockstep. `clear_on_prompt_return`
         // ignores a Running status, so a mid-turn foreground flicker to a shell
         // can't be mistaken for the agent exiting.
+        //
+        // `now_epoch_s` is threaded through for signature symmetry with the
+        // other three mutating entry points, but unused today:
+        // `clear_on_prompt_return` recedes to Idle and stamps no completion
+        // epoch. TODO(Task 11): the ledger may want the wall-clock moment of
+        // this recede.
+        let _ = now_epoch_s;
         let cleared = crate::command::is_shell_prompt(command, is_foreground)
             && self.status.clear_on_prompt_return(pane_id, tick).is_some();
         RadarChange {
@@ -372,13 +380,13 @@ impl RadarState {
         &mut self,
         raw: &str,
         tick: u64,
+        now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
-        // TODO(Task 9): thread the real wall-clock epoch through instead of `0`.
         // Displaced completion ignored here; Task 11 ledgers a Done/Error that
         // recedes on overwrite.
-        let _ = self.status.apply(p, tick, 0);
+        let _ = self.status.apply(p, tick, now_epoch_s);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
@@ -395,13 +403,28 @@ impl RadarState {
     /// True while any tracked pane is actively *working* — a status-pipe agent
     /// reporting `Running`, or an observed foreground command still live. This is
     /// the animated set (the spinner), so it wants a per-tick repaint. Deliberately
-    /// narrow: a finished `Done`/`Error` or a waiting `Pending` is not "work" for
-    /// tick purposes (it doesn't animate, and its notify/recede is the one-shot the
-    /// settle carries), mirroring `CommandStore::has_pending_or_active`. The runtime
-    /// keeps the timer alive on this OR an un-carried completion edge; see
-    /// `PluginRuntime::timer_should_continue`.
+    /// narrow: a finished `Done`/`Error` or a waiting `Pending` is not "animating"
+    /// work, mirroring `CommandStore::has_pending_or_active`.
+    ///
+    /// This does NOT mean a finished `Done` never needs another tick — a command
+    /// `Done` sits on a `DONE_TTL_TICKS` clock before it recedes to Idle (spec
+    /// §3.1's cadence design), and that recede has to land on schedule even
+    /// though the row itself is static. That's a *separate* arming reason,
+    /// deliberately kept out of this predicate: `command_awaiting_recede` carries
+    /// the TTL window, so `PluginRuntime::timer_should_continue` ORs the two
+    /// rather than broadening `has_running_work` to cover a case it was never
+    /// meant to (animation vs. a scheduled one-shot are different reasons to
+    /// tick, and conflating them would blur what each predicate promises).
     pub(crate) fn has_running_work(&self) -> bool {
         self.status.any_running() || self.command.has_pending_or_active()
+    }
+
+    /// True while a command-origin `Done` is still inside its `DONE_TTL_TICKS`
+    /// window, awaiting the recede to Idle. Delegates to
+    /// `CommandStore::has_done_awaiting_recede` — see `has_running_work`'s doc
+    /// for why this is a distinct arming reason rather than folded into it.
+    pub(crate) fn command_awaiting_recede(&self) -> bool {
+        self.command.has_done_awaiting_recede()
     }
 
     pub(crate) fn recompute_renames(&mut self, naming: config::NamingMode) -> Vec<TabRename> {

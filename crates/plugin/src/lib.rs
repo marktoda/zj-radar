@@ -26,6 +26,7 @@
 // as `crate::status`, `crate::payload`, … with no per-reference churn.
 pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
 
+mod clock;
 mod config;
 mod control;
 mod notify_rules;
@@ -170,7 +171,7 @@ impl State {
                     PermissionType::RunCommands,
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
-                Effect::SetTimeout => set_timeout(1.0),
+                Effect::SetTimeout(cadence) => set_timeout(cadence.seconds()),
                 Effect::PersistSnapshot => {
                     let existing = self.session_files.snapshot();
                     let json = self.runtime.snapshot_json(existing.as_deref());

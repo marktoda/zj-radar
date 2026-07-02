@@ -52,7 +52,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
-    let change = radar.command_changed(7, &["zsh".into()], true, 5);
+    let change = radar.command_changed(7, &["zsh".into()], true, 5, 0);
 
     // The stale `done` is cleared to idle, repo kept for tab naming. This rides
     // the shared CommandChanged signal, so every tab's instance clears alike.
@@ -71,7 +71,7 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
         .status_mut()
         .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
     // A mid-turn foreground flicker to a shell must NOT be read as an exit.
-    let change = radar.command_changed(7, &["bash".into()], true, 5);
+    let change = radar.command_changed(7, &["bash".into()], true, 5, 0);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
     assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
 }
@@ -109,7 +109,7 @@ fn active_tab_focus_is_the_only_global_focus_transition() {
         exits: Vec::new(),
     };
 
-    radar.panes_changed(update, 7, config::NamingMode::Off);
+    radar.panes_changed(update, 7, 0, config::NamingMode::Off);
 
     assert_eq!(radar.last_focused(), Some(2));
 }
@@ -152,8 +152,8 @@ fn observation_origin_is_source_specific() {
     radar
         .status_mut()
         .apply(payload_for(1, Status::Running, "status"), 1, 0);
-    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS);
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     assert_eq!(
         radar.status(1).unwrap().origin,
@@ -206,6 +206,7 @@ fn panes_changed_requests_cwd_bootstrap_for_new_pane_without_cwd() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -220,6 +221,7 @@ fn panes_changed_requests_no_cwd_bootstrap_when_naming_off() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Off,
     );
 
@@ -235,6 +237,7 @@ fn panes_changed_skips_cwd_bootstrap_when_cwd_already_known() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -249,8 +252,8 @@ fn panes_changed_requests_each_pane_cwd_only_once_even_if_unresolved() {
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
     let update = || pane_update(HashMap::from([(0, vec![focused_pane(7)])]));
 
-    let first = radar.panes_changed(update(), 1, config::NamingMode::Managed);
-    let second = radar.panes_changed(update(), 2, config::NamingMode::Managed);
+    let first = radar.panes_changed(update(), 1, 0, config::NamingMode::Managed);
+    let second = radar.panes_changed(update(), 2, 0, config::NamingMode::Managed);
 
     assert_eq!(first.cwd_bootstrap, vec![7]);
     assert!(second.cwd_bootstrap.is_empty());
@@ -264,15 +267,17 @@ fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
     let first = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(first.cwd_bootstrap, vec![7]);
 
     // Pane 7 closes (no longer live), then a new pane reuses id 7.
-    radar.panes_changed(pane_update(HashMap::new()), 2, config::NamingMode::Managed);
+    radar.panes_changed(pane_update(HashMap::new()), 2, 0, config::NamingMode::Managed);
     let reborn = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         3,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -293,6 +298,7 @@ fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
     let first = radar.panes_changed(
         pane_update(HashMap::from([(0, panes)])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -311,6 +317,7 @@ fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
                 .collect(),
         )])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(second.cwd_bootstrap, vec![8]);
@@ -325,6 +332,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     let opened = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(opened.cwd_bootstrap, vec![7]);
@@ -343,6 +351,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     let refreshed = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(refreshed.cwd_bootstrap.is_empty());
@@ -376,8 +385,8 @@ fn same_pane_status_observation_wins_over_command() {
     radar.set_tab_panes_for_position(0, vec![focused_pane(5)]);
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo.
@@ -402,8 +411,8 @@ fn notify_views_status_wins_over_command_for_same_pane() {
     let mut radar = RadarState::default();
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo so
@@ -429,8 +438,8 @@ fn finished_command_pane_carries_outcome_through_rows() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS); // promote pending → Running
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
     radar.command_mut().on_exit(1, Some(2), 3, 0);
@@ -445,8 +454,8 @@ fn finished_command_pane_carries_outcome_through_rows() {
 #[test]
 fn snapshot_round_trip_preserves_command_exit_code() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
     radar.command_mut().on_exit(7, Some(3), 3, 0);
     assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
 
@@ -487,8 +496,8 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
 #[test]
 fn snapshot_round_trip_preserves_command_observations() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(1 + DEBOUNCE_TICKS);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     let json = radar.snapshot_json(None, 2);
     let mut restored = RadarState::default();
@@ -579,6 +588,7 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
             exits: Vec::new(),
         },
         3,
+        0,
         config::NamingMode::Off,
     );
 
@@ -607,6 +617,7 @@ fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![pane(1), focused_pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(change.renames.is_empty());
@@ -627,6 +638,7 @@ fn manual_rename_is_preserved_through_focus_and_cwd_changes() {
     let focus = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(1), pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(focus.renames.is_empty());
@@ -652,6 +664,7 @@ fn applied_tab_name_repicks_when_the_naming_pane_closes() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(
@@ -676,7 +689,7 @@ fn mutating_events_request_a_render() {
     );
     assert!(
         radar
-            .command_changed(1, &["cargo".into(), "build".into()], true, 0)
+            .command_changed(1, &["cargo".into(), "build".into()], true, 0, 0)
             .render,
         "command_changed must request a render"
     );
@@ -895,7 +908,7 @@ proptest! {
                         theme: None,
                         exits: exits.clone(),
                     };
-                    st.panes_changed(update, tick, config::NamingMode::Off);
+                    st.panes_changed(update, tick, 0, config::NamingMode::Off);
 
                     // Prune contract: immediately after panes_changed every
                     // stored observation belongs to a live pane.
@@ -917,7 +930,7 @@ proptest! {
                         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane}}},"status":"{}","repo":"r","msg":"m"}}"#,
                         status.as_wire()
                     );
-                    let _ = st.status_pipe(&raw, tick, config::NamingMode::Off);
+                    let _ = st.status_pipe(&raw, tick, 0, config::NamingMode::Off);
                 }
                 Op::Command(pane, fg) => {
                     st.command_changed(
@@ -925,10 +938,11 @@ proptest! {
                         &["cargo".to_string(), "build".to_string()],
                         *fg,
                         tick,
+                        0,
                     );
                 }
                 Op::Timer => {
-                    st.timer(tick);
+                    st.timer(tick, 0);
                 }
                 Op::Cwd(pane) => {
                     st.cwd_changed(*pane, "/home/u/proj".into(), config::NamingMode::Off);

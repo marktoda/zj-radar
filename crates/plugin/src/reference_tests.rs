@@ -380,7 +380,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         theme: None,
         exits: Vec::new(),
     };
-    radar.panes_changed(update, 0, NamingMode::Off);
+    radar.panes_changed(update, 0, 0, NamingMode::Off);
 
     // 3. Apply status for each tracked pane.
     //
@@ -424,7 +424,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     &pane.task,
                     source,
                 );
-                radar.status_pipe(&wire_running, 0, NamingMode::Off);
+                radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
                 let wire_idle = to_wire(
                     pane.pane_id,
@@ -435,7 +435,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     source,
                 );
-                radar.status_pipe(&wire_idle, 1, NamingMode::Off);
+                radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
                 let wire = to_wire(
                     pane.pane_id,
@@ -446,7 +446,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     &pane.task,
                     source,
                 );
-                radar.status_pipe(&wire, 0, NamingMode::Off);
+                radar.status_pipe(&wire, 0, 0, NamingMode::Off);
             }
         }
     }
@@ -463,7 +463,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 let argv: Vec<String> = pane.msg.split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
-                radar.command_changed(pane.pane_id, &argv, true, 0);
+                radar.command_changed(pane.pane_id, &argv, true, 0, 0);
                 command_exits.push((pane.pane_id, code));
             }
         }
@@ -471,7 +471,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     if !command_exits.is_empty() {
         // Promote all pending commands to Running so the msg is set before exit.
-        radar.timer(DEBOUNCE_TICKS);
+        radar.timer(DEBOUNCE_TICKS, 0);
 
         // Now deliver the exits. Re-register the live pane set (unchanged) along
         // with the exits vec so that panes_changed → on_exit sets Done/Error.
@@ -497,7 +497,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             theme: None,
             exits: command_exits,
         };
-        radar.panes_changed(update2, 2, NamingMode::Off);
+        radar.panes_changed(update2, 2, 0, NamingMode::Off);
     }
 
     // 4. Build RenderOpts
