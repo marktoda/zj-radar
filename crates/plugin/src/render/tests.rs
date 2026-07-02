@@ -3942,6 +3942,34 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
 }
 
 #[test]
+fn ledger_entry_line_clamps_at_extreme_narrow_widths() {
+    // The fixed age+glyph prefix is 6 cols; below that the line must clamp,
+    // like every other fixed-prefix renderer in this file (see
+    // `emit_pane_line`'s narrow-width fallback and the `truncate(...)` guards
+    // on `footer_tally`/`ledger_rule`).
+    let line = crate::radar_state::LedgerLine {
+        at_epoch_s: 0,
+        error: false,
+        tab_name: "web".into(),
+        label: "deploying".into(),
+        tab_position: Some(0),
+    };
+    for width in 1..=7 {
+        let opts = RenderOpts { now_epoch_s: 1000, ..ro(width, 0) };
+        let rendered = ledger_entry_line(&line, &opts);
+        for text_line in rendered.text.lines() {
+            assert!(
+                visible_len(text_line) <= width,
+                "width {}: line exceeds width: {:?} (visible {})",
+                width,
+                text_line,
+                visible_len(text_line)
+            );
+        }
+    }
+}
+
+#[test]
 fn cards_never_lose_budget_to_the_bottom_region() {
     // Many URGENT (never idle-foldable) rows, tight height → the overflow
     // compressor packs the plan to fill body_budget exactly, leaving no
@@ -4205,7 +4233,7 @@ proptest! {
     #[test]
     fn render_rail_lockstep_lines_match_targets(
         rows in arb_rows(),
-        width in 8usize..=120,
+        width in 1usize..=120,
         height in 1usize..=60,
         ledger in arb_ledger(),
     ) {
@@ -4225,7 +4253,21 @@ proptest! {
 
         if !rows.is_empty() {
             let leftover = height.saturating_sub(body_line_count(&rows, &opts));
-            if !render_bottom(&rows, leftover, &opts).is_empty() {
+            let bottom = render_bottom(&rows, leftover, &opts);
+            // Every bottom-region line (rule/entries/footer) must clamp to the
+            // rail width, at any width down to 1 — including the ledger entries,
+            // which carry a fixed age+glyph prefix like every other fixed-prefix
+            // renderer in this file.
+            for line in &bottom {
+                prop_assert!(
+                    visible_len(&line.text) <= width,
+                    "bottom line exceeds width {}: {:?} (visible {})",
+                    width,
+                    line.text,
+                    visible_len(&line.text)
+                );
+            }
+            if !bottom.is_empty() {
                 prop_assert_eq!(rail.line_count(), height);
             }
         }

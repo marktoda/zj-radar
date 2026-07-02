@@ -1137,6 +1137,18 @@ fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -
         ("●", Role::Success)
     };
     let prefix = age_w + 1 + 1 + 1; // age, space, glyph, space
+    // Narrow-width fallback: the colored path always emits the full fixed
+    // age+glyph prefix unconditionally, so at widths below it the line would
+    // overflow. Below that floor, drop all color and emit a single plain
+    // line clamped to `width` so nothing exceeds the band.
+    if width < prefix {
+        let plain = format!("{age} {glyph} {} {}", line.tab_name, line.label);
+        return Line {
+            text: format!("{}\n", truncate(&plain, width)),
+            target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+            bg: LineBg::Rail,
+        };
+    }
     let name_budget = 12.min(width.saturating_sub(prefix));
     let name = truncate(&line.tab_name, name_budget);
     let name_w = UnicodeWidthStr::width(name.as_str());
