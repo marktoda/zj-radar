@@ -66,7 +66,7 @@ use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
-const PIPE_NAME: &str = "zj_radar.status.v1";
+const PIPE_NAME: &str = payload::STATUS_PIPE_NAME;
 #[cfg(target_arch = "wasm32")]
 const CONFIG_PIPE: &str = "zj_radar.config.v1";
 #[cfg(target_arch = "wasm32")]
@@ -374,6 +374,22 @@ mod tests {
     use super::*;
     use crate::payload::StatusPayload;
     use crate::status::Status;
+
+    /// The bash fallback producer can't import `payload::STATUS_PIPE_NAME`, so
+    /// its hand-typed literal is pinned here — one drifted character in a pipe
+    /// name is a silently dead producer, the least debuggable failure this
+    /// system has. (This crate isn't published to crates.io, so reaching
+    /// outside the crate dir is safe — same pattern as `reference_tests.rs`.)
+    #[test]
+    fn bash_producer_broadcasts_on_the_shared_pipe_name() {
+        let sh = include_str!("../../../plugins/zj-radar-claude/scripts/notify.sh");
+        let broadcast = format!("zellij pipe --name {} --", payload::STATUS_PIPE_NAME);
+        assert!(
+            sh.contains(&broadcast),
+            "notify.sh must broadcast via `{broadcast}`; if the pipe name is \
+             versioned, bump payload::STATUS_PIPE_NAME and notify.sh together"
+        );
+    }
 
     fn pane(id: u32) -> TerminalPane {
         TerminalPane {

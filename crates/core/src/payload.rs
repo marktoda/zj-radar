@@ -7,6 +7,15 @@ pub const MAX_PAYLOAD_BYTES: usize = 65536;
 pub const MAX_MSG_CHARS: usize = 60;
 pub const MAX_TASK_CHARS: usize = 60;
 
+/// The versioned pipe name that binds every producer to the plugin — the one
+/// string that must never drift between them. The pipe *name* carries the
+/// contract version: a breaking change means a new name (`…v2`), so old plugins
+/// simply never see payloads they can't parse. The payload's `v` field is
+/// informational only: [`to_wire`] stamps it, `parse` ignores it.
+pub const STATUS_PIPE_NAME: &str = "zj_radar.status.v1";
+/// Stamped into the payload's `v` field by [`to_wire`]; never read on parse.
+pub const STATUS_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusPayload {
     pub pane_id: u32,
@@ -222,7 +231,7 @@ pub fn to_wire(
     source: &str,
 ) -> String {
     serde_json::to_string(&Wire {
-        v: 1,
+        v: STATUS_VERSION,
         source,
         pane: WirePane {
             kind: "terminal",

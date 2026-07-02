@@ -45,9 +45,9 @@ fn codex_installed(codex_on_path: bool) -> bool {
 
 pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
     if codex_home_dir().is_none() {
-        crate::exit::fail();
-        eprintln!(
-            "codex: skipped — set $HOME or $CODEX_HOME so the Codex config dir can be resolved"
+        crate::exit::fail_report(
+            "codex",
+            "skipped — set $HOME or $CODEX_HOME so the Codex config dir can be resolved",
         );
         return;
     }
@@ -127,11 +127,13 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
             path.display()
         ),
         Outcome::Conflict => {
-            crate::exit::fail();
-            eprintln!(
-                "codex: {} already has a different `notify` program. Refusing to overwrite it.\n\
-                 Re-run with --legacy-notify --force to replace it, or use hook setup without --legacy-notify.",
-                path.display()
+            crate::exit::fail_report(
+                "codex",
+                format!(
+                    "{} already has a different `notify` program. Refusing to overwrite it.\n\
+                     Re-run with --legacy-notify --force to replace it, or use hook setup without --legacy-notify.",
+                    path.display()
+                ),
             );
         }
         Outcome::Changed(new) => {

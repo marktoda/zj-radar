@@ -30,11 +30,6 @@ everywhere.
 
 A native binary that drops the `jq`/`bash` dependency and wires non-plugin agents.
 
-> **Before the first tagged release**, the prebuilt tarballs and the
-> `#zj-radar-cli` Nix output aren't published yet — use the `cargo install --git`
-> form below (or build from source). The release workflow produces all three on
-> the first `v*` tag.
-
 ```sh
 # Release tarballs (published on tagged releases; named by Rust target triple):
 #   zj-radar-x86_64-unknown-linux-musl.tar.gz
@@ -42,8 +37,8 @@ A native binary that drops the `jq`/`bash` dependency and wires non-plugin agent
 #   zj-radar-aarch64-apple-darwin.tar.gz
 # Nix:
 nix build github:marktoda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
-# Cargo:
-cargo install --git https://github.com/marktoda/zj-radar zj-radar
+# Cargo (crates.io; add `--git https://github.com/marktoda/zj-radar` for HEAD):
+cargo install zj-radar
 ```
 
 - **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude

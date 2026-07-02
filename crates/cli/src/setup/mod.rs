@@ -141,8 +141,7 @@ pub fn run(options: SetupOptions<'_>) {
         .iter()
         .filter(|a| !matches!(a.as_str(), "codex" | "zellij"))
     {
-        crate::exit::fail();
-        eprintln!("zj-radar: setup does not support '{a}' (supported: codex, zellij). Skipping.");
+        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: codex, zellij). Skipping."));
     }
 
     if mode == Mode::Check {
@@ -163,8 +162,7 @@ pub fn run(options: SetupOptions<'_>) {
             match wasm_source(options.wasm, options.download) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::exit::fail();
-                    eprintln!("zellij: refused — {e}");
+                    crate::exit::fail_report("zellij", format!("refused — {e}"));
                     return;
                 }
             }
@@ -202,8 +200,7 @@ pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Opti
     match edit {
         Ok(outcome) => Some(outcome),
         Err(e) => {
-            crate::exit::fail();
-            eprintln!("{label}: refused — {e}");
+            crate::exit::fail_report(label, format!("refused — {e}"));
             None
         }
     }
@@ -238,13 +235,11 @@ pub(crate) fn confirm_and_write(
         return false;
     }
     if let Err(e) = pre_write() {
-        crate::exit::fail();
-        eprintln!("{label}: {e}");
+        crate::exit::fail_report(label, e);
         return false;
     }
     if let Err(e) = write_atomic(path, new) {
-        crate::exit::fail();
-        eprintln!("{label}: write failed — {e}");
+        crate::exit::fail_report(label, format!("write failed — {e}"));
         return false;
     }
     true

@@ -4,7 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
 use super::agents::{Agent, AgentUpdate, Intake};
-use crate::payload::to_wire;
+use crate::payload::{to_wire, STATUS_PIPE_NAME};
 use std::io::Read;
 use std::process::Command;
 
@@ -213,7 +213,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         return;
     }
     let _ = Command::new("zellij")
-        .args(["pipe", "--name", "zj_radar.status.v1", "--", &payload])
+        .args(["pipe", "--name", STATUS_PIPE_NAME, "--", &payload])
         .output();
 }
 

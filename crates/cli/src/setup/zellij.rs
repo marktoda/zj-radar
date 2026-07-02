@@ -54,19 +54,23 @@ pub(crate) fn run_grant(config_dir: &Path) {
     match Command::new("zellij").args(&args).status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
-            crate::exit::fail();
-            eprintln!(
-                "zj-radar: zellij plugin exited with {status}; \
-                 try running: zellij {}",
-                crate::run::shell_join(&args)
+            crate::exit::fail_report(
+                "zj-radar",
+                format!(
+                    "zellij plugin exited with {status}; \
+                     try running: zellij {}",
+                    crate::run::shell_join(&args)
+                ),
             );
         }
         Err(e) => {
-            crate::exit::fail();
-            eprintln!(
-                "zj-radar: failed to launch zellij for grant — {e}; \
-                 try running: zellij {}",
-                crate::run::shell_join(&args)
+            crate::exit::fail_report(
+                "zj-radar",
+                format!(
+                    "failed to launch zellij for grant — {e}; \
+                     try running: zellij {}",
+                    crate::run::shell_join(&args)
+                ),
             );
         }
     }
@@ -206,8 +210,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 Some(downloaded.as_path())
             }
             Err(e) => {
-                crate::exit::fail();
-                eprintln!("zellij: refused — {e}");
+                crate::exit::fail_report("zellij", format!("refused — {e}"));
                 return;
             }
         }
@@ -233,13 +236,11 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
 
     if !uninstall {
         let Some(src) = src else {
-            crate::exit::fail();
-            eprintln!("zellij: refused — pass --wasm <path-to-zj_radar.wasm> or --download");
+            crate::exit::fail_report("zellij", "refused — pass --wasm <path-to-zj_radar.wasm> or --download");
             return;
         };
         if !src.is_file() {
-            crate::exit::fail();
-            eprintln!("zellij: refused — wasm not found at {}", src.display());
+            crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
             return;
         }
     }
@@ -267,11 +268,13 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             print_producer_hint_if_needed(&facts);
         }
         Outcome::Conflict => {
-            crate::exit::fail();
-            eprintln!(
-                "zellij: {} already has an unmanaged `radar` plugin alias. Refusing to overwrite it.\n\
-                 Re-run with --force to replace it, or wire zj-radar manually.",
-                config_path.display()
+            crate::exit::fail_report(
+                "zellij",
+                format!(
+                    "{} already has an unmanaged `radar` plugin alias. Refusing to overwrite it.\n\
+                     Re-run with --force to replace it, or wire zj-radar manually.",
+                    config_path.display()
+                ),
             );
         }
         Outcome::Changed(new) => {
@@ -440,22 +443,17 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                     layout_path.display(),
                     layout_path.display()
                 ),
-                Err(e) => {
-                    crate::exit::fail();
-                    eprintln!("zellij: write failed — {e}");
-                }
+                Err(e) => crate::exit::fail_report("zellij", format!("write failed — {e}")),
             }
         }
         Err(crate::layout::Refusal::Unparseable(msg)) => {
-            crate::exit::fail();
-            eprintln!("zellij: layout could not be parsed — {msg}");
+            crate::exit::fail_report("zellij", format!("layout could not be parsed — {msg}"));
             eprintln!("        Add the rail manually using the snippet below.");
             let snippet = crate::layout::tailored_snippet(facts);
             println!("\n{snippet}");
         }
         Err(crate::layout::Refusal::Unrecognized(msg)) => {
-            crate::exit::fail();
-            eprintln!("zellij: layout shape not recognized — {msg}");
+            crate::exit::fail_report("zellij", format!("layout shape not recognized — {msg}"));
             eprintln!("        Add the rail manually using the snippet below.");
             let snippet = crate::layout::tailored_snippet(facts);
             println!("\n{snippet}");
@@ -487,10 +485,7 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
                     layout_path.display(),
                     layout_path.display()
                 ),
-                Err(e) => {
-                    crate::exit::fail();
-                    eprintln!("zellij: write failed — {e}");
-                }
+                Err(e) => crate::exit::fail_report("zellij", format!("write failed — {e}")),
             }
         }
     }
