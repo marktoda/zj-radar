@@ -144,7 +144,9 @@ pub(crate) fn tailored_snippet(facts: &LayoutFacts) -> String {
         lines.push("// Note: the rail includes a status bar — replace your existing top bar pane.");
     }
     if facts.has_swaps {
-        lines.push("// Note: swap layouts already present; the templates below slot into them.");
+        lines.push("// Note: swap layouts already present — route each entry through the \"ui\"");
+        lines.push("// template below (`ui max_panes=N { ... }`), or Alt+[ / Alt+] cycling will");
+        lines.push("// swap to layouts without the rail. See docs/troubleshooting.md.");
     } else {
         lines.push("// Note: swap layouts included below (enables Alt+] cycling between layouts).");
     }
@@ -152,10 +154,10 @@ pub(crate) fn tailored_snippet(facts: &LayoutFacts) -> String {
     lines.push(DEFAULT_TAB_TEMPLATE);
     lines.push("");
     lines.push(NEW_TAB_TEMPLATE);
+    lines.push("");
+    lines.push(RAIL_UI_TEMPLATE);
 
     if !facts.has_swaps {
-        lines.push("");
-        lines.push(RAIL_UI_TEMPLATE);
         lines.push("");
         lines.push(SWAP_BLOCKS);
     }
@@ -288,7 +290,21 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     // 2. Assemble the additions appended before the closing brace: the `ui`
     //    template, the swap blocks, and a `new_tab_template` when absent. Fenced
     //    with BLOCK markers (pure insertions; `uninstall` deletes them whole).
-    let mut additions = format!("{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}");
+    //
+    //    Swap blocks are added ONLY when the layout has none of its own:
+    //    appending ours next to existing `swap_tiled_layout` nodes would
+    //    duplicate names AND leave the user's rail-less swaps in the Alt+[ ]
+    //    cycle — swapping would silently pop the rail, the exact failure the
+    //    `ui` template exists to prevent. We never rewrite swap bodies we
+    //    didn't author (fail-closed), so with existing swaps the fix is the
+    //    user's one-word edit: route each entry through the `ui` template we
+    //    still inject (inert until referenced). The caller prints that
+    //    guidance; docs/troubleshooting.md carries the full story.
+    let mut additions = if facts.has_swaps {
+        RAIL_UI_TEMPLATE.to_string()
+    } else {
+        format!("{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}")
+    };
     if !body
         .nodes()
         .iter()
@@ -493,7 +509,12 @@ mod tests {
         assert!(s.contains("swap_tiled_layout"), "must include swaps when absent");
 
         let with_swaps = LayoutFacts { has_swaps: true, ..none };
-        assert!(tailored_snippet(&with_swaps).to_lowercase().contains("already"), "note existing swaps");
+        let s = tailored_snippet(&with_swaps);
+        assert!(s.to_lowercase().contains("already"), "note existing swaps");
+        assert!(!s.contains("swap_tiled_layout"), "never paste duplicate swap nodes");
+        // The `ui` template still ships — it's the one-word fix for routing the
+        // user's own swap entries through the rail.
+        assert!(s.contains("tab_template name=\"ui\""), "ui template present with swaps");
 
         let with_bar = LayoutFacts { has_top_bar: true, ..none };
         assert!(tailored_snippet(&with_bar).to_lowercase().contains("replace"), "note the rail replaces the bar");
@@ -526,6 +547,48 @@ mod tests {
         assert!(out.contains("swap_tiled_layout"));
         // re-analyze the output: now has the rail.
         assert!(analyze(&out).has_rail);
+    }
+
+    /// A layout that declares its own `swap_tiled_layout` blocks: inject must
+    /// wrap the rail and add the `ui` template, but NEVER append our swap
+    /// blocks next to the user's — duplicate names plus rail-less swaps left
+    /// in the Alt+[ ] cycle would pop the rail on swap. The user's swaps
+    /// survive untouched (we don't rewrite bodies we didn't author) and
+    /// uninstall still restores the original byte-for-byte.
+    #[test]
+    fn inject_with_existing_swaps_adds_ui_template_but_no_swap_blocks() {
+        let original = "\
+layout {
+    default_tab_template {
+        children
+    }
+    swap_tiled_layout name=\"vertical\" {
+        tab_template {
+            pane split_direction=\"vertical\" {
+                pane
+                pane
+            }
+        }
+    }
+    tab {
+        pane
+    }
+}
+";
+        let facts = analyze(original);
+        assert!(facts.has_swaps, "fixture must trip the swap gate");
+
+        let out = inject(original, &facts).expect("existing swaps are a recognized shape");
+        assert!(out.contains("plugin location=\"radar\""), "rail must be injected");
+        assert!(out.contains("tab_template name=\"ui\""), "ui template must be added");
+        assert_eq!(
+            out.matches("swap_tiled_layout").count(), 1,
+            "the user's lone swap block must remain the only one: {out}"
+        );
+        out.parse::<kdl::KdlDocument>().expect("injected output must be valid KDL");
+
+        let restored = uninstall(&out).expect("uninstall must reverse injection");
+        assert_eq!(restored, original, "uninstall must restore the original byte-for-byte");
     }
 
     #[test]
@@ -732,6 +795,21 @@ layout {
     fn uninstall_returns_none_when_no_markers() {
         let clean = "layout {\n    default_tab_template {\n        children\n    }\n}\n";
         assert!(uninstall(clean).is_none(), "no markers → must return None");
+    }
+
+    /// The example layout is load-bearing documentation (install.md and the
+    /// troubleshooting swap entry both point at it): it must parse with the
+    /// same v1-fallback parser Zellij's dialect needs, carry all three swap
+    /// blocks routed through the `ui` template, and keep the two-template rule.
+    #[test]
+    fn example_layout_parses_and_carries_rail_swaps() {
+        let example = include_str!("../../../examples/radar-sidebar.kdl");
+        example.parse::<kdl::KdlDocument>().expect("example layout must be valid KDL");
+        let f = analyze(example);
+        assert!(f.has_default_template && f.has_swaps && f.has_rail && f.has_children_anchor);
+        assert!(example.contains("new_tab_template"), "two-template rule");
+        assert!(example.contains("tab_template name=\"ui\""), "swaps route through ui");
+        assert_eq!(example.matches("swap_tiled_layout").count(), 3);
     }
 
     /// Drift guard: `full_layout()` must stay byte-equal to `run_assets/radar.kdl`

@@ -56,6 +56,45 @@ sidebar pins itself.
 [layout snippet](install.md#add-the-sidebar-to-a-layout). That sidesteps the
 derivation entirely.
 
+## Alt+] hides the rail (or stops cycling)
+
+**Symptom:** pressing `Alt+[` / `Alt+]` (cycle swap layouts) either makes the
+sidebar vanish from the current tab, or does nothing at all.
+
+**Why:** any custom `--layout` makes Zellij discard its **built-in** swap
+layouts, so a layout that declares none loses cycling entirely ("does
+nothing"). And swap layouts *replace* the tab's arrangement wholesale — a swap
+entry that doesn't itself include the rail swaps it away ("rail vanishes").
+Neither is a bug in the swap; it's what swapping means.
+
+**Fix:** the injected rail and
+[`examples/radar-sidebar.kdl`](../examples/radar-sidebar.kdl) both redeclare
+`swap_tiled_layout` with every entry routed through a rail-carrying
+`tab_template name="ui"` — cycling works and the rail survives every
+arrangement. Two cases where you're on your own:
+
+- **You wrote the layout by hand** and skipped the swap blocks: copy them from
+  the example layout (or re-run `zj-radar setup zellij --inject`, which adds
+  them when none exist).
+- **Your layout has its own `swap_tiled_layout` blocks:** `--inject`
+  deliberately leaves them untouched (it never rewrites layout bodies it
+  didn't author) and skips adding its own, so yours stay the only ones in the
+  cycle — rail-less. Route each entry through the injected `ui` template:
+
+  ```kdl
+  swap_tiled_layout name="vertical" {
+      ui max_panes=5 {          // ← was: tab_template { … } or a bare pane tree
+          pane split_direction="vertical" {
+              pane
+              pane { children; }
+          }
+      }
+  }
+  ```
+
+  One word per entry — the `ui` wrapper is the same tab template the rail
+  lives in, so every swapped arrangement keeps the left column.
+
 ## First-run prompt coordination
 
 **Symptom:** on a fresh layout the sidebar requests permissions in one tab while
