@@ -144,8 +144,13 @@ tab 1 "pinky"
  RADAR                        ·1
 ◆═══════════════════════════════
  ⠋ 1 pinky
-  ✳ running tests…
+ └ ⠋ ✳ running tests…
 ```
+
+> Single-pane tabs render their one tracked pane through the SAME tree
+> machinery as multi-pane children (§H): `└` elbow, status glyph, identity
+> mark, activity. One layout to learn — a tab with one pane and a tab with
+> three scan identically.
 
 ## D. Single agent — needs you
 
@@ -158,7 +163,7 @@ tab 3 "api"
  RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 3 api
-  ✳ approve edit?
+ └ ◆ ✳ approve edit?
 ```
 
 ## E. Single agent — done
@@ -172,7 +177,7 @@ tab 1 "dotfiles"
  RADAR                        ·1
 ════════════════════════════════
  ● 1 dotfiles
-  ✳ refactored the dotfiles
+ └ ● ✳ refactored the dotfiles
 ```
 
 ## F. Single agent — error
@@ -186,7 +191,7 @@ tab 2 "build-svc"
  RADAR                     ·1 1!
 ════════════════════════════════
  ✗ 2 build-svc
-  ✳ exit 1: cargo test failed
+ └ ✗ ✳ exit 1: cargo test failed
 ```
 
 ## G. Single command — build running
@@ -200,7 +205,7 @@ tab 1 "web"
  RADAR                        ·1
 ◆═══════════════════════════════
  ⠋ 1 web
-  ⚙ cargo build
+ └ ⠋ ⚙ cargo build
 ```
 
 ## H. Multi-pane — the `af` case (line per pane)
@@ -311,11 +316,11 @@ tab 6 "logs"
  RADAR                     6▲ 1!
 ◆═══════════════════════════════
  ◆ 1 review
-  ✳ approve diff?
+ └ ◆ ✳ approve diff?
  ⠋ 2 af
-  ❉ exploring render
+ └ ⠋ ❉ exploring render
  ● 3 dotfiles
-  ✳ refactored auth
+ └ ● ✳ refactored auth
 +3 idle ▾
 ```
 
@@ -470,7 +475,7 @@ tab 1 "pinky" bell
  RADAR                        ·1
 ◆═══════════════════════════════
  ⠋ 1 pinky                    ⚑
-  ✳ running tests
+ └ ⠋ ✳ running tests
 ```
 
 ## T. Untracked-only tab (D4 prompt-exclusion)
@@ -492,7 +497,7 @@ tab 1 "shell"
 
 ## U. Mixed tracked + untracked (one tab)
 
-**Author-from-intent.** One tracked pane (claude running) + one untracked pane (zsh). Only the tracked pane appears; untracked is suppressed. Single-pane path (1 tracked): shows `✳ exploring render` on line 2.
+**Author-from-intent.** One tracked pane (claude running) + one untracked pane (zsh). Only the tracked pane appears; untracked is suppressed. Single-pane path (1 tracked): shows ` └ ⠋ ✳ exploring render` as the child line.
 
 ```rail-input
 width 32
@@ -504,7 +509,7 @@ tab 1 "af"
  RADAR                        ·1
 ◆═══════════════════════════════
  ⠋ 1 af
-  ✳ exploring render
+ └ ⠋ ✳ exploring render
 ```
 
 > Only tracked panes produce pane lines. Untracked (prompt programs, idle shell) are invisible. ⟦D4 ✓⟧
@@ -523,7 +528,7 @@ tab 1 "pinky"
 ```rail-expect
  RADAR                        ·1
  ⠋ 1 pinky
-  ✳ running tests
+ └ ⠋ ✳ running tests
 ```
 
 > Cards density: header is title-only (no `═` rule). Content identical to compact; only the surface bg changes (not visible in the stripped grid).
@@ -557,15 +562,15 @@ tab 1 "af" active
 Command-origin path. The `pane_outcome()` function fires only for Command-origin panes;
 status-pipe panes never get an outcome tag. `Outcome::Ok` renders as no tag at all — the
 line-1 status glyph (`●`, green) is the one done signal, so a second `✓` on line 2 would
-double-mark the same fact. Single-pane path: tab glyph `●` (Done), pane line 2 =
-`  ⚙ cargo build`.
+double-mark the same fact. Single-pane path: tab glyph `●` (Done), child line =
+` └ ● ⚙ cargo build` (same tree shape as multi-pane — §C's note).
 
-Grid reasoning at width 32, prefix 6 (`"  ⚙ "` = indent 2 + mark 1 + space 1 = 4 cols;
-pane line 2 uses single-pane path with `prefix_vis = 2 + 1 + 1 = 4` cols):
+Grid reasoning at width 32 (`emit_pane_line` prefix: spine/space + `└` + space
++ glyph + space + mark + space = 7 cols):
 - Tab line: ` ● 1 work` (5 chars prefix — col-0 spine/space + glyph + sp + num + sp —
   + `work` = 9 chars total).
-- Pane line 2: `  ⚙ cargo build` = 4-col prefix + `cargo build` (11 chars) = 15 cols total.
-  No truncation (15 ≤ 32).
+- Child line: ` └ ● ⚙ cargo build` = 7-col prefix + `cargo build` (11 chars) = 18 cols total.
+  No truncation (18 ≤ 32).
 
 ```rail-input
 width 32
@@ -576,7 +581,7 @@ tab 1 "work"
  RADAR                        ·1
 ════════════════════════════════
  ● 1 work
-  ⚙ cargo build
+ └ ● ⚙ cargo build
 ```
 
 > `exit 0` routes through `command_changed` → `timer` → `panes_changed(exits)` so the
@@ -589,13 +594,13 @@ tab 1 "work"
 **Author-from-intent.** A single build pane that exited with code 1 via the Command-origin
 path. `on_exit(Some(1))` sets `status = Error` and `exit_code = Some(1)`; `pane_outcome()`
 returns `Outcome::Failed(Some(1))` → tag `exit 1`. Tab glyph `✗` (Error) already carries the
-failure signal; the tag adds the one thing the glyph can't: the exit code. Pane line 2 =
-`  ⚙ cargo build exit 1`.
+failure signal; the tag adds the one thing the glyph can't: the exit code. Child line =
+` └ ✗ ⚙ cargo build exit 1`.
 
 Grid reasoning at width 32:
 - Tab line: ` ✗ 1 work` (col 0 is the reserved, blank spine column since this tab isn't active).
-- Pane line 2 prefix (single-pane path): `  ⚙ ` = 4 cols; avail = 28.
-  `cargo build exit 1` = 19 chars, fits without truncation.
+- Child line prefix (`emit_pane_line`): ` └ ✗ ⚙ ` = 7 cols; avail = 25.
+  `cargo build exit 1` = 18 chars, fits without truncation.
 
 ```rail-input
 width 32
@@ -606,7 +611,7 @@ tab 1 "work"
  RADAR                     ·1 1!
 ════════════════════════════════
  ✗ 1 work
-  ⚙ cargo build exit 1
+ └ ✗ ⚙ cargo build exit 1
 ```
 
 > `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `exit 1`
@@ -633,7 +638,7 @@ tab 2 "notes"
  RADAR                        ·2
 ◆═══════════════════════════════
  ⠋ 1 web
-  ✳ building
+ └ ⠋ ✳ building
 
  ○ 2 notes
 ```
@@ -660,10 +665,10 @@ tab 3 "notes"
 ```rail-expect
  RADAR                        ·3
  ⠋ 1 web
-  ✳ building
+ └ ⠋ ✳ building
 
  ● 2 worker
-  ✳ shipped
+ └ ● ✳ shipped
 
  ○ 3 notes
 ```
@@ -716,8 +721,9 @@ tab 1 "work"
 
 ## T3 — sticky task: single-pane question line
 
-A single-tracked-pane tab keeps its 2-line block (tab row + identity) and adds
-the `↳` question line when pending.
+A single-tracked-pane tab keeps its 2-line block (tab row + identity, in the
+same `└` tree shape as multi-pane children) and adds the `↳` question line
+when pending — the same subordinate-line layout T1 shows under `├`.
 
 ```rail-input
 width 32
@@ -729,8 +735,8 @@ tab 1 "review"
  RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 1 review
-  ✳ migrate schema
-    ↳ approve git push?
+ └ ◆ ✳ migrate schema
+     ↳ approve git push?
 ```
 
 ## T4 — sticky task: error pane with `↳` and a sibling running pane
@@ -784,15 +790,20 @@ tab 1 "review"
 ## AB. The floor: footer + earlier-ledger
 
 **Render-derived.** The bottom region (spec §9): once a session's content
-leaves ≥2 spare lines, a footer (`─` rule, working/need-you tally, `alt-[n]
-jump` hint) pins to the floor of the pane. With ≥5 spare and a non-empty
-completion ledger, an `─ earlier` section of receded completions (newest
-first, per the `ledger` directive below) fills the space between the content
-and the footer; a tab name past 12 columns truncates with `…`. The section
-shows at most **10** entries regardless of pane height (`LEDGER_DISPLAY_CAP`)
-— the rail is a status surface, not a log, so spare height past that stays
-blank filler above the rule rather than ever-deeper history (the ring still
-*stores* 32 for cross-instance merging).
+leaves ≥2 spare lines, a footer pins to the floor of the pane — a `─` rule and
+the tally line (`{n} working`, gaining ` · {m} need you` only when `m > 0`:
+a zero need-you count is noise, not signal). The `alt-[n] jump` hint is a
+THIRD footer line that renders only under `jump_hint` (the `JumpHint` config —
+same honesty contract as `grant_hint`: only `run`-owned configs, which bake
+the Alt-1..9 → GoToTab binds, may advertise the chord; see §AC). With enough
+spare and a non-empty completion ledger, an `─ earlier` section of receded
+completions (newest first, per the `ledger` directive below) fills the space
+between the content and the footer, always followed by ONE blank spacer line
+so history gets air above the pinned floor; a tab name past 12 columns
+truncates with `…`. The section shows at most **10** entries regardless of
+pane height (`LEDGER_DISPLAY_CAP`) — the rail is a status surface, not a log,
+so spare height past that stays blank filler above the rule rather than
+ever-deeper history (the ring still *stores* 32 for cross-instance merging).
 
 ```rail-input
 width 32
@@ -808,17 +819,20 @@ ledger 300 error "workspace-ci-runner" "tests failed"
 ─ earlier ──────────────────────
 1m ● web deploying
 5m ✗ workspace-c… tests failed
+
 ────────────────────────────────
-0 working · 0 need you
- alt-[n] jump
+0 working
 ```
 
 > `height 9` leaves 6 spare lines past the 3-line body: the `─ earlier` rule +
-> 2 ledger rows (newest first) + the pinned footer (rule/tally/hint), with no
-> filler needed. `ledger <age_secs> done|error "<tab>" "<label>"` seeds a row
-> directly (age is wall-clock via `now_epoch_s`, independent of `now_tick`);
-> a row's tab is looked up live in production, so a closed tab's row just
-> becomes click-inert rather than disappearing. ⟦bottom region / spec §9⟧
+> 2 ledger rows (newest first) + the spacer + the pinned 2-line footer
+> (rule/tally — no hint line: this scenario doesn't set `jump_hint`), with no
+> filler needed. The tally reads just `0 working` — nothing needs you, so no
+> segment says so. `ledger <age_secs> done|error "<tab>" "<label>"` seeds a
+> row directly (age is wall-clock via `now_epoch_s`, independent of
+> `now_tick`); a row's tab is looked up live in production, so a closed tab's
+> row just becomes click-inert rather than disappearing. ⟦bottom region /
+> spec §9⟧
 
 ---
 
@@ -831,7 +845,8 @@ count is honest about what it counts: `·0` tabs, not 0 history.
 
 ```rail-input
 width 32
-height 7
+height 8
+jump_hint
 ledger 90 done "web" "deploying"
 ```
 ```rail-expect
@@ -839,16 +854,22 @@ ledger 90 done "web" "deploying"
 ════════════════════════════════
 ─ earlier ──────────────────────
 1m ● web deploying
+
 ────────────────────────────────
-0 working · 0 need you
+0 working
  alt-[n] jump
 ```
 
 > No `tab` line at all — zero rows. The header still renders (·0) because
 > `has_content` is `!rows.is_empty() || !ledger.is_empty()`. Only when BOTH are
 > empty does `render_rail` return nothing, and `PluginRuntime::render` routes
-> to the `onboarding()` scanning face instead (see §A's note above). ⟦zero
-> state / spec §7,§9⟧
+> to the `onboarding()` scanning face instead (see §A's note above). This
+> scenario also opts into `jump_hint`, so the footer is the full 3 lines —
+> rule, tally, ` alt-[n] jump` — the shape every `zj-radar run` session shows
+> (its owned config binds Alt-1..9 and passes `jump_hint "alt-n"` on the
+> plugin alias). Without the directive the hint line simply doesn't exist —
+> the rail never advertises a chord that isn't bound. ⟦zero state + jump_hint
+> / spec §7,§9⟧
 
 ---
 
@@ -880,6 +901,7 @@ test; no drift between doc and behavior.
 width <n>            # optional, default 32
 height <n>           # optional, default = enough to fit (no overflow)
 glyphs plain|nerd    # optional, default plain
+jump_hint            # optional; footer advertises ` alt-[n] jump` (default hidden)
 tab <pos> "<name>" [active]
   <kind> <status> "<msg>" [task "<text>"] [waiting <N>m] [exit <N>|?]   # one line per pane, indented
   ...

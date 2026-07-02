@@ -387,6 +387,7 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             ledger: self.radar.ledger_lines(),
+            jump_hint: self.config.jump_hint.shows(),
         };
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
@@ -420,6 +421,7 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             ledger: self.radar.ledger_lines(),
+            jump_hint: self.config.jump_hint.shows(),
         };
         render::body_line_count(&tabrows, &opts)
     }
@@ -1300,7 +1302,10 @@ mod tests {
         // ledger + footer) over the minimal scanning face.
         let mut runtime = PluginRuntime {
             permission: PermissionState::Resolved { granted: true },
-            config: config(),
+            // `jump_hint` opted in: this test also pins the config → render
+            // plumbing for the footer's alt-[n] line (hidden by default —
+            // only run-owned configs, which bind the chord, may claim it).
+            config: config::Config { jump_hint: config::JumpHint::AltN, ..config() },
             ..Default::default()
         };
         runtime.tabs_changed(vec![tab(0, "web", true)]);

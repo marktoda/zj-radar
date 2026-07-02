@@ -760,6 +760,16 @@ mod tests {
             );
         }
         assert!(CONFIG_TEMPLATE.contains("GoToTab 1"));
+        // And the converse: the hint is config-gated (`JumpHint`, default
+        // hidden), so this config — the one place the binds actually exist —
+        // must claim it on the alias, or run-launched rails would hide a hint
+        // that IS true. The alias covers layout rails, the Ctrl-y float, and
+        // resurrection snapshots alike (Zellij merges alias config into every
+        // launch), mirroring grant_hint one line up.
+        assert!(
+            CONFIG_TEMPLATE.contains("jump_hint \"alt-n\""),
+            "the alias must claim the alt-[n] hint this config's binds make true"
+        );
     }
 
     #[test]
@@ -778,6 +788,16 @@ mod tests {
             "0.1.0",
             "bump the workspace version so the .zj-radar-version marker changes \
              and existing owned configs re-materialize with the new alt-n binds"
+        );
+        // Same gate for the jump_hint addition: configs materialized at 0.1.1
+        // have the alt-n binds but not `jump_hint "alt-n"`, so their footers
+        // would go silent about a chord that DOES work. Force one more
+        // re-materialization.
+        assert_ne!(
+            env!("CARGO_PKG_VERSION"),
+            "0.1.1",
+            "bump the workspace version so owned configs re-materialize with \
+             the jump_hint key (the footer's alt-[n] hint is config-gated now)"
         );
     }
 

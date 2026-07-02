@@ -28,6 +28,7 @@ ignored and invalid values fall back to the default (parsing never fails):
 | `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
+| `jump_hint` | `alt-n` · anything else | hidden | Footer advertises ` alt-[n] jump`. Only set this when Alt-1..9 → `GoToTab` binds actually exist in your Zellij config — `zj-radar run` sessions set it automatically (their owned config binds the chords); the rail never advertises a chord it can't verify. |
 | `notify` | `true` · `false` | `true` | Master switch for OS desktop notifications (macOS `osascript`, Linux `notify-send`). |
 | `notify_done` | `true` · `false` | `true` | Notify when a pane transitions into `done`. |
 | `notify_error` | `true` · `false` | `true` | Notify when a pane transitions into `error`. |

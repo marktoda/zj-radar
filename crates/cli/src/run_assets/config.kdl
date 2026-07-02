@@ -13,6 +13,10 @@ plugins {
         // line covers all of them. Setup-injected rails (user-owned configs,
         // no such bind) never see this key and get the generic wording.
         grant_hint "ctrl-y"
+        // Same honesty contract for the footer: this config binds Alt-1..9
+        // (below), so rails launched through it may advertise ` alt-[n] jump`.
+        // Everywhere else the footer omits the hint line entirely.
+        jump_hint "alt-n"
     }
 }
 
