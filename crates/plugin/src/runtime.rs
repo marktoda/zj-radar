@@ -112,6 +112,15 @@ pub(crate) struct PluginRuntime {
     /// `SetTimeout(Fast)` the moment fast-worthy work arrives, without
     /// waiting for the (harmless, spurious) slow fire first.
     pub(crate) armed_cadence: Option<Cadence>,
+    /// How many `SetTimeout` fires are still in flight. Zellij's `set_timeout`
+    /// is a non-cancellable one-shot, so the Slow→Fast top-up above leaves TWO
+    /// scheduled fires; every fire but the newest chain's is stale and must be
+    /// swallowed by [`timer`](Self::timer) — ticking on it would re-arm a
+    /// second persistent chain (N chains → N Hz, every tick-window elapsing
+    /// N× too fast). Incremented wherever `arm_timer_if_needed` pushes a
+    /// `SetTimeout` (the sole emit site — `begin_permission_flow` and
+    /// `project` both arm through it); decremented at the top of `timer`.
+    pub(crate) pending_fires: u32,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission: PermissionState,
@@ -162,6 +171,19 @@ impl PluginRuntime {
     }
 
     pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
+        // Retire one in-flight fire. If another is still out there (a Slow arm
+        // was topped up with a Fast arm before its fire landed), THIS fire is
+        // the stale one: swallow it whole — no tick, no re-arm, `armed_cadence`
+        // untouched (it already reflects the newest chain). Skipping
+        // `check_deferred_permission_request` here is safe: the surviving fire
+        // runs it within one Fast period (the top-up that creates an overlap is
+        // always Slow→Fast, so the newest chain fires within 1s). The
+        // `saturating_sub` keeps a bare `timer()` call with nothing armed
+        // (tests drive the entry point directly) behaving as a legitimate fire.
+        self.pending_fires = self.pending_fires.saturating_sub(1);
+        if self.pending_fires > 0 {
+            return Outcome::none();
+        }
         self.armed_cadence = None;
         let mut effects = Vec::new();
         let permission_changed =
@@ -457,10 +479,12 @@ impl PluginRuntime {
         match (self.armed_cadence, desired) {
             (Some(Cadence::Slow), Some(Cadence::Fast)) => {
                 self.armed_cadence = Some(Cadence::Fast);
+                self.pending_fires += 1;
                 effects.push(Effect::SetTimeout(Cadence::Fast));
             }
             (None, Some(cadence)) => {
                 self.armed_cadence = Some(cadence);
+                self.pending_fires += 1;
                 effects.push(Effect::SetTimeout(cadence));
             }
             _ => {}
@@ -1698,5 +1722,64 @@ mod tests {
             outcome.effects
         );
         assert_eq!(rt.armed_cadence, Some(Cadence::Fast));
+    }
+
+    #[test]
+    fn stale_slow_fire_is_swallowed_after_fast_topup() {
+        // Zellij's `set_timeout` is a non-cancellable one-shot: after the
+        // Slow→Fast top-up, BOTH fires are in flight. The stale slow fire must
+        // be swallowed whole — if it ticked, `project` would re-arm off it and
+        // a second persistent chain would run alongside the fast one (N chains
+        // → N Hz, every tick-window elapsing N× too fast). Only the newest
+        // chain's fire may tick and re-arm.
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        rt.tabs_changed(vec![]); // arms Slow: one fire in flight
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+
+        // Fast work arrives while Slow-armed: the top-up puts a SECOND fire
+        // in flight (the slow one cannot be cancelled).
+        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let outcome = rt.status_pipe(&raw);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "setup: the top-up must arm Fast, got {:?}",
+            outcome.effects
+        );
+
+        // The STALE slow fire lands first: swallowed — no tick advance, no
+        // effects (in particular no re-arm), `armed_cadence` untouched (it
+        // still reflects the fast chain).
+        let tick_before = rt.tick;
+        let stale = rt.timer(PermissionProbe::default());
+        assert_eq!(stale, Outcome::none(), "a stale fire must be swallowed whole");
+        assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
+        assert_eq!(rt.armed_cadence, Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+
+        // The surviving fast fire ticks normally and re-arms exactly once.
+        let live = rt.timer(PermissionProbe::default());
+        assert_eq!(rt.tick, tick_before + 1, "the live fire ticks");
+        let rearms = live
+            .effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SetTimeout(_)))
+            .count();
+        assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
+        assert!(
+            live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "running work keeps the Fast cadence"
+        );
     }
 }
