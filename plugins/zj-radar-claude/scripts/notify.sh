@@ -20,11 +20,23 @@ set -euo pipefail
 
 status="${1:-running}"
 
+# Read the hook payload up front so the notify below can be fully
+# backgrounded. This hook rides UserPromptSubmit and Pre/PostToolUse — the
+# hottest events Claude has — and a synchronous notify blocks the harness
+# (UserPromptSubmit blocks the user's prompt) until it exits. On a quiet
+# machine that's milliseconds; on a saturated one (test suites, subagent
+# fleets) process spawns crawl and the hook eats the 30s timeout. A status
+# ping is fire-and-forget by nature: losing one under load is harmless,
+# blocking a prompt is not.
+input="$(cat 2>/dev/null || true)"
+
 # Prefer the native CLI when present (drops the jq/bash dependency). It applies
 # the same Zellij gate, pending backstop, and payload schema. Falls back to the
-# bash implementation below when the binary isn't installed.
+# bash implementation below when the binary isn't installed. Backgrounded per
+# the contract above — never exec'd in the hook's foreground.
 if command -v zj-radar >/dev/null 2>&1; then
-    exec zj-radar notify claude --status "$status"
+    ( printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 & )
+    exit 0
 fi
 
 # The bash fallback needs jq to build the payload. The final `jq -nc` below has
@@ -39,7 +51,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 pane_num="${ZELLIJ_PANE_ID#terminal_}"
 [[ "$pane_num" =~ ^[0-9]+$ ]] || exit 0
 
-input="$(cat 2>/dev/null || true)"
+# ($input was read before the binary dispatch above — stdin is already drained.)
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 [[ -n "$cwd" ]] || cwd="$PWD"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
