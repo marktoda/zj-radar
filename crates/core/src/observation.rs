@@ -58,6 +58,14 @@ pub struct TrackedObservation {
     /// without it, merged ledgers diverge (spec §4.3).
     #[serde(default)]
     pub completed_epoch_s: Option<u64>,
+    /// Wall-clock second at which this observation entered `Pending` — when
+    /// the agent started waiting on the user. `None` for every other status
+    /// (`StatusStore::apply` owns the stamping, mirroring `completed_epoch_s`:
+    /// stamped on the edge, kept across identical re-broadcasts, re-stamped
+    /// when a *different* question arrives). Drives the rail's `· 12m`
+    /// wait tag; rides the snapshot so rehydrated rows keep the true wait.
+    #[serde(default)]
+    pub pending_epoch_s: Option<u64>,
 }
 
 impl TrackedObservation {
@@ -78,6 +86,7 @@ impl TrackedObservation {
             ever_active: true,
             exit_code: None,
             completed_epoch_s: None,
+            pending_epoch_s: None,
         }
     }
 }
@@ -162,6 +171,7 @@ mod tests {
             ever_active: true,
             exit_code: Some(1),
             completed_epoch_s: None,
+            pending_epoch_s: None,
         }
     }
 

@@ -178,6 +178,7 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
                     ever_active: pane.ever_active,
                     exit_code: None,
                     completed_epoch_s: None,
+                    pending_epoch_s: None,
                 },
             )
         })

@@ -44,6 +44,10 @@ pub struct PrimaryDetail {
     pub kind: Kind,
     /// End-result tag for a finished command pane (None for agents/active).
     pub outcome: Option<Outcome>,
+    /// Wall-clock stamp of the waiting-on-you edge (Pending only) — the
+    /// renderer turns it into the `· 12m` wait tag against its own
+    /// `now_epoch_s`, so no epoch threads through the roll-up itself.
+    pub pending_epoch_s: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +60,8 @@ pub enum PaneDisplay {
         task: String,
         since_tick: u64,
         outcome: Option<Outcome>,
+        /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
+        pending_epoch_s: Option<u64>,
     },
     Untracked {
         pane_id: u32,
@@ -64,6 +70,7 @@ pub enum PaneDisplay {
 }
 
 impl PaneDisplay {
+    #[allow(clippy::too_many_arguments)] // mirrors the variant's fields 1:1
     pub(crate) fn tracked(
         pane_id: u32,
         kind: Kind,
@@ -72,6 +79,7 @@ impl PaneDisplay {
         task: String,
         since_tick: u64,
         outcome: Option<Outcome>,
+        pending_epoch_s: Option<u64>,
     ) -> Self {
         Self::Tracked {
             pane_id,
@@ -81,6 +89,7 @@ impl PaneDisplay {
             task,
             since_tick,
             outcome,
+            pending_epoch_s,
         }
     }
 
@@ -151,6 +160,14 @@ impl PaneDisplay {
             Self::Untracked { .. } => None,
         }
     }
+
+    /// Waiting-on-you stamp (Pending only) — feeds `render::wait_tag`.
+    pub(crate) fn pending_epoch_s(&self) -> Option<u64> {
+        match self {
+            Self::Tracked { pending_epoch_s, .. } => *pending_epoch_s,
+            Self::Untracked { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,6 +229,7 @@ pub fn roll_up<'a>(
                 s.task.clone(),
                 s.last_change_tick,
                 pane_outcome(s),
+                s.pending_epoch_s,
             ));
         } else {
             pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
@@ -234,6 +252,7 @@ pub fn roll_up<'a>(
                     status: s.status,
                     kind: s.kind,
                     outcome: pane_outcome(s),
+                    pending_epoch_s: s.pending_epoch_s,
                 });
             }
         }

@@ -65,6 +65,14 @@ impl StatusStore {
             Status::Done | Status::Error => Some(now_epoch_s),
             _ => None,
         };
+        // Mirror of the completion stamp for the waiting-on-you edge: kept
+        // across identical re-broadcasts (the wait started at the FIRST ask),
+        // re-stamped when a different question arrives (that wait is new).
+        let pending_epoch_s = match p.status {
+            Status::Pending if identical => prev.and_then(|s| s.pending_epoch_s),
+            Status::Pending => Some(now_epoch_s),
+            _ => None,
+        };
         let was_completion = prev.is_some_and(|s| matches!(s.status, Status::Done | Status::Error));
         let displaced = self.store.insert(
             p.pane_id,
@@ -82,6 +90,7 @@ impl StatusStore {
                 ever_active,
                 exit_code: None,
                 completed_epoch_s,
+                pending_epoch_s,
             },
         );
         if identical || !was_completion {
@@ -167,6 +176,7 @@ impl StatusStore {
                 ever_active: true,
                 exit_code: None,
                 completed_epoch_s: None,
+                pending_epoch_s: None,
             },
         );
         Some(old)
@@ -436,6 +446,28 @@ mod tests {
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(200));
         s.apply(payload(1, Status::Done), 3, 300); // identical re-broadcast
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(200), "no re-stamp");
+    }
+
+    #[test]
+    fn apply_stamps_pending_epoch_on_the_edge_and_restamps_a_new_question() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Running), 1, 100);
+        assert_eq!(s.get(1).unwrap().pending_epoch_s, None);
+        // Edge into Pending stamps the wait's start.
+        s.apply(payload(1, Status::Pending), 2, 200);
+        assert_eq!(s.get(1).unwrap().pending_epoch_s, Some(200));
+        // An identical re-broadcast keeps the ORIGINAL stamp — the wait
+        // started at the first ask.
+        s.apply(payload(1, Status::Pending), 3, 300);
+        assert_eq!(s.get(1).unwrap().pending_epoch_s, Some(200));
+        // A different question is a new wait.
+        let mut new_q = payload(1, Status::Pending);
+        new_q.msg = "another question?".into();
+        s.apply(new_q, 4, 400);
+        assert_eq!(s.get(1).unwrap().pending_epoch_s, Some(400));
+        // Leaving Pending drops the stamp.
+        s.apply(payload(1, Status::Running), 5, 500);
+        assert_eq!(s.get(1).unwrap().pending_epoch_s, None);
     }
 
     #[test]

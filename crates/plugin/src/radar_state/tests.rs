@@ -77,6 +77,25 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
 }
 
 #[test]
+fn pending_wait_drives_the_slow_cadence_until_saturation() {
+    // The `· Nm` wait tag advances at minute granularity, so an unsaturated
+    // pending row must keep the Slow heartbeat armed — and release it once
+    // the tag freezes at 1h+ (same window the ledger uses).
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Pending, "pinky"), 1, 1_000);
+    assert!(radar.pending_wait_unsaturated(1_000));
+    assert!(radar.pending_wait_unsaturated(1_000 + crate::ledger::SATURATE_S - 1));
+    assert!(!radar.pending_wait_unsaturated(1_000 + crate::ledger::SATURATE_S));
+    // Answering the question (running again) releases it immediately.
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), 2, 1_100);
+    assert!(!radar.pending_wait_unsaturated(1_100));
+}
+
+#[test]
 fn killed_agent_running_row_expires_via_the_timer() {
     // Ctrl+C'ing an agent mid-turn fires no hook; the pane returning to its
     // shell starts the grace clock and the timer clears the ghost "working"

@@ -210,6 +210,7 @@ mod tests {
             ever_active: true,
             exit_code: None,
             completed_epoch_s,
+            pending_epoch_s: None,
         }
     }
 

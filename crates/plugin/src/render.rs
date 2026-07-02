@@ -389,6 +389,36 @@ fn identity_and_detail<'a>(status: Status, task: &'a str, msg: &'a str) -> (&'a 
     (task, detail)
 }
 
+/// The `· 12m` wait tag for a pane blocked on the user: whole minutes since
+/// the waiting-on-you edge (`pending_epoch_s`), frozen at `1h+` once saturated
+/// — the same freeze the ledger uses, so the Slow cadence can disarm. `None`
+/// under a minute (a fresh ask needs no clock), for every non-Pending status,
+/// and for unstamped rows (pre-upgrade snapshots). Per ⟦D-timer⟧ this lives on
+/// the pane's identity line, never the tab line.
+fn wait_tag(status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> Option<String> {
+    if status != Status::Pending {
+        return None;
+    }
+    let age = now_epoch_s.saturating_sub(pending_epoch_s?);
+    if age < 60 {
+        None
+    } else if age < crate::ledger::SATURATE_S {
+        Some(format!("{}m", age / 60))
+    } else {
+        Some("1h+".to_string())
+    }
+}
+
+/// Append the wait tag to an identity line: `migrate schema · 12m`. Identity
+/// passes through untouched when no tag applies, keeping calm rows
+/// bit-identical to the tagless rail.
+fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> String {
+    match wait_tag(status, pending_epoch_s, now_epoch_s) {
+        Some(tag) => format!("{identity} · {tag}"),
+        None => identity.to_string(),
+    }
+}
+
 /// Emit one row's body into `out`, respecting `max_lines`.
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
@@ -526,7 +556,9 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             };
             let (identity, detail) =
                 identity_and_detail(pane.render_status(), pane.task(), pane.msg());
-            let text = emit_pane_line(pane, identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
+            let identity =
+                with_wait_tag(identity, pane.render_status(), pane.pending_epoch_s(), opts.now_epoch_s);
+            let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
             let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
             let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
             lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
@@ -597,7 +629,8 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                     } else {
                         dim_strong.clone()
                     };
-                    let activity = compose_activity(identity, d.outcome, avail, &cmd_color);
+                    let identity = with_wait_tag(identity, st, d.pending_epoch_s, opts.now_epoch_s);
+                    let activity = compose_activity(&identity, d.outcome, avail, &cmd_color);
                     lines.push(Line {
                         text: format!(
                             "  {} {}\n",

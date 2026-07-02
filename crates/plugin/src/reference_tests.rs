@@ -163,6 +163,10 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         /// Some(code) → command-origin path: command_changed + timer + on_exit.
         /// None → status_pipe path (existing behavior).
         exit_code: Option<Option<i32>>,
+        /// Minutes this pane has been waiting on the user (Pending only). Set
+        /// via the `waiting <N>m` trailer; backdates the apply epoch so the
+        /// `· Nm` wait tag renders. 0 = applied "now" (no tag).
+        waiting_m: u64,
     }
 
     struct TabSpec {
@@ -302,6 +306,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                         task: String::new(),
                         untracked: true,
                         exit_code: None,
+                        waiting_m: 0,
                     });
                 }
                 continue;
@@ -350,9 +355,11 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 panic!("reference DSL: unknown status '{}' in scenario", status_str);
             }
 
-            // Trailers after the closing quote: `task "<text>"` and/or `exit <N>|?`.
+            // Trailers after the closing quote: `task "<text>"`, `waiting <N>m`,
+            // and/or `exit <N>|?`.
             let mut task = String::new();
             let mut exit_code: Option<Option<i32>> = None;
+            let mut waiting_m: u64 = 0;
             let mut trailer = exit_trailer.unwrap_or("").trim();
             while !trailer.is_empty() {
                 if let Some(rest) = trailer.strip_prefix("task \"") {
@@ -361,6 +368,15 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     });
                     task = rest[..close].to_string();
                     trailer = rest[close + 1..].trim();
+                } else if let Some(rest) = trailer.strip_prefix("waiting ") {
+                    let (mins, remainder) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let mins = mins.strip_suffix('m').unwrap_or_else(|| {
+                        panic!("reference DSL: bad waiting trailer '{trailer}' — expected 'waiting <N>m'")
+                    });
+                    waiting_m = mins.parse().unwrap_or_else(|_| {
+                        panic!("reference DSL: bad waiting minutes '{mins}' — must be an integer")
+                    });
+                    trailer = remainder.trim();
                 } else if let Some(code_str) = trailer.strip_prefix("exit ") {
                     let code_str = code_str.trim();
                     if code_str == "?" {
@@ -372,7 +388,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     }
                     trailer = "";
                 } else {
-                    panic!("reference DSL: unknown pane trailer '{trailer}' — only 'task \"<text>\"' and 'exit <N>|?' are supported");
+                    panic!("reference DSL: unknown pane trailer '{trailer}' — only 'task \"<text>\"', 'waiting <N>m', and 'exit <N>|?' are supported");
                 }
             }
 
@@ -390,6 +406,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     task,
                     untracked: false,
                     exit_code,
+                    waiting_m,
                 });
             }
             continue;
@@ -503,7 +520,11 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     &pane.task,
                     source,
                 );
-                radar.status_pipe(&wire, 0, 0, NamingMode::Off);
+                // Applied "now" relative to the render epoch, backdated by the
+                // `waiting <N>m` trailer — how the doc's pending scenarios earn
+                // (or, at 0, deliberately do not earn) the `· Nm` wait tag.
+                let apply_epoch = LEDGER_NOW_EPOCH_S.saturating_sub(pane.waiting_m * 60);
+                radar.status_pipe(&wire, 0, apply_epoch, NamingMode::Off);
             }
         }
     }

@@ -10,9 +10,13 @@
 ## Design rules (this revision)
 
 1. **Width 32 columns.** The layout snippets all use `size=32` to match. ⟦D8⟧
-2. **No elapsed/timer, for now.** Removed from tab and pane lines entirely.
-   Per-pane elapsed is the eventual right answer but adds width pressure; revisit
-   later. ⟦D-timer⟧
+2. **Elapsed is pending-only.** No elapsed/timer on tab lines or calm pane
+   lines. The one exception (the ⟦D-timer⟧ "per-pane, not per-tab" answer,
+   scoped to where waiting is *costly*): a `pending` pane's identity line
+   carries a `· Nm` wait tag once it has waited ≥ 1 minute — whole minutes,
+   frozen at `1h+` (the ledger's saturate window, so the Slow heartbeat can
+   disarm). Under a minute, and for every other status, lines stay bit-identical
+   to the tagless rail. See scenario T5. ⟦D-timer ✓ pending-only⟧
 3. **One line per real pane — no collapsing.** Every *tracked* pane (an agent or
    a real command) gets its own line regardless of status or tab focus. No
    tally, no `+N verb` — those were hard to parse.
@@ -751,6 +755,30 @@ tab 1 "release"
  └ ⠋ ❉ write insta tests
 ```
 
+## T5 — pending wait tag: `· Nm` on the identity line (pending only)
+
+A pane blocked on the user for ≥ 1 minute carries a `· Nm` wait tag on its
+identity line (rule 2) — the cost of ignoring it, at a glance. The sibling
+running pane shows the tag is pending-only, and the `↳` question line is
+unchanged. The `waiting <N>m` input trailer backdates the waiting-on-you edge;
+a pending pane without it (T1/T3) renders tagless — fresh asks need no clock.
+
+```rail-input
+width 32
+tab 1 "review"
+  claude pending "approve git push?" task "migrate schema" waiting 12m
+  codex running "editing retry.rs" task "write insta tests"
+```
+
+```rail-expect
+ RADAR                     ·1 1!
+════════════════════════════════
+ ◆ 1 review
+ ├ ◆ ✳ migrate schema · 12m
+ │   ↳ approve git push?
+ └ ⠋ ❉ write insta tests
+```
+
 ---
 
 ## AB. The floor: footer + earlier-ledger
@@ -831,7 +859,10 @@ ledger 90 done "web" "deploying"
   Tied to the lingering-`done`/ghost-row question.
 - **⟦D8 ✓ done⟧** layout `size=24`→`size=32` applied (README, examples, e2e harness, design.md).
 - **⟦D9⟧** placeholder name for an unnamed/first tab ("shell"? layout name? "—"?).
-- **⟦D-timer⟧** if/when elapsed returns, per-pane (on the pane line) not per-tab.
+- **⟦D-timer ✓ pending-only⟧** resolved: elapsed returned per-pane (on the pane
+  line, as decided), scoped to `pending` rows only — the `· Nm` wait tag of
+  rule 2 / scenario T5. Calm statuses stay tagless; widening beyond pending
+  would reopen the width-pressure concern that removed elapsed originally.
 
 ---
 
@@ -850,12 +881,15 @@ width <n>            # optional, default 32
 height <n>           # optional, default = enough to fit (no overflow)
 glyphs plain|nerd    # optional, default plain
 tab <pos> "<name>" [active]
-  <kind> <status> "<msg>" [task "<text>"] [exit <N>|?]     # one line per pane, indented
+  <kind> <status> "<msg>" [task "<text>"] [waiting <N>m] [exit <N>|?]   # one line per pane, indented
   ...
 ```
 
 - `kind` ∈ claude·codex·gemini·command·build·test·deploy·server·other
 - `status` ∈ running·pending·done·error·idle
+- `waiting <N>m` backdates the pane's waiting-on-you edge by N minutes so the
+  `· Nm` wait tag renders (pending panes only; without it the pane applied
+  "now" and rule 2's under-a-minute case keeps the line tagless).
 - Omit a tab's panes for a plain/idle tab. Prompt-only panes are never listed
   (they're untracked by rule 4).
 

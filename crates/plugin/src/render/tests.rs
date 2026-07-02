@@ -3,6 +3,22 @@ use crate::kind::Kind;
 use crate::rollup::{PrimaryDetail, ProgressCounts};
 
 #[test]
+fn wait_tag_is_pending_only_minute_floored_and_frozen_at_saturation() {
+    // Under a minute: a fresh ask needs no clock.
+    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_059), None);
+    // Whole minutes from 1m up to the saturate window.
+    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_060).as_deref(), Some("1m"));
+    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_000 + 12 * 60 + 30).as_deref(), Some("12m"));
+    // Frozen at 1h+ — the display never changes again (lets the timer disarm).
+    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_000 + crate::ledger::SATURATE_S).as_deref(), Some("1h+"));
+    // Non-pending statuses and unstamped rows (pre-upgrade snapshots): no tag.
+    assert_eq!(wait_tag(Status::Running, Some(1_000), 9_999), None);
+    assert_eq!(wait_tag(Status::Pending, None, 9_999), None);
+    // Clock skew (stamp in the future) saturates to age 0 → no tag.
+    assert_eq!(wait_tag(Status::Pending, Some(2_000), 1_000), None);
+}
+
+#[test]
 fn truncate_does_not_strand_a_zwj_before_the_ellipsis() {
     // A ZWJ family emoji cut mid-cluster must not leave a dangling U+200D that
     // fuses with the appended '…'. The result ends in a clean ellipsis.
@@ -179,6 +195,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
     assert_eq!(clamped.ansi, "a\nb");
 
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "repo".into(),
         branch: "main".into(),
         msg: "approve".into(),
@@ -203,8 +220,8 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 },
                 detail: Some(detail),
                 panes: vec![
-                    PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), String::new(), 0, None),
-                    PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), String::new(), 0, None),
+                    PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), String::new(), 0, None, None),
+                    PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), String::new(), 0, None, None),
                 ],
             },
         },
@@ -283,6 +300,7 @@ fn render_row_lines_by_state() {
 
     let detail = |status, msg: &str| {
         Some(PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "b".into(),
             msg: msg.into(),
@@ -350,6 +368,7 @@ fn active_row_has_accent_bar_idle_does_not() {
 #[test]
 fn active_and_waiting_row_bar_is_attention_not_accent() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "p".into(),
         branch: "fix".into(),
         msg: "".into(),
@@ -382,6 +401,7 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
     // so it keeps its line 2 even with an empty msg.
     let row = |status, outcome| {
         let d = PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -419,6 +439,7 @@ fn right_slot_per_state() {
     // elapsed/status text appears in the rendered output.
     let mk = |status, done, total| {
         let d = PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -448,6 +469,7 @@ fn right_slot_per_state() {
 fn working_slot_is_dim_not_role_colored() {
     // Right slot is now empty; verify no elapsed appears in output.
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "".into(),
@@ -473,6 +495,7 @@ fn working_slot_is_dim_not_role_colored() {
 #[test]
 fn working_glyph_spins_with_tick() {
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "".into(),
@@ -574,6 +597,7 @@ fn visible_len(line: &str) -> usize {
 fn no_emitted_line_exceeds_width() {
     let width = 20;
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix/x".into(),
         msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
@@ -608,6 +632,7 @@ fn no_emitted_line_exceeds_width() {
 #[test]
 fn pending_detail_lines_never_exceed_width() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "averylongreponame".into(),
         branch: "feature/some-long-branch".into(),
         msg: "should we proceed with this long question".into(),
@@ -675,6 +700,7 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
 #[test]
 fn running_has_no_warning_glyph() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "".into(),
@@ -697,6 +723,7 @@ fn running_has_no_warning_glyph() {
 #[test]
 fn done_has_no_warning_glyph() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "".into(),
@@ -744,6 +771,7 @@ fn no_bell_no_marker() {
 fn error_word_narrows_when_tight() {
     // Right slot is now empty; verify "failed"/"err" do not appear.
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "infra".into(),
         branch: "".into(),
         msg: "".into(),
@@ -770,6 +798,7 @@ fn error_word_narrows_when_tight() {
 #[test]
 fn working_detail_drops_branch_before_message_when_narrow() {
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "web".into(),
         branch: "main".into(),
         msg: "running tests".into(),
@@ -835,6 +864,7 @@ fn overflow_keeps_non_idle_rows_visible() {
     let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
     // an urgent waiting tab at the very end (high position)
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "p".into(),
         branch: "x".into(),
         msg: "approve?".into(),
@@ -899,6 +929,7 @@ fn render_glyph_role_colors_are_present() {
     // density — but glyphs remain role-colored ANSI-16.)
 
     let mk_detail = |status: Status| PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix/x".into(),
         msg: "some message".into(),
@@ -1010,6 +1041,7 @@ fn pending_line2_shows_mark_and_activity() {
 
     // Case 1: pending with msg — 2 lines, mark + activity in attention color.
     let detail_with_msg = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "proj".into(),
         branch: "fix".into(),
         msg: "approve the push?".into(),
@@ -1064,6 +1096,7 @@ fn pending_line2_shows_mark_and_activity() {
 
     // Case 2: pending without msg → 1 line only, no line 2.
     let detail_no_msg = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "proj".into(),
         branch: "fix".into(),
         msg: "".into(),
@@ -1094,6 +1127,7 @@ fn pending_line2_shows_mark_and_activity() {
 
     // Width constraint: pending detail line must not exceed width
     let detail_long = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "averylongreponame".into(),
         branch: "feature/some-very-long-branch".into(),
         msg: "a very long question that should be truncated appropriately here".into(),
@@ -1146,6 +1180,7 @@ fn multi_pending_detail_never_exceeds_width() {
     // This tests the width-safety of the first line at narrow widths.
     // (Kept as a regression guard; previously tested "N needs you" overflow.)
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "averylongreponame".into(),
         branch: "feature/some-very-long-branch-name".into(),
         msg: "".into(),
@@ -1294,6 +1329,7 @@ fn cjk_and_emoji_names_never_exceed_width() {
     // CJK: each char is 2 display columns. "作業中デプロイ" = 7 chars = 14 cols.
     // Emoji in msg: 🚀 = 2 cols.
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "proj".into(),
         branch: "main".into(),
         msg: "🚀 deploying now".into(),
@@ -1360,12 +1396,12 @@ fn header_false_emits_no_header_lines() {
 
 /// Build a PaneDisplay for tree tests.
 fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, None)
+    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, None, None)
 }
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
 fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, Some(outcome))
+    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, Some(outcome), None)
 }
 
 // ── End-result outcome tag rendering ──
@@ -1458,6 +1494,7 @@ fn error_tag_is_exit_n_without_duplicate_cross() {
 fn finished_command_line2_shows_role_colored_tag() {
     let mk = |status, outcome, msg: &str| {
         let d = PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "".into(),
             msg: msg.into(),
@@ -1523,6 +1560,7 @@ fn multi_pane_finished_command_shows_outcome_tag() {
 #[test]
 fn nerd_set_renders_robot_mark_for_claude() {
     let d = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "thinking".into(),
@@ -1572,6 +1610,7 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             msg,
             ..
         } if *pane_status == status => Some(PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "b".into(),
             msg: msg.clone(),
@@ -1734,6 +1773,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
                 pending: 0,
             },
             detail: Some(PrimaryDetail {
+                pending_epoch_s: None,
                 repo: "r".into(),
                 branch: "b".into(),
                 msg: "tests".into(),
@@ -1744,7 +1784,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
                 kind: Kind::Codex,
             }),
             panes: vec![
-                PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), String::new(), 0, None),
+                PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), String::new(), 0, None, None),
                 PaneDisplay::untracked(2, "shell"),
             ],
         },
@@ -1880,6 +1920,7 @@ fn overflow_compresses_calm_before_urgent() {
     // Compression: Running rows compressed to 1 line each (3 lines saved);
     //   3×1 + 2 = 5 ≤ 5. Done. Pending keeps its activity line (2 lines total).
     let detail_running = |n: u8| PrimaryDetail {
+        pending_epoch_s: None,
         repo: format!("repo{}", n),
         branch: "main".into(),
         msg: "working".into(),
@@ -1890,6 +1931,7 @@ fn overflow_compresses_calm_before_urgent() {
         status: Status::Running,
     };
     let detail_pending = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "urgent-proj".into(),
         branch: "fix/thing".into(),
         msg: "please review".into(),
@@ -2000,6 +2042,7 @@ fn overflow_compresses_calm_before_urgent() {
 #[test]
 fn overflow_all_one_line_when_extreme() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "msg".into(),
@@ -2152,6 +2195,7 @@ fn cards_content_lines_differ_from_comfortable() {
     // least one agent differs from Comfortable. (An all-idle session would
     // now render identically, since idle rows are bare in the hybrid.)
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "working".into(),
@@ -2311,6 +2355,7 @@ fn cards_paint_content_lines_with_bg() {
     // Render an idle tab and an active working tab at normal width with Cards.
     // Every content line carries a truecolor band; gap lines and header must NOT.
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "repo".into(),
         branch: "main".into(),
         msg: "working".into(),
@@ -2407,6 +2452,7 @@ fn cards_band_fills_full_width() {
     // Short-name agent (done) tab at width 24, Cards: the painted band fills
     // the full width.
     let done = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "".into(),
         msg: "".into(),
@@ -2464,6 +2510,7 @@ fn active_card_bg_spans_full_width_on_every_line() {
     for width in [20usize, 24, 30] {
         for has_bell in [false, true] {
             let detail = PrimaryDetail {
+                pending_epoch_s: None,
                 repo: "repo".into(),
                 branch: "main".into(),
                 msg: "working".into(),
@@ -2524,6 +2571,7 @@ fn cards_rearm_bg_after_resets() {
     // resets) under Cards: the active truecolor tint must re-arm after every reset,
     // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix/x".into(),
         msg: "some work".into(),
@@ -2557,6 +2605,7 @@ fn cards_use_truecolor_not_256color() {
     // Card surfaces use theme-derived truecolor (48;2;r;g;b) — not fixed 256-color
     // indices, not truecolor foreground (38;2;), and not raw hex literals.
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "work".into(),
@@ -2626,6 +2675,7 @@ fn strip_ansi_local(line: &str) -> String {
 #[test]
 fn cards_left_chrome_is_single_column() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "x".into(),
@@ -2730,6 +2780,7 @@ fn child_line_status_glyph_precedes_spaced_mark() {
 fn comfortable_and_compact_emit_no_bg() {
     // Same tabs with Comfortable and Compact must contain NO card band.
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "working".into(),
@@ -2787,6 +2838,7 @@ fn no_emitted_line_exceeds_width_cards() {
     // The no_emitted_line_exceeds_width invariant holds for Cards density too.
     let width = 20usize;
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix/x".into(),
         msg: "abcdefghijklmnopqrstuvwxyz".into(),
@@ -3001,6 +3053,7 @@ fn cards_tint_per_row_class() {
     //   agent row (active status, not focused) → mid (238),
     //   idle/plain row → dimmest (236).
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "repo".into(),
         branch: "main".into(),
         msg: "working".into(),
@@ -3097,6 +3150,7 @@ fn cards_3tint_layout_snapshot() {
     // active running agent, pending agent, done agent, then two idle panes.
     // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
     let running = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "web".into(),
         branch: "".into(),
         msg: "building…".into(),
@@ -3107,6 +3161,7 @@ fn cards_3tint_layout_snapshot() {
         status: Status::Running,
     };
     let pending = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "api".into(),
         branch: "fix".into(),
         msg: "".into(),
@@ -3117,6 +3172,7 @@ fn cards_3tint_layout_snapshot() {
         status: Status::Pending,
     };
     let done = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "worker".into(),
         branch: "".into(),
         msg: "".into(),
@@ -3204,6 +3260,7 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
     //   waiting → `\x1b[91m` (bright red) + ◆ glyph
     //   error   → `\x1b[31m` (red)        + ✗ glyph
     let pending = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix".into(),
         msg: "".into(),
@@ -3214,6 +3271,7 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
         status: Status::Pending,
     };
     let err = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "infra".into(),
         branch: "".into(),
         msg: "boom".into(),
@@ -3300,6 +3358,7 @@ fn header_shows_radar_and_urgent_count() {
     // separate, space-joined `{n}!` token (see `header_badge_*` below), not
     // a revival of the old format.
     let pending = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "p".into(),
         branch: "x".into(),
         msg: "approve?".into(),
@@ -3689,6 +3748,7 @@ fn grid(raw: &str, width: u16) -> String {
 /// A representative multi-state session used by several snapshot tests.
 fn scenario_canonical() -> Vec<TabRow> {
     let running = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "web".into(),
         branch: "".into(),
         msg: "building\u{2026}".into(),
@@ -3699,6 +3759,7 @@ fn scenario_canonical() -> Vec<TabRow> {
         status: Status::Running,
     };
     let pending = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "api".into(),
         branch: "fix".into(),
         msg: "".into(),
@@ -3709,6 +3770,7 @@ fn scenario_canonical() -> Vec<TabRow> {
         status: Status::Pending,
     };
     let done = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "worker".into(),
         branch: "".into(),
         msg: "".into(),
@@ -3814,6 +3876,7 @@ fn snapshot_canonical_tint_map() {
 #[test]
 fn snapshot_cards_narrow_width_grid() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "payments-service".into(),
         branch: "feature/long-branch".into(),
         msg: "refactoring the auth middleware".into(),
@@ -3858,6 +3921,7 @@ fn snapshot_cards_nerd_glyphs_grid() {
 fn snapshot_overflow_fold_grid() {
     let mut rows: Vec<TabRow> = (1..=14).map(idle_row).collect();
     let urgent = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "pinky".into(),
         branch: "fix".into(),
         msg: "approve?".into(),
@@ -3968,6 +4032,7 @@ fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
         .collect();
     for n in 6u32..=15 {
         let d = PrimaryDetail {
+            pending_epoch_s: None,
             repo: "r".into(),
             branch: "b".into(),
             msg: "".into(),
@@ -4036,6 +4101,7 @@ fn both_glyph_sets_keep_columns_within_width() {
 #[test]
 fn wide_and_combining_chars_do_not_break_alignment() {
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "caf\u{00e9}".into(),
         branch: "".into(),
         msg: "测试 \u{1f680} e\u{0301}".into(),
@@ -4415,7 +4481,7 @@ prop_compose! {
                 1 => "running a fairly long migration command across the cluster now",
                 _ => "日本語のメッセージ表示テスト中です", // CJK wide glyphs
             };
-            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, 0, None)
+            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, 0, None, None)
         }
     }
 }
@@ -4443,6 +4509,7 @@ prop_compose! {
         } else {
             let detail = if total > 0 {
                 Some(PrimaryDetail {
+                    pending_epoch_s: None,
                     repo: "r".into(),
                     branch: "".into(),
                     msg: "m".into(),
@@ -4905,8 +4972,8 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             progress: ProgressCounts { done: 0, total: 2, pending: 1 },
             detail: None,
             panes: vec![
-                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), 0, None),
-                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), 0, None),
+                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), 0, None, None),
+                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), 0, None, None),
             ],
         },
     };
@@ -4985,6 +5052,7 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     // full-speed spinner — a strip_sgr grid check, per the brief.
     let now = EASE_AFTER_TICKS + 100;
     let detail = PrimaryDetail {
+        pending_epoch_s: None,
         repo: "r".into(),
         branch: "b".into(),
         msg: "long build".into(),

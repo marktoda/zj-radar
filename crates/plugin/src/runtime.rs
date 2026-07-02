@@ -507,7 +507,12 @@ impl PluginRuntime {
     fn desired_cadence(&self) -> Option<Cadence> {
         if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
             Some(Cadence::Fast)
-        } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s()) {
+        } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s())
+            || self.radar.pending_wait_unsaturated(crate::clock::now_epoch_s())
+        {
+            // Slow ticks exist to advance minute-granular ages: ledger rows'
+            // relative ages and pending rows' `· Nm` wait tags. Both freeze at
+            // 1h+ (saturation), which is what lets the timer disarm fully.
             Some(Cadence::Slow)
         } else {
             None
@@ -1615,14 +1620,19 @@ mod tests {
             "flash window has elapsed by tick 2"
         );
 
-        // With nothing else running, the timer now quiesces.
-        let mut extra = 0;
-        while rt.armed_cadence.is_some() {
+        // With nothing running, the Fast loop has nothing left — but the
+        // pending row's `· Nm` wait tag is still counting, so the timer
+        // settles to the Slow heartbeat (the same 1h-saturating cadence the
+        // ledger uses) rather than disarming outright.
+        for _ in 0..3 {
             rt.timer_fast(PermissionProbe::default());
-            extra += 1;
-            assert!(extra < 4, "timer must quiesce once the flash clears");
         }
-        assert!(!rt.timer_should_continue(), "quiesced: nothing left to tick for");
+        assert!(!rt.timer_should_continue(), "nothing needs the Fast loop");
+        assert_eq!(
+            rt.armed_cadence,
+            Some(Cadence::Slow),
+            "an unsaturated pending wait keeps the Slow heartbeat armed"
+        );
     }
 
     #[test]

@@ -630,6 +630,18 @@ impl RadarState {
         self.ledger.any_unsaturated(now_epoch_s)
     }
 
+    /// Any pushed `Pending` row whose `· Nm` wait tag is still counting (age
+    /// under the ledger's saturate window)? The pending twin of
+    /// [`ledger_any_unsaturated`](Self::ledger_any_unsaturated): both feed the
+    /// Slow cadence, and both freeze at `1h+` so the timer can disarm.
+    pub(crate) fn pending_wait_unsaturated(&self, now_epoch_s: u64) -> bool {
+        self.status.observations().any(|(_, o)| {
+            o.status == Status::Pending
+                && o.pending_epoch_s
+                    .is_some_and(|t| now_epoch_s.saturating_sub(t) < crate::ledger::SATURATE_S)
+        })
+    }
+
     /// The zero-state routing gate: `PluginRuntime::render` shows the minimal
     /// scanning face only when there are no tracked tabs AND no completion
     /// history — a session with zero live tabs but a non-empty ledger still
