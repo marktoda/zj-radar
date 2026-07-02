@@ -8,8 +8,22 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Debounce window: a pending fg command must survive this many ticks before
-/// being promoted to Running.
-pub const DEBOUNCE_TICKS: u64 = 1; // becomes 2 in Task 7
+/// being promoted to Running. Floored at 2 (~2s at the plugin's 1s tick) so an
+/// instant `cd`/`ls`-style command that returns to the shell prompt within the
+/// window never earns a line (spec §3.2) — 1 tick left too narrow a margin
+/// against real-world scheduling jitter between the fg command and its
+/// immediate return.
+///
+/// This does NOT fully close the "running cd" symptom: promotion fires purely
+/// off elapsed ticks, with no knowledge of whether the matching back-to-prompt
+/// `CommandChanged` is merely late or was never delivered at all. If Zellij
+/// drops that edge — the follow-up event Zellij owes us never arrives — the
+/// pending command promotes and the row sticks Running forever, because
+/// nothing ever calls `on_command_changed` again to clear it. Raising the
+/// floor only narrows how often normal jitter crosses that window; a row
+/// still stuck Running past ~2s is evidence of a missing Zellij edge, not a
+/// bug in this store (pinned by `missed_exit_edge_is_the_stale_running_path`).
+pub const DEBOUNCE_TICKS: u64 = 2;
 
 /// Ticks a command-origin `Done` stays lit before receding to Idle. The
 /// completion hands off to the ledger at the recede (spec §3.1). `Error` is

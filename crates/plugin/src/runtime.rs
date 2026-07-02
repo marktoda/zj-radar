@@ -460,6 +460,7 @@ impl PluginRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::DEBOUNCE_TICKS;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
     use crate::radar_state::{TabId, TerminalPane};
@@ -774,7 +775,17 @@ mod tests {
         let argv: Vec<String> = vec!["cargo".into(), "test".into()];
         runtime.command_changed(7, &argv, true);
 
-        // First tick past the debounce window promotes → must persist.
+        // Ticks short of the debounce window are quiet (no store mutation yet).
+        for _ in 1..DEBOUNCE_TICKS {
+            let quiet = runtime.timer(PermissionProbe::default());
+            assert!(
+                !quiet.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
+                "a tick short of the debounce window must not persist, got {:?}",
+                quiet.effects
+            );
+        }
+
+        // The tick that reaches the debounce window promotes → must persist.
         let promoted = runtime.timer(PermissionProbe::default());
         assert!(
             promoted.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
@@ -925,6 +936,15 @@ mod tests {
         let command = vec!["cargo".to_string(), "test".to_string()];
         let command_outcome = runtime.command_changed(7, &command, true);
         assert_eq!(command_outcome.effects, vec![Effect::SetTimeout]);
+
+        for _ in 1..DEBOUNCE_TICKS {
+            let quiet = runtime.timer(PermissionProbe::default());
+            assert_eq!(
+                quiet.effects,
+                vec![Effect::SetTimeout],
+                "still pending short of the debounce window"
+            );
+        }
 
         let timer = runtime.timer(PermissionProbe::default());
         assert!(timer.render);

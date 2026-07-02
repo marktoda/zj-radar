@@ -169,7 +169,7 @@
         for (args, want_msg, want_kind) in cases {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &argv(args), true, Some("/work/repo"), 1);
-            store.on_timer(2, 0);
+            store.on_timer(1 + DEBOUNCE_TICKS, 0);
             let s = store
                 .get(1)
                 .unwrap_or_else(|| panic!("{args:?} should be tracked"));
@@ -195,7 +195,7 @@
         // (no regression vs. not peeling). It still tracks as a generic command.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &argv(&["sudo", "-u", "user", "make"]), true, Some("/r"), 1);
-        store.on_timer(2, 0);
+        store.on_timer(1 + DEBOUNCE_TICKS, 0);
         let s = store.get(1).expect("should still be tracked");
         assert_eq!(s.kind, Kind::Command);
     }
@@ -321,12 +321,19 @@
         );
         assert!(store.pending.contains_key(&1), "must be in pending");
 
-        // t=1: timer fires at same tick → not past debounce (0 < 1)
+        // t=1: timer fires at same tick → not past debounce (0 < DEBOUNCE_TICKS)
         store.on_timer(1, 0);
         assert!(store.get(1).is_none(), "still pending at same tick");
 
-        // t=2: timer fires past debounce (2 - 1 = 1 >= DEBOUNCE_TICKS) → promote
-        store.on_timer(2, 0);
+        // One tick short of the debounce window → still pending. Only exercises
+        // something when the floor is above 1 (Task 7).
+        if DEBOUNCE_TICKS > 1 {
+            store.on_timer(DEBOUNCE_TICKS, 0);
+            assert!(store.get(1).is_none(), "still pending one tick short of debounce");
+        }
+
+        // t = 1 + DEBOUNCE_TICKS: timer fires past debounce → promote
+        store.on_timer(1 + DEBOUNCE_TICKS, 0);
         let s = store.get(1).expect("must be Running after debounce");
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.msg, "sleep 5");
@@ -350,12 +357,15 @@
         assert!(!store.on_timer(1, 0).changed, "empty store: quiet tick");
 
         store.on_command_changed(1, &cmd, true, Some("/w/repo"), 1);
-        assert!(store.on_timer(2, 0).changed, "debounced promotion mutates the store");
-        assert!(!store.on_timer(3, 0).changed, "already Running: quiet tick");
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        assert!(store.on_timer(promote_tick, 0).changed, "debounced promotion mutates the store");
+        assert!(!store.on_timer(promote_tick + 1, 0).changed, "already Running: quiet tick");
 
-        store.on_command_changed(1, &[], false, None, 4); // leaves foreground
-        assert!(store.on_timer(5, 0).changed, "confirmed Done-flip mutates the store");
-        assert!(!store.on_timer(6, 0).changed, "terminal Done: quiet tick");
+        let leave_tick = promote_tick + 2;
+        store.on_command_changed(1, &[], false, None, leave_tick); // leaves foreground
+        let done_tick = leave_tick + DEBOUNCE_TICKS;
+        assert!(store.on_timer(done_tick, 0).changed, "confirmed Done-flip mutates the store");
+        assert!(!store.on_timer(done_tick + 1, 0).changed, "terminal Done: quiet tick");
     }
 
     // ── Test 2: fg blip filtered (real command then is_foreground=false before timer)
@@ -405,21 +415,23 @@
 
         // A real command runs and is promoted to Running.
         store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/repo"), 1);
-        store.on_timer(2, 0);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
 
         // The shell prompt hook fires `direnv export zsh` as the next foreground
         // command. Being prompt machinery, it must confirm the prior command's
         // completion — NOT open a fresh "direnv" lifecycle that clobbers it.
-        store.on_command_changed(1, &argv(&["direnv", "export", "zsh"]), true, Some("/repo"), 3);
+        let direnv_tick = promote_tick + 1;
+        store.on_command_changed(1, &argv(&["direnv", "export", "zsh"]), true, Some("/repo"), direnv_tick);
         assert!(
             !store.pending.contains_key(&1),
             "direnv export must not open a new command lifecycle"
         );
 
         // Debounce → Done, still identified as the cargo test, not direnv.
-        store.on_timer(4, 0);
+        store.on_timer(direnv_tick + DEBOUNCE_TICKS, 0);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.msg, "cargo test", "the finished command is cargo test, not direnv");
@@ -434,18 +446,21 @@
 
         // t=1: fg real command
         store.on_command_changed(1, &cmd, true, Some("/repo"), 1);
-        // t=2: promote to Running
-        store.on_timer(2, 0);
+        // promote to Running after the debounce floor
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
-        // t=3: return-to-shell (is_foreground=false) → tentative, still Running
-        store.on_command_changed(1, &[], false, None, 3);
+        // return-to-shell (is_foreground=false) → tentative, still Running
+        let leave_tick = promote_tick + 1;
+        store.on_command_changed(1, &[], false, None, leave_tick);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
-        // t=4: timer past debounce → Done
-        store.on_timer(4, 0);
+        // timer past debounce → Done
+        let done_tick = leave_tick + DEBOUNCE_TICKS;
+        store.on_timer(done_tick, 0);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
-        assert_eq!(s.last_change_tick, 4);
+        assert_eq!(s.last_change_tick, done_tick);
     }
 
     // ── Test 5: on_exit(Some(0)) → Done; on_exit(Some(3)) → Error; dedupe
@@ -492,18 +507,21 @@
 
         // First run: promote to Running, then exit 0 → Done.
         store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), 1);
-        store.on_timer(2, 0);
+        let promote1 = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote1, 0);
         assert_eq!(store.get(7).unwrap().status, Status::Running);
-        store.on_exit(7, Some(0), 3, 0);
+        store.on_exit(7, Some(0), promote1 + 1, 0);
         assert_eq!(store.get(7).unwrap().status, Status::Done);
 
         // Re-run in the same (still-live) pane: back to Running.
-        store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), 4);
-        store.on_timer(5, 0);
+        let rerun_tick = promote1 + 2;
+        store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), rerun_tick);
+        let promote2 = rerun_tick + DEBOUNCE_TICKS;
+        store.on_timer(promote2, 0);
         assert_eq!(store.get(7).unwrap().status, Status::Running);
 
         // Second run exits with the SAME code — must resolve to Done, not stay Running.
-        store.on_exit(7, Some(0), 6, 0);
+        store.on_exit(7, Some(0), promote2 + 1, 0);
         assert_eq!(
             store.get(7).unwrap().status,
             Status::Done,
@@ -527,7 +545,7 @@
         ];
 
         store.on_command_changed(1, &cmd, true, Some("/home/user/myproject"), 1);
-        store.on_timer(2, 0);
+        store.on_timer(1 + DEBOUNCE_TICKS, 0);
         let s = store.get(1).expect("must be Running");
         assert_eq!(s.msg, "cargo build", "basename of nix path must be used");
         assert_eq!(s.kind, Kind::Build);
@@ -544,7 +562,7 @@
         store.on_command_changed(1, &["vim".to_string()], true, None, 1);
         // Set up pane 2: resolved Running
         store.on_command_changed(2, &["cargo".to_string()], true, None, 1);
-        store.on_timer(2, 0);
+        store.on_timer(1 + DEBOUNCE_TICKS, 0);
         // Set up pane 3: has exit record
         store.on_exit(3, Some(0), 1, 0);
 
@@ -577,18 +595,20 @@
         assert!(store.has_pending_or_active(), "true while pending");
 
         // Promote to Running
-        store.on_timer(2, 0);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert!(store.has_pending_or_active(), "true while Running");
 
         // Return to shell → tentative; still active (Running) until debounce.
-        store.on_command_changed(1, &[], false, None, 3);
+        let leave_tick = promote_tick + 1;
+        store.on_command_changed(1, &[], false, None, leave_tick);
         assert!(
             store.has_pending_or_active(),
             "still active until the debounce window flips it to Done"
         );
 
         // Timer past debounce → Done (no pending, no Running).
-        store.on_timer(4, 0);
+        store.on_timer(leave_tick + DEBOUNCE_TICKS, 0);
         assert!(
             !store.has_pending_or_active(),
             "false once Done (no pending, no Running)"
@@ -665,14 +685,15 @@
             Some("/work/pinky"),
             1,
         );
-        store.on_timer(2, 0);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().repo, "pinky");
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
         assert_eq!(store.get(1).unwrap().kind, Kind::Test);
 
         // Exit 0 → Done, but repo and msg preserved
-        store.on_exit(1, Some(0), 3, 0);
+        store.on_exit(1, Some(0), promote_tick + 1, 0);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.repo, "pinky", "repo must be preserved");
@@ -713,7 +734,7 @@
         // its own `Kind::Gemini` source so it renders with the gemini mark.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["gemini".to_string()], true, Some("/work/repo"), 1);
-        store.on_timer(2, 0);
+        store.on_timer(1 + DEBOUNCE_TICKS, 0);
         let s = store
             .get(1)
             .expect("gemini must leave a resolved command observation");
@@ -727,11 +748,13 @@
     fn leaving_foreground_debounces_before_marking_done() {
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
-        store.on_timer(2, 0);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
         // Return-to-shell: tentative — must still read Running this instant.
-        store.on_command_changed(1, &[], false, None, 3);
+        let leave_tick = promote_tick + 1;
+        store.on_command_changed(1, &[], false, None, leave_tick);
         assert_eq!(
             store.get(1).unwrap().status,
             Status::Running,
@@ -739,10 +762,11 @@
         );
 
         // Timer past the debounce window → now Done.
-        store.on_timer(4, 0);
+        let done_tick = leave_tick + DEBOUNCE_TICKS;
+        store.on_timer(done_tick, 0);
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
-        assert_eq!(s.last_change_tick, 4);
+        assert_eq!(s.last_change_tick, done_tick);
     }
 
     #[test]
@@ -752,13 +776,15 @@
         // a spurious Done in between.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
-        store.on_timer(2, 0);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(promote_tick, 0);
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
-        store.on_command_changed(1, &[], false, None, 3);
-        store.on_command_changed(1, &["rg".to_string(), "needle".to_string()], true, Some("/repo"), 3);
+        let blip_tick = promote_tick + 1;
+        store.on_command_changed(1, &[], false, None, blip_tick);
+        store.on_command_changed(1, &["rg".to_string(), "needle".to_string()], true, Some("/repo"), blip_tick);
 
-        store.on_timer(4, 0);
+        store.on_timer(blip_tick + DEBOUNCE_TICKS, 0);
         assert_eq!(
             store.get(1).unwrap().status,
             Status::Running,
@@ -878,5 +904,31 @@
         s.on_exit(9, Some(0), t + 1, 300);                        // exits pre-promotion
         assert_eq!(s.get(9).unwrap().status, Status::Done, "new run's completion applies");
         assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(300));
+    }
+
+    // ── Task 7: debounce floor + the missed-exit-edge diagnosis ──
+
+    #[test]
+    fn sub_debounce_command_never_renders_running() {
+        // Acceptance (spec §3.2): cd/ls-style instant commands never earn a line.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["cd"]), true, None, 0);
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, 0); // returns within the window
+        let r = s.on_timer(DEBOUNCE_TICKS, 100);
+        assert!(s.get(1).is_none(), "never promoted");
+        assert!(!r.changed);
+    }
+
+    #[test]
+    fn missed_exit_edge_is_the_stale_running_path() {
+        // DIAGNOSIS pin: if the back-to-shell CommandChanged never arrives, the
+        // pending promotes and the row sticks Running forever — this is the
+        // `running cd` screenshot. The floor bump narrows the window to ~2s; a
+        // stuck row beyond that implies a missing Zellij edge, not a store bug.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["cd"]), true, None, 0);
+        // no follow-up event at all
+        s.on_timer(DEBOUNCE_TICKS, 100);
+        assert_eq!(s.get(1).unwrap().status, Status::Running, "documented failure mode");
     }
 

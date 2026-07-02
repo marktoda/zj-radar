@@ -6,6 +6,7 @@
 //! docs/rail-reference.md. Editing a `rail-input`/`rail-expect` pair in the doc
 //! edits this test — the doc is the single source of truth for rail rendering.
 
+use crate::command::DEBOUNCE_TICKS;
 use crate::config::{Density, NamingMode};
 use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabId, TerminalPane};
 use crate::render::{GlyphSet, RenderOpts, TabRow};
@@ -393,7 +394,8 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     //      so that pane_outcome() fires and end-result tags (no tag / exit N / ✗) render.
     //      Sequence:
     //        1. command_changed(tick=0) — registers a pending command with the msg as argv.
-    //        2. timer(tick=1) — promotes pending→Running (debounce window = 1 tick).
+    //        2. timer(tick=DEBOUNCE_TICKS) — promotes pending→Running once the debounce
+    //           window elapses.
     //        3. panes_changed with exits vec containing the exit code — calls on_exit,
     //           which sets status Done/Error and exit_code on the resolved entry.
 
@@ -451,7 +453,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     // Command-origin path for panes with an `exit <N>|?` trailer.
     // Step 1: command_changed (tick=0) — registers each pane as a pending command.
-    // Step 2: timer(tick=1) — promotes all pending commands to Running (debounce=1).
+    // Step 2: timer(tick=DEBOUNCE_TICKS) — promotes all pending commands to Running.
     // Step 3: panes_changed with exits — on_exit sets Done/Error + exit_code.
     for spec in &tabs {
         for pane in &spec.panes {
@@ -469,7 +471,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     if !command_exits.is_empty() {
         // Promote all pending commands to Running so the msg is set before exit.
-        radar.timer(1);
+        radar.timer(DEBOUNCE_TICKS);
 
         // Now deliver the exits. Re-register the live pane set (unchanged) along
         // with the exits vec so that panes_changed → on_exit sets Done/Error.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::command::DEBOUNCE_TICKS;
 use crate::kind::Kind;
 use crate::payload::StatusPayload;
 use crate::rollup::Outcome;
@@ -152,7 +153,7 @@ fn observation_origin_is_source_specific() {
         .status_mut()
         .apply(payload_for(1, Status::Running, "status"), 1);
     radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
+    radar.timer(1 + DEBOUNCE_TICKS);
 
     assert_eq!(
         radar.status(1).unwrap().origin,
@@ -376,7 +377,7 @@ fn same_pane_status_observation_wins_over_command() {
 
     // A command observation on pane 5 (foreground command, promoted to Running).
     radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2);
+    radar.timer(1 + DEBOUNCE_TICKS);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo.
@@ -402,7 +403,7 @@ fn notify_views_status_wins_over_command_for_same_pane() {
 
     // A command observation on pane 5 (foreground command, promoted to Running).
     radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2);
+    radar.timer(1 + DEBOUNCE_TICKS);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo so
@@ -429,7 +430,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
     radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2); // promote pending → Running
+    radar.timer(1 + DEBOUNCE_TICKS); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
     radar.command_mut().on_exit(1, Some(2), 3, 0);
@@ -445,7 +446,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
 fn snapshot_round_trip_preserves_command_exit_code() {
     let mut radar = RadarState::default();
     radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
+    radar.timer(1 + DEBOUNCE_TICKS);
     radar.command_mut().on_exit(7, Some(3), 3, 0);
     assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
 
@@ -487,7 +488,7 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
 fn snapshot_round_trip_preserves_command_observations() {
     let mut radar = RadarState::default();
     radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
+    radar.timer(1 + DEBOUNCE_TICKS);
 
     let json = radar.snapshot_json(None, 2);
     let mut restored = RadarState::default();

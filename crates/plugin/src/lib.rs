@@ -997,8 +997,8 @@ mod tests {
         );
 
         // 2) real fg command → pending (not yet Running); after DEBOUNCE_TICKS timer → Running
-        // DEBOUNCE_TICKS = 1: pending since_tick = tick; next tick satisfies
-        // (tick + 1) - tick = 1 >= DEBOUNCE_TICKS.
+        // pending since_tick = tick; a timer at (tick + DEBOUNCE_TICKS) satisfies
+        // (tick + DEBOUNCE_TICKS) - tick = DEBOUNCE_TICKS >= DEBOUNCE_TICKS.
         let since = tick;
         state.runtime.radar.command_mut().on_command_changed(
             5,
