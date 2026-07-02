@@ -601,6 +601,128 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
 }
 
 #[test]
+fn snapshot_v3_round_trips_ledger_and_completion_stamps() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
+
+    // Pane 1: TTL-recede all the way to a ledger entry.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // Done, stamped at epoch 500
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede → ledgers
+    assert_eq!(radar.ledger().entries().count(), 1, "sanity: one ledger entry seeded");
+
+    // Pane 2: still-live Done observation, stamped with its own completion epoch.
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    radar.timer(confirm_tick, 700); // Done, stamped at epoch 700
+    assert_eq!(radar.command(2).unwrap().status, Status::Done);
+    assert_eq!(radar.command(2).unwrap().completed_epoch_s, Some(700));
+
+    let snapshot_tick = confirm_tick + DONE_TTL_TICKS;
+    let json = radar.snapshot_json(None, snapshot_tick);
+
+    let mut restored = RadarState::default();
+    restored.load_snapshot(&json).expect("v3 snapshot loads");
+
+    assert_eq!(
+        restored.ledger().to_vec(),
+        radar.ledger().to_vec(),
+        "the ledger round-trips through the v3 record unchanged"
+    );
+    let pane2 = restored.command(2).expect("pane 2 restored");
+    assert_eq!(pane2.completed_epoch_s, Some(700), "completion stamp survives the round trip");
+}
+
+#[test]
+fn v2_snapshot_loads_with_empty_ledger_and_same_observations() {
+    // Hand-built pre-ledger (v2) record — same shape as v3 minus the `ledger`
+    // field, which must default empty rather than reject the snapshot.
+    let json = r#"{"v":2,"tick":4,"observations":[
+        {"pane_id":1,"origin":"status_pipe","status":"running","repo":"r","branch":"b","msg":"m","source":"claude","last_change_tick":1,"ever_active":true}
+    ]}"#;
+    let mut radar = RadarState::default();
+
+    let tick = radar.load_snapshot(json).expect("v2 snapshot loads");
+
+    assert_eq!(tick, 4);
+    let pane = radar.status(1).expect("v2 observation restored");
+    assert_eq!(pane.status, Status::Running);
+    assert!(radar.ledger().is_empty(), "a v2 record predates the ledger — it loads empty, not rejected");
+}
+
+#[test]
+fn snapshot_merge_unions_ledgers_across_instances() {
+    let mut existing = RadarState::default();
+    existing.tabs_changed(vec![tab(10, 0, "work", true)]);
+    existing.set_tab_panes_for_position(0, vec![pane(1)]);
+    existing.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    existing.timer(1 + DEBOUNCE_TICKS, 0);
+    existing.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    existing.timer(confirm_tick, 500);
+    existing.timer(confirm_tick + DONE_TTL_TICKS, 900); // ledgers "cargo build" @500
+    let existing_json = existing.snapshot_json(None, confirm_tick + DONE_TTL_TICKS);
+
+    let mut current = RadarState::default();
+    current.tabs_changed(vec![tab(20, 0, "other", true)]);
+    current.set_tab_panes_for_position(0, vec![pane(2)]);
+    current.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    current.timer(1 + DEBOUNCE_TICKS, 0);
+    current.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    current.timer(confirm_tick, 600);
+    current.timer(confirm_tick + DONE_TTL_TICKS, 1000); // ledgers "cargo test" @600
+
+    let merged = current.snapshot_json(Some(&existing_json), confirm_tick + DONE_TTL_TICKS);
+    let mut restored = RadarState::default();
+    restored.load_snapshot(&merged).expect("merged snapshot loads");
+
+    let entries = restored.ledger().to_vec();
+    assert_eq!(entries.len(), 2, "both instances' ledger entries survive the union");
+    assert_eq!(entries[0].label, "cargo test", "sorted desc by completion stamp — 600 before 500");
+    assert_eq!(entries[1].label, "cargo build");
+}
+
+#[test]
+fn loaded_done_ttl_rebases_to_snapshot_tick() {
+    // A command Done stamped with a `last_change_tick` from a foreign tick
+    // domain (999999 — nothing this fresh instance has counted to) must not
+    // be trusted: on load it re-bases to the snapshot's own tick, restarting
+    // the DONE_TTL_TICKS window (spec §4.3) rather than instantly receding or
+    // never receding.
+    let json = r#"{"v":3,"tick":42,"observations":[
+        {"pane_id":1,"origin":"command","status":"done","repo":"","branch":"","msg":"cargo build","source":"build","last_change_tick":999999,"ever_active":true,"completed_epoch_s":500}
+    ],"ledger":[]}"#;
+    let mut radar = RadarState::default();
+
+    let tick = radar.load_snapshot(json).expect("v3 snapshot loads");
+
+    assert_eq!(tick, 42);
+    let cmd = radar.command(1).expect("command observation restored");
+    assert_eq!(
+        cmd.last_change_tick, tick,
+        "TTL re-bases to the snapshot's own tick, not the foreign 999999"
+    );
+    assert_eq!(cmd.completed_epoch_s, Some(500), "the completion stamp itself is untouched");
+}
+
+#[test]
+fn old_code_version_guard_note() {
+    // Pinned drop-forward behavior: a version this build doesn't recognize
+    // (here, a hypothetical v4 written by a newer build) is never partially
+    // trusted — `load` returns `None` for the whole snapshot rather than
+    // guessing at a superset/subset shape.
+    let mut radar = RadarState::default();
+    assert!(radar
+        .load_snapshot(r#"{"v":4,"tick":1,"observations":[],"ledger":[]}"#)
+        .is_none());
+}
+
+#[test]
 fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
@@ -964,14 +1086,23 @@ proptest! {
             }
         }
 
-        // Snapshot round-trip is identity: serialize → load → serialize again
-        // yields byte-identical JSON for the whole accumulated history.
+        // Snapshot round-trip is a fixed point from the second load on: the
+        // very first load may re-base a command-origin Done's
+        // `last_change_tick` to the snapshot tick (the TTL re-base, spec
+        // §4.3), so `s1` (built from the accumulated op history's own ticks)
+        // need not equal `s2` byte-for-byte. But once that one-time re-base
+        // has happened, `s2` already carries the re-based tick, so loading and
+        // re-serializing it again must be byte-identical.
         const SNAPSHOT_TICK: u64 = 9999;
         let s1 = st.snapshot_json(None, SNAPSHOT_TICK);
         let mut reloaded = RadarState::default();
         reloaded.load_snapshot(&s1);
         let s2 = reloaded.snapshot_json(None, SNAPSHOT_TICK);
-        prop_assert_eq!(s1, s2, "snapshot round-trip must be identity");
+
+        let mut reloaded_again = RadarState::default();
+        reloaded_again.load_snapshot(&s2);
+        let s3 = reloaded_again.snapshot_json(None, SNAPSHOT_TICK);
+        prop_assert_eq!(s2, s3, "snapshot round-trip must be a fixed point after the first TTL re-base");
     }
 
     #[test]

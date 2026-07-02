@@ -6,21 +6,21 @@
 //!
 //! `RadarState` now constructs a `Ledger` and feeds it on every recede edge
 //! (`push` is reachable from production wasm as of that wiring — see
-//! `radar_state.rs`'s `ledger_receded`). `entries`, `is_empty`, and
-//! `any_unsaturated` are consumed by `RadarState`'s own render/timer-facing
-//! wrappers, but those wrappers aren't wired into the rendered rail or the
-//! timer until Tasks 13/15, so both this module's `entries`/`is_empty`/
-//! `any_unsaturated`/`SATURATE_S` and their `radar_state.rs` callers stay
-//! unreachable from production wasm until then. `to_vec`, `replace`,
-//! `merge`, and `format_age` are reachable only from this module's own tests
-//! for the same reason (snapshot-merge and the rendered age column are later
-//! tasks too). All of the above keep a targeted per-item allow for the
-//! production (non-test) wasm build, mirroring the
-//! `RenderedRail::empty`/`line_count` precedent in `render.rs`, rather than
-//! the module-wide allow this used to carry. Remove each allow as its
-//! consuming task wires it in. `cargo test` (host or wasm) stays fully
-//! linted: the tests below call every `pub(crate)` item directly, so real
-//! dead code would still be caught there.
+//! `radar_state.rs`'s `ledger_receded`). `to_vec`, `replace`, and `merge` are
+//! wired into snapshot persistence as of Task 12 (`RadarState::snapshot_json`/
+//! `load_snapshot`), so they're reachable from production wasm too. `entries`,
+//! `is_empty`, and `any_unsaturated` are consumed by `RadarState`'s own
+//! render/timer-facing wrappers, but those wrappers aren't wired into the
+//! rendered rail or the timer until Tasks 13/15, so both this module's
+//! `entries`/`is_empty`/`any_unsaturated`/`SATURATE_S` and their
+//! `radar_state.rs` callers stay unreachable from production wasm until then
+//! — `format_age` likewise, for the rendered age column. Those keep a
+//! targeted per-item allow for the production (non-test) wasm build,
+//! mirroring the `RenderedRail::empty`/`line_count` precedent in `render.rs`,
+//! rather than the module-wide allow this used to carry. Remove each
+//! remaining allow as its consuming task wires it in. `cargo test` (host or
+//! wasm) stays fully linted: the tests below call every `pub(crate)` item
+//! directly, so real dead code would still be caught there.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::radar_state::TabId;
@@ -142,16 +142,11 @@ impl Ledger {
         self.entries.is_empty()
     }
 
-    /// TODO(Task 13/15): wire into snapshot persistence, then drop this allow.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn to_vec(&self) -> Vec<LedgerEntry> {
         self.entries.iter().cloned().collect()
     }
 
     /// sorted desc, capped
-    ///
-    /// TODO(Task 13/15): wire into snapshot load, then drop this allow.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn replace(&mut self, entries: Vec<LedgerEntry>) {
         let mut sorted = entries;
         sorted.sort_by_key(|e| std::cmp::Reverse(e.at_epoch_s));
@@ -171,10 +166,6 @@ impl Ledger {
     /// Union of two rings: nearest-neighbor match on (pane, outcome, label)
     /// within MERGE_WINDOW_S keeps the later stamp; result sorted by
     /// at_epoch_s desc, truncated to LEDGER_CAP.
-    ///
-    /// TODO(Task 13/15): wire into cross-instance snapshot merge, then drop
-    /// this allow.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn merge(a: Vec<LedgerEntry>, b: Vec<LedgerEntry>) -> Vec<LedgerEntry> {
         let mut all = a;
         all.extend(b);

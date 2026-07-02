@@ -230,14 +230,25 @@ pub(crate) struct RadarState {
 
 impl RadarState {
     pub(crate) fn load_snapshot(&mut self, raw: &str) -> Option<u64> {
-        let (observations, tick) = snapshot::load(raw)?;
+        let (observations, tick, ledger) = snapshot::load(raw)?;
         self.status = StatusStore::default();
         self.command = CommandStore::default();
         // This match is the SINGLE origin→store guard: each entry's intrinsic
         // origin (strict on deserialize) routes it to exactly one store, so the
         // stores trust what they're handed and don't re-check. Deserialize already
         // rejects unknown origins, dropping the whole snapshot.
-        for (pane_id, observation) in observations {
+        for (pane_id, mut observation) in observations {
+            // TTL re-base: a loaded command-origin `Done` keeps ticking down its
+            // `DONE_TTL_TICKS` window against whichever tick domain wrote it —
+            // possibly a different instance's tick count entirely. Stamping
+            // `last_change_tick` to the tick this snapshot is adopting restarts
+            // that window fresh on load, so a foreign tick domain can't make it
+            // recede instantly (huge apparent tick delta) or never recede
+            // (`tick` moving backwards relative to a `last_change_tick` far in
+            // its "future"). `Error` is exempt — it has no TTL to re-base.
+            if observation.origin == ObservationOrigin::Command && observation.status == Status::Done {
+                observation.last_change_tick = tick;
+            }
             match observation.origin {
                 ObservationOrigin::StatusPipe => self
                     .status
@@ -247,6 +258,7 @@ impl RadarState {
                     .insert_snapshot_observation(pane_id, observation),
             }
         }
+        self.ledger.replace(ledger);
         Some(tick)
     }
 
@@ -254,7 +266,7 @@ impl RadarState {
         // Both stores' observations carry their own `origin`, so the snapshot
         // module keys the merge on it — no need to tag the two iterators here.
         let current = self.status.observations().chain(self.command.observations());
-        snapshot::to_json(current, self.live_panes.as_ref(), existing, tick)
+        snapshot::to_json(current, self.live_panes.as_ref(), existing, tick, self.ledger.to_vec())
     }
 
     /// Target tab position for an `attention-next`/`attention-prev` command, or
