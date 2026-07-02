@@ -400,7 +400,12 @@ impl RadarState {
         // `resolve`'s precedence and `status_tracked_pane_ids`'s doc.
         let status_tracked = self.status_tracked_pane_ids();
         self.ledger_receded(report.receded, &index, &status_tracked);
-        report.changed
+        // Stale-Running expiry: an agent killed mid-turn sends no clearing
+        // broadcast; its prompt-return grace clock (see `clear_on_prompt_return`)
+        // runs out here. Running is not a completion — nothing to ledger — but
+        // the clear must render and persist like any other store change.
+        let stale_cleared = !self.status.expire_stale_running(tick).is_empty();
+        report.changed || stale_cleared
     }
 
     pub(crate) fn cwd_changed(
@@ -432,9 +437,11 @@ impl RadarState {
         // A pane back at its shell prompt means the agent that was pushing status
         // has exited (no producer hook fires on quit), so clear the now-stale
         // pushed status → idle. This rides the shared `CommandChanged` signal, so
-        // every tab's instance clears in lockstep. `clear_on_prompt_return`
-        // ignores a Running status, so a mid-turn foreground flicker to a shell
-        // can't be mistaken for the agent exiting.
+        // every tab's instance clears in lockstep. A Running status is not
+        // cleared immediately — `clear_on_prompt_return` starts a grace clock
+        // instead, so a mid-turn foreground flicker to a shell can't be
+        // mistaken for the agent exiting, while an agent killed mid-turn still
+        // expires to idle on the timer (`expire_stale_running`).
         //
         // `now_epoch_s` stays unused here (kept for signature symmetry with the
         // other three mutating entry points): the
@@ -457,6 +464,13 @@ impl RadarState {
                 None => false,
             }
         } else {
+            // The agent's exe back in the foreground resolves a mid-turn
+            // flicker: cancel any stale-Running grace clock the shell blip
+            // started. Other foregrounds don't vouch — a command run in the
+            // shell an agent died in must not keep its ghost alive.
+            if crate::command::is_agent_foreground(command, is_foreground) {
+                self.status.cancel_running_suspect(pane_id);
+            }
             false
         };
         RadarChange {

@@ -40,6 +40,20 @@
     }
 
     #[test]
+    fn is_agent_foreground_detects_only_a_live_foreground_agent() {
+        // The agent's own exe in the foreground vouches for the pushed status.
+        assert!(is_agent_foreground(&argv(&["claude"]), true));
+        assert!(is_agent_foreground(&argv(&["codex"]), true));
+        // Env/wrapper prefixes are peeled, mirroring is_shell_prompt.
+        assert!(is_agent_foreground(&argv(&["env", "FOO=1", "claude"]), true));
+        // Background, shells, ordinary commands, and nothing don't vouch.
+        assert!(!is_agent_foreground(&argv(&["claude"]), false));
+        assert!(!is_agent_foreground(&argv(&["zsh"]), true));
+        assert!(!is_agent_foreground(&argv(&["vim"]), true));
+        assert!(!is_agent_foreground(&argv(&[]), true));
+    }
+
+    #[test]
     fn display_command_keeps_useful_subcommands_and_drops_flags() {
         assert_eq!(
             display_command(&argv(&[

@@ -370,6 +370,19 @@ pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
     IGNORE_NAMES.contains(&name)
 }
 
+/// Whether an instrumented agent (`AGENT_NAMES`) itself is the pane's live
+/// foreground command — direct evidence the pushed status's producer is still
+/// running. Used to cancel the stale-Running grace clock after a mid-turn
+/// foreground flicker resolves back to the agent. Peels like `is_shell_prompt`.
+pub fn is_agent_foreground(command: &[String], is_foreground: bool) -> bool {
+    if !is_foreground {
+        return false;
+    }
+    let command = effective_command(command);
+    let name = command.first().map(|s| program_name(s)).unwrap_or("");
+    AGENT_NAMES.contains(&name)
+}
+
 impl CommandStore {
     /// Handle a `CommandChanged` event for a terminal pane.
     ///

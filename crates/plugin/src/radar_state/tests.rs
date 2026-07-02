@@ -77,6 +77,41 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
 }
 
 #[test]
+fn killed_agent_running_row_expires_via_the_timer() {
+    // Ctrl+C'ing an agent mid-turn fires no hook; the pane returning to its
+    // shell starts the grace clock and the timer clears the ghost "working"
+    // row — instead of it spinning (and pinning the 1 Hz timer) forever.
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
+    radar.command_changed(7, &["bash".into()], true, 5, 0);
+    let mut changed = false;
+    for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
+        changed |= radar.timer(t, 0);
+    }
+    assert!(changed, "the expiry renders + persists like any store change");
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+}
+
+#[test]
+fn agent_foreground_cancels_a_prompt_return_suspect() {
+    // A mid-turn flicker: shell shows through, then the agent's exe is the
+    // foreground again. The grace clock must cancel — a live turn is never
+    // cleared no matter how long it runs.
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
+    radar.command_changed(7, &["bash".into()], true, 5, 0);
+    radar.command_changed(7, &["claude".into()], true, 6, 0);
+    for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
+        radar.timer(t, 0);
+    }
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
+}
+
+#[test]
 fn rows_sort_tabs_by_position_and_aggregate_panes() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![

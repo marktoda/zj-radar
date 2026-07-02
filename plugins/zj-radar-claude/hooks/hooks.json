@@ -21,6 +21,9 @@
     ],
     "SessionStart": [
       { "matcher": "clear", "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle" }] }
     ]
   }
 }

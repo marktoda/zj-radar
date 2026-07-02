@@ -5,11 +5,26 @@ use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, ObservationStore, TrackedObservation};
 use crate::payload::StatusPayload;
 use crate::status::Status;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Ticks a `Running` pane may sit at a shell prompt before its pushed status is
+/// declared stale and cleared to idle (~seconds at the Fast cadence, which a
+/// Running row always keeps armed). Long enough that a mid-turn foreground
+/// flicker — which re-asserts the agent's foreground or a fresh hook payload
+/// well inside the window — never trips it; short enough that killing an agent
+/// mid-turn doesn't leave a "working" row spinning forever.
+pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = 15;
 
 #[derive(Default)]
 pub struct StatusStore {
     store: ObservationStore,
+    /// Grace clocks for panes whose foreground returned to a shell while their
+    /// pushed status was still `Running` (pane id → tick first seen). A fresh
+    /// payload or the agent's foreground reappearing cancels the clock; the
+    /// timer expires it (`expire_stale_running`). Deliberately not persisted:
+    /// suspicion is per-instance evidence, and the instance that saw the
+    /// prompt return clears the shared snapshot for everyone.
+    suspect_running: HashMap<u32, u64>,
 }
 
 impl StatusStore {
@@ -23,6 +38,9 @@ impl StatusStore {
     /// original wall-clock stamp survives repeated re-broadcasts of the same
     /// turn (spec §4.2/§4.3).
     pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Option<TrackedObservation> {
+        // Any payload is proof the producer is alive — cancel a pending
+        // stale-Running grace clock before it can misfire.
+        self.suspect_running.remove(&p.pane_id);
         let prev = self.store.get(p.pane_id);
         let status_changed = prev.map(|s| s.status) != Some(p.status);
         let identical = !status_changed && prev.is_some_and(|s| s.msg == p.msg);
@@ -75,33 +93,76 @@ impl StatusStore {
 
     /// Clear a pane's pushed status to idle because its producer is gone — the
     /// pane returned to a shell prompt (`command::is_shell_prompt`). No-op if the
-    /// pane isn't tracked, is already Idle, or is currently Running: a live agent
-    /// turn re-asserts Running via its hooks, so a transient foreground flicker to
-    /// a shell must never be mistaken for the agent exiting. Keeps repo/branch so
-    /// the tab keeps its name; drops the message. Returns the observation this
-    /// cleared (carrying its completion + stamp, if any) — the future ledger's
-    /// recede edge for "the agent exited after finishing." Unlike the (removed)
-    /// focus-driven recede, this rides the shared `CommandChanged` signal, so
-    /// every tab's instance clears in lockstep.
+    /// pane isn't tracked or is already Idle. A `Running` status is not cleared
+    /// here either — a live agent turn re-asserts Running via its hooks, so a
+    /// transient foreground flicker to a shell must never be mistaken for the
+    /// agent exiting — but it *starts the grace clock*: if no payload or agent
+    /// foreground vouches for the pane within `RUNNING_SUSPECT_GRACE_TICKS`,
+    /// `expire_stale_running` clears it (the agent was killed mid-turn; no hook
+    /// fires on a kill). Keeps repo/branch so the tab keeps its name; drops the
+    /// message. Returns the observation this cleared (carrying its completion +
+    /// stamp, if any) — the ledger's recede edge for "the agent exited after
+    /// finishing." Unlike the (removed) focus-driven recede, this rides the
+    /// shared `CommandChanged` signal, so every tab's instance clears in
+    /// lockstep.
     pub fn clear_on_prompt_return(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
         let prev = self.store.get(pane_id)?;
-        if matches!(prev.status, Status::Running | Status::Idle) {
+        if prev.status == Status::Running {
+            // First sighting starts the clock; repeats don't reset it (the
+            // pane *staying* at the prompt is exactly the stale evidence).
+            self.suspect_running.entry(pane_id).or_insert(tick);
             return None;
         }
-        let old = prev.clone();
-        let repo = old.repo.clone();
-        let branch = old.branch.clone();
-        let kind = old.kind;
+        if prev.status == Status::Idle {
+            return None;
+        }
+        self.force_idle(pane_id, tick)
+    }
+
+    /// Live evidence the producer is running (its exe is the pane's foreground
+    /// again after a flicker) — cancel the stale-Running grace clock.
+    pub fn cancel_running_suspect(&mut self, pane_id: u32) {
+        self.suspect_running.remove(&pane_id);
+    }
+
+    /// Expire grace clocks: any pane still `Running` whose prompt-return
+    /// suspicion has outlived the grace window gets cleared to idle — its
+    /// producer died mid-turn and will never send the clearing broadcast.
+    /// Returns the cleared pane ids (Running is not a completion, so there is
+    /// no ledger edge to hand back). Driven by the timer, which a Running row
+    /// always keeps armed at the Fast cadence.
+    pub fn expire_stale_running(&mut self, now_tick: u64) -> Vec<u32> {
+        let due: Vec<u32> = self
+            .suspect_running
+            .iter()
+            .filter(|&(_, &since)| now_tick.saturating_sub(since) >= RUNNING_SUSPECT_GRACE_TICKS)
+            .map(|(&id, _)| id)
+            .collect();
+        let mut cleared = Vec::new();
+        for pane_id in due {
+            self.suspect_running.remove(&pane_id);
+            let still_running = self.store.get(pane_id).is_some_and(|s| s.status == Status::Running);
+            if still_running && self.force_idle(pane_id, now_tick).is_some() {
+                cleared.push(pane_id);
+            }
+        }
+        cleared
+    }
+
+    /// The shared idle overwrite behind both clear paths: repo/branch/kind kept
+    /// (the tab keeps its name), msg/task dropped, `ever_active` sticky.
+    fn force_idle(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
+        let old = self.store.get(pane_id)?.clone();
         let _ = self.store.insert(
             pane_id,
             TrackedObservation {
                 origin: ObservationOrigin::StatusPipe,
                 status: Status::Idle,
-                repo,
-                branch,
+                repo: old.repo.clone(),
+                branch: old.branch.clone(),
                 msg: String::new(),
                 task: String::new(),
-                kind,
+                kind: old.kind,
                 last_change_tick: tick,
                 ever_active: true,
                 exit_code: None,
@@ -116,6 +177,7 @@ impl StatusStore {
     /// it is a recede edge for the future ledger. Non-completion drops (Running,
     /// Idle, Pending) are filtered out here since they carry nothing to ledger.
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+        self.suspect_running.retain(|id, _| live.contains(id));
         self.store
             .prune(live)
             .into_iter()
@@ -254,6 +316,59 @@ mod tests {
         s.apply(payload(5, Status::Idle), 1, 0);
         assert!(s.clear_on_prompt_return(5, 8).is_none());
         assert!(s.clear_on_prompt_return(999, 8).is_none());
+    }
+
+    #[test]
+    fn killed_mid_turn_running_clears_after_the_grace_window() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Running), 1, 0);
+        // Prompt return while Running: not cleared — the grace clock starts.
+        assert!(s.clear_on_prompt_return(1, 5).is_none());
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+        // Inside the window nothing expires.
+        assert!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS - 1).is_empty());
+        // At the window's edge the ghost clears: no hook ever fires on a kill.
+        assert_eq!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS), vec![1]);
+        assert_eq!(s.get(1).unwrap().status, Status::Idle);
+        assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
+        assert!(s.get(1).unwrap().ever_active, "stays a muted row, not removed");
+        assert!(!s.any_running(), "the ghost no longer pins the fast timer");
+    }
+
+    #[test]
+    fn fresh_payload_or_agent_foreground_cancels_the_grace_clock() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Running), 1, 0);
+        assert!(s.clear_on_prompt_return(1, 5).is_none());
+        // A hook payload proves the producer is alive.
+        s.apply(payload(1, Status::Running), 6, 0);
+        assert!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS).is_empty());
+        // Suspect again; this time the flicker resolves back to the agent's
+        // foreground (`cancel_running_suspect`, wired from command_changed).
+        assert!(s.clear_on_prompt_return(1, 40).is_none());
+        s.cancel_running_suspect(1);
+        assert!(s.expire_stale_running(40 + RUNNING_SUSPECT_GRACE_TICKS).is_empty());
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+    }
+
+    #[test]
+    fn repeated_prompt_returns_do_not_reset_the_grace_clock() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Running), 1, 0);
+        assert!(s.clear_on_prompt_return(1, 5).is_none());
+        // The pane *staying* at the prompt is the stale evidence — a repeat
+        // sighting must not push expiry out.
+        assert!(s.clear_on_prompt_return(1, 5 + RUNNING_SUSPECT_GRACE_TICKS - 1).is_none());
+        assert_eq!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS), vec![1]);
+    }
+
+    #[test]
+    fn pane_close_drops_its_grace_clock() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Running), 1, 0);
+        assert!(s.clear_on_prompt_return(1, 5).is_none());
+        s.prune(&HashSet::new());
+        assert!(s.expire_stale_running(100).is_empty(), "no clock for a dead pane");
     }
 
     #[test]
