@@ -125,10 +125,19 @@ const ACK_PROMPTS: &[&str] = &[
 /// Extract a sticky task label from a submitted prompt: the first non-empty
 /// line, trimmed, capped at 512 chars (the same producer-side bound as `msg`,
 /// protecting the 64 KiB wire cap). `None` — meaning "keep the previous
-/// label" — for empty prompts, slash commands, and bare acknowledgements.
+/// label" — for empty prompts, slash commands, harness-injected tag lines,
+/// and bare acknowledgements.
 pub fn task_from_prompt(prompt: &str) -> Option<String> {
     let line = prompt.lines().map(str::trim).find(|l| !l.is_empty())?;
     if line.starts_with('/') {
+        return None;
+    }
+    // The harness injects machine turns (subagent completions, hook output)
+    // through the same UserPromptSubmit hook, wrapped in tags like
+    // `<task-notification>…`. A first line opening with `<` is machinery, not
+    // the human's task — without this the rail's task line literally read
+    // "<task-notification>" whenever a background agent finished.
+    if line.starts_with('<') {
         return None;
     }
     let normalized = line.to_lowercase();
@@ -427,6 +436,14 @@ mod tests {
         assert_eq!(task_from_prompt("/review the last diff"), None);
         assert_eq!(task_from_prompt(""), None);
         assert_eq!(task_from_prompt("   \n  "), None);
+    }
+
+    #[test]
+    fn task_from_prompt_skips_harness_injected_tag_lines() {
+        // Background-agent completions arrive via UserPromptSubmit wrapped in
+        // tags; they must not clobber the human's sticky task label.
+        assert_eq!(task_from_prompt("<task-notification>\n<task-id>a1</task-id>"), None);
+        assert_eq!(task_from_prompt("  <system-reminder>ignore</system-reminder>"), None);
     }
 
     #[test]

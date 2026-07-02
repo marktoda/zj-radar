@@ -100,6 +100,12 @@ parity_task_case() { # $1 = hook JSON
   parity_task_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"Yes."}'
 }
 
+@test "parity: harness-injected tag prompt sends no task" {
+  # Background-agent completions fire UserPromptSubmit with a machine turn
+  # like <task-notification>…; neither producer may take it as the task label.
+  parity_task_case '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"<task-notification>\n<task-id>a1</task-id>done\n</task-notification>"}'
+}
+
 @test "parity: tool event sends no task" {
   parity_task_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Grep","tool_input":{"pattern":"x"},"prompt":"stray"}'
 }

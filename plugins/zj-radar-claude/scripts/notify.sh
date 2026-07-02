@@ -63,14 +63,15 @@ contains_word() {
 if [[ "$status" == "running" ]]; then
     hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
     # UserPromptSubmit: capture the first non-empty prompt line as the sticky
-    # task label (mirrors task_from_prompt in agents.rs). Slash commands and
-    # bare acks send no task — the plugin keeps the previous label.
+    # task label (mirrors task_from_prompt in agents.rs). Slash commands,
+    # harness-injected tag lines (e.g. <task-notification>), and bare acks
+    # send no task — the plugin keeps the previous label.
     if [[ "$hook_event" == "UserPromptSubmit" ]]; then
         prompt="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
         task="$(printf '%s\n' "$prompt" \
             | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
             | grep -m1 . || true)"
-        case "$task" in "/"*) task="" ;; esac
+        case "$task" in "/"*|"<"*) task="" ;; esac
         # Ack filter: lowercase, strip trailing punctuation (parity with the
         # Rust ACK_PROMPTS list — keep the two lists identical).
         t_norm="$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]' | sed -e 's/[.!?,]*$//' -e 's/[[:space:]]*$//')"
