@@ -4247,13 +4247,13 @@ fn tally_counts_running_and_needs_you_not_done() {
     let s = render(&rows, &opts);
     let lines: Vec<&str> = s.lines().collect();
     let tally = strip_sgr(lines[lines.len() - 2]);
-    // Done never counts toward either tally: 1 Running (spinner) + 1 Error
-    // (need-you) only.
-    assert_eq!(tally.trim(), "1⠋ working · 1 need you");
+    // Done never counts toward either tally: 1 Running + 1 Error (need-you)
+    // only.
+    assert_eq!(tally.trim(), "1 working · 1 need you");
 }
 
 #[test]
-fn tally_renders_zero_working_without_spinner() {
+fn tally_renders_zero_working_and_is_spinner_free() {
     let rows = vec![idle_row(1)];
     let content_height = tight(&rows, ro(24, 0)).height;
     let opts = RenderOpts { height: content_height + 3, ..ro(24, 0) };
@@ -4261,9 +4261,11 @@ fn tally_renders_zero_working_without_spinner() {
     let lines: Vec<&str> = s.lines().collect();
     let tally = strip_sgr(lines[lines.len() - 2]);
     // A zero need-you count is noise, not signal — the segment vanishes
-    // entirely rather than reporting "0 need you".
+    // entirely rather than reporting "0 need you". And the tally never spins
+    // at any count: the count is the information; motion for "running"
+    // belongs to the row glyphs and the header heartbeat.
     assert_eq!(tally.trim(), "0 working");
-    assert!(!tally.contains('⠋'), "no spinner when 0 working: {:?}", tally);
+    assert!(!tally.contains('⠋'), "tally is spinner-free: {:?}", tally);
 }
 
 #[test]

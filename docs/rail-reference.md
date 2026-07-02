@@ -857,7 +857,7 @@ ledger 90 done "web" "deploying"
 
 ────────────────────────────────
 0 working
- alt-[n] jump
+alt-[n] jump
 ```
 
 > No `tab` line at all — zero rows. The header still renders (·0) because
@@ -865,7 +865,8 @@ ledger 90 done "web" "deploying"
 > empty does `render_rail` return nothing, and `PluginRuntime::render` routes
 > to the `onboarding()` scanning face instead (see §A's note above). This
 > scenario also opts into `jump_hint`, so the footer is the full 3 lines —
-> rule, tally, ` alt-[n] jump` — the shape every `zj-radar run` session shows
+> rule, tally, `alt-[n] jump` (column 0, aligned with the tally) — the shape
+> every `zj-radar run` session shows
 > (its owned config binds Alt-1..9 and passes `jump_hint "alt-n"` on the
 > plugin alias). Without the directive the hint line simply doesn't exist —
 > the rail never advertises a chord that isn't bound. ⟦zero state + jump_hint
@@ -901,7 +902,7 @@ test; no drift between doc and behavior.
 width <n>            # optional, default 32
 height <n>           # optional, default = enough to fit (no overflow)
 glyphs plain|nerd    # optional, default plain
-jump_hint            # optional; footer advertises ` alt-[n] jump` (default hidden)
+jump_hint            # optional; footer advertises `alt-[n] jump` (default hidden)
 tab <pos> "<name>" [active]
   <kind> <status> "<msg>" [task "<text>"] [waiting <N>m] [exit <N>|?]   # one line per pane, indented
   ...

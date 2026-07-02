@@ -1167,41 +1167,41 @@ fn footer_rule(opts: &RenderOpts) -> Line {
     }
 }
 
-/// The footer's bottom hint line: " alt-[n] jump", clamped to width.
+/// The footer's bottom hint line: "alt-[n] jump", clamped to width. Starts at
+/// column 0 like the tally above it — a hand-tuned leading space here once put
+/// the two footer lines one column out of step.
 fn footer_hint(opts: &RenderOpts) -> Line {
     let idle = tc_fg(opts.theme.idle_text);
     Line {
-        text: format!("{}\n", Seg::new(&idle, truncate(" alt-[n] jump", opts.width))),
+        text: format!("{}\n", Seg::new(&idle, truncate("alt-[n] jump", opts.width))),
         target: None,
         bg: LineBg::Rail,
     }
 }
 
-/// The footer's tally line: `{n}{spin} working · {m} need you`. `n` counts
-/// `Status::Running` rows (spinner only when `n > 0`); `m` counts
-/// `Status::needs_you` rows (loud + bold — and the ` · {m} need you` segment
-/// only exists when `m > 0`: a zero is noise, not signal, so the line recedes
-/// to just `{n} working`). Truncated to width; too-tight-for-both-colors
-/// degrades to one run colored by whether the tally is still loud (`m > 0`).
+/// The footer's tally line: `{n} working · {m} need you`. `n` counts
+/// `Status::Running` rows; `m` counts `Status::needs_you` rows (loud + bold —
+/// and the ` · {m} need you` segment only exists when `m > 0`: a zero is
+/// noise, not signal, so the line recedes to just `{n} working`). No spinner:
+/// the count is the information, and motion for "something is running" already
+/// lives in the row glyphs and the header-rule heartbeat — a third animation
+/// glued to the digit read as a corrupted number, not a signal. Truncated to
+/// width; too-tight-for-both-colors degrades to one run colored by whether the
+/// tally is still loud (`m > 0`).
 fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
     let working = rows.iter().filter(|r| r.display.status == Status::Running).count();
     let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
-    let n_part = if working > 0 {
-        format!("{}{}", working, crate::status::working_spin(opts.now_tick as usize))
-    } else {
-        working.to_string()
-    };
     if need_you == 0 {
-        let text = truncate(&format!("{} working", n_part), width);
+        let text = truncate(&format!("{working} working"), width);
         return Line {
             text: format!("{}\n", Seg::new(&idle, text)),
             target: None,
             bg: LineBg::Rail,
         };
     }
-    let left = format!("{} working · ", n_part);
+    let left = format!("{working} working · ");
     let right = format!("{} need you", need_you);
     let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
     let text = if fits {
