@@ -54,6 +54,7 @@ pub enum PaneDisplay {
         status: Status,
         msg: String,
         task: String,
+        since_tick: u64,
         outcome: Option<Outcome>,
     },
     Untracked {
@@ -69,6 +70,7 @@ impl PaneDisplay {
         status: Status,
         msg: String,
         task: String,
+        since_tick: u64,
         outcome: Option<Outcome>,
     ) -> Self {
         Self::Tracked {
@@ -77,6 +79,7 @@ impl PaneDisplay {
             status,
             msg,
             task,
+            since_tick,
             outcome,
         }
     }
@@ -129,6 +132,16 @@ impl PaneDisplay {
         match self {
             Self::Tracked { task, .. } => task,
             Self::Untracked { .. } => "",
+        }
+    }
+
+    /// The tick this pane's status last changed (`None` for an untracked
+    /// pane, which has no observation to date it from). Feeds `spin_glyph`'s
+    /// long-runner easing in `render.rs`.
+    pub(crate) fn since_tick(&self) -> Option<u64> {
+        match self {
+            Self::Tracked { since_tick, .. } => Some(*since_tick),
+            Self::Untracked { .. } => None,
         }
     }
 
@@ -197,6 +210,7 @@ pub fn roll_up<'a>(
                 s.status,
                 s.msg.clone(),
                 s.task.clone(),
+                s.last_change_tick,
                 pane_outcome(s),
             ));
         } else {

@@ -202,8 +202,8 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 },
                 detail: Some(detail),
                 panes: vec![
-                    PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), String::new(), None),
-                    PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), String::new(), None),
+                    PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), String::new(), 0, None),
+                    PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), String::new(), 0, None),
                 ],
             },
         },
@@ -1319,12 +1319,12 @@ fn header_false_emits_no_header_lines() {
 
 /// Build a PaneDisplay for tree tests.
 fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), None)
+    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, None)
 }
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
 fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), Some(outcome))
+    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, Some(outcome))
 }
 
 // ── End-result outcome tag rendering ──
@@ -1703,7 +1703,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
                 kind: Kind::Codex,
             }),
             panes: vec![
-                PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), String::new(), None),
+                PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), String::new(), 0, None),
                 PaneDisplay::untracked(2, "shell"),
             ],
         },
@@ -4244,7 +4244,7 @@ prop_compose! {
                 1 => "running a fairly long migration command across the cluster now",
                 _ => "日本語のメッセージ表示テスト中です", // CJK wide glyphs
             };
-            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, None)
+            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, 0, None)
         }
     }
 }
@@ -4717,8 +4717,8 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             progress: ProgressCounts { done: 0, total: 2, pending: 1 },
             detail: None,
             panes: vec![
-                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), None),
-                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), None),
+                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), 0, None),
+                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), 0, None),
             ],
         },
     };
@@ -4758,4 +4758,62 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
         })
         .collect();
     assert_eq!(cols[0], cols[1], "active and inactive tab names must start at the same column:\n{ansi}");
+}
+
+// ── Task 21: long-runner easing ────────────────────────────────────────────
+
+#[test]
+fn spinner_eases_after_ten_minutes() {
+    assert_eq!(spin_glyph(100, 0), crate::status::working_spin(100));
+    let t = EASE_AFTER_TICKS + 100;
+    assert_eq!(spin_glyph(t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
+    assert_ne!(spin_glyph(t, 0), spin_glyph(t + 4, 0), "still blinks — alive, just calm");
+    assert_eq!(spin_glyph(t, 0), spin_glyph(t + 1, 0), "but not every tick");
+}
+
+#[test]
+fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
+    // A Running row whose since_tick is far in the past (> EASE_AFTER_TICKS)
+    // must render the eased two-frame blink glyph on line 1, not the
+    // full-speed spinner — a strip_sgr grid check, per the brief.
+    let now = EASE_AFTER_TICKS + 100;
+    let detail = PrimaryDetail {
+        repo: "r".into(),
+        branch: "b".into(),
+        msg: "long build".into(),
+        task: String::new(),
+        kind: Kind::Build,
+        since_tick: 0,
+        outcome: None,
+        status: Status::Running,
+    };
+    let row = TabRow {
+        flash: false,
+        number: 1,
+        name: "runner".into(),
+        active: false,
+        has_bell: false,
+        display: display(Status::Running, 0, 1, Some(detail)),
+    };
+    // `tight` drops the bottom-region footer (whose own tally spinner isn't
+    // eased by this task and would otherwise pollute the full-speed check
+    // below), leaving exactly the header + this row's card lines.
+    let rows = [row];
+    let opts = tight(&rows, ro(40, now));
+    let out = render(&rows, &opts);
+    let grid = strip_sgr(&out);
+    let expected = spin_glyph(now, 0);
+    let full_speed = crate::status::working_spin(now as usize);
+    assert_ne!(
+        expected, full_speed,
+        "sanity: the threshold must actually change the glyph at this tick"
+    );
+    assert!(
+        grid.contains(expected),
+        "eased glyph must appear in the rendered row:\n{grid}"
+    );
+    assert!(
+        !grid.contains(full_speed),
+        "full-speed glyph must not leak through once eased:\n{grid}"
+    );
 }

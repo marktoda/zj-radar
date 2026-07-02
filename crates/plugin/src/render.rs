@@ -17,6 +17,30 @@ use layout::*;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
+/// Ticks a Running pane/tab must sit at the SAME `since_tick` before its
+/// spinner eases from full speed to a slow two-frame blink (see
+/// `spin_glyph`). 600 ticks — the tick-driven render clock isn't wall-clock
+/// 1:1, but at typical UI tick rates this reads as "on the order of minutes".
+/// Honest only because `since_tick` is honest: `StatusStore::apply` preserves
+/// `last_change_tick` across a same-status re-broadcast
+/// (`status_store.rs::apply_sets_last_change_tick_only_on_status_change`) and
+/// `CommandStore` preserves it across a same-command re-promotion (Task 6,
+/// `crates/core/src/command.rs`) — so a long-runner's `since_tick` reflects
+/// when the work truly started, not the last time it happened to re-announce
+/// itself.
+pub const EASE_AFTER_TICKS: u64 = 600;
+
+/// Spinner frame for a Running glyph: full speed normally; after
+/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
+/// long-runner signals "still going, nothing new" instead of anxiety.
+fn spin_glyph(now_tick: u64, since_tick: u64) -> char {
+    if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
+        crate::status::working_spin(((now_tick / 4) % 2) as usize)
+    } else {
+        crate::status::working_spin(now_tick as usize)
+    }
+}
+
 /// A colored (optionally bold) text run that terminates its own SGR with RESET.
 ///
 /// Every colored token in the rail is built through `Seg`, so "colored ⇒
@@ -390,9 +414,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // never exceeds `width`.
     let pad_x = card_spacing(opts.density).pad_x;
 
-    // col 1: status glyph (working spins).
+    // col 1: status glyph (working spins; eases to a slow blink for
+    // long-runners — see `spin_glyph`).
     let glyph_char = if st == Status::Running {
-        crate::status::working_spin(now_tick as usize)
+        let since_tick = row.display.detail.as_ref().map(|d| d.since_tick).unwrap_or(now_tick);
+        spin_glyph(now_tick, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -673,7 +699,8 @@ fn emit_pane_line(
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
     let glyph = if status == Status::Running {
-        crate::status::working_spin(opts.now_tick as usize)
+        let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
+        spin_glyph(opts.now_tick, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };
