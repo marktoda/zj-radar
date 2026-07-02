@@ -8,8 +8,35 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Debounce window: a pending fg command must survive this many ticks before
-/// being promoted to Running.
-pub const DEBOUNCE_TICKS: u64 = 1;
+/// being promoted to Running. Floored at 2 (~2s at the plugin's 1s tick) so an
+/// instant `cd`/`ls`-style command that returns to the shell prompt within the
+/// window never earns a line (spec §3.2) — 1 tick left too narrow a margin
+/// against real-world scheduling jitter between the fg command and its
+/// immediate return.
+///
+/// This does NOT fully close the "running cd" symptom: promotion fires purely
+/// off elapsed ticks, with no knowledge of whether the matching back-to-prompt
+/// `CommandChanged` is merely late or was never delivered at all. If Zellij
+/// drops that edge — the follow-up event Zellij owes us never arrives — the
+/// pending command promotes and the row sticks Running forever, because
+/// nothing ever calls `on_command_changed` again to clear it. Raising the
+/// floor only narrows how often normal jitter crosses that window; a row
+/// still stuck Running past ~2s is evidence of a missing Zellij edge, not a
+/// bug in this store (pinned by `missed_exit_edge_is_the_stale_running_path`).
+pub const DEBOUNCE_TICKS: u64 = 2;
+
+/// Ticks a command-origin `Done` stays lit before receding to Idle. The
+/// completion hands off to the ledger at the recede (spec §3.1). `Error` is
+/// exempt — failures persist until re-run or prune.
+pub const DONE_TTL_TICKS: u64 = 60;
+
+/// What a tick did to the command store: whether any observation changed (the
+/// snapshot-persist trigger, exactly the old bool), and the completions that
+/// left the card this tick (TTL recede or promotion-displaced) for the ledger.
+pub struct TimerReport {
+    pub changed: bool,
+    pub receded: Vec<(u32, TrackedObservation)>,
+}
 
 /// Shell/prompt programs that signal "back to the prompt" rather than a real
 /// foreground command. Missing a shell here degrades that shell's users twice:
@@ -414,14 +441,19 @@ impl CommandStore {
     }
 
     /// Timer tick: promote any pending fg command that has survived the
-    /// debounce window to Running. Returns whether any *observation* changed —
-    /// the caller persists the shared snapshot on it, so a timer-promoted
-    /// Running (or debounce-confirmed Done) reaches tabs opened later, keeping
-    /// every instance's rail convergent (the same guarantee pushed statuses
-    /// already have). Debounce-map bookkeeping alone does not count: it is not
-    /// snapshotted.
-    pub fn on_timer(&mut self, tick: u64) -> bool {
+    /// debounce window to Running, confirm debounced Done transitions, and
+    /// recede any command Done that has sat past `DONE_TTL_TICKS`.
+    /// `TimerReport::changed` is whether any *observation* changed — the
+    /// caller persists the shared snapshot on it, so a timer-promoted Running
+    /// (or debounce-confirmed Done) reaches tabs opened later, keeping every
+    /// instance's rail convergent (the same guarantee pushed statuses already
+    /// have). Debounce-map bookkeeping alone does not count: it is not
+    /// snapshotted. `TimerReport::receded` carries every completion that left
+    /// the card this tick (a Done/Error displaced by re-promotion, or a Done
+    /// that TTL-receded to Idle) for the ledger.
+    pub fn on_timer(&mut self, tick: u64, now_epoch_s: u64) -> TimerReport {
         let mut changed = false;
+        let mut receded = Vec::new();
         let to_promote: Vec<u32> = self
             .pending
             .iter()
@@ -432,10 +464,20 @@ impl CommandStore {
         for pane_id in to_promote {
             if let Some(p) = self.pending.remove(&pane_id) {
                 let repo = sanitize(basename(&p.cwd), 40).to_string();
-                self.store.insert(
-                    pane_id,
-                    TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick),
-                );
+                let mut obs = TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick);
+                // A re-promotion of the SAME still-running command (Zellij
+                // re-reported the foreground) keeps the original start tick, so
+                // long-runner easing measures the true run, not the last report.
+                if let Some(prev) = self.store.get(pane_id) {
+                    if prev.status == Status::Running && prev.msg == obs.msg {
+                        obs.last_change_tick = prev.last_change_tick;
+                    }
+                }
+                if let Some(prev) = self.store.insert(pane_id, obs) {
+                    if matches!(prev.status, Status::Done | Status::Error) {
+                        receded.push((pane_id, prev));
+                    }
+                }
                 changed = true;
             }
         }
@@ -455,11 +497,34 @@ impl CommandStore {
                 if s.status == Status::Running {
                     s.status = Status::Done;
                     s.last_change_tick = tick;
+                    s.completed_epoch_s = Some(now_epoch_s);
                     changed = true;
                 }
             }
         }
-        changed
+
+        // TTL recede: a command Done that has sat for DONE_TTL_TICKS hands off
+        // to the ledger and recedes to a muted idle row. Error is exempt.
+        let to_recede: Vec<u32> = self
+            .store
+            .observations()
+            .filter(|(_, s)| {
+                s.status == Status::Done && tick.saturating_sub(s.last_change_tick) >= DONE_TTL_TICKS
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for pane_id in to_recede {
+            if let Some(s) = self.store.get_mut(pane_id) {
+                let completed = s.clone();
+                s.status = Status::Idle;
+                s.last_change_tick = tick;
+                s.completed_epoch_s = None;
+                receded.push((pane_id, completed));
+                changed = true;
+            }
+        }
+
+        TimerReport { changed, receded }
     }
 
     /// Apply a pane's exit status. Deduped: a repeated identical
@@ -469,16 +534,35 @@ impl CommandStore {
     /// a signal). We show it as Done rather than Error because we have no
     /// evidence of failure — the user can see the pane's scrollback if they
     /// care about the cause.
-    pub fn on_exit(&mut self, pane_id: u32, exit_status: Option<i32>, tick: u64) {
+    ///
+    /// Returns the prior completion this exit displaced (a Done/Error that was
+    /// still on the pane from an earlier run), if any, for the ledger.
+    pub fn on_exit(
+        &mut self,
+        pane_id: u32,
+        exit_status: Option<i32>,
+        tick: u64,
+        now_epoch_s: u64,
+    ) -> Vec<(u32, TrackedObservation)> {
         // Dedupe: if we've already applied the same exit status, skip.
         if self.exited.get(&pane_id) == Some(&exit_status) {
-            return;
+            return Vec::new();
         }
-        self.exited.insert(pane_id, exit_status);
-        // Clear any pending / tentative-done entry for this pane — the exit is
-        // authoritative.
-        self.pending.remove(&pane_id);
-        self.pending_done.remove(&pane_id);
+        // A bare exit replay must not resurrect a receded completion: Zellij
+        // re-reports exited panes on every manifest update (level-triggered),
+        // and a freshly-spawned instance has an empty dedup map. Once a
+        // command pane has receded to Idle, only a new observed lifecycle
+        // (CommandChanged → pending) or a prune lights it again — a `pending`
+        // entry means a fresh run is in flight, so its exit applies even when
+        // it beats the debounce promotion. Cost: a re-run that exits with no
+        // intervening CommandChanged stays swallowed (pre-existing, rare,
+        // documented race). `self.store` only ever holds command-origin
+        // observations, so no origin check is needed here.
+        if !self.pending.contains_key(&pane_id)
+            && self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle)
+        {
+            return Vec::new();
+        }
 
         let new_status = match exit_status {
             Some(0) => Status::Done,
@@ -486,10 +570,43 @@ impl CommandStore {
             None => Status::Done,
         };
 
+        // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op edge,
+        // for the same replay against a *still-displayed* completion: a fresh
+        // instance (empty `exited` dedup) replaying a held pane's exit over a
+        // snapshot-loaded Done/Error with the same outcome learns nothing new.
+        // Prime the dedup and stop — pushing the completion into `receded`
+        // would ghost a ledger entry for a card that never changed, re-stamping
+        // `completed_epoch_s = now` would duplicate it past the nearest-neighbor
+        // merge window, and bumping `last_change_tick` would postpone the Done
+        // TTL forever under repeated replays. A `pending` entry means a fresh
+        // run is in flight, so its (possibly identical-code) exit is genuine
+        // news and falls through; so does a different exit code (a new outcome
+        // on a re-run pane), which keeps the displacement behavior below.
+        if !self.pending.contains_key(&pane_id)
+            && self
+                .store
+                .get(pane_id)
+                .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
+        {
+            self.exited.insert(pane_id, exit_status);
+            return Vec::new();
+        }
+
+        self.exited.insert(pane_id, exit_status);
+        // Clear any pending / tentative-done entry for this pane — the exit is
+        // authoritative.
+        self.pending.remove(&pane_id);
+        self.pending_done.remove(&pane_id);
+
+        let mut receded = Vec::new();
         if let Some(s) = self.store.get_mut(pane_id) {
+            if matches!(s.status, Status::Done | Status::Error) {
+                receded.push((pane_id, s.clone()));
+            }
             s.status = new_status;
             s.last_change_tick = tick;
             s.exit_code = exit_status;
+            s.completed_epoch_s = Some(now_epoch_s);
         } else {
             // Untracked pane: insert a fresh completion row. This is the
             // held-command-pane path — Zellij only reports `exited` for a pane
@@ -501,10 +618,11 @@ impl CommandStore {
             // shell that exits is removed from the manifest (never reported
             // `exited=true`), so it never reaches here. Do not "guard to tracked
             // panes" — that would drop legitimate run-pane completions.
-            self.store.insert(
+            let _ = self.store.insert(
                 pane_id,
                 TrackedObservation {
                     exit_code: exit_status,
+                    completed_epoch_s: Some(now_epoch_s),
                     ..TrackedObservation::command(
                         new_status,
                         String::new(),
@@ -515,14 +633,21 @@ impl CommandStore {
                 },
             );
         }
+        receded
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
-    pub fn prune(&mut self, live: &HashSet<u32>) {
-        self.store.prune(live);
+    /// Returns the dropped Done/Error observations (an in-progress Running or
+    /// muted Idle pane closing carries no completion to ledger).
+    pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+        let dropped = self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
+        dropped
+            .into_iter()
+            .filter(|(_, obs)| matches!(obs.status, Status::Done | Status::Error))
+            .collect()
     }
 
     /// Resolved displayable state for a pane, or None.
@@ -542,7 +667,7 @@ impl CommandStore {
         pane_id: u32,
         observation: TrackedObservation,
     ) {
-        self.store.insert(pane_id, observation);
+        let _ = self.store.insert(pane_id, observation);
     }
 
     /// True if any pane is Running or has a pending fg command. Used (alongside
@@ -551,6 +676,13 @@ impl CommandStore {
     /// `Running` (plus a not-yet-promoted pending command) counts as live here.
     pub fn has_pending_or_active(&self) -> bool {
         !self.pending.is_empty() || self.store.any(|s| s.status == Status::Running)
+    }
+
+    /// Any command Done is by definition inside its TTL window (TTL flips it to
+    /// Idle), so this is the whole "awaiting recede" predicate — no tick needed.
+    /// `Error` is exempt from the TTL, so it must not arm this.
+    pub fn has_done_awaiting_recede(&self) -> bool {
+        self.store.any(|s| s.status == Status::Done)
     }
 }
 

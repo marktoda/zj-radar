@@ -600,6 +600,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bundled_config_binds_alt_n_tab_jumps() {
+        // The footer hint (`footer_hint` in render.rs: " alt-[n] jump") promises a
+        // chord the rail itself can't bind — Zellij owns keybinds, not the plugin —
+        // so the owned config.kdl must supply it for the promise to be real.
+        for n in 1..=9 {
+            assert!(
+                CONFIG_TEMPLATE.contains(&format!("bind \"Alt {n}\"")),
+                "config must bind Alt {n} → GoToTab (the rail's footer hint promises it)"
+            );
+        }
+        assert!(CONFIG_TEMPLATE.contains("GoToTab 1"));
+    }
+
+    #[test]
+    fn cli_version_bumped_past_alt_n_config_change() {
+        // materialize() is a no-op once the on-disk `.zj-radar-version` marker
+        // equals the running binary's CARGO_PKG_VERSION (see materialize() above,
+        // called with env!("CARGO_PKG_VERSION") at the real call site). Landing a
+        // config.kdl content change WITHOUT bumping the crate version would strand
+        // every existing `zj-radar run` install on the stale pre-alt-n binds
+        // forever, since their marker already matches. Pin the version past the
+        // last release that shipped without alt-n binds so this landing forces
+        // re-materialization. (One-off landing gate, not an evergreen regression
+        // test — the baseline below is expected to go stale once released.)
+        assert_ne!(
+            env!("CARGO_PKG_VERSION"),
+            "0.1.0",
+            "bump the workspace version so the .zj-radar-version marker changes \
+             and existing owned configs re-materialize with the new alt-n binds"
+        );
+    }
+
     // ── plan_run decision matrix ──
     // `granted`/`codex`/`claude` toggle whether each input signals "already set up".
     // Defaults: session "proj", does not exist (create path), not running, not nested.

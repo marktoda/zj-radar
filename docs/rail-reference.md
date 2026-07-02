@@ -27,6 +27,10 @@
    count/elapsed slot to keep lines clean. `done/total` may return later. ⟦D1⟧
 8. **Empty/initial is not a marketing screen.** No "AI agent activity" legend —
    just render the tab list; an unnamed/first tab shows a placeholder name.
+   Now true end-to-end (Task 14): the zero-tab onboarding face itself dropped
+   the status-glyph legend down to a one-line ` scanning… no agents yet`. That
+   face is a separate code path from this doc's harness (see §A's note below)
+   — `render_rail` and `aggregate` are what this file pins.
 
 ## Vocabulary
 
@@ -47,12 +51,38 @@
 ```
  RADAR                        ·N   ← title + tab count (·N; "N▲" when overflowing)
 ════════════════════════════════   ← rule (32 wide)
+ RADAR                     ·N n!   ← same, plus the needs-you badge when n>0
+════════════════════════════════   ← rule (32 wide)
 ▌⠋ 2 name                          ← tab row: [spine][glyph] [num] [name]
 ▌├ ⠋ ❉ activity message            ← pane row: [spine][conn] [glyph] [mark] [msg]
 ▌└ ● ⚙ activity message            ← last pane row uses the └ elbow connector
 ```
 
-`▌` = active-tab spine (focused tab only). Tab **glyph** = dominant status.
+**Needs-you badge (Task 16).** The header's right slot appends `{n}!` — bold,
+loud (`Attention` role) — space-joined after the census whenever `n =
+rows.iter().filter(|r| r.display.status.needs_you()).count()` is nonzero (i.e.
+any tab is `Pending` or `Error`). At narrow widths, priority to keep is
+overflow marker > badge > plain census: a tight budget drops the census
+first and shows the bare badge (`n!` with no leading `·N`); the overflow
+marker itself is never dropped for the badge's sake.
+
+**Header heartbeat sweep (Task 20).** In Compact/Comfortable density only (the
+densities with the `═` rule — Cards drops the rule entirely, so it never
+carries the heartbeat), whenever any row's `display.status == Status::Running`
+the rule line swaps one `═` character for a `◆` (`Role::Accent`, bold) at
+column `now_tick % width`, wrapping around as the tick advances — a pure,
+stateless function of `now_tick` that marches one column per render tick
+while any tab is actively working, and disappears the instant no row is
+`Running` (idle, or every row settled to Done/Error/Pending). Every fixture
+below is captured at the doc harness's fixed `now_tick = 0`, so a Compact/
+Comfortable scenario with a `Running` row shows the `◆` at column 0 (the
+rule's leftmost `═` is replaced): `◆═══════════════════════════════`.
+
+**Col 0 is always the spine column** — reserved on every line, active or not:
+`▌` for the focused tab, a plain space otherwise. This holds line 1 (the tab
+row) and every pane/child row to the same fixed columns regardless of focus,
+so the glyph/number/name never shift left by a column just because a row is
+inactive. Tab **glyph** = dominant status.
 **Multi-pane** tabs (>1 tracked pane) join their pane lines to the tab with a
 tree connector at column 1: `├` for every child that has a sibling (or a
 `+N more` line) below it, `└` for the last visible child. The connector sits one
@@ -71,11 +101,21 @@ tab 1 "shell"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 shell
+ ○ 1 shell
 ```
 
 > No legend, no permission marketing. Just the tab list. An unnamed tab renders
 > a placeholder ("shell"/the layout name). ⟦D9: placeholder text⟧
+>
+> This is the *one-tab* placeholder case, not the *zero-tab* one — with no
+> tracked tabs at all (cold start, or every tab closed with no completion
+> history), `PluginRuntime::render` routes to a distinct `onboarding()` face
+> instead of `render_rail`: ` RADAR` + the `═` rule + a blank line + one muted
+> ` scanning… no agents yet`. That face bypasses `render_rail` entirely, so it
+> isn't a `rail-input`/`rail-expect` case here — see
+> `render::tests::zero_state_is_a_scanning_one_liner`. (Zero tabs WITH
+> completion history still goes through `render_rail`, header `·0` and all —
+> see §AB's ledger scenario.)
 
 ## B. Single plain tab (idle)
 
@@ -86,7 +126,7 @@ tab 4 "notes"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 4 notes
+ ○ 4 notes
 ```
 
 ## C. Single agent — working
@@ -98,8 +138,8 @@ tab 1 "pinky"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 pinky
+◆═══════════════════════════════
+ ⠋ 1 pinky
   ✳ running tests…
 ```
 
@@ -111,9 +151,9 @@ tab 3 "api"
   claude pending "approve edit?"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-◆ 3 api
+ ◆ 3 api
   ✳ approve edit?
 ```
 
@@ -127,7 +167,7 @@ tab 1 "dotfiles"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-● 1 dotfiles
+ ● 1 dotfiles
   ✳ refactored the dotfiles
 ```
 
@@ -139,9 +179,9 @@ tab 2 "build-svc"
   claude error "exit 1: cargo test failed"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-✗ 2 build-svc
+ ✗ 2 build-svc
   ✳ exit 1: cargo test failed
 ```
 
@@ -154,8 +194,8 @@ tab 1 "web"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 web
+◆═══════════════════════════════
+ ⠋ 1 web
   ⚙ cargo build
 ```
 
@@ -171,8 +211,8 @@ tab 2 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 2 af
+◆═══════════════════════════════
+ ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ● ⚙ cargo build
 ```
@@ -189,9 +229,9 @@ tab 4 "review"
   codex running "writing tests"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-◆ 4 review
+ ◆ 4 review
  ├ ◆ ✳ approve diff?
  └ ⠋ ❉ writing tests
 ```
@@ -210,8 +250,8 @@ tab 2 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 2 af
+◆═══════════════════════════════
+ ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ○ $ ./deploy.sh
 ```
@@ -235,8 +275,8 @@ tab 2 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 2 swarm
+◆═══════════════════════════════
+ ⠋ 2 swarm
  ├ ⠋ ❉ planning api
  ├ ⠋ ❉ writing tests
  ├ ⠋ ❉ refactoring
@@ -264,13 +304,13 @@ tab 5 "scratch"
 tab 6 "logs"
 ```
 ```rail-expect
- RADAR                        6▲
-════════════════════════════════
-◆ 1 review
+ RADAR                     6▲ 1!
+◆═══════════════════════════════
+ ◆ 1 review
   ✳ approve diff?
-⠋ 2 af
+ ⠋ 2 af
   ❉ exploring render
-● 3 dotfiles
+ ● 3 dotfiles
   ✳ refactored auth
 +3 idle ▾
 ```
@@ -288,7 +328,7 @@ tab 2 "af" active
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
 ▌⠋ 2 af
 ▌├ ⠋ ❉ exploring render
 ▌└ ● ⚙ cargo build
@@ -314,8 +354,8 @@ tab 1 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 swarm
+◆═══════════════════════════════
+ ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
  ├ ⠋ ❉ pane three
@@ -344,8 +384,8 @@ tab 1 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 swarm
+◆═══════════════════════════════
+ ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
  ├ ⠋ ❉ pane three
@@ -369,8 +409,8 @@ tab 1 "work"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 work
+◆═══════════════════════════════
+ ⠋ 1 work
  ├ ⠋ ✳ this message is quite lo…
  └ ● ⚙ ok
 ```
@@ -389,8 +429,8 @@ tab 1 "cjk"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 cjk
+◆═══════════════════════════════
+ ⠋ 1 cjk
  ├ ⠋ ✳ 処理中のメッセージが長す…
  └ ● ⚙ ok
 ```
@@ -399,7 +439,7 @@ tab 1 "cjk"
 
 ## R. Bell marker in tab line
 
-**Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=4, bell_len=2, name_budget=26, gap=32-4-6-2=20 → `○ 1 alerts` + 20 spaces + `⚑`.
+**Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=5 (col-0 spine/space + glyph + sp + num + sp), bell_len=2, name_budget=25, gap=32-5-6-2=19 → ` ○ 1 alerts` + 19 spaces + `⚑`.
 
 ```rail-input
 width 32
@@ -408,7 +448,7 @@ tab 1 "alerts" bell
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 alerts                    ⚑
+ ○ 1 alerts                   ⚑
 ```
 
 > Bell token on the `tab` line sets `has_bell=true`; the `⚑` glyph appears right-aligned. Tab-line trailing space after `⚑` is trimmed by the vt100 grid helper.
@@ -424,8 +464,8 @@ tab 1 "pinky" bell
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 pinky                     ⚑
+◆═══════════════════════════════
+ ⠋ 1 pinky                    ⚑
   ✳ running tests
 ```
 
@@ -441,7 +481,7 @@ tab 1 "shell"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-○ 1 shell
+ ○ 1 shell
 ```
 
 > Untracked pane gets no line. Tab status = Idle (no tracked panes). ⟦D4 ✓⟧
@@ -458,8 +498,8 @@ tab 1 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
-⠋ 1 af
+◆═══════════════════════════════
+ ⠋ 1 af
   ✳ exploring render
 ```
 
@@ -478,7 +518,7 @@ tab 1 "pinky"
 ```
 ```rail-expect
  RADAR                        ·1
-⠋ 1 pinky
+ ⠋ 1 pinky
   ✳ running tests
 ```
 
@@ -507,18 +547,21 @@ tab 1 "af" active
 
 ---
 
-## X. Command-origin end-result tag — done (`✓`)
+## X. Command-origin end-result tag — done (no tag)
 
 **Author-from-intent.** A single build pane that exited successfully (exit 0) via the
 Command-origin path. The `pane_outcome()` function fires only for Command-origin panes;
-status-pipe panes never get an outcome tag. Single-pane path: tab glyph `●` (Done),
-pane line 2 = `  ⚙ cargo build ✓`.
+status-pipe panes never get an outcome tag. `Outcome::Ok` renders as no tag at all — the
+line-1 status glyph (`●`, green) is the one done signal, so a second `✓` on line 2 would
+double-mark the same fact. Single-pane path: tab glyph `●` (Done), pane line 2 =
+`  ⚙ cargo build`.
 
 Grid reasoning at width 32, prefix 6 (`"  ⚙ "` = indent 2 + mark 1 + space 1 = 4 cols;
 pane line 2 uses single-pane path with `prefix_vis = 2 + 1 + 1 = 4` cols):
-- Tab line: `● 1 work` (3 chars prefix + `1 work` = 8 chars total).
-- Pane line 2: `  ⚙ cargo build ✓` = 4-col prefix + `cargo build ✓` (13 chars) = 17 cols total.
-  No truncation (17 ≤ 32).
+- Tab line: ` ● 1 work` (5 chars prefix — col-0 spine/space + glyph + sp + num + sp —
+  + `work` = 9 chars total).
+- Pane line 2: `  ⚙ cargo build` = 4-col prefix + `cargo build` (11 chars) = 15 cols total.
+  No truncation (15 ≤ 32).
 
 ```rail-input
 width 32
@@ -528,25 +571,27 @@ tab 1 "work"
 ```rail-expect
  RADAR                        ·1
 ════════════════════════════════
-● 1 work
-  ⚙ cargo build ✓
+ ● 1 work
+  ⚙ cargo build
 ```
 
 > `exit 0` routes through `command_changed` → `timer` → `panes_changed(exits)` so the
 > CommandStore sets `origin = Command` and `status = Done`. `pane_outcome()` returns
-> `Outcome::Ok` → `✓` tag appended after the command string.
+> `Outcome::Ok`, whose `full()`/`minimal()` forms are both empty — `compose_activity`
+> treats an empty tag as no tag: no separator space, no empty SGR pair.
 
-## Y. Command-origin end-result tag — failed (`(exit 1)`)
+## Y. Command-origin end-result tag — failed (`exit 1`)
 
 **Author-from-intent.** A single build pane that exited with code 1 via the Command-origin
 path. `on_exit(Some(1))` sets `status = Error` and `exit_code = Some(1)`; `pane_outcome()`
-returns `Outcome::Failed(Some(1))` → tag `(exit 1)`. Tab glyph `✗` (Error); pane line 2
-= `  ⚙ cargo build (exit 1)`.
+returns `Outcome::Failed(Some(1))` → tag `exit 1`. Tab glyph `✗` (Error) already carries the
+failure signal; the tag adds the one thing the glyph can't: the exit code. Pane line 2 =
+`  ⚙ cargo build exit 1`.
 
 Grid reasoning at width 32:
-- Tab line: `✗ 1 work`.
+- Tab line: ` ✗ 1 work` (col 0 is the reserved, blank spine column since this tab isn't active).
 - Pane line 2 prefix (single-pane path): `  ⚙ ` = 4 cols; avail = 28.
-  `cargo build (exit 1)` = 21 chars, fits without truncation.
+  `cargo build exit 1` = 19 chars, fits without truncation.
 
 ```rail-input
 width 32
@@ -554,14 +599,15 @@ tab 1 "work"
   build error "cargo build" exit 1
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-✗ 1 work
-  ⚙ cargo build (exit 1)
+ ✗ 1 work
+  ⚙ cargo build exit 1
 ```
 
-> `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `(exit 1)`.
-> The full form is shown because 21 cols fits within the 28-col avail budget.
+> `exit 1` → `status = Error`, `exit_code = Some(1)` → `Outcome::Failed(Some(1))` → `exit 1`
+> (no parens — the exit code is the whole tag now that `Ok` carries none). The full form is
+> shown because 19 cols fits within the 28-col avail budget.
 
 ---
 
@@ -581,11 +627,11 @@ tab 2 "notes"
 ```
 ```rail-expect
  RADAR                        ·2
-════════════════════════════════
-⠋ 1 web
+◆═══════════════════════════════
+ ⠋ 1 web
   ✳ building
 
-○ 2 notes
+ ○ 2 notes
 ```
 
 > Comfortable density: header rule present; a blank line separates each tab. ⟦Comfortable density⟧
@@ -609,13 +655,13 @@ tab 3 "notes"
 ```
 ```rail-expect
  RADAR                        ·3
-⠋ 1 web
+ ⠋ 1 web
   ✳ building
 
-● 2 worker
+ ● 2 worker
   ✳ shipped
 
-○ 3 notes
+ ○ 3 notes
 ```
 
 > Cards density: title-only header (no `═`); each card followed by a blank gap row. ⟦Cards density⟧
@@ -636,9 +682,9 @@ tab 1 "review"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-◆ 1 review
+ ◆ 1 review
  ├ ◆ ✳ migrate schema
  │   ↳ approve git push?
  └ ⠋ ❉ write insta tests
@@ -657,9 +703,9 @@ tab 1 "work"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-◆ 1 work
+ ◆ 1 work
  ├ ◆ ✳ approve?
  └ ● ✳ fix flaky e2e
 ```
@@ -676,9 +722,9 @@ tab 1 "review"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-◆ 1 review
+ ◆ 1 review
   ✳ migrate schema
     ↳ approve git push?
 ```
@@ -697,13 +743,80 @@ tab 1 "release"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
-✗ 1 release
+ ✗ 1 release
  ├ ✗ ✳ fix the deploy
  │   ↳ boom
  └ ⠋ ❉ write insta tests
 ```
+
+---
+
+## AB. The floor: footer + earlier-ledger
+
+**Render-derived.** The bottom region (spec §9): once a session's content
+leaves ≥2 spare lines, a footer (`─` rule, working/need-you tally, `alt-[n]
+jump` hint) pins to the floor of the pane. With ≥5 spare and a non-empty
+completion ledger, an `─ earlier` section of receded completions (newest
+first, per the `ledger` directive below) fills the space between the content
+and the footer; a tab name past 12 columns truncates with `…`.
+
+```rail-input
+width 32
+height 9
+tab 1 "web"
+ledger 90 done "web" "deploying"
+ledger 300 error "workspace-ci-runner" "tests failed"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+ ○ 1 web
+─ earlier ──────────────────────
+1m ● web deploying
+5m ✗ workspace-c… tests failed
+────────────────────────────────
+0 working · 0 need you
+ alt-[n] jump
+```
+
+> `height 9` leaves 6 spare lines past the 3-line body: the `─ earlier` rule +
+> 2 ledger rows (newest first) + the pinned footer (rule/tally/hint), with no
+> filler needed. `ledger <age_secs> done|error "<tab>" "<label>"` seeds a row
+> directly (age is wall-clock via `now_epoch_s`, independent of `now_tick`);
+> a row's tab is looked up live in production, so a closed tab's row just
+> becomes click-inert rather than disappearing. ⟦bottom region / spec §9⟧
+
+---
+
+## AC. Zero tabs, non-empty ledger (history outlives the tab)
+
+**Render-derived.** Task 14: every tab can close while completion history
+remains — `render_rail` still renders (header + bottom region, no cards) as
+long as `opts.ledger` is non-empty, even with zero rows. The header's `·N`
+count is honest about what it counts: `·0` tabs, not 0 history.
+
+```rail-input
+width 32
+height 7
+ledger 90 done "web" "deploying"
+```
+```rail-expect
+ RADAR                        ·0
+════════════════════════════════
+─ earlier ──────────────────────
+1m ● web deploying
+────────────────────────────────
+0 working · 0 need you
+ alt-[n] jump
+```
+
+> No `tab` line at all — zero rows. The header still renders (·0) because
+> `has_content` is `!rows.is_empty() || !ledger.is_empty()`. Only when BOTH are
+> empty does `render_rail` return nothing, and `PluginRuntime::render` routes
+> to the `onboarding()` scanning face instead (see §A's note above). ⟦zero
+> state / spec §7,§9⟧
 
 ---
 

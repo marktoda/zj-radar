@@ -101,6 +101,14 @@ impl Status {
     pub fn needs_attention(self) -> bool {
         matches!(self, Status::Pending | Status::Error | Status::Done)
     }
+
+    /// Tabs actively blocked on the user: a waiting approval or a failure.
+    /// Distinct from `needs_attention` (the click-cycle set, which includes
+    /// `Done`): a finished task is glanceable, not blocking. Drives the header
+    /// `{n}!` badge and the footer "need you" tally.
+    pub fn needs_you(self) -> bool {
+        matches!(self, Status::Pending | Status::Error)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -277,5 +285,16 @@ mod tests {
         assert!(Status::Done.needs_attention());
         assert!(!Status::Running.needs_attention());
         assert!(!Status::Idle.needs_attention());
+    }
+
+    #[test]
+    fn needs_you_is_pending_or_error_only() {
+        // Unlike needs_attention (click-cycling, includes Done), the needs-you badge
+        // must never count a finished tab as needing the user.
+        assert!(Status::Pending.needs_you());
+        assert!(Status::Error.needs_you());
+        assert!(!Status::Done.needs_you());
+        assert!(!Status::Running.needs_you());
+        assert!(!Status::Idle.needs_you());
     }
 }

@@ -1,10 +1,104 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3281
 expression: "grid(&raw, 30)"
 ---
- RADAR                      ·1
+ RADAR                   ·1 1!
 ▌◆ 1 team
 ▌├ ⠋ ✳ building
 ▌├ ◆ ❉ approve?
 ▌└ ● ⚗ cargo test
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────
+0 working · 1 need you
+ alt-[n] jump

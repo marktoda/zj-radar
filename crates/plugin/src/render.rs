@@ -17,6 +17,31 @@ use layout::*;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
+/// Ticks a Running pane/tab must sit at the SAME `since_tick` before its
+/// spinner eases from full speed to a slow two-frame blink (see
+/// `spin_glyph`). 600 ticks — the tick-driven render clock isn't wall-clock
+/// 1:1, but at typical UI tick rates this reads as "on the order of minutes".
+/// Honest only because `since_tick` is honest: `StatusStore::apply` preserves
+/// `last_change_tick` across a same-status re-broadcast
+/// (`status_store.rs::apply_sets_last_change_tick_only_on_status_change`) and
+/// `CommandStore` preserves it across a same-command re-promotion
+/// (`promotion_preserves_running_since_for_same_command`,
+/// `crates/core/src/command.rs`) — so a long-runner's `since_tick` reflects
+/// when the work truly started, not the last time it happened to re-announce
+/// itself.
+pub const EASE_AFTER_TICKS: u64 = 600;
+
+/// Spinner frame for a Running glyph: full speed normally; after
+/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
+/// long-runner signals "still going, nothing new" instead of anxiety.
+fn spin_glyph(now_tick: u64, since_tick: u64) -> char {
+    if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
+        crate::status::working_spin(((now_tick / 4) % 2) as usize)
+    } else {
+        crate::status::working_spin(now_tick as usize)
+    }
+}
+
 /// A colored (optionally bold) text run that terminates its own SGR with RESET.
 ///
 /// Every colored token in the rail is built through `Seg`, so "colored ⇒
@@ -67,6 +92,14 @@ pub struct RenderOpts {
     /// are the only truecolor values (status hues are ANSI-16). Defaults to a
     /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
+    /// Wall-clock epoch seconds "now", for ledger age formatting
+    /// (`ledger::format_age`). Distinct from `now_tick` (the render/animation
+    /// clock) — ages are wall-clock, not tick-relative.
+    pub now_epoch_s: u64,
+    /// Prepared completion-ledger rows (spec §4), newest first — the source
+    /// for the bottom region's "earlier" list. Empty when nothing has receded
+    /// yet.
+    pub ledger: Vec<crate::radar_state::LedgerLine>,
 }
 
 #[derive(Debug)]
@@ -75,6 +108,10 @@ pub struct TabRow {
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
+    /// True for the two ticks after this tab's pane flipped from not-Pending
+    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
+    /// outranks the active tint in `card_tint`, below.
+    pub flash: bool,
     pub display: TabDisplay,
 }
 
@@ -82,19 +119,21 @@ pub struct TabRow {
 /// `rollup` (pure semantics); these methods encode the glyphs and the
 /// width-driven roomy/tight forms, which are the renderer's concern.
 impl Outcome {
-    /// The roomy form: `✓` / `(exit N)` (or `✗` when the code is unknown).
+    /// The roomy form. `Ok` is EMPTY — the line-1 status glyph (green ●) is the
+    /// one done signal; a tag would double-mark it. Errors carry the info the
+    /// line-1 `✗` can't: the exit code.
     fn full(self) -> String {
         match self {
-            Outcome::Ok => "✓".to_string(),
-            Outcome::Failed(Some(code)) => format!("(exit {})", code),
+            Outcome::Ok => String::new(),
+            Outcome::Failed(Some(code)) => format!("exit {}", code),
             Outcome::Failed(None) => "✗".to_string(),
         }
     }
 
-    /// The irreducible 1-column form, shown when width is too tight for `full`.
+    /// The irreducible short form, shown when width is too tight for `full`.
     fn minimal(self) -> &'static str {
         match self {
-            Outcome::Ok => "✓",
+            Outcome::Ok => "",
             Outcome::Failed(_) => "✗",
         }
     }
@@ -257,15 +296,16 @@ fn is_multi_pane(display: &TabDisplay) -> bool {
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
-/// span. Only the truly-empty case (no rows at all) is headerless; when `header`
-/// is false the identity block is suppressed and rows start at line 0.
+/// span. Headerless only when there's truly nothing to show — no rows AND no
+/// ledger history (`has_content` is false) — or when `header` is false, which
+/// suppresses the identity block so rows start at line 0.
 ///
 /// In Cards density the carded hero is just the " RADAR …" title (1 line) — the
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
 /// Comfortable keep the two-line title+rule header. `render_rail()` uses the
 /// same emitted header lines for ANSI and targets, so the count stays in lockstep.
-fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
-    if rows.is_empty() || !header {
+fn header_lines(_rows: &[TabRow], header: bool, density: Density, has_content: bool) -> usize {
+    if !has_content || !header {
         0
     } else if density == Density::Cards {
         1
@@ -273,19 +313,6 @@ fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
         2
     }
 }
-
-/// The onboarding legend: every `Status` with its plain-English gloss, in a
-/// deliberate *display* order (loudest first), distinct from the `Status::ALL`
-/// severity order. Each variant must appear exactly once — pinned by
-/// `onboarding_legend_covers_every_status` so a new `statuses!` row can't be
-/// silently dropped from the onboarding screen.
-const ONBOARDING_LEGEND: [(Status, &str); Status::ALL.len()] = [
-    (Status::Pending, "needs you"),
-    (Status::Running, "working"),
-    (Status::Done, "done"),
-    (Status::Error, "error"),
-    (Status::Idle, "idle"),
-];
 
 /// Push one full-width, click-inert line (`role`-colored, clamped to `w`) into a
 /// targetless panel face. The truncation acts on the visible text, never the SGR
@@ -295,36 +322,21 @@ fn push_panel_line(out: &mut String, role: &str, text: &str, w: usize) {
     out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
 }
 
-/// The rail's resting "hello / how it works" face — shown on cold start or
-/// before permission is granted. Not a permission interceptor.
+/// The rail's resting face when zero tabs are tracked (cold start, or every
+/// tab has closed with no completion history — see `PluginRuntime::render`'s
+/// routing). Not a permission interceptor. Deliberately minimal per spec §7/
+/// rail-reference.md rule 8 ("not a marketing screen"): title + rule + one
+/// muted status line, no status-glyph legend and no click hint (the panel is
+/// click-inert — there is nothing here to jump to).
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
-    let g = opts.glyphs;
     push_panel_line(&mut out, accent, " RADAR", w);
     push_panel_line(&mut out, accent, &"═".repeat(w), w);
-    push_panel_line(&mut out, muted, " watching your tabs for", w);
-    push_panel_line(&mut out, muted, " AI agent activity.", w);
     out.push('\n');
-    for (st, label) in ONBOARDING_LEGEND {
-        let role_code = st.role().ansi();
-        let glyph = st.glyph_for(g);
-        // " {glyph} {label}" — the marker+spaces are a fixed 3-col prefix. Below
-        // that the label has no room, so clamp the marker alone.
-        if w < 3 {
-            push_panel_line(&mut out, role_code, &format!(" {glyph}"), w);
-        } else {
-            out.push_str(&format!(
-                " {} {}\n",
-                Seg::new(role_code, glyph.to_string()),
-                Seg::new(muted, truncate(label, w - 3)),
-            ));
-        }
-    }
-    out.push('\n');
-    push_panel_line(&mut out, muted, " click a row to jump", w);
+    push_panel_line(&mut out, muted, " scanning… no agents yet", w);
     RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 
@@ -390,12 +402,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // derived), so those match the terminal's theme too.
     let hue = |r: Role| -> String { r.ansi().to_string() };
 
-    // col 0: active spine — accent (mauve) normally, attention (peach) when the
-    // active row is also waiting/error.
+    // col 0: spine column — ALWAYS reserved so every row's glyph/number/name
+    // start at fixed columns; `▌` when active, plain space otherwise.
     let bar = if row.active {
         Seg::new(&hue(spine_role(st)), "▌").to_string()
     } else {
-        String::new()
+        " ".to_string()
     };
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
@@ -403,9 +415,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // never exceeds `width`.
     let pad_x = card_spacing(opts.density).pad_x;
 
-    // col 1: status glyph (working spins).
+    // col 1: status glyph (working spins; eases to a slow blink for
+    // long-runners — see `spin_glyph`).
     let glyph_char = if st == Status::Running {
-        crate::status::working_spin(now_tick as usize)
+        let since_tick = row.display.detail.as_ref().map(|d| d.since_tick).unwrap_or(now_tick);
+        spin_glyph(now_tick, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -426,9 +440,9 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
     // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    // Bare minimum: bar(1 if active, 0 if not) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. Clamp pad first, then num.
     let num_full = row.number.to_string();
-    let bar_width = if row.active { 1 } else { 0 };
+    let bar_width = 1;
     let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
     let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
     let num_budget = width.saturating_sub(bare_min + pad_len);
@@ -537,12 +551,26 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
     // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
-    // Emitted when a detail exists with a non-empty msg OR a finished-command
-    // outcome tag to show. For Pending (the question), the command is colored in
-    // attention (loud); others dim. The outcome tag carries its own role hue.
+    // Emitted when a detail exists with a non-empty msg OR an outcome tag that
+    // actually renders (`Ok`'s tag is empty by design — see `Outcome::full` —
+    // so an empty-msg Ok completion earns no line at all, not a bare mark).
+    // For Pending (the question), the command is colored in attention (loud);
+    // others dim. The outcome tag carries its own role hue.
+    //
+    // These lines describe the tab's single tracked pane, so — mirroring the
+    // multi-pane tree rows — they target that pane directly rather than the
+    // tab; a click routes straight to `Effect::ShowPane`. Fall back to the tab
+    // target in the (should-never-happen) case of no tracked pane.
+    let pane_target = row
+        .display
+        .panes
+        .iter()
+        .find(|p| p.is_tracked())
+        .map(|p| RailTarget { tab_position: tab_target.tab_position, pane_id: Some(p.pane_id()) })
+        .unwrap_or(tab_target);
     if let Some(d) = &row.display.detail {
         let (identity, detail) = identity_and_detail(st, &d.task, &d.msg);
-        if !identity.trim().is_empty() || d.outcome.is_some() {
+        if !identity.trim().is_empty() || d.outcome.is_some_and(|o| !o.full().is_empty()) {
             match st {
                 Status::Idle => {}
                 Status::Done | Status::Running | Status::Error | Status::Pending => {
@@ -568,7 +596,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                             Seg::bold(&dim_strong, mark.to_string()),
                             activity
                         ),
-                        target: Some(tab_target),
+                        target: Some(pane_target),
                         bg: LineBg::Card,
                     });
                     if let Some(q) = detail {
@@ -585,7 +613,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                         };
                         lines.push(Line {
                             text,
-                            target: Some(tab_target),
+                            target: Some(pane_target),
                             bg: LineBg::Card,
                         });
                     }
@@ -597,16 +625,23 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 }
 
 /// Compose the styled activity segment for a detail/pane line: the command text
-/// (in `cmd_color`) plus, when the pane has finished, its outcome tag in the
-/// outcome's role hue. The tag is reserved FIRST so it always survives — the
-/// command absorbs any truncation (degrading to `…`, then vanishing), while the
-/// outcome shrinks only from its full form (`(exit 1)`) to the irreducible
-/// 1-column glyph (`✓`/`✗`). The returned string fits within `avail` columns and
-/// carries its own color escapes (each segment RESET-terminated).
+/// (in `cmd_color`) plus, when the pane has finished with a nonempty tag, its
+/// outcome tag in the outcome's role hue. `Ok` renders no tag at all — the
+/// line-1 status glyph is the one done signal. The tag is reserved FIRST so it
+/// always survives — the command absorbs any truncation (degrading to `…`,
+/// then vanishing), while the outcome shrinks only from its full form
+/// (`exit 1`) to the irreducible glyph (`✗`). The returned string fits within
+/// `avail` columns and carries its own color escapes (each segment
+/// RESET-terminated).
 fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
     let Some(oc) = outcome else {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
+    // An outcome whose tag renders empty (Ok) is "no tag at all": no separator
+    // space, no empty SGR pair — the status glyph already carries the signal.
+    if oc.full().is_empty() {
+        return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
+    }
     let role = oc.role().ansi();
     let cmd = cmd.trim();
     // Outcome with no command (e.g. an exit with no recorded command string):
@@ -647,7 +682,7 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
 /// Emit one pane line in the line-per-pane / tree design:
 /// Inactive: ` {connector} {glyph} {mark} {msg}` (space + `├`/`└` + space)
 /// Active:   `▌{connector} {glyph} {mark} {msg}` (spine + `├`/`└` + space)
-// `identity`/`has_detail` (Task 4) pushed this past clippy's 7-arg default; the
+// The `identity`/`has_detail` params push this past clippy's 7-arg default; the
 // params are tightly coupled render-context pieces (no natural sub-struct)
 // shared with `emit_pane_detail_line`'s sibling call in `render_row`.
 #[allow(clippy::too_many_arguments)]
@@ -667,7 +702,8 @@ fn emit_pane_line(
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
     let glyph = if status == Status::Running {
-        crate::status::working_spin(opts.now_tick as usize)
+        let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
+        spin_glyph(opts.now_tick, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };
@@ -814,11 +850,14 @@ fn tc_fg(c: (u8, u8, u8)) -> String {
     format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
-/// The truecolor surface tint for a card, by class: the focused tab is
-/// brightest, agent rows (active status) are mid, idle/plain panes are
-/// the dimmest surface. Returns an owned ANSI escape string.
+/// The truecolor surface tint for a card, by class: a flashing row (the
+/// flip-to-pending ping) outranks everything else — it's the glance-catcher —
+/// then the focused tab, then agent rows (active status), then idle/plain
+/// panes as the dimmest surface. Returns an owned ANSI escape string.
 fn card_tint(row: &TabRow, theme: &DerivedColors) -> String {
-    let rgb = if row.active {
+    let rgb = if row.flash {
+        theme.surface_flash
+    } else if row.active {
         theme.surface_active
     } else if row.display.status.is_active() {
         theme.surface_agent
@@ -870,39 +909,86 @@ fn target_for_row(row: &TabRow) -> RailTarget {
 }
 
 /// Produce the identity header lines as raw (unpainted) `Line` values.
-/// Returns 0 lines if `!opts.header` or rows is empty; 1 line (title only) in
-/// Cards density; 2 lines (title + `═` rule) in all other densities.
-/// `overflow` is computed by the caller and passed in.
-fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line> {
-    if !opts.header || rows.is_empty() {
+/// Returns 0 lines if `!opts.header` or `!has_content` (no rows AND no ledger
+/// history); 1 line (title only) in Cards density; 2 lines (title + `═` rule)
+/// in all other densities. `overflow` is computed by the caller and passed in.
+/// The `·N`/`N▲` count is always `rows.len()` — with zero tracked tabs and a
+/// non-empty ledger it reads `·0`, which is honest: the header counts tabs,
+/// not history.
+///
+/// The right slot appends a needs-you badge (`{n}!`, `Role::Attention`, bold)
+/// whenever any row's `Status::needs_you()`, space-joined after the census —
+/// `·{tabs} {n}!`. Narrow-width priority (`Some(_) if …` guards below, tried
+/// top to bottom): the overflow marker always wins over the badge; the badge
+/// always wins over the plain census. So a tight budget drops the census
+/// first, keeping the badge alone; only once there's no badge (or the
+/// overflow marker itself needs the room) does the lone primary token stand,
+/// clamped to width.
+///
+/// `working` drives the header-rule heartbeat: in Compact/
+/// Comfortable density (Cards has no `═` rule to carry it) the rule swaps one
+/// `═` for a `◆` (`Role::Accent`, bold) at column `now_tick % width`, a pure
+/// function of the render tick — see [`header_rule`] and [`render_body`]'s
+/// call site for how `working` is derived from `rows`.
+fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content: bool, working: bool) -> Vec<Line> {
+    if !opts.header || !has_content {
         return vec![];
     }
     let width = opts.width;
     let accent = Role::Accent.ansi();
-    let count = if overflow {
+    let primary = if overflow {
         format!("{}▲", rows.len())
     } else {
         format!("·{}", rows.len())
     };
     let title = " RADAR";
-    let count_w = UnicodeWidthStr::width(count.as_str());
-    let right_w = count_w.min(width);
+    let title_w = UnicodeWidthStr::width(title);
+    // Title in accent; primary muted (accent when overflowing, so the ▲
+    // marker stays loud).
+    let primary_color = if overflow { accent } else { Role::Muted.ansi() };
+    let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
+    let badge = (need_you > 0).then(|| format!("{}!", need_you));
+    // Budget available to the right slot before the title itself has to give
+    // up any columns — the priority decision below is made against this,
+    // independent of the later title-squeeze clamp.
+    let avail = width.saturating_sub(title_w);
+    let combined_w = |b: &str| UnicodeWidthStr::width(primary.as_str()) + 1 + UnicodeWidthStr::width(b);
+    // (text, color, bold) run(s) that make up the right slot, in emission order.
+    let right_segs: Vec<(String, &str, bool)> = match &badge {
+        Some(b) if combined_w(b) <= avail => {
+            vec![(primary.clone(), primary_color, false), (format!(" {b}"), Role::Attention.ansi(), true)]
+        }
+        // Combined doesn't fit: the overflow marker always wins, but a plain
+        // census loses to the badge — drop it and keep the badge alone.
+        Some(b) if !overflow => vec![(b.clone(), Role::Attention.ansi(), true)],
+        _ => vec![(primary.clone(), primary_color, false)],
+    };
+    let plain_right: String = right_segs.iter().map(|(t, _, _)| t.as_str()).collect();
+    let right_full_w = UnicodeWidthStr::width(plain_right.as_str());
+    let right_w = right_full_w.min(width);
     // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
     // assembled visible content never exceeds `width`.
-    let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
-    // Title in accent; total count muted (accent when overflowing, so the
-    // ▲ marker stays loud).
-    let count_color = if overflow { accent } else { Role::Muted.ansi() };
+    let gap = width.saturating_sub(title_w + right_w);
     // Clamp visible portions to width before assembling the ANSI line.
     let title_budget = width.saturating_sub(right_w + gap);
     let title_clamped = truncate(title, title_budget);
-    let count_clamped = truncate(&count, right_w);
+    let right_rendered = if right_full_w > width {
+        // Extreme-narrow clamp: the composite doesn't even fit alone — fall
+        // back to one plain (uncolored-per-segment) truncated run, same as
+        // the pre-badge single-token clamp.
+        Seg::new(primary_color, truncate(&plain_right, right_w)).to_string()
+    } else {
+        right_segs
+            .into_iter()
+            .map(|(t, c, b)| if b { Seg::bold(c, t).to_string() } else { Seg::new(c, t).to_string() })
+            .collect::<String>()
+    };
     let mut title_line = String::new();
     title_line.push_str(&format!(
         "{}{}{}\n",
         Seg::new(accent, title_clamped),
         " ".repeat(gap),
-        Seg::new(count_color, count_clamped),
+        right_rendered,
     ));
 
     let mut lines = vec![Line {
@@ -913,12 +999,35 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
         lines.push(Line {
-            text: format!("{}\n", Seg::new(accent, "═".repeat(width))),
+            text: format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
             target: None,
             bg: LineBg::Rail,
         });
     }
     lines
+}
+
+/// The header rule (`═` × width), or — while `working` is true — the same
+/// rule with one column swapped for a bold-accent `◆` at `now_tick % width`:
+/// three `Seg`s (`═`×pos, `◆`, `═`×rest) so the heartbeat is purely additive
+/// over the plain rule's layout, exactly like every other colored token in
+/// this file. Pure function of `now_tick`: no state, just a different column
+/// each tick, wrapping at `width`. `width == 0` degenerates to an empty rule
+/// (nothing to place the diamond in) — `render_rail` never calls with 0
+/// (`cols.max(1)`), but this stays total rather than panicking if a test does.
+fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> String {
+    if !working || width == 0 {
+        return Seg::new(accent, "═".repeat(width)).to_string();
+    }
+    let pos = (now_tick % width as u64) as usize;
+    let before = "═".repeat(pos);
+    let after = "═".repeat(width - pos - 1);
+    format!(
+        "{}{}{}",
+        Seg::new(accent, before),
+        Seg::bold(accent, "◆"),
+        Seg::new(accent, after),
+    )
 }
 
 /// Produce the idle-strip line as a raw (unpainted) `Line` value.
@@ -940,13 +1049,19 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
     }]
 }
 
-pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
-    if rows.is_empty() {
-        return RenderedRail::from_lines(vec![]);
-    }
+/// Header + one card block per kept row + idle strip — everything in
+/// `render_rail` EXCEPT the bottom region (spec §9). Split out so the bottom
+/// region's `leftover` can be measured against this body's real footprint,
+/// and so a test harness can ask "how tall is this session's content alone"
+/// (see `body_line_count`) without triggering the pinned-footer fill.
+fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
     let width = opts.width;
     let cards = opts.density == Density::Cards;
     let rail = tc_bg(opts.theme.rail_bg);
+    // Zero tabs with a non-empty ledger still has something to show (spec §9's
+    // floor: header + bottom region, no cards) — the header must not vanish
+    // just because `rows` is empty.
+    let has_content = !rows.is_empty() || !opts.ledger.is_empty();
 
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
@@ -954,14 +1069,21 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
         .collect();
     let body_budget = opts
         .height
-        .saturating_sub(header_lines(rows, opts.header, opts.density));
+        .saturating_sub(header_lines(rows, opts.header, opts.density, has_content));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
+    // Drives the header-rule heartbeat — a plain `any()`, not a
+    // count, so it's a distinct question from `footer_tally`'s "how many are
+    // working" tally computed later in `render_bottom`; the two live in
+    // separate pipeline stages (body vs. bottom region) and sharing one
+    // number across that seam would cost more plumbing than the one `filter`
+    // it saves.
+    let working = rows.iter().any(|r| r.display.status == Status::Running);
 
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
-    for mut line in render_header(rows, opts, overflow) {
+    for mut line in render_header(rows, opts, overflow, has_content, working) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }
@@ -1000,6 +1122,224 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
 
     // Idle strip.
     for mut line in render_strip(strip_folded, opts) {
+        if cards { line.text = paint_card_line(&line.text, width, &rail); }
+        flat.push(line);
+    }
+
+    flat
+}
+
+/// Test-only: the height `render_rail` needs to show every row (+ idle strip)
+/// with no overflow folding and no bottom region (leftover 0) at this
+/// width/density — i.e. the session's "natural" content height. `opts.height`
+/// only needs to be large enough to avoid overflow folding; the result is
+/// otherwise independent of it. The reference-doc harness uses this to
+/// preserve pre-footer scenario heights: passing a merely-large height (the
+/// old "enough to fit" sentinel) would now land in the bottom region's
+/// unbounded-filler branch.
+#[cfg(test)]
+pub(crate) fn body_line_count(rows: &[TabRow], opts: &RenderOpts) -> usize {
+    render_body(rows, opts).len()
+}
+
+/// One filler line: blank, rail-based, click-inert. Shared by the bottom
+/// region's leading pad and (via the ledger branch) its interior pad.
+fn bottom_filler() -> Line {
+    Line { text: "\n".to_string(), target: None, bg: LineBg::Rail }
+}
+
+/// The footer's top rule: a full-width ghost-colored `─` line.
+fn footer_rule(opts: &RenderOpts) -> Line {
+    let ghost = tc_fg(opts.theme.idle_text);
+    Line {
+        text: format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// The footer's bottom hint line: " alt-[n] jump", clamped to width.
+fn footer_hint(opts: &RenderOpts) -> Line {
+    let idle = tc_fg(opts.theme.idle_text);
+    Line {
+        text: format!("{}\n", Seg::new(&idle, truncate(" alt-[n] jump", opts.width))),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// The footer's tally line: `{n}{spin} working · {m} need you`. `n` counts
+/// `Status::Running` rows (spinner only when `n > 0`); `m` counts
+/// `Status::needs_you` rows (loud + bold when `m > 0`). Truncated to width;
+/// too-tight-for-both-colors degrades to one run colored by whether the tally
+/// is still loud (`m > 0`).
+fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    let working = rows.iter().filter(|r| r.display.status == Status::Running).count();
+    let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
+    let n_part = if working > 0 {
+        format!("{}{}", working, crate::status::working_spin(opts.now_tick as usize))
+    } else {
+        working.to_string()
+    };
+    let left = format!("{} working · ", n_part);
+    let right = format!("{} need you", need_you);
+    let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
+    let text = if fits {
+        let right_seg = if need_you > 0 {
+            Seg::bold(Role::Attention.ansi(), right)
+        } else {
+            Seg::new(&idle, right)
+        };
+        format!("{}{}\n", Seg::new(&idle, left), right_seg)
+    } else {
+        let full = format!("{left}{right}");
+        let clamped = truncate(&full, width);
+        if need_you > 0 {
+            format!("{}\n", Seg::bold(Role::Attention.ansi(), clamped))
+        } else {
+            format!("{}\n", Seg::new(&idle, clamped))
+        }
+    };
+    Line { text, target: None, bg: LineBg::Rail }
+}
+
+/// The ledger section's own rule: `─ earlier ` then `─` fill to width.
+fn ledger_rule(opts: &RenderOpts) -> Line {
+    let ghost = tc_fg(opts.theme.idle_text);
+    let prefix = "─ earlier ";
+    let prefix_w = UnicodeWidthStr::width(prefix);
+    let text = if opts.width <= prefix_w {
+        truncate(prefix, opts.width)
+    } else {
+        format!("{}{}", prefix, "─".repeat(opts.width - prefix_w))
+    };
+    Line {
+        text: format!("{}\n", Seg::new(&ghost, text)),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// One ledger row: `{age} {glyph} {tab_name} {label}`. Exact truncation rule
+/// (spec §9): the fixed 3-col `age space glyph space` prefix is reserved
+/// first, `tab_name` gets up to 12 cols of what's left, and `label` absorbs
+/// whatever remains — omitted (with its separating space) entirely when
+/// nothing remains. Click-inert once its tab has closed (`tab_position` is
+/// `None`).
+fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -> Line {
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    let dim_strong = tc_fg(opts.theme.dim_strong);
+    let age = crate::ledger::format_age(line.at_epoch_s, opts.now_epoch_s);
+    let age_w = UnicodeWidthStr::width(age.as_str());
+    let (glyph, glyph_role) = if line.error {
+        ("✗", Role::Error)
+    } else {
+        ("●", Role::Success)
+    };
+    let prefix = age_w + 1 + 1 + 1; // age, space, glyph, space
+    // Narrow-width fallback: the colored path always emits the full fixed
+    // age+glyph prefix unconditionally, so at widths below it the line would
+    // overflow. Below that floor, drop all color and emit a single plain
+    // line clamped to `width` so nothing exceeds the band.
+    if width < prefix {
+        let plain = format!("{age} {glyph} {} {}", line.tab_name, line.label);
+        return Line {
+            text: format!("{}\n", truncate(&plain, width)),
+            target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+            bg: LineBg::Rail,
+        };
+    }
+    let name_budget = 12.min(width.saturating_sub(prefix));
+    let name = truncate(&line.tab_name, name_budget);
+    let name_w = UnicodeWidthStr::width(name.as_str());
+    let label_budget = width.saturating_sub(prefix + name_w + 1);
+    let mut text = format!(
+        "{} {} {}",
+        Seg::new(&idle, age),
+        Seg::new(glyph_role.ansi(), glyph),
+        Seg::new(&dim_strong, name),
+    );
+    if label_budget > 0 {
+        let label = truncate(&line.label, label_budget);
+        text.push(' ');
+        text.push_str(&Seg::new(&idle, label).to_string());
+    }
+    text.push('\n');
+    Line {
+        text,
+        target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+        bg: LineBg::Rail,
+    }
+}
+
+/// The bottom region per the spec §9 budget table. `leftover` = height minus
+/// everything already in `flat` (i.e. `render_body`'s footprint). Returns
+/// lines ordered top→bottom (filler … ledger rule, entries newest-first …
+/// footer rule, tally, hint). INVARIANT: when it returns any lines,
+/// `flat.len() + returned.len() == opts.height` exactly.
+///
+/// | leftover | region |
+/// |---|---|
+/// | 0–1 | nothing |
+/// | 2 | rule + tally |
+/// | 3 | rule + tally + hint |
+/// | 4 | 1 filler + footer(3) |
+/// | ≥5, ledger empty | (leftover−3) filler + footer(3) |
+/// | ≥5, ledger non-empty | filler + ledger rule + `min(len, leftover−4)` entries + footer(3) |
+fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
+    match leftover {
+        0 | 1 => vec![],
+        2 => vec![footer_rule(opts), footer_tally(rows, opts)],
+        3 => vec![footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
+        4 => vec![bottom_filler(), footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
+        n => {
+            let mut v = Vec::with_capacity(n);
+            if opts.ledger.is_empty() {
+                for _ in 0..n - 3 {
+                    v.push(bottom_filler());
+                }
+            } else {
+                let entries_n = opts.ledger.len().min(n - 4);
+                let filler_n = n - 4 - entries_n;
+                for _ in 0..filler_n {
+                    v.push(bottom_filler());
+                }
+                v.push(ledger_rule(opts));
+                for line in opts.ledger.iter().take(entries_n) {
+                    v.push(ledger_entry_line(line, opts));
+                }
+            }
+            v.push(footer_rule(opts));
+            v.push(footer_tally(rows, opts));
+            v.push(footer_hint(opts));
+            v
+        }
+    }
+}
+
+pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
+    // Truly nothing to show only when there are no rows AND no ledger history
+    // — the caller routes that case to `onboarding` instead (spec §7/§9). Zero
+    // rows with a non-empty ledger still renders: header + bottom region, no
+    // cards.
+    if rows.is_empty() && opts.ledger.is_empty() {
+        return RenderedRail::from_lines(vec![]);
+    }
+    let cards = opts.density == Density::Cards;
+    let width = opts.width;
+    let rail = tc_bg(opts.theme.rail_bg);
+
+    let mut flat = render_body(rows, opts);
+
+    // Bottom region (spec §9): whatever height `render_body` didn't use, up to
+    // and including the pinned footer at the floor. The trailing gap line the
+    // body already emits after the last card simply becomes part of the space
+    // `leftover` measures — no special-casing needed.
+    let leftover = opts.height.saturating_sub(flat.len());
+    for mut line in render_bottom(rows, leftover, opts) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }

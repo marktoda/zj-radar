@@ -1,4 +1,5 @@
 use super::*;
+use crate::command::{DEBOUNCE_TICKS, DONE_TTL_TICKS};
 use crate::kind::Kind;
 use crate::payload::StatusPayload;
 use crate::rollup::Outcome;
@@ -47,11 +48,11 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     // quit it (no producer hook fires on quit).
     radar
         .status_mut()
-        .apply(payload_for(7, Status::Done, "pinky"), 1);
+        .apply(payload_for(7, Status::Done, "pinky"), 1, 0);
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
-    let change = radar.command_changed(7, &["zsh".into()], true, 5);
+    let change = radar.command_changed(7, &["zsh".into()], true, 5, 0);
 
     // The stale `done` is cleared to idle, repo kept for tab naming. This rides
     // the shared CommandChanged signal, so every tab's instance clears alike.
@@ -68,9 +69,9 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(7, Status::Running, "pinky"), 1);
+        .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
     // A mid-turn foreground flicker to a shell must NOT be read as an exit.
-    let change = radar.command_changed(7, &["bash".into()], true, 5);
+    let change = radar.command_changed(7, &["bash".into()], true, 5, 0);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
     assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
 }
@@ -86,9 +87,9 @@ fn rows_sort_tabs_by_position_and_aggregate_panes() {
     radar.set_tab_panes_for_position(0, vec![pane(42)]);
     radar
         .status_mut()
-        .apply(payload_for(42, Status::Running, "repo"), 1);
+        .apply(payload_for(42, Status::Running, "repo"), 1, 0);
 
-    let rows = radar.rows();
+    let rows = radar.rows(1);
 
     assert_eq!(
         rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -108,7 +109,7 @@ fn active_tab_focus_is_the_only_global_focus_transition() {
         exits: Vec::new(),
     };
 
-    radar.panes_changed(update, 7, config::NamingMode::Off);
+    radar.panes_changed(update, 7, 0, config::NamingMode::Off);
 
     assert_eq!(radar.last_focused(), Some(2));
 }
@@ -150,9 +151,9 @@ fn observation_origin_is_source_specific() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(1, Status::Running, "status"), 1);
-    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
+        .apply(payload_for(1, Status::Running, "status"), 1, 0);
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     assert_eq!(
         radar.status(1).unwrap().origin,
@@ -205,6 +206,7 @@ fn panes_changed_requests_cwd_bootstrap_for_new_pane_without_cwd() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -219,6 +221,7 @@ fn panes_changed_requests_no_cwd_bootstrap_when_naming_off() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Off,
     );
 
@@ -234,6 +237,7 @@ fn panes_changed_skips_cwd_bootstrap_when_cwd_already_known() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -248,8 +252,8 @@ fn panes_changed_requests_each_pane_cwd_only_once_even_if_unresolved() {
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
     let update = || pane_update(HashMap::from([(0, vec![focused_pane(7)])]));
 
-    let first = radar.panes_changed(update(), 1, config::NamingMode::Managed);
-    let second = radar.panes_changed(update(), 2, config::NamingMode::Managed);
+    let first = radar.panes_changed(update(), 1, 0, config::NamingMode::Managed);
+    let second = radar.panes_changed(update(), 2, 0, config::NamingMode::Managed);
 
     assert_eq!(first.cwd_bootstrap, vec![7]);
     assert!(second.cwd_bootstrap.is_empty());
@@ -263,15 +267,17 @@ fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
     let first = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(first.cwd_bootstrap, vec![7]);
 
     // Pane 7 closes (no longer live), then a new pane reuses id 7.
-    radar.panes_changed(pane_update(HashMap::new()), 2, config::NamingMode::Managed);
+    radar.panes_changed(pane_update(HashMap::new()), 2, 0, config::NamingMode::Managed);
     let reborn = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         3,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -292,6 +298,7 @@ fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
     let first = radar.panes_changed(
         pane_update(HashMap::from([(0, panes)])),
         1,
+        0,
         config::NamingMode::Managed,
     );
 
@@ -310,6 +317,7 @@ fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
                 .collect(),
         )])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(second.cwd_bootstrap, vec![8]);
@@ -324,6 +332,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     let opened = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         1,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(opened.cwd_bootstrap, vec![7]);
@@ -342,6 +351,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     let refreshed = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(refreshed.cwd_bootstrap.is_empty());
@@ -375,16 +385,16 @@ fn same_pane_status_observation_wins_over_command() {
     radar.set_tab_panes_for_position(0, vec![focused_pane(5)]);
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo.
     radar
         .status_mut()
-        .apply(payload_for(5, Status::Running, "from-status"), 3);
+        .apply(payload_for(5, Status::Running, "from-status"), 3, 0);
 
-    let row = radar.rows().remove(0);
+    let row = radar.rows(3).remove(0);
     let detail = row.display.detail.as_ref().expect("active pane sets detail");
     assert_eq!(
         detail.repo, "from-status",
@@ -401,15 +411,15 @@ fn notify_views_status_wins_over_command_for_same_pane() {
     let mut radar = RadarState::default();
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
     // A status-pipe observation on the SAME pane 5, with a distinct repo so
     // the two sources are distinguishable.
     radar
         .status_mut()
-        .apply(payload_for(5, Status::Done, "from-status"), 3);
+        .apply(payload_for(5, Status::Done, "from-status"), 3, 0);
 
     let views = radar.notify_views();
     let obs = views.get(&5).expect("pane 5 must appear in notify_views");
@@ -428,13 +438,13 @@ fn finished_command_pane_carries_outcome_through_rows() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
-    radar.timer(2); // promote pending → Running
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
-    radar.command_mut().on_exit(1, Some(2), 3);
+    radar.command_mut().on_exit(1, Some(2), 3, 0);
 
-    let row = radar.rows().remove(0);
+    let row = radar.rows(3).remove(0);
     assert_eq!(row.display.status, Status::Error);
     let detail = row.display.detail.as_ref().unwrap();
     assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
@@ -444,9 +454,9 @@ fn finished_command_pane_carries_outcome_through_rows() {
 #[test]
 fn snapshot_round_trip_preserves_command_exit_code() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
-    radar.command_mut().on_exit(7, Some(3), 3);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_mut().on_exit(7, Some(3), 3, 0);
     assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
 
     let json = radar.snapshot_json(None, 3);
@@ -462,12 +472,12 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
     let mut radar = RadarState::default();
     radar
         .status_mut()
-        .apply(payload_for(1, Status::Running, "repo"), 3);
+        .apply(payload_for(1, Status::Running, "repo"), 3, 0);
     let mut done = payload_for(2, Status::Done, "pinky");
     done.branch = "fix/x".into();
     done.msg = "shipped it".into();
     done.source = "codex".into();
-    radar.status_mut().apply(done, 5);
+    radar.status_mut().apply(done, 5, 0);
 
     let json = radar.snapshot_json(None, 42);
     let mut restored = RadarState::default();
@@ -486,8 +496,8 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
 #[test]
 fn snapshot_round_trip_preserves_command_observations() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
-    radar.timer(2);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     let json = radar.snapshot_json(None, 2);
     let mut restored = RadarState::default();
@@ -541,13 +551,13 @@ fn snapshot_merge_preserves_existing_when_live_panes_are_unknown() {
     let mut existing = RadarState::default();
     existing
         .status_mut()
-        .apply(payload_for(1, Status::Running, "old"), 1);
+        .apply(payload_for(1, Status::Running, "old"), 1, 0);
     let existing_json = existing.snapshot_json(None, 5);
 
     let mut current = RadarState::default();
     current
         .status_mut()
-        .apply(payload_for(2, Status::Running, "new"), 2);
+        .apply(payload_for(2, Status::Running, "new"), 2, 0);
     let merged = current.snapshot_json(Some(&existing_json), 3);
 
     let mut restored = RadarState::default();
@@ -562,14 +572,14 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
     let mut existing = RadarState::default();
     existing
         .status_mut()
-        .apply(payload_for(1, Status::Running, "dead"), 1);
+        .apply(payload_for(1, Status::Running, "dead"), 1, 0);
     let existing_json = existing.snapshot_json(None, 5);
 
     let mut current = RadarState::default();
     current.tabs_changed(vec![tab(10, 0, "work", true)]);
     current
         .status_mut()
-        .apply(payload_for(2, Status::Running, "live"), 2);
+        .apply(payload_for(2, Status::Running, "live"), 2, 0);
     current.panes_changed(
         PaneUpdate {
             tab_panes: HashMap::from([(0, vec![focused_pane(2)])]),
@@ -578,6 +588,7 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
             exits: Vec::new(),
         },
         3,
+        0,
         config::NamingMode::Off,
     );
 
@@ -587,6 +598,128 @@ fn snapshot_merge_drops_existing_dead_panes_after_live_update() {
 
     assert!(restored.status(1).is_none(), "known-dead pane is pruned");
     assert_eq!(restored.status(2).unwrap().repo, "live");
+}
+
+#[test]
+fn snapshot_v3_round_trips_ledger_and_completion_stamps() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
+
+    // Pane 1: TTL-recede all the way to a ledger entry.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // Done, stamped at epoch 500
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede → ledgers
+    assert_eq!(radar.ledger().entries().count(), 1, "sanity: one ledger entry seeded");
+
+    // Pane 2: still-live Done observation, stamped with its own completion epoch.
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    radar.timer(confirm_tick, 700); // Done, stamped at epoch 700
+    assert_eq!(radar.command(2).unwrap().status, Status::Done);
+    assert_eq!(radar.command(2).unwrap().completed_epoch_s, Some(700));
+
+    let snapshot_tick = confirm_tick + DONE_TTL_TICKS;
+    let json = radar.snapshot_json(None, snapshot_tick);
+
+    let mut restored = RadarState::default();
+    restored.load_snapshot(&json).expect("v3 snapshot loads");
+
+    assert_eq!(
+        restored.ledger().to_vec(),
+        radar.ledger().to_vec(),
+        "the ledger round-trips through the v3 record unchanged"
+    );
+    let pane2 = restored.command(2).expect("pane 2 restored");
+    assert_eq!(pane2.completed_epoch_s, Some(700), "completion stamp survives the round trip");
+}
+
+#[test]
+fn v2_snapshot_loads_with_empty_ledger_and_same_observations() {
+    // Hand-built pre-ledger (v2) record — same shape as v3 minus the `ledger`
+    // field, which must default empty rather than reject the snapshot.
+    let json = r#"{"v":2,"tick":4,"observations":[
+        {"pane_id":1,"origin":"status_pipe","status":"running","repo":"r","branch":"b","msg":"m","source":"claude","last_change_tick":1,"ever_active":true}
+    ]}"#;
+    let mut radar = RadarState::default();
+
+    let tick = radar.load_snapshot(json).expect("v2 snapshot loads");
+
+    assert_eq!(tick, 4);
+    let pane = radar.status(1).expect("v2 observation restored");
+    assert_eq!(pane.status, Status::Running);
+    assert!(radar.ledger().is_empty(), "a v2 record predates the ledger — it loads empty, not rejected");
+}
+
+#[test]
+fn snapshot_merge_unions_ledgers_across_instances() {
+    let mut existing = RadarState::default();
+    existing.tabs_changed(vec![tab(10, 0, "work", true)]);
+    existing.set_tab_panes_for_position(0, vec![pane(1)]);
+    existing.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    existing.timer(1 + DEBOUNCE_TICKS, 0);
+    existing.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    existing.timer(confirm_tick, 500);
+    existing.timer(confirm_tick + DONE_TTL_TICKS, 900); // ledgers "cargo build" @500
+    let existing_json = existing.snapshot_json(None, confirm_tick + DONE_TTL_TICKS);
+
+    let mut current = RadarState::default();
+    current.tabs_changed(vec![tab(20, 0, "other", true)]);
+    current.set_tab_panes_for_position(0, vec![pane(2)]);
+    current.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    current.timer(1 + DEBOUNCE_TICKS, 0);
+    current.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    current.timer(confirm_tick, 600);
+    current.timer(confirm_tick + DONE_TTL_TICKS, 1000); // ledgers "cargo test" @600
+
+    let merged = current.snapshot_json(Some(&existing_json), confirm_tick + DONE_TTL_TICKS);
+    let mut restored = RadarState::default();
+    restored.load_snapshot(&merged).expect("merged snapshot loads");
+
+    let entries = restored.ledger().to_vec();
+    assert_eq!(entries.len(), 2, "both instances' ledger entries survive the union");
+    assert_eq!(entries[0].label, "cargo test", "sorted desc by completion stamp — 600 before 500");
+    assert_eq!(entries[1].label, "cargo build");
+}
+
+#[test]
+fn loaded_done_ttl_rebases_to_snapshot_tick() {
+    // A command Done stamped with a `last_change_tick` from a foreign tick
+    // domain (999999 — nothing this fresh instance has counted to) must not
+    // be trusted: on load it re-bases to the snapshot's own tick, restarting
+    // the DONE_TTL_TICKS window (spec §4.3) rather than instantly receding or
+    // never receding.
+    let json = r#"{"v":3,"tick":42,"observations":[
+        {"pane_id":1,"origin":"command","status":"done","repo":"","branch":"","msg":"cargo build","source":"build","last_change_tick":999999,"ever_active":true,"completed_epoch_s":500}
+    ],"ledger":[]}"#;
+    let mut radar = RadarState::default();
+
+    let tick = radar.load_snapshot(json).expect("v3 snapshot loads");
+
+    assert_eq!(tick, 42);
+    let cmd = radar.command(1).expect("command observation restored");
+    assert_eq!(
+        cmd.last_change_tick, tick,
+        "TTL re-bases to the snapshot's own tick, not the foreign 999999"
+    );
+    assert_eq!(cmd.completed_epoch_s, Some(500), "the completion stamp itself is untouched");
+}
+
+#[test]
+fn old_code_version_guard_note() {
+    // Pinned drop-forward behavior: a version this build doesn't recognize
+    // (here, a hypothetical v4 written by a newer build) is never partially
+    // trusted — `load` returns `None` for the whole snapshot rather than
+    // guessing at a superset/subset shape.
+    let mut radar = RadarState::default();
+    assert!(radar
+        .load_snapshot(r#"{"v":4,"tick":1,"observations":[],"ledger":[]}"#)
+        .is_none());
 }
 
 #[test]
@@ -606,6 +739,7 @@ fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![pane(1), focused_pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(change.renames.is_empty());
@@ -626,6 +760,7 @@ fn manual_rename_is_preserved_through_focus_and_cwd_changes() {
     let focus = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(1), pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert!(focus.renames.is_empty());
@@ -651,6 +786,7 @@ fn applied_tab_name_repicks_when_the_naming_pane_closes() {
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(2)])])),
         2,
+        0,
         config::NamingMode::Managed,
     );
     assert_eq!(
@@ -675,7 +811,7 @@ fn mutating_events_request_a_render() {
     );
     assert!(
         radar
-            .command_changed(1, &["cargo".into(), "build".into()], true, 0)
+            .command_changed(1, &["cargo".into(), "build".into()], true, 0, 0)
             .render,
         "command_changed must request a render"
     );
@@ -698,7 +834,7 @@ fn focus_does_not_change_rail_status() {
     let mut radar = RadarState::default();
     // A completed agent turn: a pushed Done.
     let done = payload_for(5, Status::Done, "repo");
-    radar.status_mut().apply(done, 1);
+    radar.status_mut().apply(done, 1, 0);
 
     // Focusing the pane must NOT clear the Done — focus no longer recedes status.
     radar.note_focus(Some(5));
@@ -724,8 +860,8 @@ fn next_attention_tab_skips_running_and_idle() {
     // tab 0: running (not attention); tab 1: pending (attention); tab 2: idle.
     st.set_tab_panes_for_position(0, vec![pane(10)]);
     st.set_tab_panes_for_position(1, vec![pane(11)]);
-    st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
-    st.status_mut().apply(payload_for(11, Status::Pending, ""), 1);
+    st.status_mut().apply(payload_for(10, Status::Running, ""), 1, 0);
+    st.status_mut().apply(payload_for(11, Status::Pending, ""), 1, 0);
 
     assert_eq!(st.next_attention_tab(Direction::Next), Some(1));
     assert_eq!(st.next_attention_tab(Direction::Prev), Some(1));
@@ -738,7 +874,7 @@ fn next_attention_tab_none_when_no_attention() {
         RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false },
     ]);
     st.set_tab_panes_for_position(0, vec![pane(10)]);
-    st.status_mut().apply(payload_for(10, Status::Running, ""), 1);
+    st.status_mut().apply(payload_for(10, Status::Running, ""), 1, 0);
     assert_eq!(st.next_attention_tab(Direction::Next), None);
     assert_eq!(st.next_attention_tab(Direction::Prev), None);
 }
@@ -842,6 +978,33 @@ fn arb_op() -> impl Strategy<Value = Op> {
     ]
 }
 
+/// Zero out the one field the first snapshot load is allowed to mutate:
+/// `last_change_tick` on a command-origin, Done observation (the TTL
+/// re-base in `RadarState::load_snapshot` — see the comment there).
+/// Every other field, every other entry, the ledger array, and the tick must
+/// survive a first load byte-equal; this function must NOT be widened to
+/// cover any other field without a matching re-base in production code, or
+/// it silently launders a real regression into "expected drift".
+///
+/// `observations` is a JSON array of flattened `{pane_id, origin, status,
+/// ..., last_change_tick, ...}` objects (see `snapshot::SnapshotEntry`), in
+/// the deterministic `(pane_id, origin)` order `to_json`'s `BTreeMap`
+/// produces — so no reordering is needed here, only field normalization.
+fn normalize_rebased_ticks(v: &mut serde_json::Value) {
+    let Some(observations) = v.get_mut("observations").and_then(serde_json::Value::as_array_mut) else {
+        return;
+    };
+    for entry in observations {
+        let is_rebased_entry = entry.get("origin").and_then(serde_json::Value::as_str) == Some("command")
+            && entry.get("status").and_then(serde_json::Value::as_str) == Some("done");
+        if is_rebased_entry {
+            if let Some(tick) = entry.get_mut("last_change_tick") {
+                *tick = serde_json::json!(0);
+            }
+        }
+    }
+}
+
 proptest! {
     #[test]
     fn radar_state_invariants_hold_after_any_event_sequence(
@@ -894,7 +1057,7 @@ proptest! {
                         theme: None,
                         exits: exits.clone(),
                     };
-                    st.panes_changed(update, tick, config::NamingMode::Off);
+                    st.panes_changed(update, tick, 0, config::NamingMode::Off);
 
                     // Prune contract: immediately after panes_changed every
                     // stored observation belongs to a live pane.
@@ -916,7 +1079,7 @@ proptest! {
                         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane}}},"status":"{}","repo":"r","msg":"m"}}"#,
                         status.as_wire()
                     );
-                    let _ = st.status_pipe(&raw, tick, config::NamingMode::Off);
+                    let _ = st.status_pipe(&raw, tick, 0, config::NamingMode::Off);
                 }
                 Op::Command(pane, fg) => {
                     st.command_changed(
@@ -924,10 +1087,11 @@ proptest! {
                         &["cargo".to_string(), "build".to_string()],
                         *fg,
                         tick,
+                        0,
                     );
                 }
                 Op::Timer => {
-                    st.timer(tick);
+                    st.timer(tick, 0);
                 }
                 Op::Cwd(pane) => {
                     st.cwd_changed(*pane, "/home/u/proj".into(), config::NamingMode::Off);
@@ -935,7 +1099,7 @@ proptest! {
             }
 
             // `rows()` is total (never panics) and well-formed after every op.
-            let rows = st.rows();
+            let rows = st.rows(tick);
             for w in rows.windows(2) {
                 prop_assert!(
                     w[0].number < w[1].number,
@@ -949,14 +1113,41 @@ proptest! {
             }
         }
 
-        // Snapshot round-trip is identity: serialize → load → serialize again
-        // yields byte-identical JSON for the whole accumulated history.
+        // Snapshot round-trip. Two properties, kept separate on purpose:
+        //
+        // 1. Fixed point from the second load on: once the one-time TTL
+        //    re-base (below) has happened, `s2` already carries the re-based
+        //    tick, so loading and re-serializing it again must be
+        //    byte-identical. This alone would miss non-idempotence introduced
+        //    by anything *other* than the re-base.
+        // 2. Full-strength first-load comparison: the very first load may
+        //    re-base a command-origin Done's `last_change_tick` to the
+        //    snapshot tick (the TTL re-base, spec §4.3) — that is the ONE
+        //    field allowed to differ between `s1` (built from the
+        //    accumulated op history's own ticks) and `s2`. Normalizing just
+        //    that field and then asserting full equality keeps first-load
+        //    coverage for everything else: dropped observations, mis-routed
+        //    origins, ledger corruption, or any other field drifting would
+        //    still fail this assertion.
         const SNAPSHOT_TICK: u64 = 9999;
         let s1 = st.snapshot_json(None, SNAPSHOT_TICK);
         let mut reloaded = RadarState::default();
         reloaded.load_snapshot(&s1);
         let s2 = reloaded.snapshot_json(None, SNAPSHOT_TICK);
-        prop_assert_eq!(s1, s2, "snapshot round-trip must be identity");
+
+        let mut reloaded_again = RadarState::default();
+        reloaded_again.load_snapshot(&s2);
+        let s3 = reloaded_again.snapshot_json(None, SNAPSHOT_TICK);
+        prop_assert_eq!(&s2, &s3, "snapshot round-trip must be a fixed point after the first TTL re-base");
+
+        let mut v1: serde_json::Value = serde_json::from_str(&s1).unwrap();
+        let mut v2: serde_json::Value = serde_json::from_str(&s2).unwrap();
+        normalize_rebased_ticks(&mut v1);
+        normalize_rebased_ticks(&mut v2);
+        prop_assert_eq!(
+            v1, v2,
+            "first load must be byte-identical modulo the TTL-rebased last_change_tick field"
+        );
     }
 
     #[test]
@@ -1075,4 +1266,303 @@ fn from_raw_theme_falls_back_to_any_terminal_pane_when_none_focused() {
 #[test]
 fn from_raw_theme_is_none_without_color_reports() {
     assert!(PaneUpdate::from_raw(vec![raw_pane(1, 0)]).theme.is_none());
+}
+
+// ── Ledger recede edges ──
+
+#[test]
+fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+
+    // Drive a command-origin pane all the way through to a TTL recede: a
+    // foreground command runs, leaves the foreground (back to a shell), the
+    // debounce window confirms Done (stamped with THIS timer's epoch), and a
+    // later timer far past DONE_TTL_TICKS recedes it.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
+    assert_eq!(radar.command(1).unwrap().status, Status::Running);
+
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
+    assert_eq!(radar.command(1).unwrap().status, Status::Done);
+    assert!(radar.ledger_is_empty(), "still inside the TTL window — nothing has receded yet");
+
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "cargo build");
+    assert!(!lines[0].error);
+    assert_eq!(
+        lines[0].at_epoch_s, 500,
+        "the ledger keeps the completion's own stamp, not the recede's wall-clock moment"
+    );
+
+    // The raw entry (not just the rendered `LedgerLine`) carries the pane and
+    // tab identity the line's live lookup depends on.
+    let raw = radar.ledger().entries().next().unwrap();
+    assert_eq!(raw.pane_id, 1);
+    assert_eq!(raw.tab_id, TabId::new(10));
+    assert_eq!(raw.outcome, LedgerOutcome::Done);
+}
+
+#[test]
+fn ledger_any_unsaturated_reflects_the_saturate_window() {
+    let mut radar = RadarState::default();
+    assert!(
+        !radar.ledger_any_unsaturated(1_000_000),
+        "an empty ledger has nothing left to age out"
+    );
+
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "", "claude");
+    radar.status_pipe(&wire, 1, 1000, config::NamingMode::Off);
+    radar.command_changed(1, &["zsh".into()], true, 5, 9999); // recedes → ledgers at epoch 1000
+
+    assert!(radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S - 1));
+    assert!(!radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S));
+}
+
+#[test]
+fn prompt_return_clear_ledgers_the_agent_completion() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    let wire = payload::to_wire(7, Status::Done, "pinky", "main", "shipped it", "", "claude");
+    radar.status_pipe(&wire, 1, 100, config::NamingMode::Off);
+    assert_eq!(radar.status(7).unwrap().status, Status::Done);
+
+    // The pane returns to a shell prompt — the agent that pushed the Done is
+    // gone — so `clear_on_prompt_return` recedes it to idle.
+    radar.command_changed(7, &["zsh".into()], true, 5, 999);
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "shipped it");
+    assert!(!lines[0].error);
+    assert_eq!(
+        lines[0].at_epoch_s, 100,
+        "the completion's own stamp survives, not command_changed's now_epoch_s"
+    );
+}
+
+#[test]
+fn prune_ledgers_completions_with_the_pre_close_tab_name() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "web", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(3)]);
+
+    // A Done sits on pane 3, in tab "web", right before the tab (and its
+    // pane) close in a single PaneUpdate.
+    let wire = payload::to_wire(3, Status::Done, "repo", "main", "built", "", "claude");
+    radar.status_pipe(&wire, 1, 50, config::NamingMode::Off);
+
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(), // the tab's own entry is gone too
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, 2, 999, config::NamingMode::Off);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0].tab_name, "web",
+        "must ledger under the pre-close name, not whatever (if anything) replaced it"
+    );
+    assert_eq!(lines[0].at_epoch_s, 50);
+}
+
+#[test]
+fn pending_and_running_never_ledger() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
+
+    // pane 1: a live Running command.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(1).unwrap().status, Status::Running);
+
+    // pane 2: a Pending status-pipe observation (queued, not yet started).
+    let wire = payload::to_wire(2, Status::Pending, "repo", "main", "queued", "", "claude");
+    radar.status_pipe(&wire, 1, 0, config::NamingMode::Off);
+    assert_eq!(radar.status(2).unwrap().status, Status::Pending);
+
+    // Both panes close.
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(),
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, 5, 999, config::NamingMode::Off);
+
+    assert!(
+        radar.ledger_is_empty(),
+        "Running/Pending carry nothing to ledger — only Done/Error recede"
+    );
+}
+
+#[test]
+fn shadowed_command_completion_never_ledgers() {
+    // A pane tracked by BOTH stores: the status observation wins on the card
+    // (`resolve`'s status-wins-over-command precedence), so the command
+    // store's invisible Done must not ghost into the ledger — not on TTL
+    // recede, and not on prune.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    // 1. Drive a command Done on pane 7: a foreground command runs, leaves
+    // the foreground, and the debounce window confirms Done.
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
+    assert_eq!(radar.command(7).unwrap().status, Status::Running);
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
+    assert_eq!(radar.command(7).unwrap().status, Status::Done);
+
+    // 2. A status-pipe Running observation lands on the SAME pane 7 — the
+    // status store now shadows the command Done on the card.
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), confirm_tick, 600);
+
+    // 3. Tick past DONE_TTL_TICKS: the command Done recedes off its own TTL
+    // clock. It was never actually shown on the card (status shadowed it),
+    // so it must NOT ghost into the ledger.
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900);
+    assert!(
+        radar.ledger_is_empty(),
+        "a command completion shadowed by a status observation must not ledger on TTL recede"
+    );
+
+    // 4. The status observation itself now finishes (Done), then the pane
+    // closes — pruning both stores in the same PaneUpdate. Exactly ONE
+    // ledger entry should land: the STATUS one.
+    radar.status_mut().apply(
+        payload_for(7, Status::Done, "pinky"),
+        confirm_tick + DONE_TTL_TICKS,
+        950,
+    );
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(),
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, confirm_tick + DONE_TTL_TICKS + 1, 999, config::NamingMode::Off);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1, "exactly one ledger entry — the status completion");
+    assert_eq!(lines[0].label, "working", "the STATUS observation's msg, not the command's");
+    assert_eq!(lines[0].at_epoch_s, 950);
+}
+
+#[test]
+fn unshadowed_command_completion_still_ledgers() {
+    // Sanity: with no status observation on the pane, a command Done recedes
+    // into the ledger exactly as before — guards against over-suppression.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500);
+    assert_eq!(radar.command(7).unwrap().status, Status::Done);
+
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "cargo build");
+    assert_eq!(lines[0].at_epoch_s, 500);
+}
+
+#[test]
+fn ledger_lines_resolve_live_tab_position_or_none() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "", "claude");
+    radar.status_pipe(&wire, 1, 42, config::NamingMode::Off);
+    radar.command_changed(1, &["zsh".into()], true, 5, 100); // recedes → ledgers
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].tab_position, Some(0), "tab 10 is still live at position 0");
+
+    // The tab closes; a later `tabs_changed` no longer carries it.
+    radar.tabs_changed(vec![]);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1, "the ledger itself never forgets an entry");
+    assert_eq!(lines[0].tab_position, None, "a gone tab resolves to a click-inert row");
+}
+
+// ── Ping flash on flip-to-pending ──
+
+#[test]
+fn pipe_flip_to_pending_flashes_for_two_ticks() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    // A live not-Pending → Pending edge at tick 5 arms a flash through tick 6
+    // (`flash_until = tick + 2`, and `rows` reads `now_tick < flash_until`).
+    let wire = payload::to_wire(7, Status::Pending, "repo", "main", "approve?", "", "claude");
+    radar.status_pipe(&wire, 5, 0, config::NamingMode::Off);
+
+    assert!(radar.rows(5).remove(0).flash, "flips to Pending at tick 5 — flashes immediately");
+    assert!(radar.rows(6).remove(0).flash, "still inside the two-tick window");
+    assert!(!radar.rows(7).remove(0).flash, "the window (tick+2) has elapsed");
+
+    // A re-broadcast of an already-Pending status (still inside the window) is
+    // NOT a flip — it must not extend or re-arm the flash.
+    let wire_again = payload::to_wire(7, Status::Pending, "repo", "main", "approve still?", "", "claude");
+    radar.status_pipe(&wire_again, 6, 0, config::NamingMode::Off);
+    assert!(
+        !radar.rows(7).remove(0).flash,
+        "re-broadcasting an already-Pending status must not re-flash"
+    );
+}
+
+#[test]
+fn snapshot_load_never_flashes() {
+    // A Pending observation that arrives via `load_snapshot` (a plugin instance
+    // starting up onto pre-existing state) is not a live pipe edge — spec §8's
+    // ping is for the flip a user actually watches happen, so a rehydrated
+    // Pending must never flash.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    radar.status_mut().apply(payload_for(7, Status::Pending, "repo"), 5, 0);
+
+    let json = radar.snapshot_json(None, 5);
+
+    let mut restored = RadarState::default();
+    let tick = restored.load_snapshot(&json).expect("valid snapshot");
+    // `load_snapshot` restores observations only; topology arrives separately
+    // via the host's own `tabs_changed`/`panes_changed` broadcasts.
+    restored.tabs_changed(vec![tab(10, 0, "work", true)]);
+    restored.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    assert_eq!(restored.status(7).unwrap().status, Status::Pending);
+    assert!(
+        !restored.rows(tick).remove(0).flash,
+        "a snapshot-loaded Pending must never flash"
+    );
 }

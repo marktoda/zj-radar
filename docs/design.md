@@ -72,6 +72,13 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
   `●` green = done · `○` dim = plain terminal (no agent). (The shipped glyph set —
   the sketch above shows the layout, not final glyphs; `docs/rail-reference.md` is
   the executable spec for the rendered rail.)
+- **Since shipped, this sketch is stale beyond glyphs too:** the header is a
+  single `RADAR` + rule line carrying a live `·N` tab-count / `n!` needs-you
+  badge and a heartbeat sweep while any tab is `Running` — not the boxed
+  single-word `agents` title drawn above — and a session with completion
+  history but zero live tabs still renders that header plus a trailing
+  `─ earlier ─` ledger region. `docs/rail-reference.md` is ground truth for
+  the exact grid.
 - **Status vocabulary:** the pipe sends raw values `running`/`pending`/`done`/`error`/`idle`;
   the renderer maps `running`→working, `pending`→waiting-for-you, `idle`/absent→plain.
 - Per-tab rows are **two lines**: line 1 = state dot + **display tab number** + name (+

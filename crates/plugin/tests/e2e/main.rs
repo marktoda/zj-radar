@@ -489,22 +489,37 @@ fn focused_done_stays_lit_until_a_shared_clear() {
     );
 
     // A shared signal — a fresh broadcast for the pane (the `/clear` → idle
-    // reset) — is what recedes it, on every instance alike.
+    // reset) — is what recedes it, on every instance alike. Check the CARD
+    // region only: the receded completion now legitimately resurfaces as an
+    // `─ earlier` ledger row (spec §9's bottom region), so a whole-sidebar
+    // substring check would false-negative once that row renders — this
+    // asserts the live card is gone, not that the string vanished entirely.
     let idle = format!(
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"idle","repo":"web","msg":""}}"#
     );
     session.pipe_status(&idle);
     let receded = session.wait_until(std::time::Duration::from_secs(6), |s| {
-        !sidebar_region(&s.screen(), 32).contains("deploying")
+        !card_region_only(&sidebar_region(&s.screen(), 32)).contains("deploying")
     });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] post-idle sidebar (32 cols):\n{}", sidebar);
     assert!(
         receded,
-        "an idle broadcast must recede the finished row;\nsidebar:\n{}",
+        "an idle broadcast must recede the finished card row;\nsidebar:\n{}",
         sidebar
     );
-    eprintln!("[e2e] PASS: done stayed lit under focus, receded on the idle broadcast");
+    // The feature working: the completion that just receded resurfaces below
+    // the `─ earlier` rule as a ledger row rather than vanishing outright.
+    assert!(
+        sidebar
+            .split_once("─ earlier")
+            .is_some_and(|(_, after)| after.contains("deploying")),
+        "the receded completion should resurface as an `─ earlier` ledger row;\nsidebar:\n{}",
+        sidebar
+    );
+    eprintln!(
+        "[e2e] PASS: done stayed lit under focus, receded to the ledger on the idle broadcast"
+    );
 }
 
 /// Behavior: an error the user is watching must NOT recede — CONTEXT.md's hard
@@ -812,4 +827,188 @@ fn dispatched_grant_float_enables_ungranted_attached_session() {
     );
 
     eprintln!("[e2e] PASS: auto-dispatched grant float rendered and enabled the rail");
+}
+
+/// Regression pin: the rail paints every column of its pane, not just most of
+/// it. Reported live (ghostty): the focused card's bright background band
+/// appeared to stop 1-2 columns short of the rail pane's right edge. Reading
+/// `crates/plugin/src/lib.rs::render` and `crates/plugin/src/render.rs`'s
+/// `paint_card_line`/`render_header` showed every painted band is padded to
+/// exactly the `width` Zellij hands the plugin — so a real shortfall could
+/// only come from Zellij reporting fewer `cols` than the pane's true
+/// on-screen width (an off-by-N upstream of the plugin).
+///
+/// This drives a REAL Zellij (`size=32 borderless=true` rail, mirroring the
+/// live layout) with a focused, active card (`tab.active` selects
+/// `surface_active` — the same tint implicated in the report) and reads the
+/// OUTER vt100 screen — the terminal's own view of what Zellij emitted, not
+/// anything internal to the plugin. It pins: painted-last-col ==
+/// pane-last-col (31, since `size=32 borderless=true` gives the pane
+/// on-screen columns `0..=31`) on both the header row and the focused card's
+/// row.
+///
+/// A 41-outer-width sweep and live mid-session resizes were also run during
+/// the investigation and found zero gap at every point; those aren't kept
+/// here (too slow for CI) — see `.superpowers/sdd/task-3-probe-report.md` for
+/// the full investigation. This test is the load-bearing pin: it proves the
+/// plugin-output → outer-terminal seam is gap-free, so the live shortfall is
+/// a ghostty-side presentation artifact, not a zj-radar under-paint bug.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn rail_paints_every_column_of_its_pane() {
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {wasm:?}. Build it:\n  cargo build --release --target wasm32-wasip1 -p zj-radar-plugin"
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_probe3_{}", std::process::id());
+    // Mirrors the user's live layout shape: rail pane size=32 borderless=true
+    // on the left, content pane on the right. This is exactly `sidebar_layout`.
+    let layout = sidebar_layout(&wasm);
+    eprintln!("[e2e] layout:\n{layout}");
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+    eprintln!("[e2e] plugin loaded");
+
+    let pane_id = session.discover_terminal_pane_id();
+    eprintln!("[e2e] terminal pane_id={pane_id}");
+
+    // Active/running status on the sole tab's pane -> tab.active is true (only
+    // one tab exists and it's the focused one) -> card_tint picks
+    // theme.surface_active for its row (crates/plugin/src/render.rs card_tint).
+    let payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","repo":"web","msg":"building"}}"#
+    );
+    eprintln!("[e2e] piping: {payload}");
+    session.pipe_status(&payload);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let screen = session.screen();
+    let (screen_rows, screen_cols) = screen.size();
+    eprintln!("[e2e] outer vt100 screen size: rows={screen_rows} cols={screen_cols}");
+
+    let sidebar = sidebar_region(&screen, 40);
+    eprintln!("[e2e] left-40-col region:\n{sidebar}");
+
+    // Locate the focused card's tab row (spine '▌' + spinner), same technique
+    // as `rendered_sidebar_paints_focused_card_with_text_and_tint`.
+    let detail_idx = sidebar_row_index(&screen, 40, "building")
+        .expect("the agent activity 'building' must render in the sidebar");
+    let tab_idx = detail_idx
+        .checked_sub(1)
+        .expect("the agent tab row must sit above its activity row") as u16;
+    eprintln!("[e2e] header row=0, focused-card tab row={tab_idx}, detail row={detail_idx}");
+
+    // Per-column background dump, columns 0..40, for both rows.
+    fn dump_row_bg(screen: &vt100::Screen, row: u16, upto: u16) -> Vec<(u16, vt100::Color, String)> {
+        (0..upto)
+            .map(|c| {
+                let cell = screen.cell(row, c);
+                let bg = cell.map(|x| x.bgcolor()).unwrap_or(vt100::Color::Default);
+                let ch = cell.map(|x| x.contents()).unwrap_or_default();
+                (c, bg, ch)
+            })
+            .collect()
+    }
+
+    fn last_painted_col(dump: &[(u16, vt100::Color, String)]) -> Option<u16> {
+        dump.iter()
+            .rev()
+            .find(|(_, bg, _)| !matches!(bg, vt100::Color::Default))
+            .map(|(c, _, _)| *c)
+    }
+
+    fn fmt_dump(dump: &[(u16, vt100::Color, String)]) -> String {
+        dump.iter()
+            .map(|(c, bg, ch)| {
+                let bgs = match bg {
+                    vt100::Color::Default => "default".to_string(),
+                    vt100::Color::Idx(i) => format!("idx({i})"),
+                    vt100::Color::Rgb(r, g, b) => format!("rgb({r},{g},{b})"),
+                };
+                let chs = if ch.trim().is_empty() {
+                    "' '".to_string()
+                } else {
+                    format!("{ch:?}")
+                };
+                format!("  col={c:2} bg={bgs:<14} ch={chs}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    let header_dump = dump_row_bg(&screen, 0, 40);
+    let card_dump = dump_row_bg(&screen, tab_idx, 40);
+
+    eprintln!("[e2e] === header row (0) per-column dump ===\n{}", fmt_dump(&header_dump));
+    eprintln!("[e2e] === focused-card row ({tab_idx}) per-column dump ===\n{}", fmt_dump(&card_dump));
+
+    let header_last = last_painted_col(&header_dump);
+    let card_last = last_painted_col(&card_dump);
+
+    // The rail pane is `size=32 borderless=true`. Borderless means Zellij
+    // reserves no column for chrome, so the pane's on-screen column range as
+    // the OUTER terminal sees it should be exactly [0, 31] (32 columns), and
+    // column 32 onward belongs to the sibling content pane.
+    const EXPECTED_PANE_LAST_COL: u16 = 31; // 0-indexed; 32 columns total.
+
+    eprintln!(
+        "[e2e] header last painted col = {:?} (expected pane last col = {})",
+        header_last, EXPECTED_PANE_LAST_COL
+    );
+    eprintln!(
+        "[e2e] focused-card last painted col = {:?} (expected pane last col = {})",
+        card_last, EXPECTED_PANE_LAST_COL
+    );
+
+    // Report what's immediately to the right of the expected boundary, so we
+    // can see whether col 32+ is sibling-pane content (proving the plugin's
+    // own band stopped at 31) or still rail-colored (proving the plugin
+    // painted further right than expected).
+    eprintln!(
+        "[e2e] columns 28..40 header:  {:?}",
+        &header_dump[28..40]
+            .iter()
+            .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "[e2e] columns 28..40 card:    {:?}",
+        &card_dump[28..40]
+            .iter()
+            .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
+            .collect::<Vec<_>>()
+    );
+
+    // Decisive assertions, written so failures self-document the exact
+    // shortfall (or confirm full coverage) in the panic message.
+    assert_eq!(
+        header_last,
+        Some(EXPECTED_PANE_LAST_COL),
+        "VERDICT DATA: header row's last painted column is {header_last:?}, expected \
+         {EXPECTED_PANE_LAST_COL} (pane region's last column, size=32 borderless=true). \
+         If this is Some(n) with n < {EXPECTED_PANE_LAST_COL}, the plugin/harness paints \
+         exactly up to col n and the remaining columns up to {EXPECTED_PANE_LAST_COL} are \
+         unpainted WITHIN the pane region as this outer terminal sees it -> plugin \
+         under-paints relative to the pane. If None, no truecolor bg was found at all \
+         (broken probe or theme). Full dumps above."
+    );
+    assert_eq!(
+        card_last,
+        Some(EXPECTED_PANE_LAST_COL),
+        "VERDICT DATA: focused-card row's last painted column is {card_last:?}, expected \
+         {EXPECTED_PANE_LAST_COL} (pane region's last column). Same interpretation as the \
+         header assertion. Full dumps above."
+    );
+
+    eprintln!(
+        "[e2e] VERDICT: painted span covers the full advertised pane width \
+         (last col {EXPECTED_PANE_LAST_COL}) for both header and focused-card rows \
+         in this PTY+vt100 harness. If this test PASSES, the plugin paints every \
+         column Zellij hands it and the pane region is fully covered here — any \
+         live-ghostty shortfall is not reproduced at the plugin-output/outer-terminal \
+         seam this harness observes, pointing at a ghostty-side (or ghostty+font) \
+         rendering artifact rather than a plugin under-paint bug."
+    );
 }

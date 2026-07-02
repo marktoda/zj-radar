@@ -26,8 +26,10 @@
 // as `crate::status`, `crate::payload`, … with no per-reference churn.
 pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
 
+mod clock;
 mod config;
 mod control;
+mod ledger;
 mod notify_rules;
 mod permission;
 mod radar_state;
@@ -104,8 +106,13 @@ impl State {
 
     /// Render at an explicit width so `last_rendered` is populated.
     /// Click tests historically asserted the width-80 layout; keep that explicit.
-    /// When no height has been set yet (last_render_height == 0), use a large
-    /// height so folding/overflow never discards rows unexpectedly.
+    /// When no height has been set yet (last_render_height == 0), use this
+    /// session's natural content height (see `PluginRuntime::natural_height`)
+    /// so folding/overflow never discards rows unexpectedly — and, since Task
+    /// 13, so the bottom region's pinned footer doesn't pad the render out to
+    /// an unboundedly large height (`usize::MAX / 2` used to be a safe "big
+    /// enough" sentinel; now it would land in the footer's unbounded-filler
+    /// branch and blow the allocator).
     ///
     /// # Contract — LIVE, permission-granted rail only
     ///
@@ -121,7 +128,7 @@ impl State {
     fn render_at(&mut self, width: usize) {
         self.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
         let height = if self.runtime.last_render_height == 0 {
-            usize::MAX / 2
+            self.runtime.natural_height(width)
         } else {
             self.runtime.last_render_height
         };
@@ -170,7 +177,7 @@ impl State {
                     PermissionType::RunCommands,
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
-                Effect::SetTimeout => set_timeout(1.0),
+                Effect::SetTimeout(cadence) => set_timeout(cadence.seconds()),
                 Effect::PersistSnapshot => {
                     let existing = self.session_files.snapshot();
                     let json = self.runtime.snapshot_json(existing.as_deref());
@@ -285,11 +292,14 @@ impl ZellijPlugin for State {
                     .panes_changed(radar_state::PaneUpdate::from_raw(raw));
                 self.handle_outcome(outcome)
             }
-            Event::Timer(_) => {
+            Event::Timer(elapsed_s) => {
                 // Re-probe (marker + lock) each tick so a waiting peer can take
                 // over a prompt whose owner died holding a now-stale lock.
+                // `elapsed_s` is the duration the fired `set_timeout` was armed
+                // with — the runtime uses it to identify (and swallow) a stale
+                // slow fire after a Slow→Fast top-up.
                 let probe = self.session_files.refresh_permission_probe();
-                let outcome = self.runtime.timer(probe);
+                let outcome = self.runtime.timer(probe, elapsed_s);
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
@@ -395,7 +405,7 @@ mod tests {
         tick: u64,
         msg: &str,
     ) {
-        state.runtime.radar.status_mut().apply(
+        let _ = state.runtime.radar.status_mut().apply(
             StatusPayload {
                 pane_id,
                 status,
@@ -406,6 +416,7 @@ mod tests {
                 source: "test".into(),
             },
             tick,
+            0,
         );
     }
 
@@ -716,7 +727,9 @@ mod tests {
     fn multi_pane_active_tracked_and_untracked_children_clickable() {
         // Only 1 tracked pane (pane 20 Running); pane 21 is untracked.
         // is_multi_pane = false → single-pane path: header + detail line (2 lines total).
-        // The untracked pane has no rendered line; the detail line has no per-pane target.
+        // The untracked pane has no rendered line; the detail line targets the
+        // tab's one tracked pane (20), same as the multi-pane tree rows — a
+        // click routes to `Effect::ShowPane`, not `SwitchTab`.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
         state
             .runtime
@@ -728,8 +741,8 @@ mod tests {
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
         assert_eq!(
             state.target_at_line(3),
-            Some((0, None)),
-            "detail line (single-pane mode, no per-pane target)"
+            Some((0, Some(20))),
+            "detail line targets the single tracked pane"
         );
         assert!(state.tab_position_at_line(4).is_none(), "tab ends after 2 lines");
 
@@ -990,15 +1003,15 @@ mod tests {
             tick,
         );
         tick += 1;
-        state.runtime.radar.command_mut().on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick, 0);
         assert!(
             state.runtime.radar.command_store().get(5).is_none(),
             "shell prompt must leave pane idle"
         );
 
         // 2) real fg command → pending (not yet Running); after DEBOUNCE_TICKS timer → Running
-        // DEBOUNCE_TICKS = 1: pending since_tick = tick; next tick satisfies
-        // (tick + 1) - tick = 1 >= DEBOUNCE_TICKS.
+        // pending since_tick = tick; a timer at (tick + DEBOUNCE_TICKS) satisfies
+        // (tick + DEBOUNCE_TICKS) - tick = DEBOUNCE_TICKS >= DEBOUNCE_TICKS.
         let since = tick;
         state.runtime.radar.command_mut().on_command_changed(
             5,
@@ -1009,7 +1022,7 @@ mod tests {
         );
         // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
         tick += DEBOUNCE_TICKS;
-        state.runtime.radar.command_mut().on_timer(tick);
+        state.runtime.radar.command_mut().on_timer(tick, 0);
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Running),
@@ -1020,7 +1033,7 @@ mod tests {
 
         // 3) pane exits with code 0 → Done (and stays Done; focus no longer clears it)
         tick += 1;
-        state.runtime.radar.command_mut().on_exit(5, Some(0), tick);
+        state.runtime.radar.command_mut().on_exit(5, Some(0), tick, 0);
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Done),

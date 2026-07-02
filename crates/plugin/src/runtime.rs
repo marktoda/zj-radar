@@ -38,11 +38,39 @@ use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
 
+/// How urgently the one-shot timer should re-fire. `Fast` is the 1 Hz tick
+/// that drives animation and debounce/TTL bookkeeping; `Slow` backs off to a
+/// once-a-minute heartbeat when nothing needs per-second resolution but a
+/// ledger age is still changing. `desired_cadence` selects between the two
+/// (or `None` to fully disarm).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cadence {
+    Fast,
+    Slow,
+}
+
+impl Cadence {
+    pub(crate) fn seconds(self) -> f64 {
+        match self {
+            Cadence::Fast => 1.0,
+            Cadence::Slow => 60.0,
+        }
+    }
+}
+
+/// A `Timer` fire whose reported elapsed exceeds this came from a Slow (60s)
+/// arm. Fast fires report ~1s and Slow ~60s, so any threshold safely between
+/// the two works; 5s tolerates heavy scheduler delay on a fast fire (a fast
+/// fire arriving >5s late is pathological) while never mistaking a slow fire
+/// for fast. Used only to decide which of two in-flight fires is the stale
+/// one — see [`PluginRuntime::timer`].
+const STALE_FIRE_ELAPSED_S: f64 = 5.0;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
     SetSelectable(bool),
-    SetTimeout,
+    SetTimeout(Cadence),
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
     RenameTab { position: usize, name: String },
@@ -85,7 +113,23 @@ impl Outcome {
 pub(crate) struct PluginRuntime {
     pub(crate) radar: RadarState,
     pub(crate) tick: u64,
-    pub(crate) timer_armed: bool,
+    /// The cadence the last-scheduled `SetTimeout` was armed with, or `None`
+    /// if the timer is fully disarmed. `arm_timer_if_needed` compares this
+    /// against `desired_cadence()` on every call — not just an "is anything
+    /// armed" bool — so a Slow-armed timer can be topped up with a fresh
+    /// `SetTimeout(Fast)` the moment fast-worthy work arrives, without
+    /// waiting for the (harmless, spurious) slow fire first.
+    pub(crate) armed_cadence: Option<Cadence>,
+    /// How many `SetTimeout` fires are still in flight. Zellij's `set_timeout`
+    /// is a non-cancellable one-shot, so the Slow→Fast top-up above leaves TWO
+    /// scheduled fires; the slow-armed one is stale and must be swallowed by
+    /// [`timer`](Self::timer) — ticking on it would re-arm a second persistent
+    /// chain (N chains → N Hz, every tick-window elapsing N× too fast).
+    /// Incremented wherever `arm_timer_if_needed` pushes a `SetTimeout` (the
+    /// sole emit site — `begin_permission_flow` and `project` both arm through
+    /// it); decremented at the top of `timer`, which pairs the count with the
+    /// fire's reported elapsed to identify the stale one.
+    pub(crate) pending_fires: u32,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission: PermissionState,
@@ -114,7 +158,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn build_rows(&self) -> Vec<TabRow> {
-        self.radar.rows()
+        self.radar.rows(self.tick)
     }
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
@@ -126,14 +170,51 @@ impl PluginRuntime {
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        let change = self
-            .radar
-            .panes_changed(update, self.tick, self.config.naming);
+        let change = self.radar.panes_changed(
+            update,
+            self.tick,
+            crate::clock::now_epoch_s(),
+            self.config.naming,
+        );
         self.project(vec![], change)
     }
 
-    pub(crate) fn timer(&mut self, permission: PermissionProbe) -> Outcome {
-        self.timer_armed = false;
+    /// `elapsed_s` is the duration Zellij reports on `Event::Timer` — the
+    /// seconds the fired `set_timeout` was armed with, i.e. which cadence
+    /// scheduled this fire.
+    pub(crate) fn timer(&mut self, permission: PermissionProbe, elapsed_s: f64) -> Outcome {
+        // Retire one in-flight fire. `set_timeout` is a non-cancellable
+        // one-shot, so the Slow→Fast top-up (`arm_timer_if_needed`) leaves TWO
+        // fires in flight, and the slow-armed one is the stale one REGARDLESS
+        // of which lands first. Swallow a fire — no tick, no re-arm,
+        // `armed_cadence` untouched — only when BOTH hold: its elapsed marks
+        // it slow-armed (> STALE_FIRE_ELAPSED_S) and another fire is still
+        // out (post-decrement pending_fires > 0). A fast fire always
+        // processes and re-arms: swallowing by count alone would freeze the
+        // tick clock in the common order, where the live fast fire lands
+        // first and the stale slow fire lands up to 59s later.
+        //
+        // Convergence, common order: fast fire lands (2→1), processes,
+        // re-arms (→2); each following fast fire repeats that; the stale slow
+        // finally lands (2→1), swallowed → steady single chain. Rare order (a
+        // top-up in the slow window's final second): the stale slow lands
+        // first (2→1), swallowed; the fast fire then processes (1→0) and
+        // re-arms (→1). The Fast→Slow wind-down converges too: an older slow
+        // always lands before a newer slow, so the older one still sees a
+        // fire in flight and is the one swallowed. A slow fire with nothing
+        // else in flight (post-decrement 0) IS the live chain and processes
+        // normally.
+        //
+        // A swallowed fire skips `check_deferred_permission_request`: safe,
+        // because an overlap only exists while a newer chain is live, whose
+        // next fire runs it within ~1s. `saturating_sub` keeps a direct
+        // `timer()` call with nothing armed (tests drive the entry point that
+        // way) counting as a legitimate fire.
+        self.pending_fires = self.pending_fires.saturating_sub(1);
+        if elapsed_s > STALE_FIRE_ELAPSED_S && self.pending_fires > 0 {
+            return Outcome::none();
+        }
+        self.armed_cadence = None;
         let mut effects = Vec::new();
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
@@ -142,14 +223,17 @@ impl PluginRuntime {
         // Running→Done confirm). Persist the snapshot when it does, or a tab
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
-        let store_changed = self.radar.timer(self.tick);
+        let store_changed = self.radar.timer(self.tick, crate::clock::now_epoch_s());
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
         let render = permission_changed
             || awaiting_permission
             || store_changed
-            || self.timer_should_continue();
+            || self.timer_should_continue()
+            // A Slow tick exists precisely to repaint ledger ages — even
+            // when nothing else changed, `format_age` output may have moved.
+            || self.desired_cadence() == Some(Cadence::Slow);
         let change = RadarChange {
             render,
             settle: true,
@@ -231,14 +315,23 @@ impl PluginRuntime {
         command: &[String],
         is_foreground: bool,
     ) -> Outcome {
-        let change = self
-            .radar
-            .command_changed(pane_id, command, is_foreground, self.tick);
+        let change = self.radar.command_changed(
+            pane_id,
+            command,
+            is_foreground,
+            self.tick,
+            crate::clock::now_epoch_s(),
+        );
         self.project(vec![], change)
     }
 
     pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
-        let Some(change) = self.radar.status_pipe(raw, self.tick, self.config.naming) else {
+        let Some(change) = self.radar.status_pipe(
+            raw,
+            self.tick,
+            crate::clock::now_epoch_s(),
+            self.config.naming,
+        ) else {
             return Outcome::none();
         };
         self.project(vec![], change)
@@ -275,10 +368,12 @@ impl PluginRuntime {
             header: self.config.header,
             density: self.config.density,
             theme: self.theme.clone(),
+            now_epoch_s: crate::clock::now_epoch_s(),
+            ledger: self.radar.ledger_lines(),
         };
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts)
-        } else if tabrows.is_empty() {
+        } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &opts)
@@ -286,6 +381,30 @@ impl PluginRuntime {
         let ansi = rail.ansi.clone();
         self.last_rendered = rail;
         ansi
+    }
+
+    /// Test-only: this session's natural content height at `cols` — enough to
+    /// show every row with no overflow folding and no bottom-region padding
+    /// (spec §9). Click-mapping tests want a "big enough, no overflow" height
+    /// without hard-coding one; passing a merely-large sentinel (the old
+    /// `usize::MAX / 2` convention) now lands in the bottom region's
+    /// unbounded-filler branch, so this asks `render::body_line_count` for the
+    /// real number instead.
+    #[cfg(test)]
+    pub(crate) fn natural_height(&self, cols: usize) -> usize {
+        let tabrows = self.build_rows();
+        let opts = render::RenderOpts {
+            width: cols.max(1),
+            height: usize::MAX / 2,
+            now_tick: self.tick,
+            glyphs: self.config.glyphs,
+            header: self.config.header,
+            density: self.config.density,
+            theme: self.theme.clone(),
+            now_epoch_s: crate::clock::now_epoch_s(),
+            ledger: self.radar.ledger_lines(),
+        };
+        render::body_line_count(&tabrows, &opts)
     }
 
     pub(crate) fn sidebar_should_be_selectable(&self) -> bool {
@@ -365,23 +484,49 @@ impl PluginRuntime {
         true
     }
 
+    /// Spec §10 cadence function. Fast (1s) while anything tick-windowed is
+    /// live; Slow (60s) while ledger ages are still changing; None once every
+    /// age is saturated ("1h+") — the battery property's full-disarm state.
+    fn desired_cadence(&self) -> Option<Cadence> {
+        if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
+            Some(Cadence::Fast)
+        } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s()) {
+            Some(Cadence::Slow)
+        } else {
+            None
+        }
+    }
+
+    /// Arm (or re-arm) the one-shot timer at `desired_cadence()`. Unlike a
+    /// plain "already armed?" bool, this compares the *cadence* the previous
+    /// arm used against what's desired now: a Slow-armed timer that should
+    /// now be Fast gets a fresh `SetTimeout(Fast)` pushed immediately, rather
+    /// than waiting for the (harmless, spurious) slow fire to notice. Every
+    /// other transition — first arm, already-correct cadence, or nothing
+    /// desired — is a no-op.
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
-        if !self.timer_armed
-            && (self.permission.is_waiting()
-                || self.permission.selectable()
-                || self.timer_should_continue())
-        {
-            self.timer_armed = true;
-            effects.push(Effect::SetTimeout);
+        let desired = self.desired_cadence();
+        match (self.armed_cadence, desired) {
+            (Some(Cadence::Slow), Some(Cadence::Fast)) => {
+                self.armed_cadence = Some(Cadence::Fast);
+                self.pending_fires += 1;
+                effects.push(Effect::SetTimeout(Cadence::Fast));
+            }
+            (None, Some(cadence)) => {
+                self.armed_cadence = Some(cadence);
+                self.pending_fires += 1;
+                effects.push(Effect::SetTimeout(cadence));
+            }
+            _ => {}
         }
     }
 
     /// Whether the one-shot timer should (re-)arm for *domain* reasons — the
     /// "tick only while there's something to do" rule that keeps an idle rail from
-    /// waking every second. Two triggers:
+    /// waking every second. Four triggers:
     ///
     /// - **animating work** — a `Running` agent/command whose glyph spins each
-    ///   tick (`RadarState::has_running_work`); and
+    ///   tick (`RadarState::has_running_work`);
     /// - **an un-carried completion edge** — a `status_pipe` payload defers its
     ///   recede + notification to the timer (it can't trust its own focus, see
     ///   `RadarState::status_pipe`), so we must keep ticking until the settle has
@@ -389,10 +534,21 @@ impl PluginRuntime {
     ///   advances the baseline, so a *backgrounded* `Done`/`Error`/`Pending` stops
     ///   pinning the timer awake once notified — a later focus change or broadcast
     ///   re-arms it. (The pre-settle baseline read costs at most one extra tick.)
+    /// - **a command `Done` awaiting its TTL recede** (`RadarState::command_awaiting_recede`)
+    ///   — the row itself is static (it doesn't animate and its notify already
+    ///   fired), but the ledger handoff at `DONE_TTL_TICKS` still needs a tick to
+    ///   land on schedule, so it keeps this armed even though `has_running_work`
+    ///   stays narrow (see that method's doc for the arming split).
+    /// - **an active ping flash** (`RadarState::has_active_flash`) — the
+    ///   flip-to-pending glance-catcher is a two-tick visual, not a card fact,
+    ///   so nothing else here would otherwise keep the timer awake for it.
     ///
     /// [`has_unsettled_notifications`]: Self::has_unsettled_notifications
     fn timer_should_continue(&self) -> bool {
-        self.radar.has_running_work() || self.has_unsettled_notifications()
+        self.radar.has_running_work()
+            || self.has_unsettled_notifications()
+            || self.radar.command_awaiting_recede()
+            || self.radar.has_active_flash(self.tick)
     }
 
     /// True while the notification baseline lags the live per-pane statuses — i.e.
@@ -438,7 +594,7 @@ impl PluginRuntime {
     /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
     /// is the sole caller of `notify_effects`, and the only *domain-change* path
     /// that arms the timer (the permission flow arms it separately in
-    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `timer_armed` and on
+    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `armed_cadence` and on
     /// whether there's anything to arm for, so calling it unconditionally
     /// here is a no-op wherever a handler has no pending work to arm for.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
@@ -460,6 +616,7 @@ impl PluginRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::DEBOUNCE_TICKS;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
     use crate::radar_state::{TabId, TerminalPane};
@@ -510,12 +667,21 @@ mod tests {
         }
     }
 
+    impl PluginRuntime {
+        /// Test shorthand: deliver a live Fast fire (elapsed ~1s) — how every
+        /// test that isn't about the stale-fire dedup drives the tick entry
+        /// point. Dedup tests pass explicit elapsed values to `timer` instead.
+        fn timer_fast(&mut self, permission: PermissionProbe) -> Outcome {
+            self.timer(permission, Cadence::Fast.seconds())
+        }
+    }
+
     #[test]
     fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
         let mut seeded = RadarState::default();
         seeded
             .status_mut()
-            .apply(payload_for(9, Status::Running), 7);
+            .apply(payload_for(9, Status::Running), 7, 0);
         let snapshot = seeded.snapshot_json(None, 7);
 
         let mut runtime = PluginRuntime::default();
@@ -543,7 +709,7 @@ mod tests {
                 // Zellij sends no state events to trigger a render).
                 effects: vec![
                     Effect::RequestPermission,
-                    Effect::SetTimeout,
+                    Effect::SetTimeout(Cadence::Fast),
                     Effect::SetSelectable(true),
                 ],
             }
@@ -623,11 +789,11 @@ mod tests {
 
         // A later tick that (re)acquires the lock still must not request —
         // only a landed Granted marker may unblock it.
-        let tick = runtime.timer(PermissionProbe { marker: None, lock_acquired: true });
+        let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: true });
         assert!(!tick.effects.contains(&Effect::RequestPermission));
 
         // The float's granted marker finally lets it request (auto-resolves).
-        let granted_tick = runtime.timer(PermissionProbe {
+        let granted_tick = runtime.timer_fast(PermissionProbe {
             marker: Some(PermissionMarker::Granted),
             lock_acquired: false,
         });
@@ -648,10 +814,10 @@ mod tests {
         assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
         assert_eq!(
             load.effects,
-            vec![Effect::SetTimeout, Effect::SetSelectable(false)]
+            vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(false)]
         );
 
-        let timer = runtime.timer(PermissionProbe {
+        let timer = runtime.timer_fast(PermissionProbe {
             marker: Some(PermissionMarker::Granted),
             lock_acquired: false,
         });
@@ -666,7 +832,7 @@ mod tests {
             vec![
                 Effect::RequestPermission,
                 Effect::SetSelectable(true),
-                Effect::SetTimeout,
+                Effect::SetTimeout(Cadence::Fast),
             ]
         );
     }
@@ -688,13 +854,13 @@ mod tests {
             },
         );
         assert!(
-            load.effects.contains(&Effect::SetTimeout),
+            load.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
             "owner must arm a timer so the needs_permission screen gets a paint trigger",
         );
 
         // The tick repaints while still awaiting the user's y/n — even with no
         // marker, no reclaimed lock, and no agent work to report.
-        let tick = runtime.timer(PermissionProbe {
+        let tick = runtime.timer_fast(PermissionProbe {
             marker: None,
             lock_acquired: false,
         });
@@ -707,12 +873,12 @@ mod tests {
         // Once the user answers, the heartbeat stops: a granted, idle rail must
         // not spin a timer forever.
         let _ = runtime.permission_result(true);
-        let after = runtime.timer(PermissionProbe {
+        let after = runtime.timer_fast(PermissionProbe {
             marker: None,
             lock_acquired: false,
         });
         assert!(!after.render, "granted idle rail must not keep repainting");
-        assert!(!after.effects.contains(&Effect::SetTimeout));
+        assert!(!after.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
     }
 
     #[test]
@@ -732,7 +898,7 @@ mod tests {
         );
         assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
 
-        let timer = runtime.timer(PermissionProbe {
+        let timer = runtime.timer_fast(PermissionProbe {
             marker: None,
             lock_acquired: true,
         });
@@ -774,8 +940,18 @@ mod tests {
         let argv: Vec<String> = vec!["cargo".into(), "test".into()];
         runtime.command_changed(7, &argv, true);
 
-        // First tick past the debounce window promotes → must persist.
-        let promoted = runtime.timer(PermissionProbe::default());
+        // Ticks short of the debounce window are quiet (no store mutation yet).
+        for _ in 1..DEBOUNCE_TICKS {
+            let quiet = runtime.timer_fast(PermissionProbe::default());
+            assert!(
+                !quiet.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
+                "a tick short of the debounce window must not persist, got {:?}",
+                quiet.effects
+            );
+        }
+
+        // The tick that reaches the debounce window promotes → must persist.
+        let promoted = runtime.timer_fast(PermissionProbe::default());
         assert!(
             promoted.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
             "promotion tick must persist the snapshot, got {:?}",
@@ -791,7 +967,7 @@ mod tests {
         );
 
         // A quiet tick (no store mutation) must NOT persist.
-        let quiet = runtime.timer(PermissionProbe::default());
+        let quiet = runtime.timer_fast(PermissionProbe::default());
         assert!(
             !quiet.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
             "a no-change tick must not churn the snapshot, got {:?}",
@@ -820,7 +996,7 @@ mod tests {
         // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
         // not position — the order contract has its own dedicated test.
         assert_eq!(outcome.effects.len(), 2);
-        assert!(outcome.effects.contains(&Effect::SetTimeout));
+        assert!(outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
         assert!(outcome
             .effects
             .iter()
@@ -842,12 +1018,12 @@ mod tests {
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(10, Status::Running), 1);
+            .apply(payload_for(10, Status::Running), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(11, Status::Running), 1);
-        runtime.radar.command_mut().on_exit(12, Some(0), 1);
+            .apply(payload_for(11, Status::Running), 1, 0);
+        runtime.radar.command_mut().on_exit(12, Some(0), 1, 0);
 
         let mut live = HashSet::new();
         live.insert(10);
@@ -924,13 +1100,22 @@ mod tests {
 
         let command = vec!["cargo".to_string(), "test".to_string()];
         let command_outcome = runtime.command_changed(7, &command, true);
-        assert_eq!(command_outcome.effects, vec![Effect::SetTimeout]);
+        assert_eq!(command_outcome.effects, vec![Effect::SetTimeout(Cadence::Fast)]);
 
-        let timer = runtime.timer(PermissionProbe::default());
+        for _ in 1..DEBOUNCE_TICKS {
+            let quiet = runtime.timer_fast(PermissionProbe::default());
+            assert_eq!(
+                quiet.effects,
+                vec![Effect::SetTimeout(Cadence::Fast)],
+                "still pending short of the debounce window"
+            );
+        }
+
+        let timer = runtime.timer_fast(PermissionProbe::default());
         assert!(timer.render);
         // The promotion mutates the command store, so this tick persists the
         // snapshot too (late-spawned instances must see the Running command).
-        assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout]);
+        assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]);
         let state = runtime
             .radar
             .command_store()
@@ -970,15 +1155,15 @@ mod tests {
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(20, Status::Pending), 1);
+            .apply(payload_for(20, Status::Pending), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(21, Status::Running), 1);
+            .apply(payload_for(21, Status::Running), 1, 0);
         runtime
             .radar
             .status_mut()
-            .apply(payload_for(22, Status::Running), 1);
+            .apply(payload_for(22, Status::Running), 1, 0);
 
         let ansi = runtime.render(100, 80);
         assert!(ansi.contains("team"));
@@ -993,12 +1178,83 @@ mod tests {
     }
 
     #[test]
+    fn single_pane_detail_line_click_shows_the_pane() {
+        // One tab, one tracked pane with a msg → single-pane path: header
+        // (line 2) + detail line (line 3). The detail line describes that one
+        // pane, so it must click-target the pane (ShowPane), not the tab
+        // (SwitchTab) — mirroring the multi-pane tree rows.
+        let mut runtime = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        runtime.tabs_changed(vec![tab(0, "team", false)]);
+        runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(30)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(30, Status::Running), 1, 0);
+
+        let ansi = runtime.render(100, 80);
+        assert!(ansi.contains("team"));
+
+        let header_click = runtime.mouse_click(2);
+        let detail_click = runtime.mouse_click(3);
+
+        assert_eq!(header_click.effects, vec![Effect::SwitchTab { position: 0 }]);
+        assert_eq!(detail_click.effects, vec![Effect::ShowPane { pane_id: 30 }]);
+    }
+
+    #[test]
     fn mouse_click_is_ignored_until_permission_granted() {
         let mut runtime = runtime_with_config(config());
         runtime.tabs_changed(vec![tab(0, "team", false)]);
         runtime.render(100, 80);
 
         assert_eq!(runtime.mouse_click(2), Outcome::default());
+    }
+
+    #[test]
+    fn no_tabs_with_history_renders_ledger_not_scanning() {
+        // Zero tracked tabs alone isn't the onboarding trigger — a
+        // session with completion history still has something to show. Seed a
+        // Done pane, let it recede into the ledger as its tab closes, then
+        // close every tab and confirm `render` picks `render_rail` (header +
+        // ledger + footer) over the minimal scanning face.
+        let mut runtime = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        runtime.tabs_changed(vec![tab(0, "web", true)]);
+        runtime.radar.set_tab_panes_for_position(0, vec![pane(5)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(5, Status::Done), 1, 1_000);
+
+        // The pane closes with a still-lit Done: pruning hands it to the
+        // ledger (spec §4.2).
+        runtime.panes_changed(PaneUpdate {
+            tab_panes: HashMap::new(),
+            live: HashSet::new(),
+            theme: None,
+            exits: Vec::new(),
+        });
+        assert!(!runtime.radar.ledger_is_empty(), "setup: ledger must be seeded");
+
+        // The tab itself closes too — zero tabs, but history remains.
+        runtime.tabs_changed(vec![]);
+
+        let ansi = runtime.render(24, 40);
+        assert!(ansi.contains("earlier"), "ledger renders even with no tabs: {ansi:?}");
+        assert!(ansi.contains("alt-[n] jump"), "footer still pins to the floor: {ansi:?}");
+        assert!(
+            !ansi.to_lowercase().contains("scanning"),
+            "must not fall back to the onboarding scanning face: {ansi:?}"
+        );
     }
 
     #[test]
@@ -1012,8 +1268,8 @@ mod tests {
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         let out = runtime.command(Command::AttentionNext);
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
@@ -1024,7 +1280,7 @@ mod tests {
         let mut runtime = PluginRuntime { config: config(), ..Default::default() };
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         assert_eq!(runtime.command(Command::AttentionNext), Outcome::default());
     }
@@ -1069,7 +1325,7 @@ mod tests {
         rt.command_changed(5, &["make".into()], true);
         rt.command_changed(7, &["cargo".into(), "test".into()], true);
         // Promote pending → Running via a timer tick.
-        rt.timer(PermissionProbe::default());
+        rt.timer_fast(PermissionProbe::default());
         // The timer tick above also advances notify_prev to a Running baseline via
         // notify_effects, so subsequent tests start from Running rather than the
         // Idle default. In production the same happens on every timer fire; here
@@ -1083,11 +1339,11 @@ mod tests {
         // SetTimeout → notify. Seed a background Done so `settle` actually
         // produces a Notify, exercising all five effect kinds in one change.
         let mut rt = two_tab_runtime_with_running_commands();
-        rt.radar.command_mut().on_exit(7, Some(0), rt.tick);
-        // `arm_timer_if_needed` self-guards on `timer_armed`; the setup helper's
+        rt.radar.command_mut().on_exit(7, Some(0), rt.tick, 0);
+        // `arm_timer_if_needed` self-guards on `armed_cadence`; the setup helper's
         // timer tick already armed it, so reset to let `project`'s unconditional
         // arm call actually produce a `SetTimeout` effect.
-        rt.timer_armed = false;
+        rt.armed_cadence = None;
 
         let change = RadarChange {
             render: true,
@@ -1102,7 +1358,7 @@ mod tests {
             Effect::RenameTab { .. } => 0,
             Effect::PersistSnapshot => 1,
             Effect::ResolveCwd { .. } => 2,
-            Effect::SetTimeout => 3,
+            Effect::SetTimeout(_) => 3,
             Effect::Notify { .. } => 4,
             other => panic!("unexpected effect in canonical-order test: {other:?}"),
         };
@@ -1189,7 +1445,7 @@ mod tests {
     fn restored_snapshot_does_not_notify() {
         // Build a snapshot containing an already-Done command pane.
         let mut seeded = crate::radar_state::RadarState::default();
-        seeded.command_mut().on_exit(7, Some(0), 1);
+        seeded.command_mut().on_exit(7, Some(0), 1, 0);
         // Confirm the observation is present as Done.
         assert_eq!(seeded.command(7).unwrap().status, Status::Done);
         let snapshot = seeded.snapshot_json(None, 2);
@@ -1199,7 +1455,7 @@ mod tests {
         rt.load(config(), Some(&snapshot), PermissionProbe::default());
 
         // A subsequent timer tick must not emit any Notify for the pre-existing pane.
-        let out = rt.timer(PermissionProbe::default());
+        let out = rt.timer_fast(PermissionProbe::default());
         assert!(
             !out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
             "a pre-existing Done loaded from snapshot must not fire a notification; \
@@ -1220,14 +1476,14 @@ mod tests {
 
         // The edge arms the timer but does not itself settle (focus could be stale).
         let edge = rt.status_pipe(&raw);
-        assert!(edge.effects.contains(&Effect::SetTimeout), "status-pipe edge arms the timer");
+        assert!(edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)), "status-pipe edge arms the timer");
         assert!(
             !edge.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
             "the edge itself does not notify (settle is deferred to the timer)"
         );
 
         // The first tick carries the deferred completion notification exactly once.
-        let tick1 = rt.timer(PermissionProbe::default());
+        let tick1 = rt.timer_fast(PermissionProbe::default());
         assert_eq!(
             tick1.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
             1,
@@ -1237,8 +1493,8 @@ mod tests {
         // Then the timer quiesces within a bounded number of ticks — a backgrounded
         // Done no longer pins it awake, and no further notifications fire.
         let mut extra = 0;
-        while rt.timer_armed {
-            let t = rt.timer(PermissionProbe::default());
+        while rt.armed_cadence.is_some() {
+            let t = rt.timer_fast(PermissionProbe::default());
             assert!(
                 !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
                 "no repeat notification after the first settle",
@@ -1250,6 +1506,53 @@ mod tests {
 
         // The Done stays lit (it recedes only when focused, via a later PaneUpdate).
         assert_eq!(rt.radar.status_store().get(7).unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn flash_keeps_fast_timer_until_cleared() {
+        // A flip-to-pending pipe edge arms a two-tick ping flash — even once the
+        // deferred notify settle has fired and nothing else is running, the
+        // timer must keep ticking Fast until the flash itself clears. Mirrors
+        // `backgrounded_done_via_status_pipe_notifies_once_then_timer_quiesces`,
+        // which quiesces right after its one settle tick; the flash pins the
+        // timer open for its own extra window on top of that.
+        let mut rt = runtime_with_config(config());
+        rt.tabs_changed(vec![tab(0, "work", true)]);
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+        let raw = payload::to_wire(7, Status::Pending, "repo", "main", "approve?", "", "claude");
+        let edge = rt.status_pipe(&raw);
+        assert!(
+            edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "the flip-to-pending edge arms the timer"
+        );
+
+        // Tick 1 carries the deferred notify settle; the flash (armed through
+        // tick 2) is still active, so the timer must not disarm yet.
+        rt.timer_fast(PermissionProbe::default());
+        assert_eq!(rt.tick, 1);
+        assert!(
+            rt.armed_cadence.is_some(),
+            "flash still active at tick 1 — timer must stay armed"
+        );
+
+        // Tick 2: the flash window has just elapsed (`now_tick < flash_until`,
+        // and `flash_until == 2`).
+        rt.timer_fast(PermissionProbe::default());
+        assert_eq!(rt.tick, 2);
+        assert!(
+            !rt.radar.has_active_flash(rt.tick),
+            "flash window has elapsed by tick 2"
+        );
+
+        // With nothing else running, the timer now quiesces.
+        let mut extra = 0;
+        while rt.armed_cadence.is_some() {
+            rt.timer_fast(PermissionProbe::default());
+            extra += 1;
+            assert!(extra < 4, "timer must quiesce once the flash clears");
+        }
+        assert!(!rt.timer_should_continue(), "quiesced: nothing left to tick for");
     }
 
     #[test]
@@ -1265,9 +1568,9 @@ mod tests {
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
         runtime.radar.set_tab_panes_for_position(2, vec![pane(12)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
-        runtime.radar.status_mut().apply(payload_for(12, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(12, Status::Pending), 1, 0);
 
         let out = runtime.command(Command::AttentionPrev);
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 2 }]);
@@ -1284,11 +1587,312 @@ mod tests {
         runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
         runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
-        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1);
-        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1);
+        runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+        runtime.radar.status_mut().apply(payload_for(11, Status::Pending), 1, 0);
 
         // Exercises the full parse → command → effect path through the pipe entry.
         let out = runtime.command_pipe("attention-next");
         assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
+    }
+
+    #[test]
+    fn cadence_seconds_maps_fast_and_slow() {
+        // Both cadences are exercised here (rather than only via the wasm-only
+        // glue that replays `SetTimeout`) so this pure mapping is host-testable
+        // and neither variant reads as dead code under `cargo test`.
+        assert_eq!(Cadence::Fast.seconds(), 1.0);
+        assert_eq!(Cadence::Slow.seconds(), 60.0);
+    }
+
+    #[test]
+    fn command_done_keeps_fast_timer_armed_until_ttl_recede() {
+        let mut rt = runtime_with_config(config());
+        rt.command_changed(7, &["make".into()], true);
+        rt.timer_fast(PermissionProbe::default()); // debounce tick 1
+        rt.timer_fast(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
+        // Command leaves the foreground → tentative done → confirmed next tick.
+        rt.command_changed(7, &["zsh".into()], true);
+        rt.timer_fast(PermissionProbe::default());
+        rt.timer_fast(PermissionProbe::default());
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
+        assert!(rt.armed_cadence.is_some(), "a Done awaiting TTL must keep the timer armed");
+        // Tick past the TTL: the Done recedes and the timer quiesces. No tab
+        // topology is registered for pane 7, so the recede has no tab to
+        // ledger under and is silently dropped (`ledger_receded`) — the
+        // ledger stays empty and cadence fully disarms.
+        for _ in 0..=crate::command::DONE_TTL_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
+        assert!(rt.radar.ledger_is_empty(), "setup: no tab topology, so the recede has nowhere to ledger");
+        assert!(rt.armed_cadence.is_none(), "receded: nothing left to tick for");
+    }
+
+    #[test]
+    fn command_ttl_recede_rearms_slow_not_fast_when_ledgered() {
+        // The subtle Fast→Slow handoff: when the LAST fast-worthy signal (a
+        // Done awaiting its TTL) finally recedes, `arm_timer_if_needed`
+        // re-arms from scratch on that very tick's `project` call. This time
+        // the pane has real tab topology, so the recede lands a fresh entry
+        // in the ledger — the freshly re-armed cadence must be Slow (there's
+        // an age to repaint), not None (nothing left) and not Fast (nothing
+        // tick-windowed remains).
+        let mut rt = runtime_with_config(config());
+        rt.tabs_changed(vec![tab(0, "work", true)]);
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+        rt.command_changed(7, &["make".into()], true);
+        rt.timer_fast(PermissionProbe::default()); // debounce tick 1
+        rt.timer_fast(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
+        rt.command_changed(7, &["zsh".into()], true);
+        rt.timer_fast(PermissionProbe::default());
+        rt.timer_fast(PermissionProbe::default());
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
+        assert_eq!(
+            rt.armed_cadence,
+            Some(Cadence::Fast),
+            "a Done awaiting TTL needs Fast resolution"
+        );
+
+        for _ in 0..=crate::command::DONE_TTL_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+
+        assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
+        assert!(!rt.radar.ledger_is_empty(), "the TTL recede must hand the completion to the ledger");
+        assert_eq!(
+            rt.armed_cadence,
+            Some(Cadence::Slow),
+            "receded: nothing fast-worthy remains, but the fresh ledger entry keeps a Slow heartbeat armed"
+        );
+    }
+
+    #[test]
+    fn idle_with_fresh_history_arms_slow_and_repaints() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        assert!(rt.armed_cadence.is_none(), "setup: nothing has armed a timer yet");
+
+        // Any event that runs `project` (here, a no-op topology update) must
+        // arm the Slow heartbeat — nothing is tick-windowed, but the ledger
+        // age is still changing.
+        let outcome = rt.tabs_changed(vec![]);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+            "idle with unsaturated history must arm Slow, got {:?}",
+            outcome.effects
+        );
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow));
+
+        // The slow tick itself must render — it exists precisely to repaint
+        // the ledger's ages.
+        let tick = rt.timer_fast(PermissionProbe::default());
+        assert!(tick.render, "a slow tick renders to repaint ledger ages");
+    }
+
+    #[test]
+    fn saturated_history_fully_disarms() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        // Any epoch older than SATURATE_S relative to the real wall clock —
+        // 0 trivially qualifies.
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: 0,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        assert_eq!(rt.desired_cadence(), None, "a saturated ledger has nothing left worth ticking for");
+
+        let outcome = rt.tabs_changed(vec![]);
+        assert!(
+            !outcome.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+            "a fully-saturated idle rail must not arm any timer, got {:?}",
+            outcome.effects
+        );
+        assert!(rt.armed_cadence.is_none());
+    }
+
+    #[test]
+    fn fast_work_arriving_during_slow_rearms_fast() {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        rt.tabs_changed(vec![]);
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+
+        // New fast-worthy work (a Running status) arrives while Slow-armed.
+        // The earlier-scheduled slow fire is a harmless spurious tick, but a
+        // fresh `SetTimeout(Fast)` must also be pushed so the 1s resolution
+        // returns promptly.
+        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let outcome = rt.status_pipe(&raw);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "fast work arriving during a slow arm must re-arm Fast, got {:?}",
+            outcome.effects
+        );
+        assert_eq!(rt.armed_cadence, Some(Cadence::Fast));
+    }
+
+    /// Shared setup for the stale-fire dedup tests: Slow-armed on fresh
+    /// history (one fire in flight), then a Running broadcast tops up Fast
+    /// (a second, non-cancellable fire in flight).
+    fn slow_armed_then_fast_topup() -> PluginRuntime {
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        rt.tabs_changed(vec![]); // arms Slow: one fire in flight
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let outcome = rt.status_pipe(&raw);
+        assert!(
+            outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "setup: the top-up must arm Fast, got {:?}",
+            outcome.effects
+        );
+        rt
+    }
+
+    #[test]
+    fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
+        // The COMMON arrival order after a Slow→Fast top-up: the fast fire
+        // (armed for 1s) lands first; the stale slow fire lands up to 59s
+        // later. The fast fire must process normally — swallowing it by count
+        // alone would freeze the tick clock (spinner, debounce, TTL, flash)
+        // until the slow fire finally landed, while Fast-worthy work runs.
+        let mut rt = slow_armed_then_fast_topup();
+
+        // The live fast fire (elapsed ~1s) ticks and re-arms exactly once.
+        let tick_before = rt.tick;
+        let live = rt.timer(PermissionProbe::default(), 1.0);
+        assert_eq!(rt.tick, tick_before + 1, "the live fast fire ticks");
+        let rearms = live
+            .effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SetTimeout(_)))
+            .count();
+        assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
+        assert!(
+            live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "running work keeps the Fast cadence"
+        );
+
+        // The STALE slow fire (elapsed ~60s) lands second, with the re-armed
+        // fast fire still in flight: swallowed whole — no tick advance, no
+        // effects, `armed_cadence` untouched. Ticking it would re-arm a
+        // second persistent chain.
+        let tick_before = rt.tick;
+        let stale = rt.timer(PermissionProbe::default(), 60.0);
+        assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
+        assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
+        assert_eq!(rt.armed_cadence, Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+
+        // Steady state: exactly one chain remains and keeps ticking.
+        let next = rt.timer(PermissionProbe::default(), 1.0);
+        assert_eq!(rt.tick, tick_before + 1, "the surviving chain keeps ticking");
+        assert!(
+            next.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "the surviving chain re-arms, got {:?}",
+            next.effects
+        );
+    }
+
+    #[test]
+    fn stale_slow_fire_landing_first_is_swallowed() {
+        // The RARE arrival order (top-up in the slow window's final second):
+        // the stale slow fire lands before the fast one. It must be swallowed
+        // — another fire is in flight and its elapsed marks it slow-armed —
+        // and the fast fire then processes normally.
+        let mut rt = slow_armed_then_fast_topup();
+
+        let tick_before = rt.tick;
+        let stale = rt.timer(PermissionProbe::default(), 60.0);
+        assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
+        assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
+        assert_eq!(rt.armed_cadence, Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+
+        // The surviving fast fire ticks normally and re-arms exactly once.
+        let live = rt.timer(PermissionProbe::default(), 1.0);
+        assert_eq!(rt.tick, tick_before + 1, "the live fire ticks");
+        let rearms = live
+            .effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SetTimeout(_)))
+            .count();
+        assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
+        assert!(
+            live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "running work keeps the Fast cadence"
+        );
+    }
+
+    #[test]
+    fn lone_slow_fire_processes_as_the_live_chain() {
+        // A slow fire with no other fire in flight IS the live chain — its
+        // 60s elapsed must not get it swallowed, or the idle heartbeat (and
+        // the ledger-age repaint it exists for) would die.
+        let mut rt = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        let now = crate::clock::now_epoch_s();
+        rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+            at_epoch_s: now,
+            outcome: crate::ledger::LedgerOutcome::Done,
+            tab_id: TabId::new(1),
+            tab_name: "work".into(),
+            label: "cargo test".into(),
+            pane_id: 5,
+        });
+        rt.tabs_changed(vec![]); // arms Slow: the only fire in flight
+        assert_eq!(rt.armed_cadence, Some(Cadence::Slow));
+
+        let tick = rt.timer(PermissionProbe::default(), 60.0);
+        assert!(tick.render, "the lone slow fire processes and repaints ledger ages");
+        assert!(
+            tick.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+            "the lone slow chain re-arms itself, got {:?}",
+            tick.effects
+        );
     }
 }

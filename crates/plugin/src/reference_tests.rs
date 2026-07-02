@@ -6,6 +6,7 @@
 //! docs/rail-reference.md. Editing a `rail-input`/`rail-expect` pair in the doc
 //! edits this test — the doc is the single source of truth for rail rendering.
 
+use crate::command::DEBOUNCE_TICKS;
 use crate::config::{Density, NamingMode};
 use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabId, TerminalPane};
 use crate::render::{GlyphSet, RenderOpts, TabRow};
@@ -128,8 +129,27 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     let mut width: usize = 32;
     let mut height: usize = usize::MAX / 2;
+    let mut explicit_height = false;
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
+    let mut ledger_lines: Vec<crate::radar_state::LedgerLine> = Vec::new();
+    // A fixed "now" for the `ledger` directive's age math, so a scenario's
+    // round `age_secs` numbers produce deterministic, doc-readable
+    // `format_age` text (e.g. 90 → "1m").
+    const LEDGER_NOW_EPOCH_S: u64 = 1_000_000;
+
+    /// Split a leading `"quoted"` token off `s`, returning (contents, rest).
+    /// Used by the `ledger` directive, which packs two quoted strings
+    /// (tab name, label) after its two bare tokens.
+    fn take_quoted(s: &str) -> (&str, &str) {
+        let s = s.trim_start();
+        if let Some(inner) = s.strip_prefix('"') {
+            if let Some(end) = inner.find('"') {
+                return (&inner[..end], &inner[end + 1..]);
+            }
+        }
+        (s, "")
+    }
 
     struct PaneSpec {
         pane_id: u32,
@@ -168,6 +188,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         if let Some(rest) = line.strip_prefix("height ") {
             if let Ok(n) = rest.trim().parse::<usize>() {
                 height = n;
+                explicit_height = true;
             }
             continue;
         }
@@ -185,6 +206,43 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 "cards" => Density::Cards,
                 other => panic!("reference DSL: unknown density '{}' in scenario", other),
             };
+            continue;
+        }
+
+        // Completion-ledger row (spec §9 bottom region): `ledger <age_secs>
+        // done|error "<tab_name>" "<label>"`. `tab_position` is always `None`
+        // here — the DSL has no live `RadarState` recede path to seed a real
+        // one through, and it makes no visual difference (only click targets,
+        // which this doc doesn't assert).
+        if let Some(rest) = line.strip_prefix("ledger ") {
+            let rest = rest.trim();
+            let mut parts = rest.splitn(3, ' ');
+            let age_str = parts.next().unwrap_or("0");
+            let outcome_str = parts.next().unwrap_or("done");
+            let remainder = parts.next().unwrap_or("");
+            let age_secs: u64 = age_str.parse().unwrap_or_else(|_| {
+                panic!(
+                    "reference DSL: bad ledger age '{}' — must be an integer number of seconds",
+                    age_str
+                )
+            });
+            let error = match outcome_str {
+                "done" => false,
+                "error" => true,
+                other => panic!(
+                    "reference DSL: unknown ledger outcome '{}' — must be 'done' or 'error'",
+                    other
+                ),
+            };
+            let (tab_name, after) = take_quoted(remainder);
+            let (label, _) = take_quoted(after);
+            ledger_lines.push(crate::radar_state::LedgerLine {
+                at_epoch_s: LEDGER_NOW_EPOCH_S.saturating_sub(age_secs),
+                error,
+                tab_name: tab_name.to_string(),
+                label: label.to_string(),
+                tab_position: None,
+            });
             continue;
         }
 
@@ -379,7 +437,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         theme: None,
         exits: Vec::new(),
     };
-    radar.panes_changed(update, 0, NamingMode::Off);
+    radar.panes_changed(update, 0, 0, NamingMode::Off);
 
     // 3. Apply status for each tracked pane.
     //
@@ -390,10 +448,11 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     //      then apply Idle (tick=1). This preserves scenario J's idle-but-tracked behavior.
     //
     //   b) command-origin path (exit_code == Some(code)): drives the CommandStore path
-    //      so that pane_outcome() fires and end-result tags (✓ / (exit N) / ✗) render.
+    //      so that pane_outcome() fires and end-result tags (no tag / exit N / ✗) render.
     //      Sequence:
     //        1. command_changed(tick=0) — registers a pending command with the msg as argv.
-    //        2. timer(tick=1) — promotes pending→Running (debounce window = 1 tick).
+    //        2. timer(tick=DEBOUNCE_TICKS) — promotes pending→Running once the debounce
+    //           window elapses.
     //        3. panes_changed with exits vec containing the exit code — calls on_exit,
     //           which sets status Done/Error and exit_code on the resolved entry.
 
@@ -422,7 +481,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     &pane.task,
                     source,
                 );
-                radar.status_pipe(&wire_running, 0, NamingMode::Off);
+                radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
                 let wire_idle = to_wire(
                     pane.pane_id,
@@ -433,7 +492,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     "",
                     source,
                 );
-                radar.status_pipe(&wire_idle, 1, NamingMode::Off);
+                radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
                 let wire = to_wire(
                     pane.pane_id,
@@ -444,14 +503,14 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                     &pane.task,
                     source,
                 );
-                radar.status_pipe(&wire, 0, NamingMode::Off);
+                radar.status_pipe(&wire, 0, 0, NamingMode::Off);
             }
         }
     }
 
     // Command-origin path for panes with an `exit <N>|?` trailer.
     // Step 1: command_changed (tick=0) — registers each pane as a pending command.
-    // Step 2: timer(tick=1) — promotes all pending commands to Running (debounce=1).
+    // Step 2: timer(tick=DEBOUNCE_TICKS) — promotes all pending commands to Running.
     // Step 3: panes_changed with exits — on_exit sets Done/Error + exit_code.
     for spec in &tabs {
         for pane in &spec.panes {
@@ -461,7 +520,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 let argv: Vec<String> = pane.msg.split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
-                radar.command_changed(pane.pane_id, &argv, true, 0);
+                radar.command_changed(pane.pane_id, &argv, true, 0, 0);
                 command_exits.push((pane.pane_id, code));
             }
         }
@@ -469,7 +528,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     if !command_exits.is_empty() {
         // Promote all pending commands to Running so the msg is set before exit.
-        radar.timer(1);
+        radar.timer(DEBOUNCE_TICKS, 0);
 
         // Now deliver the exits. Re-register the live pane set (unchanged) along
         // with the exits vec so that panes_changed → on_exit sets Done/Error.
@@ -495,12 +554,17 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             theme: None,
             exits: command_exits,
         };
-        radar.panes_changed(update2, 2, NamingMode::Off);
+        radar.panes_changed(update2, 2, 0, NamingMode::Off);
     }
 
     // 4. Build RenderOpts
     let theme = DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
-    let opts = RenderOpts {
+    // Fixtures render a settled state, not the instant a pane just flipped to
+    // Pending — pass a tick well past any flash window armed during setup
+    // above (which uses small hardcoded ticks like 0/1/DEBOUNCE_TICKS) so a
+    // `claude pending ...` scenario never spuriously renders the flash tint.
+    let rows = radar.rows(10_000);
+    let mut opts = RenderOpts {
         width,
         height,
         now_tick: 0,
@@ -508,9 +572,23 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         header: true,
         density,
         theme,
+        now_epoch_s: LEDGER_NOW_EPOCH_S,
+        ledger: ledger_lines,
     };
+    // Scenarios that don't declare an explicit `height` used the old
+    // "unboundedly large" sentinel to mean "enough to fit, no overflow, no
+    // padding" — a meaning the bottom region has changed: any
+    // height taller than the content now pads down to a pinned footer, and
+    // `usize::MAX / 2` worth of filler lines would never finish building.
+    // Recompute that default as the session's exact natural content height
+    // (leftover 0 ⇒ no bottom region), so every pre-existing scenario keeps
+    // rendering exactly what it always did; only a scenario that opts into an
+    // explicit `height` can exercise the footer/ledger region.
+    if !explicit_height {
+        opts.height = crate::render::body_line_count(&rows, &opts);
+    }
 
-    (radar.rows(), opts)
+    (rows, opts)
 }
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────

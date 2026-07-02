@@ -21,6 +21,7 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         last_change_tick: tick,
         ever_active: true,
         exit_code: None,
+        completed_epoch_s: None,
     }
 }
 
@@ -153,6 +154,17 @@ fn pane_outcome_maps_finished_commands_only() {
 }
 
 #[test]
+fn tracked_pane_display_carries_last_change_tick_as_since_tick() {
+    let panes = [pane(1, "shell")];
+    let ob = obs(ObservationOrigin::StatusPipe, Status::Running, 42);
+    let display = roll_up(&panes, |id| (id == 1).then_some(&ob));
+    match &display.panes[0] {
+        PaneDisplay::Tracked { since_tick, .. } => assert_eq!(*since_tick, 42),
+        other => panic!("expected tracked pane, got {other:?}"),
+    }
+}
+
+#[test]
 fn task_threads_through_to_pane_display_and_primary_detail() {
     let panes = [pane(1, "shell")];
     let mut obs = TrackedObservation::command(Status::Pending, "r".into(), "approve?".into(), Kind::Claude, 3);
@@ -223,6 +235,7 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     last_change_tick: tick,
                     ever_active,
                     exit_code,
+                    completed_epoch_s: None,
                 },
             );
         }
