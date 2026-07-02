@@ -3,7 +3,7 @@
 //! All agent-specific decisions live in `agents/`; this file is agent-agnostic
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
-use super::agents::{Agent, Intake};
+use super::agents::{Agent, AgentUpdate, Intake};
 use crate::payload::to_wire;
 use std::io::Read;
 use std::process::Command;
@@ -115,7 +115,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         return;
     };
     let Some(agent) = Agent::from_cli(agent) else {
-        eprintln!("zj-radar: unknown agent '{agent}' (expected: claude | codex)");
+        eprintln!("zj-radar: unknown agent '{agent}' (expected: claude | codex — or `notify generic` for scripts)");
         return;
     };
 
@@ -129,6 +129,69 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         return;
     };
 
+    broadcast(pane_id, update, agent.source(), dry_run);
+}
+
+/// `zj-radar notify generic` — the producer for anything that isn't an
+/// instrumented agent: deploy scripts, cron jobs, homegrown loops. No hook
+/// payload, no adapter — status/msg/task arrive as explicit flags and the
+/// broadcast is otherwise identical to an agent's. `source` picks the rail's
+/// kind mark (`test`/`build`/`deploy`/`server`/…); anything unrecognized —
+/// including the default `generic` — renders as the neutral `⦿ other` mark.
+/// Same fire-and-forget contract as the hook path: outside Zellij, or with a
+/// missing/unknown status token, it prints a hint and exits 0.
+pub fn run_generic(
+    status: Option<&str>,
+    msg: Option<&str>,
+    task: Option<&str>,
+    source: Option<&str>,
+    dry_run: bool,
+) {
+    let Some(pane_id) = pane_id_from_env() else {
+        return;
+    };
+    let Some(update) = generic_update(status, msg, task) else {
+        eprintln!(
+            "zj-radar: notify generic needs --status <running|pending|done|error|idle> \
+             (plus optional --msg, --task, --source)"
+        );
+        return;
+    };
+    broadcast(pane_id, update, source.unwrap_or("generic"), dry_run);
+}
+
+/// The pure half of [`run_generic`]: explicit flags → update. `None` (no
+/// broadcast, hint printed by the caller) when the status token is absent or
+/// not in the wire vocabulary — a typo'd status silently becoming `idle` would
+/// erase the row it meant to update. Mirrors the adapters' conventions: a
+/// running row with no message gets the `working` baseline; idle always
+/// broadcasts blank; an empty task means "keep the stored label" (wire rule).
+fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -> Option<AgentUpdate> {
+    use crate::status::Status;
+    let token = status?;
+    if !Status::ALL.iter().any(|s| s.as_wire() == token) {
+        return None;
+    }
+    let status = Status::from_wire(token);
+    let msg = msg.unwrap_or("");
+    let msg = if status == Status::Idle {
+        String::new()
+    } else if status == Status::Running && msg.trim().is_empty() {
+        "working".to_string()
+    } else {
+        msg.to_string()
+    };
+    Some(AgentUpdate {
+        status,
+        msg,
+        cwd: None,
+        task: task.map(str::to_string).filter(|t| !t.trim().is_empty()),
+    })
+}
+
+/// The shared broadcast tail: resolve cwd → repo/branch, cap the message,
+/// build the wire payload, `zellij pipe` it (or print it under `--dry-run`).
+fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     let cwd = update
         .cwd
         .filter(|s| !s.is_empty())
@@ -143,7 +206,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     // control-char stripping.
     let msg: String = update.msg.chars().take(512).collect();
     let task = update.task.unwrap_or_default();
-    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, &task, agent.source());
+    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, &task, source);
 
     if dry_run {
         eprintln!("{payload}");
@@ -213,6 +276,32 @@ mod tests {
         // And any other multi-line or non-absolute output is equally untrusted.
         assert_eq!(repo_name_from_common_dir("/a/.git\n/b/.git"), None);
         assert_eq!(repo_name_from_common_dir("relative/.git"), None);
+    }
+
+    // --- generic producer ---
+
+    #[test]
+    fn generic_update_requires_a_known_status_token() {
+        use crate::status::Status;
+        assert!(generic_update(None, None, None).is_none());
+        // A typo'd status must NOT lenient-parse to idle — that would silently
+        // erase the row the script meant to update. Hint-and-no-op instead.
+        assert!(generic_update(Some("runnign"), None, None).is_none());
+        let u = generic_update(Some("done"), Some("deploy finished"), None).unwrap();
+        assert_eq!(u.status, Status::Done);
+        assert_eq!(u.msg, "deploy finished");
+    }
+
+    #[test]
+    fn generic_update_mirrors_adapter_msg_and_task_conventions() {
+        // Running with no msg → the "working" baseline (never a blank active row).
+        assert_eq!(generic_update(Some("running"), None, None).unwrap().msg, "working");
+        // Idle always broadcasts blank, dropping any msg passed alongside.
+        assert_eq!(generic_update(Some("idle"), Some("stale"), None).unwrap().msg, "");
+        // Task rides only when non-blank (wire rule: empty = keep stored label).
+        let u = generic_update(Some("running"), Some("deploying"), Some("nightly deploy")).unwrap();
+        assert_eq!(u.task.as_deref(), Some("nightly deploy"));
+        assert_eq!(generic_update(Some("done"), None, Some("  ")).unwrap().task, None);
     }
 
     // --- bounded stdin read ---

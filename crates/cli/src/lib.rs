@@ -61,13 +61,27 @@ struct Cli {
 enum Command {
     /// Broadcast one agent's status to the sidebar (called from an agent hook).
     Notify {
-        /// Which agent is reporting: `claude` or `codex`.
+        /// Which agent is reporting: `claude`, `codex`, or `generic` (any
+        /// script — pass explicit `--status`/`--msg`/`--task` flags, no hook
+        /// payload needed).
         agent: String,
         /// Hook payload as a trailing argument (codex). Claude passes it on stdin instead.
         input: Option<String>,
-        /// Explicit status (claude hooks pass this); bypasses event derivation.
+        /// Explicit status (claude hooks pass this; required for `generic`):
+        /// running | pending | done | error | idle.
         #[arg(long)]
         status: Option<String>,
+        /// Activity line for `generic` (e.g. "deploying site"); shown on the
+        /// pane's rail line. Running with no msg gets a "working" baseline.
+        #[arg(long)]
+        msg: Option<String>,
+        /// Sticky task label for `generic`; empty keeps the stored label.
+        #[arg(long)]
+        task: Option<String>,
+        /// Kind mark for `generic`: test | build | deploy | server | command …
+        /// (default `generic` → the neutral ⦿ mark).
+        #[arg(long)]
+        source: Option<String>,
         /// Print the payload instead of broadcasting.
         #[arg(long)]
         dry_run: bool,
@@ -137,9 +151,22 @@ pub fn run() -> std::process::ExitCode {
             agent,
             input,
             status,
+            msg,
+            task,
+            source,
             dry_run,
         } => {
-            notify::run(&agent, input.as_deref(), status.as_deref(), dry_run);
+            if agent == "generic" {
+                notify::run_generic(
+                    status.as_deref(),
+                    msg.as_deref(),
+                    task.as_deref(),
+                    source.as_deref(),
+                    dry_run,
+                );
+            } else {
+                notify::run(&agent, input.as_deref(), status.as_deref(), dry_run);
+            }
         }
         Command::Setup {
             targets,

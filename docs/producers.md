@@ -66,6 +66,36 @@ cargo install --git https://github.com/marktoda/zj-radar zj-radar
 Codex hooks report turn start, tool use, permission requests, subagents, and
 turn stop. zj-radar maps those to `running`, `pending`, and `done`.
 
+## Any script: `zj-radar notify generic`
+
+Anything that isn't an instrumented agent — deploy scripts, cron jobs,
+homegrown loops — can put a row on the radar without touching the wire format:
+
+```sh
+zj-radar notify generic --status running --msg "deploying site" --task "nightly deploy" --source deploy
+# … do the work …
+zj-radar notify generic --status done --msg "deploy finished" --source deploy
+```
+
+- `--status` (required): `running` | `pending` | `done` | `error` | `idle`. An
+  unknown token prints a hint and sends nothing — it never lenient-parses to
+  `idle` and erases your row.
+- `--msg`: the activity line. `running` with no msg gets a `working` baseline;
+  `idle` always broadcasts blank.
+- `--task`: the sticky task label (empty keeps the stored one).
+- `--source`: picks the kind mark — `test` ⚗ · `build` ⚙ · `deploy` ⇡ ·
+  `server` ❯ · `command` $ — anything else (including the default `generic`)
+  renders the neutral `⦿`.
+- Repo/branch come from `git` in the calling directory; the pane id from
+  `$ZELLIJ_PANE_ID`. Outside Zellij it's a silent no-op (safe under `set -e`).
+  `--dry-run` prints the payload instead of broadcasting.
+
+The same lifecycle rules as agents apply: latest broadcast wins, a finished
+status clears when the pane returns to its shell prompt, and a `running` row
+whose pane sits at the prompt with no follow-up broadcast is cleared by the
+stale-Running watchdog after ~15s — so send `done`/`error` when your script
+finishes rather than leaning on the watchdog.
+
 ## Writing your own producer
 
 The plugin's only real interface is the versioned pipe payload. Broadcast (by
