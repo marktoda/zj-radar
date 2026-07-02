@@ -508,6 +508,14 @@ impl CommandStore {
                 receded.push((pane_id, completed));
                 changed = true;
             }
+            // The recede means this completion has been fully processed and
+            // handed off to the ledger — forget its exit so a SUBSEQUENT
+            // identical exit (a held-open pane re-running with no intervening
+            // foreground CommandChanged, the documented race in on_exit's
+            // untracked-insert branch) is treated as a new completion rather
+            // than absorbed by the dedup meant only for Zellij re-reporting
+            // the same run.
+            self.exited.remove(&pane_id);
         }
 
         TimerReport { changed, receded }
