@@ -252,10 +252,17 @@ pub(crate) fn confirm_and_write(
 
 /// Back up the existing file, then write atomically (temp file + rename via the
 /// shared `fsutil::atomic_write`). The `.bak` is specific to `setup` editing the
-/// user's own files; `run` writes its owned dir without one.
+/// user's own files; `run` writes its owned dir without one. A failed backup
+/// aborts the write: the success epilogues advertise the `.bak` as the restore
+/// point, so the user's file must never be replaced without it existing.
 pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if path.exists() {
-        let _ = std::fs::copy(path, path_with_suffix(path, ".zj-radar.bak"));
+        std::fs::copy(path, path_with_suffix(path, ".zj-radar.bak")).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("backup copy failed ({e}); {} left untouched", path.display()),
+            )
+        })?;
     }
     crate::fsutil::atomic_write(path, contents.as_bytes())
 }
@@ -287,5 +294,24 @@ mod tests {
         assert!(matches!(mode_from_flags(false, true, true), Mode::Check));
         assert!(matches!(mode_from_flags(false, false, true), Mode::Uninstall));
         assert!(matches!(mode_from_flags(false, false, false), Mode::Install));
+    }
+
+    #[test]
+    fn write_atomic_aborts_when_backup_cannot_be_written() {
+        // The success epilogues advertise the .bak as the restore point, so a
+        // failed backup must abort the write, not overwrite-and-lie. Force the
+        // copy to fail by occupying the .bak path with a directory.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.kdl");
+        std::fs::write(&target, "original").unwrap();
+        std::fs::create_dir(path_with_suffix(&target, ".zj-radar.bak")).unwrap();
+
+        let err = write_atomic(&target, "replacement").unwrap_err();
+        assert!(err.to_string().contains("backup copy failed"), "err: {err}");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "original",
+            "target must be untouched when the backup fails"
+        );
     }
 }

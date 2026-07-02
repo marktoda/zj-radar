@@ -133,8 +133,7 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) {
         layout_text: std::fs::read_to_string(&layout_path).ok(),
         permissions_text: crate::run::zellij_permissions_path()
             .and_then(|p| std::fs::read_to_string(p).ok()),
-        codex_hooks_text: dirs::home_dir()
-            .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok()),
+        codex_hooks_text: super::codex_hooks_text(),
         installed_plugins_text: dirs::home_dir()
             .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()),
         wasm_present: wasm_dest.is_file(),

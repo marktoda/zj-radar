@@ -135,6 +135,26 @@ pub(crate) fn claude_producer_wired(installed_plugins_json: Option<&str>) -> boo
     installed_plugins_json.is_some_and(|s| s.contains("zj-radar-claude"))
 }
 
+/// Join argv into a copy-pasteable shell command. Every printed command hint
+/// (`--print-cmd`, "try running: zellij …") must go through this: on macOS the
+/// owned config dir lives under `~/Library/Application Support/…`, so a bare
+/// `join(" ")` produces a command that breaks at the space for every user who
+/// pastes it. Conservatively single-quotes anything beyond the unambiguous
+/// safe set (with embedded `'` as `'\''`, the POSIX idiom).
+pub(crate) fn shell_join(args: &[String]) -> String {
+    let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    quoted.join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    let safe = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',' | b'@' | b'+');
+    if !arg.is_empty() && arg.bytes().all(safe) {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
 // ── Path locators ────────────────────────────────────────────────────────────
 
 /// The zj-radar–owned Zellij config directory rooted under `data_dir`.
@@ -496,7 +516,7 @@ pub fn run(opts: RunOptions) {
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
         resurrect_layout_defers,
         permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
-        codex_hooks: read_under_home(".codex/hooks.json"),
+        codex_hooks: crate::setup::codex_hooks_text(),
         installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
     };
     let plan = plan_run(&facts);
@@ -506,9 +526,9 @@ pub fn run(opts: RunOptions) {
     }
     if opts.print_cmd {
         if let Some(dispatch) = &plan.pre_attach {
-            println!("zellij {}", dispatch.join(" "));
+            println!("zellij {}", shell_join(dispatch));
         }
-        println!("zellij {}", plan.args.join(" "));
+        println!("zellij {}", shell_join(&plan.args));
         return;
     }
     if plan.nested {
@@ -590,6 +610,23 @@ mod tests {
     ChangeApplicationState
 }
 "#;
+
+    #[test]
+    fn shell_join_quotes_what_a_shell_would_split_or_expand() {
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Plain flags and paths pass through bare.
+        assert_eq!(shell_join(&s(&["attach", "--config-dir", "/cfg", "foo"])),
+                   "attach --config-dir /cfg foo");
+        // The macOS owned-config path — the case this helper exists for.
+        assert_eq!(
+            shell_join(&s(&["--config-dir", "/Users/m/Library/Application Support/zj-radar/zellij"])),
+            "--config-dir '/Users/m/Library/Application Support/zj-radar/zellij'"
+        );
+        // Embedded single quote uses the POSIX '\'' idiom; empty arg stays visible.
+        assert_eq!(shell_join(&s(&["it's", ""])), r"'it'\''s' ''");
+        // Shell metacharacters (globs, vars, semicolons) get quoted, not trusted.
+        assert_eq!(shell_join(&s(&["a b", "$HOME", "*;rm"])), "'a b' '$HOME' '*;rm'");
+    }
 
     #[test]
     fn grant_detection_matches_block_headers_only() {

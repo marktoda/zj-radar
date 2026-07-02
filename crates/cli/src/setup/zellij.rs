@@ -58,7 +58,7 @@ pub(crate) fn run_grant(config_dir: &Path) {
             eprintln!(
                 "zj-radar: zellij plugin exited with {status}; \
                  try running: zellij {}",
-                args.join(" ")
+                crate::run::shell_join(&args)
             );
         }
         Err(e) => {
@@ -66,7 +66,7 @@ pub(crate) fn run_grant(config_dir: &Path) {
             eprintln!(
                 "zj-radar: failed to launch zellij for grant — {e}; \
                  try running: zellij {}",
-                args.join(" ")
+                crate::run::shell_join(&args)
             );
         }
     }
@@ -158,8 +158,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         "{}.kdl",
         crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref())
     ));
-    let codex_hooks_text = dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".codex/hooks.json")).ok());
+    let codex_hooks_text = super::codex_hooks_text();
     let installed_plugins_text = dirs::home_dir()
         .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok());
     let facts = analyze_zellij(&ZellijEnv {
@@ -268,6 +267,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             print_producer_hint_if_needed(&facts);
         }
         Outcome::Conflict => {
+            crate::exit::fail();
             eprintln!(
                 "zellij: {} already has an unmanaged `radar` plugin alias. Refusing to overwrite it.\n\
                  Re-run with --force to replace it, or wire zj-radar manually.",
@@ -440,7 +440,10 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                     layout_path.display(),
                     layout_path.display()
                 ),
-                Err(e) => eprintln!("zellij: write failed — {e}"),
+                Err(e) => {
+                    crate::exit::fail();
+                    eprintln!("zellij: write failed — {e}");
+                }
             }
         }
         Err(crate::layout::Refusal::Unparseable(msg)) => {
@@ -484,7 +487,10 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
                     layout_path.display(),
                     layout_path.display()
                 ),
-                Err(e) => eprintln!("zellij: write failed — {e}"),
+                Err(e) => {
+                    crate::exit::fail();
+                    eprintln!("zellij: write failed — {e}");
+                }
             }
         }
     }

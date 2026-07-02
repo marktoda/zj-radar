@@ -11,6 +11,15 @@ pub(crate) fn codex_hooks_path() -> Option<PathBuf> {
     codex_home_dir().map(|d| d.join("hooks.json"))
 }
 
+/// Read Codex's hooks.json for producer *detection* (`run`'s advisory, `setup
+/// zellij`'s epilogue hint, `--check`). Routed through `codex_hooks_path` so
+/// `$CODEX_HOME` is honored on the read side exactly as `setup codex` honors
+/// it on the write side — a hand-rolled `~/.codex` probe here would tell a
+/// `CODEX_HOME` user their correctly-installed hooks are missing.
+pub(crate) fn codex_hooks_text() -> Option<String> {
+    codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
 fn codex_home_dir() -> Option<PathBuf> {
     codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"))
 }
