@@ -214,8 +214,9 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             };
             continue;
         }
-        // Footer `alt-[n] jump` hint: config-driven honesty (only run-owned
-        // configs bind the chord) — default hidden, mirroring `JumpHint`.
+        // Footer `alt-[n] jump` hint: config-driven honesty (opt-in for setups
+        // where Alt+digit actually reaches Zellij; no in-tree config sets it)
+        // — default hidden, mirroring `JumpHint`.
         if line.trim() == "jump_hint" {
             jump_hint = true;
             continue;

@@ -794,8 +794,11 @@ leaves ≥2 spare lines, a footer pins to the floor of the pane — a `─` rule
 the tally line (`{n} working`, gaining ` · {m} need you` only when `m > 0`:
 a zero need-you count is noise, not signal). The `alt-[n] jump` hint is a
 THIRD footer line that renders only under `jump_hint` (the `JumpHint` config —
-same honesty contract as `grant_hint`: only `run`-owned configs, which bake
-the Alt-1..9 → GoToTab binds, may advertise the chord; see §AC). With enough
+same honesty contract as `grant_hint`, but no in-tree config sets it: `run`
+bakes Alt-1..9 → GoToTab binds, yet Alt+digit is commonly claimed upstream of
+Zellij — WM workspace hotkeys, macOS Option typing `¡` — and the rail can't
+detect interception, so the hint is opt-in for setups that truly deliver the
+chord; see §AC). With enough
 spare and a non-empty completion ledger, an `─ earlier` section of receded
 completions (newest first, per the `ledger` directive below) fills the space
 between the content and the footer, always followed by ONE blank spacer line
@@ -865,12 +868,12 @@ alt-[n] jump
 > empty does `render_rail` return nothing, and `PluginRuntime::render` routes
 > to the `onboarding()` scanning face instead (see §A's note above). This
 > scenario also opts into `jump_hint`, so the footer is the full 3 lines —
-> rule, tally, `alt-[n] jump` (column 0, aligned with the tally) — the shape
-> every `zj-radar run` session shows
-> (its owned config binds Alt-1..9 and passes `jump_hint "alt-n"` on the
-> plugin alias). Without the directive the hint line simply doesn't exist —
-> the rail never advertises a chord that isn't bound. ⟦zero state + jump_hint
-> / spec §7,§9⟧
+> rule, tally, `alt-[n] jump` (column 0, aligned with the tally). No in-tree
+> config opts in (see §AB — interception upstream of Zellij makes the chord
+> machine-dependent); the directive keeps the mechanism pinned for users who
+> set `jump_hint "alt-n"` themselves. Without it the hint line simply doesn't
+> exist — the rail never advertises a chord that isn't bound. ⟦zero state +
+> jump_hint / spec §7,§9⟧
 
 ---
 
