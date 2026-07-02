@@ -85,8 +85,7 @@ locally if you touch the script.
 ## Dev loop
 
 ```sh
-just dev          # build wasm + CLI, launch the sandboxed zj-radar-dev session
-just dev-fresh    # same, but discard the previous dev session first
+just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev session
 just dev-build    # build the dev artifacts without launching
 ```
 

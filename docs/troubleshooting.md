@@ -138,7 +138,7 @@ pane.
 when the target plugin was created by a layout and has made itself non-selectable
 (as the radar sidebar does after permissions).
 
-**Fix:** the dev loop (`just dev` / `just dev-fresh`) avoids in-place plugin
+**Fix:** the dev loop (`just dev`) avoids in-place plugin
 reloads entirely for exactly this reason — every iteration is a fresh
 disposable `zj-radar-dev` session rather than a reload. See
 [Development in the README](../README.md#development).

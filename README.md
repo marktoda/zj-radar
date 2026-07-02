@@ -197,12 +197,13 @@ just dev                                  # build + launch the sandboxed dev ses
 `just dev` builds the release wasm and the CLI from this checkout, then drives
 the real `zj-radar run` flow — grant onboarding included — fully sandboxed
 under `target/dev/data` (`ZJ_RADAR_DATA_DIR` + `ZJ_RADAR_WASM`), as the
-disposable session `zj-radar-dev`. It can never touch an installed zj-radar's
-assets, and your real sessions (and the agents in them) keep running
-untouched alongside it. Run it from a plain terminal — `zj-radar run` refuses
-to nest inside Zellij. `just dev-fresh` discards the previous dev session
-first; `just dev-build` builds the artifacts without launching. In the Nix
-shell, `nix develop -c just dev`.
+disposable session `zj-radar-dev` — always a *fresh* one: a leftover dev
+session is deleted first, since attaching would silently keep running the
+previous wasm. It can never touch an installed zj-radar's assets, and your
+real sessions (and the agents in them) keep running untouched alongside it.
+Run it from a plain terminal — `zj-radar run` refuses to nest inside Zellij.
+`just dev-build` builds the artifacts without launching. In the Nix shell,
+`nix develop -c just dev`.
 
 The hero GIF is reproducible — its VHS tape and recording script live in
 [`demo/`](demo/) (`demo/record.sh`).

@@ -30,24 +30,21 @@ review:
 # this checkout, fully isolated from an installed zj-radar: ZJ_RADAR_DATA_DIR
 # sandboxes the run-owned config/wasm under target/dev, so it never touches
 # (or downloads over) the tagged release assets your daily `zj-radar run`
-# uses; ZJ_RADAR_WASM force-loads the just-built plugin. Run from a plain
-# terminal (`run` refuses to nest inside Zellij); the session is named
-# zj-radar-dev so it sits alongside your real sessions in the session list.
-# `rm -rf target/dev/data` resets the sandbox (config + grant onboarding).
+# uses; ZJ_RADAR_WASM force-loads the just-built plugin. ALWAYS a fresh
+# session: a leftover zj-radar-dev is deleted first, because attaching would
+# silently keep running the PREVIOUS wasm (a session loads its plugin at
+# launch; a new artifact on disk never hot-swaps in). Your real sessions —
+# and the agents in them — are untouched. Run from a plain terminal (`run`
+# refuses to nest inside Zellij). The sandbox under target/dev/data survives
+# across runs so the grant doesn't re-prompt; `rm -rf target/dev/data` for a
+# true first-run experience.
 dev:
     cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
     cargo build -p zj-radar
+    -zellij delete-session zj-radar-dev --force
     ZJ_RADAR_DATA_DIR="{{justfile_directory()}}/target/dev/data" \
     ZJ_RADAR_WASM="{{justfile_directory()}}/target/wasm32-wasip1/release/zj_radar.wasm" \
     ./target/debug/zj-radar run zj-radar-dev
-
-# Fresh dev iteration: discard the previous zj-radar-dev session (your real
-# sessions — and the agents in them — are untouched) and relaunch on the new
-# build. The sandbox under target/dev/data survives, so the grant doesn't
-# re-prompt; `rm -rf target/dev/data` too for a true first-run experience.
-dev-fresh:
-    -zellij delete-session zj-radar-dev --force
-    just dev
 
 # Build the dev artifacts without launching (point an existing session's
 # layout at the fresh wasm, or drive the CLI by hand).

@@ -33,8 +33,7 @@ nix develop -c cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
 ## Dev loop
 
 ```sh
-just dev          # build wasm + CLI, launch the sandboxed zj-radar-dev session
-just dev-fresh    # same, but discard the previous dev session first
+just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev session
 ```
 
 Both use the ambient Rust toolchain (`rust-toolchain.toml` auto-installs the
