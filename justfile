@@ -26,5 +26,28 @@ clippy:
 review:
     cargo insta review
 
+# Disposable dev session with the FRESH LOCAL build — wasm and CLI both from
+# this checkout, fully isolated from an installed zj-radar: ZJ_RADAR_DATA_DIR
+# sandboxes the run-owned config/wasm under target/dev, so it never touches
+# (or downloads over) the tagged release assets your daily `zj-radar run`
+# uses; ZJ_RADAR_WASM force-loads the just-built plugin. Run from a plain
+# terminal (`run` refuses to nest inside Zellij); the session is named
+# zj-radar-dev so it sits alongside your real sessions in the session list.
+# `rm -rf target/dev/data` resets the sandbox (config + grant onboarding).
+dev:
+    cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
+    cargo build -p zj-radar
+    ZJ_RADAR_DATA_DIR="{{justfile_directory()}}/target/dev/data" \
+    ZJ_RADAR_WASM="{{justfile_directory()}}/target/wasm32-wasip1/release/zj_radar.wasm" \
+    ./target/debug/zj-radar run zj-radar-dev
+
+# Build the dev artifacts without launching (point an existing session's
+# layout at the fresh wasm, or drive the CLI by hand).
+dev-build:
+    cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
+    cargo build -p zj-radar
+    @echo "cli:  target/debug/zj-radar"
+    @echo "wasm: target/wasm32-wasip1/release/zj_radar.wasm"
+
 # Everything a PR must pass locally.
 ci: test clippy test-bash

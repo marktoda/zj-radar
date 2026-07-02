@@ -150,7 +150,13 @@ pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
 }
 
 /// Platform-resolved owned config dir, or `None` if the data dir is unknown.
+/// `ZJ_RADAR_DATA_DIR` overrides the platform data dir — the isolation knob
+/// `just dev` sets so a locally-built CLI materializes into its own sandbox
+/// and can never touch the installed zj-radar's assets.
 pub(crate) fn owned_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ZJ_RADAR_DATA_DIR").filter(|d| !d.is_empty()) {
+        return Some(owned_config_dir_in(Path::new(&dir)));
+    }
     dirs::data_dir().map(|d| owned_config_dir_in(&d))
 }
 
@@ -446,6 +452,20 @@ pub fn run(opts: RunOptions) {
     let session = session_name(&cwd, opts.name.as_deref());
     let session_exists = session_is_live(&session);
     let session_running = session_exists && session_is_running(&session);
+
+    // Local-wasm override (`just dev`): copy the freshly-built artifact over
+    // the materialized path on every run, so the session always loads the
+    // build under test — never the embedded or downloaded release wasm.
+    if let Some(wasm) = std::env::var_os("ZJ_RADAR_WASM").filter(|w| !w.is_empty()) {
+        if let Err(e) = std::fs::copy(&wasm, &materialized.wasm_path) {
+            crate::exit::fail();
+            eprintln!(
+                "zj-radar: copying ZJ_RADAR_WASM ({}) failed — {e}",
+                Path::new(&wasm).display()
+            );
+            return;
+        }
+    }
 
     // No embedded wasm (a from-crates.io `cargo install`) and none cached yet —
     // fetch the matching release once. Prebuilt binaries embed the wasm, so this
