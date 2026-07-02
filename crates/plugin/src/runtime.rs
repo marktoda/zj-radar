@@ -90,6 +90,12 @@ pub(crate) enum Effect {
     /// after permission is granted — it has served its purpose. Needs no Zellij
     /// permission (`close_self` is always allowed).
     CloseSelf,
+    /// Refresh the shared permission lock's mtime. Emitted each tick while this
+    /// instance's own request is in-flight (`Requesting`), so waiting peers
+    /// never see the lock go stale while a user is still looking at a live
+    /// prompt — `reclaim_if_stale` (and with it the deferring rails' patience
+    /// escalation) only ever fires once the prompt-owner is actually gone.
+    HeartbeatPermissionLock,
     Notify { title: String, body: String },
 }
 
@@ -218,6 +224,12 @@ impl PluginRuntime {
         let mut effects = Vec::new();
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
+        // Our own request is in-flight (including one this very tick just
+        // fired): keep the shared lock fresh so no waiting peer reclaims it
+        // out from under a live prompt.
+        if self.permission.selectable() {
+            effects.push(Effect::HeartbeatPermissionLock);
+        }
         self.tick += 1;
         // A tick can mutate the command store (debounced promotion to Running,
         // Running→Done confirm). Persist the snapshot when it does, or a tab
@@ -785,7 +797,7 @@ mod tests {
             PermissionProbe { marker: None, lock_acquired: true },
         );
         assert!(!load.effects.contains(&Effect::RequestPermission));
-        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
 
         // A later tick that (re)acquires the lock still must not request —
         // only a landed Granted marker may unblock it.
@@ -811,7 +823,7 @@ mod tests {
                 lock_acquired: false,
             },
         );
-        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
         assert_eq!(
             load.effects,
             vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(false)]
@@ -826,15 +838,68 @@ mod tests {
         assert_eq!(runtime.permission, PermissionState::Requesting);
         assert!(!runtime.permission.is_waiting());
         // The promoted peer is now an owner with an in-flight request, so it also
-        // arms the needs_permission heartbeat until the user answers.
+        // arms the needs_permission heartbeat until the user answers — and
+        // immediately starts heartbeating the lock it now effectively owns.
         assert_eq!(
             timer.effects,
             vec![
                 Effect::RequestPermission,
                 Effect::SetSelectable(true),
+                Effect::HeartbeatPermissionLock,
                 Effect::SetTimeout(Cadence::Fast),
             ]
         );
+    }
+
+    #[test]
+    fn requesting_instance_heartbeats_the_lock_each_tick_and_stops_when_answered() {
+        // In-flight request: every tick refreshes the shared lock so waiting
+        // peers can't reclaim it from under the live prompt.
+        let mut runtime = PluginRuntime::default();
+        let load = runtime.load(
+            config(),
+            None,
+            PermissionProbe { marker: None, lock_acquired: true },
+        );
+        assert!(load.effects.contains(&Effect::RequestPermission));
+        let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
+        assert!(
+            tick.effects.contains(&Effect::HeartbeatPermissionLock),
+            "an in-flight request must heartbeat the lock; effects = {:?}", tick.effects,
+        );
+
+        // A merely WAITING peer never heartbeats — a stale lock is exactly the
+        // signal its patience escalation relies on.
+        let mut waiting = PluginRuntime::default();
+        let deferring = config::Config { defer_permission: true, ..config() };
+        let _ = waiting.load(deferring, None, PermissionProbe { marker: None, lock_acquired: false });
+        let waiting_tick = waiting.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
+        assert!(!waiting_tick.effects.contains(&Effect::HeartbeatPermissionLock));
+
+        // Answered: the heartbeat stops with the request.
+        let _ = runtime.permission_result(true);
+        let after = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
+        assert!(!after.effects.contains(&Effect::HeartbeatPermissionLock));
+    }
+
+    #[test]
+    fn stranded_deferring_rail_escalates_and_requests_after_patience() {
+        // The resurrect deadlock: a session rebuilt from a cached onboarding
+        // layout has defer_permission rails but no float — no marker will ever
+        // land. Once patience runs out AND the (stale) lock is reclaimed, the
+        // rail must fire its own request instead of waiting forever.
+        let deferring = config::Config { defer_permission: true, ..config() };
+        let mut runtime = PluginRuntime::default();
+        let _ = runtime.load(deferring, None, PermissionProbe { marker: None, lock_acquired: true });
+        runtime.permission = PermissionState::WaitingForPeer {
+            ticks: crate::permission::DEFER_PATIENCE_TICKS - 1,
+        };
+        let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: true });
+        assert!(
+            tick.effects.contains(&Effect::RequestPermission),
+            "patience exhausted + reclaimed lock must self-elect; effects = {:?}", tick.effects,
+        );
+        assert_eq!(runtime.permission, PermissionState::Requesting);
     }
 
     #[test]
@@ -896,7 +961,7 @@ mod tests {
                 lock_acquired: false,
             },
         );
-        assert_eq!(runtime.permission, PermissionState::WaitingForPeer);
+        assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
 
         let timer = runtime.timer_fast(PermissionProbe {
             marker: None,

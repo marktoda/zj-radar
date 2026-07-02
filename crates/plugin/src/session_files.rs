@@ -131,6 +131,17 @@ impl SessionFiles {
         }
     }
 
+    /// Refresh the permission lock's mtime (rewriting it, creating if needed).
+    /// Called each tick by the instance whose own request is in-flight, so
+    /// `reclaim_if_stale` only ever sees a stale lock when the prompt-owner is
+    /// actually gone — never while a user is still answering a live prompt.
+    pub(crate) fn heartbeat_permission_lock(&self) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        let _ = std::fs::write(&paths.permission_lock, b"");
+    }
+
     pub(crate) fn persist_snapshot(&self, json: &str) {
         let Some(paths) = &self.paths else {
             return;
@@ -431,6 +442,23 @@ mod tests {
             Some(PermissionMarker::Granted)
         );
         assert!(!dir.join("zj-radar.42.permissions.1.tmp").exists());
+    }
+
+    #[test]
+    fn heartbeat_rewrites_the_lock_and_is_inert_when_disabled() {
+        let dir = TempDir::new("heartbeat");
+        let owner = open(dir.path(), ids(1, 42));
+        let lock = dir.join("zj-radar.42.permissions.lock");
+        assert!(lock.exists());
+
+        // A heartbeat rewrites the lock in place — and restores it if a peer's
+        // stale-reclaim raced its owner and deleted it mid-prompt.
+        std::fs::remove_file(&lock).unwrap();
+        owner.files.heartbeat_permission_lock();
+        assert!(lock.exists(), "heartbeat must (re)create the lock it owns");
+
+        // Disabled persistence: no paths, no panic, no writes.
+        SessionFiles::default().heartbeat_permission_lock();
     }
 
     #[test]

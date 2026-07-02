@@ -186,6 +186,9 @@ impl State {
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }
+                Effect::HeartbeatPermissionLock => {
+                    self.session_files.heartbeat_permission_lock()
+                }
                 Effect::RenameTab { position, name } => rename_tab(position as u32 + 1, &name),
                 Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
                 Effect::ShowPane { pane_id } => {

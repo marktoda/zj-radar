@@ -61,10 +61,24 @@ pub(crate) fn create_session_args(config_dir: &Path, session: &str, layout: &str
     ]
 }
 
-/// Args to attach to (or resurrect) an existing session. The layout was applied
-/// at creation, so no layout/config-dir flags are needed.
-pub(crate) fn attach_session_args(session: &str) -> Vec<String> {
-    vec!["attach".into(), session.into()]
+/// Args to attach to (or resurrect) an existing session:
+/// `zellij --config-dir <dir> attach <name>`.
+///
+/// The layout was applied at creation, but `--config-dir` is still load-bearing
+/// here: Zellij config (keybinds included) comes from the ATTACHING client, and
+/// a resurrected session is a brand-new server started by that client. Without
+/// it, attach reads the user's default `~/.config/zellij` — where the Ctrl-y
+/// grant keybind doesn't exist (and a `clear-defaults=true` user config strips
+/// any merge path) — so the rail's "press Ctrl-y" advice was a dead end on
+/// every resurrect. Passing the owned dir makes the baked-in binds real for
+/// every client, not just the creating one.
+pub(crate) fn attach_session_args(config_dir: &Path, session: &str) -> Vec<String> {
+    vec![
+        "--config-dir".into(),
+        config_dir.to_string_lossy().into_owned(),
+        "attach".into(),
+        session.into(),
+    ]
 }
 
 /// Args to summon the grant float on a LIVE session before we attach:
@@ -242,6 +256,11 @@ struct RunFacts {
     session_running: bool,
     /// Whether we're invoked from inside a Zellij session (`run` can't nest).
     inside_zellij: bool,
+    /// Whether the DEAD session's cached resurrection layout carries
+    /// `defer_permission "true"` rails (see `session_layout_defers`). A
+    /// resurrected onboarding-era session rebuilds those rails with the float
+    /// long gone — the marker they wait on will never land without help.
+    resurrect_layout_defers: bool,
     permissions_kdl: Option<String>,
     codex_hooks: Option<String>,
     installed_plugins: Option<String>,
@@ -253,6 +272,14 @@ struct RunPlan {
     /// When `Some`, a `zellij` action to dispatch (best-effort) BEFORE `args`,
     /// to summon the grant float on a live session so no keypress is needed.
     pre_attach: Option<Vec<String>>,
+    /// When `Some`, the same grant-float action, to dispatch AFTER the session's
+    /// server comes up — the resurrect path. A dead session can't receive an
+    /// action, so the caller watches for liveness in the background while
+    /// `attach` resurrects, then fires this once. Covers both the ungranted
+    /// resurrect (float hosts the real prompt) and the granted-but-deferring
+    /// resurrect (float auto-resolves against the cached grant and writes the
+    /// marker the frozen `defer_permission` rails are stuck waiting on).
+    post_attach_watch: Option<Vec<String>>,
     advisories: Vec<String>,
     /// When set, the caller must NOT launch (we're nested) — show guidance.
     nested: bool,
@@ -268,7 +295,7 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
         .is_some_and(|kdl| wasm_is_granted(kdl, &facts.wasm_path.to_string_lossy()));
 
     let args = if facts.session_exists {
-        attach_session_args(&facts.session)
+        attach_session_args(&facts.config_dir, &facts.session)
     } else {
         // First run (ungranted) opens the onboarding layout — its floating pane
         // hosts Zellij's grant prompt legibly. Once granted, later runs use the
@@ -284,6 +311,16 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     let pre_attach = (!granted && facts.session_exists && facts.session_running)
         .then(|| grant_float_args(&facts.session, &facts.wasm_path));
 
+    // Attaching to a DEAD session (resurrect): no server to dispatch to yet,
+    // so plan a post-attach watch instead — fired once the resurrected server
+    // is up. Needed when the wasm is ungranted (the float hosts the prompt) OR
+    // when the cached layout resurrects deferring rails (granted or not, they
+    // are stuck until a float writes the marker).
+    let post_attach_watch = (facts.session_exists
+        && !facts.session_running
+        && (!granted || facts.resurrect_layout_defers))
+        .then(|| grant_float_args(&facts.session, &facts.wasm_path));
+
     let mut advisories = Vec::new();
     if !granted {
         advisories.push(GRANT_HINT.to_string());
@@ -292,7 +329,7 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude) {
         advisories.push(hint);
     }
-    RunPlan { args, pre_attach, advisories, nested: facts.inside_zellij }
+    RunPlan { args, pre_attach, post_attach_watch, advisories, nested: facts.inside_zellij }
 }
 
 pub struct RunOptions {
@@ -336,6 +373,60 @@ fn session_is_running(name: &str) -> bool {
         })
 }
 
+/// True iff a cached resurrection layout will rebuild `defer_permission "true"`
+/// rails. Zellij snapshots plugin config verbatim into `session-layout.kdl`, so
+/// a session created from the onboarding layout carries the flag forever — even
+/// after the float granted and closed. Substring match is enough: the value is
+/// only ever written as the exact `defer_permission "true"` pair by our own
+/// layouts, and a false positive merely summons a float that auto-resolves and
+/// closes itself.
+pub(crate) fn session_layout_defers(session_layout_kdl: &str) -> bool {
+    session_layout_kdl.contains("defer_permission \"true\"")
+}
+
+/// Read the cached resurrection layout for `session`, if Zellij kept one:
+/// `<zellij cache>/<contract dir>/session_info/<session>/session-layout.kdl`.
+/// The contract dir's name is a Zellij internal (`contract_version_1` today),
+/// so scan for any directory that has our session under `session_info` rather
+/// than hardcoding it. Best-effort: any error reads as `None` (fail-open — the
+/// plugin's own patience escalation still self-heals, just slower).
+fn cached_session_layout(session: &str) -> Option<String> {
+    let base = zellij_permissions_path()?.parent()?.to_path_buf();
+    let entries = std::fs::read_dir(base).ok()?;
+    entries.flatten().find_map(|entry| {
+        let candidate = entry
+            .path()
+            .join("session_info")
+            .join(session)
+            .join("session-layout.kdl");
+        std::fs::read_to_string(candidate).ok()
+    })
+}
+
+/// Fire `dispatch` (a `zellij …` invocation) once the session's server is up,
+/// polling from a detached thread while the foreground `attach` resurrects it.
+/// Output is discarded — the terminal belongs to the attached client by then —
+/// and every failure mode is best-effort by design: the watcher gives up after
+/// ~30s, and the plugin's own patience escalation remains the backstop.
+fn dispatch_when_running(session: String, dispatch: Vec<String>) {
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if session_is_running(&session) {
+                // One settling beat: the server lists as running slightly
+                // before it accepts actions.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _ = std::process::Command::new("zellij")
+                    .args(&dispatch)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                return;
+            }
+        }
+    });
+}
+
 pub fn run(opts: RunOptions) {
     let Some(dir) = owned_config_dir() else {
         crate::exit::fail();
@@ -371,6 +462,11 @@ pub fn run(opts: RunOptions) {
         }
     }
 
+    // Only a dead-but-existing session resurrects from a cached layout, so
+    // only that case needs the defer probe.
+    let resurrect_layout_defers = session_exists
+        && !session_running
+        && cached_session_layout(&session).is_some_and(|kdl| session_layout_defers(&kdl));
     let facts = RunFacts {
         session,
         config_dir: materialized.config_dir,
@@ -378,6 +474,7 @@ pub fn run(opts: RunOptions) {
         session_exists,
         session_running,
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
+        resurrect_layout_defers,
         permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: read_under_home(".codex/hooks.json"),
         installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
@@ -409,6 +506,12 @@ pub fn run(opts: RunOptions) {
     if let Some(dispatch) = &plan.pre_attach {
         let _ = std::process::Command::new("zellij").args(dispatch).status();
     }
+    // Resurrect path: the server only exists once `attach` below brings it up,
+    // so watch for it from the background and fire the float dispatch then.
+    // The thread dies with this process (which outlives the attached client).
+    if let Some(dispatch) = plan.post_attach_watch.clone() {
+        dispatch_when_running(facts.session.clone(), dispatch);
+    }
     if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
         crate::exit::fail();
         eprintln!("zj-radar: failed to launch zellij: {e}");
@@ -436,7 +539,25 @@ mod tests {
             create_session_args(Path::new("/cfg"), "foo", "radar"),
             vec!["--config-dir", "/cfg", "--session", "foo", "--new-session-with-layout", "radar"]
         );
-        assert_eq!(attach_session_args("foo"), vec!["attach", "foo"]);
+        // --config-dir on attach is load-bearing: a resurrected session is a
+        // NEW server whose config (Ctrl-y grant keybind included) comes from
+        // the attaching client, not from the session's creation.
+        assert_eq!(
+            attach_session_args(Path::new("/cfg"), "foo"),
+            vec!["--config-dir", "/cfg", "attach", "foo"]
+        );
+    }
+
+    #[test]
+    fn session_layout_defers_detects_frozen_onboarding_rails() {
+        assert!(session_layout_defers(
+            "layout {\n  pane {\n    plugin location=\"file:/x.wasm\" {\n      defer_permission \"true\"\n    }\n  }\n}\n"
+        ));
+        assert!(!session_layout_defers("layout { pane { plugin location=\"file:/x.wasm\" } }\n"));
+        // The granted-era plain layout never carries the flag.
+        assert!(!session_layout_defers(LAYOUT));
+        // Our onboarding layout always does — the pair this probe exists for.
+        assert!(session_layout_defers(ONBOARDING_LAYOUT));
     }
 
     const SAMPLE: &str = r#"
@@ -645,6 +766,7 @@ mod tests {
             session_exists: false,
             session_running: false,
             inside_zellij: false,
+            resurrect_layout_defers: false,
             permissions_kdl: granted.then(|| format!("\"{wasm}\" {{\n}}\n")),
             codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
             installed_plugins: claude.then(|| "zj-radar-claude".to_string()),
@@ -679,7 +801,7 @@ mod tests {
         let mut f = facts(true, true, false);
         f.session_exists = true;
         let p = plan_run(&f);
-        assert_eq!(p.args, attach_session_args("proj"));
+        assert_eq!(p.args, attach_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
     }
 
     #[test]
@@ -705,25 +827,54 @@ mod tests {
         f.session_exists = true;
         f.session_running = true;
         let p = plan_run(&f);
-        assert_eq!(p.args, attach_session_args("proj"), "ungranted + existing session still attaches");
+        assert_eq!(
+            p.args,
+            attach_session_args(Path::new("/data/zj-radar/zellij"), "proj"),
+            "ungranted + existing session still attaches"
+        );
         assert_eq!(
             p.pre_attach.as_deref(),
             Some(grant_float_args("proj", Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")).as_slice()),
             "live attach dispatches the grant float before attaching"
         );
+        assert!(p.post_attach_watch.is_none(), "a live server needs no post-attach watch");
     }
 
     #[test]
-    fn plan_run_no_dispatch_on_dead_ungranted_attach() {
-        // A dead/resurrectable session has no running server to receive the
-        // action — dispatch would fail — so `plan_run` emits none and the baked-in
-        // Ctrl-y keybind (named in the advisory) is the fallback after resurrect.
+    fn plan_run_watches_dead_ungranted_attach_for_resurrection() {
+        // A dead/resurrectable session has no server to receive an action NOW —
+        // so the plan is a post-attach watch: once `attach` resurrects the
+        // server, the caller fires the same grant-float dispatch.
         let mut f = facts(false, true, false); // ungranted
         f.session_exists = true;
         f.session_running = false; // resurrectable, not running
         let p = plan_run(&f);
-        assert_eq!(p.args, attach_session_args("proj"));
-        assert!(p.pre_attach.is_none(), "no live server → no dispatch; keybind covers resurrect");
+        assert_eq!(p.args, attach_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
+        assert!(p.pre_attach.is_none(), "no live server → nothing to dispatch to yet");
+        assert_eq!(
+            p.post_attach_watch.as_deref(),
+            Some(grant_float_args("proj", Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")).as_slice()),
+            "dead ungranted attach must plan the post-resurrect float dispatch"
+        );
+    }
+
+    #[test]
+    fn plan_run_watches_granted_resurrect_whose_layout_defers() {
+        // The resurrect deadlock: permissions.kdl says granted, but the cached
+        // session layout rebuilds `defer_permission "true"` rails with no float
+        // — they'd wait (patience-long) for a marker nothing writes. The watch
+        // summons the float, which auto-resolves against the cached grant and
+        // writes the marker immediately.
+        let mut f = facts(true, true, false); // granted
+        f.session_exists = true;
+        f.session_running = false;
+        f.resurrect_layout_defers = true;
+        let p = plan_run(&f);
+        assert!(p.post_attach_watch.is_some(), "granted + deferring layout still needs the float");
+        // Same facts but a healthy (non-deferring) cached layout: no watch, no
+        // float flash on plain granted resurrects.
+        f.resurrect_layout_defers = false;
+        assert!(plan_run(&f).post_attach_watch.is_none());
     }
 
     #[test]
