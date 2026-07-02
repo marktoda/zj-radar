@@ -893,6 +893,64 @@
     }
 
     #[test]
+    fn fresh_instance_exit_replay_of_displayed_completion_is_inert() {
+        // A freshly-spawned instance (empty `exited` dedup) receives the
+        // level-triggered exit replay for a held pane whose completion it
+        // already shows from the loaded snapshot. That replay is not news:
+        // it must not push the still-displayed completion into `receded`
+        // (a ghost ledger entry — the card never changed), must not re-stamp
+        // `completed_epoch_s = now` (a duplicate surviving the nearest-
+        // neighbor merge once the delta exceeds MERGE_WINDOW_S), and must not
+        // bump `last_change_tick` (bumping would postpone the Done TTL
+        // forever under repeated replays).
+        for (code, status) in [(Some(0), Status::Done), (Some(2), Status::Error)] {
+            let mut s = CommandStore::default();
+            let obs = TrackedObservation {
+                exit_code: code,
+                completed_epoch_s: Some(100),
+                ..TrackedObservation::command(status, "repo".into(), "make".into(), Kind::Command, 5)
+            };
+            s.insert_snapshot_observation(9, obs);
+
+            let receded = s.on_exit(9, code, 50, 999);
+            assert!(receded.is_empty(), "{status:?}: an identical replay must not ghost-ledger");
+            let got = s.get(9).unwrap();
+            assert_eq!(got.status, status, "{status:?}: unchanged");
+            assert_eq!(got.completed_epoch_s, Some(100), "{status:?}: original stamp survives");
+            assert_eq!(got.last_change_tick, 5, "{status:?}: no tick bump — the TTL clock must keep running");
+
+            // The dedup map is primed: a second identical replay no-ops too.
+            let receded = s.on_exit(9, code, 51, 1000);
+            assert!(receded.is_empty(), "{status:?}: dedup primed after the first swallow");
+            assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(100));
+        }
+    }
+
+    #[test]
+    fn different_exit_code_on_displayed_completion_still_displaces() {
+        // Counter-case: a DIFFERENT exit code against a non-pending completion
+        // is a genuine new outcome (a held run-pane re-run whose fresh
+        // `CommandChanged` was missed or hasn't landed) — it must displace the
+        // old completion (receding it to the ledger) and stamp the new one.
+        let mut s = CommandStore::default();
+        let obs = TrackedObservation {
+            exit_code: Some(0),
+            completed_epoch_s: Some(100),
+            ..TrackedObservation::command(Status::Done, "repo".into(), "make".into(), Kind::Command, 5)
+        };
+        s.insert_snapshot_observation(9, obs);
+
+        let receded = s.on_exit(9, Some(2), 50, 999);
+        assert_eq!(receded.len(), 1, "the displayed Done leaves via displacement");
+        assert_eq!(receded[0].1.status, Status::Done);
+        assert_eq!(receded[0].1.completed_epoch_s, Some(100));
+        let got = s.get(9).unwrap();
+        assert_eq!(got.status, Status::Error);
+        assert_eq!(got.exit_code, Some(2));
+        assert_eq!(got.completed_epoch_s, Some(999), "the new outcome stamps fresh");
+    }
+
+    #[test]
     fn rerun_with_command_changed_after_recede_applies_its_exit() {
         // A genuine new lifecycle (CommandChanged → pending) re-lights the pane
         // even if its exit lands before the debounce promotion.

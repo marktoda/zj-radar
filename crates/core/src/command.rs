@@ -563,17 +563,40 @@ impl CommandStore {
         {
             return Vec::new();
         }
-        self.exited.insert(pane_id, exit_status);
-        // Clear any pending / tentative-done entry for this pane — the exit is
-        // authoritative.
-        self.pending.remove(&pane_id);
-        self.pending_done.remove(&pane_id);
 
         let new_status = match exit_status {
             Some(0) => Status::Done,
             Some(_) => Status::Error,
             None => Status::Done,
         };
+
+        // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op edge,
+        // for the same replay against a *still-displayed* completion: a fresh
+        // instance (empty `exited` dedup) replaying a held pane's exit over a
+        // snapshot-loaded Done/Error with the same outcome learns nothing new.
+        // Prime the dedup and stop — pushing the completion into `receded`
+        // would ghost a ledger entry for a card that never changed, re-stamping
+        // `completed_epoch_s = now` would duplicate it past the nearest-neighbor
+        // merge window, and bumping `last_change_tick` would postpone the Done
+        // TTL forever under repeated replays. A `pending` entry means a fresh
+        // run is in flight, so its (possibly identical-code) exit is genuine
+        // news and falls through; so does a different exit code (a new outcome
+        // on a re-run pane), which keeps the displacement behavior below.
+        if !self.pending.contains_key(&pane_id)
+            && self
+                .store
+                .get(pane_id)
+                .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
+        {
+            self.exited.insert(pane_id, exit_status);
+            return Vec::new();
+        }
+
+        self.exited.insert(pane_id, exit_status);
+        // Clear any pending / tentative-done entry for this pane — the exit is
+        // authoritative.
+        self.pending.remove(&pane_id);
+        self.pending_done.remove(&pane_id);
 
         let mut receded = Vec::new();
         if let Some(s) = self.store.get_mut(pane_id) {
