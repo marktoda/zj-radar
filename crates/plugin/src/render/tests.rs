@@ -3384,6 +3384,80 @@ fn header_badge_survives_narrow_width_over_census() {
     );
 }
 
+// ── Header heartbeat sweep (Task 20) ──────────────────────────────────────
+
+#[test]
+fn heartbeat_marches_one_column_per_tick_while_working() {
+    // A single Running row: the rule carries one ◆ that marches one column
+    // per tick, wrapping at `width`.
+    let rows = vec![TabRow { flash: false,
+        number: 1,
+        name: "a".into(),
+        active: false,
+        has_bell: false,
+        display: display(Status::Running, 0, 1, None),
+    }];
+    let s0 = render(&rows, &ro(10, 3));
+    let s1 = render(&rows, &ro(10, 4));
+    let rule0 = strip_sgr(s0.lines().nth(1).unwrap());
+    let rule1 = strip_sgr(s1.lines().nth(1).unwrap());
+    assert_eq!(
+        rule0.chars().position(|c| c == '◆'),
+        Some(3),
+        "tick 3 puts the ◆ at col 3 (tick % width): {:?}",
+        rule0
+    );
+    assert_eq!(
+        rule1.chars().position(|c| c == '◆'),
+        Some(4),
+        "tick 4 puts the ◆ at col 4: {:?}",
+        rule1
+    );
+    // Every other column is still the plain rule character.
+    for (i, c) in rule0.chars().enumerate() {
+        if i != 3 {
+            assert_eq!(c, '═', "col {i} unaffected by the heartbeat: {:?}", rule0);
+        }
+    }
+    // Wraps: tick == width lands back at column 0.
+    let s_wrap = render(&rows, &ro(10, 10));
+    let rule_wrap = strip_sgr(s_wrap.lines().nth(1).unwrap());
+    assert_eq!(
+        rule_wrap.chars().position(|c| c == '◆'),
+        Some(0),
+        "tick == width wraps back to col 0: {:?}",
+        rule_wrap
+    );
+}
+
+#[test]
+fn heartbeat_absent_when_idle_and_in_cards() {
+    // No Running row at all: the rule stays plain regardless of tick.
+    let idle_rows = vec![idle_row(1)];
+    let s = render(&idle_rows, &ro(10, 3));
+    let rule = strip_sgr(s.lines().nth(1).unwrap());
+    assert!(!rule.contains('◆'), "no heartbeat while idle: {:?}", rule);
+    assert_eq!(rule, "═".repeat(10), "rule unchanged while idle: {:?}", rule);
+
+    // A Running row IS present, but density is Cards — no `═` rule line
+    // exists at all, so there's nowhere for the heartbeat to appear.
+    let running_rows = vec![TabRow { flash: false,
+        number: 1,
+        name: "a".into(),
+        active: false,
+        has_bell: false,
+        display: display(Status::Running, 0, 1, None),
+    }];
+    let mut cards_opts = ro(10, 3);
+    cards_opts.density = crate::config::Density::Cards;
+    let s = render(&running_rows, &cards_opts);
+    let stripped = strip_sgr(&s);
+    assert!(!stripped.contains('◆'), "Cards has no rule to carry the heartbeat: {:?}", stripped);
+    // Confirm the header is still just the one title line in Cards (no rule
+    // line at all — see `header_lines`).
+    assert!(stripped.lines().next().unwrap().trim_end().contains("RADAR"));
+}
+
 // ── Color additivity guard ────────────────────────────────────────────────
 
 /// Strip `\x1b[...m` SGR escape sequences from a string.

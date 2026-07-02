@@ -894,7 +894,13 @@ fn target_for_row(row: &TabRow) -> RailTarget {
 /// first, keeping the badge alone; only once there's no badge (or the
 /// overflow marker itself needs the room) does the lone primary token stand,
 /// clamped to width exactly as before Task 16.
-fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content: bool) -> Vec<Line> {
+///
+/// `working` (Task 20) drives the header-rule heartbeat: in Compact/
+/// Comfortable density (Cards has no `═` rule to carry it) the rule swaps one
+/// `═` for a `◆` (`Role::Accent`, bold) at column `now_tick % width`, a pure
+/// function of the render tick — see [`header_rule`] and [`render_body`]'s
+/// call site for how `working` is derived from `rows`.
+fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content: bool, working: bool) -> Vec<Line> {
     if !opts.header || !has_content {
         return vec![];
     }
@@ -963,12 +969,35 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
         lines.push(Line {
-            text: format!("{}\n", Seg::new(accent, "═".repeat(width))),
+            text: format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
             target: None,
             bg: LineBg::Rail,
         });
     }
     lines
+}
+
+/// The header rule (`═` × width), or — while `working` is true — the same
+/// rule with one column swapped for a bold-accent `◆` at `now_tick % width`:
+/// three `Seg`s (`═`×pos, `◆`, `═`×rest) so the heartbeat is purely additive
+/// over the plain rule's layout, exactly like every other colored token in
+/// this file. Pure function of `now_tick`: no state, just a different column
+/// each tick, wrapping at `width`. `width == 0` degenerates to an empty rule
+/// (nothing to place the diamond in) — `render_rail` never calls with 0
+/// (`cols.max(1)`), but this stays total rather than panicking if a test does.
+fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> String {
+    if !working || width == 0 {
+        return Seg::new(accent, "═".repeat(width)).to_string();
+    }
+    let pos = (now_tick % width as u64) as usize;
+    let before = "═".repeat(pos);
+    let after = "═".repeat(width - pos - 1);
+    format!(
+        "{}{}{}",
+        Seg::new(accent, before),
+        Seg::bold(accent, "◆"),
+        Seg::new(accent, after),
+    )
 }
 
 /// Produce the idle-strip line as a raw (unpainted) `Line` value.
@@ -1013,11 +1042,18 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
         .saturating_sub(header_lines(rows, opts.header, opts.density, has_content));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
+    // Drives the header-rule heartbeat (Task 20) — a plain `any()`, not a
+    // count, so it's a distinct question from `footer_tally`'s "how many are
+    // working" tally computed later in `render_bottom`; the two live in
+    // separate pipeline stages (body vs. bottom region) and sharing one
+    // number across that seam would cost more plumbing than the one `filter`
+    // it saves.
+    let working = rows.iter().any(|r| r.display.status == Status::Running);
 
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
-    for mut line in render_header(rows, opts, overflow, has_content) {
+    for mut line in render_header(rows, opts, overflow, has_content, working) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }

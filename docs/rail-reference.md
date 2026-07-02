@@ -66,6 +66,18 @@ overflow marker > badge > plain census: a tight budget drops the census
 first and shows the bare badge (`n!` with no leading `·N`); the overflow
 marker itself is never dropped for the badge's sake.
 
+**Header heartbeat sweep (Task 20).** In Compact/Comfortable density only (the
+densities with the `═` rule — Cards drops the rule entirely, so it never
+carries the heartbeat), whenever any row's `display.status == Status::Running`
+the rule line swaps one `═` character for a `◆` (`Role::Accent`, bold) at
+column `now_tick % width`, wrapping around as the tick advances — a pure,
+stateless function of `now_tick` that marches one column per render tick
+while any tab is actively working, and disappears the instant no row is
+`Running` (idle, or every row settled to Done/Error/Pending). Every fixture
+below is captured at the doc harness's fixed `now_tick = 0`, so a Compact/
+Comfortable scenario with a `Running` row shows the `◆` at column 0 (the
+rule's leftmost `═` is replaced): `◆═══════════════════════════════`.
+
 **Col 0 is always the spine column** — reserved on every line, active or not:
 `▌` for the focused tab, a plain space otherwise. This holds line 1 (the tab
 row) and every pane/child row to the same fixed columns regardless of focus,
@@ -126,7 +138,7 @@ tab 1 "pinky"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 pinky
   ✳ running tests…
 ```
@@ -182,7 +194,7 @@ tab 1 "web"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 web
   ⚙ cargo build
 ```
@@ -199,7 +211,7 @@ tab 2 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ● ⚙ cargo build
@@ -238,7 +250,7 @@ tab 2 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 2 af
  ├ ⠋ ❉ exploring render
  └ ○ $ ./deploy.sh
@@ -263,7 +275,7 @@ tab 2 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 2 swarm
  ├ ⠋ ❉ planning api
  ├ ⠋ ❉ writing tests
@@ -293,7 +305,7 @@ tab 6 "logs"
 ```
 ```rail-expect
  RADAR                     6▲ 1!
-════════════════════════════════
+◆═══════════════════════════════
  ◆ 1 review
   ✳ approve diff?
  ⠋ 2 af
@@ -316,7 +328,7 @@ tab 2 "af" active
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
 ▌⠋ 2 af
 ▌├ ⠋ ❉ exploring render
 ▌└ ● ⚙ cargo build
@@ -342,7 +354,7 @@ tab 1 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
@@ -372,7 +384,7 @@ tab 1 "swarm"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 swarm
  ├ ⠋ ❉ pane one
  ├ ⠋ ❉ pane two
@@ -397,7 +409,7 @@ tab 1 "work"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 work
  ├ ⠋ ✳ this message is quite lo…
  └ ● ⚙ ok
@@ -417,7 +429,7 @@ tab 1 "cjk"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 cjk
  ├ ⠋ ✳ 処理中のメッセージが長す…
  └ ● ⚙ ok
@@ -452,7 +464,7 @@ tab 1 "pinky" bell
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 pinky                    ⚑
   ✳ running tests
 ```
@@ -486,7 +498,7 @@ tab 1 "af"
 ```
 ```rail-expect
  RADAR                        ·1
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 af
   ✳ exploring render
 ```
@@ -615,7 +627,7 @@ tab 2 "notes"
 ```
 ```rail-expect
  RADAR                        ·2
-════════════════════════════════
+◆═══════════════════════════════
  ⠋ 1 web
   ✳ building
 
