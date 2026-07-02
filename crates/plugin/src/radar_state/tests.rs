@@ -1,5 +1,5 @@
 use super::*;
-use crate::command::DEBOUNCE_TICKS;
+use crate::command::{DEBOUNCE_TICKS, DONE_TTL_TICKS};
 use crate::kind::Kind;
 use crate::payload::StatusPayload;
 use crate::rollup::Outcome;
@@ -1090,4 +1090,169 @@ fn from_raw_theme_falls_back_to_any_terminal_pane_when_none_focused() {
 #[test]
 fn from_raw_theme_is_none_without_color_reports() {
     assert!(PaneUpdate::from_raw(vec![raw_pane(1, 0)]).theme.is_none());
+}
+
+// ── Ledger recede edges (Task 11) ──
+
+#[test]
+fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+
+    // Drive a command-origin pane all the way through to a TTL recede: a
+    // foreground command runs, leaves the foreground (back to a shell), the
+    // debounce window confirms Done (stamped with THIS timer's epoch), and a
+    // later timer far past DONE_TTL_TICKS recedes it.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
+    assert_eq!(radar.command(1).unwrap().status, Status::Running);
+
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
+    assert_eq!(radar.command(1).unwrap().status, Status::Done);
+    assert!(radar.ledger_is_empty(), "still inside the TTL window — nothing has receded yet");
+
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "cargo build");
+    assert!(!lines[0].error);
+    assert_eq!(
+        lines[0].at_epoch_s, 500,
+        "the ledger keeps the completion's own stamp, not the recede's wall-clock moment"
+    );
+
+    // The raw entry (not just the rendered `LedgerLine`) carries the pane and
+    // tab identity the line's live lookup depends on.
+    let raw = radar.ledger().entries().next().unwrap();
+    assert_eq!(raw.pane_id, 1);
+    assert_eq!(raw.tab_id, TabId::new(10));
+    assert_eq!(raw.outcome, LedgerOutcome::Done);
+}
+
+#[test]
+fn ledger_any_unsaturated_reflects_the_saturate_window() {
+    let mut radar = RadarState::default();
+    assert!(
+        !radar.ledger_any_unsaturated(1_000_000),
+        "an empty ledger has nothing left to age out"
+    );
+
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "claude");
+    radar.status_pipe(&wire, 1, 1000, config::NamingMode::Off);
+    radar.command_changed(1, &["zsh".into()], true, 5, 9999); // recedes → ledgers at epoch 1000
+
+    assert!(radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S - 1));
+    assert!(!radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S));
+}
+
+#[test]
+fn prompt_return_clear_ledgers_the_agent_completion() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    let wire = payload::to_wire(7, Status::Done, "pinky", "main", "shipped it", "claude");
+    radar.status_pipe(&wire, 1, 100, config::NamingMode::Off);
+    assert_eq!(radar.status(7).unwrap().status, Status::Done);
+
+    // The pane returns to a shell prompt — the agent that pushed the Done is
+    // gone — so `clear_on_prompt_return` recedes it to idle.
+    radar.command_changed(7, &["zsh".into()], true, 5, 999);
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "shipped it");
+    assert!(!lines[0].error);
+    assert_eq!(
+        lines[0].at_epoch_s, 100,
+        "the completion's own stamp survives, not command_changed's now_epoch_s"
+    );
+}
+
+#[test]
+fn prune_ledgers_completions_with_the_pre_close_tab_name() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "web", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(3)]);
+
+    // A Done sits on pane 3, in tab "web", right before the tab (and its
+    // pane) close in a single PaneUpdate.
+    let wire = payload::to_wire(3, Status::Done, "repo", "main", "built", "claude");
+    radar.status_pipe(&wire, 1, 50, config::NamingMode::Off);
+
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(), // the tab's own entry is gone too
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, 2, 999, config::NamingMode::Off);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0].tab_name, "web",
+        "must ledger under the pre-close name, not whatever (if anything) replaced it"
+    );
+    assert_eq!(lines[0].at_epoch_s, 50);
+}
+
+#[test]
+fn pending_and_running_never_ledger() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
+
+    // pane 1: a live Running command.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(1).unwrap().status, Status::Running);
+
+    // pane 2: a Pending status-pipe observation (queued, not yet started).
+    let wire = payload::to_wire(2, Status::Pending, "repo", "main", "queued", "claude");
+    radar.status_pipe(&wire, 1, 0, config::NamingMode::Off);
+    assert_eq!(radar.status(2).unwrap().status, Status::Pending);
+
+    // Both panes close.
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(),
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, 5, 999, config::NamingMode::Off);
+
+    assert!(
+        radar.ledger_is_empty(),
+        "Running/Pending carry nothing to ledger — only Done/Error recede"
+    );
+}
+
+#[test]
+fn ledger_lines_resolve_live_tab_position_or_none() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+
+    let wire = payload::to_wire(1, Status::Done, "repo", "main", "shipped", "claude");
+    radar.status_pipe(&wire, 1, 42, config::NamingMode::Off);
+    radar.command_changed(1, &["zsh".into()], true, 5, 100); // recedes → ledgers
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].tab_position, Some(0), "tab 10 is still live at position 0");
+
+    // The tab closes; a later `tabs_changed` no longer carries it.
+    radar.tabs_changed(vec![]);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1, "the ledger itself never forgets an entry");
+    assert_eq!(lines[0].tab_position, None, "a gone tab resolves to a click-inert row");
 }

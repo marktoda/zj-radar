@@ -1,22 +1,26 @@
 //! The completion ledger: a small ring of "what finished earlier" entries that
 //! cards hand off to when a Done/Error leaves the rail (spec §4). Pure data +
-//! policy: RadarState feeds it recede edges; the renderer consumes prepared
-//! lines. Convergent across instances because every entry edge is a shared
-//! signal and the snapshot merges rings.
+//! policy: `RadarState` feeds it recede edges (wired in `radar_state.rs`); the
+//! renderer consumes prepared lines. Convergent across instances because every
+//! entry edge is a shared signal and the snapshot merges rings.
 //!
-//! Nothing in the crate constructs a [`Ledger`] yet — `RadarState` wiring
-//! lands in a later task. Until then every item here is reachable only from
-//! this module's own tests, so the shipped (non-test) wasm build would flag
-//! it all as dead code. The crate-root `allow(dead_code)` only covers plain
-//! host builds (`not(wasm32) && not(test)`); it deliberately leaves both test
-//! builds and the production wasm build fully linted. This module adds the
-//! matching allow for the one remaining unlinted case — production wasm,
-//! pre-wiring — mirroring the per-item `RenderedRail::empty`/`line_count`
-//! precedent in `render.rs`, just scoped to the whole module since nothing in
-//! it is wired in production yet. `cargo test` (host or wasm) stays fully
+//! `RadarState` now constructs a `Ledger` and feeds it on every recede edge
+//! (`push` is reachable from production wasm as of that wiring — see
+//! `radar_state.rs`'s `ledger_receded`). `entries`, `is_empty`, and
+//! `any_unsaturated` are consumed by `RadarState`'s own render/timer-facing
+//! wrappers, but those wrappers aren't wired into the rendered rail or the
+//! timer until Tasks 13/15, so both this module's `entries`/`is_empty`/
+//! `any_unsaturated`/`SATURATE_S` and their `radar_state.rs` callers stay
+//! unreachable from production wasm until then. `to_vec`, `replace`,
+//! `merge`, and `format_age` are reachable only from this module's own tests
+//! for the same reason (snapshot-merge and the rendered age column are later
+//! tasks too). All of the above keep a targeted per-item allow for the
+//! production (non-test) wasm build, mirroring the
+//! `RenderedRail::empty`/`line_count` precedent in `render.rs`, rather than
+//! the module-wide allow this used to carry. Remove each allow as its
+//! consuming task wires it in. `cargo test` (host or wasm) stays fully
 //! linted: the tests below call every `pub(crate)` item directly, so real
 //! dead code would still be caught there.
-#![cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::radar_state::TabId;
@@ -30,6 +34,10 @@ pub(crate) const LEDGER_CAP: usize = 32;
 pub(crate) const MERGE_WINDOW_S: u64 = 4;
 /// Ages ≥ this render as the frozen "1h+" — the display never changes again,
 /// which is what lets the idle timer fully disarm (spec §4.4/§10).
+///
+/// TODO(Task 15): drop this allow once `RadarState::ledger_any_unsaturated`
+/// (its only consumer) is wired into timer arming.
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 pub(crate) const SATURATE_S: u64 = 3600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,19 +127,31 @@ impl Ledger {
     }
 
     /// newest first
+    ///
+    /// TODO(Task 13): drop this allow once `RadarState::ledger_lines` (its
+    /// only consumer) is wired into the rendered rail.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn entries(&self) -> impl Iterator<Item = &LedgerEntry> {
         self.entries.iter()
     }
 
+    /// TODO(Task 13): drop this allow once `RadarState::ledger_is_empty` (its
+    /// only consumer) is wired into the rendered rail.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// TODO(Task 13/15): wire into snapshot persistence, then drop this allow.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn to_vec(&self) -> Vec<LedgerEntry> {
         self.entries.iter().cloned().collect()
     }
 
     /// sorted desc, capped
+    ///
+    /// TODO(Task 13/15): wire into snapshot load, then drop this allow.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn replace(&mut self, entries: Vec<LedgerEntry>) {
         let mut sorted = entries;
         sorted.sort_by_key(|e| std::cmp::Reverse(e.at_epoch_s));
@@ -140,6 +160,10 @@ impl Ledger {
     }
 
     /// Any entry still younger than SATURATE_S? (Drives the Slow cadence.)
+    ///
+    /// TODO(Task 15): drop this allow once `RadarState::ledger_any_unsaturated`
+    /// (its only consumer) is wired into timer arming.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn any_unsaturated(&self, now_epoch_s: u64) -> bool {
         self.entries.iter().any(|e| now_epoch_s.saturating_sub(e.at_epoch_s) < SATURATE_S)
     }
@@ -147,6 +171,10 @@ impl Ledger {
     /// Union of two rings: nearest-neighbor match on (pane, outcome, label)
     /// within MERGE_WINDOW_S keeps the later stamp; result sorted by
     /// at_epoch_s desc, truncated to LEDGER_CAP.
+    ///
+    /// TODO(Task 13/15): wire into cross-instance snapshot merge, then drop
+    /// this allow.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn merge(a: Vec<LedgerEntry>, b: Vec<LedgerEntry>) -> Vec<LedgerEntry> {
         let mut all = a;
         all.extend(b);
@@ -163,6 +191,9 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
+///
+/// TODO(Task 13): wire into the rendered ledger row, then drop this allow.
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
     let age = now_epoch_s.saturating_sub(at_epoch_s);
     if age < 60 {

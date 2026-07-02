@@ -3,6 +3,7 @@
 
 use crate::command::CommandStore;
 use crate::config;
+use crate::ledger::{Ledger, LedgerEntry, LedgerOutcome};
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::render::TabRow;
@@ -190,6 +191,23 @@ pub(crate) struct RadarChange {
 /// generous enough that opening tabs one at a time never hits it.
 const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
 
+/// A ledger entry, resolved for rendering: the live tab position (or `None`
+/// once that tab is gone, making the row click-inert) looked up fresh on every
+/// call, rather than cached — the ledger itself only ever remembers the
+/// `TabId` it happened in.
+///
+/// TODO(Task 13): consumed by the rendered ledger row; drop the allow below
+/// once that wiring lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+pub(crate) struct LedgerLine {
+    pub at_epoch_s: u64,
+    pub error: bool,
+    pub tab_name: String,
+    pub label: String,
+    pub tab_position: Option<usize>,
+}
+
 #[derive(Default)]
 pub(crate) struct RadarState {
     status: StatusStore,
@@ -204,6 +222,10 @@ pub(crate) struct RadarState {
     /// Tracks *attempts*, not successes, so a pane that has no cwd yet is never
     /// re-polled; pruned with `pane_cwd` so a recycled id can bootstrap again.
     cwd_bootstrap_attempted: HashSet<u32>,
+    /// Completions that have receded off the rail — every edge that removes a
+    /// Done/Error from a card (TTL recede, prompt-return clear, an overwrite,
+    /// or a prune) hands its observation here (spec §4.2).
+    ledger: Ledger,
 }
 
 impl RadarState {
@@ -286,19 +308,26 @@ impl RadarState {
         now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> RadarChange {
+        // Captured BEFORE `self.tab_panes` is overwritten below: every ledger
+        // edge in this method (the exit-displace and both stores' prunes)
+        // reports a pane that is either still on its pre-close topology or is
+        // *about* to leave it, so the tab name it ledgers under must be the
+        // last known one, not whatever (if anything) replaces it.
+        let old_index = self.pane_tab_index();
+
         for (pane_id, exit_status) in update.exits {
-            // Displaced completion ignored here (a prior Done/Error still on
-            // the pane when a fresh exit lands); Task 11 ledgers it.
-            let _ = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s);
+            let displaced = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s);
+            self.ledger_receded(displaced, &old_index);
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
-        // Dropped completions ignored here; Task 11 ledgers a pane closing with
-        // an unreceded Done/Error still on it.
-        let _ = self.status.prune(&update.live);
-        // Dropped completions ignored here; Task 11 ledgers a pane closing with
-        // an unreceded Done/Error still on it.
-        let _ = self.command.prune(&update.live);
+        // A pane closing with an unreceded Done/Error still on it is a recede
+        // edge for both stores; both prunes ledger against the pre-close
+        // `old_index` captured above.
+        let dropped_status = self.status.prune(&update.live);
+        let dropped_command = self.command.prune(&update.live);
+        self.ledger_receded(dropped_status, &old_index);
+        self.ledger_receded(dropped_command, &old_index);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
@@ -319,11 +348,14 @@ impl RadarState {
 
     /// Timer tick. Returns whether an observation changed (a debounced
     /// promotion or Done-flip) — the runtime persists the snapshot on it so
-    /// timer-driven mutations reach late-spawned instances too.
-    ///
-    /// TODO(Task 11): consume `TimerReport::receded` into the ledger.
+    /// timer-driven mutations reach late-spawned instances too. Every
+    /// completion the tick receded (TTL recede, or a promotion displacing a
+    /// still-lit Done/Error) hands off to the ledger.
     pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
-        self.command.on_timer(tick, now_epoch_s).changed
+        let report = self.command.on_timer(tick, now_epoch_s);
+        let index = self.pane_tab_index();
+        self.ledger_receded(report.receded, &index);
+        report.changed
     }
 
     pub(crate) fn cwd_changed(
@@ -359,14 +391,25 @@ impl RadarState {
         // ignores a Running status, so a mid-turn foreground flicker to a shell
         // can't be mistaken for the agent exiting.
         //
-        // `now_epoch_s` is threaded through for signature symmetry with the
-        // other three mutating entry points, but unused today:
-        // `clear_on_prompt_return` recedes to Idle and stamps no completion
-        // epoch. TODO(Task 11): the ledger may want the wall-clock moment of
-        // this recede.
+        // `now_epoch_s` stays unused here (kept for signature symmetry with the
+        // other three mutating entry points, per the Task 9 decision): the
+        // displaced observation `clear_on_prompt_return` hands back already
+        // carries its own `completed_epoch_s` stamp from when it first
+        // completed, so `LedgerEntry::from_observation` needs no fresh epoch
+        // from this call site.
         let _ = now_epoch_s;
-        let cleared = crate::command::is_shell_prompt(command, is_foreground)
-            && self.status.clear_on_prompt_return(pane_id, tick).is_some();
+        let cleared = if crate::command::is_shell_prompt(command, is_foreground) {
+            match self.status.clear_on_prompt_return(pane_id, tick) {
+                Some(receded) => {
+                    let index = self.pane_tab_index();
+                    self.ledger_receded(vec![(pane_id, receded)], &index);
+                    true
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
         RadarChange {
             render: true,
             settle: false,
@@ -385,9 +428,13 @@ impl RadarState {
         naming: config::NamingMode,
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
-        // Displaced completion ignored here; Task 11 ledgers a Done/Error that
-        // recedes on overwrite.
-        let _ = self.status.apply(p, tick, now_epoch_s);
+        let pane_id = p.pane_id;
+        // A Done/Error that recedes on overwrite (a new broadcast for the same
+        // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
+        if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
+            let index = self.pane_tab_index();
+            self.ledger_receded(vec![(pane_id, displaced)], &index);
+        }
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
@@ -481,6 +528,79 @@ impl RadarState {
             .collect()
     }
 
+    /// Prepared ledger rows for rendering, newest first. Each row's tab
+    /// position is a *live* lookup of the stored `tab_id` against `self.tabs`
+    /// — `None` once that tab has closed, which the renderer reads as
+    /// click-inert (the ledger itself never forgets an entry just because its
+    /// tab went away).
+    ///
+    /// TODO(Task 13): wired into the rendered rail; drop the allow below once
+    /// that lands (today it's reachable only from this module's tests, so the
+    /// production wasm build sees it as dead).
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    pub(crate) fn ledger_lines(&self) -> Vec<LedgerLine> {
+        self.ledger
+            .entries()
+            .map(|e| LedgerLine {
+                at_epoch_s: e.at_epoch_s,
+                error: e.outcome == LedgerOutcome::Error,
+                tab_name: e.tab_name.clone(),
+                label: e.label.clone(),
+                tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
+            })
+            .collect()
+    }
+
+    /// Any ledger entry still younger than the saturate window — drives the
+    /// Slow cadence (spec §4.4/§10) so the timer stays armed only while a row's
+    /// displayed age can still change.
+    ///
+    /// TODO(Task 15): wired into timer arming; drop the allow below once that
+    /// lands.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    pub(crate) fn ledger_any_unsaturated(&self, now_epoch_s: u64) -> bool {
+        self.ledger.any_unsaturated(now_epoch_s)
+    }
+
+    /// TODO(Task 13): wired into the rendered rail; drop the allow below once
+    /// that lands.
+    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    pub(crate) fn ledger_is_empty(&self) -> bool {
+        self.ledger.is_empty()
+    }
+
+    /// Pane → (tab id, tab name) for every pane currently in `self.tab_panes`,
+    /// joined against `self.tabs` for the name. Callers that need the topology
+    /// as of *before* a mutation (`panes_changed`'s prune edges) must capture
+    /// this BEFORE applying that mutation — the index itself is always just a
+    /// snapshot of current `self` state.
+    fn pane_tab_index(&self) -> HashMap<u32, (TabId, String)> {
+        let mut index = HashMap::new();
+        for tab in &self.tabs {
+            if let Some(panes) = self.tab_panes.get(&tab.position) {
+                for pane in panes {
+                    index.insert(pane.id, (tab.id, tab.name.clone()));
+                }
+            }
+        }
+        index
+    }
+
+    /// Push every receded observation that resolves to a completion into the
+    /// ledger, via `index`. A pane absent from `index` (its tab/topology is
+    /// unknown to this call) is silently dropped — there is no tab name to
+    /// ledger it under.
+    fn ledger_receded(&mut self, receded: Vec<(u32, TrackedObservation)>, index: &HashMap<u32, (TabId, String)>) {
+        for (pane_id, obs) in receded {
+            let Some((tab_id, tab_name)) = index.get(&pane_id) else {
+                continue;
+            };
+            if let Some(entry) = LedgerEntry::from_observation(pane_id, &obs, *tab_id, tab_name) {
+                self.ledger.push(entry);
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn status(&self, pane_id: u32) -> Option<&crate::observation::TrackedObservation> {
         self.status.get(pane_id)
@@ -509,6 +629,11 @@ impl RadarState {
     #[cfg(test)]
     pub(crate) fn command_store(&self) -> &CommandStore {
         &self.command
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.ledger
     }
 
     #[cfg(test)]
