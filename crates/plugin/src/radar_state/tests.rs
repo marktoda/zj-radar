@@ -978,6 +978,33 @@ fn arb_op() -> impl Strategy<Value = Op> {
     ]
 }
 
+/// Zero out the one field the first snapshot load is allowed to mutate:
+/// `last_change_tick` on a command-origin, Done observation (the TTL
+/// re-base in `RadarState::load_snapshot`, Task 12 — see the comment there).
+/// Every other field, every other entry, the ledger array, and the tick must
+/// survive a first load byte-equal; this function must NOT be widened to
+/// cover any other field without a matching re-base in production code, or
+/// it silently launders a real regression into "expected drift".
+///
+/// `observations` is a JSON array of flattened `{pane_id, origin, status,
+/// ..., last_change_tick, ...}` objects (see `snapshot::SnapshotEntry`), in
+/// the deterministic `(pane_id, origin)` order `to_json`'s `BTreeMap`
+/// produces — so no reordering is needed here, only field normalization.
+fn normalize_rebased_ticks(v: &mut serde_json::Value) {
+    let Some(observations) = v.get_mut("observations").and_then(serde_json::Value::as_array_mut) else {
+        return;
+    };
+    for entry in observations {
+        let is_rebased_entry = entry.get("origin").and_then(serde_json::Value::as_str) == Some("command")
+            && entry.get("status").and_then(serde_json::Value::as_str) == Some("done");
+        if is_rebased_entry {
+            if let Some(tick) = entry.get_mut("last_change_tick") {
+                *tick = serde_json::json!(0);
+            }
+        }
+    }
+}
+
 proptest! {
     #[test]
     fn radar_state_invariants_hold_after_any_event_sequence(
@@ -1086,13 +1113,22 @@ proptest! {
             }
         }
 
-        // Snapshot round-trip is a fixed point from the second load on: the
-        // very first load may re-base a command-origin Done's
-        // `last_change_tick` to the snapshot tick (the TTL re-base, spec
-        // §4.3), so `s1` (built from the accumulated op history's own ticks)
-        // need not equal `s2` byte-for-byte. But once that one-time re-base
-        // has happened, `s2` already carries the re-based tick, so loading and
-        // re-serializing it again must be byte-identical.
+        // Snapshot round-trip. Two properties, kept separate on purpose:
+        //
+        // 1. Fixed point from the second load on: once the one-time TTL
+        //    re-base (below) has happened, `s2` already carries the re-based
+        //    tick, so loading and re-serializing it again must be
+        //    byte-identical. This alone would miss non-idempotence introduced
+        //    by anything *other* than the re-base.
+        // 2. Full-strength first-load comparison: the very first load may
+        //    re-base a command-origin Done's `last_change_tick` to the
+        //    snapshot tick (the TTL re-base, spec §4.3) — that is the ONE
+        //    field allowed to differ between `s1` (built from the
+        //    accumulated op history's own ticks) and `s2`. Normalizing just
+        //    that field and then asserting full equality keeps first-load
+        //    coverage for everything else: dropped observations, mis-routed
+        //    origins, ledger corruption, or any other field drifting would
+        //    still fail this assertion.
         const SNAPSHOT_TICK: u64 = 9999;
         let s1 = st.snapshot_json(None, SNAPSHOT_TICK);
         let mut reloaded = RadarState::default();
@@ -1102,7 +1138,16 @@ proptest! {
         let mut reloaded_again = RadarState::default();
         reloaded_again.load_snapshot(&s2);
         let s3 = reloaded_again.snapshot_json(None, SNAPSHOT_TICK);
-        prop_assert_eq!(s2, s3, "snapshot round-trip must be a fixed point after the first TTL re-base");
+        prop_assert_eq!(&s2, &s3, "snapshot round-trip must be a fixed point after the first TTL re-base");
+
+        let mut v1: serde_json::Value = serde_json::from_str(&s1).unwrap();
+        let mut v2: serde_json::Value = serde_json::from_str(&s2).unwrap();
+        normalize_rebased_ticks(&mut v1);
+        normalize_rebased_ticks(&mut v2);
+        prop_assert_eq!(
+            v1, v2,
+            "first load must be byte-identical modulo the TTL-rebased last_change_tick field"
+        );
     }
 
     #[test]
