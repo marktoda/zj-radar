@@ -314,20 +314,25 @@ impl RadarState {
         // *about* to leave it, so the tab name it ledgers under must be the
         // last known one, not whatever (if anything) replaces it.
         let old_index = self.pane_tab_index();
+        // Captured BEFORE `self.status.prune` runs below — mirrors `resolve`'s
+        // status-wins-over-command precedence. A command-origin recede for a
+        // pane the status store was tracking at THIS moment was never actually
+        // shown on the card, so `ledger_receded` must not ghost it in.
+        let status_tracked = self.status_tracked_pane_ids();
 
         for (pane_id, exit_status) in update.exits {
             let displaced = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s);
-            self.ledger_receded(displaced, &old_index);
+            self.ledger_receded(displaced, &old_index, &status_tracked);
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
         // A pane closing with an unreceded Done/Error still on it is a recede
         // edge for both stores; both prunes ledger against the pre-close
-        // `old_index` captured above.
+        // `old_index` and `status_tracked` captured above.
         let dropped_status = self.status.prune(&update.live);
         let dropped_command = self.command.prune(&update.live);
-        self.ledger_receded(dropped_status, &old_index);
-        self.ledger_receded(dropped_command, &old_index);
+        self.ledger_receded(dropped_status, &old_index, &status_tracked);
+        self.ledger_receded(dropped_command, &old_index, &status_tracked);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
         self.cwd_bootstrap_attempted
             .retain(|id| update.live.contains(id));
@@ -354,7 +359,11 @@ impl RadarState {
     pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
         let report = self.command.on_timer(tick, now_epoch_s);
         let index = self.pane_tab_index();
-        self.ledger_receded(report.receded, &index);
+        // All-command-origin recedes here; no pruning is in flight on this
+        // edge, so the live status store IS the "at this moment" set — see
+        // `resolve`'s precedence and `status_tracked_pane_ids`'s doc.
+        let status_tracked = self.status_tracked_pane_ids();
+        self.ledger_receded(report.receded, &index, &status_tracked);
         report.changed
     }
 
@@ -402,7 +411,11 @@ impl RadarState {
             match self.status.clear_on_prompt_return(pane_id, tick) {
                 Some(receded) => {
                     let index = self.pane_tab_index();
-                    self.ledger_receded(vec![(pane_id, receded)], &index);
+                    // Status-origin recede: `status_tracked` never suppresses
+                    // it — the shadow filter only ever applies to
+                    // Command-origin observations.
+                    let status_tracked = self.status_tracked_pane_ids();
+                    self.ledger_receded(vec![(pane_id, receded)], &index, &status_tracked);
                     true
                 }
                 None => false,
@@ -433,7 +446,10 @@ impl RadarState {
         // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
         if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
             let index = self.pane_tab_index();
-            self.ledger_receded(vec![(pane_id, displaced)], &index);
+            // Status-origin recede: never suppressed (see `command_changed`'s
+            // matching call site).
+            let status_tracked = self.status_tracked_pane_ids();
+            self.ledger_receded(vec![(pane_id, displaced)], &index, &status_tracked);
         }
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
@@ -586,12 +602,38 @@ impl RadarState {
         index
     }
 
+    /// Pane ids the status store currently holds an observation for,
+    /// regardless of its status value — mirrors `resolve`'s precedence check
+    /// (`status.get(...).or_else(command.get(...))`: mere PRESENCE in the
+    /// status store shadows a command observation, whatever its status is).
+    /// `ledger_receded` uses this to recognize a command-origin recede that
+    /// was never actually shown on the card.
+    fn status_tracked_pane_ids(&self) -> HashSet<u32> {
+        self.status.observations().map(|(id, _)| id).collect()
+    }
+
     /// Push every receded observation that resolves to a completion into the
     /// ledger, via `index`. A pane absent from `index` (its tab/topology is
     /// unknown to this call) is silently dropped — there is no tab name to
     /// ledger it under.
-    fn ledger_receded(&mut self, receded: Vec<(u32, TrackedObservation)>, index: &HashMap<u32, (TabId, String)>) {
+    ///
+    /// A command-origin observation for a pane in `status_tracked` is also
+    /// dropped, unconditionally: `resolve`'s status-wins-over-command
+    /// precedence means that observation was never a card fact, so its
+    /// recede — TTL or prune — must not ghost into the ledger (spec §4.2's
+    /// "an observation at the edge where it stops being shown as a card
+    /// fact"). A status-origin observation is never filtered here; only
+    /// `resolve` and this check know there are two stores at all.
+    fn ledger_receded(
+        &mut self,
+        receded: Vec<(u32, TrackedObservation)>,
+        index: &HashMap<u32, (TabId, String)>,
+        status_tracked: &HashSet<u32>,
+    ) {
         for (pane_id, obs) in receded {
+            if obs.origin == ObservationOrigin::Command && status_tracked.contains(&pane_id) {
+                continue;
+            }
             let Some((tab_id, tab_name)) = index.get(&pane_id) else {
                 continue;
             };

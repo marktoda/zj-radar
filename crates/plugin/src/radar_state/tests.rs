@@ -1236,6 +1236,86 @@ fn pending_and_running_never_ledger() {
 }
 
 #[test]
+fn shadowed_command_completion_never_ledgers() {
+    // A pane tracked by BOTH stores: the status observation wins on the card
+    // (`resolve`'s status-wins-over-command precedence), so the command
+    // store's invisible Done must not ghost into the ledger — not on TTL
+    // recede, and not on prune.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    // 1. Drive a command Done on pane 7: a foreground command runs, leaves
+    // the foreground, and the debounce window confirms Done.
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
+    assert_eq!(radar.command(7).unwrap().status, Status::Running);
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
+    assert_eq!(radar.command(7).unwrap().status, Status::Done);
+
+    // 2. A status-pipe Running observation lands on the SAME pane 7 — the
+    // status store now shadows the command Done on the card.
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Running, "pinky"), confirm_tick, 600);
+
+    // 3. Tick past DONE_TTL_TICKS: the command Done recedes off its own TTL
+    // clock. It was never actually shown on the card (status shadowed it),
+    // so it must NOT ghost into the ledger.
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900);
+    assert!(
+        radar.ledger_is_empty(),
+        "a command completion shadowed by a status observation must not ledger on TTL recede"
+    );
+
+    // 4. The status observation itself now finishes (Done), then the pane
+    // closes — pruning both stores in the same PaneUpdate. Exactly ONE
+    // ledger entry should land: the STATUS one.
+    radar.status_mut().apply(
+        payload_for(7, Status::Done, "pinky"),
+        confirm_tick + DONE_TTL_TICKS,
+        950,
+    );
+    let update = PaneUpdate {
+        tab_panes: HashMap::new(),
+        live: HashSet::new(),
+        theme: None,
+        exits: Vec::new(),
+    };
+    radar.panes_changed(update, confirm_tick + DONE_TTL_TICKS + 1, 999, config::NamingMode::Off);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1, "exactly one ledger entry — the status completion");
+    assert_eq!(lines[0].label, "working", "the STATUS observation's msg, not the command's");
+    assert_eq!(lines[0].at_epoch_s, 950);
+}
+
+#[test]
+fn unshadowed_command_completion_still_ledgers() {
+    // Sanity: with no status observation on the pane, a command Done recedes
+    // into the ledger exactly as before — guards against over-suppression.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
+    radar.timer(confirm_tick, 500);
+    assert_eq!(radar.command(7).unwrap().status, Status::Done);
+
+    radar.timer(confirm_tick + DONE_TTL_TICKS, 900);
+
+    let lines = radar.ledger_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].label, "cargo build");
+    assert_eq!(lines[0].at_epoch_s, 500);
+}
+
+#[test]
 fn ledger_lines_resolve_live_tab_position_or_none() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
