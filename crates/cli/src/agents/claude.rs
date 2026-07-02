@@ -7,6 +7,13 @@ use serde_json::Value;
 const GENERIC_PENDING: [&str; 2] = ["Claude needs attention", "Claude Code needs your attention"];
 
 /// Map a Claude hook event name to a status (used when `--status` is absent).
+///
+/// `error` is deliberately absent: Claude's hook vocabulary has no reliable
+/// failure signal. `PostToolUse` carries per-tool `is_error`, but a mid-turn
+/// tool failure is normal agent behavior (it recovers and continues), and
+/// `Stop` reports no turn-level outcome — so mapping either to `Error` would
+/// paint healthy turns red. Observed command exits remain the only error
+/// source until the hook model grows a real one.
 fn status_from_event(event: &str) -> Option<Status> {
     match event {
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SubagentStop" => Some(Status::Running),
@@ -33,6 +40,23 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         Some(s) => Status::from_wire(s),
         None => status_from_event(event?)?,
     };
+
+    // A turn that ends by asking the user something is blocked on input, not
+    // finished — but Claude's hook model only surfaces tool-permission
+    // questions as `Notification`s; a prose question just fires `Stop`. Remap
+    // that Done to Pending with the trailing question as the message, so the
+    // rail shows "needs you" instead of a green row the user will misread as
+    // safe to ignore.
+    if status == Status::Done {
+        if let Some(question) = super::trailing_question(msg) {
+            return Some(AgentUpdate {
+                status: Status::Pending,
+                msg: question.to_string(),
+                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+                task: None,
+            });
+        }
+    }
 
     if status == Status::Pending {
         let m = msg.trim();
@@ -198,6 +222,35 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(bash.msg, "pushing");
+    }
+
+    #[test]
+    fn stop_ending_in_a_question_remaps_done_to_pending() {
+        // A turn that ends mid-question is blocked on the user; "done" would
+        // read as safe to ignore. Only the trailing line rides as the msg —
+        // it's the sentence the rail's question slot can actually show.
+        let u = derive(&intake(
+            r#"{"hook_event_name":"Stop","last_assistant_message":"Refactored the auth module.\n\nShould I also update the tests?","cwd":"/home/u/repo"}"#,
+            Some("done"),
+        ))
+        .unwrap();
+        assert_eq!(u.status, Status::Pending);
+        assert_eq!(u.msg, "Should I also update the tests?");
+        assert_eq!(u.cwd.as_deref(), Some("/home/u/repo"));
+        assert_eq!(u.task, None, "no prompt here — keep the stored label");
+    }
+
+    #[test]
+    fn stop_ending_in_a_statement_stays_done() {
+        // A question mark anywhere but the trailing line is not "ends by
+        // asking" — the turn finished on a statement.
+        let u = derive(&intake(
+            r#"{"hook_event_name":"Stop","last_assistant_message":"Want anything else?\nAll tests pass."}"#,
+            Some("done"),
+        ))
+        .unwrap();
+        assert_eq!(u.status, Status::Done);
+        assert_eq!(u.msg, "Want anything else?\nAll tests pass.");
     }
 
     #[test]

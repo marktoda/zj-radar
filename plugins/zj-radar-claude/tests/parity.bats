@@ -104,6 +104,36 @@ parity_task_case() { # $1 = hook JSON
   parity_task_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Grep","tool_input":{"pattern":"x"},"prompt":"stray"}'
 }
 
+@test "parity: Stop ending in a question remaps done to pending" {
+  # A turn that ends by asking is blocked on input: both producers must remap
+  # done → pending and carry ONLY the trailing question line as the msg.
+  local json='{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"Refactored the auth module.\n\nShould I also update the tests?"}'
+
+  rm -f "$RECORD"; echo "$json" | "$SCRIPT" done
+  local bash_payload; bash_payload="$(last_payload)"
+
+  rm -f "$RECORD"; echo "$json" | "$CLI" notify claude --status done
+  local rust_payload; rust_payload="$(last_payload)"
+
+  [ "$(jq -r '.status' <<<"$bash_payload")" = pending ]
+  [ "$(jq -r '.status' <<<"$rust_payload")" = pending ]
+  [ "$(jq -r '.msg' <<<"$bash_payload")" = "Should I also update the tests?" ]
+  [ "$(jq -r '.msg' <<<"$rust_payload")" = "Should I also update the tests?" ]
+}
+
+@test "parity: Stop ending in a statement stays done" {
+  local json='{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"Anything else?\nAll tests pass."}'
+
+  rm -f "$RECORD"; echo "$json" | "$SCRIPT" done
+  local bash_payload; bash_payload="$(last_payload)"
+
+  rm -f "$RECORD"; echo "$json" | "$CLI" notify claude --status done
+  local rust_payload; rust_payload="$(last_payload)"
+
+  [ "$(jq -r '.status' <<<"$bash_payload")" = done ]
+  [ "$(jq -r '.status' <<<"$rust_payload")" = done ]
+}
+
 @test "parity: idle clears the message in both producers" {
   # `parity_case` asserts a NON-empty msg, so idle (intentionally blank) needs
   # its own check: both producers must agree on status=idle AND an empty msg,

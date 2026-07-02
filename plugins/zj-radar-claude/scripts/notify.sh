@@ -153,6 +153,21 @@ if [[ "$status" == "pending" ]]; then
     esac
 fi
 
+# A turn that ends by asking the user something is blocked on input, not done:
+# remap done → pending with the trailing question (the last non-empty line,
+# when it ends in a question mark) as the message. Parity with
+# trailing_question in agents.rs.
+if [[ "$status" == "done" && -n "$msg" ]]; then
+    last_line="$(printf '%s\n' "$msg" | awk 'NF{l=$0} END{print l}' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "$last_line" in
+        *"?"|*"？")
+            status="pending"
+            msg="$last_line"
+            ;;
+    esac
+fi
+
 # idle means "no activity" — never carry a message (drops any stale message the
 # payload rides in on, e.g. a SessionStart session_title), so the rail row
 # recedes cleanly on /clear. Mirrors derive_claude's idle branch.

@@ -139,6 +139,17 @@ pub fn task_from_prompt(prompt: &str) -> Option<String> {
     Some(line.chars().take(512).collect())
 }
 
+/// The trailing question in a final assistant message, if the turn ends by
+/// asking one: the last non-empty line, when it ends with `?` (or the
+/// full-width `？`). A turn that ends mid-question is blocked on the user, not
+/// done — the caller remaps its status to Pending with this line as the
+/// question. Line-scoped on purpose: the last *sentence* is what the rail's
+/// 60-char question slot can actually show.
+pub fn trailing_question(msg: &str) -> Option<&str> {
+    let line = msg.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    (line.ends_with('?') || line.ends_with('？')).then_some(line)
+}
+
 fn basename(path: &str) -> Option<&str> {
     if path.is_empty() {
         return None;
@@ -432,5 +443,19 @@ mod tests {
     fn task_from_prompt_caps_at_512_chars() {
         let long = "x".repeat(600);
         assert_eq!(task_from_prompt(&long).unwrap().chars().count(), 512);
+    }
+
+    #[test]
+    fn trailing_question_is_the_last_nonempty_line_only_when_it_asks() {
+        assert_eq!(
+            trailing_question("Done with the refactor.\n\nShall I push?  \n"),
+            Some("Shall I push?")
+        );
+        // Question earlier, statement last → not blocked on the user.
+        assert_eq!(trailing_question("Anything else?\nAll tests pass."), None);
+        assert_eq!(trailing_question("all set"), None);
+        assert_eq!(trailing_question(""), None);
+        // Full-width question mark (CJK) counts.
+        assert_eq!(trailing_question("完了しました。続けますか？"), Some("完了しました。続けますか？"));
     }
 }

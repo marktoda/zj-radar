@@ -33,7 +33,16 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
             Status::Running,
             last_assistant_message(v).unwrap_or_else(|| "delegating".into()),
         ),
-        "Stop" => (Status::Done, last_assistant_message(v).unwrap_or_default()),
+        // A turn that ends by asking the user something is blocked on input,
+        // not finished — remap to Pending with the trailing question as the
+        // message (same rule as the Claude adapter).
+        "Stop" => {
+            let msg = last_assistant_message(v).unwrap_or_default();
+            match super::trailing_question(&msg) {
+                Some(q) => (Status::Pending, q.to_string()),
+                None => (Status::Done, msg),
+            }
+        }
         _ => return None,
     };
     let task = if event == "UserPromptSubmit" {
@@ -117,6 +126,20 @@ mod tests {
     fn only_prompt_submit_carries_a_task() {
         let u = update(r#"{"hook_event_name":"Stop","last_assistant_message":"implemented"}"#);
         assert_eq!(u.task, None);
+    }
+
+    #[test]
+    fn stop_ending_in_a_question_remaps_done_to_pending() {
+        // Same rule as the Claude adapter: a turn that ends mid-question is
+        // blocked on input; only the trailing line rides as the msg.
+        let u = update(
+            r#"{"hook_event_name":"Stop","last_assistant_message":"Refactored.\n\nShould I push?"}"#,
+        );
+        assert_eq!(u.status, Status::Pending);
+        assert_eq!(u.msg, "Should I push?");
+        // A statement-final turn stays done.
+        let u = update(r#"{"hook_event_name":"Stop","last_assistant_message":"All tests pass."}"#);
+        assert_eq!(u.status, Status::Done);
     }
 
     #[test]
