@@ -81,10 +81,13 @@ impl TabNamer {
             if ours && name_supported(&tab.panes, &tab.name) {
                 continue;
             }
-            let Some(desired) = computed_name(&tab.panes) else {
+            // Sanitized exactly like the tab intake sanitizes host names: what
+            // we apply must equal what `TabUpdate` echoes back, or stickiness
+            // would misread our own (re-sanitized) name as a manual rename.
+            let Some(desired) = computed_name(&tab.panes).map(|n| crate::payload::sanitize(&n, 40)) else {
                 continue;
             };
-            if desired == tab.name {
+            if desired.is_empty() || desired == tab.name {
                 continue;
             }
             if force || is_default_name(&tab.name) || ours {
@@ -412,6 +415,21 @@ mod tests {
         let mut namer = TabNamer::default();
         let tabs = vec![tab(1, "alpha", vec![repo_pane("alpha", true)])];
         assert!(namer.rename(&tabs, NamingMode::Managed).is_empty());
+    }
+
+    #[test]
+    fn applied_names_round_trip_through_the_tab_intake_sanitize() {
+        // A candidate over the 40-char intake cap: the name we apply must equal
+        // what `TabUpdate` echoes back (post-sanitize), or Managed would
+        // misread its own name as a manual rename and re-emit forever.
+        let long = "a".repeat(50);
+        let mut namer = TabNamer::default();
+        let out = namer.rename(&[tab(1, "Tab #1", vec![repo_pane(&long, true)])], NamingMode::Managed);
+        let applied = out[0].name.clone();
+        assert_eq!(applied.chars().count(), 40, "applied name is pre-capped");
+        // The host echoes the sanitized name back: recognized as ours, settled.
+        let out = namer.rename(&[tab(1, &applied, vec![repo_pane(&long, true)])], NamingMode::Managed);
+        assert!(out.is_empty(), "no rename fight after the echo");
     }
 
     #[test]

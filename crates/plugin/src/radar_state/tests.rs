@@ -99,6 +99,39 @@ fn rows_sort_tabs_by_position_and_aggregate_panes() {
 }
 
 #[test]
+fn tabs_changed_sanitizes_host_names_before_they_reach_the_grid() {
+    // Tab names are the one externally-writable string that reaches the render
+    // grid (`zellij rename-tab`, layouts). A newline would desync the
+    // line↔click-target lockstep; an ESC would inject ANSI; bidi controls are
+    // the Trojan-Source class. The intake scrubs all three, like pane titles.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "evil\x1b[31m\nname\u{202e}", true)]);
+    assert_eq!(radar.rows(0)[0].name, "evil name");
+}
+
+#[test]
+fn snapshot_load_scrubs_hostile_ledger_strings() {
+    // A pre-sanitize build (or a hand-edited /cache file) may have persisted
+    // raw control chars in ledger strings; the loader scrubs them so a merged
+    // snapshot can never smuggle ANSI or a lockstep-breaking newline in.
+    let hostile = crate::ledger::LedgerEntry {
+        at_epoch_s: 5,
+        outcome: crate::ledger::LedgerOutcome::Done,
+        tab_id: TabId::new(3),
+        tab_name: "ev\x1b[31mil\ntab".into(),
+        label: "a\x07b".into(),
+        pane_id: 9,
+    };
+    let json = format!(
+        r#"{{"v":3,"tick":1,"observations":[],"ledger":[{}]}}"#,
+        serde_json::to_string(&hostile).unwrap()
+    );
+    let (_, _, ledger) = snapshot::load(&json).expect("valid snapshot");
+    assert_eq!(ledger[0].tab_name, "evil tab");
+    assert_eq!(ledger[0].label, "ab");
+}
+
+#[test]
 fn active_tab_focus_is_the_only_global_focus_transition() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "left", false), tab(20, 1, "right", true)]);

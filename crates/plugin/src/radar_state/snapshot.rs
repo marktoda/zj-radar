@@ -144,7 +144,11 @@ fn load_v3(value: serde_json::Value) -> Option<LoadedSnapshot> {
         .into_iter()
         .map(|entry| (entry.pane_id, entry.obs))
         .collect();
-    Some((observations, snapshot.tick, snapshot.ledger))
+    // Ledger strings ride the disk record verbatim; a pre-sanitize build (or a
+    // hand-edited file) may have persisted raw control chars, so scrub them on
+    // the way in like every other externally-sourced string.
+    let ledger = snapshot.ledger.into_iter().map(LedgerEntry::sanitized).collect();
+    Some((observations, snapshot.tick, ledger))
 }
 
 /// A v2 (pre-ledger) record shares v3's exact struct shape — `ledger` is

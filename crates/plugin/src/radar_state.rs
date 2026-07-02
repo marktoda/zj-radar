@@ -313,7 +313,14 @@ impl RadarState {
         self.flash_until.values().any(|&u| now_tick < u)
     }
 
-    pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> RadarChange {
+    pub(crate) fn tabs_changed(&mut self, mut tabs: Vec<RadarTab>) -> RadarChange {
+        // Tab names are externally writable (`zellij rename-tab`, layouts) and
+        // reach the render grid verbatim, so they get the same intake sanitize
+        // as pane titles: a raw ESC would inject ANSI into the rail, and a
+        // newline would desync the line↔click-target lockstep.
+        for t in &mut tabs {
+            t.name = payload::sanitize(&t.name, 40);
+        }
         self.tabs = tabs;
         // Drop naming state for tabs that closed (the update carries the full
         // current set), so `applied` doesn't accrete gone tabs.

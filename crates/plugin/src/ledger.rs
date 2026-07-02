@@ -13,6 +13,7 @@
 //! `is_empty` via `PluginRuntime::render`'s onboarding-vs-rail choice.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
+use crate::payload::{sanitize, MAX_MSG_CHARS};
 use crate::radar_state::TabId;
 use crate::status::Status;
 use serde::{Deserialize, Serialize};
@@ -73,12 +74,23 @@ impl LedgerEntry {
         };
         Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name), label, pane_id })
     }
+
+    /// Re-scrub the free-text fields. Live entries are built from
+    /// already-sanitized state; this is for entries loaded off disk, where a
+    /// pre-sanitize build (or a hand-edited snapshot) may have persisted raw
+    /// control chars that would otherwise reach the render grid.
+    pub(crate) fn sanitized(mut self) -> LedgerEntry {
+        self.tab_name = sanitized_or(&self.tab_name);
+        self.label = sanitize(&self.label, MAX_MSG_CHARS);
+        self
+    }
 }
 
-/// Trim + fall back to `"tab"` for an empty name, so a ledgered entry never
-/// shows a blank tab column.
+/// Sanitize (strip controls/ANSI, cap like a tab name) + fall back to `"tab"`
+/// for an empty result, so a ledgered entry never shows a blank tab column.
 fn sanitized_or(name: &str) -> String {
-    let trimmed = name.trim();
+    let clean = sanitize(name, 40);
+    let trimmed = clean.trim();
     if trimmed.is_empty() {
         "tab".to_string()
     } else {
@@ -203,6 +215,16 @@ mod tests {
 
     fn entry(pane_id: u32, outcome: LedgerOutcome, label: &str, at_epoch_s: u64) -> LedgerEntry {
         LedgerEntry { at_epoch_s, outcome, tab_id: TabId::new(0), tab_name: "tab".into(), label: label.to_string(), pane_id }
+    }
+
+    #[test]
+    fn sanitized_scrubs_disk_loaded_free_text() {
+        // Entries loaded off disk may predate intake sanitization; the scrub
+        // strips ANSI/controls and folds newlines like every other intake.
+        let e = entry(1, LedgerOutcome::Done, "did\nthings\x1b[31m", 5);
+        let e = LedgerEntry { tab_name: "ev\x1b[2Jil\ntab".into(), ..e }.sanitized();
+        assert_eq!(e.tab_name, "evil tab");
+        assert_eq!(e.label, "did things");
     }
 
     #[test]

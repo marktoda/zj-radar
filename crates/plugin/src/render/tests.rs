@@ -4423,7 +4423,12 @@ prop_compose! {
 prop_compose! {
     fn arb_row()(
         status in arb_status(),
-        name in "[a-zA-Z0-9_-]{0,20}",
+        // Post-sanitize tab names can still carry wide/CJK glyphs — fuzz them
+        // so name truncation and the lockstep width math see width-2 chars.
+        name in prop_oneof![
+            "[a-zA-Z0-9_-]{0,20}",
+            Just("日本語のタブ名".to_string()),
+        ],
         active in any::<bool>(),
         total in 0usize..4,
         panes in proptest::collection::vec(arb_pane(), 0..=8),
