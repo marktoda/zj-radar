@@ -6,6 +6,13 @@
 plugins {
     radar location="file:@WASM@" {
         naming "managed"
+        // This config carries a real Ctrl-y grant keybind (below), so rails
+        // launched through this alias may advertise it on the needs-permission
+        // face. Zellij merges alias config into every launch — per-layout
+        // plugin blocks and the resurrection snapshot included — so this one
+        // line covers all of them. Setup-injected rails (user-owned configs,
+        // no such bind) never see this key and get the generic wording.
+        grant_hint "ctrl-y"
     }
 }
 

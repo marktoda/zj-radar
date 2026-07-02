@@ -703,12 +703,11 @@ mod tests {
 
     #[test]
     fn bundled_config_has_grant_keybind() {
-        // The Ctrl-y escape hatch is the resurrection-safe grant path: `run`
-        // auto-dispatches the float on a LIVE attach, but a dead/resurrectable
-        // session has no server to dispatch to, and attach applies no layout — so
-        // the baked-in keybind (living with every session's server) is the only
-        // thing that can summon the float after a cold resurrect. It must launch
-        // the radar plugin floating in the onboarding role.
+        // The Ctrl-y escape hatch is the manual grant path from ANY session
+        // state. Keybinds come from each client's config, so it's real only
+        // because `attach_session_args` passes `--config-dir` back to this
+        // owned config — creation and every later attach/resurrect alike. It
+        // must launch the radar plugin floating in the onboarding role.
         assert!(CONFIG_TEMPLATE.contains("bind \"Ctrl y\""), "config must bind the grant escape hatch");
         assert!(
             CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""),
@@ -718,6 +717,14 @@ mod tests {
         assert!(
             CONFIG_TEMPLATE.contains("role \"onboarding\""),
             "grant float must use the onboarding role so it owns the prompt and closes on grant"
+        );
+        // The rail's needs-permission face only advertises Ctrl-y when its
+        // config claims the bind exists. Zellij merges alias config into every
+        // launch of the `radar` alias, so one key on the alias covers layout
+        // rails, the keybind float, and resurrection snapshots alike.
+        assert!(
+            CONFIG_TEMPLATE.contains("grant_hint \"ctrl-y\""),
+            "the alias must claim the Ctrl-y hint this config's keybind makes true"
         );
     }
 

@@ -70,6 +70,32 @@ impl Role {
     }
 }
 
+/// Which escape hatch the `needs_permission` face may honestly advertise. The
+/// rail can't know how it was installed, and the two install flows differ in
+/// what's actually bound: `run`-owned configs bake a Ctrl-y keybind that
+/// summons the legible grant float, while a `setup`-injected rail lives in the
+/// user's own config where no such bind exists — telling those users to press
+/// Ctrl-y is a dead end. So the hint is config-driven: the `run` layouts pass
+/// `grant_hint "ctrl-y"`, and everything else falls back to the universally
+/// true generic wording (focus the rail, answer Zellij's prompt).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GrantHint {
+    /// A Ctrl-y grant keybind is known to exist (run-owned configs only).
+    CtrlY,
+    /// Default: promise nothing about keybinds we didn't install.
+    #[default]
+    Generic,
+}
+
+impl GrantHint {
+    pub fn from_config(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ctrl-y" => GrantHint::CtrlY,
+            _ => GrantHint::default(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Config {
     pub naming: NamingMode,
@@ -77,6 +103,8 @@ pub struct Config {
     pub glyphs: crate::status::GlyphSet,
     pub density: Density,
     pub role: Role,
+    /// Which grant escape hatch the needs-permission face advertises.
+    pub grant_hint: GrantHint,
     /// Set on the onboarding layout's rail instances: never fire our own
     /// permission request — wait for the floating onboarding pane to win the
     /// grant, so Zellij binds its prompt to the float, not the rail.
@@ -96,6 +124,7 @@ impl Default for Config {
             glyphs: crate::status::GlyphSet::default(),
             density: Density::default(),
             role: Role::default(),
+            grant_hint: GrantHint::default(),
             defer_permission: false,
             notify: true,
             notify_done: true,
@@ -175,6 +204,7 @@ config_fields! {
         density: "density" => Density::from_config,
         glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
         role:    "role"    => Role::from_config,
+        grant_hint: "grant_hint" => GrantHint::from_config,
     }
     opt {
         header:              "header"              => parse_bool,
@@ -407,6 +437,26 @@ mod tests {
         assert_eq!(c.naming, NamingMode::Managed);
         assert!(c.header);
         assert_eq!(c.glyphs, crate::status::GlyphSet::Plain);
+    }
+
+    #[test]
+    fn grant_hint_parses_and_defaults_to_generic() {
+        // Absent or unrecognized: promise nothing about keybinds we didn't
+        // install — only the run-owned layouts may claim Ctrl-y.
+        assert_eq!(Config::default().grant_hint, GrantHint::Generic);
+        assert_eq!(Config::from_map(&map(&[])).grant_hint, GrantHint::Generic);
+        assert_eq!(
+            Config::from_map(&map(&[("grant_hint", "ctrl-y")])).grant_hint,
+            GrantHint::CtrlY
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("grant_hint", "CTRL-Y")])).grant_hint,
+            GrantHint::CtrlY
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("grant_hint", "banana")])).grant_hint,
+            GrantHint::Generic
+        );
     }
 
     #[test]

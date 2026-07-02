@@ -347,7 +347,7 @@ pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
 /// host Zellij's prompt legibly (Zellij #4749), and on an attached session no
 /// onboarding float was ever opened — `Ctrl-y` summons that legible float from
 /// any session state.
-pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
+pub fn needs_permission(opts: &RenderOpts, grant_hint: crate::config::GrantHint) -> RenderedRail {
     let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
@@ -357,9 +357,17 @@ pub fn needs_permission(opts: &RenderOpts) -> RenderedRail {
     push_panel_line(&mut out, accent, &"═".repeat(w), w);
     push_panel_line(&mut out, needs, " ⚠ needs permission", w);
     out.push('\n');
-    push_panel_line(&mut out, muted, " press Ctrl-y to", w);
-    push_panel_line(&mut out, muted, " open the grant", w);
-    push_panel_line(&mut out, muted, " prompt.", w);
+    // The escape-hatch hint must only promise what this install actually
+    // bound: run-owned configs bake the Ctrl-y float keybind; a setup-injected
+    // rail has no such bind, so it gets the universally true wording (Zellij's
+    // own prompt is bound to a rail pane — focus it and answer).
+    let hint: [&str; 3] = match grant_hint {
+        crate::config::GrantHint::CtrlY => [" press Ctrl-y to", " open the grant", " prompt."],
+        crate::config::GrantHint::Generic => [" focus this pane;", " press y when the", " prompt appears."],
+    };
+    for line in hint {
+        push_panel_line(&mut out, muted, line, w);
+    }
     RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 

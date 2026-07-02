@@ -384,7 +384,7 @@ impl PluginRuntime {
             ledger: self.radar.ledger_lines(),
         };
         let rail = if !self.permission.granted() {
-            render::needs_permission(&opts)
+            render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
             render::onboarding(&opts)
         } else {
