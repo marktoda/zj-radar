@@ -489,22 +489,37 @@ fn focused_done_stays_lit_until_a_shared_clear() {
     );
 
     // A shared signal — a fresh broadcast for the pane (the `/clear` → idle
-    // reset) — is what recedes it, on every instance alike.
+    // reset) — is what recedes it, on every instance alike. Check the CARD
+    // region only: the receded completion now legitimately resurfaces as an
+    // `─ earlier` ledger row (spec §9's bottom region), so a whole-sidebar
+    // substring check would false-negative once that row renders — this
+    // asserts the live card is gone, not that the string vanished entirely.
     let idle = format!(
         r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"idle","repo":"web","msg":""}}"#
     );
     session.pipe_status(&idle);
     let receded = session.wait_until(std::time::Duration::from_secs(6), |s| {
-        !sidebar_region(&s.screen(), 32).contains("deploying")
+        !card_region_only(&sidebar_region(&s.screen(), 32)).contains("deploying")
     });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] post-idle sidebar (32 cols):\n{}", sidebar);
     assert!(
         receded,
-        "an idle broadcast must recede the finished row;\nsidebar:\n{}",
+        "an idle broadcast must recede the finished card row;\nsidebar:\n{}",
         sidebar
     );
-    eprintln!("[e2e] PASS: done stayed lit under focus, receded on the idle broadcast");
+    // The feature working: the completion that just receded resurfaces below
+    // the `─ earlier` rule as a ledger row rather than vanishing outright.
+    assert!(
+        sidebar
+            .split_once("─ earlier")
+            .is_some_and(|(_, after)| after.contains("deploying")),
+        "the receded completion should resurface as an `─ earlier` ledger row;\nsidebar:\n{}",
+        sidebar
+    );
+    eprintln!(
+        "[e2e] PASS: done stayed lit under focus, receded to the ledger on the idle broadcast"
+    );
 }
 
 /// Behavior: an error the user is watching must NOT recede — CONTEXT.md's hard

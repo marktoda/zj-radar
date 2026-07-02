@@ -312,6 +312,8 @@ impl PluginRuntime {
             header: self.config.header,
             density: self.config.density,
             theme: self.theme.clone(),
+            now_epoch_s: crate::clock::now_epoch_s(),
+            ledger: self.radar.ledger_lines(),
         };
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts)
@@ -323,6 +325,30 @@ impl PluginRuntime {
         let ansi = rail.ansi.clone();
         self.last_rendered = rail;
         ansi
+    }
+
+    /// Test-only: this session's natural content height at `cols` — enough to
+    /// show every row with no overflow folding and no bottom-region padding
+    /// (spec §9). Click-mapping tests want a "big enough, no overflow" height
+    /// without hard-coding one; passing a merely-large sentinel (the old
+    /// `usize::MAX / 2` convention) now lands in the bottom region's
+    /// unbounded-filler branch, so this asks `render::body_line_count` for the
+    /// real number instead.
+    #[cfg(test)]
+    pub(crate) fn natural_height(&self, cols: usize) -> usize {
+        let tabrows = self.build_rows();
+        let opts = render::RenderOpts {
+            width: cols.max(1),
+            height: usize::MAX / 2,
+            now_tick: self.tick,
+            glyphs: self.config.glyphs,
+            header: self.config.header,
+            density: self.config.density,
+            theme: self.theme.clone(),
+            now_epoch_s: crate::clock::now_epoch_s(),
+            ledger: self.radar.ledger_lines(),
+        };
+        render::body_line_count(&tabrows, &opts)
     }
 
     pub(crate) fn sidebar_should_be_selectable(&self) -> bool {

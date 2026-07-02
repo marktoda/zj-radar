@@ -717,6 +717,43 @@ tab 1 "release"
 
 ---
 
+## AB. The floor: footer + earlier-ledger
+
+**Render-derived.** The bottom region (spec §9): once a session's content
+leaves ≥2 spare lines, a footer (`─` rule, working/need-you tally, `alt-[n]
+jump` hint) pins to the floor of the pane. With ≥5 spare and a non-empty
+completion ledger, an `─ earlier` section of receded completions (newest
+first, per the `ledger` directive below) fills the space between the content
+and the footer; a tab name past 12 columns truncates with `…`.
+
+```rail-input
+width 32
+height 9
+tab 1 "web"
+ledger 90 done "web" "deploying"
+ledger 300 error "workspace-ci-runner" "tests failed"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+ ○ 1 web
+─ earlier ──────────────────────
+1m ● web deploying
+5m ✗ workspace-c… tests failed
+────────────────────────────────
+0 working · 0 need you
+ alt-[n] jump
+```
+
+> `height 9` leaves 6 spare lines past the 3-line body: the `─ earlier` rule +
+> 2 ledger rows (newest first) + the pinned footer (rule/tally/hint), with no
+> filler needed. `ledger <age_secs> done|error "<tab>" "<label>"` seeds a row
+> directly (age is wall-clock via `now_epoch_s`, independent of `now_tick`);
+> a row's tab is looked up live in production, so a closed tab's row just
+> becomes click-inert rather than disappearing. ⟦bottom region / spec §9⟧
+
+---
+
 ## Open decisions
 
 - **⟦D1⟧** right-slot: keep dropped, or re-add `done/total` for multi-pane?

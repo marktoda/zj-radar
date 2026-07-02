@@ -898,3 +898,21 @@ pub fn sidebar_region(screen: &vt100::Screen, width: u16) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// `sidebar_region`'s text with everything from the bottom region's `─
+/// earlier` ledger rule onward stripped off — i.e. just the live card rows.
+///
+/// Since the Task 13 bottom region shipped, a completion that recedes off a
+/// card legitimately resurfaces below that rule as a ledger row (spec §9), so
+/// a raw `sidebar_region(..).contains(needle)` check no longer means "this
+/// row is still live" — it would also match the row's own ledger echo. Tests
+/// asserting a card recede should check `card_region_only` instead; tests
+/// that want to see the ledger echo can inspect the full `sidebar_region`.
+#[cfg(feature = "e2e")]
+#[allow(dead_code)]
+pub fn card_region_only(sidebar: &str) -> &str {
+    match sidebar.find("─ earlier") {
+        Some(idx) => &sidebar[..idx],
+        None => sidebar,
+    }
+}

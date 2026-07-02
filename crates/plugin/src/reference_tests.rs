@@ -129,8 +129,27 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     let mut width: usize = 32;
     let mut height: usize = usize::MAX / 2;
+    let mut explicit_height = false;
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
+    let mut ledger_lines: Vec<crate::radar_state::LedgerLine> = Vec::new();
+    // A fixed "now" for the `ledger` directive's age math, so a scenario's
+    // round `age_secs` numbers produce deterministic, doc-readable
+    // `format_age` text (e.g. 90 → "1m").
+    const LEDGER_NOW_EPOCH_S: u64 = 1_000_000;
+
+    /// Split a leading `"quoted"` token off `s`, returning (contents, rest).
+    /// Used by the `ledger` directive, which packs two quoted strings
+    /// (tab name, label) after its two bare tokens.
+    fn take_quoted(s: &str) -> (&str, &str) {
+        let s = s.trim_start();
+        if let Some(inner) = s.strip_prefix('"') {
+            if let Some(end) = inner.find('"') {
+                return (&inner[..end], &inner[end + 1..]);
+            }
+        }
+        (s, "")
+    }
 
     struct PaneSpec {
         pane_id: u32,
@@ -169,6 +188,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         if let Some(rest) = line.strip_prefix("height ") {
             if let Ok(n) = rest.trim().parse::<usize>() {
                 height = n;
+                explicit_height = true;
             }
             continue;
         }
@@ -186,6 +206,43 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 "cards" => Density::Cards,
                 other => panic!("reference DSL: unknown density '{}' in scenario", other),
             };
+            continue;
+        }
+
+        // Completion-ledger row (spec §9 bottom region): `ledger <age_secs>
+        // done|error "<tab_name>" "<label>"`. `tab_position` is always `None`
+        // here — the DSL has no live `RadarState` recede path to seed a real
+        // one through, and it makes no visual difference (only click targets,
+        // which this doc doesn't assert).
+        if let Some(rest) = line.strip_prefix("ledger ") {
+            let rest = rest.trim();
+            let mut parts = rest.splitn(3, ' ');
+            let age_str = parts.next().unwrap_or("0");
+            let outcome_str = parts.next().unwrap_or("done");
+            let remainder = parts.next().unwrap_or("");
+            let age_secs: u64 = age_str.parse().unwrap_or_else(|_| {
+                panic!(
+                    "reference DSL: bad ledger age '{}' — must be an integer number of seconds",
+                    age_str
+                )
+            });
+            let error = match outcome_str {
+                "done" => false,
+                "error" => true,
+                other => panic!(
+                    "reference DSL: unknown ledger outcome '{}' — must be 'done' or 'error'",
+                    other
+                ),
+            };
+            let (tab_name, after) = take_quoted(remainder);
+            let (label, _) = take_quoted(after);
+            ledger_lines.push(crate::radar_state::LedgerLine {
+                at_epoch_s: LEDGER_NOW_EPOCH_S.saturating_sub(age_secs),
+                error,
+                tab_name: tab_name.to_string(),
+                label: label.to_string(),
+                tab_position: None,
+            });
             continue;
         }
 
@@ -502,7 +559,8 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
 
     // 4. Build RenderOpts
     let theme = DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
-    let opts = RenderOpts {
+    let rows = radar.rows();
+    let mut opts = RenderOpts {
         width,
         height,
         now_tick: 0,
@@ -510,9 +568,23 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         header: true,
         density,
         theme,
+        now_epoch_s: LEDGER_NOW_EPOCH_S,
+        ledger: ledger_lines,
     };
+    // Scenarios that don't declare an explicit `height` used the old
+    // "unboundedly large" sentinel to mean "enough to fit, no overflow, no
+    // padding" — a meaning the bottom region (Task 13) has changed: any
+    // height taller than the content now pads down to a pinned footer, and
+    // `usize::MAX / 2` worth of filler lines would never finish building.
+    // Recompute that default as the session's exact natural content height
+    // (leftover 0 ⇒ no bottom region), so every pre-existing scenario keeps
+    // rendering exactly what it always did; only a scenario that opts into an
+    // explicit `height` can exercise the footer/ledger region.
+    if !explicit_height {
+        opts.height = crate::render::body_line_count(&rows, &opts);
+    }
 
-    (radar.rows(), opts)
+    (rows, opts)
 }
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────

@@ -8,13 +8,15 @@
 //! (`push` is reachable from production wasm as of that wiring — see
 //! `radar_state.rs`'s `ledger_receded`). `to_vec`, `replace`, and `merge` are
 //! wired into snapshot persistence as of Task 12 (`RadarState::snapshot_json`/
-//! `load_snapshot`), so they're reachable from production wasm too. `entries`,
-//! `is_empty`, and `any_unsaturated` are consumed by `RadarState`'s own
-//! render/timer-facing wrappers, but those wrappers aren't wired into the
-//! rendered rail or the timer until Tasks 13/15, so both this module's
-//! `entries`/`is_empty`/`any_unsaturated`/`SATURATE_S` and their
-//! `radar_state.rs` callers stay unreachable from production wasm until then
-//! — `format_age` likewise, for the rendered age column. Those keep a
+//! `load_snapshot`), so they're reachable from production wasm too. `entries`
+//! and `format_age` are consumed by the Task 13 bottom region
+//! (`render::render_bottom` via `RadarState::ledger_lines`), so they're
+//! reachable from production wasm too now. `is_empty` and `any_unsaturated`
+//! are consumed only by `RadarState`'s own `ledger_is_empty`/
+//! `ledger_any_unsaturated` wrappers, which aren't wired into the rendered
+//! rail or the timer until Task 14/15, so this module's
+//! `is_empty`/`any_unsaturated`/`SATURATE_S` and their `radar_state.rs`
+//! callers stay unreachable from production wasm until then. Those keep a
 //! targeted per-item allow for the production (non-test) wasm build,
 //! mirroring the `RenderedRail::empty`/`line_count` precedent in `render.rs`,
 //! rather than the module-wide allow this used to carry. Remove each
@@ -127,15 +129,11 @@ impl Ledger {
     }
 
     /// newest first
-    ///
-    /// TODO(Task 13): drop this allow once `RadarState::ledger_lines` (its
-    /// only consumer) is wired into the rendered rail.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn entries(&self) -> impl Iterator<Item = &LedgerEntry> {
         self.entries.iter()
     }
 
-    /// TODO(Task 13): drop this allow once `RadarState::ledger_is_empty` (its
+    /// TODO(Task 14): drop this allow once `RadarState::ledger_is_empty` (its
     /// only consumer) is wired into the rendered rail.
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
@@ -182,9 +180,6 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
-///
-/// TODO(Task 13): wire into the rendered ledger row, then drop this allow.
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
     let age = now_epoch_s.saturating_sub(at_epoch_s);
     if age < 60 {

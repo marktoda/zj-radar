@@ -1,6 +1,6 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3428
+assertion_line: 3584
 expression: "grid(&raw, 30)"
 ---
  RADAR                      ·4
@@ -12,3 +12,94 @@ expression: "grid(&raw, 30)"
  ● 3 worker
 
  ○ 4 notes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────
+1⠋ working · 1 need you
+ alt-[n] jump

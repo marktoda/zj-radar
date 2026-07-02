@@ -67,6 +67,14 @@ pub struct RenderOpts {
     /// are the only truecolor values (status hues are ANSI-16). Defaults to a
     /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
+    /// Wall-clock epoch seconds "now", for ledger age formatting
+    /// (`ledger::format_age`). Distinct from `now_tick` (the render/animation
+    /// clock) — ages are wall-clock, not tick-relative.
+    pub now_epoch_s: u64,
+    /// Prepared completion-ledger rows (spec §4), newest first — the source
+    /// for the bottom region's "earlier" list. Empty when nothing has receded
+    /// yet.
+    pub ledger: Vec<crate::radar_state::LedgerLine>,
 }
 
 #[derive(Debug)]
@@ -949,10 +957,12 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
     }]
 }
 
-pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
-    if rows.is_empty() {
-        return RenderedRail::from_lines(vec![]);
-    }
+/// Header + one card block per kept row + idle strip — everything in
+/// `render_rail` EXCEPT the bottom region (spec §9). Split out so the bottom
+/// region's `leftover` can be measured against this body's real footprint,
+/// and so a test harness can ask "how tall is this session's content alone"
+/// (see `body_line_count`) without triggering the pinned-footer fill.
+fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
     let width = opts.width;
     let cards = opts.density == Density::Cards;
     let rail = tc_bg(opts.theme.rail_bg);
@@ -1009,6 +1019,208 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
 
     // Idle strip.
     for mut line in render_strip(strip_folded, opts) {
+        if cards { line.text = paint_card_line(&line.text, width, &rail); }
+        flat.push(line);
+    }
+
+    flat
+}
+
+/// Test-only: the height `render_rail` needs to show every row (+ idle strip)
+/// with no overflow folding and no bottom region (leftover 0) at this
+/// width/density — i.e. the session's "natural" content height. `opts.height`
+/// only needs to be large enough to avoid overflow folding; the result is
+/// otherwise independent of it. The reference-doc harness uses this to
+/// preserve pre-footer scenario heights: passing a merely-large height (the
+/// old "enough to fit" sentinel) would now land in the bottom region's
+/// unbounded-filler branch.
+#[cfg(test)]
+pub(crate) fn body_line_count(rows: &[TabRow], opts: &RenderOpts) -> usize {
+    render_body(rows, opts).len()
+}
+
+/// One filler line: blank, rail-based, click-inert. Shared by the bottom
+/// region's leading pad and (via the ledger branch) its interior pad.
+fn bottom_filler() -> Line {
+    Line { text: "\n".to_string(), target: None, bg: LineBg::Rail }
+}
+
+/// The footer's top rule: a full-width ghost-colored `─` line.
+fn footer_rule(opts: &RenderOpts) -> Line {
+    let ghost = tc_fg(opts.theme.idle_text);
+    Line {
+        text: format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// The footer's bottom hint line: " alt-[n] jump", clamped to width.
+fn footer_hint(opts: &RenderOpts) -> Line {
+    let idle = tc_fg(opts.theme.idle_text);
+    Line {
+        text: format!("{}\n", Seg::new(&idle, truncate(" alt-[n] jump", opts.width))),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// The footer's tally line: `{n}{spin} working · {m} need you`. `n` counts
+/// `Status::Running` rows (spinner only when `n > 0`); `m` counts
+/// `Status::needs_you` rows (loud + bold when `m > 0`). Truncated to width;
+/// too-tight-for-both-colors degrades to one run colored by whether the tally
+/// is still loud (`m > 0`).
+fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    let working = rows.iter().filter(|r| r.display.status == Status::Running).count();
+    let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
+    let n_part = if working > 0 {
+        format!("{}{}", working, crate::status::working_spin(opts.now_tick as usize))
+    } else {
+        working.to_string()
+    };
+    let left = format!("{} working · ", n_part);
+    let right = format!("{} need you", need_you);
+    let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
+    let text = if fits {
+        let right_seg = if need_you > 0 {
+            Seg::bold(Role::Attention.ansi(), right)
+        } else {
+            Seg::new(&idle, right)
+        };
+        format!("{}{}\n", Seg::new(&idle, left), right_seg)
+    } else {
+        let full = format!("{left}{right}");
+        let clamped = truncate(&full, width);
+        if need_you > 0 {
+            format!("{}\n", Seg::bold(Role::Attention.ansi(), clamped))
+        } else {
+            format!("{}\n", Seg::new(&idle, clamped))
+        }
+    };
+    Line { text, target: None, bg: LineBg::Rail }
+}
+
+/// The ledger section's own rule: `─ earlier ` then `─` fill to width.
+fn ledger_rule(opts: &RenderOpts) -> Line {
+    let ghost = tc_fg(opts.theme.idle_text);
+    let prefix = "─ earlier ";
+    let prefix_w = UnicodeWidthStr::width(prefix);
+    let text = if opts.width <= prefix_w {
+        truncate(prefix, opts.width)
+    } else {
+        format!("{}{}", prefix, "─".repeat(opts.width - prefix_w))
+    };
+    Line {
+        text: format!("{}\n", Seg::new(&ghost, text)),
+        target: None,
+        bg: LineBg::Rail,
+    }
+}
+
+/// One ledger row: `{age} {glyph} {tab_name} {label}`. Exact truncation rule
+/// (spec §9): the fixed 3-col `age space glyph space` prefix is reserved
+/// first, `tab_name` gets up to 12 cols of what's left, and `label` absorbs
+/// whatever remains — omitted (with its separating space) entirely when
+/// nothing remains. Click-inert once its tab has closed (`tab_position` is
+/// `None`).
+fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -> Line {
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    let dim_strong = tc_fg(opts.theme.dim_strong);
+    let age = crate::ledger::format_age(line.at_epoch_s, opts.now_epoch_s);
+    let age_w = UnicodeWidthStr::width(age.as_str());
+    let (glyph, glyph_role) = if line.error {
+        ("✗", Role::Error)
+    } else {
+        ("●", Role::Success)
+    };
+    let prefix = age_w + 1 + 1 + 1; // age, space, glyph, space
+    let name_budget = 12.min(width.saturating_sub(prefix));
+    let name = truncate(&line.tab_name, name_budget);
+    let name_w = UnicodeWidthStr::width(name.as_str());
+    let label_budget = width.saturating_sub(prefix + name_w + 1);
+    let mut text = format!(
+        "{} {} {}",
+        Seg::new(&idle, age),
+        Seg::new(glyph_role.ansi(), glyph),
+        Seg::new(&dim_strong, name),
+    );
+    if label_budget > 0 {
+        let label = truncate(&line.label, label_budget);
+        text.push(' ');
+        text.push_str(&Seg::new(&idle, label).to_string());
+    }
+    text.push('\n');
+    Line {
+        text,
+        target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+        bg: LineBg::Rail,
+    }
+}
+
+/// The bottom region per the spec §9 budget table. `leftover` = height minus
+/// everything already in `flat` (i.e. `render_body`'s footprint). Returns
+/// lines ordered top→bottom (filler … ledger rule, entries newest-first …
+/// footer rule, tally, hint). INVARIANT: when it returns any lines,
+/// `flat.len() + returned.len() == opts.height` exactly.
+///
+/// | leftover | region |
+/// |---|---|
+/// | 0–1 | nothing |
+/// | 2 | rule + tally |
+/// | 3 | rule + tally + hint |
+/// | 4 | 1 filler + footer(3) |
+/// | ≥5, ledger empty | (leftover−3) filler + footer(3) |
+/// | ≥5, ledger non-empty | filler + ledger rule + `min(len, leftover−4)` entries + footer(3) |
+fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
+    match leftover {
+        0 | 1 => vec![],
+        2 => vec![footer_rule(opts), footer_tally(rows, opts)],
+        3 => vec![footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
+        4 => vec![bottom_filler(), footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
+        n => {
+            let mut v = Vec::with_capacity(n);
+            if opts.ledger.is_empty() {
+                for _ in 0..n - 3 {
+                    v.push(bottom_filler());
+                }
+            } else {
+                let entries_n = opts.ledger.len().min(n - 4);
+                let filler_n = n - 4 - entries_n;
+                for _ in 0..filler_n {
+                    v.push(bottom_filler());
+                }
+                v.push(ledger_rule(opts));
+                for line in opts.ledger.iter().take(entries_n) {
+                    v.push(ledger_entry_line(line, opts));
+                }
+            }
+            v.push(footer_rule(opts));
+            v.push(footer_tally(rows, opts));
+            v.push(footer_hint(opts));
+            v
+        }
+    }
+}
+
+pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
+    if rows.is_empty() {
+        return RenderedRail::from_lines(vec![]);
+    }
+    let cards = opts.density == Density::Cards;
+    let width = opts.width;
+    let rail = tc_bg(opts.theme.rail_bg);
+
+    let mut flat = render_body(rows, opts);
+
+    // Bottom region (spec §9): whatever height `render_body` didn't use, up to
+    // and including the pinned footer at the floor. The trailing gap line the
+    // body already emits after the last card simply becomes part of the space
+    // `leftover` measures — no special-casing needed.
+    let leftover = opts.height.saturating_sub(flat.len());
+    for mut line in render_bottom(rows, leftover, opts) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }

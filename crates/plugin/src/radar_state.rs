@@ -195,11 +195,7 @@ const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
 /// once that tab is gone, making the row click-inert) looked up fresh on every
 /// call, rather than cached — the ledger itself only ever remembers the
 /// `TabId` it happened in.
-///
-/// TODO(Task 13): consumed by the rendered ledger row; drop the allow below
-/// once that wiring lands.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
 pub(crate) struct LedgerLine {
     pub at_epoch_s: u64,
     pub error: bool,
@@ -561,11 +557,6 @@ impl RadarState {
     /// — `None` once that tab has closed, which the renderer reads as
     /// click-inert (the ledger itself never forgets an entry just because its
     /// tab went away).
-    ///
-    /// TODO(Task 13): wired into the rendered rail; drop the allow below once
-    /// that lands (today it's reachable only from this module's tests, so the
-    /// production wasm build sees it as dead).
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn ledger_lines(&self) -> Vec<LedgerLine> {
         self.ledger
             .entries()
@@ -590,8 +581,12 @@ impl RadarState {
         self.ledger.any_unsaturated(now_epoch_s)
     }
 
-    /// TODO(Task 13): wired into the rendered rail; drop the allow below once
-    /// that lands.
+    /// Unlike `ledger_lines`, not yet wired into the rendered rail — the
+    /// bottom region (Task 13) checks `RenderOpts::ledger`'s own `is_empty`
+    /// on the prepared `Vec<LedgerLine>` rather than asking `RadarState`
+    /// directly.
+    ///
+    /// TODO(Task 14): wire in a consumer, then drop the allow below.
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
     pub(crate) fn ledger_is_empty(&self) -> bool {
         self.ledger.is_empty()

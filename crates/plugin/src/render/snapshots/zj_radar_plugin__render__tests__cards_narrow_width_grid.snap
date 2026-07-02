@@ -1,8 +1,105 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3217
+assertion_line: 3503
 expression: "grid(&raw, 16)"
 ---
  RADAR        ·1
 ▌⠋ 1 payments-s…
   ✳ refactoring…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────
+1⠋ working · 0 …
+ alt-[n] jump

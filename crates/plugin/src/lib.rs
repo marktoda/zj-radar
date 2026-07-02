@@ -106,8 +106,13 @@ impl State {
 
     /// Render at an explicit width so `last_rendered` is populated.
     /// Click tests historically asserted the width-80 layout; keep that explicit.
-    /// When no height has been set yet (last_render_height == 0), use a large
-    /// height so folding/overflow never discards rows unexpectedly.
+    /// When no height has been set yet (last_render_height == 0), use this
+    /// session's natural content height (see `PluginRuntime::natural_height`)
+    /// so folding/overflow never discards rows unexpectedly — and, since Task
+    /// 13, so the bottom region's pinned footer doesn't pad the render out to
+    /// an unboundedly large height (`usize::MAX / 2` used to be a safe "big
+    /// enough" sentinel; now it would land in the footer's unbounded-filler
+    /// branch and blow the allocator).
     ///
     /// # Contract — LIVE, permission-granted rail only
     ///
@@ -123,7 +128,7 @@ impl State {
     fn render_at(&mut self, width: usize) {
         self.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
         let height = if self.runtime.last_render_height == 0 {
-            usize::MAX / 2
+            self.runtime.natural_height(width)
         } else {
             self.runtime.last_render_height
         };

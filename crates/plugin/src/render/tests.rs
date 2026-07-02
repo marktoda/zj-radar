@@ -46,7 +46,20 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         header: true,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     }
+}
+
+/// `opts` with its height replaced by `rows`' exact natural content height
+/// (leftover 0 ⇒ no bottom region — see `body_line_count`). `height: 100` was
+/// always just an "enough, no overflow" sentinel pre-Task-13; tests that
+/// assert exact line counts/content unrelated to the pinned footer use this
+/// so a generous sentinel height doesn't pull the footer into their
+/// expectations.
+fn tight(rows: &[TabRow], opts: RenderOpts) -> RenderOpts {
+    let height = body_line_count(rows, &opts);
+    RenderOpts { height, ..opts }
 }
 
 // ── Surface-tint oracle ──────────────────────────────────────────────────
@@ -236,7 +249,7 @@ fn plain_tab_renders_name_only_no_second_line() {
         has_bell: false,
         display: display(Status::Idle, 0, 0, None),
     }];
-    let s = render(&rows, &ro(24, 0));
+    let s = render(&rows, &tight(&rows, ro(24, 0)));
     assert!(s.contains("notes"));
     assert_eq!(s.lines().count(), 3); // always-on header (2) + tab row (1)
     assert!(s.contains(Status::Idle.glyph_for(GlyphSet::Plain)));
@@ -434,6 +447,8 @@ fn working_glyph_spins_with_tick() {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     let f1 = render(
@@ -446,6 +461,8 @@ fn working_glyph_spins_with_tick() {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     assert!(f0.contains('⠋'));
@@ -461,7 +478,7 @@ fn idle_row_is_single_line_with_no_right_slot_text() {
         has_bell: false,
         display: display(Status::Idle, 0, 0, None),
     }];
-    let s = render(&rows, &ro(24, 0));
+    let s = render(&rows, &tight(&rows, ro(24, 0)));
     assert_eq!(s.lines().skip(2).count(), 1); // exactly one body line
     assert!(s.contains('○'));
     assert!(s.contains("logs"));
@@ -521,7 +538,7 @@ fn no_emitted_line_exceeds_width() {
         has_bell: false,
         display: display(Status::Running, 2, 4, Some(detail)),
     }];
-    let s = render(&rows, &ro(width, 14));
+    let s = render(&rows, &tight(&rows, ro(width, 14)));
     // header (2) + two tab lines emitted (Running+detail = 2 lines)
     assert_eq!(s.lines().count(), 4);
     // every visible (ANSI-stripped) line fits within the sidebar width
@@ -750,6 +767,8 @@ fn overflow_folds_idle_into_strip_and_marks_header() {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     assert!(s.contains("idle")); // "+N idle ▾" footer
@@ -790,6 +809,8 @@ fn overflow_keeps_non_idle_rows_visible() {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     assert!(s.contains("pinky")); // urgent row never folded
@@ -810,6 +831,8 @@ fn no_overflow_when_everything_fits() {
             header: true,
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     assert!(!s.contains("idle ▾"));
@@ -885,6 +908,8 @@ fn render_glyph_role_colors_are_present() {
         header: true,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     };
     let s = render(&rows, &opts);
 
@@ -1197,6 +1222,8 @@ fn idle_strip_never_exceeds_width() {
                 header: true,
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
+                now_epoch_s: 0,
+                ledger: Vec::new(),
             },
         );
         // folding must have happened
@@ -1273,6 +1300,8 @@ fn header_false_emits_no_header_lines() {
         header: false,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     };
     let s = render(&rows, &opts);
     // No identity header: rows start at line 0, so no "RADAR"/"═" line.
@@ -1553,7 +1582,8 @@ fn multi_pane_render_emits_header_child_and_collapse_lines() {
         has_bell: false,
         display: a,
     };
-    let s = render(&[row], &ro(30, 0));
+    let rows = [row];
+    let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
     // Header line shows the most-urgent pending glyph.
     assert!(
@@ -1599,7 +1629,8 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
         has_bell: false,
         display: a,
     };
-    let s = render(&[row], &ro(30, 0));
+    let rows = [row];
+    let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
 
     // body[0] = header, body[1] = pane1(Claude/Running x), body[2] = pane2(Codex/Running y)
@@ -1633,7 +1664,8 @@ fn multi_pane_untracked_only_summary_names_panes() {
             ],
         },
     };
-    let s = render(&[row], &ro(30, 0));
+    let rows = [row];
+    let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
 
     // With 0 tracked panes: single-pane path, Idle → 1 line (header only).
@@ -1672,7 +1704,8 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
             ],
         },
     };
-    let s = render(&[row], &ro(30, 0));
+    let rows = [row];
+    let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
 
     // 1 tracked + 1 untracked → is_multi_pane = false → single-pane path.
@@ -1700,7 +1733,8 @@ fn multi_pane_active_expands_all_no_collapse() {
         has_bell: false,
         display: a,
     };
-    let s = render(&[row], &ro(30, 0));
+    let rows = [row];
+    let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
     // header + 2 pane lines, no collapse.
     assert_eq!(body.len(), 3, "active: header + 2 pane lines: {:?}", s);
@@ -1896,6 +1930,8 @@ fn overflow_compresses_calm_before_urgent() {
         header: true,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     };
     let s = render(&rows, &opts);
     assert!(
@@ -1953,6 +1989,8 @@ fn overflow_all_one_line_when_extreme() {
         header: true,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     };
     let s = render(&rows, &opts);
     let line_count = s.lines().count();
@@ -1985,6 +2023,8 @@ fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
         header: true,
         density: crate::config::Density::Comfortable,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     }
 }
 
@@ -1995,7 +2035,7 @@ fn comfortable_inserts_blank_line_between_tabs() {
     // With trailing \n stripped: the last gap line's newline is removed, so
     // .lines() sees 7 lines (the trailing blank gap is consumed by the strip).
     let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-    let s = render(&rows, &ro_comfortable(24, 100));
+    let s = render(&rows, &tight(&rows, ro_comfortable(24, 100)));
     // body lines: each idle row = 1 content + 1 gap = 2 lines each. Total body = 6.
     // But the last gap's trailing \n is stripped, so .lines() gives 7 total.
     assert_eq!(
@@ -2040,8 +2080,10 @@ fn compact_has_no_gaps() {
         header: true,
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     };
-    let s = render(&rows, &opts);
+    let s = render(&rows, &tight(&rows, opts));
     assert_eq!(
         s.lines().count(),
         5,
@@ -2094,6 +2136,8 @@ fn cards_content_lines_differ_from_comfortable() {
             header: true,
             density: crate::config::Density::Comfortable,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     let cards = render(
@@ -2106,6 +2150,8 @@ fn cards_content_lines_differ_from_comfortable() {
             header: true,
             density: crate::config::Density::Cards,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     assert_ne!(
@@ -2152,6 +2198,8 @@ fn gaps_dropped_under_overflow() {
             header: true,
             density: crate::config::Density::Comfortable,
             theme: crate::theme::DerivedColors::default(),
+            now_epoch_s: 0,
+            ledger: Vec::new(),
         },
     );
     let line_count = s.lines().count();
@@ -2208,6 +2256,8 @@ fn ro_cards(width: usize, height: usize) -> RenderOpts {
         header: true,
         density: crate::config::Density::Cards,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     }
 }
 
@@ -2673,6 +2723,8 @@ fn comfortable_and_compact_emit_no_bg() {
                 header: true,
                 density,
                 theme: crate::theme::DerivedColors::default(),
+                now_epoch_s: 0,
+                ledger: Vec::new(),
             },
         );
         assert!(
@@ -2903,7 +2955,7 @@ fn cards_tint_per_row_class() {
             display: display(Status::Running, 0, 1, Some(detail)),
         },
     ];
-    let s = render(&rows, &ro_cards(30, 100));
+    let s = render(&rows, &tight(&rows, ro_cards(30, 100)));
     // Cards header is 1 line (no rule); each card emits content then a
     // trailing gap row (rail_bg — the panel shows through). Classifying every
     // row by surface band pins the full hierarchy in one assertion: idle <
@@ -3033,7 +3085,7 @@ fn cards_3tint_layout_snapshot() {
             display: display(Status::Idle, 0, 0, None),
         },
     ];
-    let s = render(&rows, &ro_cards(24, 100));
+    let s = render(&rows, &tight(&rows, ro_cards(24, 100)));
     // Cards is now a cohesive dark panel: the 1-line header (no rule) is
     // painted with rail_bg; each card emits its content lines then a
     // trailing gap row (rail_bg — the panel shows through between cards).
@@ -3425,6 +3477,8 @@ fn ro_full(
         header: true,
         density,
         theme: crate::theme::DerivedColors::default(),
+        now_epoch_s: 0,
+        ledger: Vec::new(),
     }
 }
 
@@ -3724,6 +3778,198 @@ fn wide_and_combining_chars_do_not_break_alignment() {
     }
 }
 
+// ── Bottom region tests (spec §9 budget table) ──
+
+#[test]
+fn footer_pins_to_the_floor_with_exact_height() {
+    let rows = vec![idle_row(1)];
+    let opts = RenderOpts { height: 20, ..ro(24, 0) };
+    let s = render(&rows, &opts);
+    let lines: Vec<&str> = s.lines().collect();
+    assert_eq!(lines.len(), 20, "exact-height invariant: {:?}", s);
+    let rule = strip_sgr(lines[17]);
+    let tally = strip_sgr(lines[18]);
+    let hint = strip_sgr(lines[19]);
+    assert!(
+        !rule.is_empty() && rule.chars().all(|c| c == '─'),
+        "line -3 is the footer rule: {:?}",
+        rule
+    );
+    assert!(
+        tally.contains("working") && tally.contains("need you"),
+        "line -2 is the tally: {:?}",
+        tally
+    );
+    assert!(hint.contains("alt-[n] jump"), "line -1 is the hint: {:?}", hint);
+}
+
+#[test]
+fn budget_table_boundaries() {
+    let rows = vec![idle_row(1)];
+    let content_height = tight(&rows, ro(24, 0)).height; // header(2) + 1 content row = 3
+    for leftover in 0..=8usize {
+        let opts = RenderOpts { height: content_height + leftover, ..ro(24, 0) };
+        let s = render(&rows, &opts);
+        let lines: Vec<&str> = s.lines().collect();
+        let bottom = &lines[content_height.min(lines.len())..];
+        match leftover {
+            0 | 1 => assert!(
+                bottom.is_empty(),
+                "leftover {leftover}: nothing renders: {:?}",
+                bottom
+            ),
+            2 => assert_eq!(
+                bottom.len(),
+                2,
+                "leftover 2: rule + tally: {:?}",
+                bottom
+            ),
+            3 => assert_eq!(
+                bottom.len(),
+                3,
+                "leftover 3: rule + tally + hint: {:?}",
+                bottom
+            ),
+            n => {
+                // leftover 4, and every ≥5-with-empty-ledger row, share one
+                // shape: (n - 3) filler lines + the 3-line footer.
+                assert_eq!(
+                    bottom.len(),
+                    n,
+                    "leftover {n}: filler + footer fills exactly: {:?}",
+                    bottom
+                );
+                assert!(
+                    bottom[..n - 3].iter().all(|l| l.is_empty()),
+                    "leftover {n}: leading lines are blank filler: {:?}",
+                    bottom
+                );
+                assert!(
+                    !bottom[n - 3].is_empty(),
+                    "leftover {n}: footer rule follows the filler: {:?}",
+                    bottom
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tally_counts_running_and_needs_you_not_done() {
+    let rows = vec![
+        TabRow { number: 1, name: "a".into(), active: false, has_bell: false, display: display(Status::Running, 0, 1, None) },
+        TabRow { number: 2, name: "b".into(), active: false, has_bell: false, display: display(Status::Done, 1, 1, None) },
+        TabRow { number: 3, name: "c".into(), active: false, has_bell: false, display: display(Status::Error, 0, 1, None) },
+    ];
+    let content_height = tight(&rows, ro(30, 0)).height;
+    let opts = RenderOpts { height: content_height + 3, ..ro(30, 0) };
+    let s = render(&rows, &opts);
+    let lines: Vec<&str> = s.lines().collect();
+    let tally = strip_sgr(lines[lines.len() - 2]);
+    // Done never counts toward either tally: 1 Running (spinner) + 1 Error
+    // (need-you) only.
+    assert_eq!(tally.trim(), "1⠋ working · 1 need you");
+}
+
+#[test]
+fn tally_renders_zero_working_without_spinner() {
+    let rows = vec![idle_row(1)];
+    let content_height = tight(&rows, ro(24, 0)).height;
+    let opts = RenderOpts { height: content_height + 3, ..ro(24, 0) };
+    let s = render(&rows, &opts);
+    let lines: Vec<&str> = s.lines().collect();
+    let tally = strip_sgr(lines[lines.len() - 2]);
+    assert_eq!(tally.trim(), "0 working · 0 need you");
+    assert!(!tally.contains('⠋'), "no spinner when 0 working: {:?}", tally);
+}
+
+#[test]
+fn ledger_entries_render_newest_first_and_click_to_their_tab() {
+    let rows = vec![idle_row(1)];
+    // Newest first: `web` (age <1m) precedes `gone` (age 15m). `gone` carries
+    // no live tab_position — a closed tab's row is click-inert, not dropped.
+    let ledger = vec![
+        crate::radar_state::LedgerLine {
+            at_epoch_s: 950,
+            error: false,
+            tab_name: "web".into(),
+            label: "deploying".into(),
+            tab_position: Some(0),
+        },
+        crate::radar_state::LedgerLine {
+            at_epoch_s: 100,
+            error: true,
+            tab_name: "gone".into(),
+            label: "failed".into(),
+            tab_position: None,
+        },
+    ];
+    let content_height = tight(&rows, ro(30, 0)).height;
+    let opts = RenderOpts {
+        height: content_height + 6, // 0 filler + rule(1) + 2 entries + footer(3)
+        ledger: ledger.clone(),
+        now_epoch_s: 1000,
+        ..ro(30, 0)
+    };
+    let rail = render_rail(&rows, &opts);
+    let entry1_line = content_height + 1;
+    let entry2_line = content_height + 2;
+
+    assert_eq!(
+        rail.target_at_line(entry1_line as isize),
+        Some(RailTarget { tab_position: 0, pane_id: None }),
+        "the newer, still-open entry is clickable to its tab"
+    );
+    assert_eq!(
+        rail.target_at_line(entry2_line as isize),
+        None,
+        "a gone tab's ledger row is click-inert"
+    );
+
+    let ansi_lines: Vec<&str> = rail.ansi.lines().collect();
+    let l1 = strip_sgr(ansi_lines[entry1_line]);
+    let l2 = strip_sgr(ansi_lines[entry2_line]);
+    assert!(
+        l1.contains("<1m") && l1.contains('●') && l1.contains("web") && l1.contains("deploying"),
+        "newest entry first: {:?}",
+        l1
+    );
+    assert!(
+        l2.contains("15m") && l2.contains('✗') && l2.contains("gone") && l2.contains("failed"),
+        "older entry second: {:?}",
+        l2
+    );
+}
+
+#[test]
+fn cards_never_lose_budget_to_the_bottom_region() {
+    // Many URGENT (never idle-foldable) rows, tight height → the overflow
+    // compressor packs the plan to fill body_budget exactly, leaving no
+    // headroom for the bottom region (leftover 0). The plan renders exactly
+    // as it did before Task 13 — no footer squeezed in over dropped rows.
+    let rows: Vec<TabRow> = (1..=20)
+        .map(|n| TabRow {
+            number: n,
+            name: format!("t{}", n),
+            active: false,
+            has_bell: false,
+            display: display(Status::Pending, 0, 1, None),
+        })
+        .collect();
+    let opts = ro_cards(24, 10);
+    let leftover = opts.height.saturating_sub(body_line_count(&rows, &opts));
+    assert!(leftover <= 1, "sanity: this scenario must leave no headroom: {leftover}");
+    assert!(render_bottom(&rows, leftover, &opts).is_empty());
+
+    let rail = render_rail(&rows, &opts);
+    assert_eq!(rail.line_count(), 10, "the overflow plan alone fills the pane");
+    assert!(
+        !rail.ansi.contains("alt-[n] jump"),
+        "no footer should be squeezed in when there's no room: {:?}",
+        rail.ansi
+    );
+}
+
 // ── Property-based tests ──
 
 use proptest::prelude::*;
@@ -3922,17 +4168,51 @@ proptest! {
     }
 }
 
+prop_compose! {
+    /// An arbitrary ledger row: a real tab position about half the time
+    /// (`None` the other half, simulating a closed tab — still rendered,
+    /// just click-inert).
+    fn arb_ledger_line()(
+        at_epoch_s in 0u64..1_000_000,
+        error in any::<bool>(),
+        tab_name in "[a-zA-Z0-9_-]{0,15}",
+        label in "[a-zA-Z0-9_ -]{0,20}",
+        has_tab in any::<bool>(),
+        tab_position in 0usize..8,
+    ) -> crate::radar_state::LedgerLine {
+        crate::radar_state::LedgerLine {
+            at_epoch_s,
+            error,
+            tab_name,
+            label,
+            tab_position: if has_tab { Some(tab_position) } else { None },
+        }
+    }
+}
+
+fn arb_ledger() -> impl Strategy<Value = Vec<crate::radar_state::LedgerLine>> {
+    proptest::collection::vec(arb_ledger_line(), 0..6)
+}
+
 proptest! {
     /// Lockstep: the emitted ANSI and the click-target map stay in exact
-    /// 1:1 line correspondence, at every width the rail can be drawn at.
+    /// 1:1 line correspondence, at every width/height/ledger-size the rail
+    /// can be drawn at. Also pins the bottom region's exact-height invariant
+    /// (spec §9): whenever it renders any lines at all, the total footprint
+    /// is exactly `height` — never short, never over (the final `truncate`
+    /// only ever bites the degenerate header-taller-than-height case, which
+    /// `render_bottom` never contributes to).
     #[test]
     fn render_rail_lockstep_lines_match_targets(
         rows in arb_rows(),
         width in 8usize..=120,
         height in 1usize..=60,
+        ledger in arb_ledger(),
     ) {
         let mut opts = ro(width, 0);
         opts.height = height;
+        opts.ledger = ledger;
+        opts.now_epoch_s = 500_000;
         let rail = render_rail(&rows, &opts);
         // 1:1 correspondence between physical lines and target slots.
         prop_assert_eq!(rail.line_count(), rail.ansi.lines().count());
@@ -3942,6 +4222,13 @@ proptest! {
         }
         prop_assert_eq!(rail.target_at_line(-1), None);
         prop_assert_eq!(rail.target_at_line(rail.line_count() as isize), None);
+
+        if !rows.is_empty() {
+            let leftover = height.saturating_sub(body_line_count(&rows, &opts));
+            if !render_bottom(&rows, leftover, &opts).is_empty() {
+                prop_assert_eq!(rail.line_count(), height);
+            }
+        }
     }
 }
 
