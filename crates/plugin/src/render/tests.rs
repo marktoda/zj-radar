@@ -3222,8 +3222,10 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
 
 #[test]
 fn header_shows_radar_and_urgent_count() {
-    // Header reads " RADAR" with tab count. The ·N! urgent marker has been
-    // removed per design rule 7 (no right-slot for now).
+    // Header reads " RADAR" with tab count. The old fused `·N!` urgent
+    // marker (design rule 7) stays gone — Task 16's needs-you badge is a
+    // separate, space-joined `{n}!` token (see `header_badge_*` below), not
+    // a revival of the old format.
     let pending = PrimaryDetail {
         repo: "p".into(),
         branch: "x".into(),
@@ -3262,10 +3264,11 @@ fn header_shows_radar_and_urgent_count() {
         "header must show total count ·3: {:?}",
         header
     );
-    // The ·N! urgent marker is removed per design.
+    // The old fused ·N! urgent marker is removed per design; the space-joined
+    // needs-you badge (Task 16) reads "·3 1!" here, not "·1!".
     assert!(
         !header.contains("·1!"),
-        "urgent marker must not appear: {:?}",
+        "old fused urgent marker must not appear: {:?}",
         header
     );
 }
@@ -3279,6 +3282,104 @@ fn header_no_urgent_marker_when_nothing_pending() {
     assert!(
         !header.contains('!'),
         "no urgent marker when nothing pending: {:?}",
+        header
+    );
+}
+
+#[test]
+fn header_badge_counts_pending_and_error_tabs_only() {
+    // Done, Pending, Error, Running → census ·4, badge counts only the two
+    // needs-you rows (Pending + Error) — Done and Running don't count.
+    let rows = vec![
+        TabRow {
+            number: 1,
+            name: "a".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Done, 1, 1, None),
+        },
+        TabRow {
+            number: 2,
+            name: "b".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Pending, 0, 1, None),
+        },
+        TabRow {
+            number: 3,
+            name: "c".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Error, 0, 1, None),
+        },
+        TabRow {
+            number: 4,
+            name: "d".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Running, 0, 1, None),
+        },
+    ];
+    let s = render(&rows, &ro(30, 0));
+    let header = strip_sgr(s.lines().next().unwrap());
+    assert!(
+        header.contains("·4 2!"),
+        "right slot reads census + badge: {:?}",
+        header
+    );
+}
+
+#[test]
+fn header_badge_absent_at_zero() {
+    // All Running/Idle rows → no needs-you row at all, so no badge — just
+    // the plain census, same as before Task 16.
+    let rows = vec![
+        TabRow {
+            number: 1,
+            name: "a".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Running, 0, 1, None),
+        },
+        idle_row(2),
+    ];
+    let s = render(&rows, &ro(30, 0));
+    let header = strip_sgr(s.lines().next().unwrap());
+    assert!(header.contains("·2"), "census still shows: {:?}", header);
+    assert!(!header.contains('!'), "no badge at zero: {:?}", header);
+}
+
+#[test]
+fn header_badge_survives_narrow_width_over_census() {
+    // Width just fitting " RADAR" (6) + "2!" (2) = 8: the census (·2, width
+    // 2) can't join the badge in that budget, so it's dropped entirely and
+    // the bare badge stands alone — no leftover "·2 2!" truncation debris.
+    let rows = vec![
+        TabRow {
+            number: 1,
+            name: "a".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Pending, 0, 1, None),
+        },
+        TabRow {
+            number: 2,
+            name: "b".into(),
+            active: false,
+            has_bell: false,
+            display: display(Status::Error, 0, 1, None),
+        },
+    ];
+    let s = render(&rows, &tight(&rows, ro(8, 0)));
+    let header = strip_sgr(s.lines().next().unwrap());
+    assert!(
+        header.contains("2!"),
+        "badge survives the narrow width: {:?}",
+        header
+    );
+    assert!(
+        !header.contains('·'),
+        "census is dropped to make room for the badge: {:?}",
         header
     );
 }

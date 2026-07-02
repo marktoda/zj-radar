@@ -866,36 +866,74 @@ fn target_for_row(row: &TabRow) -> RailTarget {
 /// The `·N`/`N▲` count is always `rows.len()` — with zero tracked tabs and a
 /// non-empty ledger it reads `·0`, which is honest: the header counts tabs,
 /// not history.
+///
+/// The right slot appends a needs-you badge (`{n}!`, `Role::Attention`, bold)
+/// whenever any row's `Status::needs_you()`, space-joined after the census —
+/// `·{tabs} {n}!`. Narrow-width priority (`Some(_) if …` guards below, tried
+/// top to bottom): the overflow marker always wins over the badge; the badge
+/// always wins over the plain census. So a tight budget drops the census
+/// first, keeping the badge alone; only once there's no badge (or the
+/// overflow marker itself needs the room) does the lone primary token stand,
+/// clamped to width exactly as before Task 16.
 fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content: bool) -> Vec<Line> {
     if !opts.header || !has_content {
         return vec![];
     }
     let width = opts.width;
     let accent = Role::Accent.ansi();
-    let count = if overflow {
+    let primary = if overflow {
         format!("{}▲", rows.len())
     } else {
         format!("·{}", rows.len())
     };
     let title = " RADAR";
-    let count_w = UnicodeWidthStr::width(count.as_str());
-    let right_w = count_w.min(width);
+    let title_w = UnicodeWidthStr::width(title);
+    // Title in accent; primary muted (accent when overflowing, so the ▲
+    // marker stays loud).
+    let primary_color = if overflow { accent } else { Role::Muted.ansi() };
+    let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
+    let badge = (need_you > 0).then(|| format!("{}!", need_you));
+    // Budget available to the right slot before the title itself has to give
+    // up any columns — the priority decision below is made against this,
+    // independent of the later title-squeeze clamp.
+    let avail = width.saturating_sub(title_w);
+    let combined_w = |b: &str| UnicodeWidthStr::width(primary.as_str()) + 1 + UnicodeWidthStr::width(b);
+    // (text, color, bold) run(s) that make up the right slot, in emission order.
+    let right_segs: Vec<(String, &str, bool)> = match &badge {
+        Some(b) if combined_w(b) <= avail => {
+            vec![(primary.clone(), primary_color, false), (format!(" {b}"), Role::Attention.ansi(), true)]
+        }
+        // Combined doesn't fit: the overflow marker always wins, but a plain
+        // census loses to the badge — drop it and keep the badge alone.
+        Some(b) if !overflow => vec![(b.clone(), Role::Attention.ansi(), true)],
+        _ => vec![(primary.clone(), primary_color, false)],
+    };
+    let plain_right: String = right_segs.iter().map(|(t, _, _)| t.as_str()).collect();
+    let right_full_w = UnicodeWidthStr::width(plain_right.as_str());
+    let right_w = right_full_w.min(width);
     // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
     // assembled visible content never exceeds `width`.
-    let gap = width.saturating_sub(UnicodeWidthStr::width(title) + right_w);
-    // Title in accent; total count muted (accent when overflowing, so the
-    // ▲ marker stays loud).
-    let count_color = if overflow { accent } else { Role::Muted.ansi() };
+    let gap = width.saturating_sub(title_w + right_w);
     // Clamp visible portions to width before assembling the ANSI line.
     let title_budget = width.saturating_sub(right_w + gap);
     let title_clamped = truncate(title, title_budget);
-    let count_clamped = truncate(&count, right_w);
+    let right_rendered = if right_full_w > width {
+        // Extreme-narrow clamp: the composite doesn't even fit alone — fall
+        // back to one plain (uncolored-per-segment) truncated run, same as
+        // the pre-badge single-token clamp.
+        Seg::new(primary_color, truncate(&plain_right, right_w)).to_string()
+    } else {
+        right_segs
+            .into_iter()
+            .map(|(t, c, b)| if b { Seg::bold(c, t).to_string() } else { Seg::new(c, t).to_string() })
+            .collect::<String>()
+    };
     let mut title_line = String::new();
     title_line.push_str(&format!(
         "{}{}{}\n",
         Seg::new(accent, title_clamped),
         " ".repeat(gap),
-        Seg::new(count_color, count_clamped),
+        right_rendered,
     ));
 
     let mut lines = vec![Line {

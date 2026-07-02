@@ -1,9 +1,8 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3450
 expression: "grid(&raw, 30)"
 ---
- RADAR                      ·4
+ RADAR                   ·4 1!
 ▌⠋ 1 web
   ✳ building…
 

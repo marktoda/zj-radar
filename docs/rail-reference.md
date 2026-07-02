@@ -51,10 +51,20 @@
 ```
  RADAR                        ·N   ← title + tab count (·N; "N▲" when overflowing)
 ════════════════════════════════   ← rule (32 wide)
+ RADAR                     ·N n!   ← same, plus the needs-you badge when n>0
+════════════════════════════════   ← rule (32 wide)
 ▌⠋ 2 name                          ← tab row: [spine][glyph] [num] [name]
 ▌├ ⠋ ❉ activity message            ← pane row: [spine][conn] [glyph] [mark] [msg]
 ▌└ ● ⚙ activity message            ← last pane row uses the └ elbow connector
 ```
+
+**Needs-you badge (Task 16).** The header's right slot appends `{n}!` — bold,
+loud (`Attention` role) — space-joined after the census whenever `n =
+rows.iter().filter(|r| r.display.status.needs_you()).count()` is nonzero (i.e.
+any tab is `Pending` or `Error`). At narrow widths, priority to keep is
+overflow marker > badge > plain census: a tight budget drops the census
+first and shows the bare badge (`n!` with no leading `·N`); the overflow
+marker itself is never dropped for the badge's sake.
 
 **Col 0 is always the spine column** — reserved on every line, active or not:
 `▌` for the focused tab, a plain space otherwise. This holds line 1 (the tab
@@ -129,7 +139,7 @@ tab 3 "api"
   claude pending "approve edit?"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 3 api
   ✳ approve edit?
@@ -157,7 +167,7 @@ tab 2 "build-svc"
   claude error "exit 1: cargo test failed"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ✗ 2 build-svc
   ✳ exit 1: cargo test failed
@@ -207,7 +217,7 @@ tab 4 "review"
   codex running "writing tests"
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 4 review
  ├ ◆ ✳ approve diff?
@@ -282,7 +292,7 @@ tab 5 "scratch"
 tab 6 "logs"
 ```
 ```rail-expect
- RADAR                        6▲
+ RADAR                     6▲ 1!
 ════════════════════════════════
  ◆ 1 review
   ✳ approve diff?
@@ -577,7 +587,7 @@ tab 1 "work"
   build error "cargo build" exit 1
 ```
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ✗ 1 work
   ⚙ cargo build exit 1
@@ -660,7 +670,7 @@ tab 1 "review"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 1 review
  ├ ◆ ✳ migrate schema
@@ -681,7 +691,7 @@ tab 1 "work"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 1 work
  ├ ◆ ✳ approve?
@@ -700,7 +710,7 @@ tab 1 "review"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ◆ 1 review
   ✳ migrate schema
@@ -721,7 +731,7 @@ tab 1 "release"
 ```
 
 ```rail-expect
- RADAR                        ·1
+ RADAR                     ·1 1!
 ════════════════════════════════
  ✗ 1 release
  ├ ✗ ✳ fix the deploy
