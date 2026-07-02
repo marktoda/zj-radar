@@ -1,8 +1,8 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3838
+assertion_line: 3923
 expression: "grid(&raw, 16)"
 ---
  RADAR        ·1
 ▌⠋ 1 payments-s…
-  ✳ refactoring…
+▌└ ⠋ ✳ refactor…

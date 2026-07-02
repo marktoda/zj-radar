@@ -41,6 +41,18 @@ fn display(
     total: usize,
     detail: Option<PrimaryDetail>,
 ) -> TabDisplay {
+    // Production TabDisplays always carry the pane their detail was derived
+    // FROM (`roll_up` computes `detail` from the highest-severity pane), and
+    // the single-pane child line renders from that pane — mirror the
+    // invariant here so fixtures exercise the production path.
+    let panes = detail
+        .as_ref()
+        .map(|d| {
+            vec![crate::rollup::PaneDisplay::tracked(
+                FIXTURE_PANE_ID, d.kind, d.status, d.msg.clone(), d.task.clone(), d.since_tick, d.outcome, d.pending_epoch_s,
+            )]
+        })
+        .unwrap_or_default();
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -49,10 +61,17 @@ fn display(
             pending: if status == Status::Pending { 1 } else { 0 },
         },
         detail,
-        panes: vec![],
+        panes,
     }
 }
 
+/// The pane id `display()` gives its synthesized detail pane. Click-target
+/// tests can use this to assert the single-pane child line routes to the pane.
+const FIXTURE_PANE_ID: u32 = 900;
+
+// Tests default to `jump_hint: true` (the fuller, pre-gating footer shape) so
+// line-offset expectations stay put; hint-hidden shapes are exercised by the
+// explicit `jump_hint: false` tests.
 fn ro(width: usize, now_tick: u64) -> RenderOpts {
     RenderOpts {
         width,
@@ -64,6 +83,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     }
 }
 
@@ -524,6 +544,7 @@ fn working_glyph_spins_with_tick() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     let f1 = render(
@@ -538,6 +559,7 @@ fn working_glyph_spins_with_tick() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     assert!(f0.contains('⠋'));
@@ -850,6 +872,7 @@ fn overflow_folds_idle_into_strip_and_marks_header() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     assert!(s.contains("idle")); // "+N idle ▾" footer
@@ -893,6 +916,7 @@ fn overflow_keeps_non_idle_rows_visible() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     assert!(s.contains("pinky")); // urgent row never folded
@@ -915,6 +939,7 @@ fn no_overflow_when_everything_fits() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     assert!(!s.contains("idle ▾"));
@@ -993,6 +1018,7 @@ fn render_glyph_role_colors_are_present() {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     };
     let s = render(&rows, &opts);
 
@@ -1056,16 +1082,7 @@ fn pending_line2_shows_mark_and_activity() {
         name: "agents".into(),
         active: false,
         has_bell: false,
-        display: TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts {
-                done: 0,
-                total: 3,
-                pending: 2,
-            },
-            detail: Some(detail_with_msg),
-            panes: vec![],
-        },
+        display: display(Status::Pending, 0, 3, Some(detail_with_msg)),
     }];
     let s = render(&rows, &ro(30, 0));
     // line 2 must show the mark and the activity text
@@ -1111,16 +1128,7 @@ fn pending_line2_shows_mark_and_activity() {
         name: "solo".into(),
         active: false,
         has_bell: false,
-        display: TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts {
-                done: 0,
-                total: 1,
-                pending: 1,
-            },
-            detail: Some(detail_no_msg),
-            panes: vec![],
-        },
+        display: display(Status::Pending, 0, 1, Some(detail_no_msg)),
     }];
     // full_lines = 1 (no msg → no line 2)
     assert_eq!(render_row(&rows2[0], &ro(30, 0)).len(), 1);
@@ -1142,16 +1150,7 @@ fn pending_line2_shows_mark_and_activity() {
         name: "multi".into(),
         active: false,
         has_bell: false,
-        display: TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts {
-                done: 0,
-                total: 5,
-                pending: 3,
-            },
-            detail: Some(detail_long),
-            panes: vec![],
-        },
+        display: display(Status::Pending, 0, 5, Some(detail_long)),
     }];
     for width in [20usize, 24, 30] {
         let s3 = render(&rows3, &ro(width, 0));
@@ -1304,6 +1303,7 @@ fn idle_strip_never_exceeds_width() {
                 theme: crate::theme::DerivedColors::default(),
                 now_epoch_s: 0,
                 ledger: Vec::new(),
+                jump_hint: true,
             },
         );
         // folding must have happened
@@ -1383,6 +1383,7 @@ fn header_false_emits_no_header_lines() {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     };
     let s = render(&rows, &opts);
     // No identity header: rows start at line 0, so no "RADAR"/"═" line.
@@ -1515,8 +1516,8 @@ fn finished_command_line2_shows_role_colored_tag() {
     let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
     assert!(
-        !dline.contains('✓') && strip_sgr(dline).trim() == "⚙ cargo build",
-        "done line carries no tag — the line-1 glyph is the one done signal: {:?}",
+        !dline.contains('✓') && strip_sgr(dline).trim() == "└ ● ⚙ cargo build",
+        "done line carries no tag — the child status glyph is the one done signal: {:?}",
         dline
     );
 
@@ -2019,6 +2020,7 @@ fn overflow_compresses_calm_before_urgent() {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     };
     let s = render(&rows, &opts);
     assert!(
@@ -2079,6 +2081,7 @@ fn overflow_all_one_line_when_extreme() {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     };
     let s = render(&rows, &opts);
     let line_count = s.lines().count();
@@ -2113,6 +2116,7 @@ fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     }
 }
 
@@ -2170,6 +2174,7 @@ fn compact_has_no_gaps() {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     };
     let s = render(&rows, &tight(&rows, opts));
     assert_eq!(
@@ -2227,6 +2232,7 @@ fn cards_content_lines_differ_from_comfortable() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     let cards = render(
@@ -2241,6 +2247,7 @@ fn cards_content_lines_differ_from_comfortable() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     assert_ne!(
@@ -2289,6 +2296,7 @@ fn gaps_dropped_under_overflow() {
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
             ledger: Vec::new(),
+            jump_hint: true,
         },
     );
     let line_count = s.lines().count();
@@ -2347,6 +2355,7 @@ fn ro_cards(width: usize, height: usize) -> RenderOpts {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     }
 }
 
@@ -2501,11 +2510,9 @@ fn active_card_bg_spans_full_width_on_every_line() {
     // background color of *every* cell, column by column, on every line of an
     // active 2-line card — with and without the bell — at several widths.
     let theme = crate::theme::DerivedColors::default();
-    let expected = vt100::Color::Rgb(
-        theme.surface_active.0,
-        theme.surface_active.1,
-        theme.surface_active.2,
-    );
+    let rgb = |c: (u8, u8, u8)| vt100::Color::Rgb(c.0, c.1, c.2);
+    let active_bg = rgb(theme.surface_active);
+    let agent_bg = rgb(theme.surface_agent);
 
     for width in [20usize, 24, 30] {
         for has_bell in [false, true] {
@@ -2529,16 +2536,28 @@ fn active_card_bg_spans_full_width_on_every_line() {
             }];
             let raw = render(&rows, &ro_cards(width, 100));
             let lines: Vec<&str> = raw.lines().collect();
-            let active_rows: Vec<usize> = lines
+            // The active card is header (active band) + child detail line
+            // (agent band — ActiveChild steps down, same as multi-pane).
+            // Full-width bg coverage must hold on both, each in its own band.
+            let card_rows: Vec<(usize, vt100::Color)> = lines
                 .iter()
                 .enumerate()
-                .filter(|(_, l)| surface_of(l) == Surface::Active)
-                .map(|(i, _)| i)
+                .filter_map(|(i, l)| match surface_of(l) {
+                    Surface::Active => Some((i, active_bg)),
+                    Surface::Agent => Some((i, agent_bg)),
+                    _ => None,
+                })
                 .collect();
             assert_eq!(
-                active_rows.len(),
+                card_rows.len(),
                 2,
                 "expected a 2-line active card (label + detail) at width {width} bell {has_bell}: {:?}",
+                lines
+            );
+            assert_eq!(
+                card_rows.iter().map(|&(_, c)| c).collect::<Vec<_>>(),
+                vec![active_bg, agent_bg],
+                "header carries the active band, the child steps down to agent at width {width} bell {has_bell}: {:?}",
                 lines
             );
 
@@ -2548,7 +2567,7 @@ fn active_card_bg_spans_full_width_on_every_line() {
             let mut parser = vt100::Parser::new(height, width as u16, 0);
             parser.process(raw.replace('\n', "\r\n").as_bytes());
             let screen = parser.screen();
-            for &row in &active_rows {
+            for &(row, expected) in &card_rows {
                 for col in 0..width as u16 {
                     let cell = screen.cell(row as u16, col).unwrap_or_else(|| {
                         panic!("missing vt100 cell at row {row} col {col} (width {width} bell {has_bell})")
@@ -2556,7 +2575,7 @@ fn active_card_bg_spans_full_width_on_every_line() {
                     assert_eq!(
                         cell.bgcolor(),
                         expected,
-                        "active card bg gap at width {width} bell {has_bell}, row {row} col {col}\nrow text: {:?}",
+                        "card bg gap at width {width} bell {has_bell}, row {row} col {col}\nrow text: {:?}",
                         lines[row]
                     );
                 }
@@ -2822,6 +2841,7 @@ fn comfortable_and_compact_emit_no_bg() {
                 theme: crate::theme::DerivedColors::default(),
                 now_epoch_s: 0,
                 ledger: Vec::new(),
+                jump_hint: true,
             },
         );
         assert!(
@@ -3099,7 +3119,7 @@ fn cards_tint_per_row_class() {
         "agent",  // line 4  agent detail
         "rail",   // line 5  agent gap
         "active", // line 6  focus content line 1
-        "active", // line 7  focus detail
+        "agent",  // line 7  focus detail — child steps down (ActiveChild), same as multi-pane
         "rail",   // line 8  focus gap
     ]
     .join("\n");
@@ -3224,7 +3244,8 @@ fn cards_3tint_layout_snapshot() {
     // painted with rail_bg; each card emits its content lines then a
     // trailing gap row (rail_bg — the panel shows through between cards).
     // Per card:
-    //   Claude (active, 2 content) → 2 content + 1 gap = "active","active","rail"
+    //   Claude (active, 2 content) → header "active" + child steps down to
+    //          "agent" (ActiveChild — same subordination as multi-pane) + gap
     //   api    (agent, 1 content)  → pending+empty-msg → 1 content + 1 gap = "agent","rail"
     //   worker (agent, 1 content)  → 1 content + 1 gap = "agent","rail"
     //   Pane#1 (idle, 1 content)   → 1 content + 1 gap = "idle","rail"
@@ -3232,7 +3253,7 @@ fn cards_3tint_layout_snapshot() {
     let expected = "\
 rail\n\
 active\n\
-active\n\
+agent\n\
 rail\n\
 agent\n\
 rail\n\
@@ -3828,6 +3849,7 @@ fn ro_full(
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         ledger: Vec::new(),
+        jump_hint: true,
     }
 }
 
@@ -4155,7 +4177,7 @@ fn footer_pins_to_the_floor_with_exact_height() {
         rule
     );
     assert!(
-        tally.contains("working") && tally.contains("need you"),
+        tally.contains("working"),
         "line -2 is the tally: {:?}",
         tally
     );
@@ -4238,7 +4260,9 @@ fn tally_renders_zero_working_without_spinner() {
     let s = render(&rows, &opts);
     let lines: Vec<&str> = s.lines().collect();
     let tally = strip_sgr(lines[lines.len() - 2]);
-    assert_eq!(tally.trim(), "0 working · 0 need you");
+    // A zero need-you count is noise, not signal — the segment vanishes
+    // entirely rather than reporting "0 need you".
+    assert_eq!(tally.trim(), "0 working");
     assert!(!tally.contains('⠋'), "no spinner when 0 working: {:?}", tally);
 }
 
@@ -4265,7 +4289,7 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
     ];
     let content_height = tight(&rows, ro(30, 0)).height;
     let opts = RenderOpts {
-        height: content_height + 6, // 0 filler + rule(1) + 2 entries + footer(3)
+        height: content_height + 7, // 0 filler + rule(1) + 2 entries + spacer(1) + footer(3)
         ledger: ledger.clone(),
         now_epoch_s: 1000,
         ..ro(30, 0)
@@ -4335,10 +4359,12 @@ fn ledger_display_caps_at_ten_entries_with_filler_above() {
         .iter()
         .position(|l| l.contains("─ earlier"))
         .expect("earlier rule renders");
-    // filler_n = leftover − 4 − 10 = 6 blank lines between content and rule.
+    // filler_n = leftover − footer(3) − rule/spacer(2) − 10 = 5 blank lines
+    // between content and rule (one more line now sits BELOW the entries: the
+    // spacer that gives history air above the pinned footer).
     assert_eq!(
         rule_idx,
-        content_height + 6,
+        content_height + 5,
         "capped-out spare height becomes filler above the rule: {lines:?}"
     );
     assert!(

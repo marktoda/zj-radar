@@ -100,6 +100,13 @@ pub struct RenderOpts {
     /// for the bottom region's "earlier" list. Empty when nothing has receded
     /// yet.
     pub ledger: Vec<crate::radar_state::LedgerLine>,
+    /// Whether the footer may advertise the `alt-[n] jump` chord. Zellij owns
+    /// keybinds, not the plugin, so this is config-driven honesty (the
+    /// `GrantHint` pattern): only `run`-owned configs — which bake the
+    /// Alt-1..9 → GoToTab binds — claim it; every other install (setup-injected
+    /// rails, hand-rolled layouts) omits the hint line rather than promising a
+    /// chord that does nothing.
+    pub jump_hint: bool,
 }
 
 #[derive(Debug)]
@@ -589,76 +596,37 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         return lines;
     }
 
-    // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
-    // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
-    // Emitted when a detail exists with a non-empty msg OR an outcome tag that
-    // actually renders (`Ok`'s tag is empty by design — see `Outcome::full` —
-    // so an empty-msg Ok completion earns no line at all, not a bare mark).
-    // For Pending (the question), the command is colored in attention (loud);
-    // others dim. The outcome tag carries its own role hue.
+    // ── Single-pane pane line (chunk 1) ──────────────────────────────────────
+    // The tab's one tracked pane renders through the SAME tree machinery as
+    // multi-pane children — `└` elbow, status glyph, identity mark, activity
+    // (wait tag included), and the subordinate `↳ question` line — so single-
+    // and multi-pane tabs scan identically: same columns, same glyphs, same
+    // click semantics (the line targets the pane directly; a click routes
+    // straight to `Effect::ShowPane`) and the same subordinate surface band
+    // when the tab is active (`LineBg::ActiveChild`).
     //
-    // These lines describe the tab's single tracked pane, so — mirroring the
-    // multi-pane tree rows — they target that pane directly rather than the
-    // tab; a click routes straight to `Effect::ShowPane`. Fall back to the tab
-    // target in the (should-never-happen) case of no tracked pane.
-    let pane_target = row
-        .display
-        .panes
-        .iter()
-        .find(|p| p.is_tracked())
-        .map(|p| RailTarget { tab_position: tab_target.tab_position, pane_id: Some(p.pane_id()) })
-        .unwrap_or(tab_target);
-    if let Some(d) = &row.display.detail {
-        let (identity, detail) = identity_and_detail(st, &d.task, &d.msg);
-        if !identity.trim().is_empty() || d.outcome.is_some_and(|o| !o.full().is_empty()) {
-            match st {
-                Status::Idle => {}
-                Status::Done | Status::Running | Status::Error | Status::Pending => {
-                    // Identity mark: vendor-neutral but bold + the stronger dim
-                    // (dim_strong, not the faint idle_text) so it reads as a
-                    // deliberate mark, not a footnote. Glyph-set aware.
-                    let mark = d.kind.mark(opts.glyphs);
-                    let mark_width = UnicodeWidthChar::width(mark).unwrap_or(1);
-                    // "  ‹mark› " prefix: 2-space indent + mark + space. The
-                    // mark sits one column right of the line-1 glyph (which is at
-                    // col 1 after the bar/spine column), matching the design.
-                    let prefix_vis = 2 + mark_width + 1;
-                    let avail = width.saturating_sub(prefix_vis);
-                    let cmd_color = if st == Status::Pending && detail.is_none() {
-                        hue(Role::Attention)
-                    } else {
-                        dim_strong.clone()
-                    };
-                    let identity = with_wait_tag(identity, st, d.pending_epoch_s, opts.now_epoch_s);
-                    let activity = compose_activity(&identity, d.outcome, avail, &cmd_color);
-                    lines.push(Line {
-                        text: format!(
-                            "  {} {}\n",
-                            Seg::bold(&dim_strong, mark.to_string()),
-                            activity
-                        ),
-                        target: Some(pane_target),
-                        bg: LineBg::Card,
-                    });
-                    if let Some(q) = detail {
-                        // "    ↳ q" — 4-space indent aligns ↳ under the mark; 6 visible prefix cols.
-                        const PREFIX_VIS: usize = 6;
-                        let text = if width < PREFIX_VIS {
-                            // Extreme-narrow: no room for the styled prefix — fall
-                            // back to a plain clamped line, mirroring
-                            // `emit_pane_detail_line`'s `width < PREFIX_VIS` guard.
-                            format!("{}\n", truncate(&format!("    ↳ {q}"), width))
-                        } else {
-                            let budget = width - PREFIX_VIS;
-                            format!("    {}\n", Seg::new(&hue(st.role()), format!("↳ {}", truncate(q, budget))))
-                        };
-                        lines.push(Line {
-                            text,
-                            target: Some(pane_target),
-                            bg: LineBg::Card,
-                        });
-                    }
-                }
+    // Unlike the multi-pane roster (where every tracked pane earns a line),
+    // the single pane's line is emitted only when it says something: a
+    // non-empty identity OR an outcome tag that actually renders (`Ok`'s tag
+    // is empty by design — see `Outcome::full` — so an empty-msg Ok completion
+    // earns no line at all). Idle stays header-only.
+    if let Some(pane) = row.display.panes.iter().find(|p| p.is_tracked()) {
+        let pane_status = pane.render_status();
+        let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
+        let says_something = !identity.trim().is_empty()
+            || pane.outcome().is_some_and(|o| !o.full().is_empty());
+        if pane_status != Status::Idle && says_something {
+            let identity =
+                with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
+            let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
+            let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
+            let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, Branch::Elbow);
+            lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+            if let Some(q) = detail {
+                let text = emit_pane_detail_line(
+                    q, row.active, st, pane_status, Branch::Elbow, &idle_color, width,
+                );
+                lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
             }
         }
     }
@@ -1211,9 +1179,10 @@ fn footer_hint(opts: &RenderOpts) -> Line {
 
 /// The footer's tally line: `{n}{spin} working · {m} need you`. `n` counts
 /// `Status::Running` rows (spinner only when `n > 0`); `m` counts
-/// `Status::needs_you` rows (loud + bold when `m > 0`). Truncated to width;
-/// too-tight-for-both-colors degrades to one run colored by whether the tally
-/// is still loud (`m > 0`).
+/// `Status::needs_you` rows (loud + bold — and the ` · {m} need you` segment
+/// only exists when `m > 0`: a zero is noise, not signal, so the line recedes
+/// to just `{n} working`). Truncated to width; too-tight-for-both-colors
+/// degrades to one run colored by whether the tally is still loud (`m > 0`).
 fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
@@ -1224,6 +1193,14 @@ fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     } else {
         working.to_string()
     };
+    if need_you == 0 {
+        let text = truncate(&format!("{} working", n_part), width);
+        return Line {
+            text: format!("{}\n", Seg::new(&idle, text)),
+            target: None,
+            bg: LineBg::Rail,
+        };
+    }
     let left = format!("{} working · ", n_part);
     let right = format!("{} need you", need_you);
     let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
@@ -1325,33 +1302,51 @@ const LEDGER_DISPLAY_CAP: usize = 10;
 
 /// The bottom region per the spec §9 budget table. `leftover` = height minus
 /// everything already in `flat` (i.e. `render_body`'s footprint). Returns
-/// lines ordered top→bottom (filler … ledger rule, entries newest-first …
-/// footer rule, tally, hint). INVARIANT: when it returns any lines,
+/// lines ordered top→bottom (filler … ledger rule, entries newest-first,
+/// spacer … footer rule, tally, hint?). INVARIANT: when it returns any lines,
 /// `flat.len() + returned.len() == opts.height` exactly.
+///
+/// The footer is `f` lines: rule + tally, plus the `alt-[n] jump` hint line
+/// only when `opts.jump_hint` claims the chord actually exists (f = 2 or 3).
+/// A shown ledger always ends with one blank spacer line before the footer
+/// rule — history gets air above the pinned floor instead of running into it.
 ///
 /// | leftover | region |
 /// |---|---|
 /// | 0–1 | nothing |
-/// | 2 | rule + tally |
-/// | 3 | rule + tally + hint |
-/// | 4 | 1 filler + footer(3) |
-/// | ≥5, ledger empty | (leftover−3) filler + footer(3) |
-/// | ≥5, ledger non-empty | filler + ledger rule + `min(len, leftover−4, LEDGER_DISPLAY_CAP)` entries + footer(3) |
+/// | 2 | rule + tally (hint dropped even when configured) |
+/// | 3..=f | full footer(f) |
+/// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
+/// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
 fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
+    let f = if opts.jump_hint { 3 } else { 2 };
+    let push_footer = |v: &mut Vec<Line>| {
+        v.push(footer_rule(opts));
+        v.push(footer_tally(rows, opts));
+        if opts.jump_hint {
+            v.push(footer_hint(opts));
+        }
+    };
     match leftover {
         0 | 1 => vec![],
         2 => vec![footer_rule(opts), footer_tally(rows, opts)],
-        3 => vec![footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
-        4 => vec![bottom_filler(), footer_rule(opts), footer_tally(rows, opts), footer_hint(opts)],
+        n if n <= f => {
+            let mut v = Vec::with_capacity(n);
+            push_footer(&mut v);
+            v
+        }
         n => {
             let mut v = Vec::with_capacity(n);
-            if opts.ledger.is_empty() {
-                for _ in 0..n - 3 {
+            // Ledger needs its rule, ≥1 entry, and the spacer to be worth
+            // showing; below that (saturating: n can be as small as f+1) the
+            // space reads better as blank filler.
+            let entries_n = opts.ledger.len().min(n.saturating_sub(f + 2)).min(LEDGER_DISPLAY_CAP);
+            if entries_n == 0 {
+                for _ in 0..n - f {
                     v.push(bottom_filler());
                 }
             } else {
-                let entries_n = opts.ledger.len().min(n - 4).min(LEDGER_DISPLAY_CAP);
-                let filler_n = n - 4 - entries_n;
+                let filler_n = n - f - 2 - entries_n;
                 for _ in 0..filler_n {
                     v.push(bottom_filler());
                 }
@@ -1359,10 +1354,9 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
                 for line in opts.ledger.iter().take(entries_n) {
                     v.push(ledger_entry_line(line, opts));
                 }
+                v.push(bottom_filler());
             }
-            v.push(footer_rule(opts));
-            v.push(footer_tally(rows, opts));
-            v.push(footer_hint(opts));
+            push_footer(&mut v);
             v
         }
     }

@@ -1,11 +1,11 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3924
+assertion_line: 4010
 expression: "tint_map_for(&raw, &light)"
 ---
 rail
 active
-active
+agent
 rail
 agent
 rail

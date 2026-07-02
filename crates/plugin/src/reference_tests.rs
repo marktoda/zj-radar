@@ -115,6 +115,7 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 ///   width N
 ///   height N
 ///   glyphs plain|nerd
+///   jump_hint            ← footer advertises `alt-[n] jump` (default: hidden)
 ///   tab <pos> "<name>" [active]
 ///     <kind> <status> "<msg>" [task "<text>"] [exit <N>|?]   ← indented; one line per pane
 ///
@@ -132,6 +133,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     let mut explicit_height = false;
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
+    let mut jump_hint = false;
     let mut ledger_lines: Vec<crate::radar_state::LedgerLine> = Vec::new();
     // A fixed "now" for the `ledger` directive's age math, so a scenario's
     // round `age_secs` numbers produce deterministic, doc-readable
@@ -210,6 +212,12 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 "cards" => Density::Cards,
                 other => panic!("reference DSL: unknown density '{}' in scenario", other),
             };
+            continue;
+        }
+        // Footer `alt-[n] jump` hint: config-driven honesty (only run-owned
+        // configs bind the chord) — default hidden, mirroring `JumpHint`.
+        if line.trim() == "jump_hint" {
+            jump_hint = true;
             continue;
         }
 
@@ -595,6 +603,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         theme,
         now_epoch_s: LEDGER_NOW_EPOCH_S,
         ledger: ledger_lines,
+        jump_hint,
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no

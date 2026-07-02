@@ -96,6 +96,34 @@ impl GrantHint {
     }
 }
 
+/// Whether the footer may advertise the `alt-[n] jump` chord — the same
+/// honesty contract as [`GrantHint`]: Zellij owns keybinds, not the plugin,
+/// so only configs that actually bake the Alt-1..9 → GoToTab binds (the
+/// `run`-owned config) may claim them. Everywhere else the footer omits the
+/// hint line entirely rather than promising a dead chord.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JumpHint {
+    /// Alt-1..9 tab-jump binds are known to exist (run-owned configs only).
+    AltN,
+    /// Default: promise nothing about keybinds we didn't install.
+    #[default]
+    Hidden,
+}
+
+impl JumpHint {
+    pub fn from_config(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "alt-n" | "alt" => JumpHint::AltN,
+            _ => JumpHint::default(),
+        }
+    }
+
+    /// True when the footer may render the `alt-[n] jump` hint line.
+    pub fn shows(self) -> bool {
+        self == JumpHint::AltN
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Config {
     pub naming: NamingMode,
@@ -105,6 +133,8 @@ pub struct Config {
     pub role: Role,
     /// Which grant escape hatch the needs-permission face advertises.
     pub grant_hint: GrantHint,
+    /// Whether the footer advertises the `alt-[n] jump` chord.
+    pub jump_hint: JumpHint,
     /// Set on the onboarding layout's rail instances: never fire our own
     /// permission request — wait for the floating onboarding pane to win the
     /// grant, so Zellij binds its prompt to the float, not the rail.
@@ -125,6 +155,7 @@ impl Default for Config {
             density: Density::default(),
             role: Role::default(),
             grant_hint: GrantHint::default(),
+            jump_hint: JumpHint::default(),
             defer_permission: false,
             notify: true,
             notify_done: true,
@@ -205,6 +236,7 @@ config_fields! {
         glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
         role:    "role"    => Role::from_config,
         grant_hint: "grant_hint" => GrantHint::from_config,
+        jump_hint:  "jump_hint"  => JumpHint::from_config,
     }
     opt {
         header:              "header"              => parse_bool,
@@ -456,6 +488,29 @@ mod tests {
         assert_eq!(
             Config::from_map(&map(&[("grant_hint", "banana")])).grant_hint,
             GrantHint::Generic
+        );
+    }
+
+    #[test]
+    fn jump_hint_parses_and_defaults_to_hidden() {
+        // Same honesty contract as grant_hint: absent or unrecognized promises
+        // nothing — only the run-owned config (which binds Alt-1..9) may claim
+        // the footer's alt-[n] jump hint.
+        assert_eq!(Config::default().jump_hint, JumpHint::Hidden);
+        assert!(!JumpHint::Hidden.shows());
+        assert_eq!(Config::from_map(&map(&[])).jump_hint, JumpHint::Hidden);
+        assert_eq!(
+            Config::from_map(&map(&[("jump_hint", "alt-n")])).jump_hint,
+            JumpHint::AltN
+        );
+        assert!(JumpHint::AltN.shows());
+        assert_eq!(
+            Config::from_map(&map(&[("jump_hint", "ALT-N")])).jump_hint,
+            JumpHint::AltN
+        );
+        assert_eq!(
+            Config::from_map(&map(&[("jump_hint", "banana")])).jump_hint,
+            JumpHint::Hidden
         );
     }
 
