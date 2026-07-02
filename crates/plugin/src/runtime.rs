@@ -317,7 +317,7 @@ impl PluginRuntime {
         };
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts)
-        } else if tabrows.is_empty() {
+        } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &opts)
@@ -1091,6 +1091,47 @@ mod tests {
         runtime.render(100, 80);
 
         assert_eq!(runtime.mouse_click(2), Outcome::default());
+    }
+
+    #[test]
+    fn no_tabs_with_history_renders_ledger_not_scanning() {
+        // Task 14: zero tracked tabs alone isn't the onboarding trigger — a
+        // session with completion history still has something to show. Seed a
+        // Done pane, let it recede into the ledger as its tab closes, then
+        // close every tab and confirm `render` picks `render_rail` (header +
+        // ledger + footer) over the minimal scanning face.
+        let mut runtime = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        runtime.tabs_changed(vec![tab(0, "web", true)]);
+        runtime.radar.set_tab_panes_for_position(0, vec![pane(5)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(5, Status::Done), 1, 1_000);
+
+        // The pane closes with a still-lit Done: pruning hands it to the
+        // ledger (spec §4.2).
+        runtime.panes_changed(PaneUpdate {
+            tab_panes: HashMap::new(),
+            live: HashSet::new(),
+            theme: None,
+            exits: Vec::new(),
+        });
+        assert!(!runtime.radar.ledger_is_empty(), "setup: ledger must be seeded");
+
+        // The tab itself closes too — zero tabs, but history remains.
+        runtime.tabs_changed(vec![]);
+
+        let ansi = runtime.render(24, 40);
+        assert!(ansi.contains("earlier"), "ledger renders even with no tabs: {ansi:?}");
+        assert!(ansi.contains("alt-[n] jump"), "footer still pins to the floor: {ansi:?}");
+        assert!(
+            !ansi.to_lowercase().contains("scanning"),
+            "must not fall back to the onboarding scanning face: {ansi:?}"
+        );
     }
 
     #[test]

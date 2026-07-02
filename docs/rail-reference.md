@@ -27,6 +27,10 @@
    count/elapsed slot to keep lines clean. `done/total` may return later. ⟦D1⟧
 8. **Empty/initial is not a marketing screen.** No "AI agent activity" legend —
    just render the tab list; an unnamed/first tab shows a placeholder name.
+   Now true end-to-end (Task 14): the zero-tab onboarding face itself dropped
+   the status-glyph legend down to a one-line ` scanning… no agents yet`. That
+   face is a separate code path from this doc's harness (see §A's note below)
+   — `render_rail` and `aggregate` are what this file pins.
 
 ## Vocabulary
 
@@ -80,6 +84,16 @@ tab 1 "shell"
 
 > No legend, no permission marketing. Just the tab list. An unnamed tab renders
 > a placeholder ("shell"/the layout name). ⟦D9: placeholder text⟧
+>
+> This is the *one-tab* placeholder case, not the *zero-tab* one — with no
+> tracked tabs at all (cold start, or every tab closed with no completion
+> history), `PluginRuntime::render` routes to a distinct `onboarding()` face
+> instead of `render_rail`: ` RADAR` + the `═` rule + a blank line + one muted
+> ` scanning… no agents yet`. That face bypasses `render_rail` entirely, so it
+> isn't a `rail-input`/`rail-expect` case here — see
+> `render::tests::zero_state_is_a_scanning_one_liner`. (Zero tabs WITH
+> completion history still goes through `render_rail`, header `·0` and all —
+> see §AB's ledger scenario.)
 
 ## B. Single plain tab (idle)
 
@@ -751,6 +765,36 @@ ledger 300 error "workspace-ci-runner" "tests failed"
 > directly (age is wall-clock via `now_epoch_s`, independent of `now_tick`);
 > a row's tab is looked up live in production, so a closed tab's row just
 > becomes click-inert rather than disappearing. ⟦bottom region / spec §9⟧
+
+---
+
+## AC. Zero tabs, non-empty ledger (history outlives the tab)
+
+**Render-derived.** Task 14: every tab can close while completion history
+remains — `render_rail` still renders (header + bottom region, no cards) as
+long as `opts.ledger` is non-empty, even with zero rows. The header's `·N`
+count is honest about what it counts: `·0` tabs, not 0 history.
+
+```rail-input
+width 32
+height 7
+ledger 90 done "web" "deploying"
+```
+```rail-expect
+ RADAR                        ·0
+════════════════════════════════
+─ earlier ──────────────────────
+1m ● web deploying
+────────────────────────────────
+0 working · 0 need you
+ alt-[n] jump
+```
+
+> No `tab` line at all — zero rows. The header still renders (·0) because
+> `has_content` is `!rows.is_empty() || !ledger.is_empty()`. Only when BOTH are
+> empty does `render_rail` return nothing, and `PluginRuntime::render` routes
+> to the `onboarding()` scanning face instead (see §A's note above). ⟦zero
+> state / spec §7,§9⟧
 
 ---
 

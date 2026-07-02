@@ -581,13 +581,13 @@ impl RadarState {
         self.ledger.any_unsaturated(now_epoch_s)
     }
 
-    /// Unlike `ledger_lines`, not yet wired into the rendered rail — the
-    /// bottom region (Task 13) checks `RenderOpts::ledger`'s own `is_empty`
-    /// on the prepared `Vec<LedgerLine>` rather than asking `RadarState`
-    /// directly.
-    ///
-    /// TODO(Task 14): wire in a consumer, then drop the allow below.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    /// The zero-state routing gate: `PluginRuntime::render` shows the minimal
+    /// scanning face only when there are no tracked tabs AND no completion
+    /// history — a session with zero live tabs but a non-empty ledger still
+    /// renders `render_rail`'s header + bottom region (spec §9's floor).
+    /// Unlike `ledger_lines`, this asks `RadarState` directly rather than the
+    /// prepared `Vec<LedgerLine>` — the routing decision happens before
+    /// `RenderOpts` is built.
     pub(crate) fn ledger_is_empty(&self) -> bool {
         self.ledger.is_empty()
     }

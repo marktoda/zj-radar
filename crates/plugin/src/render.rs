@@ -267,15 +267,16 @@ fn is_multi_pane(display: &TabDisplay) -> bool {
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
-/// span. Only the truly-empty case (no rows at all) is headerless; when `header`
-/// is false the identity block is suppressed and rows start at line 0.
+/// span. Headerless only when there's truly nothing to show — no rows AND no
+/// ledger history (`has_content` is false) — or when `header` is false, which
+/// suppresses the identity block so rows start at line 0.
 ///
 /// In Cards density the carded hero is just the " RADAR …" title (1 line) — the
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
 /// Comfortable keep the two-line title+rule header. `render_rail()` uses the
 /// same emitted header lines for ANSI and targets, so the count stays in lockstep.
-fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
-    if rows.is_empty() || !header {
+fn header_lines(_rows: &[TabRow], header: bool, density: Density, has_content: bool) -> usize {
+    if !has_content || !header {
         0
     } else if density == Density::Cards {
         1
@@ -283,19 +284,6 @@ fn header_lines(rows: &[TabRow], header: bool, density: Density) -> usize {
         2
     }
 }
-
-/// The onboarding legend: every `Status` with its plain-English gloss, in a
-/// deliberate *display* order (loudest first), distinct from the `Status::ALL`
-/// severity order. Each variant must appear exactly once — pinned by
-/// `onboarding_legend_covers_every_status` so a new `statuses!` row can't be
-/// silently dropped from the onboarding screen.
-const ONBOARDING_LEGEND: [(Status, &str); Status::ALL.len()] = [
-    (Status::Pending, "needs you"),
-    (Status::Running, "working"),
-    (Status::Done, "done"),
-    (Status::Error, "error"),
-    (Status::Idle, "idle"),
-];
 
 /// Push one full-width, click-inert line (`role`-colored, clamped to `w`) into a
 /// targetless panel face. The truncation acts on the visible text, never the SGR
@@ -305,36 +293,21 @@ fn push_panel_line(out: &mut String, role: &str, text: &str, w: usize) {
     out.push_str(&format!("{}\n", Seg::new(role, truncate(text, w))));
 }
 
-/// The rail's resting "hello / how it works" face — shown on cold start or
-/// before permission is granted. Not a permission interceptor.
+/// The rail's resting face when zero tabs are tracked (cold start, or every
+/// tab has closed with no completion history — see `PluginRuntime::render`'s
+/// routing). Not a permission interceptor. Deliberately minimal per spec §7/
+/// rail-reference.md rule 8 ("not a marketing screen"): title + rule + one
+/// muted status line, no status-glyph legend and no click hint (the panel is
+/// click-inert — there is nothing here to jump to).
 pub fn onboarding(opts: &RenderOpts) -> RenderedRail {
     let w = opts.width;
     let mut out = String::new();
     let accent = Role::Accent.ansi();
     let muted = Role::Muted.ansi();
-    let g = opts.glyphs;
     push_panel_line(&mut out, accent, " RADAR", w);
     push_panel_line(&mut out, accent, &"═".repeat(w), w);
-    push_panel_line(&mut out, muted, " watching your tabs for", w);
-    push_panel_line(&mut out, muted, " AI agent activity.", w);
     out.push('\n');
-    for (st, label) in ONBOARDING_LEGEND {
-        let role_code = st.role().ansi();
-        let glyph = st.glyph_for(g);
-        // " {glyph} {label}" — the marker+spaces are a fixed 3-col prefix. Below
-        // that the label has no room, so clamp the marker alone.
-        if w < 3 {
-            push_panel_line(&mut out, role_code, &format!(" {glyph}"), w);
-        } else {
-            out.push_str(&format!(
-                " {} {}\n",
-                Seg::new(role_code, glyph.to_string()),
-                Seg::new(muted, truncate(label, w - 3)),
-            ));
-        }
-    }
-    out.push('\n');
-    push_panel_line(&mut out, muted, " click a row to jump", w);
+    push_panel_line(&mut out, muted, " scanning… no agents yet", w);
     RenderedRail::from_ansi_without_targets(&out, opts.height)
 }
 
@@ -887,11 +860,14 @@ fn target_for_row(row: &TabRow) -> RailTarget {
 }
 
 /// Produce the identity header lines as raw (unpainted) `Line` values.
-/// Returns 0 lines if `!opts.header` or rows is empty; 1 line (title only) in
-/// Cards density; 2 lines (title + `═` rule) in all other densities.
-/// `overflow` is computed by the caller and passed in.
-fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool) -> Vec<Line> {
-    if !opts.header || rows.is_empty() {
+/// Returns 0 lines if `!opts.header` or `!has_content` (no rows AND no ledger
+/// history); 1 line (title only) in Cards density; 2 lines (title + `═` rule)
+/// in all other densities. `overflow` is computed by the caller and passed in.
+/// The `·N`/`N▲` count is always `rows.len()` — with zero tracked tabs and a
+/// non-empty ledger it reads `·0`, which is honest: the header counts tabs,
+/// not history.
+fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content: bool) -> Vec<Line> {
+    if !opts.header || !has_content {
         return vec![];
     }
     let width = opts.width;
@@ -966,6 +942,10 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
     let width = opts.width;
     let cards = opts.density == Density::Cards;
     let rail = tc_bg(opts.theme.rail_bg);
+    // Zero tabs with a non-empty ledger still has something to show (spec §9's
+    // floor: header + bottom region, no cards) — the header must not vanish
+    // just because `rows` is empty.
+    let has_content = !rows.is_empty() || !opts.ledger.is_empty();
 
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
@@ -973,14 +953,14 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
         .collect();
     let body_budget = opts
         .height
-        .saturating_sub(header_lines(rows, opts.header, opts.density));
+        .saturating_sub(header_lines(rows, opts.header, opts.density, has_content));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
 
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
-    for mut line in render_header(rows, opts, overflow) {
+    for mut line in render_header(rows, opts, overflow, has_content) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }
@@ -1218,7 +1198,11 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
 }
 
 pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
-    if rows.is_empty() {
+    // Truly nothing to show only when there are no rows AND no ledger history
+    // — the caller routes that case to `onboarding` instead (spec §7/§9). Zero
+    // rows with a non-empty ledger still renders: header + bottom region, no
+    // cards.
+    if rows.is_empty() && opts.ledger.is_empty() {
         return RenderedRail::from_lines(vec![]);
     }
     let cards = opts.density == Density::Cards;

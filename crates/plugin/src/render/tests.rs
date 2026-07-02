@@ -129,7 +129,7 @@ fn header_is_title_then_rule_two_lines() {
         display: display(Status::Running, 0, 0, None),
     }];
     assert_eq!(
-        header_lines(&rows, true, crate::config::Density::Compact),
+        header_lines(&rows, true, crate::config::Density::Compact, true),
         2
     );
     let s = render(&rows, &ro(24, 0));
@@ -145,10 +145,21 @@ fn header_is_title_then_rule_two_lines() {
 fn header_absent_for_empty_rows() {
     let rows: Vec<TabRow> = vec![];
     assert_eq!(
-        header_lines(&rows, true, crate::config::Density::Compact),
+        header_lines(&rows, true, crate::config::Density::Compact, false),
         0
     );
     assert!(render(&rows, &ro(24, 0)).is_empty());
+}
+
+#[test]
+fn header_present_for_empty_rows_with_ledger_history() {
+    // Zero tracked tabs but a non-empty ledger is still "has_content" — the
+    // header renders with an honest `·0` tab count (spec §9's floor).
+    let rows: Vec<TabRow> = vec![];
+    assert_eq!(
+        header_lines(&rows, true, crate::config::Density::Compact, true),
+        2
+    );
 }
 
 #[test]
@@ -1134,24 +1145,17 @@ fn multi_pending_detail_never_exceeds_width() {
 }
 
 #[test]
-fn onboarding_shows_legend_and_click_hint() {
+fn zero_state_is_a_scanning_one_liner() {
+    // Task 14: the onboarding face is the minimal scanning line, not the old
+    // status-glyph legend — rail-reference.md rule 8 ("not a marketing
+    // screen") now holds end-to-end.
     let s = onboarding(&ro(28, 0));
     assert!(s.ansi.contains("RADAR"));
-    assert!(s.ansi.contains('◆')); // legend includes the waiting glyph (plain set)
-    assert!(s.ansi.to_lowercase().contains("needs you"));
-    assert!(s.ansi.to_lowercase().contains("click"));
-}
-
-#[test]
-fn onboarding_legend_covers_every_status() {
-    // The const's length is already pinned to `Status::ALL.len()` at compile
-    // time; this guards the complementary property — every variant appears
-    // exactly once (no duplicate covering for a missing one). Adding a
-    // `statuses!` row therefore forces a matching legend entry.
-    for &want in Status::ALL {
-        let hits = ONBOARDING_LEGEND.iter().filter(|(st, _)| *st == want).count();
-        assert_eq!(hits, 1, "{want:?} must appear exactly once in the legend");
-    }
+    assert!(s.ansi.to_lowercase().contains("scanning… no agents yet"));
+    // No legend glyph lines and no click hint — the panel is click-inert.
+    assert!(!s.ansi.contains('◆'));
+    assert!(!s.ansi.to_lowercase().contains("needs you"));
+    assert!(!s.ansi.to_lowercase().contains("click"));
 }
 
 #[test]
@@ -1289,7 +1293,7 @@ fn header_false_emits_no_header_lines() {
         display: display(Status::Running, 0, 0, None),
     }];
     assert_eq!(
-        header_lines(&rows, false, crate::config::Density::Compact),
+        header_lines(&rows, false, crate::config::Density::Compact, true),
         0
     );
     let opts = RenderOpts {
