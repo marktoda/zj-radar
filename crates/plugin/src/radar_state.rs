@@ -430,7 +430,7 @@ impl RadarState {
         // can't be mistaken for the agent exiting.
         //
         // `now_epoch_s` stays unused here (kept for signature symmetry with the
-        // other three mutating entry points, per the Task 9 decision): the
+        // other three mutating entry points): the
         // displaced observation `clear_on_prompt_return` hands back already
         // carries its own `completed_epoch_s` stamp from when it first
         // completed, so `LedgerEntry::from_observation` needs no fresh epoch

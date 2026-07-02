@@ -980,7 +980,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
 
 /// Zero out the one field the first snapshot load is allowed to mutate:
 /// `last_change_tick` on a command-origin, Done observation (the TTL
-/// re-base in `RadarState::load_snapshot`, Task 12 — see the comment there).
+/// re-base in `RadarState::load_snapshot` — see the comment there).
 /// Every other field, every other entry, the ledger array, and the tick must
 /// survive a first load byte-equal; this function must NOT be widened to
 /// cover any other field without a matching re-base in production code, or
@@ -1268,7 +1268,7 @@ fn from_raw_theme_is_none_without_color_reports() {
     assert!(PaneUpdate::from_raw(vec![raw_pane(1, 0)]).theme.is_none());
 }
 
-// ── Ledger recede edges (Task 11) ──
+// ── Ledger recede edges ──
 
 #[test]
 fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
@@ -1513,7 +1513,7 @@ fn ledger_lines_resolve_live_tab_position_or_none() {
     assert_eq!(lines[0].tab_position, None, "a gone tab resolves to a click-inert row");
 }
 
-// ── Ping flash on flip-to-pending (Task 19) ──
+// ── Ping flash on flip-to-pending ──
 
 #[test]
 fn pipe_flip_to_pending_flashes_for_two_ticks() {

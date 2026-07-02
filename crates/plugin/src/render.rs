@@ -24,7 +24,8 @@ const BOLD: &str = "\x1b[1m";
 /// Honest only because `since_tick` is honest: `StatusStore::apply` preserves
 /// `last_change_tick` across a same-status re-broadcast
 /// (`status_store.rs::apply_sets_last_change_tick_only_on_status_change`) and
-/// `CommandStore` preserves it across a same-command re-promotion (Task 6,
+/// `CommandStore` preserves it across a same-command re-promotion
+/// (`promotion_preserves_running_since_for_same_command`,
 /// `crates/core/src/command.rs`) — so a long-runner's `since_tick` reflects
 /// when the work truly started, not the last time it happened to re-announce
 /// itself.
@@ -550,9 +551,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // ── Single-pane line 2 (chunk 1) ───────────────────────────────────────
     // Line 2: `‹mark› ‹activity›` — source-agnostic for all active statuses.
-    // Emitted when a detail exists with a non-empty msg OR a finished-command
-    // outcome tag to show. For Pending (the question), the command is colored in
-    // attention (loud); others dim. The outcome tag carries its own role hue.
+    // Emitted when a detail exists with a non-empty msg OR an outcome tag that
+    // actually renders (`Ok`'s tag is empty by design — see `Outcome::full` —
+    // so an empty-msg Ok completion earns no line at all, not a bare mark).
+    // For Pending (the question), the command is colored in attention (loud);
+    // others dim. The outcome tag carries its own role hue.
     //
     // These lines describe the tab's single tracked pane, so — mirroring the
     // multi-pane tree rows — they target that pane directly rather than the
@@ -567,7 +570,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         .unwrap_or(tab_target);
     if let Some(d) = &row.display.detail {
         let (identity, detail) = identity_and_detail(st, &d.task, &d.msg);
-        if !identity.trim().is_empty() || d.outcome.is_some() {
+        if !identity.trim().is_empty() || d.outcome.is_some_and(|o| !o.full().is_empty()) {
             match st {
                 Status::Idle => {}
                 Status::Done | Status::Running | Status::Error | Status::Pending => {
@@ -679,7 +682,7 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
 /// Emit one pane line in the line-per-pane / tree design:
 /// Inactive: ` {connector} {glyph} {mark} {msg}` (space + `├`/`└` + space)
 /// Active:   `▌{connector} {glyph} {mark} {msg}` (spine + `├`/`└` + space)
-// `identity`/`has_detail` (Task 4) pushed this past clippy's 7-arg default; the
+// The `identity`/`has_detail` params push this past clippy's 7-arg default; the
 // params are tightly coupled render-context pieces (no natural sub-struct)
 // shared with `emit_pane_detail_line`'s sibling call in `render_row`.
 #[allow(clippy::too_many_arguments)]
@@ -920,9 +923,9 @@ fn target_for_row(row: &TabRow) -> RailTarget {
 /// always wins over the plain census. So a tight budget drops the census
 /// first, keeping the badge alone; only once there's no badge (or the
 /// overflow marker itself needs the room) does the lone primary token stand,
-/// clamped to width exactly as before Task 16.
+/// clamped to width.
 ///
-/// `working` (Task 20) drives the header-rule heartbeat: in Compact/
+/// `working` drives the header-rule heartbeat: in Compact/
 /// Comfortable density (Cards has no `═` rule to carry it) the rule swaps one
 /// `═` for a `◆` (`Role::Accent`, bold) at column `now_tick % width`, a pure
 /// function of the render tick — see [`header_rule`] and [`render_body`]'s
@@ -1069,7 +1072,7 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
         .saturating_sub(header_lines(rows, opts.header, opts.density, has_content));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
-    // Drives the header-rule heartbeat (Task 20) — a plain `any()`, not a
+    // Drives the header-rule heartbeat — a plain `any()`, not a
     // count, so it's a distinct question from `footer_tally`'s "how many are
     // working" tally computed later in `render_bottom`; the two live in
     // separate pipeline stages (body vs. bottom region) and sharing one

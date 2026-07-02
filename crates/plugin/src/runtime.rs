@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn no_tabs_with_history_renders_ledger_not_scanning() {
-        // Task 14: zero tracked tabs alone isn't the onboarding trigger — a
+        // Zero tracked tabs alone isn't the onboarding trigger — a
         // session with completion history still has something to show. Seed a
         // Done pane, let it recede into the ledger as its tab closes, then
         // close every tab and confirm `render` picks `render_rail` (header +
@@ -1558,9 +1558,8 @@ mod tests {
 
     #[test]
     fn cadence_seconds_maps_fast_and_slow() {
-        // Fast is the only cadence `arm_timer_if_needed` selects today; `Slow`
-        // is Task 15's back-off target. Both are exercised here (rather than
-        // only via the wasm-only glue) so this pure mapping is host-testable
+        // Both cadences are exercised here (rather than only via the wasm-only
+        // glue that replays `SetTimeout`) so this pure mapping is host-testable
         // and neither variant reads as dead code under `cargo test`.
         assert_eq!(Cadence::Fast.seconds(), 1.0);
         assert_eq!(Cadence::Slow.seconds(), 60.0);

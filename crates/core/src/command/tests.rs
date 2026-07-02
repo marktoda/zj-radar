@@ -326,7 +326,7 @@
         assert!(store.get(1).is_none(), "still pending at same tick");
 
         // One tick short of the debounce window → still pending. Only exercises
-        // something when the floor is above 1 (Task 7).
+        // something when the floor is above 1.
         if DEBOUNCE_TICKS > 1 {
             store.on_timer(DEBOUNCE_TICKS, 0);
             assert!(store.get(1).is_none(), "still pending one tick short of debounce");
@@ -809,7 +809,7 @@
         );
     }
 
-    // ── Task 6: done TTL recede, epoch stamping, easing-safe promotion ──
+    // ── Done TTL recede, epoch stamping, easing-safe promotion ──
 
     #[test]
     fn done_recedes_to_idle_after_ttl_and_reports_the_recede() {
@@ -964,7 +964,7 @@
         assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(300));
     }
 
-    // ── Task 7: debounce floor + the missed-exit-edge diagnosis ──
+    // ── Debounce floor + the missed-exit-edge diagnosis ──
 
     #[test]
     fn sub_debounce_command_never_renders_running() {

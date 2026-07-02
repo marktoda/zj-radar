@@ -124,7 +124,12 @@ transient, also skipped). A command completion **shadowed** by a status
 observation for the same pane never enters either: `resolve`'s
 status-wins-over-command precedence means that command fact was never actually
 on the card, so its recede must not ghost a row into history —
-`ledger_receded`'s `status_tracked` filter cites `resolve` directly. A
+`ledger_receded`'s `status_tracked` filter cites `resolve` directly. The
+filter reads the shadow at *recede* time, not onset: a command `Done` that was
+visibly on the card but gets shadowed by a status observation within its TTL
+window never ledgers either — deliberate, since the status source now owns
+that pane's story and its own completion will ledger instead of double-ghosting
+the pane. A
 status-origin recede is never filtered; only `resolve` and this one check know
 there are two stores at all.
 

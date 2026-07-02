@@ -577,7 +577,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no
-    // padding" — a meaning the bottom region (Task 13) has changed: any
+    // padding" — a meaning the bottom region has changed: any
     // height taller than the content now pads down to a pinned footer, and
     // `usize::MAX / 2` worth of filler lines would never finish building.
     // Recompute that default as the session's exact natural content height

@@ -53,7 +53,8 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
 
 /// `opts` with its height replaced by `rows`' exact natural content height
 /// (leftover 0 ⇒ no bottom region — see `body_line_count`). `height: 100` was
-/// always just an "enough, no overflow" sentinel pre-Task-13; tests that
+/// always just an "enough, no overflow" sentinel before the bottom region
+/// existed; tests that
 /// assert exact line counts/content unrelated to the pinned footer use this
 /// so a generous sentinel height doesn't pull the footer into their
 /// expectations.
@@ -370,6 +371,46 @@ fn active_and_waiting_row_bar_is_attention_not_accent() {
     assert!(line1.contains('▌'));
     // the bar uses the attention role when the active tab is also waiting
     assert!(line1.contains(Role::Attention.ansi()));
+}
+
+#[test]
+fn empty_msg_ok_completion_emits_no_bare_mark_line() {
+    // `Outcome::Ok` renders an empty tag (`Outcome::full` — the line-1 status
+    // glyph is the one done signal), so with an empty msg there is nothing for
+    // line 2 to say: the row must stay a single line, not emit a bare
+    // "  ‹mark› " prefix with no activity. A Failed outcome DOES render a tag,
+    // so it keeps its line 2 even with an empty msg.
+    let row = |status, outcome| {
+        let d = PrimaryDetail {
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "".into(),
+            task: String::new(),
+            kind: Kind::Command,
+            since_tick: 0,
+            outcome,
+            status,
+        };
+        TabRow { flash: false,
+            number: 1,
+            name: "n".into(),
+            active: false,
+            has_bell: false,
+            display: display(status, 1, 1, Some(d)),
+        }
+    };
+
+    let ok_lines = render_row(&row(Status::Done, Some(Outcome::Ok)), &ro(30, 0));
+    assert_eq!(
+        ok_lines.len(),
+        1,
+        "an empty-msg Ok completion has no line 2: {:?}",
+        ok_lines.iter().map(|l| &l.text).collect::<Vec<_>>()
+    );
+
+    let failed_lines = render_row(&row(Status::Error, Some(Outcome::Failed(Some(1)))), &ro(30, 0));
+    assert_eq!(failed_lines.len(), 2, "a Failed outcome still earns its line 2");
+    assert!(failed_lines[1].text.contains("exit 1"), "line 2 carries the tag: {:?}", failed_lines[1].text);
 }
 
 #[test]
@@ -1146,9 +1187,9 @@ fn multi_pending_detail_never_exceeds_width() {
 
 #[test]
 fn zero_state_is_a_scanning_one_liner() {
-    // Task 14: the onboarding face is the minimal scanning line, not the old
-    // status-glyph legend — rail-reference.md rule 8 ("not a marketing
-    // screen") now holds end-to-end.
+    // The onboarding face is the minimal scanning line, not a status-glyph
+    // legend — rail-reference.md rule 8 ("not a marketing screen") holds
+    // end-to-end.
     let s = onboarding(&ro(28, 0));
     assert!(s.ansi.contains("RADAR"));
     assert!(s.ansi.to_lowercase().contains("scanning… no agents yet"));
@@ -3223,7 +3264,7 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
 #[test]
 fn header_shows_radar_and_urgent_count() {
     // Header reads " RADAR" with tab count. The old fused `·N!` urgent
-    // marker (design rule 7) stays gone — Task 16's needs-you badge is a
+    // marker (design rule 7) stays gone — the needs-you badge is a
     // separate, space-joined `{n}!` token (see `header_badge_*` below), not
     // a revival of the old format.
     let pending = PrimaryDetail {
@@ -3265,7 +3306,7 @@ fn header_shows_radar_and_urgent_count() {
         header
     );
     // The old fused ·N! urgent marker is removed per design; the space-joined
-    // needs-you badge (Task 16) reads "·3 1!" here, not "·1!".
+    // needs-you badge reads "·3 1!" here, not "·1!".
     assert!(
         !header.contains("·1!"),
         "old fused urgent marker must not appear: {:?}",
@@ -3332,7 +3373,7 @@ fn header_badge_counts_pending_and_error_tabs_only() {
 #[test]
 fn header_badge_absent_at_zero() {
     // All Running/Idle rows → no needs-you row at all, so no badge — just
-    // the plain census, same as before Task 16.
+    // the plain census.
     let rows = vec![
         TabRow { flash: false,
             number: 1,
@@ -3384,7 +3425,7 @@ fn header_badge_survives_narrow_width_over_census() {
     );
 }
 
-// ── Header heartbeat sweep (Task 20) ──────────────────────────────────────
+// ── Header heartbeat sweep ─────────────────────────────────────────────────
 
 #[test]
 fn heartbeat_marches_one_column_per_tick_while_working() {
@@ -4154,7 +4195,8 @@ fn cards_never_lose_budget_to_the_bottom_region() {
     // Many URGENT (never idle-foldable) rows, tight height → the overflow
     // compressor packs the plan to fill body_budget exactly, leaving no
     // headroom for the bottom region (leftover 0). The plan renders exactly
-    // as it did before Task 13 — no footer squeezed in over dropped rows.
+    // as if the bottom region did not exist — no footer squeezed in over
+    // dropped rows.
     let rows: Vec<TabRow> = (1..=20)
         .map(|n| TabRow { flash: false,
             number: n,
@@ -4760,7 +4802,7 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
     assert_eq!(cols[0], cols[1], "active and inactive tab names must start at the same column:\n{ansi}");
 }
 
-// ── Task 21: long-runner easing ────────────────────────────────────────────
+// ── Long-runner easing ─────────────────────────────────────────────────────
 
 #[test]
 fn spinner_eases_after_ten_minutes() {

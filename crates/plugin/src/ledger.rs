@@ -4,20 +4,13 @@
 //! renderer consumes prepared lines. Convergent across instances because every
 //! entry edge is a shared signal and the snapshot merges rings.
 //!
-//! `RadarState` now constructs a `Ledger` and feeds it on every recede edge
-//! (`push` is reachable from production wasm as of that wiring — see
-//! `radar_state.rs`'s `ledger_receded`). `to_vec`, `replace`, and `merge` are
-//! wired into snapshot persistence as of Task 12 (`RadarState::snapshot_json`/
-//! `load_snapshot`), so they're reachable from production wasm too. `entries`
-//! and `format_age` are consumed by the Task 13 bottom region
-//! (`render::render_bottom` via `RadarState::ledger_lines`), so they're
-//! reachable from production wasm too now. `any_unsaturated`/`SATURATE_S` are
-//! consumed via `RadarState::ledger_any_unsaturated` by
-//! `PluginRuntime::desired_cadence` (Task 15's cadence selection), so they're
-//! reachable too. `is_empty` still carries a per-item allow pending its own
-//! cleanup (see its doc). `cargo test` (host or wasm) stays fully linted: the
-//! tests below call every `pub(crate)` item directly, so real dead code would
-//! still be caught there.
+//! Consumers, by seam: `push` via `RadarState::ledger_receded` (every edge
+//! that retires a card); `to_vec`/`replace`/`merge` via snapshot persistence
+//! (`RadarState::snapshot_json`/`load_snapshot`); `entries`/`format_age` via
+//! the rail's bottom region (`render::render_bottom` through
+//! `RadarState::ledger_lines`); `any_unsaturated`/`SATURATE_S` via
+//! `PluginRuntime::desired_cadence` (the Slow-vs-disarm cadence pick); and
+//! `is_empty` via `PluginRuntime::render`'s onboarding-vs-rail choice.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::radar_state::TabId;
@@ -110,6 +103,14 @@ impl Ledger {
     /// Append unless a matching entry (same pane/outcome/label within
     /// MERGE_WINDOW_S) is already present — the dedup guard that stops
     /// overlapping recede edges (prune racing TTL) double-appending.
+    ///
+    /// Deliberately asymmetric with `merge` on which stamp survives a match:
+    /// `push` keeps the EXISTING entry's stamp (the duplicate is this instance
+    /// re-observing its own local edge, so first-seen is the honest completion
+    /// time), while `merge` keeps the LATER stamp (two instances stamped the
+    /// same event independently; the later one is the fresher knowledge). Safe
+    /// because a match by definition lies within MERGE_WINDOW_S: whichever
+    /// stamp wins, rendered ages differ by ≤4s and re-merging still matches.
     pub(crate) fn push(&mut self, entry: LedgerEntry) -> bool {
         if self.entries.iter().any(|existing| is_same_event(existing, &entry)) {
             return false;
@@ -124,9 +125,9 @@ impl Ledger {
         self.entries.iter()
     }
 
-    /// TODO(Task 14): drop this allow once `RadarState::ledger_is_empty` (its
-    /// only consumer) is wired into the rendered rail.
-    #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+    /// Consumed (via `RadarState::ledger_is_empty`) by `PluginRuntime::render`:
+    /// zero tracked tabs AND an empty ledger is the only state that shows the
+    /// onboarding face instead of the rail.
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
