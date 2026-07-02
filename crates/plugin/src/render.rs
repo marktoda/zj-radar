@@ -523,6 +523,18 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // Emitted when a detail exists with a non-empty msg OR a finished-command
     // outcome tag to show. For Pending (the question), the command is colored in
     // attention (loud); others dim. The outcome tag carries its own role hue.
+    //
+    // These lines describe the tab's single tracked pane, so — mirroring the
+    // multi-pane tree rows — they target that pane directly rather than the
+    // tab; a click routes straight to `Effect::ShowPane`. Fall back to the tab
+    // target in the (should-never-happen) case of no tracked pane.
+    let pane_target = row
+        .display
+        .panes
+        .iter()
+        .find(|p| p.is_tracked())
+        .map(|p| RailTarget { tab_position: tab_target.tab_position, pane_id: Some(p.pane_id()) })
+        .unwrap_or(tab_target);
     if let Some(d) = &row.display.detail {
         let (identity, detail) = identity_and_detail(st, &d.task, &d.msg);
         if !identity.trim().is_empty() || d.outcome.is_some() {
@@ -551,7 +563,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                             Seg::bold(&dim_strong, mark.to_string()),
                             activity
                         ),
-                        target: Some(tab_target),
+                        target: Some(pane_target),
                         bg: LineBg::Card,
                     });
                     if let Some(q) = detail {
@@ -568,7 +580,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                         };
                         lines.push(Line {
                             text,
-                            target: Some(tab_target),
+                            target: Some(pane_target),
                             bg: LineBg::Card,
                         });
                     }

@@ -1111,6 +1111,36 @@ mod tests {
     }
 
     #[test]
+    fn single_pane_detail_line_click_shows_the_pane() {
+        // One tab, one tracked pane with a msg → single-pane path: header
+        // (line 2) + detail line (line 3). The detail line describes that one
+        // pane, so it must click-target the pane (ShowPane), not the tab
+        // (SwitchTab) — mirroring the multi-pane tree rows.
+        let mut runtime = PluginRuntime {
+            permission: PermissionState::Resolved { granted: true },
+            config: config(),
+            ..Default::default()
+        };
+        runtime.tabs_changed(vec![tab(0, "team", false)]);
+        runtime
+            .radar
+            .set_tab_panes_for_position(0, vec![pane(30)]);
+        runtime
+            .radar
+            .status_mut()
+            .apply(payload_for(30, Status::Running), 1, 0);
+
+        let ansi = runtime.render(100, 80);
+        assert!(ansi.contains("team"));
+
+        let header_click = runtime.mouse_click(2);
+        let detail_click = runtime.mouse_click(3);
+
+        assert_eq!(header_click.effects, vec![Effect::SwitchTab { position: 0 }]);
+        assert_eq!(detail_click.effects, vec![Effect::ShowPane { pane_id: 30 }]);
+    }
+
+    #[test]
     fn mouse_click_is_ignored_until_permission_granted() {
         let mut runtime = runtime_with_config(config());
         runtime.tabs_changed(vec![tab(0, "team", false)]);

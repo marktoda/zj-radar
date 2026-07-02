@@ -724,7 +724,9 @@ mod tests {
     fn multi_pane_active_tracked_and_untracked_children_clickable() {
         // Only 1 tracked pane (pane 20 Running); pane 21 is untracked.
         // is_multi_pane = false → single-pane path: header + detail line (2 lines total).
-        // The untracked pane has no rendered line; the detail line has no per-pane target.
+        // The untracked pane has no rendered line; the detail line targets the
+        // tab's one tracked pane (20), same as the multi-pane tree rows — a
+        // click routes to `Effect::ShowPane`, not `SwitchTab`.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
         state
             .runtime
@@ -736,8 +738,8 @@ mod tests {
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
         assert_eq!(
             state.target_at_line(3),
-            Some((0, None)),
-            "detail line (single-pane mode, no per-pane target)"
+            Some((0, Some(20))),
+            "detail line targets the single tracked pane"
         );
         assert!(state.tab_position_at_line(4).is_none(), "tab ends after 2 lines");
 

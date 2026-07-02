@@ -30,10 +30,12 @@ against it — so the rail the user sees *is* the rail clicks are scored against
 
 ## RailTarget
 
-What a clickable line resolves to: a tab to switch to (`tab_position`) or, for an
-expanded multi-pane row, a specific pane to show (`pane_id`). Header, gap, and
-idle-strip lines have no `RailTarget`. The runtime turns a `RailTarget` into a
-`SwitchTab` / `ShowPane` effect on click.
+What a clickable line resolves to: a tab to switch to (`tab_position`) or a
+specific pane to show (`pane_id`) — for an expanded multi-pane row's tree
+lines, or for a single-pane tab's line-2 detail line(s), which target that
+tab's one tracked pane. Header, gap, and idle-strip lines have no
+`RailTarget`. The runtime turns a `RailTarget` into a `SwitchTab` / `ShowPane`
+effect on click.
 
 ## RadarState
 
