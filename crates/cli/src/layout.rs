@@ -747,4 +747,35 @@ layout {
              adjust the fragment consts or the file to re-sync"
         );
     }
+
+    /// Drift guard for the FIRST-RUN onboarding layout: `radar-onboarding.kdl` is
+    /// a hand-derived variant of the canonical fragments (same rail + swaps, plus
+    /// `defer_permission` and the grant float). The test above pins `radar.kdl`;
+    /// this pins the onboarding copy, so editing `SWAP_BLOCKS` or the rail
+    /// templates can't silently ship first-run users a layout that disagrees
+    /// with every later run.
+    #[test]
+    fn onboarding_layout_tracks_the_canonical_fragments() {
+        let onboarding = include_str!("run_assets/radar-onboarding.kdl");
+        assert!(
+            onboarding.contains(SWAP_BLOCKS),
+            "radar-onboarding.kdl must embed SWAP_BLOCKS verbatim; re-sync it with layout.rs"
+        );
+        // The onboarding rail is the canonical rail with `defer_permission "true"`
+        // spliced into each radar plugin block — undo the splice and the canonical
+        // templates must reappear verbatim.
+        let defer_block = "plugin location=\"radar\" {\n                    \
+                           defer_permission \"true\"\n                }";
+        let normalized = onboarding.replace(defer_block, "plugin location=\"radar\"");
+        assert!(
+            normalized.contains(NEW_TAB_TEMPLATE),
+            "radar-onboarding.kdl's new_tab_template must match NEW_TAB_TEMPLATE \
+             modulo the defer_permission splice; re-sync it with layout.rs"
+        );
+        assert!(
+            normalized.contains(RAIL_UI_TEMPLATE),
+            "radar-onboarding.kdl's ui template must match RAIL_UI_TEMPLATE \
+             modulo the defer_permission splice; re-sync it with layout.rs"
+        );
+    }
 }
