@@ -85,12 +85,15 @@ locally if you touch the script.
 ## Dev loop
 
 ```sh
-./dev/run.sh            # build the debug wasm + open a disposable dev session
-./dev/run.sh --help     # other modes (--build-only, --dry-run, --fresh-session)
+just dev          # build wasm + CLI, launch the sandboxed zj-radar-dev session
+just dev-fresh    # same, but discard the previous dev session first
+just dev-build    # build the dev artifacts without launching
 ```
 
-Works from a normal terminal or from inside Zellij. See the README's *Develop*
-section for the inside-Zellij caveats.
+The dev session is fully sandboxed (config, wasm, and grant live under
+`target/dev/data`) and runs alongside your real sessions without touching
+them. Start it from a plain terminal — `zj-radar run` refuses to nest inside
+Zellij. See the README's *Development* section for details.
 
 ## Pull requests
 

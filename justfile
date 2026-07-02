@@ -41,6 +41,14 @@ dev:
     ZJ_RADAR_WASM="{{justfile_directory()}}/target/wasm32-wasip1/release/zj_radar.wasm" \
     ./target/debug/zj-radar run zj-radar-dev
 
+# Fresh dev iteration: discard the previous zj-radar-dev session (your real
+# sessions — and the agents in them — are untouched) and relaunch on the new
+# build. The sandbox under target/dev/data survives, so the grant doesn't
+# re-prompt; `rm -rf target/dev/data` too for a true first-run experience.
+dev-fresh:
+    -zellij delete-session zj-radar-dev --force
+    just dev
+
 # Build the dev artifacts without launching (point an existing session's
 # layout at the fresh wasm, or drive the CLI by hand).
 dev-build:

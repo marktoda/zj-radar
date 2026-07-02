@@ -357,13 +357,13 @@ replacement is push-only and tiered:
   Zellij loads plugins as WASI command modules (it calls `_start`, which
   `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
   `_start` and won't load. See the comment block in `crates/plugin/src/main.rs`.
-- **Dev loop:** `./dev/run.sh` builds the debug wasm, generates a layout with an
-  absolute plugin path, and refreshes the dev surface. From a normal terminal it
-  restarts the disposable `zj-radar-dev` session; from inside Zellij it reloads
-  the current session's existing zj-radar sidebar panes in place. Zellij 0.44
-  does not safely hot-reload layout-created plugin panes; `start-or-reload-plugin`
-  opens a second pane instead, so the script uses `launch-plugin --in-place` for
-  in-session reloads.
+- **Dev loop:** `just dev` builds the release wasm + CLI and drives the real
+  `zj-radar run` flow (grant onboarding included) in a sandbox —
+  `ZJ_RADAR_DATA_DIR`/`ZJ_RADAR_WASM` root the run-owned config and plugin
+  under `target/dev/data`, session `zj-radar-dev`. Every iteration is a fresh
+  disposable session, never an in-place reload: Zellij 0.44 does not safely
+  hot-reload layout-created plugin panes (`start-or-reload-plugin` opens a
+  second pane instead).
 - **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
   release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
   reference via a `@zjRadar@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`

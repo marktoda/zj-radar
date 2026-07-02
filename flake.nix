@@ -140,8 +140,8 @@
         ];
         shellHook = ''
           echo "zj-radar dev shell: $(rustc --version)"
-          echo "dev:    ./dev/run.sh"
-          echo "build:  ./dev/run.sh --build-only"
+          echo "dev:    just dev         (sandboxed zj-radar-dev session)"
+          echo "build:  just dev-build   (wasm + CLI, no launch)"
           echo "test:   just test        (cargo test --all-features)"
           echo "        just test-bash   (shellcheck + bats hook tests)"
           echo "        just test-e2e    (wasm build + live Zellij PTY)"

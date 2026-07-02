@@ -191,16 +191,18 @@ schema, and a copy-paste smoke test.
 
 ```sh
 cargo test                                # host tests, no wasm needed
-./dev/run.sh                              # build + open the dev session
+just dev                                  # build + launch the sandboxed dev session
 ```
 
-Run `./dev/run.sh` from either a normal terminal or inside Zellij. It builds
-`target/wasm32-wasip1/debug/zj_radar.wasm` and generates `target/dev/dev.kdl`
-with an absolute plugin path. Outside Zellij it restarts the disposable
-`zj-radar-dev` session. Inside Zellij it leaves the current session unchanged;
-use `./dev/run.sh --fresh-session` when you explicitly want to switch the
-current client to a fresh disposable dev session. If the current Rust toolchain
-is missing `wasm32-wasip1`, the script uses the repo's Nix flake automatically.
+`just dev` builds the release wasm and the CLI from this checkout, then drives
+the real `zj-radar run` flow — grant onboarding included — fully sandboxed
+under `target/dev/data` (`ZJ_RADAR_DATA_DIR` + `ZJ_RADAR_WASM`), as the
+disposable session `zj-radar-dev`. It can never touch an installed zj-radar's
+assets, and your real sessions (and the agents in them) keep running
+untouched alongside it. Run it from a plain terminal — `zj-radar run` refuses
+to nest inside Zellij. `just dev-fresh` discards the previous dev session
+first; `just dev-build` builds the artifacts without launching. In the Nix
+shell, `nix develop -c just dev`.
 
 The hero GIF is reproducible — its VHS tape and recording script live in
 [`demo/`](demo/) (`demo/record.sh`).
@@ -215,7 +217,6 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
 | `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |
-| `dev/dev.kdl` | A dev layout for dogfooding the debug plugin while building. |
 
 The shared wire/classification core (`command`, `kind`, `observation`, `payload`,
 `status`, `wire`) lives in `crates/core`. The sidebar's own modules (`radar_state`,
