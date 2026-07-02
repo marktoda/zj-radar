@@ -853,18 +853,30 @@
     }
 
     #[test]
-    fn recede_clears_exit_dedup_so_a_rerun_with_the_same_code_applies() {
-        // A held-open run-pane exits 0, its Done recedes via TTL, then the pane's
-        // command re-runs and exits 0 again with NO intervening CommandChanged
-        // (the documented held-pane race). The second completion must apply —
-        // the dedup only exists to absorb Zellij re-reporting the SAME run.
+    fn bare_exit_replay_after_recede_never_resurrects() {
+        // Level-triggered exits: every PaneUpdate re-delivers a held pane's exit.
+        // After the TTL recede, those replays must be inert — no Done flap, no
+        // fresh completion stamp.
         let mut s = CommandStore::default();
         s.on_exit(9, Some(0), 5, 100);
-        assert_eq!(s.get(9).unwrap().status, Status::Done);
         s.on_timer(5 + DONE_TTL_TICKS, 200); // recede
         assert_eq!(s.get(9).unwrap().status, Status::Idle);
-        s.on_exit(9, Some(0), 5 + DONE_TTL_TICKS + 1, 300); // same code, new run
-        assert_eq!(s.get(9).unwrap().status, Status::Done, "second completion must not be swallowed");
+        s.on_exit(9, Some(0), 5 + DONE_TTL_TICKS + 1, 300); // manifest replay
+        assert_eq!(s.get(9).unwrap().status, Status::Idle, "no resurrection");
+        assert_eq!(s.get(9).unwrap().completed_epoch_s, None, "no fresh stamp");
+    }
+
+    #[test]
+    fn rerun_with_command_changed_after_recede_applies_its_exit() {
+        // A genuine new lifecycle (CommandChanged → pending) re-lights the pane
+        // even if its exit lands before the debounce promotion.
+        let mut s = CommandStore::default();
+        s.on_exit(9, Some(0), 5, 100);
+        s.on_timer(5 + DONE_TTL_TICKS, 200); // recede
+        let t = 5 + DONE_TTL_TICKS + 2;
+        s.on_command_changed(9, &argv(&["make"]), true, None, t); // new run opens
+        s.on_exit(9, Some(0), t + 1, 300);                        // exits pre-promotion
+        assert_eq!(s.get(9).unwrap().status, Status::Done, "new run's completion applies");
         assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(300));
     }
 

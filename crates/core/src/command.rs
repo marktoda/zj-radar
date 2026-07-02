@@ -508,14 +508,6 @@ impl CommandStore {
                 receded.push((pane_id, completed));
                 changed = true;
             }
-            // The recede means this completion has been fully processed and
-            // handed off to the ledger — forget its exit so a SUBSEQUENT
-            // identical exit (a held-open pane re-running with no intervening
-            // foreground CommandChanged, the documented race in on_exit's
-            // untracked-insert branch) is treated as a new completion rather
-            // than absorbed by the dedup meant only for Zellij re-reporting
-            // the same run.
-            self.exited.remove(&pane_id);
         }
 
         TimerReport { changed, receded }
@@ -540,6 +532,21 @@ impl CommandStore {
     ) -> Vec<(u32, TrackedObservation)> {
         // Dedupe: if we've already applied the same exit status, skip.
         if self.exited.get(&pane_id) == Some(&exit_status) {
+            return Vec::new();
+        }
+        // A bare exit replay must not resurrect a receded completion: Zellij
+        // re-reports exited panes on every manifest update (level-triggered),
+        // and a freshly-spawned instance has an empty dedup map. Once a
+        // command pane has receded to Idle, only a new observed lifecycle
+        // (CommandChanged → pending) or a prune lights it again — a `pending`
+        // entry means a fresh run is in flight, so its exit applies even when
+        // it beats the debounce promotion. Cost: a re-run that exits with no
+        // intervening CommandChanged stays swallowed (pre-existing, rare,
+        // documented race). `self.store` only ever holds command-origin
+        // observations, so no origin check is needed here.
+        if !self.pending.contains_key(&pane_id)
+            && self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle)
+        {
             return Vec::new();
         }
         self.exited.insert(pane_id, exit_status);
