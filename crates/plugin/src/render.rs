@@ -1,7 +1,7 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
 
 use crate::config::Density;
-use crate::rollup::{Outcome, PaneDisplay, TabDisplay};
+use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
 use crate::theme::DerivedColors;
@@ -96,10 +96,6 @@ pub struct RenderOpts {
     /// (`ledger::format_age`). Distinct from `now_tick` (the render/animation
     /// clock) — ages are wall-clock, not tick-relative.
     pub now_epoch_s: u64,
-    /// Prepared completion-ledger rows (spec §4), newest first — the source
-    /// for the bottom region's "earlier" list. Empty when nothing has receded
-    /// yet.
-    pub ledger: Vec<crate::radar_state::LedgerLine>,
     /// Whether the footer may advertise the `alt-[n] jump` chord. Zellij owns
     /// keybinds, not the plugin, so this is config-driven honesty (the
     /// `GrantHint` pattern): only `run`-owned configs — which bake the
@@ -107,19 +103,6 @@ pub struct RenderOpts {
     /// rails, hand-rolled layouts) omits the hint line rather than promising a
     /// chord that does nothing.
     pub jump_hint: bool,
-}
-
-#[derive(Debug)]
-pub struct TabRow {
-    pub number: u32,
-    pub name: String,
-    pub active: bool,
-    pub has_bell: bool,
-    /// True for the two ticks after this tab's pane flipped from not-Pending
-    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
-    /// outranks the active tint in `card_tint`, below.
-    pub flash: bool,
-    pub display: TabDisplay,
 }
 
 /// Presentation for the roll-up's `Outcome` tag. The enum itself lives in
@@ -1077,14 +1060,14 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
 /// region's `leftover` can be measured against this body's real footprint,
 /// and so a test harness can ask "how tall is this session's content alone"
 /// (see `body_line_count`) without triggering the pinned-footer fill.
-fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
+fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec<Line> {
     let width = opts.width;
     let cards = opts.density == Density::Cards;
     let rail = tc_bg(opts.theme.rail_bg);
     // Zero tabs with a non-empty ledger still has something to show (spec §9's
     // floor: header + bottom region, no cards) — the header must not vanish
     // just because `rows` is empty.
-    let has_content = !rows.is_empty() || !opts.ledger.is_empty();
+    let has_content = !rows.is_empty() || !ledger.is_empty();
 
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
@@ -1161,8 +1144,8 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
 /// old "enough to fit" sentinel) would now land in the bottom region's
 /// unbounded-filler branch.
 #[cfg(test)]
-pub(crate) fn body_line_count(rows: &[TabRow], opts: &RenderOpts) -> usize {
-    render_body(rows, opts).len()
+pub(crate) fn body_line_count(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> usize {
+    render_body(rows, ledger, opts).len()
 }
 
 /// One filler line: blank, rail-based, click-inert. Shared by the bottom
@@ -1252,7 +1235,7 @@ fn ledger_rule(opts: &RenderOpts) -> Line {
 /// whatever remains — omitted (with its separating space) entirely when
 /// nothing remains. Click-inert once its tab has closed (`tab_position` is
 /// `None`).
-fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -> Line {
+fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
     let dim_strong = tc_fg(opts.theme.dim_strong);
@@ -1324,7 +1307,7 @@ const LEDGER_DISPLAY_CAP: usize = 10;
 /// | 3..=f | full footer(f) |
 /// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
 /// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
-fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
+fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
     let f = if opts.jump_hint { 3 } else { 2 };
     let push_footer = |v: &mut Vec<Line>| {
         v.push(footer_rule(opts));
@@ -1346,7 +1329,7 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
             // Ledger needs its rule, ≥1 entry, and the spacer to be worth
             // showing; below that (saturating: n can be as small as f+1) the
             // space reads better as blank filler.
-            let entries_n = opts.ledger.len().min(n.saturating_sub(f + 2)).min(LEDGER_DISPLAY_CAP);
+            let entries_n = ledger.len().min(n.saturating_sub(f + 2)).min(LEDGER_DISPLAY_CAP);
             if entries_n == 0 {
                 for _ in 0..n - f {
                     v.push(bottom_filler());
@@ -1357,7 +1340,7 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
                     v.push(bottom_filler());
                 }
                 v.push(ledger_rule(opts));
-                for line in opts.ledger.iter().take(entries_n) {
+                for line in ledger.iter().take(entries_n) {
                     v.push(ledger_entry_line(line, opts));
                 }
                 v.push(bottom_filler());
@@ -1368,26 +1351,26 @@ fn render_bottom(rows: &[TabRow], leftover: usize, opts: &RenderOpts) -> Vec<Lin
     }
 }
 
-pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
+pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> RenderedRail {
     // Truly nothing to show only when there are no rows AND no ledger history
     // — the caller routes that case to `onboarding` instead (spec §7/§9). Zero
     // rows with a non-empty ledger still renders: header + bottom region, no
     // cards.
-    if rows.is_empty() && opts.ledger.is_empty() {
+    if rows.is_empty() && ledger.is_empty() {
         return RenderedRail::from_lines(vec![]);
     }
     let cards = opts.density == Density::Cards;
     let width = opts.width;
     let rail = tc_bg(opts.theme.rail_bg);
 
-    let mut flat = render_body(rows, opts);
+    let mut flat = render_body(rows, ledger, opts);
 
     // Bottom region (spec §9): whatever height `render_body` didn't use, up to
     // and including the pinned footer at the floor. The trailing gap line the
     // body already emits after the last card simply becomes part of the space
     // `leftover` measures — no special-casing needed.
     let leftover = opts.height.saturating_sub(flat.len());
-    for mut line in render_bottom(rows, leftover, opts) {
+    for mut line in render_bottom(rows, ledger, leftover, opts) {
         if cards { line.text = paint_card_line(&line.text, width, &rail); }
         flat.push(line);
     }
@@ -1405,7 +1388,7 @@ pub fn render_rail(rows: &[TabRow], opts: &RenderOpts) -> RenderedRail {
 
 #[cfg(test)]
 fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
-    render_rail(rows, opts).ansi
+    render_rail(rows, &[], opts).ansi
 }
 
 #[cfg(test)]

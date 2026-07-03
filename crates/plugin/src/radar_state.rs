@@ -6,8 +6,7 @@ use crate::config;
 use crate::ledger::{Ledger, LedgerEntry, LedgerOutcome};
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
-use crate::render::TabRow;
-use crate::rollup::{self, TabDisplay};
+use crate::rollup::{self, LedgerLine, TabDisplay, TabRow, TerminalPane};
 use crate::status::Status;
 use crate::status_store::StatusStore;
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
@@ -81,13 +80,6 @@ pub(crate) struct RadarTab {
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TerminalPane {
-    pub id: u32,
-    pub title: String,
-    pub focused_in_tab: bool,
 }
 
 #[derive(Debug)]
@@ -190,19 +182,6 @@ pub(crate) struct RadarChange {
 /// the postmortem's "cap concurrent in-flight host calls" rule; the cap is
 /// generous enough that opening tabs one at a time never hits it.
 const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
-
-/// A ledger entry, resolved for rendering: the live tab position (or `None`
-/// once that tab is gone, making the row click-inert) looked up fresh on every
-/// call, rather than cached — the ledger itself only ever remembers the
-/// `TabId` it happened in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LedgerLine {
-    pub at_epoch_s: u64,
-    pub error: bool,
-    pub tab_name: String,
-    pub label: String,
-    pub tab_position: Option<usize>,
-}
 
 #[derive(Default)]
 pub(crate) struct RadarState {

@@ -82,7 +82,6 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     }
 }
@@ -95,7 +94,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
 /// so a generous sentinel height doesn't pull the footer into their
 /// expectations.
 fn tight(rows: &[TabRow], opts: RenderOpts) -> RenderOpts {
-    let height = body_line_count(rows, &opts);
+    let height = body_line_count(rows, &[], &opts);
     RenderOpts { height, ..opts }
 }
 
@@ -254,7 +253,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         },
     ];
 
-    let rail = render_rail(&rows, &ro(40, 0));
+    let rail = render_rail(&rows, &[], &ro(40, 0));
     assert_eq!(rail.line_count(), rail.ansi.lines().count());
     assert_eq!(rail.target_at_line(-1), None);
     assert_eq!(rail.target_at_line(0), None);
@@ -543,7 +542,6 @@ fn working_glyph_spins_with_tick() {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -558,7 +556,6 @@ fn working_glyph_spins_with_tick() {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -871,7 +868,6 @@ fn overflow_folds_idle_into_strip_and_marks_header() {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -915,7 +911,6 @@ fn overflow_keeps_non_idle_rows_visible() {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -938,7 +933,6 @@ fn no_overflow_when_everything_fits() {
             density: crate::config::Density::Compact,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -1017,7 +1011,6 @@ fn render_glyph_role_colors_are_present() {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     };
     let s = render(&rows, &opts);
@@ -1302,7 +1295,6 @@ fn idle_strip_never_exceeds_width() {
                 density: crate::config::Density::Compact,
                 theme: crate::theme::DerivedColors::default(),
                 now_epoch_s: 0,
-                ledger: Vec::new(),
                 jump_hint: true,
             },
         );
@@ -1382,7 +1374,6 @@ fn header_false_emits_no_header_lines() {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     };
     let s = render(&rows, &opts);
@@ -2019,7 +2010,6 @@ fn overflow_compresses_calm_before_urgent() {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     };
     let s = render(&rows, &opts);
@@ -2080,7 +2070,6 @@ fn overflow_all_one_line_when_extreme() {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     };
     let s = render(&rows, &opts);
@@ -2115,7 +2104,6 @@ fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
         density: crate::config::Density::Comfortable,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     }
 }
@@ -2173,7 +2161,6 @@ fn compact_has_no_gaps() {
         density: crate::config::Density::Compact,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     };
     let s = render(&rows, &tight(&rows, opts));
@@ -2231,7 +2218,6 @@ fn cards_content_lines_differ_from_comfortable() {
             density: crate::config::Density::Comfortable,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -2246,7 +2232,6 @@ fn cards_content_lines_differ_from_comfortable() {
             density: crate::config::Density::Cards,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -2295,7 +2280,6 @@ fn gaps_dropped_under_overflow() {
             density: crate::config::Density::Comfortable,
             theme: crate::theme::DerivedColors::default(),
             now_epoch_s: 0,
-            ledger: Vec::new(),
             jump_hint: true,
         },
     );
@@ -2354,7 +2338,6 @@ fn ro_cards(width: usize, height: usize) -> RenderOpts {
         density: crate::config::Density::Cards,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     }
 }
@@ -2840,7 +2823,6 @@ fn comfortable_and_compact_emit_no_bg() {
                 density,
                 theme: crate::theme::DerivedColors::default(),
                 now_epoch_s: 0,
-                ledger: Vec::new(),
                 jump_hint: true,
             },
         );
@@ -3848,7 +3830,6 @@ fn ro_full(
         density,
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
-        ledger: Vec::new(),
         jump_hint: true,
     }
 }
@@ -4274,14 +4255,14 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
     // Newest first: `web` (age <1m) precedes `gone` (age 15m). `gone` carries
     // no live tab_position — a closed tab's row is click-inert, not dropped.
     let ledger = vec![
-        crate::radar_state::LedgerLine {
+        crate::rollup::LedgerLine {
             at_epoch_s: 950,
             error: false,
             tab_name: "web".into(),
             label: "deploying".into(),
             tab_position: Some(0),
         },
-        crate::radar_state::LedgerLine {
+        crate::rollup::LedgerLine {
             at_epoch_s: 100,
             error: true,
             tab_name: "gone".into(),
@@ -4292,11 +4273,10 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
     let content_height = tight(&rows, ro(30, 0)).height;
     let opts = RenderOpts {
         height: content_height + 7, // 0 filler + rule(1) + 2 entries + spacer(1) + footer(3)
-        ledger: ledger.clone(),
         now_epoch_s: 1000,
         ..ro(30, 0)
     };
-    let rail = render_rail(&rows, &opts);
+    let rail = render_rail(&rows, &ledger, &opts);
     let entry1_line = content_height + 1;
     let entry2_line = content_height + 2;
 
@@ -4333,8 +4313,8 @@ fn ledger_display_caps_at_ten_entries_with_filler_above() {
     // the reclaimed spare height stays blank filler ABOVE the rule. The ring
     // may hold up to 32 (`ledger::LEDGER_CAP`); the cut is display-only.
     let rows = vec![idle_row(1)];
-    let ledger: Vec<crate::radar_state::LedgerLine> = (0..12)
-        .map(|i| crate::radar_state::LedgerLine {
+    let ledger: Vec<crate::rollup::LedgerLine> = (0..12)
+        .map(|i| crate::rollup::LedgerLine {
             at_epoch_s: 1000 - i as u64, // newest first, like `Ledger::entries`
             error: false,
             tab_name: "web".into(),
@@ -4346,11 +4326,10 @@ fn ledger_display_caps_at_ten_entries_with_filler_above() {
     let leftover = 20; // without the cap, leftover−4 = 16 entries would fit
     let opts = RenderOpts {
         height: content_height + leftover,
-        ledger,
         now_epoch_s: 1000,
         ..ro(30, 0)
     };
-    let s = render(&rows, &opts);
+    let s = render_rail(&rows, &ledger, &opts).ansi;
     let lines: Vec<String> = s.lines().map(strip_sgr).collect();
     assert_eq!(
         lines.len(),
@@ -4391,7 +4370,7 @@ fn ledger_entry_line_clamps_at_extreme_narrow_widths() {
     // like every other fixed-prefix renderer in this file (see
     // `emit_pane_line`'s narrow-width fallback and the `truncate(...)` guards
     // on `footer_tally`/`ledger_rule`).
-    let line = crate::radar_state::LedgerLine {
+    let line = crate::rollup::LedgerLine {
         at_epoch_s: 0,
         error: false,
         tab_name: "web".into(),
@@ -4430,11 +4409,11 @@ fn cards_never_lose_budget_to_the_bottom_region() {
         })
         .collect();
     let opts = ro_cards(24, 10);
-    let leftover = opts.height.saturating_sub(body_line_count(&rows, &opts));
+    let leftover = opts.height.saturating_sub(body_line_count(&rows, &[], &opts));
     assert!(leftover <= 1, "sanity: this scenario must leave no headroom: {leftover}");
-    assert!(render_bottom(&rows, leftover, &opts).is_empty());
+    assert!(render_bottom(&rows, &[], leftover, &opts).is_empty());
 
-    let rail = render_rail(&rows, &opts);
+    let rail = render_rail(&rows, &[], &opts);
     assert_eq!(rail.line_count(), 10, "the overflow plan alone fills the pane");
     assert!(
         !rail.ansi.contains("alt-[n] jump"),
@@ -4658,8 +4637,8 @@ prop_compose! {
         label in "[a-zA-Z0-9_ -]{0,20}",
         has_tab in any::<bool>(),
         tab_position in 0usize..8,
-    ) -> crate::radar_state::LedgerLine {
-        crate::radar_state::LedgerLine {
+    ) -> crate::rollup::LedgerLine {
+        crate::rollup::LedgerLine {
             at_epoch_s,
             error,
             tab_name,
@@ -4669,7 +4648,7 @@ prop_compose! {
     }
 }
 
-fn arb_ledger() -> impl Strategy<Value = Vec<crate::radar_state::LedgerLine>> {
+fn arb_ledger() -> impl Strategy<Value = Vec<crate::rollup::LedgerLine>> {
     proptest::collection::vec(arb_ledger_line(), 0..6)
 }
 
@@ -4690,9 +4669,8 @@ proptest! {
     ) {
         let mut opts = ro(width, 0);
         opts.height = height;
-        opts.ledger = ledger;
         opts.now_epoch_s = 500_000;
-        let rail = render_rail(&rows, &opts);
+        let rail = render_rail(&rows, &ledger, &opts);
         // 1:1 correspondence between physical lines and target slots.
         prop_assert_eq!(rail.line_count(), rail.ansi.lines().count());
         // Every in-range line resolves without panic; out-of-range is None.
@@ -4703,8 +4681,8 @@ proptest! {
         prop_assert_eq!(rail.target_at_line(rail.line_count() as isize), None);
 
         if !rows.is_empty() {
-            let leftover = height.saturating_sub(body_line_count(&rows, &opts));
-            let bottom = render_bottom(&rows, leftover, &opts);
+            let leftover = height.saturating_sub(body_line_count(&rows, &ledger, &opts));
+            let bottom = render_bottom(&rows, &ledger, leftover, &opts);
             // Every bottom-region line (rule/entries/footer) must clamp to the
             // rail width, at any width down to 1 — including the ledger entries,
             // which carry a fixed age+glyph prefix like every other fixed-prefix
@@ -4761,7 +4739,7 @@ proptest! {
         ],
     ) {
         let opts = RenderOpts { width, height, density, ..ro(width, 0) };
-        let rr = render_rail(&rows, &opts);
+        let rr = render_rail(&rows, &[], &opts);
         let ansi_lines = if rr.ansi.is_empty() { 0 } else { rr.ansi.split('\n').count() };
         prop_assert_eq!(ansi_lines, rr.line_count());
     }
@@ -4770,7 +4748,7 @@ proptest! {
 #[test]
 fn render_rail_empty_has_zero_lines_and_no_targets() {
     let opts = ro(24, 0);
-    let rail = render_rail(&[], &opts);
+    let rail = render_rail(&[], &[], &opts);
     assert_eq!(rail.line_count(), 0);
     assert_eq!(rail.ansi, "");
     assert_eq!(rail.target_at_line(0), None);
@@ -5027,7 +5005,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             ],
         },
     };
-    let rendered = render_rail(&[row], &ro_comfortable(32, 40));
+    let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_ansi_local(&rendered.ansi); // use the file's existing ANSI-strip helper
     assert!(grid.contains("├ ◆ ✳ migrate schema"), "task is the identity line:\n{grid}");
     assert!(grid.contains("│   ↳ approve git push?"), "question is subordinate:\n{grid}");

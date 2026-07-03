@@ -33,7 +33,8 @@ use crate::control::Command;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
-use crate::render::{self, RenderedRail, TabRow};
+use crate::render::{self, RenderedRail};
+use crate::rollup::TabRow;
 use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
@@ -386,15 +387,15 @@ impl PluginRuntime {
             density: self.config.density,
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
-            ledger: self.radar.ledger_lines(),
             jump_hint: self.config.jump_hint.shows(),
         };
+        let ledger = self.radar.ledger_lines();
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
             render::onboarding(&opts)
         } else {
-            render::render_rail(&tabrows, &opts)
+            render::render_rail(&tabrows, &ledger, &opts)
         };
         let ansi = rail.ansi.clone();
         self.last_rendered = rail;
@@ -420,10 +421,9 @@ impl PluginRuntime {
             density: self.config.density,
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
-            ledger: self.radar.ledger_lines(),
             jump_hint: self.config.jump_hint.shows(),
         };
-        render::body_line_count(&tabrows, &opts)
+        render::body_line_count(&tabrows, &self.radar.ledger_lines(), &opts)
     }
 
     pub(crate) fn sidebar_should_be_selectable(&self) -> bool {
@@ -643,7 +643,8 @@ mod tests {
     use crate::command::DEBOUNCE_TICKS;
     use crate::config::{Density, NamingMode};
     use crate::payload::{self, StatusPayload};
-    use crate::radar_state::{TabId, TerminalPane};
+    use crate::radar_state::TabId;
+    use crate::rollup::TerminalPane;
     use crate::status::{GlyphSet, Status};
     use std::collections::{HashMap, HashSet};
 
