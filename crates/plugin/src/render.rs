@@ -689,6 +689,30 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
     }
 }
 
+/// The shared fixed-prefix line shape — sole owner of the narrow-width
+/// invariant "no emitted line exceeds `width`". Every colored row emitter
+/// writes an unconditional `prefix_cols`-wide styled prefix and budgets its
+/// tail with what's left; below the floor (`width < prefix_cols`) the colored
+/// path would overflow, so color is dropped whole and ONE plain line is
+/// clamped to `width`. `plain` builds that fallback (full, untruncated —
+/// clamping happens here); `styled` receives the tail budget
+/// (`width - prefix_cols`) and returns the full styled line. Both omit the
+/// trailing newline; it is appended here so "exactly one `\n`" rides the same
+/// owner. Used by the pane, detail, and ledger rows — a new fixed-prefix row
+/// type should route through this rather than re-deriving the guard.
+fn prefixed_line(
+    width: usize,
+    prefix_cols: usize,
+    plain: impl FnOnce() -> String,
+    styled: impl FnOnce(usize) -> String,
+) -> String {
+    if width < prefix_cols {
+        format!("{}\n", truncate(&plain(), width))
+    } else {
+        format!("{}\n", styled(width - prefix_cols))
+    }
+}
+
 /// Emit one pane line in the line-per-pane / tree design:
 /// Inactive: ` {connector} {glyph} {mark} {msg}` (space + `├`/`└` + space)
 /// Active:   `▌{connector} {glyph} {mark} {msg}` (spine + `├`/`└` + space)
@@ -720,40 +744,40 @@ fn emit_pane_line(
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
     // Prefix: 3 cols (spine/space + connector + space) + glyph + 1 space + mark + 1 space
     let prefix_vis = 3 + glyph_w + 1 + mark_w + 1;
-    // Narrow-width fallback: the colored path always emits the full fixed prefix
-    // (spine/connector/indent + glyph + mark + spaces) unconditionally, so at widths
-    // below it the line would overflow. Below that floor, drop all color and emit a
-    // single plain line clamped to `width` so nothing exceeds the band.
-    if width < prefix_vis {
-        let spine = if tab_active { "▌" } else { " " };
-        let plain = format!("{spine}{} {glyph} {mark} {}", branch.glyph(), identity);
-        return format!("{}\n", truncate(&plain, width));
-    }
-    let avail = width.saturating_sub(prefix_vis);
-    let role_ansi = |r: Role| -> &'static str { r.ansi() };
-    // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
-    // (vendor-neutral, heavier than the faint idle_text).
-    let glyph_color = role_ansi(status.role());
-    let cmd_color = if status == Status::Pending && !has_detail {
-        role_ansi(Role::Attention).to_string()
-    } else {
-        dim_strong.to_string()
-    };
-    let activity = compose_activity(identity, pane.outcome(), avail, &cmd_color);
-    // The glyph carries the status color (bold on non-idle, matching line 1); the
-    // mark is the vendor-neutral stronger dim, always bold.
-    let glyph_seg = Seg {
-        color: glyph_color,
-        bold: status != Status::Idle,
-        text: glyph.to_string().into(),
-    };
-    let mark_seg = Seg::bold(dim_strong, mark.to_string());
-    format!(
-        "{}{} {} {}\n",
-        child_prefix(tab_active, tab_status, branch, conn_color),
-        glyph_seg,
-        mark_seg,
-        activity,
+    prefixed_line(
+        width,
+        prefix_vis,
+        || {
+            let spine = if tab_active { "▌" } else { " " };
+            format!("{spine}{} {glyph} {mark} {}", branch.glyph(), identity)
+        },
+        |avail| {
+            let role_ansi = |r: Role| -> &'static str { r.ansi() };
+            // Glyph bold on non-idle (matches line 1); mark bold + the stronger dim
+            // (vendor-neutral, heavier than the faint idle_text).
+            let glyph_color = role_ansi(status.role());
+            let cmd_color = if status == Status::Pending && !has_detail {
+                role_ansi(Role::Attention).to_string()
+            } else {
+                dim_strong.to_string()
+            };
+            let activity = compose_activity(identity, pane.outcome(), avail, &cmd_color);
+            // The glyph carries the status color (bold on non-idle, matching line 1); the
+            // mark is the vendor-neutral stronger dim, always bold.
+            let glyph_seg = Seg {
+                color: glyph_color,
+                bold: status != Status::Idle,
+                text: glyph.to_string().into(),
+            };
+            let mark_seg = Seg::bold(dim_strong, mark.to_string());
+            format!(
+                "{}{} {} {}",
+                child_prefix(tab_active, tab_status, branch, conn_color),
+                glyph_seg,
+                mark_seg,
+                activity,
+            )
+        },
     )
 }
 
@@ -776,20 +800,26 @@ fn emit_pane_detail_line(
         Branch::Elbow => " ",
     };
     const PREFIX_VIS: usize = 7; // spine + cont + 3 spaces + ↳ + space
-    if width < PREFIX_VIS {
-        let spine = if tab_active { "▌" } else { " " };
-        return format!("{}\n", truncate(&format!("{spine}{cont}   ↳ {question}"), width));
-    }
-    let spine = if tab_active {
-        Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
-    } else {
-        " ".to_string()
-    };
-    format!(
-        "{}{}   {}\n",
-        spine,
-        Seg::new(conn_color, cont),
-        Seg::new(pane_status.role().ansi(), format!("↳ {}", truncate(question, width - PREFIX_VIS))),
+    prefixed_line(
+        width,
+        PREFIX_VIS,
+        || {
+            let spine = if tab_active { "▌" } else { " " };
+            format!("{spine}{cont}   ↳ {question}")
+        },
+        |avail| {
+            let spine = if tab_active {
+                Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
+            } else {
+                " ".to_string()
+            };
+            format!(
+                "{}{}   {}",
+                spine,
+                Seg::new(conn_color, cont),
+                Seg::new(pane_status.role().ansi(), format!("↳ {}", truncate(question, avail))),
+            )
+        },
     )
 }
 
@@ -1247,34 +1277,29 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
         ("●", Role::Success)
     };
     let prefix = age_w + 1 + 1 + 1; // age, space, glyph, space
-    // Narrow-width fallback: the colored path always emits the full fixed
-    // age+glyph prefix unconditionally, so at widths below it the line would
-    // overflow. Below that floor, drop all color and emit a single plain
-    // line clamped to `width` so nothing exceeds the band.
-    if width < prefix {
-        let plain = format!("{age} {glyph} {} {}", line.tab_name, line.label);
-        return Line::new(
-            format!("{}\n", truncate(&plain, width)),
-            line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
-            LineBg::Rail,
-        );
-    }
-    let name_budget = 12.min(width.saturating_sub(prefix));
-    let name = truncate(&line.tab_name, name_budget);
-    let name_w = UnicodeWidthStr::width(name.as_str());
-    let label_budget = width.saturating_sub(prefix + name_w + 1);
-    let mut text = format!(
-        "{} {} {}",
-        Seg::new(&idle, age),
-        Seg::new(glyph_role.ansi(), glyph),
-        Seg::new(&dim_strong, name),
+    let text = prefixed_line(
+        width,
+        prefix,
+        || format!("{age} {glyph} {} {}", line.tab_name, line.label),
+        |avail| {
+            let name_budget = 12.min(avail);
+            let name = truncate(&line.tab_name, name_budget);
+            let name_w = UnicodeWidthStr::width(name.as_str());
+            let label_budget = avail.saturating_sub(name_w + 1);
+            let mut text = format!(
+                "{} {} {}",
+                Seg::new(&idle, age.as_str()),
+                Seg::new(glyph_role.ansi(), glyph),
+                Seg::new(&dim_strong, name),
+            );
+            if label_budget > 0 {
+                let label = truncate(&line.label, label_budget);
+                text.push(' ');
+                text.push_str(&Seg::new(&idle, label).to_string());
+            }
+            text
+        },
     );
-    if label_budget > 0 {
-        let label = truncate(&line.label, label_budget);
-        text.push(' ');
-        text.push_str(&Seg::new(&idle, label).to_string());
-    }
-    text.push('\n');
     Line::new(
         text,
         line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
