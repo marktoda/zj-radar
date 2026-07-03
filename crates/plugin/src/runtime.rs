@@ -121,27 +121,106 @@ impl Outcome {
     }
 }
 
+/// The one-shot timer chain. Zellij's `set_timeout` is non-cancellable, so a
+/// cadence change can leave TWO fires in flight; the pairing "arming grows the
+/// in-flight count exactly where a `SetTimeout` is emitted, a fire retires
+/// exactly one, a stale fire is swallowed whole" is a single invariant — held
+/// structurally: the fields are private, so [`TimerChain::arm`] and
+/// [`TimerChain::on_fire`] are the only ways to move them.
+#[derive(Default)]
+struct TimerChain {
+    /// The cadence the last-scheduled `SetTimeout` was armed with, or `None`
+    /// if the timer is fully disarmed.
+    armed: Option<Cadence>,
+    /// How many `SetTimeout` fires are still in flight. The Slow→Fast top-up
+    /// leaves two; the slow-armed one is stale and must be swallowed by
+    /// `on_fire` — ticking on it would re-arm a second persistent chain
+    /// (N chains → N Hz, every tick-window elapsing N× too fast).
+    pending_fires: u32,
+}
+
+/// What a `Timer` event means for the runtime — see [`TimerChain::on_fire`].
+enum Fire {
+    /// The live chain: process the tick and re-arm.
+    Live,
+    /// A stale leftover from before a cadence top-up: swallow it whole —
+    /// no tick, no re-arm, the live arm untouched.
+    Stale,
+}
+
+impl TimerChain {
+    /// Arm (or re-arm) toward `desired`. `Some(c)` means the caller MUST emit
+    /// `Effect::SetTimeout(c)` — returning the cadence from the same place
+    /// the count grows is what keeps them paired. Compares the *cadence* the
+    /// previous arm used, not just "is anything armed": a Slow-armed timer
+    /// that should now be Fast gets a fresh fast arm immediately, rather than
+    /// waiting for the (harmless, spurious) slow fire to notice. Every other
+    /// transition — first arm, already-correct cadence, nothing desired — is
+    /// a no-op.
+    fn arm(&mut self, desired: Option<Cadence>) -> Option<Cadence> {
+        let arm = match (self.armed, desired) {
+            (Some(Cadence::Slow), Some(Cadence::Fast)) => Some(Cadence::Fast),
+            (None, Some(cadence)) => Some(cadence),
+            _ => None,
+        };
+        if let Some(cadence) = arm {
+            self.armed = Some(cadence);
+            self.pending_fires += 1;
+        }
+        arm
+    }
+
+    /// Retire one in-flight fire, pairing the count with the fire's reported
+    /// `elapsed_s` to identify a stale one: swallow ([`Fire::Stale`]) only
+    /// when BOTH hold — its elapsed marks it slow-armed
+    /// (> `STALE_FIRE_ELAPSED_S`) and another fire is still out
+    /// (post-decrement count > 0). A fast fire always processes: swallowing
+    /// by count alone would freeze the tick clock in the common order, where
+    /// the live fast fire lands first and the stale slow fire lands up to 59s
+    /// later. A slow fire with nothing else in flight IS the live chain.
+    ///
+    /// Convergence, common order: fast fire lands (2→1), processes, re-arms
+    /// (→2); each following fast fire repeats that; the stale slow finally
+    /// lands (2→1), swallowed → steady single chain. Rare order (a top-up in
+    /// the slow window's final second): the stale slow lands first (2→1),
+    /// swallowed; the fast fire then processes (1→0) and re-arms (→1). The
+    /// Fast→Slow wind-down converges too: an older slow always lands before a
+    /// newer slow, so the older one still sees a fire in flight and is the one
+    /// swallowed. `saturating_sub` keeps a direct `timer()` call with nothing
+    /// armed (tests drive the entry point that way) counting as a live fire.
+    fn on_fire(&mut self, elapsed_s: f64) -> Fire {
+        self.pending_fires = self.pending_fires.saturating_sub(1);
+        if elapsed_s > STALE_FIRE_ELAPSED_S && self.pending_fires > 0 {
+            return Fire::Stale;
+        }
+        self.armed = None;
+        Fire::Live
+    }
+
+    /// The currently armed cadence (`None` = fully disarmed). Read-only —
+    /// the battery-property tests assert arm/disarm through this.
+    #[cfg(test)]
+    fn armed(&self) -> Option<Cadence> {
+        self.armed
+    }
+
+    /// Test-only escape hatch: force the disarmed state so a test can watch
+    /// an arm happen in isolation. Explicit and greppable, unlike the raw
+    /// field write it replaced — production code has no way to do this.
+    #[cfg(test)]
+    fn disarm_for_test(&mut self) {
+        self.armed = None;
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PluginRuntime {
     pub(crate) radar: RadarState,
     pub(crate) tick: u64,
-    /// The cadence the last-scheduled `SetTimeout` was armed with, or `None`
-    /// if the timer is fully disarmed. `arm_timer_if_needed` compares this
-    /// against `desired_cadence()` on every call — not just an "is anything
-    /// armed" bool — so a Slow-armed timer can be topped up with a fresh
-    /// `SetTimeout(Fast)` the moment fast-worthy work arrives, without
-    /// waiting for the (harmless, spurious) slow fire first.
-    pub(crate) armed_cadence: Option<Cadence>,
-    /// How many `SetTimeout` fires are still in flight. Zellij's `set_timeout`
-    /// is a non-cancellable one-shot, so the Slow→Fast top-up above leaves TWO
-    /// scheduled fires; the slow-armed one is stale and must be swallowed by
-    /// [`timer`](Self::timer) — ticking on it would re-arm a second persistent
-    /// chain (N chains → N Hz, every tick-window elapsing N× too fast).
-    /// Incremented wherever `arm_timer_if_needed` pushes a `SetTimeout` (the
-    /// sole emit site — `begin_permission_flow` and `project` both arm through
-    /// it); decremented at the top of `timer`, which pairs the count with the
-    /// fire's reported elapsed to identify the stale one.
-    pub(crate) pending_fires: u32,
+    /// The one-shot `SetTimeout` chain — see [`TimerChain`]. Every arm goes
+    /// through `arm_timer_if_needed` (`begin_permission_flow` and `project`
+    /// both arm through it); every fire retires through `timer`.
+    timer_chain: TimerChain,
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission: PermissionState,
@@ -195,38 +274,14 @@ impl PluginRuntime {
     /// seconds the fired `set_timeout` was armed with, i.e. which cadence
     /// scheduled this fire.
     pub(crate) fn timer(&mut self, permission: PermissionProbe, elapsed_s: f64) -> Outcome {
-        // Retire one in-flight fire. `set_timeout` is a non-cancellable
-        // one-shot, so the Slow→Fast top-up (`arm_timer_if_needed`) leaves TWO
-        // fires in flight, and the slow-armed one is the stale one REGARDLESS
-        // of which lands first. Swallow a fire — no tick, no re-arm,
-        // `armed_cadence` untouched — only when BOTH hold: its elapsed marks
-        // it slow-armed (> STALE_FIRE_ELAPSED_S) and another fire is still
-        // out (post-decrement pending_fires > 0). A fast fire always
-        // processes and re-arms: swallowing by count alone would freeze the
-        // tick clock in the common order, where the live fast fire lands
-        // first and the stale slow fire lands up to 59s later.
-        //
-        // Convergence, common order: fast fire lands (2→1), processes,
-        // re-arms (→2); each following fast fire repeats that; the stale slow
-        // finally lands (2→1), swallowed → steady single chain. Rare order (a
-        // top-up in the slow window's final second): the stale slow lands
-        // first (2→1), swallowed; the fast fire then processes (1→0) and
-        // re-arms (→1). The Fast→Slow wind-down converges too: an older slow
-        // always lands before a newer slow, so the older one still sees a
-        // fire in flight and is the one swallowed. A slow fire with nothing
-        // else in flight (post-decrement 0) IS the live chain and processes
-        // normally.
-        //
-        // A swallowed fire skips `check_deferred_permission_request`: safe,
-        // because an overlap only exists while a newer chain is live, whose
-        // next fire runs it within ~1s. `saturating_sub` keeps a direct
-        // `timer()` call with nothing armed (tests drive the entry point that
-        // way) counting as a legitimate fire.
-        self.pending_fires = self.pending_fires.saturating_sub(1);
-        if elapsed_s > STALE_FIRE_ELAPSED_S && self.pending_fires > 0 {
+        // Retire one in-flight fire; a stale one (see `TimerChain::on_fire`)
+        // is swallowed whole. A swallowed fire skips
+        // `check_deferred_permission_request`: safe, because an overlap only
+        // exists while a newer chain is live, whose next fire runs it within
+        // ~1s.
+        if let Fire::Stale = self.timer_chain.on_fire(elapsed_s) {
             return Outcome::none();
         }
-        self.armed_cadence = None;
         let mut effects = Vec::new();
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
@@ -521,27 +576,12 @@ impl PluginRuntime {
         }
     }
 
-    /// Arm (or re-arm) the one-shot timer at `desired_cadence()`. Unlike a
-    /// plain "already armed?" bool, this compares the *cadence* the previous
-    /// arm used against what's desired now: a Slow-armed timer that should
-    /// now be Fast gets a fresh `SetTimeout(Fast)` pushed immediately, rather
-    /// than waiting for the (harmless, spurious) slow fire to notice. Every
-    /// other transition — first arm, already-correct cadence, or nothing
-    /// desired — is a no-op.
+    /// Arm (or re-arm) the one-shot timer at `desired_cadence()` — a thin
+    /// bridge from [`TimerChain::arm`]'s decision to the effect vec, so the
+    /// "arm returned ⇒ SetTimeout emitted" pairing has exactly one home.
     fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
-        let desired = self.desired_cadence();
-        match (self.armed_cadence, desired) {
-            (Some(Cadence::Slow), Some(Cadence::Fast)) => {
-                self.armed_cadence = Some(Cadence::Fast);
-                self.pending_fires += 1;
-                effects.push(Effect::SetTimeout(Cadence::Fast));
-            }
-            (None, Some(cadence)) => {
-                self.armed_cadence = Some(cadence);
-                self.pending_fires += 1;
-                effects.push(Effect::SetTimeout(cadence));
-            }
-            _ => {}
+        if let Some(cadence) = self.timer_chain.arm(self.desired_cadence()) {
+            effects.push(Effect::SetTimeout(cadence));
         }
     }
 
@@ -618,7 +658,7 @@ impl PluginRuntime {
     /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
     /// is the sole caller of `notify_effects`, and the only *domain-change* path
     /// that arms the timer (the permission flow arms it separately in
-    /// `begin_permission_flow`). `arm_timer_if_needed` self-guards on `armed_cadence` and on
+    /// `begin_permission_flow`). `TimerChain::arm` self-guards on the armed cadence and on
     /// whether there's anything to arm for, so calling it unconditionally
     /// here is a no-op wherever a handler has no pending work to arm for.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
@@ -1416,10 +1456,10 @@ mod tests {
         // produces a Notify, exercising all five effect kinds in one change.
         let mut rt = two_tab_runtime_with_running_commands();
         rt.radar.command_mut().on_exit(7, Some(0), rt.tick, 0);
-        // `arm_timer_if_needed` self-guards on `armed_cadence`; the setup helper's
-        // timer tick already armed it, so reset to let `project`'s unconditional
-        // arm call actually produce a `SetTimeout` effect.
-        rt.armed_cadence = None;
+        // `TimerChain::arm` self-guards on the armed cadence; the setup helper's
+        // timer tick already armed it, so force the disarmed state to let
+        // `project`'s unconditional arm call actually produce a `SetTimeout`.
+        rt.timer_chain.disarm_for_test();
 
         let change = RadarChange {
             render: true,
@@ -1570,7 +1610,7 @@ mod tests {
         // Then the timer quiesces within a bounded number of ticks — a backgrounded
         // Done no longer pins it awake, and no further notifications fire.
         let mut extra = 0;
-        while rt.armed_cadence.is_some() {
+        while rt.timer_chain.armed().is_some() {
             let t = rt.timer_fast(PermissionProbe::default());
             assert!(
                 !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
@@ -1612,7 +1652,7 @@ mod tests {
         rt.timer_fast(PermissionProbe::default());
         assert_eq!(rt.tick, 1);
         assert!(
-            rt.armed_cadence.is_some(),
+            rt.timer_chain.armed().is_some(),
             "flash still active at tick 1 — timer must stay armed"
         );
 
@@ -1634,7 +1674,7 @@ mod tests {
         }
         assert!(!rt.timer_should_continue(), "nothing needs the Fast loop");
         assert_eq!(
-            rt.armed_cadence,
+            rt.timer_chain.armed(),
             Some(Cadence::Slow),
             "an unsaturated pending wait keeps the Slow heartbeat armed"
         );
@@ -1700,7 +1740,7 @@ mod tests {
         rt.timer_fast(PermissionProbe::default());
         rt.timer_fast(PermissionProbe::default());
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
-        assert!(rt.armed_cadence.is_some(), "a Done awaiting TTL must keep the timer armed");
+        assert!(rt.timer_chain.armed().is_some(), "a Done awaiting TTL must keep the timer armed");
         // Tick past the TTL: the Done recedes and the timer quiesces. No tab
         // topology is registered for pane 7, so the recede has no tab to
         // ledger under and is silently dropped (`ledger_receded`) — the
@@ -1710,7 +1750,7 @@ mod tests {
         }
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
         assert!(rt.radar.ledger_is_empty(), "setup: no tab topology, so the recede has nowhere to ledger");
-        assert!(rt.armed_cadence.is_none(), "receded: nothing left to tick for");
+        assert!(rt.timer_chain.armed().is_none(), "receded: nothing left to tick for");
     }
 
     #[test]
@@ -1733,7 +1773,7 @@ mod tests {
         rt.timer_fast(PermissionProbe::default());
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
         assert_eq!(
-            rt.armed_cadence,
+            rt.timer_chain.armed(),
             Some(Cadence::Fast),
             "a Done awaiting TTL needs Fast resolution"
         );
@@ -1745,7 +1785,7 @@ mod tests {
         assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Idle);
         assert!(!rt.radar.ledger_is_empty(), "the TTL recede must hand the completion to the ledger");
         assert_eq!(
-            rt.armed_cadence,
+            rt.timer_chain.armed(),
             Some(Cadence::Slow),
             "receded: nothing fast-worthy remains, but the fresh ledger entry keeps a Slow heartbeat armed"
         );
@@ -1767,7 +1807,7 @@ mod tests {
             label: "cargo test".into(),
             pane_id: 5,
         });
-        assert!(rt.armed_cadence.is_none(), "setup: nothing has armed a timer yet");
+        assert!(rt.timer_chain.armed().is_none(), "setup: nothing has armed a timer yet");
 
         // Any event that runs `project` (here, a no-op topology update) must
         // arm the Slow heartbeat — nothing is tick-windowed, but the ledger
@@ -1778,7 +1818,7 @@ mod tests {
             "idle with unsaturated history must arm Slow, got {:?}",
             outcome.effects
         );
-        assert_eq!(rt.armed_cadence, Some(Cadence::Slow));
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
 
         // The slow tick itself must render — it exists precisely to repaint
         // the ledger's ages.
@@ -1811,7 +1851,7 @@ mod tests {
             "a fully-saturated idle rail must not arm any timer, got {:?}",
             outcome.effects
         );
-        assert!(rt.armed_cadence.is_none());
+        assert!(rt.timer_chain.armed().is_none());
     }
 
     #[test]
@@ -1831,7 +1871,7 @@ mod tests {
             pane_id: 5,
         });
         rt.tabs_changed(vec![]);
-        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: slow-armed on fresh history");
 
         // New fast-worthy work (a Running status) arrives while Slow-armed.
         // The earlier-scheduled slow fire is a harmless spurious tick, but a
@@ -1844,7 +1884,7 @@ mod tests {
             "fast work arriving during a slow arm must re-arm Fast, got {:?}",
             outcome.effects
         );
-        assert_eq!(rt.armed_cadence, Some(Cadence::Fast));
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast));
     }
 
     /// Shared setup for the stale-fire dedup tests: Slow-armed on fresh
@@ -1866,7 +1906,7 @@ mod tests {
             pane_id: 5,
         });
         rt.tabs_changed(vec![]); // arms Slow: one fire in flight
-        assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: slow-armed on fresh history");
         let raw = payload::to_wire(&payload_for(5, Status::Running));
         let outcome = rt.status_pipe(&raw);
         assert!(
@@ -1903,13 +1943,13 @@ mod tests {
 
         // The STALE slow fire (elapsed ~60s) lands second, with the re-armed
         // fast fire still in flight: swallowed whole — no tick advance, no
-        // effects, `armed_cadence` untouched. Ticking it would re-arm a
+        // effects, the live arm untouched. Ticking it would re-arm a
         // second persistent chain.
         let tick_before = rt.tick;
         let stale = rt.timer(PermissionProbe::default(), 60.0);
         assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
         assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
-        assert_eq!(rt.armed_cadence, Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
 
         // Steady state: exactly one chain remains and keeps ticking.
         let next = rt.timer(PermissionProbe::default(), 1.0);
@@ -1933,7 +1973,7 @@ mod tests {
         let stale = rt.timer(PermissionProbe::default(), 60.0);
         assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
         assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
-        assert_eq!(rt.armed_cadence, Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
 
         // The surviving fast fire ticks normally and re-arms exactly once.
         let live = rt.timer(PermissionProbe::default(), 1.0);
@@ -1970,7 +2010,7 @@ mod tests {
             pane_id: 5,
         });
         rt.tabs_changed(vec![]); // arms Slow: the only fire in flight
-        assert_eq!(rt.armed_cadence, Some(Cadence::Slow));
+        assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
 
         let tick = rt.timer(PermissionProbe::default(), 60.0);
         assert!(tick.render, "the lone slow fire processes and repaints ledger ages");
