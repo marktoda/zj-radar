@@ -7,7 +7,7 @@
 
 **Problem:** today wiring up the notifiers means hand-editing several files
 (`~/.claude/settings.json`, `~/.codex/hooks.json`, shell scripts, Nix). That's
-fine for Mark's own machine; it's a non-starter for anyone else adopting this.
+workable for a single developer; it's a non-starter for anyone else adopting this.
 We want **install-once, no manual config, cleanly removable.**
 
 This memo is grounded in how Cmux (`cmux hooks setup`, 17 agents) and code-notify

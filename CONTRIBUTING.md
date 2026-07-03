@@ -109,7 +109,7 @@ Zellij. See the README's *Development* section for details.
 ## Adding a producer or an agent
 
 The plugin's only real external interface is the versioned `zj_radar.status.v1`
-pipe payload (see the README's *Writing your own producer*). To add a new
+pipe payload (see [`docs/producers.md#writing-your-own-producer`](docs/producers.md#writing-your-own-producer)). To add a new
 instrumented agent to the CLI, add an `enum Agent` variant in
 `crates/cli/src/agents/` and implement `Agent::derive`; the
 `source_round_trips_through_kind` guard test will tell you what else to wire.

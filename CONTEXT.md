@@ -1,8 +1,7 @@
 # zj-radar — domain glossary
 
-Names for the good seams in zj-radar. Architecture vocabulary (module, interface,
-depth, seam, leverage, locality) lives in the `codebase-design` skill; this file
-names the *domain* concepts those terms attach to.
+Names for the good seams in zj-radar. This file defines the domain concepts in
+zj-radar's architecture, focusing on the key interfaces and state flows.
 
 ## Rail
 

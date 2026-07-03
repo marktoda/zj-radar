@@ -9,7 +9,7 @@ Key implementation notes — anything a reviewer needs to follow the diff.
 
 ## Checklist
 
-- [ ] `just ci` passes (`just test` + `just test-bash`).
+- [ ] `just ci` passes (`just test` + `cargo clippy` + `just test-bash`).
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` is clean.
 - [ ] Did **not** run `cargo fmt` (this repo is hand-formatted — see CONTRIBUTING.md).
 - [ ] Tests added/updated at the right layer (snapshot / `rail-reference.md` for render changes, unit/proptest for wire/parse).

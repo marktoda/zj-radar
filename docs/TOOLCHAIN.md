@@ -36,7 +36,7 @@ nix develop -c cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
 just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev session
 ```
 
-Both use the ambient Rust toolchain (`rust-toolchain.toml` auto-installs the
+Uses the ambient Rust toolchain (`rust-toolchain.toml` auto-installs the
 wasm target on first build). In the Nix shell, prefix with `nix develop -c`.
 
 Zellij 0.44 does not safely hot-reload plugins that were created by a layout:

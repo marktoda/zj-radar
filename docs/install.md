@@ -226,7 +226,7 @@ Zellij can also load a plugin directly from an `https://` URL, downloading and
 caching it (no manual `cp`) — once a release is tagged:
 
 ```kdl
-plugin location="https://github.com/marktoda/zj-radar/releases/download/v0.1.1/zj_radar.wasm"
+plugin location="https://github.com/marktoda/zj-radar/releases/latest/download/zj_radar.wasm"
 ```
 
 **Not recommended as the default for zj-radar**, though: the sidebar loads once
@@ -260,7 +260,7 @@ a Rust toolchain (mirrors the older `room`/`smart-tabs` vendoring this replaces)
 
 ```nix
 zjRadarWasm = pkgs.fetchurl {
-  url = "https://github.com/marktoda/zj-radar/releases/download/v0.1.1/zj_radar.wasm";
+  url = "https://github.com/marktoda/zj-radar/releases/latest/download/zj_radar.wasm";
   hash = "sha256-..."; # nix-prefetch-url the asset to fill this in
 };
 ```

@@ -16,8 +16,8 @@ removal — see `smart-tabs-postmortem.md` — and the focus-removal refactor)
 
 ## 1. Goal
 
-Bring Cmux-style agent awareness into Mark's existing Zellij setup without changing the
-parts he likes (keybindings, swap layouts, Nix-managed config). Specifically: an always-on
+Bring Cmux-style agent awareness into an existing Zellij setup without changing the
+preferred keybindings, swap layouts, or config. Specifically: an always-on
 **left sidebar** that lists every tab and, for tabs running AI coding agents, shows
 per-tab state (working / waiting-for-you / done / error) with color, plus repo/branch,
 elapsed time, and the last message — and lets you click a row to jump to that tab.
@@ -167,7 +167,7 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 
 ### 4.2 Per-pane → per-tab aggregation
 
-Mark's `compact.kdl` has multi-agent-in-one-tab shapes (`quad-grid` = 4 Claude panes in one
+Some layouts (e.g. `compact.kdl`) have multi-agent-in-one-tab shapes (`quad-grid` = 4 Claude panes in one
 tab), so tab state cannot come from names. The store keys by `PaneId`; `PaneUpdate`'s
 `PaneManifest` gives the pane→tab map. Tab aggregation:
 

@@ -11,7 +11,7 @@
 //
 // The sidebar is a borderless left column INSIDE a vertical split, OUTSIDE
 // `children`, so it survives swap-layout cycling. Two templates are required —
-// see the "Why two templates?" note in the README (upstream zellij#3247): a
+// see the "Can't open a new tab" note in docs/troubleshooting.md (upstream zellij#3247): a
 // `children` nested in a split is dropped when Zellij derives new_tab_template,
 // so runtime tabs (Ctrl+t n) need a concrete focused `pane` instead.
 layout {
