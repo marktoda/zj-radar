@@ -140,6 +140,13 @@ new_tab_template {
 Why two templates? It works around an upstream Zellij derivation bug — see
 [Can't open a new tab](troubleshooting.md#cant-open-a-new-tab-the-two-template-rule).
 
+One more thing the snippet above does **not** cover: any custom layout makes
+Zellij discard its built-in swap layouts, so `Alt+[` / `Alt+]` cycling stops
+working (and a swap that doesn't include the rail would swap it away). Copy the
+`tab_template name="ui"` + `swap_tiled_layout` blocks from the example layout
+below, or let `--inject` add them — and if your layout already has its own
+swaps, see [Alt+] hides the rail](troubleshooting.md#alt-hides-the-rail-or-stops-cycling).
+
 Prefer a complete starting layout? Copy
 [`examples/radar-sidebar.kdl`](../examples/radar-sidebar.kdl) to
 `~/.config/zellij/layouts/` and run `zellij --layout radar-sidebar`. It uses the

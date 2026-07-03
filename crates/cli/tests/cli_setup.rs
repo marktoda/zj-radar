@@ -377,6 +377,65 @@ fn setup_zellij_inject_writes_rail_and_bak() {
     );
 }
 
+// ── Test 4a2: --inject with existing swaps skips swap blocks, prints advisory ──
+
+#[test]
+fn setup_zellij_inject_with_existing_swaps_skips_swaps_and_advises() {
+    // A layout that already declares its own swap_tiled_layout: inject must
+    // wrap the rail and add the `ui` template, but never append our swap
+    // blocks next to the user's — and it must SAY so, or the first Alt+]
+    // silently swaps the rail away.
+    let layout_with_swaps = "\
+layout {
+    default_tab_template {
+        children
+    }
+    swap_tiled_layout name=\"vertical\" {
+        tab_template {
+            pane split_direction=\"vertical\" {
+                pane
+                pane
+            }
+        }
+    }
+    tab focus=true {
+        pane
+    }
+}
+";
+    let config_dir = isolated_zellij_config(layout_with_swaps);
+    let layout_path = config_dir.path().join("layouts").join("default.kdl");
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let injected = fs::read_to_string(&layout_path).unwrap();
+    assert!(
+        injected.contains("plugin location=\"radar\""),
+        "--inject must add the radar plugin; got:\n{injected}"
+    );
+    assert!(
+        injected.contains("tab_template name=\"ui\""),
+        "--inject must add the ui template; got:\n{injected}"
+    );
+    assert_eq!(
+        injected.matches("swap_tiled_layout").count(), 1,
+        "the user's lone swap block must remain the only one; got:\n{injected}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("swap_tiled_layout blocks, which were left untouched"),
+        "must print the swap advisory; stdout:\n{stdout}"
+    );
+}
+
 // ── Test 4b: --yes without --inject → Snippet: layout unchanged, prints snippet ─
 
 #[test]

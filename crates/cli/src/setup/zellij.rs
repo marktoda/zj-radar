@@ -434,15 +434,19 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                     "zellij: would inject rail into {} (dry-run)\n--- layout (dry-run) ---\n{new_text}",
                     layout_path.display()
                 );
+                print_swap_advisory_if_needed(facts);
                 return;
             }
             // Back up then atomically write (shared setup helper).
             match write_atomic(layout_path, &new_text) {
-                Ok(()) => println!(
-                    "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
-                    layout_path.display(),
-                    layout_path.display()
-                ),
+                Ok(()) => {
+                    println!(
+                        "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
+                        layout_path.display(),
+                        layout_path.display()
+                    );
+                    print_swap_advisory_if_needed(facts);
+                }
                 Err(e) => crate::exit::fail_report("zellij", format!("write failed — {e}")),
             }
         }
@@ -458,6 +462,23 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
             let snippet = crate::layout::tailored_snippet(facts);
             println!("\n{snippet}");
         }
+    }
+}
+
+/// After injecting into a layout that declares its own `swap_tiled_layout`
+/// blocks, tell the user what inject deliberately did NOT do: their swaps were
+/// left untouched (we never rewrite bodies we didn't author), so Alt+[ / Alt+]
+/// still cycles to rail-less layouts until they route each swap entry through
+/// the injected `ui` template. Silence here would read as "all wired" right up
+/// until the first swap pops the rail.
+fn print_swap_advisory_if_needed(facts: &crate::layout::LayoutFacts) {
+    if facts.has_swaps {
+        println!(
+            "zellij: note — your layout has its own swap_tiled_layout blocks, which were \
+             left untouched. Alt+[ / Alt+] will swap to layouts without the rail until \
+             each swap entry is routed through the injected `ui` template \
+             (`ui max_panes=N {{ ... }}`) — see docs/troubleshooting.md."
+        );
     }
 }
 
