@@ -218,11 +218,29 @@ impl LineBg {
 /// One physical rail line and the click target it resolves to. `text` always
 /// ends in exactly one '\n'. The unit of rendering: ansi, targets, and
 /// footprint all derive from a `Vec<Line>`, so they cannot drift.
+/// Construct via `Line::new` only — the struct literal appears nowhere else.
 #[derive(Clone, Debug)]
 struct Line {
     text: String,
     target: Option<RailTarget>,
     bg: LineBg,
+}
+
+impl Line {
+    /// The ONLY way to build a `Line`: owns the trailing-newline invariant
+    /// (exactly one `\n`, at the end) that keeps ansi/target lockstep — an
+    /// interior newline would render as two physical rows against one click
+    /// target.
+    fn new(text: String, target: Option<RailTarget>, bg: LineBg) -> Self {
+        debug_assert!(
+            !text.trim_end_matches('\n').contains('\n'),
+            "interior newline breaks lockstep: {text:?}"
+        );
+        let mut text = text;
+        while text.ends_with('\n') { text.pop(); }
+        text.push('\n');
+        Line { text, target, bg }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -525,11 +543,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         bold: label_bold,
         text: label_text.into(),
     };
-    lines.push(Line {
-        text: format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
-        target: Some(tab_target),
-        bg: LineBg::Card,
-    });
+    lines.push(Line::new(
+        format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
+        Some(tab_target),
+        LineBg::Card,
+    ));
 
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
     // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
@@ -568,12 +586,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
             let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
             let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
-            lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+            lines.push(Line::new(text, Some(pane_target), pane_bg));
             if let Some(q) = detail {
                 let text = emit_pane_detail_line(
                     q, row.active, st, pane.render_status(), branch, &idle_color, opts.width,
                 );
-                lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+                lines.push(Line::new(text, Some(pane_target), pane_bg));
             }
         }
 
@@ -587,11 +605,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                 child_prefix(row.active, st, Branch::Elbow, &idle_color),
                 Seg::new(&idle_color, clamped),
             );
-            lines.push(Line {
+            lines.push(Line::new(
                 text,
-                target: Some(tab_target),
-                bg: if row.active { LineBg::ActiveChild } else { LineBg::Card },
-            });
+                Some(tab_target),
+                if row.active { LineBg::ActiveChild } else { LineBg::Card },
+            ));
         }
         return lines;
     }
@@ -621,12 +639,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
             let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
             let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, Branch::Elbow);
-            lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+            lines.push(Line::new(text, Some(pane_target), pane_bg));
             if let Some(q) = detail {
                 let text = emit_pane_detail_line(
                     q, row.active, st, pane_status, Branch::Elbow, &idle_color, width,
                 );
-                lines.push(Line { text, target: Some(pane_target), bg: pane_bg });
+                lines.push(Line::new(text, Some(pane_target), pane_bg));
             }
         }
     }
@@ -1000,18 +1018,14 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
         right_rendered,
     ));
 
-    let mut lines = vec![Line {
-        text: title_line,
-        target: None,
-        bg: LineBg::Rail,
-    }];
+    let mut lines = vec![Line::new(title_line, None, LineBg::Rail)];
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
-        lines.push(Line {
-            text: format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
-            target: None,
-            bg: LineBg::Rail,
-        });
+        lines.push(Line::new(
+            format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
+            None,
+            LineBg::Rail,
+        ));
     }
     lines
 }
@@ -1045,17 +1059,17 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
     if strip_folded == 0 {
         return vec![];
     }
-    vec![Line {
-        text: format!(
+    vec![Line::new(
+        format!(
             "{}\n",
             Seg::new(
                 Role::Accent.ansi(),
                 truncate(&format!("+{} idle ▾", strip_folded), opts.width),
             ),
         ),
-        target: None,
-        bg: LineBg::Rail,
-    }]
+        None,
+        LineBg::Rail,
+    )]
 }
 
 /// Header + one card block per kept row + idle strip — everything in
@@ -1110,7 +1124,7 @@ fn render_body(rows: &[TabRow], opts: &RenderOpts) -> Vec<Line> {
                 Some(esc) if cards => paint_card_line(&text, width, &esc),
                 _ => text,
             };
-            Line { text, target, bg: LineBg::None }
+            Line::new(text, target, LineBg::None)
         };
 
         // pad_y internal top padding — belongs to this card's click span.
@@ -1154,17 +1168,17 @@ pub(crate) fn body_line_count(rows: &[TabRow], opts: &RenderOpts) -> usize {
 /// One filler line: blank, rail-based, click-inert. Shared by the bottom
 /// region's leading pad and (via the ledger branch) its interior pad.
 fn bottom_filler() -> Line {
-    Line { text: "\n".to_string(), target: None, bg: LineBg::Rail }
+    Line::new("\n".to_string(), None, LineBg::Rail)
 }
 
 /// The footer's top rule: a full-width ghost-colored `─` line.
 fn footer_rule(opts: &RenderOpts) -> Line {
     let ghost = tc_fg(opts.theme.idle_text);
-    Line {
-        text: format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))),
-        target: None,
-        bg: LineBg::Rail,
-    }
+    Line::new(
+        format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))),
+        None,
+        LineBg::Rail,
+    )
 }
 
 /// The footer's bottom hint line: "alt-[n] jump", clamped to width. Starts at
@@ -1172,11 +1186,11 @@ fn footer_rule(opts: &RenderOpts) -> Line {
 /// the two footer lines one column out of step.
 fn footer_hint(opts: &RenderOpts) -> Line {
     let idle = tc_fg(opts.theme.idle_text);
-    Line {
-        text: format!("{}\n", Seg::new(&idle, truncate("alt-[n] jump", opts.width))),
-        target: None,
-        bg: LineBg::Rail,
-    }
+    Line::new(
+        format!("{}\n", Seg::new(&idle, truncate("alt-[n] jump", opts.width))),
+        None,
+        LineBg::Rail,
+    )
 }
 
 /// The footer's tally line: `{n} working · {m} need you`. `n` counts
@@ -1195,11 +1209,7 @@ fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
     if need_you == 0 {
         let text = truncate(&format!("{working} working"), width);
-        return Line {
-            text: format!("{}\n", Seg::new(&idle, text)),
-            target: None,
-            bg: LineBg::Rail,
-        };
+        return Line::new(format!("{}\n", Seg::new(&idle, text)), None, LineBg::Rail);
     }
     let left = format!("{working} working · ");
     let right = format!("{} need you", need_you);
@@ -1220,7 +1230,7 @@ fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
             format!("{}\n", Seg::new(&idle, clamped))
         }
     };
-    Line { text, target: None, bg: LineBg::Rail }
+    Line::new(text, None, LineBg::Rail)
 }
 
 /// The ledger section's own rule: `─ earlier ` then `─` fill to width.
@@ -1233,11 +1243,7 @@ fn ledger_rule(opts: &RenderOpts) -> Line {
     } else {
         format!("{}{}", prefix, "─".repeat(opts.width - prefix_w))
     };
-    Line {
-        text: format!("{}\n", Seg::new(&ghost, text)),
-        target: None,
-        bg: LineBg::Rail,
-    }
+    Line::new(format!("{}\n", Seg::new(&ghost, text)), None, LineBg::Rail)
 }
 
 /// One ledger row: `{age} {glyph} {tab_name} {label}`. Exact truncation rule
@@ -1264,11 +1270,11 @@ fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -
     // line clamped to `width` so nothing exceeds the band.
     if width < prefix {
         let plain = format!("{age} {glyph} {} {}", line.tab_name, line.label);
-        return Line {
-            text: format!("{}\n", truncate(&plain, width)),
-            target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
-            bg: LineBg::Rail,
-        };
+        return Line::new(
+            format!("{}\n", truncate(&plain, width)),
+            line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+            LineBg::Rail,
+        );
     }
     let name_budget = 12.min(width.saturating_sub(prefix));
     let name = truncate(&line.tab_name, name_budget);
@@ -1286,11 +1292,11 @@ fn ledger_entry_line(line: &crate::radar_state::LedgerLine, opts: &RenderOpts) -
         text.push_str(&Seg::new(&idle, label).to_string());
     }
     text.push('\n');
-    Line {
+    Line::new(
         text,
-        target: line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
-        bg: LineBg::Rail,
-    }
+        line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+        LineBg::Rail,
+    )
 }
 
 /// Most `─ earlier` entries the rail ever shows, no matter how tall the pane

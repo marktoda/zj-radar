@@ -4823,9 +4823,9 @@ fn single_running_pane_with_detail_is_two_content_lines() {
 fn from_lines_derives_ansi_and_targets_in_lockstep() {
     let t = RailTarget { tab_position: 2, pane_id: None };
     let lines = vec![
-        Line { text: "alpha\n".into(), target: Some(t), bg: LineBg::None },
-        Line { text: "beta\n".into(),  target: None,    bg: LineBg::None },
-        Line { text: "gamma\n".into(), target: Some(RailTarget { tab_position: 3, pane_id: Some(9) }), bg: LineBg::None },
+        Line::new("alpha\n".into(), Some(t), LineBg::None),
+        Line::new("beta\n".into(),  None,    LineBg::None),
+        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9) }), LineBg::None),
     ];
     let rr = RenderedRail::from_lines(lines);
     // ansi: joined, trailing newline popped.
@@ -4838,6 +4838,28 @@ fn from_lines_derives_ansi_and_targets_in_lockstep() {
     assert_eq!(rr.target_at_line(3), None);
     // Structural lockstep: every '\n'-terminated segment has a target slot.
     assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
+}
+
+#[test]
+fn line_new_normalizes_trailing_newline() {
+    // No trailing newline: exactly one is appended.
+    let line = Line::new("no newline".to_string(), None, LineBg::None);
+    assert_eq!(line.text, "no newline\n");
+
+    // Already has exactly one trailing newline: unchanged.
+    let line = Line::new("already terminated\n".to_string(), None, LineBg::None);
+    assert_eq!(line.text, "already terminated\n");
+
+    // Multiple trailing newlines collapse to exactly one.
+    let line = Line::new("too many\n\n\n".to_string(), None, LineBg::None);
+    assert_eq!(line.text, "too many\n");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "interior newline breaks lockstep")]
+fn line_new_panics_on_interior_newline() {
+    Line::new("first\nsecond\n".to_string(), None, LineBg::None);
 }
 
 #[test]
