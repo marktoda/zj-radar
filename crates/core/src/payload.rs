@@ -3,8 +3,12 @@
 use crate::status::Status;
 use serde::Deserialize;
 
+/// Public-contract limit: payloads larger than this are rejected outright by
+/// `parse` (returns `None`) before JSON parsing is even attempted.
 pub const MAX_PAYLOAD_BYTES: usize = 65536;
+/// Public-contract limit: `msg` truncates to this many chars on parse.
 pub const MAX_MSG_CHARS: usize = 60;
+/// Public-contract limit: `task` truncates to this many chars on parse.
 pub const MAX_TASK_CHARS: usize = 60;
 /// Public-contract limit: `repo` truncates to this many chars on parse.
 pub const MAX_REPO_CHARS: usize = 40;
@@ -34,6 +38,30 @@ pub struct StatusPayload {
     /// replace. Clearing is a plugin lifecycle rule, never a wire signal.
     pub task: String,
     pub source: String,
+}
+
+/// Mirrors what `parse` produces for a payload with every optional field
+/// absent: `status` falls back the same way `Status::from_wire` does for an
+/// unknown/absent token (`Status::Idle`), every text field defaults to `""`
+/// (an absent field's serde default on `Raw`, sanitized), and `pane_id` is
+/// `0` (the primitive default `RawPane.id` would take). So
+/// `..Default::default()` in a struct literal means exactly "absent on the
+/// wire" — this is the forward-compatible construction path for external
+/// producers: a future field addition to `StatusPayload` defaults the same
+/// way an absent wire field would, so existing `..Default::default()`
+/// literals keep compiling and keep meaning the same thing.
+impl Default for StatusPayload {
+    fn default() -> Self {
+        StatusPayload {
+            pane_id: 0,
+            status: Status::default(),
+            repo: String::new(),
+            branch: String::new(),
+            msg: String::new(),
+            task: String::new(),
+            source: String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -278,6 +306,18 @@ mod tests {
         assert_eq!(got.pane_id, 3);
         assert_eq!(got.status, Status::Done);
         assert_eq!(got.repo, "");
+    }
+
+    #[test]
+    fn default_matches_parse_of_an_all_absent_payload() {
+        // `StatusPayload::default()` must mean the same thing as "every optional
+        // field absent on the wire". `pane.id` and `status` are the only two
+        // fields `Raw` requires outright (no `#[serde(default)]`); pin `id: 0`
+        // (the primitive default) and an unknown `status` token, which
+        // `from_wire` maps to `Status::Idle` — the same fallback `Default`
+        // uses. Every other field is genuinely absent.
+        let got = p(r#"{"pane":{"type":"terminal","id":0},"status":""}"#).unwrap();
+        assert_eq!(got, StatusPayload::default());
     }
 
     #[test]

@@ -251,16 +251,29 @@ mod tests {
     /// the doc to be updated.
     #[test]
     fn agent_help_text_mentions_all_sources() {
-        // Read the lib.rs file and check that the agent doc comment mentions all sources.
+        // Read the lib.rs file and check that the `agent` field's doc comment
+        // (only that comment, not the whole file) mentions all sources.
         let lib_rs = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")
         ).expect("Could not read lib.rs");
 
+        // Scope the search to the `Notify::agent` field's doc-comment block:
+        // from its opening line down to the field declaration that follows it.
+        // Scoping matters — without it, a future backticked agent name ANYWHERE
+        // in lib.rs (e.g. in an unrelated doc comment) would make this guard
+        // vacuously pass instead of catching a stale `agent` doc comment.
+        let doc_start = lib_rs.find("/// Which agent is reporting")
+            .expect("lib.rs must have the `Notify::agent` field's doc comment (\"Which agent is reporting\")");
+        let field_decl = lib_rs[doc_start..].find("agent: String,")
+            .map(|i| doc_start + i)
+            .expect("the `agent` doc comment must be immediately followed by the `agent: String,` field");
+        let doc_comment = &lib_rs[doc_start..field_decl];
+
         for &agent in Agent::ALL {
             let source = agent.source();
             assert!(
-                lib_rs.contains(&format!("`{source}`")) || lib_rs.contains(&format!("\"{source}\"")),
-                "lib.rs agent doc comment must mention `{}`, but does not. \
+                doc_comment.contains(&format!("`{source}`")) || doc_comment.contains(&format!("\"{source}\"")),
+                "lib.rs's `Notify::agent` doc comment must mention `{}`, but does not. \
                  Found agents: {:?}. Update the doc comment on the `Notify` command's `agent` field.",
                 source,
                 Agent::ALL.iter().map(|a| a.source()).collect::<Vec<_>>()

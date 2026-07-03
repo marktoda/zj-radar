@@ -1407,13 +1407,8 @@ fn ledger_any_unsaturated_reflects_the_saturate_window() {
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![pane(1)]);
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 1,
-        status: Status::Done,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "shipped".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(1, Status::Done, "repo")
     });
     radar.status_pipe(&wire, 1, 1000, config::NamingMode::Off);
     radar.command_changed(1, &["zsh".into()], true, 5, 9999); // recedes → ledgers at epoch 1000
@@ -1429,13 +1424,8 @@ fn prompt_return_clear_ledgers_the_agent_completion() {
     radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 7,
-        status: Status::Done,
-        repo: "pinky".into(),
-        branch: "main".into(),
         msg: "shipped it".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(7, Status::Done, "pinky")
     });
     radar.status_pipe(&wire, 1, 100, config::NamingMode::Off);
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
@@ -1464,13 +1454,8 @@ fn prune_ledgers_completions_with_the_pre_close_tab_name() {
     // A Done sits on pane 3, in tab "web", right before the tab (and its
     // pane) close in a single PaneUpdate.
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 3,
-        status: Status::Done,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "built".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(3, Status::Done, "repo")
     });
     radar.status_pipe(&wire, 1, 50, config::NamingMode::Off);
 
@@ -1504,13 +1489,8 @@ fn pending_and_running_never_ledger() {
 
     // pane 2: a Pending status-pipe observation (queued, not yet started).
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 2,
-        status: Status::Pending,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "queued".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(2, Status::Pending, "repo")
     });
     radar.status_pipe(&wire, 1, 0, config::NamingMode::Off);
     assert_eq!(radar.status(2).unwrap().status, Status::Pending);
@@ -1617,13 +1597,8 @@ fn ledger_lines_resolve_live_tab_position_or_none() {
     radar.set_tab_panes_for_position(0, vec![pane(1)]);
 
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 1,
-        status: Status::Done,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "shipped".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(1, Status::Done, "repo")
     });
     radar.status_pipe(&wire, 1, 42, config::NamingMode::Off);
     radar.command_changed(1, &["zsh".into()], true, 5, 100); // recedes → ledgers
@@ -1651,13 +1626,8 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     // A live not-Pending → Pending edge at tick 5 arms a flash through tick 6
     // (`flash_until = tick + 2`, and `rows` reads `now_tick < flash_until`).
     let wire = payload::to_wire(&StatusPayload {
-        pane_id: 7,
-        status: Status::Pending,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "approve?".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(7, Status::Pending, "repo")
     });
     radar.status_pipe(&wire, 5, 0, config::NamingMode::Off);
 
@@ -1668,13 +1638,8 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     // A re-broadcast of an already-Pending status (still inside the window) is
     // NOT a flip — it must not extend or re-arm the flash.
     let wire_again = payload::to_wire(&StatusPayload {
-        pane_id: 7,
-        status: Status::Pending,
-        repo: "repo".into(),
-        branch: "main".into(),
         msg: "approve still?".into(),
-        task: "".into(),
-        source: "claude".into(),
+        ..payload_for(7, Status::Pending, "repo")
     });
     radar.status_pipe(&wire_again, 6, 0, config::NamingMode::Off);
     assert!(

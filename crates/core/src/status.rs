@@ -91,6 +91,14 @@ statuses! {
     Error   => "error",   Role::Error,     '✗', '\u{f057}';
 }
 
+/// Matches `from_wire`'s fallback for an absent/unknown wire token — see the
+/// `statuses!` table's `fallback = Idle`.
+impl Default for Status {
+    fn default() -> Self {
+        Status::Idle
+    }
+}
+
 impl Status {
     pub fn is_active(self) -> bool {
         self != Status::Idle
@@ -182,6 +190,14 @@ mod tests {
             Some(Status::Error),
             "max yields the most-urgent status",
         );
+    }
+
+    #[test]
+    fn default_matches_from_wire_fallback() {
+        // `Default` must agree with `from_wire`'s fallback for absent/unknown
+        // tokens, since `StatusPayload::default()` relies on this correspondence.
+        assert_eq!(Status::default(), Status::from_wire(""));
+        assert_eq!(Status::default(), Status::Idle);
     }
 
     #[test]
