@@ -4,8 +4,11 @@
 //! and `pending` counts and a highest-severity detail line. This is the domain
 //! operation named "Tab Roll-Up" in `CONTEXT.md`: a deep, pure module that
 //! turns a tab's panes plus a per-pane observation lookup into the `TabDisplay`
-//! the rail renders. It owns its output vocabulary (`TabDisplay`, `PaneDisplay`,
-//! `PrimaryDetail`, `ProgressCounts`, `Outcome`); the renderer consumes it.
+//! the rail renders. It owns the whole render-input vocabulary — `TabDisplay`,
+//! `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`, `Outcome`, plus the
+//! rail-row types `TabRow`/`LedgerLine` and the topology record
+//! `TerminalPane` — so the arrows run one way: `radar_state` builds these,
+//! `render` consumes them, and neither imports the other.
 //!
 //! The "two sources, status wins" knowledge lives in the caller's `resolve`
 //! closure — `roll_up` never learns there is more than one store, which keeps
@@ -13,8 +16,16 @@
 
 use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
-use crate::radar_state::TerminalPane;
 use crate::status::Status;
+
+/// One terminal pane of a tab's topology — the input record `roll_up`
+/// aggregates and `RadarState` stores per tab.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TerminalPane {
+    pub id: u32,
+    pub title: String,
+    pub focused_in_tab: bool,
+}
 
 /// The end-result of a finished *command* pane, shown as a tag after the
 /// activity (`cargo build exit 1`; `Ok` renders no tag — the line-1 status
@@ -284,6 +295,35 @@ fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
         Status::Error => Some(Outcome::Failed(s.exit_code)),
         _ => None,
     }
+}
+
+/// One rail row as the renderer consumes it: the tab's identity bits plus its
+/// rolled-up [`TabDisplay`]. Built by `RadarState::rows`; `render_rail` never
+/// reaches past it into state.
+#[derive(Debug)]
+pub struct TabRow {
+    pub number: u32,
+    pub name: String,
+    pub active: bool,
+    pub has_bell: bool,
+    /// True for the two ticks after this tab's pane flipped from not-Pending
+    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
+    /// outranks the active tint in `card_tint` in the renderer.
+    pub flash: bool,
+    pub display: TabDisplay,
+}
+
+/// A ledger entry, resolved for rendering: the live tab position (or `None`
+/// once that tab is gone, making the row click-inert) looked up fresh on every
+/// call, rather than cached — the ledger itself only ever remembers the
+/// `TabId` it happened in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LedgerLine {
+    pub at_epoch_s: u64,
+    pub error: bool,
+    pub tab_name: String,
+    pub label: String,
+    pub tab_position: Option<usize>,
 }
 
 #[cfg(test)]

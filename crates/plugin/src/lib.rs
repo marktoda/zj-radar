@@ -50,9 +50,9 @@ mod theme;
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
 use radar_state::{RadarTab, TabId};
 #[cfg(test)]
-use radar_state::TerminalPane;
+use rollup::TerminalPane;
 #[cfg(test)]
-use render::TabRow;
+use rollup::TabRow;
 use runtime::PluginRuntime;
 use session_files::SessionFiles;
 

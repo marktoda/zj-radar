@@ -8,8 +8,9 @@
 
 use crate::command::DEBOUNCE_TICKS;
 use crate::config::{Density, NamingMode};
-use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabId, TerminalPane};
-use crate::render::{GlyphSet, RenderOpts, TabRow};
+use crate::radar_state::{PaneUpdate, RadarState, RadarTab, TabId};
+use crate::render::{GlyphSet, RenderOpts};
+use crate::rollup::{TabRow, TerminalPane};
 use crate::status::Status;
 use crate::theme::DerivedColors;
 use std::collections::{HashMap, HashSet};
@@ -124,7 +125,7 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 /// idle-but-tracked behavior required by scenario J.
 ///
 /// Panics on unknown `kind` or `status` tokens with a descriptive message.
-fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
+fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpts) {
     use crate::kind::Kind;
     use crate::payload::{to_wire, StatusPayload};
 
@@ -134,7 +135,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
     let mut jump_hint = false;
-    let mut ledger_lines: Vec<crate::radar_state::LedgerLine> = Vec::new();
+    let mut ledger_lines: Vec<crate::rollup::LedgerLine> = Vec::new();
     // A fixed "now" for the `ledger` directive's age math, so a scenario's
     // round `age_secs` numbers produce deterministic, doc-readable
     // `format_age` text (e.g. 90 → "1m").
@@ -249,7 +250,7 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
             };
             let (tab_name, after) = take_quoted(remainder);
             let (label, _) = take_quoted(after);
-            ledger_lines.push(crate::radar_state::LedgerLine {
+            ledger_lines.push(crate::rollup::LedgerLine {
                 at_epoch_s: LEDGER_NOW_EPOCH_S.saturating_sub(age_secs),
                 error,
                 tab_name: tab_name.to_string(),
@@ -603,7 +604,6 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
         density,
         theme,
         now_epoch_s: LEDGER_NOW_EPOCH_S,
-        ledger: ledger_lines,
         jump_hint,
     };
     // Scenarios that don't declare an explicit `height` used the old
@@ -616,10 +616,10 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     // rendering exactly what it always did; only a scenario that opts into an
     // explicit `height` can exercise the footer/ledger region.
     if !explicit_height {
-        opts.height = crate::render::body_line_count(&rows, &opts);
+        opts.height = crate::render::body_line_count(&rows, &ledger_lines, &opts);
     }
 
-    (rows, opts)
+    (rows, ledger_lines, opts)
 }
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────
@@ -671,8 +671,8 @@ fn rail_reference_matches() {
     eprintln!("Found {} scenarios", cases.len());
     let mut failures = Vec::new();
     for case in &cases {
-        let (rows, opts) = build(&case.input);
-        let rail = crate::render::render_rail(&rows, &opts);
+        let (rows, ledger, opts) = build(&case.input);
+        let rail = crate::render::render_rail(&rows, &ledger, &opts);
         let got = grid(&rail.ansi, opts.width);
         if got.trim_end() == case.expect.trim_end() {
             eprintln!("PASS: {}", case.id);

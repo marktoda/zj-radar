@@ -246,6 +246,21 @@ mod tests {
         );
     }
 
+    /// Guard for the guards: `ALL` is hand-maintained, and every other guard
+    /// here iterates it — a variant missing from `ALL` would weaken them all
+    /// silently (and be unparseable by `from_cli`). The match is the
+    /// compile-time anchor (a new variant fails to build until routed here)
+    /// and the length assert makes "fixed the match, forgot ALL" impossible.
+    #[test]
+    fn all_lists_every_variant() {
+        for &a in Agent::ALL {
+            match a {
+                Agent::Claude | Agent::Codex => {}
+            }
+        }
+        assert_eq!(Agent::ALL.len(), 2, "a variant is missing from Agent::ALL");
+    }
+
     /// The clap doc-comment on the `agent` arg (lib.rs) cannot be dynamic. This
     /// test asserts it mentions every `Agent::ALL` source, so a new agent forces
     /// the doc to be updated.

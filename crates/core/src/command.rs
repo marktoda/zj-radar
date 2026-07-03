@@ -175,10 +175,11 @@ fn effective_command(command: &[String]) -> &[String] {
     }
 }
 
-/// Declarative compaction rule for one family of tools. The per-exe special
-/// cases all reduce to two questions — *which token is the operative verb* and
-/// *which verbs carry a trailing target* — so adding a tool is a one-line table
-/// entry rather than another nested match arm.
+/// Declarative rule for one family of tools: how its argv compacts into a
+/// display string AND how it classifies into a [`Kind`]. The per-exe special
+/// cases all reduce to a handful of columns, so adding a tool is one table
+/// row rather than a nested match arm here plus an if-chain in `command_kind`
+/// that must agree with it.
 struct ToolRule {
     /// Exe basenames this rule matches.
     exes: &'static [&'static str],
@@ -189,11 +190,22 @@ struct ToolRule {
     /// Verbs after which the next non-option arg is appended as a target
     /// (`cargo test <name>`, `npm run <script>`).
     target_verbs: &'static [&'static str],
+    /// Classification columns, checked in order by `command_kind`:
+    /// `exe_kind` — the exe alone decides (`pytest` is always a test run);
+    /// `verb_kinds` — exact match on the operative verb, for closed
+    ///   vocabularies (`cargo run test-runner` must NOT read as a test);
+    /// `word_kinds` — first whole-word hit over the lowercased compacted
+    ///   display, for open vocabularies where the verb is the user's own word
+    ///   (npm scripts, make/just targets). No match → `Kind::Command`.
+    exe_kind: Option<Kind>,
+    verb_kinds: &'static [(&'static str, Kind)],
+    word_kinds: &'static [(&'static str, Kind)],
 }
 
-/// Tools with structured argv. Anything not listed (and not an agent or
-/// `python`) falls through to [`FIRST_ARG_RULE`], which keeps the first
-/// non-option arg — covering `pytest`, `ruff`, `make`, `just`, `sleep`, etc.
+/// Tools with structured argv or a known classification. Anything not listed
+/// (and not an agent or `python`) falls through to [`FIRST_ARG_RULE`], which
+/// keeps the first non-option arg and classifies as a plain command —
+/// covering `sleep`, `rsync`, one-off scripts, etc.
 const TOOL_RULES: &[ToolRule] = &[
     ToolRule {
         exes: &["cargo"],
@@ -202,33 +214,73 @@ const TOOL_RULES: &[ToolRule] = &[
             "publish", "update", "nextest",
         ]),
         target_verbs: &["test", "bench", "run", "nextest"],
+        exe_kind: None,
+        verb_kinds: &[("test", Kind::Test), ("nextest", Kind::Test), ("build", Kind::Build), ("check", Kind::Build)],
+        word_kinds: &[],
     },
     ToolRule {
         exes: &["go"],
         subcommands: Some(&["test", "build", "run", "fmt", "vet", "mod"]),
         target_verbs: &["test", "run"],
+        exe_kind: None,
+        verb_kinds: &[("test", Kind::Test), ("build", Kind::Build)],
+        word_kinds: &[],
     },
     ToolRule {
         exes: &["npm", "pnpm", "yarn", "bun"],
         subcommands: None,
         target_verbs: &["run"],
+        exe_kind: None,
+        verb_kinds: &[],
+        word_kinds: &[
+            ("test", Kind::Test), ("build", Kind::Build),
+            ("dev", Kind::Server), ("start", Kind::Server), ("serve", Kind::Server),
+        ],
+    },
+    ToolRule {
+        exes: &["pytest"],
+        subcommands: None,
+        target_verbs: &[],
+        exe_kind: Some(Kind::Test),
+        verb_kinds: &[],
+        word_kinds: &[],
+    },
+    ToolRule {
+        exes: &["make", "just", "ruff"],
+        subcommands: None,
+        target_verbs: &[],
+        exe_kind: None,
+        verb_kinds: &[],
+        word_kinds: &[
+            ("test", Kind::Test), ("build", Kind::Build),
+            ("deploy", Kind::Deploy), ("push", Kind::Deploy),
+            ("serve", Kind::Server), ("server", Kind::Server), ("dev", Kind::Server),
+        ],
     },
 ];
 
-/// The fallback rule: keep the exe plus its first non-option arg.
+/// The fallback rule: keep the exe plus its first non-option arg; plain command.
 const FIRST_ARG_RULE: ToolRule = ToolRule {
     exes: &[],
     subcommands: None,
     target_verbs: &[],
+    exe_kind: None,
+    verb_kinds: &[],
+    word_kinds: &[],
 };
+
+/// The token classification and compaction both key on: a known subcommand
+/// when the rule declares them, else the first non-option arg.
+fn operative_verb<'a>(args: &'a [String], rule: &ToolRule) -> Option<(usize, &'a str)> {
+    match rule.subcommands {
+        Some(subs) => known_subcommand(args, subs),
+        None => first_non_option(args, 0),
+    }
+}
 
 /// Render `exe` plus its operative verb (and optional target) per `rule`.
 fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
-    let verb = match rule.subcommands {
-        Some(subs) => known_subcommand(args, subs),
-        None => first_non_option(args, 0),
-    };
-    let Some((idx, verb)) = verb else {
+    let Some((idx, verb)) = operative_verb(args, rule) else {
         return exe.to_string();
     };
     if rule.target_verbs.contains(&verb) {
@@ -269,8 +321,8 @@ fn display_command(command: &[String]) -> String {
     let exe = basename(first);
     let args = &command[1..];
     let raw = match exe {
-        // Agents own their pane via the push pipe; show only the bare name.
-        "codex" | "claude" | "gemini" => exe.to_string(),
+        // Agents own their pane (pushed or not); show only the bare name.
+        _ if Kind::from_source(exe).is_agent() => exe.to_string(),
         "python" | "python3" => display_python(exe, args),
         _ => {
             let rule = TOOL_RULES
@@ -311,48 +363,31 @@ fn command_kind(command: &[String], display: &str) -> Kind {
     // precondition); argv case must not defeat classification (`make TEST`,
     // `npm run BUILD`). Exe names stay case-sensitive — they name binaries.
     let display = display.to_lowercase();
-    let display = display.as_str();
     let exe = command.first().map(|s| basename(s)).unwrap_or("");
-    match exe {
-        "claude" => Kind::Claude,
-        "codex" => Kind::Codex,
-        "gemini" => Kind::Gemini,
-        "pytest" => Kind::Test,
-        "cargo" if display.starts_with("cargo test") || display.starts_with("cargo nextest") => {
-            Kind::Test
-        }
-        "cargo" if display.starts_with("cargo build") || display.starts_with("cargo check") => {
-            Kind::Build
-        }
-        "npm" | "pnpm" | "yarn" | "bun" if contains_word(display, "test") => Kind::Test,
-        "npm" | "pnpm" | "yarn" | "bun" if contains_word(display, "build") => Kind::Build,
-        "npm" | "pnpm" | "yarn" | "bun"
-            if contains_word(display, "dev")
-                || contains_word(display, "start")
-                || contains_word(display, "serve") =>
-        {
-            Kind::Server
-        }
-        "go" if display.starts_with("go test") => Kind::Test,
-        "go" if display.starts_with("go build") => Kind::Build,
-        "make" | "just" | "ruff" => {
-            if contains_word(display, "test") {
-                Kind::Test
-            } else if contains_word(display, "build") {
-                Kind::Build
-            } else if contains_word(display, "deploy") || contains_word(display, "push") {
-                Kind::Deploy
-            } else if contains_word(display, "serve")
-                || contains_word(display, "server")
-                || contains_word(display, "dev")
-            {
-                Kind::Server
-            } else {
-                Kind::Command
-            }
-        }
-        _ => Kind::Command,
+    // Agents classify by identity, not by rule: an exe that IS an agent's
+    // wire-source token owns its pane under that Kind — even without a push
+    // adapter (Gemini renders under its own mark via ordinary tracking).
+    let identity = Kind::from_source(exe);
+    if identity.is_agent() {
+        return identity;
     }
+    let rule = TOOL_RULES
+        .iter()
+        .find(|r| r.exes.contains(&exe))
+        .unwrap_or(&FIRST_ARG_RULE);
+    if let Some(kind) = rule.exe_kind {
+        return kind;
+    }
+    let args = command.get(1..).unwrap_or_default();
+    if let Some((_, verb)) = operative_verb(args, rule) {
+        if let Some(&(_, kind)) = rule.verb_kinds.iter().find(|&&(v, _)| v == verb) {
+            return kind;
+        }
+    }
+    rule.word_kinds
+        .iter()
+        .find(|&&(word, _)| contains_word(&display, word))
+        .map_or(Kind::Command, |&(_, kind)| kind)
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
