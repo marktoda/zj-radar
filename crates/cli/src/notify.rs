@@ -115,7 +115,8 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         return;
     };
     let Some(agent) = Agent::from_cli(agent) else {
-        eprintln!("zj-radar: unknown agent '{agent}' (expected: claude | codex — or `notify generic` for scripts)");
+        let expected = Agent::ALL.iter().map(|a| a.source()).collect::<Vec<_>>().join(" | ");
+        eprintln!("zj-radar: unknown agent '{agent}' (expected: {expected} — or `notify generic` for scripts)");
         return;
     };
 

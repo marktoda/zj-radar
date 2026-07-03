@@ -53,17 +53,12 @@ pub enum Agent {
 impl Agent {
     /// Every push-reporter agent, in declaration order. Lets the coherence
     /// guards iterate the variants without re-typing the list (mirrors
-    /// `Kind::ALL`). Test-only today — its sole consumers are the guard tests.
-    #[cfg(test)]
+    /// `Kind::ALL`).
     pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex];
 
     /// Parse the `notify <agent>` CLI argument. Inverse of [`Agent::source`].
     pub fn from_cli(s: &str) -> Option<Agent> {
-        match s {
-            "claude" => Some(Agent::Claude),
-            "codex" => Some(Agent::Codex),
-            _ => None,
-        }
+        Agent::ALL.iter().copied().find(|a| a.source() == s)
     }
 
     /// The wire `source` string. MUST round-trip through `Kind::from_source` to
@@ -249,6 +244,28 @@ mod tests {
             "command.rs::AGENT_NAMES must equal the push-adapter source set — \
              an agent in one but not the other either goes dark or flickers"
         );
+    }
+
+    /// The clap doc-comment on the `agent` arg (lib.rs) cannot be dynamic. This
+    /// test asserts it mentions every `Agent::ALL` source, so a new agent forces
+    /// the doc to be updated.
+    #[test]
+    fn agent_help_text_mentions_all_sources() {
+        // Read the lib.rs file and check that the agent doc comment mentions all sources.
+        let lib_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")
+        ).expect("Could not read lib.rs");
+
+        for &agent in Agent::ALL {
+            let source = agent.source();
+            assert!(
+                lib_rs.contains(&format!("`{source}`")) || lib_rs.contains(&format!("\"{source}\"")),
+                "lib.rs agent doc comment must mention `{}`, but does not. \
+                 Found agents: {:?}. Update the doc comment on the `Notify` command's `agent` field.",
+                source,
+                Agent::ALL.iter().map(|a| a.source()).collect::<Vec<_>>()
+            );
+        }
     }
 
     // ── tool_activity ─────────────────────────────────────────────────────────
