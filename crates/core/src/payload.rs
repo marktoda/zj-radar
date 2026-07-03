@@ -74,7 +74,10 @@ struct RawPane {
 #[derive(Deserialize)]
 struct Raw {
     pane: RawPane,
-    status: String,
+    // `Status`'s Deserialize is the lenient wire_serde path (unknown → Idle),
+    // so typing the field here IS the "unknown status maps to Idle" policy —
+    // no hand-written `from_wire` step. A *missing* status stays a parse error.
+    status: Status,
     #[serde(default)]
     repo: String,
     #[serde(default)]
@@ -226,7 +229,7 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
     }
     Some(StatusPayload {
         pane_id: r.pane.id,
-        status: Status::from_wire(&r.status),
+        status: r.status,
         repo: sanitize(&r.repo, MAX_REPO_CHARS),
         branch: sanitize(&r.branch, MAX_BRANCH_CHARS),
         msg: sanitize(&r.msg, MAX_MSG_CHARS),
@@ -597,24 +600,11 @@ mod tests {
             // format must preserve EVERY field parse surfaces — across all statuses,
             // the full pane-id range, and msg/source (the fields the old version
             // silently dropped). Only printable ASCII within each field's cap is
-            // generated, so sanitize does not alter any field.
-            let wire = to_wire(&StatusPayload {
-                pane_id: pane,
-                status,
-                repo: repo.clone(),
-                branch: branch.clone(),
-                msg: msg.clone(),
-                task: task.clone(),
-                source: source.clone(),
-            });
-            let got = parse(&wire).expect("our own wire output must parse");
-            prop_assert_eq!(got.pane_id, pane);
-            prop_assert_eq!(got.status, status);
-            prop_assert_eq!(got.repo, repo);
-            prop_assert_eq!(got.branch, branch);
-            prop_assert_eq!(got.msg, msg);
-            prop_assert_eq!(got.task, task);
-            prop_assert_eq!(got.source, source);
+            // generated, so sanitize does not alter any field and whole-struct
+            // equality is the exact inverse law.
+            let p = StatusPayload { pane_id: pane, status, repo, branch, msg, task, source };
+            let got = parse(&to_wire(&p)).expect("our own wire output must parse");
+            prop_assert_eq!(got, p);
         }
 
         #[test]
