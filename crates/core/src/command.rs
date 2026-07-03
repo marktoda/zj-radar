@@ -3,7 +3,7 @@
 
 use crate::kind::Kind;
 use crate::observation::{ObservationStore, TrackedObservation};
-use crate::payload::{sanitize, MAX_MSG_CHARS};
+use crate::payload::{sanitize, MAX_MSG_CHARS, MAX_REPO_CHARS};
 use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
@@ -476,7 +476,7 @@ impl CommandStore {
 
         for pane_id in to_promote {
             if let Some(p) = self.pending.remove(&pane_id) {
-                let repo = sanitize(basename(&p.cwd), 40).to_string();
+                let repo = sanitize(basename(&p.cwd), MAX_REPO_CHARS);
                 let mut obs = TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick);
                 // A re-promotion of the SAME still-running command (Zellij
                 // re-reported the foreground) keeps the original start tick, so

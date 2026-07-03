@@ -6,6 +6,12 @@ use serde::Deserialize;
 pub const MAX_PAYLOAD_BYTES: usize = 65536;
 pub const MAX_MSG_CHARS: usize = 60;
 pub const MAX_TASK_CHARS: usize = 60;
+/// Public-contract limit: `repo` truncates to this many chars on parse.
+pub const MAX_REPO_CHARS: usize = 40;
+/// Public-contract limit: `branch` truncates to this many chars on parse.
+pub const MAX_BRANCH_CHARS: usize = 40;
+/// Public-contract limit: `source` truncates to this many chars on parse.
+pub const MAX_SOURCE_CHARS: usize = 16;
 
 /// The versioned pipe name that binds every producer to the plugin — the one
 /// string that must never drift between them. The pipe *name* carries the
@@ -54,7 +60,11 @@ struct Raw {
 }
 // Note: the retired clear-on-focus hint key is silently ignored (serde drops
 // unknown fields) — no longer consumed, kept tolerated on the wire for back-compat
-// with older producers, exactly like the legacy `seq`.
+// with older producers, exactly like the legacy `seq`. `v` is the same story
+// but by design, not retirement: `Raw` deliberately has no `v` field, so serde
+// drops it unread. The pipe NAME (`STATUS_PIPE_NAME`) is the version authority;
+// `to_wire` stamps `v` for human/debug legibility, but any value there — old,
+// new, or garbage — parses identically. See `parses_ignores_v_field_value`.
 
 /// Unicode bidi format/override characters. These can visually reorder or hide
 /// surrounding text (the "Trojan Source" class) — e.g. an RLO (U+202E) in a
@@ -189,11 +199,11 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
     Some(StatusPayload {
         pane_id: r.pane.id,
         status: Status::from_wire(&r.status),
-        repo: sanitize(&r.repo, 40),
-        branch: sanitize(&r.branch, 40),
+        repo: sanitize(&r.repo, MAX_REPO_CHARS),
+        branch: sanitize(&r.branch, MAX_BRANCH_CHARS),
         msg: sanitize(&r.msg, MAX_MSG_CHARS),
         task: sanitize(&r.task, MAX_TASK_CHARS),
-        source: sanitize(&r.source, 16),
+        source: sanitize(&r.source, MAX_SOURCE_CHARS),
     })
 }
 
@@ -289,10 +299,15 @@ mod tests {
 
     #[test]
     fn truncates_each_field_to_its_own_cap() {
-        // Each text field has a distinct cap (repo/branch 40, msg MAX_MSG_CHARS,
-        // source 16). Pin all four so nudging any cap in `parse` is caught here —
-        // the wire boundary is the only thing standing between a hostile producer
-        // and an unbounded row.
+        // Each text field has a distinct cap (repo/branch MAX_REPO_CHARS/
+        // MAX_BRANCH_CHARS, msg MAX_MSG_CHARS, source MAX_SOURCE_CHARS). Pin all
+        // four so nudging any cap in `parse` is caught here — the wire boundary
+        // is the only thing standing between a hostile producer and an
+        // unbounded row. The literal VALUES are pinned separately below so an
+        // accidental edit to a const still fails a test, not just this one.
+        assert_eq!(MAX_REPO_CHARS, 40);
+        assert_eq!(MAX_BRANCH_CHARS, 40);
+        assert_eq!(MAX_SOURCE_CHARS, 16);
         let json = format!(
             r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","repo":"{r}","branch":"{b}","msg":"{m}","source":"{s}"}}"#,
             r = "r".repeat(100),
@@ -301,10 +316,21 @@ mod tests {
             s = "s".repeat(100),
         );
         let got = p(&json).unwrap();
-        assert_eq!(got.repo.chars().count(), 40);
-        assert_eq!(got.branch.chars().count(), 40);
+        assert_eq!(got.repo.chars().count(), MAX_REPO_CHARS);
+        assert_eq!(got.branch.chars().count(), MAX_BRANCH_CHARS);
         assert_eq!(got.msg.chars().count(), MAX_MSG_CHARS);
-        assert_eq!(got.source.chars().count(), 16);
+        assert_eq!(got.source.chars().count(), MAX_SOURCE_CHARS);
+    }
+
+    #[test]
+    fn parses_ignores_v_field_value() {
+        // The pipe NAME is the version authority (see the `Raw` comment above);
+        // an otherwise-valid payload with a bogus `v` still parses as if it were
+        // v1 — `Raw` has no `v` field, so serde silently drops it.
+        let got = p(r#"{"v":999,"pane":{"type":"terminal","id":1},"status":"running","repo":"pinky"}"#).unwrap();
+        assert_eq!(got.pane_id, 1);
+        assert_eq!(got.status, Status::Running);
+        assert_eq!(got.repo, "pinky");
     }
 
     #[test]
