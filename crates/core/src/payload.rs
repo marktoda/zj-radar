@@ -221,27 +221,24 @@ struct WirePane {
 
 /// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). Shared by the
 /// CLI producer and tested against `parse` so the two can never drift.
-pub fn to_wire(
-    pane_id: u32,
-    status: Status,
-    repo: &str,
-    branch: &str,
-    msg: &str,
-    task: &str,
-    source: &str,
-) -> String {
+///
+/// Takes `&StatusPayload` rather than seven positional args (four of them
+/// adjacent `&str`s) — the struct's named fields make a `msg`/`task` or
+/// `repo`/`branch` swap a compile-visible field-name mismatch instead of a
+/// silent argument-order bug.
+pub fn to_wire(p: &StatusPayload) -> String {
     serde_json::to_string(&Wire {
         v: STATUS_VERSION,
-        source,
+        source: &p.source,
         pane: WirePane {
             kind: "terminal",
-            id: pane_id,
+            id: p.pane_id,
         },
-        status,
-        repo,
-        branch,
-        msg,
-        task,
+        status: p.status,
+        repo: &p.repo,
+        branch: &p.branch,
+        msg: &p.msg,
+        task: &p.task,
     })
     .expect("status payload of plain fields always serializes")
 }
@@ -404,7 +401,15 @@ mod tests {
         let got = p(r#"{"pane":{"type":"terminal","id":3},"status":"running"}"#).unwrap();
         assert_eq!(got.task, "");
         // Present task survives to_wire → parse.
-        let json = to_wire(9, Status::Running, "r", "b", "editing x.rs", "fix flaky e2e", "claude");
+        let json = to_wire(&StatusPayload {
+            pane_id: 9,
+            status: Status::Running,
+            repo: "r".into(),
+            branch: "b".into(),
+            msg: "editing x.rs".into(),
+            task: "fix flaky e2e".into(),
+            source: "claude".into(),
+        });
         let got = parse(&json).expect("to_wire output must parse");
         assert_eq!(got.task, "fix flaky e2e");
         assert_eq!(got.msg, "editing x.rs");
@@ -424,15 +429,15 @@ mod tests {
     #[test]
     fn to_wire_round_trips_through_parse() {
         use crate::status::Status;
-        let json = to_wire(
-            12,
-            Status::Running,
-            "pinky",
-            "fix/x",
-            "running tests",
-            "",
-            "claude",
-        );
+        let json = to_wire(&StatusPayload {
+            pane_id: 12,
+            status: Status::Running,
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "running tests".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
         let got = parse(&json).expect("to_wire output must parse");
         assert_eq!(got.pane_id, 12);
         assert_eq!(got.status, Status::Running);
@@ -440,6 +445,28 @@ mod tests {
         assert_eq!(got.branch, "fix/x");
         assert_eq!(got.msg, "running tests");
         assert_eq!(got.source, "claude");
+    }
+
+    #[test]
+    fn to_wire_emits_the_exact_pinned_wire_bytes() {
+        // The wire bytes are the public contract (`zj_radar.status.v1`), not an
+        // implementation detail transitively pinned by the parse round-trip —
+        // pin the exact JSON here, including field names, "v":1, and the
+        // {"type":"terminal","id":N} pane shape, so a serde field rename or
+        // reorder is caught directly instead of only failing downstream.
+        let json = to_wire(&StatusPayload {
+            pane_id: 12,
+            status: Status::Running,
+            repo: "pinky".into(),
+            branch: "fix/x".into(),
+            msg: "running tests".into(),
+            task: "fix flaky e2e".into(),
+            source: "claude".into(),
+        });
+        assert_eq!(
+            json,
+            r#"{"v":1,"source":"claude","pane":{"type":"terminal","id":12},"status":"running","repo":"pinky","branch":"fix/x","msg":"running tests","task":"fix flaky e2e"}"#
+        );
     }
 
     #[test]
@@ -505,7 +532,15 @@ mod tests {
             // the full pane-id range, and msg/source (the fields the old version
             // silently dropped). Only printable ASCII within each field's cap is
             // generated, so sanitize does not alter any field.
-            let wire = to_wire(pane, status, &repo, &branch, &msg, &task, &source);
+            let wire = to_wire(&StatusPayload {
+                pane_id: pane,
+                status,
+                repo: repo.clone(),
+                branch: branch.clone(),
+                msg: msg.clone(),
+                task: task.clone(),
+                source: source.clone(),
+            });
             let got = parse(&wire).expect("our own wire output must parse");
             prop_assert_eq!(got.pane_id, pane);
             prop_assert_eq!(got.status, status);

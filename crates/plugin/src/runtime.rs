@@ -1055,15 +1055,15 @@ mod tests {
     #[test]
     fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
         let mut runtime = runtime_with_config(config());
-        let raw = payload::to_wire(
-            5,
-            Status::Running,
-            "repo",
-            "main",
-            "cargo test",
-            "",
-            "claude",
-        );
+        let raw = payload::to_wire(&StatusPayload {
+            pane_id: 5,
+            status: Status::Running,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "cargo test".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
 
         let outcome = runtime.status_pipe(&raw);
 
@@ -1550,9 +1550,15 @@ mod tests {
         // non-settling status pipe, so the runtime arms the timer once to carry the
         // deferred notify/recede — then quiesces.
         let mut rt = runtime_with_config(config());
-        let raw = payload::to_wire(
-            7, Status::Done, "repo", "main", "shipped", "", "claude",
-        );
+        let raw = payload::to_wire(&StatusPayload {
+            pane_id: 7,
+            status: Status::Done,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "shipped".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
 
         // The edge arms the timer but does not itself settle (focus could be stale).
         let edge = rt.status_pipe(&raw);
@@ -1600,7 +1606,15 @@ mod tests {
         rt.tabs_changed(vec![tab(0, "work", true)]);
         rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
-        let raw = payload::to_wire(7, Status::Pending, "repo", "main", "approve?", "", "claude");
+        let raw = payload::to_wire(&StatusPayload {
+            pane_id: 7,
+            status: Status::Pending,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "approve?".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
         let edge = rt.status_pipe(&raw);
         assert!(
             edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
@@ -1837,7 +1851,15 @@ mod tests {
         // The earlier-scheduled slow fire is a harmless spurious tick, but a
         // fresh `SetTimeout(Fast)` must also be pushed so the 1s resolution
         // returns promptly.
-        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let raw = payload::to_wire(&StatusPayload {
+            pane_id: 5,
+            status: Status::Running,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "working".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
         let outcome = rt.status_pipe(&raw);
         assert!(
             outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
@@ -1867,7 +1889,15 @@ mod tests {
         });
         rt.tabs_changed(vec![]); // arms Slow: one fire in flight
         assert_eq!(rt.armed_cadence, Some(Cadence::Slow), "setup: slow-armed on fresh history");
-        let raw = payload::to_wire(5, Status::Running, "repo", "main", "working", "", "claude");
+        let raw = payload::to_wire(&StatusPayload {
+            pane_id: 5,
+            status: Status::Running,
+            repo: "repo".into(),
+            branch: "main".into(),
+            msg: "working".into(),
+            task: "".into(),
+            source: "claude".into(),
+        });
         let outcome = rt.status_pipe(&raw);
         assert!(
             outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),

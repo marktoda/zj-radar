@@ -126,7 +126,7 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 /// Panics on unknown `kind` or `status` tokens with a descriptive message.
 fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
     use crate::kind::Kind;
-    use crate::payload::to_wire;
+    use crate::payload::{to_wire, StatusPayload};
 
     let mut width: usize = 32;
     let mut height: usize = usize::MAX / 2;
@@ -498,37 +498,37 @@ fn build(input: &str) -> (Vec<TabRow>, RenderOpts) {
                 // First prime ever_active (and the task) with Running, then switch
                 // to Idle with task="" — the idle apply clears it, matching real
                 // `/clear` semantics.
-                let wire_running = to_wire(
-                    pane.pane_id,
-                    Status::Running,
-                    "",
-                    "",
-                    &pane.msg,
-                    &pane.task,
-                    source,
-                );
+                let wire_running = to_wire(&StatusPayload {
+                    pane_id: pane.pane_id,
+                    status: Status::Running,
+                    repo: "".into(),
+                    branch: "".into(),
+                    msg: pane.msg.clone(),
+                    task: pane.task.clone(),
+                    source: source.to_string(),
+                });
                 radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
-                let wire_idle = to_wire(
-                    pane.pane_id,
-                    Status::Idle,
-                    "",
-                    "",
-                    &pane.msg,
-                    "",
-                    source,
-                );
+                let wire_idle = to_wire(&StatusPayload {
+                    pane_id: pane.pane_id,
+                    status: Status::Idle,
+                    repo: "".into(),
+                    branch: "".into(),
+                    msg: pane.msg.clone(),
+                    task: "".into(),
+                    source: source.to_string(),
+                });
                 radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
-                let wire = to_wire(
-                    pane.pane_id,
-                    pane.status,
-                    "",
-                    "",
-                    &pane.msg,
-                    &pane.task,
-                    source,
-                );
+                let wire = to_wire(&StatusPayload {
+                    pane_id: pane.pane_id,
+                    status: pane.status,
+                    repo: "".into(),
+                    branch: "".into(),
+                    msg: pane.msg.clone(),
+                    task: pane.task.clone(),
+                    source: source.to_string(),
+                });
                 // Applied "now" relative to the render epoch, backdated by the
                 // `waiting <N>m` trailer — how the doc's pending scenarios earn
                 // (or, at 0, deliberately do not earn) the `· Nm` wait tag.

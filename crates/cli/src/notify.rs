@@ -4,7 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
 use super::agents::{Agent, AgentUpdate, Intake};
-use crate::payload::{to_wire, STATUS_PIPE_NAME};
+use crate::payload::{to_wire, StatusPayload, STATUS_PIPE_NAME};
 use std::io::Read;
 use std::process::Command;
 
@@ -206,7 +206,15 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // control-char stripping.
     let msg: String = update.msg.chars().take(512).collect();
     let task = update.task.unwrap_or_default();
-    let payload = to_wire(pane_id, update.status, &repo, &branch, &msg, &task, source);
+    let payload = to_wire(&StatusPayload {
+        pane_id,
+        status: update.status,
+        repo,
+        branch,
+        msg,
+        task,
+        source: source.to_string(),
+    });
 
     if dry_run {
         eprintln!("{payload}");
