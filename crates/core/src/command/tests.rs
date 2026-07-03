@@ -164,6 +164,12 @@
             (argv(&["npm", "run", "dev"]), "npm run dev", Kind::Server),
             (argv(&["just", "serve"]), "just serve", Kind::Server),
             (argv(&["make", "deploy"]), "make deploy", Kind::Deploy),
+            // Closed vs open verb vocabularies: cargo classifies by its known
+            // subcommand only, so a *target* named test-server is not a test —
+            // while npm scripts are the user's own words, so the word-bounded
+            // scan reads test-watch as a test.
+            (argv(&["cargo", "run", "test-server"]), "cargo run test-server", Kind::Command),
+            (argv(&["npm", "run", "test-watch"]), "npm run test-watch", Kind::Test),
             // Anything unrecognized is a plain command.
             (argv(&["sleep", "5"]), "sleep 5", Kind::Command),
         ]

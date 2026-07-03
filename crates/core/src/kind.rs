@@ -79,6 +79,22 @@ kinds! {
     Server  => "server",  '❯', '❯';
 }
 
+impl Kind {
+    /// Whether this kind is an *agent* identity (a program that owns its pane
+    /// outright) rather than a task classification. The command observer uses
+    /// it to classify an exe by identity: `Kind::from_source(exe).is_agent()`
+    /// is THE test for "this exe is an agent", so the agent exe vocabulary
+    /// lives only in the `kinds!` table. Exhaustive on purpose — a new variant
+    /// must declare which side it is here before it compiles.
+    pub fn is_agent(self) -> bool {
+        match self {
+            Kind::Claude | Kind::Codex | Kind::Gemini => true,
+            Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy
+            | Kind::Server => false,
+        }
+    }
+}
+
 // `Kind` crosses the persisted snapshot as its `source` wire token. Lenient,
 // like `Status`: an unknown/absent token folds to `Other` rather than erroring,
 // so an old or hand-edited snapshot still loads. Rides the shared `wire_serde!`
