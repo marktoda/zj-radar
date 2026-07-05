@@ -276,13 +276,15 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     let check = |extra: &[&str]| {
         let mut args = vec!["setup", "zellij", "--check"];
         args.extend_from_slice(extra);
-        let assert = Command::cargo_bin("zj-radar")
+        // No `.success()`: the doctor exits non-zero when anything is Missing,
+        // and this fixture has no wasm — the layout item is the subject here.
+        let output = Command::cargo_bin("zj-radar")
             .unwrap()
             .args(&args)
             .env("ZELLIJ_CONFIG_DIR", config_dir.path())
-            .assert()
-            .success();
-        String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
     };
 
     // No --layout: the doctor must inspect main.kdl (the default_layout), which
@@ -298,6 +300,35 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     assert!(
         !out.contains("ok layout"),
         "check --layout other must inspect other.kdl (no rail); got:\n{out}"
+    );
+}
+
+// ── Test: the doctor is scriptable ───────────────────────────────────────────
+// Missing items set the exit code (`setup --check && zj-radar run` can gate),
+// and a bare `setup --check` covers BOTH halves instead of silently skipping
+// the zellij section the way a bare install (which needs a wasm source) does.
+
+#[test]
+fn check_exit_code_gates_and_bare_check_covers_both_targets() {
+    let config_dir = TempDir::new().unwrap(); // empty: the zellij half is all Missing
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "--check"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("zellij:"),
+        "bare --check must report the zellij half; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("codex:"),
+        "bare --check must report the codex half; got:\n{stdout}"
+    );
+    assert!(
+        !output.status.success(),
+        "missing items must exit non-zero so scripts can gate on the doctor"
     );
 }
 

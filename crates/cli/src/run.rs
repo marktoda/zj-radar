@@ -520,8 +520,11 @@ pub fn run(opts: RunOptions) {
     };
     let plan = plan_run(&facts);
 
+    // Advisories are guidance, which belongs on stderr (see the `exit` module
+    // doc) — and `--print-cmd`'s stdout must stay machine-readable: a shell
+    // doing `$(zj-radar run --print-cmd)` must capture the command, not prose.
     for advisory in &plan.advisories {
-        println!("{advisory}");
+        eprintln!("{advisory}");
     }
     if opts.print_cmd {
         if let Some(dispatch) = &plan.pre_attach {

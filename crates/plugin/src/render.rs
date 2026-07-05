@@ -224,6 +224,13 @@ impl Line {
         text.push('\n');
         Line { text, target, bg }
     }
+
+    /// Repaint the text onto a surface band (Cards), re-normalizing through
+    /// [`Line::new`] — the paint paths must not assign `text` raw, or the
+    /// constructor's newline invariant becomes discipline-held again.
+    fn painted(self, width: usize, bg: &str) -> Line {
+        Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1119,9 +1126,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
-    for mut line in render_header(rows, opts, overflow, has_content, working) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_header(rows, opts, overflow, has_content, working) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     // Body: one card block per kept row.
@@ -1157,9 +1163,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     }
 
     // Idle strip.
-    for mut line in render_strip(strip_folded, opts) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_strip(strip_folded, opts) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     flat
@@ -1395,9 +1400,8 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // body already emits after the last card simply becomes part of the space
     // `leftover` measures — no special-casing needed.
     let leftover = opts.height.saturating_sub(flat.len());
-    for mut line in render_bottom(rows, ledger, leftover, opts) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_bottom(rows, ledger, leftover, opts) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     // Final height clamp. The body is budgeted against `height - header_lines`, so

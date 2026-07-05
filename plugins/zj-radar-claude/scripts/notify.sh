@@ -20,22 +20,32 @@ set -euo pipefail
 
 status="${1:-running}"
 
-# Read the hook payload up front so the notify below can be fully
-# backgrounded. This hook rides UserPromptSubmit and Pre/PostToolUse — the
+# Read the hook payload up front so the running-path notify below can be
+# backgrounded. `running` rides UserPromptSubmit and Pre/PostToolUse — the
 # hottest events Claude has — and a synchronous notify blocks the harness
 # (UserPromptSubmit blocks the user's prompt) until it exits. On a quiet
 # machine that's milliseconds; on a saturated one (test suites, subagent
-# fleets) process spawns crawl and the hook eats the 30s timeout. A status
+# fleets) process spawns crawl and the hook eats the 30s timeout. A running
 # ping is fire-and-forget by nature: losing one under load is harmless,
 # blocking a prompt is not.
 input="$(cat 2>/dev/null || true)"
 
 # Prefer the native CLI when present (drops the jq/bash dependency). It applies
 # the same Zellij gate, pending backstop, and payload schema. Falls back to the
-# bash implementation below when the binary isn't installed. Backgrounded per
-# the contract above — never exec'd in the hook's foreground.
+# bash implementation below when the binary isn't installed.
+#
+# Dispatch split, reconciling the in-order contract with the hot-path note
+# above: `running` is backgrounded (self-healing — the next event overwrites
+# it, and the plugin's stale-Running grace clock catches a straggler), but the
+# EDGES (done/pending/idle) go synchronously — an edge overtaken by a stale
+# `running` is exactly the stuck-spinner bug the tail comment on the bash path
+# documents, and edges fire once per turn, off the harness's critical path.
 if command -v zj-radar >/dev/null 2>&1; then
-    ( printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 & )
+    if [[ "$status" == "running" ]]; then
+        ( printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 & )
+    else
+        printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 

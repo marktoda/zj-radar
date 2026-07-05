@@ -48,6 +48,17 @@ macro_rules! statuses {
                 }
             }
 
+            /// Strict parse: `Some` only for a token in the wire vocabulary.
+            /// The door for producers that must hint-and-refuse on a typo
+            /// rather than lenient-fall-back to `Idle` — a typo'd status
+            /// silently becoming idle erases the row it meant to update.
+            pub fn try_from_wire(s: &str) -> Option<Status> {
+                match s {
+                    $( $wire => Some(Status::$variant), )+
+                    _ => None,
+                }
+            }
+
             /// Serialize to the wire vocabulary — the inverse of `from_wire` for
             /// every variant (`Status::from_wire(s.as_wire()) == s`).
             pub fn as_wire(self) -> &'static str {
@@ -150,10 +161,14 @@ pub enum GlyphSet {
 }
 
 impl GlyphSet {
-    pub fn from_config(s: &str) -> GlyphSet {
+    /// Recognized values only; `None` otherwise. Callers keep their current
+    /// value on `None` — first load keeps the default, and a typo on the live
+    /// config pipe must not clobber a set value back to it.
+    pub fn from_config(s: &str) -> Option<GlyphSet> {
         match s {
-            "nerd" => GlyphSet::Nerd,
-            _ => GlyphSet::Plain,
+            "nerd" => Some(GlyphSet::Nerd),
+            "plain" => Some(GlyphSet::Plain),
+            _ => None,
         }
     }
 }
@@ -231,6 +246,15 @@ mod tests {
     }
 
     #[test]
+    fn try_from_wire_is_strict_where_from_wire_is_lenient() {
+        for &s in Status::ALL {
+            assert_eq!(Status::try_from_wire(s.as_wire()), Some(s));
+        }
+        assert_eq!(Status::try_from_wire("runnign"), None);
+        assert_eq!(Status::try_from_wire(""), None);
+    }
+
+    #[test]
     fn glyphs_and_roles_distinct_per_variant() {
         use GlyphSet::Plain;
         for (i, a) in Status::ALL.iter().enumerate() {
@@ -280,10 +304,10 @@ mod tests {
     }
 
     #[test]
-    fn glyph_set_from_config_defaults_to_plain() {
-        assert_eq!(GlyphSet::from_config("nerd"), GlyphSet::Nerd);
-        assert_eq!(GlyphSet::from_config("plain"), GlyphSet::Plain);
-        assert_eq!(GlyphSet::from_config("anything-else"), GlyphSet::Plain);
+    fn glyph_set_from_config_recognized_values_only() {
+        assert_eq!(GlyphSet::from_config("nerd"), Some(GlyphSet::Nerd));
+        assert_eq!(GlyphSet::from_config("plain"), Some(GlyphSet::Plain));
+        assert_eq!(GlyphSet::from_config("anything-else"), None);
     }
 
     #[test]

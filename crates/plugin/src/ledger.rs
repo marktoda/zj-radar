@@ -182,11 +182,15 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
+///
+/// The final band starts at SATURATE_S so the rendered age stops changing
+/// exactly when `any_unsaturated` goes false and the Slow timer disarms —
+/// a frozen "1h+" is what makes full disarm safe.
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
     let age = now_epoch_s.saturating_sub(at_epoch_s);
     if age < 60 {
         "<1m".to_string()
-    } else if age < 3600 {
+    } else if age < SATURATE_S {
         format!("{}m", age / 60)
     } else {
         "1h+".to_string()

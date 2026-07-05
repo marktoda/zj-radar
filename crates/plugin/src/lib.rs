@@ -65,12 +65,15 @@ use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
 
+// Pipe names live with their vocabularies (host-testable, so the guard tests
+// in control.rs/lib.rs can pin them against docs and the bash producer);
+// these aliases just keep the match arms below short.
 #[cfg(target_arch = "wasm32")]
 const PIPE_NAME: &str = payload::STATUS_PIPE_NAME;
 #[cfg(target_arch = "wasm32")]
-const CONFIG_PIPE: &str = "zj_radar.config.v1";
+const CONFIG_PIPE: &str = config::CONFIG_PIPE;
 #[cfg(target_arch = "wasm32")]
-const CMD_PIPE: &str = "zj_radar.cmd.v1";
+const CMD_PIPE: &str = control::CMD_PIPE;
 
 #[derive(Default)]
 pub struct State {
@@ -329,14 +332,14 @@ impl ZellijPlugin for State {
                         .cwd_changed(id, path.to_string_lossy().to_string());
                     return self.handle_outcome(outcome);
                 }
-                true
+                false // plugin panes: nothing observed, nothing to repaint
             }
             Event::CommandChanged(pane_id, command, is_foreground, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
                     let outcome = self.runtime.command_changed(id, &command, is_foreground);
                     return self.handle_outcome(outcome);
                 }
-                true
+                false // plugin panes: nothing observed, nothing to repaint
             }
             _ => false,
         }

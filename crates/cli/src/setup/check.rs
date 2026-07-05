@@ -40,7 +40,10 @@ impl CheckItem {
     }
 }
 
-pub(crate) fn check_codex(legacy_notify: bool) {
+/// Returns true when any item is `Missing` — the doctor's contribution to the
+/// process exit code, so `zj-radar setup --check && zj-radar run` can gate.
+/// Warns don't fail: they're advice, not a broken install.
+pub(crate) fn check_codex(legacy_notify: bool) -> bool {
     let env = CodexEnv {
         codex_on_path:    which("codex"),
         zj_radar_on_path: which("zj-radar"),
@@ -49,7 +52,7 @@ pub(crate) fn check_codex(legacy_notify: bool) {
     };
     let items = codex_check_items(&analyze_codex(&env), legacy_notify);
     println!("codex:");
-    print_check_items(&items);
+    print_check_items(&items)
 }
 
 /// `CheckItem`s for `zj-radar setup zellij --check`. Pure over fully-derived
@@ -116,7 +119,8 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
     items
 }
 
-pub(crate) fn check_zellij(layout_name: Option<&str>) {
+/// Returns true when any item is `Missing` — see [`check_codex`].
+pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     let config_dir = zellij_config_dir();
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
@@ -142,10 +146,11 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) {
     };
     let items = zellij_check_items(&analyze_zellij(&env));
     println!("zellij:");
-    print_check_items(&items);
+    print_check_items(&items)
 }
 
-fn print_check_items(items: &[CheckItem]) {
+/// Print the items; report whether any is `Missing`.
+fn print_check_items(items: &[CheckItem]) -> bool {
     for item in items {
         let status = match item.level {
             CheckLevel::Ok => "ok",
@@ -154,6 +159,7 @@ fn print_check_items(items: &[CheckItem]) {
         };
         println!("  {status} {}: {}", item.name, item.detail);
     }
+    items.iter().any(|i| i.level == CheckLevel::Missing)
 }
 
 pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<CheckItem> {
