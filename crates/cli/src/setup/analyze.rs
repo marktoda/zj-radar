@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, notify_is_ours, strip_managed_zellij_alias};
+use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, strip_managed_zellij_alias};
 
 use toml_edit::{DocumentMut, Item};
 
@@ -38,8 +38,11 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
     let mut lines_without_managed = lines.clone();
     strip_managed_zellij_alias(&mut lines_without_managed);
     let unmanaged_alias_present = has_unmanaged_radar_alias(&lines_without_managed);
+    // Scoped to radar alias lines: other plugins legitimately live in the
+    // store (e.g. `room location="file:/nix/store/…"`) and must not trip the
+    // radar grant-persistence warning.
     let alias_is_store_path =
-        env.config_text.as_deref().is_some_and(|t| t.contains("/nix/store/"));
+        lines.iter().any(|l| is_unmanaged_radar_alias_line(l) && l.contains("/nix/store/"));
     let has_rail = env.layout_text.as_deref().map(|t| crate::layout::analyze(t).has_rail);
     let granted = env
         .permissions_text
@@ -177,10 +180,48 @@ mod tests {
     }
 
     #[test]
+    fn analyze_zellij_store_path_warn_is_scoped_to_the_radar_alias() {
+        // Another plugin living in the store (room, zjstatus, …) must not trip
+        // the radar grant-persistence warning; only the radar alias itself
+        // pointing into /nix/store/ counts.
+        let other_plugin_in_store = concat!(
+            "plugins {\n",
+            "    room location=\"file:/nix/store/abc-room/bin/room.wasm\"\n",
+            "    radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\"\n",
+            "}\n",
+        );
+        let radar_in_store = concat!(
+            "plugins {\n",
+            "    radar location=\"file:/nix/store/abc-zj-radar/bin/zj_radar.wasm\"\n",
+            "}\n",
+        );
+        let env_for = |config: &str| ZellijEnv {
+            config_text: Some(config.to_string()),
+            layout_text: None,
+            permissions_text: None,
+            codex_hooks_text: None,
+            installed_plugins_text: None,
+            wasm_present: false,
+            config_managed: false,
+            wasm_path: "/x.wasm".to_string(),
+        };
+        assert!(
+            !analyze_zellij(&env_for(other_plugin_in_store)).alias_is_store_path,
+            "a different plugin's store path must not warn"
+        );
+        assert!(
+            analyze_zellij(&env_for(radar_in_store)).alias_is_store_path,
+            "the radar alias in the store must still warn"
+        );
+    }
+
+    #[test]
     fn analyze_zellij_derives_has_rail_and_grant_from_text() {
         let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
         let layout = "layout {\n    plugin location=\"radar\"\n}\n";
-        let perms = format!("\"{wasm_path}\" {{\n    ReadApplicationState\n}}\n");
+        let perms = format!(
+            "\"{wasm_path}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n"
+        );
         let env = ZellijEnv {
             config_text: None,
             layout_text: Some(layout.to_string()),

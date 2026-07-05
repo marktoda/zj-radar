@@ -237,19 +237,36 @@ for a quick single-tab try.
 
 ## Nix / home-manager
 
-This flake exposes the wasm as `packages.default`, so a flake-based config can
-consume the exact same artifact this repo builds. Add the repo as an input:
+This flake exposes the wasm as `packages.default` and the CLI as
+`packages.zj-radar-cli`, so a flake-based config consumes the exact artifacts
+this repo builds. Add the repo as an input:
 
 ```nix
 # flake.nix
 inputs.zj-radar.url = "github:marktoda/zj-radar";
 ```
 
-Then reference the built wasm from your generated `config.kdl` alias:
+Install both halves from the same pin — the CLI must ride along because the
+producer hooks prefer `zj-radar notify` from PATH:
+
+```nix
+# home-manager module
+home.packages = [inputs.zj-radar.packages.${pkgs.system}.zj-radar-cli];
+
+# Symlink the wasm to a STABLE path rather than pointing the alias at the
+# /nix/store path directly: Zellij keys permission grants by the configured
+# location string, so a per-build store path re-prompts after every rebuild
+# (`zj-radar setup zellij --check` warns about exactly this). Rebuilds swap
+# the symlink target; the granted path never changes.
+home.file.".config/zellij/plugins/zj_radar.wasm".source =
+  "${inputs.zj-radar.packages.${pkgs.system}.default}/bin/zj_radar.wasm";
+```
+
+Then point the alias in your generated `config.kdl` at the stable path:
 
 ```kdl
 plugins {
-    radar location="file:${inputs.zj-radar.packages.${system}.default}/bin/zj_radar.wasm" {
+    radar location="file:~/.config/zellij/plugins/zj_radar.wasm" {
         naming "managed"
     }
 }

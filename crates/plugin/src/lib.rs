@@ -170,6 +170,10 @@ impl State {
     fn handle_effects(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
+                // Keep in lockstep with REQUIRED_PLUGIN_PERMISSIONS in
+                // crates/cli/src/run.rs: adding a permission here makes every
+                // existing grant partial, and the CLI must detect that (a
+                // partial grant re-prompts illegibly inside the rail).
                 Effect::RequestPermission => request_permission(&[
                     PermissionType::ReadApplicationState,
                     PermissionType::ReadCliPipes,

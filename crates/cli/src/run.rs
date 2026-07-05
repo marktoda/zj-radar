@@ -106,16 +106,30 @@ pub(crate) fn grant_float_args(session: &str, wasm_path: &Path) -> Vec<String> {
     ]
 }
 
+/// Every permission the plugin requests on load — keep in lockstep with the
+/// `Effect::RequestPermission` list in `crates/plugin/src/lib.rs`.
+const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
+    ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
+
 /// True iff `permissions.kdl` contains a top-level grant block whose quoted key
-/// equals `wasm_abs_path`. Zellij keys grants by the literal path string, so an
-/// exact match (closing quote included) is correct; the `{` guard skips a bare
-/// quoted string that isn't a block header.
+/// equals `wasm_abs_path` AND that block covers the full permission set the
+/// plugin requests. Zellij keys grants by the literal path string, so an exact
+/// match (closing quote included) is correct; the `{` guard skips a bare quoted
+/// string that isn't a block header.
+///
+/// The full-set requirement is load-bearing: when an upgraded plugin requests a
+/// permission its old grant lacks, Zellij re-prompts — and that prompt is
+/// illegible inside the 32-col rail (zellij#4749), so a partial grant presents
+/// as a silently blank rail. Treating it as ungranted routes the user to the
+/// floating-pane grant flow instead.
 pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> bool {
     let needle = format!("\"{wasm_abs_path}\"");
-    permissions_kdl
-        .lines()
-        .map(str::trim_start)
-        .any(|l| l.starts_with(&needle) && l.contains('{'))
+    let mut lines = permissions_kdl.lines().map(str::trim_start);
+    if !lines.any(|l| l.starts_with(&needle) && l.contains('{')) {
+        return false;
+    }
+    let granted: Vec<&str> = lines.take_while(|l| !l.starts_with('}')).map(str::trim_end).collect();
+    REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.contains(required))
 }
 
 /// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
@@ -606,6 +620,16 @@ mod tests {
     ReadApplicationState
     ReadCliPipes
     ChangeApplicationState
+    RunCommands
+}
+"#;
+
+    // A grant from an older plugin version: entry exists, RunCommands missing.
+    const STALE_SAMPLE: &str = r#"
+"/Users/m/Library/Application Support/zj-radar/zellij/plugins/zj_radar.wasm" {
+    ReadApplicationState
+    ReadCliPipes
+    ChangeApplicationState
 }
 "#;
 
@@ -636,6 +660,17 @@ mod tests {
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm\"\n", "/x/zj_radar.wasm"));
         // The closing quote in the needle prevents matching a longer path it prefixes.
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm.bak\" {\n}\n", "/x/zj_radar.wasm"));
+    }
+
+    #[test]
+    fn grant_detection_requires_the_full_permission_set() {
+        let p = "/Users/m/Library/Application Support/zj-radar/zellij/plugins/zj_radar.wasm";
+        // An entry from an older plugin version (RunCommands missing) is NOT a
+        // grant: zellij will re-prompt for the new permission, illegibly, in
+        // the rail — the exact blank-rail failure this check exists to catch.
+        assert!(!wasm_is_granted(STALE_SAMPLE, p));
+        // An empty grant block is not a grant either.
+        assert!(!wasm_is_granted(&format!("\"{p}\" {{\n}}\n"), p));
     }
 
     #[test]
@@ -844,7 +879,9 @@ mod tests {
             session_running: false,
             inside_zellij: false,
             resurrect_layout_defers: false,
-            permissions_kdl: granted.then(|| format!("\"{wasm}\" {{\n}}\n")),
+            permissions_kdl: granted.then(|| {
+                format!("\"{wasm}\" {{\n    {}\n}}\n", REQUIRED_PLUGIN_PERMISSIONS.join("\n    "))
+            }),
             codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
             installed_plugins: claude.then(|| "zj-radar-claude".to_string()),
         }
