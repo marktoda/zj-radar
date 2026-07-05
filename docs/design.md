@@ -16,8 +16,8 @@ removal — see `smart-tabs-postmortem.md` — and the focus-removal refactor)
 
 ## 1. Goal
 
-Bring Cmux-style agent awareness into an existing Zellij setup without changing the
-preferred keybindings, swap layouts, or config. Specifically: an always-on
+Bring Cmux-style agent awareness into an existing Zellij setup without changing your
+existing keybindings, swap layouts, or config. Specifically: an always-on
 **left sidebar** that lists every tab and, for tabs running AI coding agents, shows
 per-tab state (working / waiting-for-you / done / error) with color, plus repo/branch,
 elapsed time, and the last message — and lets you click a row to jump to that tab.
@@ -123,16 +123,18 @@ runtime.
 │    owns per-session filesystem coordination across sidebar instances:  │
 │    snapshot durability, permission marker/lock, root fallback, pruning │
 │                                                                        │
-│  radar_state.rs/rollup.rs/command.rs/tab_namer.rs: state + tab model   │
+│  radar_state.rs/rollup.rs/tab_namer.rs: state + tab model              │
 │    StatusStore + CommandStore + roll_up(tab) + TabNamer                │
+│    (observed argv classified by crates/core's command.rs)              │
 │                                                                        │
 │  render.rs: pure rail renderer                                         │
-│    render_rail(rows, opts) -> RenderedRail { ansi, line_targets }      │
+│    render_rail(rows, ledger, opts) -> RenderedRail (target_at_line)    │
 │    owns layout, overflow, ANSI, and click-target materialization       │
 └────────────────────────────────────────────────────────────────────────┘
         │ Effects: switch_tab_to(position + 1), show_pane_with_id, rename_tab,
         │ request_permission, set_timeout, set_selectable, persist session state
-        ▼  (desktop notifications stay in the shell adapters, NOT the plugin)
+        ▼  (desktop notifications too: the plugin hands osascript/notify-send
+           invocations to the host via run_command — see §12)
 ```
 
 **Design principle:** keep host-coupled code thin; push lifecycle decisions into
@@ -352,22 +354,23 @@ replacement is push-only and tiered:
 
 ## 8. Build & packaging (Nix)
 
-- Rust, `zellij-tile = "0.44"` (pinned to 0.44.3), target `wasm32-wasip1`. Repo:
-  `~/dev/zj-radar`. **Note:** the artifact is a *binary* crate, not `cdylib` —
+- Rust, `zellij-tile = "0.44"` (pinned to 0.44.3), target `wasm32-wasip1`.
+  **Note:** the artifact is a *binary* crate, not `cdylib` —
   Zellij loads plugins as WASI command modules (it calls `_start`, which
   `register_plugin!`'s generated `fn main` provides); a cdylib reactor has no
   `_start` and won't load. See the comment block in `crates/plugin/src/main.rs`.
 - **Dev loop:** `just dev` builds the release wasm + CLI and drives the real
   `zj-radar run` flow (grant onboarding included) in a sandbox —
   `ZJ_RADAR_DATA_DIR`/`ZJ_RADAR_WASM` root the run-owned config and plugin
-  under `target/dev/data`, session `zj-radar-dev`. Every iteration is a fresh
-  disposable session, never an in-place reload: Zellij 0.44 does not safely
+  under `target/dev/data`. Every iteration is a fresh, uniquely named
+  `zj-radar-dev-<hhmmss>` session (exited leftovers swept, live sessions never
+  killed), never an in-place reload: Zellij 0.44 does not safely
   hot-reload layout-created plugin panes (`start-or-reload-plugin` opens a
   second pane instead).
-- **Nix:** build the wasm with `crane`/`naersk` (or, simplest first, `fetchurl` from a GitHub
-  release — the same way `room` is vendored in `home-manager/modules/zellij/default.nix`), then
-  reference via a `@zjRadar@` `replaceStrings` substitution alongside `@room@`. The `@smartTabs@`
-  substitution and its `fetchurl` are **removed** (smart-tabs is gone).
+- **Nix:** the repo's flake builds the wasm hermetically with `crane`
+  (`nix flake check` exercises it in CI). For consuming the plugin from Nix /
+  home-manager — packaging the release wasm and pointing the `radar` plugin
+  alias at the store path — see [`install.md` → Nix / home-manager](install.md#nix--home-manager).
 
 ## 9. Testing
 

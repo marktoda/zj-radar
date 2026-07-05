@@ -38,7 +38,7 @@
 
 ## Vocabulary
 
-**Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠋⠏)* · `◆` needs-you ·
+**Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏)* · `◆` needs-you ·
 `●` done · `✗` error.
 **Kind marks:** `✳` claude · `❉` codex · `✦` gemini · `$` command · `⚙` build ·
 `⚗` test · `⇡` deploy · `❯` server · `⦿` other.
@@ -91,8 +91,10 @@ inactive. Tab **glyph** = dominant status.
 tree connector at column 1: `├` for every child that has a sibling (or a
 `+N more` line) below it, `└` for the last visible child. The connector sits one
 column right of the spine, so the prefix is 3 cols (`[spine/space][conn][space]`)
-and the status glyph aligns at column 3. **Single-pane** tabs are connector-free:
-they put the one pane's message on line 2 with just its mark (`  ‹mark› ‹msg›`).
+and the status glyph aligns at column 3. **Single-pane** tabs render through the
+same tree machinery: the one tracked pane gets a `└` elbow line
+(` └ ‹glyph› ‹mark› ‹msg›`), so a tab with one pane and a tab with three scan
+identically (see §C).
 
 ---
 
@@ -928,9 +930,9 @@ const DOC: &str = include_str!("../../../docs/rail-reference.md");
 #[test]
 fn rail_reference_matches() {
     for case in parse_cases(DOC) {                 // (id, input_dsl, expect_grid)
-        let (rows, opts) = build_state(&case.input);   // DSL → StateStore/CommandStore
-                                                        //      → aggregate() per tab → TabRow[]
-        let rail = render::render_rail(&rows, &opts);
+        let (rows, ledger, opts) = build_state(&case.input); // DSL → StateStore/CommandStore
+                                                              //      → aggregate() per tab → TabRow[]
+        let rail = render::render_rail(&rows, &ledger, &opts);
         let got = grid(&rail.ansi, opts.width);         // existing vt100 grid() helper
         assert_eq!(got.trim_end(), case.expect.trim_end(),
             "scenario {} mismatch:\n--- expected ---\n{}\n--- got ---\n{}",

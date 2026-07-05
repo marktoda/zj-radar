@@ -167,9 +167,12 @@ fi
 
 # Defense-in-depth: if a Claude version fires Notification without a matcher
 # and produces a generic idle phrase (or no message), skip broadcasting pending
-# — it isn't a real "needs you" event.
+# — it isn't a real "needs you" event. The comparison uses a TRIMMED copy
+# (parity with the Rust producer's msg.trim()) so a whitespace-padded generic
+# phrase is still dropped; the broadcast itself keeps the raw msg, as Rust does.
 if [[ "$status" == "pending" ]]; then
-    case "$msg" in
+    m_trim="$(printf '%s' "$msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "$m_trim" in
         ""|"Claude needs attention"|"Claude Code needs your attention")
             exit 0
             ;;

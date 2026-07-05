@@ -5,6 +5,10 @@
 .devenv/
 .devenv.flake.nix
 .direnv/
+.envrc
+devenv.nix
+devenv.yaml
+devenv.lock
 result
 
 # Superpowers SDD process artifacts (plans/specs) — working exhaust, not docs

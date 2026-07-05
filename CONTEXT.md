@@ -8,7 +8,7 @@ zj-radar's architecture, focusing on the key interfaces and state flows.
 The rendered sidebar: the pinned left column listing every tab with per-tab agent
 status. The **rail seam** is the renderer's single deep interface —
 `render_rail(rows, opts) -> RenderedRail` (with `onboarding(opts) -> RenderedRail`
-as the not-yet-live sibling). Everything a caller needs to draw and to resolve a
+as the sibling face for the no-agents-yet state). Everything a caller needs to draw and to resolve a
 click crosses this one seam; layout planning (overflow folding, card spacing,
 multi-pane tree expansion) is implementation *behind* it, not interface.
 

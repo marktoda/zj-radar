@@ -33,7 +33,7 @@ nix develop -c cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
 ## Dev loop
 
 ```sh
-just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev session
+just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev-<hhmmss> session
 ```
 
 Uses the ambient Rust toolchain (`rust-toolchain.toml` auto-installs the
@@ -41,7 +41,8 @@ wasm target on first build). In the Nix shell, prefix with `nix develop -c`.
 
 Zellij 0.44 does not safely hot-reload plugins that were created by a layout:
 `start-or-reload-plugin` opens a second pane instead. The dev loop therefore
-never reloads in place — every iteration is a fresh disposable `zj-radar-dev`
-session, launched from a plain terminal (`zj-radar run` refuses to nest inside
+never reloads in place — every iteration is a fresh, uniquely named
+`zj-radar-dev-<hhmmss>` session (exited leftovers are swept; live sessions are
+never killed), launched from a plain terminal (`zj-radar run` refuses to nest inside
 Zellij) and fully sandboxed under `target/dev/data`, so it runs alongside your
 real sessions without touching them or an installed zj-radar's assets.

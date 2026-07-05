@@ -20,7 +20,7 @@ layout {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
                 plugin location="radar" {
-                    // Desktop notifications (macOS). Master switch + per-status toggles.
+                    // Desktop notifications (macOS + Linux). Master switch + per-status toggles.
                     // notify true
                     // notify_done true
                     // notify_error true
@@ -43,7 +43,7 @@ layout {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
                 plugin location="radar" {
-                    // Desktop notifications (macOS). Master switch + per-status toggles.
+                    // Desktop notifications (macOS + Linux). Master switch + per-status toggles.
                     // notify true
                     // notify_done true
                     // notify_error true
