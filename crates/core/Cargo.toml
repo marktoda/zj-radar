@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["zellij", "plugin", "terminal", "status", "agent"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "zj_radar_core"

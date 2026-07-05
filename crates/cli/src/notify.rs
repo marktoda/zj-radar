@@ -5,6 +5,7 @@
 
 use super::agents::{Agent, AgentUpdate, Intake};
 use crate::payload::{to_wire, StatusPayload, STATUS_PIPE_NAME};
+use crate::status::Status;
 use std::io::Read;
 use std::process::Command;
 
@@ -120,6 +121,17 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         return;
     };
 
+    // An explicit `--status` must be in the wire vocabulary. Without this
+    // guard a typo lenient-parses to `idle` inside the adapter and silently
+    // ERASES the row it meant to update — the same failure `notify generic`
+    // hints on. Hint-and-no-op keeps the calling hook unbroken.
+    if let Some(token) = status_arg {
+        if Status::try_from_wire(token).is_none() {
+            eprintln!("zj-radar: unknown --status '{token}' (expected: {})", wire_vocabulary());
+            return;
+        }
+    }
+
     // Uniform input sourcing: argv `input` if present (Codex's legacy notify),
     // else stdin (Claude and modern Codex hooks). The adapter parses it.
     let raw = input.map(str::to_owned).unwrap_or_else(read_stdin);
@@ -153,12 +165,18 @@ pub fn run_generic(
     };
     let Some(update) = generic_update(status, msg, task) else {
         eprintln!(
-            "zj-radar: notify generic needs --status <running|pending|done|error|idle> \
-             (plus optional --msg, --task, --source)"
+            "zj-radar: notify generic needs --status <{}> (plus optional --msg, --task, --source)",
+            wire_vocabulary()
         );
         return;
     };
     broadcast(pane_id, update, source.unwrap_or("generic"), dry_run);
+}
+
+/// The status tokens producers may pass, straight from the table (`Status::ALL`)
+/// so a vocabulary change can't leave a stale hint behind.
+fn wire_vocabulary() -> String {
+    Status::ALL.iter().map(|s| s.as_wire()).collect::<Vec<_>>().join("|")
 }
 
 /// The pure half of [`run_generic`]: explicit flags → update. `None` (no
@@ -168,12 +186,7 @@ pub fn run_generic(
 /// running row with no message gets the `working` baseline; idle always
 /// broadcasts blank; an empty task means "keep the stored label" (wire rule).
 fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -> Option<AgentUpdate> {
-    use crate::status::Status;
-    let token = status?;
-    if !Status::ALL.iter().any(|s| s.as_wire() == token) {
-        return None;
-    }
-    let status = Status::from_wire(token);
+    let status = Status::try_from_wire(status?)?;
     let msg = msg.unwrap_or("");
     let msg = if status == Status::Idle {
         String::new()

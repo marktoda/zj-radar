@@ -142,16 +142,20 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     const LEDGER_NOW_EPOCH_S: u64 = 1_000_000;
 
     /// Split a leading `"quoted"` token off `s`, returning (contents, rest).
-    /// Used by the `ledger` directive, which packs two quoted strings
-    /// (tab name, label) after its two bare tokens.
+    /// THE quote splitter for every DSL site that reads a quoted string —
+    /// the `ledger` directive, tab names, pane msgs, untracked titles, and
+    /// the `task "…"` trailer. Lenient on malformed input: an unquoted token
+    /// yields the whole (trim-started) remainder, an unterminated quote
+    /// everything after the opening `"` — both with an empty rest.
     fn take_quoted(s: &str) -> (&str, &str) {
         let s = s.trim_start();
-        if let Some(inner) = s.strip_prefix('"') {
-            if let Some(end) = inner.find('"') {
-                return (&inner[..end], &inner[end + 1..]);
-            }
+        match s.strip_prefix('"') {
+            Some(inner) => match inner.find('"') {
+                Some(end) => (&inner[..end], &inner[end + 1..]),
+                None => (inner, ""),
+            },
+            None => (s, ""),
         }
-        (s, "")
     }
 
     struct PaneSpec {
@@ -268,15 +272,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
             let pos = pos_str.parse::<usize>().unwrap_or(0);
             let after_pos = after_pos.trim();
             // Parse name (quoted)
-            let (name, after_name) = if let Some(inner) = after_pos.strip_prefix('"') {
-                if let Some(end) = inner.find('"') {
-                    (&inner[..end], inner[end + 1..].trim())
-                } else {
-                    (inner, "")
-                }
-            } else {
-                (after_pos, "")
-            };
+            let (name, after_name) = take_quoted(after_pos);
             let active = after_name.contains("active");
             let has_bell = after_name.contains("bell");
             let idx = tabs.len();
@@ -300,11 +296,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
 
             // Untracked pane form: `untracked "<title>"`
             if let Some(rest) = trimmed.strip_prefix("untracked ") {
-                let title = if let Some(inner) = rest.trim().strip_prefix('"') {
-                    inner.strip_suffix('"').unwrap_or(inner)
-                } else {
-                    rest.trim()
-                };
+                let (title, _) = take_quoted(rest);
                 let pane_id = next_pane_id;
                 next_pane_id += 1;
                 if let Some(idx) = current_tab {
@@ -331,29 +323,17 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
             let status_str = parts.next().unwrap_or("idle");
             let rest = parts.next().unwrap_or("\"\"");
 
-            // Parse the (possibly-quoted) message and any trailing `exit <N>|?`.
-            // If the msg starts with `"`, find the closing `"`, then look for
-            // a trailer after it. Otherwise treat the whole rest as the msg.
-            let (msg, exit_trailer) = if let Some(after_open) = rest.strip_prefix('"') {
-                if let Some(close_pos) = after_open.find('"') {
-                    let msg_inner = &after_open[..close_pos];
-                    let after_close = after_open[close_pos + 1..].trim();
-                    let trailer = if after_close.is_empty() { None } else { Some(after_close) };
-                    (msg_inner, trailer)
-                } else {
-                    // No closing quote — treat the whole thing as the msg
-                    (after_open, None)
-                }
-            } else {
-                (rest, None)
-            };
+            // Parse the (possibly-quoted) message; whatever follows the close
+            // quote is the trailer chain (`task`/`waiting`/`exit`). An
+            // unquoted msg consumes the whole rest, so it carries no trailers.
+            let (msg, after_msg) = take_quoted(rest);
 
-            // Validate kind token
-            let valid_kinds = [
-                "claude", "codex", "gemini", "command", "build",
-                "test", "deploy", "server", "other",
-            ];
-            if !valid_kinds.contains(&kind_str) {
+            // Validate kind token against the single source of truth (the
+            // `kinds!` table): a token is valid iff it round-trips through
+            // `from_source`/`as_source` — a new agent added via the
+            // compiler-guided flow is accepted by the DSL automatically, while
+            // a typo (which `from_source` folds to `Other`) still panics.
+            if Kind::from_source(kind_str).as_source() != kind_str {
                 panic!("reference DSL: unknown kind '{}' in scenario", kind_str);
             }
 
@@ -370,14 +350,12 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
             let mut task = String::new();
             let mut exit_code: Option<Option<i32>> = None;
             let mut waiting_m: u64 = 0;
-            let mut trailer = exit_trailer.unwrap_or("").trim();
+            let mut trailer = after_msg.trim();
             while !trailer.is_empty() {
-                if let Some(rest) = trailer.strip_prefix("task \"") {
-                    let close = rest.find('"').unwrap_or_else(|| {
-                        panic!("reference DSL: unterminated task trailer '{trailer}'")
-                    });
-                    task = rest[..close].to_string();
-                    trailer = rest[close + 1..].trim();
+                if trailer.starts_with("task \"") {
+                    let (text, remainder) = take_quoted(&trailer["task ".len()..]);
+                    task = text.to_string();
+                    trailer = remainder.trim();
                 } else if let Some(rest) = trailer.strip_prefix("waiting ") {
                     let (mins, remainder) = rest.split_once(' ').unwrap_or((rest, ""));
                     let mins = mins.strip_suffix('m').unwrap_or_else(|| {

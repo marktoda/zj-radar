@@ -53,7 +53,7 @@ The suite is layered. `just` is the entry point:
 just test        # L1–L4: deterministic host suite (unit, insta snapshots, proptest, vt100)
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5: live — builds the wasm and drives a real Zellij in a PTY (needs zellij)
-just ci          # what every PR must pass locally: test + clippy + test-bash
+just ci          # what every PR must pass locally: test + clippy + wasm build + test-bash
 ```
 
 - The shared core (`status`, `payload`, `command`, `kind`, `observation`,
@@ -85,21 +85,24 @@ locally if you touch the script.
 ## Dev loop
 
 ```sh
-just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev session
+just dev          # build wasm + CLI, launch a FRESH sandboxed zj-radar-dev-<hhmmss> session
 just dev-build    # build the dev artifacts without launching
 ```
 
-The dev session is fully sandboxed (config, wasm, and grant live under
-`target/dev/data`) and runs alongside your real sessions without touching
-them. Start it from a plain terminal — `zj-radar run` refuses to nest inside
-Zellij. See the README's *Development* section for details.
+Each run launches a uniquely named `zj-radar-dev-<hhmmss>` session (a leftover
+would silently keep running the previous wasm); *exited* dev leftovers are
+swept, live sessions are never killed. The session is fully sandboxed (config,
+wasm, and grant live under `target/dev/data`) and runs alongside your real
+sessions without touching them. Start it from a plain terminal — `zj-radar run`
+refuses to nest inside Zellij. See the README's *Development* section for
+details.
 
 ## Pull requests
 
 1. Open an issue first for anything non-trivial, so we can agree on the approach.
 2. Keep PRs focused; one logical change per PR.
 3. `just ci` must pass — it runs the host suite, `cargo clippy ... -D warnings`,
-   and the bash hook tests.
+   a wasm compile check, and the bash hook tests.
 4. Add or update tests at the appropriate layer. New render behavior → a snapshot
    or `rail-reference.md` scenario; new wire/parse behavior → a unit/proptest.
 5. Update docs (`README.md`, `docs/`, `CONTEXT.md`) when behavior or interfaces

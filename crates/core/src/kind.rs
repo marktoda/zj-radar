@@ -27,14 +27,11 @@ macro_rules! kinds {
 
         impl Kind {
             /// Every `Kind`, in table order. Lets callers and exhaustiveness
-            /// tests iterate the variants without re-typing the list. The
-            /// generated list is a uniform surface; today only the exhaustiveness
-            /// tests consume it, so allow it to go unused in non-test builds.
-            #[allow(dead_code)]
+            /// tests iterate the variants without re-typing the list.
             pub const ALL: &'static [Kind] = &[ $( Kind::$variant ),+ ];
 
             /// Derive a `Kind` from the payload `source` field (lowercased wire
-            /// value); unknown or absent sources fall back to `Other`.
+            /// value); unknown or empty sources fall back to `Other`.
             pub fn from_source(s: &str) -> Kind {
                 match s {
                     $( $source => Kind::$variant, )+
@@ -96,7 +93,7 @@ impl Kind {
 }
 
 // `Kind` crosses the persisted snapshot as its `source` wire token. Lenient,
-// like `Status`: an unknown/absent token folds to `Other` rather than erroring,
+// like `Status`: an unknown or empty token folds to `Other` rather than erroring,
 // so an old or hand-edited snapshot still loads. Rides the shared `wire_serde!`
 // generator with its domain-specific accessor pair (`as_source`/`from_source` —
 // the wire field is literally `source`), so it can't drift from the lenient
@@ -130,7 +127,7 @@ mod tests {
             let json = serde_json::to_string(&k).unwrap();
             assert_eq!(serde_json::from_str::<Kind>(&json).unwrap(), k);
         }
-        // Unknown/absent tokens fold to Other (lenient), never error.
+        // Unknown or empty tokens fold to Other (lenient), never error.
         assert_eq!(serde_json::from_str::<Kind>(r#""nonsense""#).unwrap(), Kind::Other);
     }
 

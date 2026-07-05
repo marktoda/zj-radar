@@ -7,15 +7,14 @@
 //! terminal's real `default_bg`/`default_fg` (reported per-pane in `PaneInfo`) to
 //! sit correctly against whatever theme the terminal is using.
 
-/// An (r, g, b) color triple. Only consumed by the wasm glue (the `PaneUpdate`
-/// handler), so it looks dead to host test/non-test builds.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// An (r, g, b) color triple — the vocabulary every derived color in this
+/// module (and the renderer's truecolor escapes) is spelled in.
 pub type Rgb = (u8, u8, u8);
 
 /// Parse a hex color string (`"#rrggbb"` or `"rrggbb"`) into an (r, g, b) triple.
 /// Returns `None` for anything that isn't exactly six hex digits (optionally
 /// prefixed with `#`).
-pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+pub fn parse_hex(s: &str) -> Option<Rgb> {
     let h = s.strip_prefix('#').unwrap_or(s);
     if h.len() != 6 {
         return None;
@@ -27,7 +26,7 @@ pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// Linear per-channel blend: t=0 → a, t=1 → b.
-pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let ch = |ac: u8, bc: u8| {
         (ac as f32 + (bc as f32 - ac as f32) * t)
             .round()
@@ -49,21 +48,21 @@ pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 #[derive(Clone, Debug)]
 pub struct DerivedColors {
     /// The dark panel base — the whole sidebar column sits on this.
-    pub rail_bg: (u8, u8, u8),
+    pub rail_bg: Rgb,
     /// Card surface when idle (barely above the panel — idle recedes).
-    pub surface_idle: (u8, u8, u8),
+    pub surface_idle: Rgb,
     /// Card surface when an agent is running
-    pub surface_agent: (u8, u8, u8),
+    pub surface_agent: Rgb,
     /// Card surface when the row is active/focused (the only one brighter than bg).
-    pub surface_active: (u8, u8, u8),
+    pub surface_active: Rgb,
     /// Card surface for the one-shot "ping" flash on a not-Pending → Pending
     /// flip — one step brighter than `surface_active`, so the glance-catcher
     /// outranks the focus tint for its brief window.
-    pub surface_flash: (u8, u8, u8),
+    pub surface_flash: Rgb,
     /// Strong dim: detail location / spinner line
-    pub dim_strong: (u8, u8, u8),
+    pub dim_strong: Rgb,
     /// Idle text dim: row name when idle
-    pub idle_text: (u8, u8, u8),
+    pub idle_text: Rgb,
 }
 
 impl DerivedColors {
@@ -76,7 +75,7 @@ impl DerivedColors {
     /// A gentle step keeps a light terminal's panel light, so its dark dims stay
     /// legible. The design requires "legible on light"; the dark path is
     /// unchanged (`dim_text_keeps_contrast_against_its_surface_in_both_polarities`).
-    pub fn from_bg_fg(bg: (u8, u8, u8), fg: (u8, u8, u8)) -> Self {
+    pub fn from_bg_fg(bg: Rgb, fg: Rgb) -> Self {
         let is_dark = luminance(bg) <= luminance(fg);
         let recede = if is_dark { 0.30 } else { 0.08 };
         let rail_bg = blend(bg, (0, 0, 0), recede);
@@ -96,15 +95,15 @@ impl DerivedColors {
 
 /// Channel-sum luminance — a cheap brightness proxy, enough to tell a dark
 /// terminal theme (bg darker than fg) from a light one.
-fn luminance((r, g, b): (u8, u8, u8)) -> u32 {
+fn luminance((r, g, b): Rgb) -> u32 {
     r as u32 + g as u32 + b as u32
 }
 
 /// Neutral-dark fallback used until the terminal reports its own colors. A
 /// generic dark — NOT branded — so an unthemed/unreported terminal still gets a
 /// reasonable dark panel.
-pub const FALLBACK_BG: (u8, u8, u8) = (26, 27, 38);
-pub const FALLBACK_FG: (u8, u8, u8) = (192, 202, 220);
+pub const FALLBACK_BG: Rgb = (26, 27, 38);
+pub const FALLBACK_FG: Rgb = (192, 202, 220);
 
 impl Default for DerivedColors {
     fn default() -> Self {
@@ -167,7 +166,7 @@ mod tests {
         assert_eq!(parse_hex("rgb(1,2,3)"), None);
     }
 
-    fn lum(c: (u8, u8, u8)) -> u32 {
+    fn lum(c: Rgb) -> u32 {
         c.0 as u32 + c.1 as u32 + c.2 as u32
     }
 

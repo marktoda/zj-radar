@@ -276,13 +276,15 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     let check = |extra: &[&str]| {
         let mut args = vec!["setup", "zellij", "--check"];
         args.extend_from_slice(extra);
-        let assert = Command::cargo_bin("zj-radar")
+        // No `.success()`: the doctor exits non-zero when anything is Missing,
+        // and this fixture has no wasm — the layout item is the subject here.
+        let output = Command::cargo_bin("zj-radar")
             .unwrap()
             .args(&args)
             .env("ZELLIJ_CONFIG_DIR", config_dir.path())
-            .assert()
-            .success();
-        String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
     };
 
     // No --layout: the doctor must inspect main.kdl (the default_layout), which
@@ -298,6 +300,35 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     assert!(
         !out.contains("ok layout"),
         "check --layout other must inspect other.kdl (no rail); got:\n{out}"
+    );
+}
+
+// ── Test: the doctor is scriptable ───────────────────────────────────────────
+// Missing items set the exit code (`setup --check && zj-radar run` can gate),
+// and a bare `setup --check` covers BOTH halves instead of silently skipping
+// the zellij section the way a bare install (which needs a wasm source) does.
+
+#[test]
+fn check_exit_code_gates_and_bare_check_covers_both_targets() {
+    let config_dir = TempDir::new().unwrap(); // empty: the zellij half is all Missing
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "--check"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("zellij:"),
+        "bare --check must report the zellij half; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("codex:"),
+        "bare --check must report the codex half; got:\n{stdout}"
+    );
+    assert!(
+        !output.status.success(),
+        "missing items must exit non-zero so scripts can gate on the doctor"
     );
 }
 
@@ -644,5 +675,68 @@ fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
     assert!(
         !stdout.contains("Agent status off — no producer wired"),
         "claude producer wired -> the hint must not print; stdout:\n{stdout}"
+    );
+}
+
+// ── Test 6: the grant hint is skipped when permissions.kdl already grants ─────
+//
+// The install path used to build its `ZellijFacts` with `permissions_text:
+// None`, so `granted` was always None and the first-launch grant walkthrough
+// printed even for a long-granted install. The probe now reads the same
+// `zellij_permissions_path()` the doctor uses: the platform cache dir under
+// HOME (macOS: `Library/Caches/org.Zellij-Contributors.Zellij`; elsewhere:
+// `$XDG_CACHE_HOME/zellij`), keyed by the absolute wasm destination path.
+
+#[test]
+fn setup_zellij_skips_grant_hint_when_already_granted() {
+    // Runs one full `setup zellij --wasm … --yes` install in an isolated HOME,
+    // optionally pre-seeding a permissions.kdl granting the destination wasm.
+    let install_stdout = |seed_grant: bool| -> String {
+        let (config_dir, wasm_dir) = isolated_zellij_install_env();
+        let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+        let home = TempDir::new().unwrap();
+        if seed_grant {
+            let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+            #[cfg(target_os = "macos")]
+            let perms_path = home
+                .path()
+                .join("Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl");
+            #[cfg(not(target_os = "macos"))]
+            let perms_path = home.path().join(".cache/zellij/permissions.kdl");
+            fs::create_dir_all(perms_path.parent().unwrap()).unwrap();
+            fs::write(
+                &perms_path,
+                format!("\"{}\" {{\n    ReadApplicationState\n}}\n", wasm_dest.display()),
+            )
+            .unwrap();
+        }
+        let output = Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let stdout = install_stdout(true);
+    assert!(
+        stdout.contains("zellij: installed"),
+        "granted install must still install; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("press y to"),
+        "already-granted install must not print the first-launch grant hint; stdout:\n{stdout}"
+    );
+
+    // Positive control: the identical install without a grant keeps the hint.
+    let stdout = install_stdout(false);
+    assert!(
+        stdout.contains("press y to"),
+        "ungranted install must keep the grant hint; stdout:\n{stdout}"
     );
 }

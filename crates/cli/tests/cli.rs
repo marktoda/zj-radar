@@ -2,31 +2,21 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 
 fn cli_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zj-radar"))
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("zj-radar-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 #[test]
 fn setup_codex_installs_hooks_without_touching_foreign_notify() {
-    let codex_home = temp_dir("codex-home");
-    let config = codex_home.join("config.toml");
+    let codex_home = TempDir::new().unwrap();
+    let config = codex_home.path().join("config.toml");
     fs::write(&config, "notify = [\"/other/notifier\", \"turn-ended\"]\n").unwrap();
 
     let output = Command::new(cli_bin())
         .args(["setup", "codex", "--yes"])
-        .env("CODEX_HOME", &codex_home)
+        .env("CODEX_HOME", codex_home.path())
         .output()
         .unwrap();
     assert!(
@@ -41,7 +31,7 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
         config_after,
         "notify = [\"/other/notifier\", \"turn-ended\"]\n"
     );
-    let hooks = fs::read_to_string(codex_home.join("hooks.json")).unwrap();
+    let hooks = fs::read_to_string(codex_home.path().join("hooks.json")).unwrap();
     assert!(hooks.contains("ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"));
     assert!(hooks.contains("\"PermissionRequest\""));
     assert!(hooks.contains("\"Stop\""));
@@ -52,9 +42,9 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
 fn notify_codex_hook_broadcasts_pending_payload() {
     use std::os::unix::fs::PermissionsExt;
 
-    let bin_dir = temp_dir("fake-bin");
-    let capture = bin_dir.join("zellij-args.txt");
-    let fake_zellij = bin_dir.join("zellij");
+    let bin_dir = TempDir::new().unwrap();
+    let capture = bin_dir.path().join("zellij-args.txt");
+    let fake_zellij = bin_dir.path().join("zellij");
     fs::write(
         &fake_zellij,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ZJ_RADAR_CAPTURE\"\n",
@@ -70,7 +60,7 @@ fn notify_codex_hook_broadcasts_pending_payload() {
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_42")
         .env("ZJ_RADAR_CAPTURE", &capture)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .env("PATH", format!("{}:{old_path}", bin_dir.path().display()))
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();

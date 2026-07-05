@@ -2,7 +2,9 @@
 //!
 //! # Shape
 //! - [`State`] is the per-tab plugin instance Zellij loads. It owns a
-//!   [`runtime::PluginRuntime`] (the pure, host-testable state machine) and a
+//!   [`runtime::PluginRuntime`] (the host-testable state machine — pure apart
+//!   from wall-clock reads via `clock::now_epoch_s`; the stores it drives take
+//!   epochs as arguments, which is where determinism matters) and a
 //!   [`session_files::SessionFiles`] (snapshot + permission-marker persistence).
 //! - The `#[cfg(target_arch = "wasm32")] impl ZellijPlugin for State` block is the
 //!   only code that touches the Zellij host API; everything it calls is pure logic
@@ -65,12 +67,15 @@ use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
 
+// Pipe names live with their vocabularies (host-testable, so the guard tests
+// in control.rs/lib.rs can pin them against docs and the bash producer);
+// these aliases just keep the match arms below short.
 #[cfg(target_arch = "wasm32")]
 const PIPE_NAME: &str = payload::STATUS_PIPE_NAME;
 #[cfg(target_arch = "wasm32")]
-const CONFIG_PIPE: &str = "zj_radar.config.v1";
+const CONFIG_PIPE: &str = config::CONFIG_PIPE;
 #[cfg(target_arch = "wasm32")]
-const CMD_PIPE: &str = "zj_radar.cmd.v1";
+const CMD_PIPE: &str = control::CMD_PIPE;
 
 #[derive(Default)]
 pub struct State {
@@ -333,14 +338,14 @@ impl ZellijPlugin for State {
                         .cwd_changed(id, path.to_string_lossy().to_string());
                     return self.handle_outcome(outcome);
                 }
-                true
+                false // plugin panes: nothing observed, nothing to repaint
             }
             Event::CommandChanged(pane_id, command, is_foreground, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
                     let outcome = self.runtime.command_changed(id, &command, is_foreground);
                     return self.handle_outcome(outcome);
                 }
-                true
+                false // plugin panes: nothing observed, nothing to repaint
             }
             _ => false,
         }
@@ -359,7 +364,7 @@ impl ZellijPlugin for State {
             }
         } else if message.name == CMD_PIPE {
             if let Some(raw) = &message.payload {
-                let outcome = self.runtime.command_pipe(raw);
+                let outcome = self.runtime.control_pipe(raw);
                 return self.handle_outcome(outcome);
             }
         }

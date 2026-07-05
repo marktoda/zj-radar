@@ -98,6 +98,33 @@ fn tight(rows: &[TabRow], opts: RenderOpts) -> RenderOpts {
     RenderOpts { height, ..opts }
 }
 
+/// Strip `\x1b[...m` SGR escape sequences from a string — THE one ANSI-strip
+/// helper for these tests (visible-width checks go through the production
+/// `visible_width` instead). Deliberately SGR-only: a non-SGR escape (a
+/// cursor move, an OSC) is left in place, so escape residue stays detectable
+/// (see `color_additivity_leaves_no_escape_residue`).
+fn strip_sgr(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                for ch in chars.by_ref() {
+                    if ch == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 // ── Surface-tint oracle ──────────────────────────────────────────────────
 //
 // The Cards renderer paints every row with one of four truecolor background
@@ -165,7 +192,7 @@ fn header_is_title_then_rule_two_lines() {
         display: display(Status::Running, 0, 0, None),
     }];
     assert_eq!(
-        header_lines(&rows, true, crate::config::Density::Compact, true),
+        header_lines(true, crate::config::Density::Compact, true),
         2
     );
     let s = render(&rows, &ro(24, 0));
@@ -181,7 +208,7 @@ fn header_is_title_then_rule_two_lines() {
 fn header_absent_for_empty_rows() {
     let rows: Vec<TabRow> = vec![];
     assert_eq!(
-        header_lines(&rows, true, crate::config::Density::Compact, false),
+        header_lines(true, crate::config::Density::Compact, false),
         0
     );
     assert!(render(&rows, &ro(24, 0)).is_empty());
@@ -191,9 +218,8 @@ fn header_absent_for_empty_rows() {
 fn header_present_for_empty_rows_with_ledger_history() {
     // Zero tracked tabs but a non-empty ledger is still "has_content" — the
     // header renders with an honest `·0` tab count (spec §9's floor).
-    let rows: Vec<TabRow> = vec![];
     assert_eq!(
-        header_lines(&rows, true, crate::config::Density::Compact, true),
+        header_lines(true, crate::config::Density::Compact, true),
         2
     );
 }
@@ -531,34 +557,8 @@ fn working_glyph_spins_with_tick() {
         has_bell: false,
         display: display(Status::Running, 0, 1, Some(d.clone())),
     };
-    let f0 = render(
-        &[row(0)],
-        &RenderOpts {
-            width: 30,
-            height: 100,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Compact,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
-    let f1 = render(
-        &[row(1)],
-        &RenderOpts {
-            width: 30,
-            height: 100,
-            now_tick: 1,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Compact,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let f0 = render(&[row(0)], &ro(30, 0));
+    let f1 = render(&[row(1)], &ro(30, 1));
     assert!(f0.contains('⠋'));
     assert!(f1.contains('⠙'));
 }
@@ -591,27 +591,6 @@ fn narrow_width_truncates_with_ellipsis() {
     assert!(s.contains('…'));
 }
 
-/// Strip `\x1b[...m` SGR escape sequences and sum display widths of remaining chars.
-fn visible_len(line: &str) -> usize {
-    let mut width = 0usize;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // consume "[...m"
-            if chars.peek() == Some(&'[') {
-                for inner in chars.by_ref() {
-                    if inner == 'm' {
-                        break;
-                    }
-                }
-            }
-        } else {
-            width += UnicodeWidthChar::width(c).unwrap_or(0);
-        }
-    }
-    width
-}
-
 #[test]
 fn no_emitted_line_exceeds_width() {
     let width = 20;
@@ -639,11 +618,11 @@ fn no_emitted_line_exceeds_width() {
     // every visible (ANSI-stripped) line fits within the sidebar width
     for line in s.lines() {
         assert!(
-            visible_len(line) <= width,
+            visible_width(line) <= width,
             "line exceeds width {}: {:?} (visible {})",
             width,
             line,
-            visible_len(line)
+            visible_width(line)
         );
     }
 }
@@ -672,11 +651,11 @@ fn pending_detail_lines_never_exceed_width() {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "pending line exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -704,12 +683,12 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
             let s = render(&rows, &ro(width, 3));
             for line in s.lines() {
                 assert!(
-                    visible_len(line) <= width,
+                    visible_width(line) <= width,
                     "bell row exceeds width {} (active={}): {:?} (visible {})",
                     width,
                     active,
                     line,
-                    visible_len(line)
+                    visible_width(line)
                 );
             }
         }
@@ -836,7 +815,7 @@ fn working_detail_drops_branch_before_message_when_narrow() {
     }];
     let narrow = render(&rows, &ro(16, 5));
     for line in narrow.lines() {
-        assert!(visible_len(line) <= 16);
+        assert!(visible_width(line) <= 16);
     }
     // branch path is the first thing to go: "web/main" should not survive at 16 cols
     assert!(!narrow.contains("web/main"));
@@ -857,20 +836,7 @@ fn idle_row(n: u32) -> TabRow {
 fn overflow_folds_idle_into_strip_and_marks_header() {
     // 20 idle tabs, height only fits a few → fold.
     let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-    let s = render(
-        &rows,
-        &RenderOpts {
-            width: 24,
-            height: 6,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Compact,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let s = render(&rows, &RenderOpts { height: 6, ..ro(24, 0) });
     assert!(s.contains("idle")); // "+N idle ▾" footer
     assert!(s.contains('▾'));
     assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
@@ -900,20 +866,7 @@ fn overflow_keeps_non_idle_rows_visible() {
         has_bell: false,
         display: display(Status::Pending, 0, 1, Some(d)),
     });
-    let s = render(
-        &rows,
-        &RenderOpts {
-            width: 30,
-            height: 8,
-            now_tick: 2,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Compact,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let s = render(&rows, &RenderOpts { height: 8, ..ro(30, 2) });
     assert!(s.contains("pinky")); // urgent row never folded
     assert!(s.contains("approve?")); // activity (msg) survives on line 2
     assert!(s.contains('✳')); // Claude identity mark on line 2
@@ -922,20 +875,7 @@ fn overflow_keeps_non_idle_rows_visible() {
 #[test]
 fn no_overflow_when_everything_fits() {
     let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-    let s = render(
-        &rows,
-        &RenderOpts {
-            width: 24,
-            height: 40,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Compact,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let s = render(&rows, &RenderOpts { height: 40, ..ro(24, 0) });
     assert!(!s.contains("idle ▾"));
     assert!(!s.lines().next().unwrap().contains('▲'));
 }
@@ -1002,18 +942,7 @@ fn render_glyph_role_colors_are_present() {
         },
     ];
 
-    let opts = RenderOpts {
-        width: 30,
-        height: 100,
-        now_tick: 7,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Compact,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    };
-    let s = render(&rows, &opts);
+    let s = render(&rows, &ro(30, 7));
 
     // Compact density must NOT have card background bands.
     assert!(
@@ -1155,11 +1084,11 @@ fn pending_line2_shows_mark_and_activity() {
         );
         for line in s3.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "pending detail line exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -1202,11 +1131,11 @@ fn multi_pending_detail_never_exceeds_width() {
         let s = render(&rows, &ro(width, 0));
         for line in s.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "multi-pending detail exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -1235,9 +1164,9 @@ fn onboarding_never_exceeds_width() {
         let s = onboarding(&ro(width, 0));
         for line in s.ansi.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "onboarding line exceeds width {width}: {line:?} (visible {})",
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -1284,20 +1213,7 @@ fn panel_faces_never_exceed_height() {
 fn idle_strip_never_exceeds_width() {
     let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
     for width in [18usize, 24, 30] {
-        let s = render(
-            &rows,
-            &RenderOpts {
-                width,
-                height: 6,
-                now_tick: 0,
-                glyphs: GlyphSet::Plain,
-                header: true,
-                density: crate::config::Density::Compact,
-                theme: crate::theme::DerivedColors::default(),
-                now_epoch_s: 0,
-                jump_hint: true,
-            },
-        );
+        let s = render(&rows, &RenderOpts { height: 6, ..ro(width, 0) });
         // folding must have happened
         assert!(
             s.contains("idle ▾"),
@@ -1306,11 +1222,11 @@ fn idle_strip_never_exceeds_width() {
         );
         for line in s.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "idle strip/line exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -1342,11 +1258,11 @@ fn cjk_and_emoji_names_never_exceed_width() {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "CJK/emoji line exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -1362,21 +1278,10 @@ fn header_false_emits_no_header_lines() {
         display: display(Status::Running, 0, 0, None),
     }];
     assert_eq!(
-        header_lines(&rows, false, crate::config::Density::Compact, true),
+        header_lines(false, crate::config::Density::Compact, true),
         0
     );
-    let opts = RenderOpts {
-        width: 24,
-        height: 100,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: false,
-        density: crate::config::Density::Compact,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    };
-    let s = render(&rows, &opts);
+    let s = render(&rows, &RenderOpts { header: false, ..ro(24, 0) });
     // No identity header: rows start at line 0, so no "RADAR"/"═" line.
     assert!(!s.contains("RADAR"));
     assert!(!s.contains('═'));
@@ -1457,11 +1362,11 @@ fn compose_activity_reserves_outcome_against_truncation() {
             cmd_color,
         );
         assert!(
-            visible_len(&s) <= avail,
+            visible_width(&s) <= avail,
             "compose_activity exceeds avail={}: {:?} (visible {})",
             avail,
             s,
-            visible_len(&s)
+            visible_width(&s)
         );
     }
 }
@@ -1857,11 +1762,11 @@ fn multi_pane_child_and_collapse_lines_never_exceed_width() {
                                                            // tree's own child (idx 1) and collapse (idx 2) lines.
         for line in &body[1..] {
             assert!(
-                visible_len(line) <= width,
+                visible_width(line) <= width,
                 "tree child/collapse line exceeds width {}: {:?} (visible {})",
                 width,
                 line,
-                visible_len(line)
+                visible_width(line)
             );
         }
     }
@@ -2001,18 +1906,7 @@ fn overflow_compresses_calm_before_urgent() {
     );
 
     // Render and verify: Running rows have no detail line; urgent shows activity.
-    let opts = RenderOpts {
-        width: 30,
-        height: 7,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Compact,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    };
-    let s = render(&rows, &opts);
+    let s = render(&rows, &RenderOpts { height: 7, ..ro(30, 0) });
     assert!(
         s.contains("please review"),
         "urgent row activity must survive"
@@ -2061,18 +1955,7 @@ fn overflow_all_one_line_when_extreme() {
         },
     ];
     // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
-    let opts = RenderOpts {
-        width: 24,
-        height: 3,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Compact,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    };
-    let s = render(&rows, &opts);
+    let s = render(&rows, &RenderOpts { height: 3, ..ro(24, 0) });
     let line_count = s.lines().count();
     assert!(
         line_count <= 3,
@@ -2095,17 +1978,7 @@ fn overflow_all_one_line_when_extreme() {
 
 /// Helper: comfortable-density RenderOpts at the given width/height.
 fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
-    RenderOpts {
-        width,
-        height,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Comfortable,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    }
+    RenderOpts { height, density: crate::config::Density::Comfortable, ..ro(width, 0) }
 }
 
 #[test]
@@ -2152,18 +2025,7 @@ fn compact_has_no_gaps() {
     // 3 idle tabs, compact → no gap lines at all.
     // Total lines = 2 header + 3 content = 5 \n chars.
     let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-    let opts = RenderOpts {
-        width: 24,
-        height: 100,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Compact,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    };
-    let s = render(&rows, &tight(&rows, opts));
+    let s = render(&rows, &tight(&rows, ro(24, 0)));
     assert_eq!(
         s.lines().count(),
         5,
@@ -2207,34 +2069,8 @@ fn cards_content_lines_differ_from_comfortable() {
         },
         idle_row(2),
     ];
-    let comfortable = render(
-        &rows,
-        &RenderOpts {
-            width: 24,
-            height: 100,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Comfortable,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
-    let cards = render(
-        &rows,
-        &RenderOpts {
-            width: 24,
-            height: 100,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Cards,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let comfortable = render(&rows, &ro_comfortable(24, 100));
+    let cards = render(&rows, &ro_cards(24, 100));
     assert_ne!(
         comfortable, cards,
         "Cards should differ from Comfortable (has bg bands)"
@@ -2269,20 +2105,7 @@ fn gaps_dropped_under_overflow() {
     // 3 content + 3 gaps = 6 > 4 (body_budget) → gaps dropped.
     assert_eq!(gap_used, 0, "gaps should be dropped when they don't fit");
     // Render and verify: no blank lines in output.
-    let s = render(
-        &rows,
-        &RenderOpts {
-            width: 24,
-            height,
-            now_tick: 0,
-            glyphs: GlyphSet::Plain,
-            header: true,
-            density: crate::config::Density::Comfortable,
-            theme: crate::theme::DerivedColors::default(),
-            now_epoch_s: 0,
-            jump_hint: true,
-        },
-    );
+    let s = render(&rows, &ro_comfortable(24, height));
     let line_count = s.lines().count();
     assert!(
         line_count <= height,
@@ -2329,17 +2152,7 @@ fn plan_layout_comfortable_gap_when_space_available() {
 // ── Cards density background band tests ──
 
 fn ro_cards(width: usize, height: usize) -> RenderOpts {
-    RenderOpts {
-        width,
-        height,
-        now_tick: 0,
-        glyphs: GlyphSet::Plain,
-        header: true,
-        density: crate::config::Density::Cards,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    }
+    RenderOpts { height, density: crate::config::Density::Cards, ..ro(width, 0) }
 }
 
 #[test]
@@ -2472,7 +2285,7 @@ fn cards_band_fills_full_width() {
         content_line
     );
     // Visible width must equal exactly `width`.
-    let vw = visible_len(content_line);
+    let vw = visible_width(content_line);
     assert_eq!(
         vw, width,
         "painted content line visible width must equal {} (full band), got {}: {:?}",
@@ -2655,25 +2468,6 @@ fn cards_use_truecolor_not_256color() {
 /// which provides the card's 1-col inset. Content (the status glyph) sits at
 /// column 1 for both active and idle rows — the active spine does NOT push
 /// content right. Guards against re-introducing a second pad column.
-fn strip_ansi_local(line: &str) -> String {
-    let mut out = String::new();
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                for i in chars.by_ref() {
-                    if i == 'm' {
-                        break;
-                    }
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 #[test]
 fn cards_left_chrome_is_single_column() {
     let detail = PrimaryDetail {
@@ -2704,7 +2498,7 @@ fn cards_left_chrome_is_single_column() {
         },
     ];
     let s = render(&rows, &ro_cards(30, 100));
-    let lines: Vec<String> = s.lines().map(strip_ansi_local).collect();
+    let lines: Vec<String> = s.lines().map(strip_sgr).collect();
     // line 0 = header; line 1 = idle row; line 3 = active row (line 2 is its
     // detail row, line between is the idle gap). Find by name.
     let idle = lines.iter().find(|l| l.contains("idle")).unwrap();
@@ -2747,7 +2541,7 @@ fn child_line_status_glyph_precedes_spaced_mark() {
     // Find the running pane line (active → has spine ▌, contains ⠋ and ✳).
     let pane_lines: Vec<String> = s
         .lines()
-        .map(strip_ansi_local)
+        .map(strip_sgr)
         .filter(|l| l.contains('⠋') && l.contains('✳'))
         .collect();
     assert!(!pane_lines.is_empty(), "running pane line with mark not found");
@@ -2812,20 +2606,7 @@ fn comfortable_and_compact_emit_no_bg() {
         crate::config::Density::Comfortable,
         crate::config::Density::Compact,
     ] {
-        let s = render(
-            &rows,
-            &RenderOpts {
-                width: 30,
-                height: 100,
-                now_tick: 0,
-                glyphs: GlyphSet::Plain,
-                header: true,
-                density,
-                theme: crate::theme::DerivedColors::default(),
-                now_epoch_s: 0,
-                jump_hint: true,
-            },
-        );
+        let s = render(&rows, &RenderOpts { density, ..ro(30, 0) });
         assert!(
             !is_painted(&s),
             "density {:?} must NOT emit a truecolor card band: {:?}",
@@ -2860,11 +2641,11 @@ fn no_emitted_line_exceeds_width_cards() {
     let s = render(&rows, &ro_cards(width, 100));
     for line in s.lines() {
         assert!(
-            visible_len(line) <= width,
+            visible_width(line) <= width,
             "Cards: line exceeds width {}: {:?} (visible {})",
             width,
             line,
-            visible_len(line)
+            visible_width(line)
         );
     }
 }
@@ -2959,26 +2740,8 @@ fn cards_have_rail_gap_row() {
         gap_row
     );
     // ANSI-stripped, the gap row is blank (only spaces / no glyphs or text).
-    fn strip_ansi(line: &str) -> String {
-        let mut out = String::new();
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                if chars.peek() == Some(&'[') {
-                    for inner in chars.by_ref() {
-                        if inner == 'm' {
-                            break;
-                        }
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
     assert!(
-        strip_ansi(gap_row).trim().is_empty(),
+        strip_sgr(gap_row).trim().is_empty(),
         "gap row must be visually blank (no content): {:?}",
         gap_row
     );
@@ -3629,29 +3392,6 @@ fn heartbeat_absent_when_idle_and_in_cards() {
 
 // ── Color additivity guard ────────────────────────────────────────────────
 
-/// Strip `\x1b[...m` SGR escape sequences from a string.
-fn strip_sgr(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                for ch in chars.by_ref() {
-                    if ch == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 #[test]
 fn color_is_purely_additive_over_a_fixed_layout() {
     let rows = vec![
@@ -3821,17 +3561,7 @@ fn ro_full(
     density: crate::config::Density,
     glyphs: GlyphSet,
 ) -> RenderOpts {
-    RenderOpts {
-        width,
-        height,
-        now_tick: 0,
-        glyphs,
-        header: true,
-        density,
-        theme: crate::theme::DerivedColors::default(),
-        now_epoch_s: 0,
-        jump_hint: true,
-    }
+    RenderOpts { height, density, glyphs, ..ro(width, 0) }
 }
 
 // ── Snapshot tests ──
@@ -4382,11 +4112,11 @@ fn ledger_entry_line_clamps_at_extreme_narrow_widths() {
         let rendered = ledger_entry_line(&line, &opts);
         for text_line in rendered.text.lines() {
             assert!(
-                visible_len(text_line) <= width,
+                visible_width(text_line) <= width,
                 "width {}: line exceeds width: {:?} (visible {})",
                 width,
                 text_line,
-                visible_len(text_line)
+                visible_width(text_line)
             );
         }
     }
@@ -4689,11 +4419,11 @@ proptest! {
             // renderer in this file.
             for line in &bottom {
                 prop_assert!(
-                    visible_len(&line.text) <= width,
+                    visible_width(&line.text) <= width,
                     "bottom line exceeds width {}: {:?} (visible {})",
                     width,
                     line.text,
-                    visible_len(&line.text)
+                    visible_width(&line.text)
                 );
             }
             if !bottom.is_empty() {
@@ -5006,7 +4736,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
         },
     };
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
-    let grid = strip_ansi_local(&rendered.ansi); // use the file's existing ANSI-strip helper
+    let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper
     assert!(grid.contains("├ ◆ ✳ migrate schema"), "task is the identity line:\n{grid}");
     assert!(grid.contains("│   ↳ approve git push?"), "question is subordinate:\n{grid}");
     assert!(grid.contains("└ ⠋ ❉ write tests"), "running pane shows task only:\n{grid}");

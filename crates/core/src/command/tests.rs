@@ -933,7 +933,7 @@
             s.insert_snapshot_observation(9, obs);
 
             let receded = s.on_exit(9, code, 50, 999);
-            assert!(receded.is_empty(), "{status:?}: an identical replay must not ghost-ledger");
+            assert!(receded.is_none(), "{status:?}: an identical replay must not ghost-ledger");
             let got = s.get(9).unwrap();
             assert_eq!(got.status, status, "{status:?}: unchanged");
             assert_eq!(got.completed_epoch_s, Some(100), "{status:?}: original stamp survives");
@@ -941,7 +941,7 @@
 
             // The dedup map is primed: a second identical replay no-ops too.
             let receded = s.on_exit(9, code, 51, 1000);
-            assert!(receded.is_empty(), "{status:?}: dedup primed after the first swallow");
+            assert!(receded.is_none(), "{status:?}: dedup primed after the first swallow");
             assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(100));
         }
     }
@@ -960,10 +960,10 @@
         };
         s.insert_snapshot_observation(9, obs);
 
-        let receded = s.on_exit(9, Some(2), 50, 999);
-        assert_eq!(receded.len(), 1, "the displayed Done leaves via displacement");
-        assert_eq!(receded[0].1.status, Status::Done);
-        assert_eq!(receded[0].1.completed_epoch_s, Some(100));
+        let receded = s.on_exit(9, Some(2), 50, 999)
+            .expect("the displayed Done leaves via displacement");
+        assert_eq!(receded.status, Status::Done);
+        assert_eq!(receded.completed_epoch_s, Some(100));
         let got = s.get(9).unwrap();
         assert_eq!(got.status, Status::Error);
         assert_eq!(got.exit_code, Some(2));

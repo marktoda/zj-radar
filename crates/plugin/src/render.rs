@@ -4,7 +4,7 @@ use crate::config::Density;
 use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
-use crate::theme::DerivedColors;
+use crate::theme::{DerivedColors, Rgb};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod layout;
@@ -30,6 +30,17 @@ const BOLD: &str = "\x1b[1m";
 /// when the work truly started, not the last time it happened to re-announce
 /// itself.
 pub const EASE_AFTER_TICKS: u64 = 600;
+
+/// Most pane lines a multi-pane tab renders before folding the remainder into
+/// a single `+N more` line — the ⟦D6⟧ cap (rail-reference.md: high on
+/// purpose, so the common case never folds).
+const MAX_PANE_LINES: usize = 6;
+
+/// Columns of the shared tree prefix every child line starts with:
+/// spine-or-space (1) + connector `├`/`└` (1) + separating space (1) —
+/// exactly what [`child_prefix`] emits. Holding this fixed keeps the glyph
+/// aligned across all child lines (see `child_prefix`'s doc).
+const TREE_PREFIX_COLS: usize = 3;
 
 /// Spinner frame for a Running glyph: full speed normally; after
 /// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
@@ -98,10 +109,13 @@ pub struct RenderOpts {
     pub now_epoch_s: u64,
     /// Whether the footer may advertise the `alt-[n] jump` chord. Zellij owns
     /// keybinds, not the plugin, so this is config-driven honesty (the
-    /// `GrantHint` pattern): only `run`-owned configs — which bake the
-    /// Alt-1..9 → GoToTab binds — claim it; every other install (setup-injected
-    /// rails, hand-rolled layouts) omits the hint line rather than promising a
-    /// chord that does nothing.
+    /// `GrantHint` pattern) — and strictly opt-in: NO in-tree config sets it.
+    /// Even the `run`-owned config, which bakes the Alt-1..9 → GoToTab binds,
+    /// deliberately omits it (`run.rs` pins that): Alt+digit is commonly
+    /// claimed upstream of Zellij (WM hotkeys, macOS Option typing `¡`) and
+    /// the rail can't detect interception. Only a config whose environment
+    /// truly delivers the chord may claim it; everything else omits the hint
+    /// line rather than promising a chord that does nothing.
     pub jump_hint: bool,
 }
 
@@ -118,6 +132,14 @@ impl Outcome {
             Outcome::Failed(Some(code)) => format!("exit {}", code),
             Outcome::Failed(None) => "✗".to_string(),
         }
+    }
+
+    /// Whether this outcome renders a visible tag at all — `Ok`'s tag is
+    /// empty by design (the line-1 status glyph is the one done signal), so
+    /// only failures do. Lets callers ask "is there a tag?" without building
+    /// the `full()` string just to test it for emptiness.
+    fn renders_tag(self) -> bool {
+        !matches!(self, Outcome::Ok)
     }
 
     /// The irreducible short form, shown when width is too tight for `full`.
@@ -224,6 +246,13 @@ impl Line {
         text.push('\n');
         Line { text, target, bg }
     }
+
+    /// Repaint the text onto a surface band (Cards), re-normalizing through
+    /// [`Line::new`] — the paint paths must not assign `text` raw, or the
+    /// constructor's newline invariant becomes discipline-held again.
+    fn painted(self, width: usize, bg: &str) -> Line {
+        Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -312,7 +341,7 @@ fn is_multi_pane(display: &TabDisplay) -> bool {
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
 /// Comfortable keep the two-line title+rule header. `render_rail()` uses the
 /// same emitted header lines for ANSI and targets, so the count stays in lockstep.
-fn header_lines(_rows: &[TabRow], header: bool, density: Density, has_content: bool) -> usize {
+fn header_lines(header: bool, density: Density, has_content: bool) -> usize {
     if !has_content || !header {
         0
     } else if density == Density::Cards {
@@ -538,6 +567,28 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let dim_strong = tc_fg(opts.theme.dim_strong);
     let idle_color = tc_fg(opts.theme.idle_text);
 
+    // Shared per-pane emission: the identity line (wait tag folded in) plus the
+    // optional subordinate `↳ question` line, both click-targeting the pane
+    // itself. The multi-pane roster and the single-pane branch below differ
+    // only in which panes earn lines and which Branch connector they carry.
+    let pane_lines = |pane: &PaneDisplay, branch: Branch| -> Vec<Line> {
+        let pane_status = pane.render_status();
+        let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
+        let identity =
+            with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
+        let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
+        let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
+        let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
+        let mut out = vec![Line::new(text, Some(pane_target), pane_bg)];
+        if let Some(q) = detail {
+            let text = emit_pane_detail_line(
+                q, row.active, st, pane_status, branch, &idle_color, width,
+            );
+            out.push(Line::new(text, Some(pane_target), pane_bg));
+        }
+        out
+    };
+
     // ── Multi-pane line-per-pane tree (new design) ────────────────────────────
     // A tab with >1 tracked pane renders as: header (line 1, above) + one line
     // per tracked pane (in position order), up to MAX_PANE_LINES, joined by tree
@@ -546,7 +597,6 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // `└`. No collapse — the tree is purely a visual affordance for "these panes
     // belong to the tab above."
     if is_multi_pane(&row.display) {
-        const MAX_PANE_LINES: usize = 6;
         let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
             .filter(|p| p.is_tracked())
             .collect();
@@ -554,7 +604,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let show = total_tracked.min(MAX_PANE_LINES);
         let remaining = total_tracked - show;
 
-        for (i, pane) in tracked_panes.iter().take(show).enumerate() {
+        for (i, &pane) in tracked_panes.iter().take(show).enumerate() {
             // The final pane line is the `└` only when no `+N more` line follows
             // it; otherwise that trailing line carries the elbow.
             let branch = if i + 1 == show && remaining == 0 {
@@ -562,27 +612,15 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             } else {
                 Branch::Tee
             };
-            let (identity, detail) =
-                identity_and_detail(pane.render_status(), pane.task(), pane.msg());
-            let identity =
-                with_wait_tag(identity, pane.render_status(), pane.pending_epoch_s(), opts.now_epoch_s);
-            let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
-            let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
-            let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
-            lines.push(Line::new(text, Some(pane_target), pane_bg));
-            if let Some(q) = detail {
-                let text = emit_pane_detail_line(
-                    q, row.active, st, pane.render_status(), branch, &idle_color, opts.width,
-                );
-                lines.push(Line::new(text, Some(pane_target), pane_bg));
-            }
+            lines.extend(pane_lines(pane, branch));
         }
 
         if remaining > 0 {
             let more_text = format!("+{} more", remaining);
-            // The prefix is a 3-col tree prefix (spine/space + connector + space),
-            // so reserve those columns before clamping the text to avoid overflow.
-            let clamped = truncate(&more_text, opts.width.saturating_sub(3));
+            // The prefix is the TREE_PREFIX_COLS-wide tree prefix (spine/space +
+            // connector + space), so reserve those columns before clamping the
+            // text to avoid overflow.
+            let clamped = truncate(&more_text, opts.width.saturating_sub(TREE_PREFIX_COLS));
             let text = format!(
                 "{}{}\n",
                 child_prefix(row.active, st, Branch::Elbow, &idle_color),
@@ -609,26 +647,15 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // Unlike the multi-pane roster (where every tracked pane earns a line),
     // the single pane's line is emitted only when it says something: a
     // non-empty identity OR an outcome tag that actually renders (`Ok`'s tag
-    // is empty by design — see `Outcome::full` — so an empty-msg Ok completion
-    // earns no line at all). Idle stays header-only.
+    // is empty by design — see `Outcome::renders_tag` — so an empty-msg Ok
+    // completion earns no line at all). Idle stays header-only.
     if let Some(pane) = row.display.panes.iter().find(|p| p.is_tracked()) {
         let pane_status = pane.render_status();
-        let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
+        let (identity, _) = identity_and_detail(pane_status, pane.task(), pane.msg());
         let says_something = !identity.trim().is_empty()
-            || pane.outcome().is_some_and(|o| !o.full().is_empty());
+            || pane.outcome().is_some_and(|o| o.renders_tag());
         if pane_status != Status::Idle && says_something {
-            let identity =
-                with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
-            let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
-            let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
-            let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, Branch::Elbow);
-            lines.push(Line::new(text, Some(pane_target), pane_bg));
-            if let Some(q) = detail {
-                let text = emit_pane_detail_line(
-                    q, row.active, st, pane_status, Branch::Elbow, &idle_color, width,
-                );
-                lines.push(Line::new(text, Some(pane_target), pane_bg));
-            }
+            lines.extend(pane_lines(pane, Branch::Elbow));
         }
     }
     lines
@@ -647,9 +674,9 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
     let Some(oc) = outcome else {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
-    // An outcome whose tag renders empty (Ok) is "no tag at all": no separator
+    // An outcome that renders no tag (Ok) is "no tag at all": no separator
     // space, no empty SGR pair — the status glyph already carries the signal.
-    if oc.full().is_empty() {
+    if !oc.renders_tag() {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     }
     let role = oc.role().ansi();
@@ -742,8 +769,8 @@ fn emit_pane_line(
         status.glyph_for(opts.glyphs)
     };
     let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
-    // Prefix: 3 cols (spine/space + connector + space) + glyph + 1 space + mark + 1 space
-    let prefix_vis = 3 + glyph_w + 1 + mark_w + 1;
+    // Prefix: the tree prefix (spine/space + connector + space) + glyph + 1 space + mark + 1 space
+    let prefix_vis = TREE_PREFIX_COLS + glyph_w + 1 + mark_w + 1;
     prefixed_line(
         width,
         prefix_vis,
@@ -799,7 +826,9 @@ fn emit_pane_detail_line(
         Branch::Tee => "│",
         Branch::Elbow => " ",
     };
-    const PREFIX_VIS: usize = 7; // spine + cont + 3 spaces + ↳ + space
+    // The shared tree prefix (spine + connector continuation + its space) + 4
+    // more cols: two further indent spaces + `↳` + its trailing space.
+    const PREFIX_VIS: usize = TREE_PREFIX_COLS + 4;
     prefixed_line(
         width,
         PREFIX_VIS,
@@ -842,7 +871,8 @@ impl Branch {
     }
 }
 
-/// The 3-column left prefix shared by multi-pane child / `+N more` lines:
+/// The [`TREE_PREFIX_COLS`]-column (3) left prefix shared by multi-pane child
+/// / `+N more` lines:
 ///   col 0  — active-tab spine `▌` (status-hued: peach when waiting/error,
 ///            mauve accent otherwise) or a plain space when inactive;
 ///   col 1  — the tree connector (`├`/`└`), in the muted `conn_color`;
@@ -881,12 +911,12 @@ fn visible_width(s: &str) -> usize {
 }
 
 /// Emit an ANSI truecolor background escape for a given (r, g, b) triple.
-fn tc_bg(c: (u8, u8, u8)) -> String {
+fn tc_bg(c: Rgb) -> String {
     format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
 }
 
 /// Emit an ANSI truecolor foreground escape for a given (r, g, b) triple.
-fn tc_fg(c: (u8, u8, u8)) -> String {
+fn tc_fg(c: Rgb) -> String {
     format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
@@ -1105,7 +1135,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         .collect();
     let body_budget = opts
         .height
-        .saturating_sub(header_lines(rows, opts.header, opts.density, has_content));
+        .saturating_sub(header_lines(opts.header, opts.density, has_content));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
     // Drives the header-rule heartbeat — a plain `any()`, not a
@@ -1119,9 +1149,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
-    for mut line in render_header(rows, opts, overflow, has_content, working) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_header(rows, opts, overflow, has_content, working) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     // Body: one card block per kept row.
@@ -1157,9 +1186,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     }
 
     // Idle strip.
-    for mut line in render_strip(strip_folded, opts) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_strip(strip_folded, opts) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     flat
@@ -1227,21 +1255,13 @@ fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let left = format!("{working} working · ");
     let right = format!("{} need you", need_you);
     let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
+    // `need_you > 0` is guaranteed past the early return, so the loud (bold
+    // attention) form is the only one either branch renders.
     let text = if fits {
-        let right_seg = if need_you > 0 {
-            Seg::bold(Role::Attention.ansi(), right)
-        } else {
-            Seg::new(&idle, right)
-        };
-        format!("{}{}\n", Seg::new(&idle, left), right_seg)
+        format!("{}{}\n", Seg::new(&idle, left), Seg::bold(Role::Attention.ansi(), right))
     } else {
         let full = format!("{left}{right}");
-        let clamped = truncate(&full, width);
-        if need_you > 0 {
-            format!("{}\n", Seg::bold(Role::Attention.ansi(), clamped))
-        } else {
-            format!("{}\n", Seg::new(&idle, clamped))
-        }
+        format!("{}\n", Seg::bold(Role::Attention.ansi(), truncate(&full, width)))
     };
     Line::new(text, None, LineBg::Rail)
 }
@@ -1259,12 +1279,17 @@ fn ledger_rule(opts: &RenderOpts) -> Line {
     Line::new(format!("{}\n", Seg::new(&ghost, text)), None, LineBg::Rail)
 }
 
+/// Max columns a ledger row's tab name may take before truncating — the
+/// label absorbs whatever remains. rail-reference.md §AB documents the
+/// same 12 ("a tab name past 12 columns truncates with `…`").
+const LEDGER_NAME_COLS: usize = 12;
+
 /// One ledger row: `{age} {glyph} {tab_name} {label}`. Exact truncation rule
 /// (spec §9): the fixed 3-col `age space glyph space` prefix is reserved
-/// first, `tab_name` gets up to 12 cols of what's left, and `label` absorbs
-/// whatever remains — omitted (with its separating space) entirely when
-/// nothing remains. Click-inert once its tab has closed (`tab_position` is
-/// `None`).
+/// first, `tab_name` gets up to [`LEDGER_NAME_COLS`] cols of what's left, and
+/// `label` absorbs whatever remains — omitted (with its separating space)
+/// entirely when nothing remains. Click-inert once its tab has closed
+/// (`tab_position` is `None`).
 fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
@@ -1282,7 +1307,7 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
         prefix,
         || format!("{age} {glyph} {} {}", line.tab_name, line.label),
         |avail| {
-            let name_budget = 12.min(avail);
+            let name_budget = LEDGER_NAME_COLS.min(avail);
             let name = truncate(&line.tab_name, name_budget);
             let name_w = UnicodeWidthStr::width(name.as_str());
             let label_budget = avail.saturating_sub(name_w + 1);
@@ -1314,6 +1339,13 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
 /// keeps `ledger::LEDGER_CAP` (32) entries for cross-instance merge/dedup.
 const LEDGER_DISPLAY_CAP: usize = 10;
 
+/// The pinned footer's height: rule + tally, plus the `alt-[n] jump` hint
+/// line only when `opts.jump_hint` claims the chord exists — the one owner of
+/// the `f` (2 or 3) the spec §9 budget table is written against.
+fn footer_lines(opts: &RenderOpts) -> usize {
+    if opts.jump_hint { 3 } else { 2 }
+}
+
 /// The bottom region per the spec §9 budget table. `leftover` = height minus
 /// everything already in `flat` (i.e. `render_body`'s footprint). Returns
 /// lines ordered top→bottom (filler … ledger rule, entries newest-first,
@@ -1333,7 +1365,7 @@ const LEDGER_DISPLAY_CAP: usize = 10;
 /// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
 /// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
 fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
-    let f = if opts.jump_hint { 3 } else { 2 };
+    let f = footer_lines(opts);
     let push_footer = |v: &mut Vec<Line>| {
         v.push(footer_rule(opts));
         v.push(footer_tally(rows, opts));
@@ -1395,9 +1427,8 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // body already emits after the last card simply becomes part of the space
     // `leftover` measures — no special-casing needed.
     let leftover = opts.height.saturating_sub(flat.len());
-    for mut line in render_bottom(rows, ledger, leftover, opts) {
-        if cards { line.text = paint_card_line(&line.text, width, &rail); }
-        flat.push(line);
+    for line in render_bottom(rows, ledger, leftover, opts) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
     // Final height clamp. The body is budgeted against `height - header_lines`, so

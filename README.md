@@ -26,13 +26,13 @@ status for every tab — *working*, *waiting for you*, *done*, or *error* — wi
 repo·branch, elapsed time, and the last message. Click a row to jump to that
 tab.
 
-![zj-radar — every agent, every tab, at a glance](docs/media/zj-radar-hero.png)
+![zj-radar — every agent, every tab, at a glance](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/zj-radar-hero.png)
 
 `◆ needs you` · `⠋ working` · `● done` · `✗ error` · `○ idle / plain terminal`
 
 *Live in a real session:*
 
-![zj-radar — live per-tab agent and command status in a Zellij sidebar](docs/media/hero.gif)
+![zj-radar — live per-tab agent and command status in a Zellij sidebar](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/hero.gif)
 
 ## What is it?
 
@@ -197,10 +197,12 @@ just dev                                  # build + launch the sandboxed dev ses
 
 `just dev` builds the release wasm and the CLI from this checkout, then drives
 the real `zj-radar run` flow — grant onboarding included — fully sandboxed
-under `target/dev/data` (`ZJ_RADAR_DATA_DIR` + `ZJ_RADAR_WASM`), as the
-disposable session `zj-radar-dev` — always a *fresh* one: a leftover dev
-session is deleted first, since attaching would silently keep running the
-previous wasm. It can never touch an installed zj-radar's assets, and your
+under `target/dev/data` (`ZJ_RADAR_DATA_DIR` + `ZJ_RADAR_WASM`), as a
+disposable session — always a *fresh* one: each run launches a uniquely named
+`zj-radar-dev-<hhmmss>` session, since attaching to a leftover would silently
+keep running the previous wasm. *Exited* dev leftovers are swept on the next
+run; a live session is never killed. It can never touch an installed
+zj-radar's assets, and your
 real sessions (and the agents in them) keep running untouched alongside it.
 Run it from a plain terminal — `zj-radar run` refuses to nest inside Zellij.
 `just dev-build` builds the artifacts without launching. In the Nix shell,

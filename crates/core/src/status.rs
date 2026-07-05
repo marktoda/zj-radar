@@ -20,8 +20,10 @@
 /// - **Severity order.** Rows are listed in ascending-severity order so the
 ///   derived `Ord` *is* the aggregation order used by the Tab Roll-Up
 ///   (`.max()` picks the most-urgent member). Reordering rows reorders severity.
-/// - **Lenient parse.** `from_wire` falls back to `$fallback` for any unknown or
-///   absent token, matching how the pipe payload parses status.
+/// - **Lenient parse.** `from_wire` falls back to `$fallback` for any unknown
+///   token (the empty string included), matching how the pipe payload parses
+///   status. `Default` is generated from the same `fallback =` declaration, so
+///   the two can never disagree.
 macro_rules! statuses {
     (
         fallback = $fallback:ident;
@@ -39,12 +41,23 @@ macro_rules! statuses {
             /// and exhaustiveness tests iterate the variants without re-typing.
             pub const ALL: &'static [Status] = &[ $( Status::$variant ),+ ];
 
-            /// Parse a wire value; anything unknown/absent is the fallback
-            /// (`Status::Idle`).
+            /// Parse a wire value; any unknown token (the empty string
+            /// included) is the fallback (`Status::Idle`).
             pub fn from_wire(s: &str) -> Status {
                 match s {
                     $( $wire => Status::$variant, )+
                     _ => Status::$fallback,
+                }
+            }
+
+            /// Strict parse: `Some` only for a token in the wire vocabulary.
+            /// The door for producers that must hint-and-refuse on a typo
+            /// rather than lenient-fall-back to `Idle` — a typo'd status
+            /// silently becoming idle erases the row it meant to update.
+            pub fn try_from_wire(s: &str) -> Option<Status> {
+                match s {
+                    $( $wire => Some(Status::$variant), )+
+                    _ => None,
                 }
             }
 
@@ -75,9 +88,19 @@ macro_rules! statuses {
         }
 
         // Snapshot/pipe encoding, generated from the same table. Lenient: an
-        // unknown/absent token deserializes to the `from_wire` fallback (Idle),
-        // matching how the pipe payload parses status.
+        // unknown or empty token deserializes to the `from_wire` fallback
+        // (Idle), matching how the pipe payload parses status.
         $crate::wire::wire_serde!(lenient, Status);
+
+        /// Matches `from_wire`'s fallback for an unknown or empty wire token —
+        /// generated from the same `fallback = …` table declaration `from_wire`
+        /// uses, so the two agree by construction (and the
+        /// `default_matches_from_wire_fallback` test guards the pairing).
+        impl Default for Status {
+            fn default() -> Self {
+                Status::$fallback
+            }
+        }
     };
 }
 
@@ -91,15 +114,9 @@ statuses! {
     Error   => "error",   Role::Error,     '✗', '\u{f057}';
 }
 
-/// Matches `from_wire`'s fallback for an absent/unknown wire token — see the
-/// `statuses!` table's `fallback = Idle`.
-impl Default for Status {
-    fn default() -> Self {
-        Status::Idle
-    }
-}
-
 impl Status {
+    /// Anything but `Idle` — the pane has a live story (working, waiting, or a
+    /// still-displayed completion) rather than resting.
     pub fn is_active(self) -> bool {
         self != Status::Idle
     }
@@ -119,6 +136,9 @@ impl Status {
     }
 }
 
+/// Semantic color role for rendered rail elements. The renderer styles by
+/// role, never by raw color, so what each status *means* (see `Status::role`)
+/// stays separate from how a terminal palette happens to paint it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Error,
@@ -130,6 +150,8 @@ pub enum Role {
 }
 
 impl Role {
+    /// The ANSI SGR foreground sequence for this role (16-color palette, so
+    /// the user's terminal theme decides the exact shade).
     pub fn ansi(self) -> &'static str {
         match self {
             Role::Error => "\x1b[31m",
@@ -142,6 +164,9 @@ impl Role {
     }
 }
 
+/// Which glyph vocabulary the rail renders with: `Plain` geometric shapes
+/// (the default — no special font needed) or `Nerd` font icons for users with
+/// a Nerd Font installed. Selected via the `glyphs` config key (`from_config`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphSet {
     Nerd,
@@ -150,10 +175,14 @@ pub enum GlyphSet {
 }
 
 impl GlyphSet {
-    pub fn from_config(s: &str) -> GlyphSet {
+    /// Recognized values only; `None` otherwise. Callers keep their current
+    /// value on `None` — first load keeps the default, and a typo on the live
+    /// config pipe must not clobber a set value back to it.
+    pub fn from_config(s: &str) -> Option<GlyphSet> {
         match s {
-            "nerd" => GlyphSet::Nerd,
-            _ => GlyphSet::Plain,
+            "nerd" => Some(GlyphSet::Nerd),
+            "plain" => Some(GlyphSet::Plain),
+            _ => None,
         }
     }
 }
@@ -194,8 +223,10 @@ mod tests {
 
     #[test]
     fn default_matches_from_wire_fallback() {
-        // `Default` must agree with `from_wire`'s fallback for absent/unknown
-        // tokens, since `StatusPayload::default()` relies on this correspondence.
+        // `Default` must agree with `from_wire`'s fallback for unknown tokens
+        // (`""` included), since `StatusPayload::default()` relies on this
+        // correspondence. Both are generated from the table's `fallback =`
+        // declaration; this pins the pairing against a macro regression.
         assert_eq!(Status::default(), Status::from_wire(""));
         assert_eq!(Status::default(), Status::Idle);
     }
@@ -228,6 +259,15 @@ mod tests {
                 "{s:?} must survive a wire round-trip",
             );
         }
+    }
+
+    #[test]
+    fn try_from_wire_is_strict_where_from_wire_is_lenient() {
+        for &s in Status::ALL {
+            assert_eq!(Status::try_from_wire(s.as_wire()), Some(s));
+        }
+        assert_eq!(Status::try_from_wire("runnign"), None);
+        assert_eq!(Status::try_from_wire(""), None);
     }
 
     #[test]
@@ -280,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn glyph_set_from_config_defaults_to_plain() {
-        assert_eq!(GlyphSet::from_config("nerd"), GlyphSet::Nerd);
-        assert_eq!(GlyphSet::from_config("plain"), GlyphSet::Plain);
-        assert_eq!(GlyphSet::from_config("anything-else"), GlyphSet::Plain);
+    fn glyph_set_from_config_recognized_values_only() {
+        assert_eq!(GlyphSet::from_config("nerd"), Some(GlyphSet::Nerd));
+        assert_eq!(GlyphSet::from_config("plain"), Some(GlyphSet::Plain));
+        assert_eq!(GlyphSet::from_config("anything-else"), None);
     }
 
     #[test]

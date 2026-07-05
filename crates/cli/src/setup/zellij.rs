@@ -133,6 +133,63 @@ pub(crate) fn config_is_managed(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Refusal for a bare `setup zellij` with no wasm source: name the install
+/// routes AND the supported wasm-less invocations, so the message is a menu,
+/// not a dead end.
+const NO_WASM_REFUSAL: &str =
+    "refused — pass --wasm <path-to-zj_radar.wasm> or --download to install; \
+     or use --inject (add the rail to a layout only) or --check (inspect the current state)";
+
+/// Which path a `setup zellij` invocation takes. [`setup_path`] decides purely
+/// from the facts the orchestrator's old early-return ladder read;
+/// `setup_zellij` matches on it and keeps all the IO. Ordering is part of the
+/// contract: a managed config wins over everything (a symlinked config.kdl is
+/// never rewritten), then the wasm-less modes resolve, and only then does the
+/// full flow run.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SetupPath {
+    /// config.kdl is a symlink (Nix / home-manager): install prints the layout
+    /// snippet for guidance; uninstall skips the config rewrite (the alias
+    /// lives in the user's Nix config, so removal is their Nix concern) but
+    /// still strips the injected rail from the (separate) layout file.
+    Managed,
+    /// Install with no wasm source but `--inject`/`--yes` consent: skip the
+    /// wasm/alias step and run the layout step only. This makes `setup zellij
+    /// --inject` and `setup zellij --yes` usable and testable without a wasm
+    /// artifact.
+    LayoutOnlyInstall,
+    /// `--uninstall` with no wasm source and no config.kdl on disk: only the
+    /// layout could hold anything of ours.
+    LayoutOnlyUninstall,
+    /// Bare install with no wasm source and no wasm-less consent flag: refuse
+    /// with [`NO_WASM_REFUSAL`].
+    RefuseNoWasm,
+    /// The full wasm + alias (+ layout) install/uninstall flow.
+    Full,
+}
+
+pub(crate) fn setup_path(
+    uninstall: bool,
+    config_managed: bool,
+    has_wasm_source: bool,
+    inject: bool,
+    yes: bool,
+    config_exists: bool,
+) -> SetupPath {
+    if config_managed {
+        return SetupPath::Managed;
+    }
+    if !uninstall && !has_wasm_source {
+        return if inject || yes { SetupPath::LayoutOnlyInstall } else { SetupPath::RefuseNoWasm };
+    }
+    // An uninstall with a config.kdl on disk still runs the full flow — the
+    // alias may need stripping.
+    if uninstall && !has_wasm_source && !config_exists {
+        return SetupPath::LayoutOnlyUninstall;
+    }
+    SetupPath::Full
+}
+
 pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let (wasm, download): (Option<&Path>, bool) = match &opts.wasm_source {
         WasmSource::Path(p) => (Some(p.as_path()), false),
@@ -155,47 +212,59 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let config_text = std::fs::read_to_string(&config_path).ok();
 
     // Resolve the target layout path up front (needed whether or not a managed
-    // config short-circuits): `--layout <name>` wins, else the config's own
-    // `default_layout "name"` (the layout Zellij actually loads), else
-    // `default`. Always `<config_dir>/layouts/<name>.kdl`.
-    let layout_path = config_dir.join("layouts").join(format!(
-        "{}.kdl",
-        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref())
-    ));
-    let codex_hooks_text = super::codex_hooks_text();
-    let installed_plugins_text = dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok());
+    // config short-circuits).
+    let layout_path =
+        crate::setup::detect::resolve_layout_path(&config_dir, layout_name, config_text.as_deref());
     let facts = analyze_zellij(&ZellijEnv {
         config_text:            config_text.clone(),
-        layout_text:            None, // install only consults `config_managed`; the layout is read later by the inject flow
-        permissions_text:       None,
-        codex_hooks_text,
-        installed_plugins_text,
+        layout_text:            None, // the layout is read later by the inject flow
+        permissions_text:       crate::run::zellij_permissions_path()
+            .and_then(|p| std::fs::read_to_string(p).ok()),
+        codex_hooks_text:       super::codex_hooks_text(),
+        installed_plugins_text: super::claude_installed_plugins_text(),
         wasm_present:           wasm_dest.is_file(),
         config_managed:         config_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
     });
 
-    // Refuse to touch a managed (symlinked) config.kdl. On install we print the
-    // layout snippet for guidance; on uninstall we skip the config rewrite (the
-    // alias lives in the user's Nix config, so removal is their Nix concern) but
-    // still strip the injected rail from the (separate) layout file. Either way a
-    // Nix/home-manager user's managed config is never overwritten.
-    if facts.config_managed {
-        eprintln!(
-            "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
-             zj-radar will not {} a managed config — {} the plugin alias via\n\
-             your Nix config instead. See docs/install.md for the home-manager snippet.",
-            config_path.display(),
-            if uninstall { "modify" } else { "overwrite" },
-            if uninstall { "remove" } else { "add" },
-        );
-        if uninstall {
-            run_layout_uninstall(&layout_path, dry_run);
-        } else {
-            print_snippet_for(&layout_path);
+    let path = setup_path(
+        uninstall,
+        facts.config_managed,
+        wasm.is_some() || download,
+        inject_flag,
+        yes,
+        config_path.exists(),
+    );
+    match path {
+        SetupPath::Managed => {
+            eprintln!(
+                "zellij: config.kdl at {} is a symlink (managed by Nix / home-manager).\n\
+                 zj-radar will not {} a managed config — {} the plugin alias via\n\
+                 your Nix config instead. See docs/install.md for the home-manager snippet.",
+                config_path.display(),
+                if uninstall { "modify" } else { "overwrite" },
+                if uninstall { "remove" } else { "add" },
+            );
+            if uninstall {
+                run_layout_uninstall(&layout_path, dry_run);
+            } else {
+                print_snippet_for(&layout_path);
+            }
+            return;
         }
-        return;
+        SetupPath::LayoutOnlyInstall => {
+            run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+            return;
+        }
+        SetupPath::LayoutOnlyUninstall => {
+            run_layout_uninstall(&layout_path, dry_run);
+            return;
+        }
+        SetupPath::RefuseNoWasm => {
+            crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
+            return;
+        }
+        SetupPath::Full => {}
     }
 
     // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
@@ -218,25 +287,11 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         wasm
     };
 
-    // When `--inject` is set (or `--yes` is set for a non-mutating snippet) but
-    // no wasm source is given, skip the wasm/alias step and go directly to the
-    // layout step. This makes `setup zellij --inject` and `setup zellij --yes`
-    // usable and testable without a wasm artifact while preserving the existing
-    // "refused — pass --wasm" error for bare `setup zellij` invocations.
-    let layout_only_install = src.is_none() && !uninstall && (inject_flag || yes);
-    if layout_only_install {
-        run_layout_inject(&layout_path, inject_flag, yes, dry_run);
-        return;
-    }
-    // `--uninstall` with no wasm/config: layout-only uninstall.
-    if uninstall && src.is_none() && !config_path.exists() {
-        run_layout_uninstall(&layout_path, dry_run);
-        return;
-    }
-
     if !uninstall {
+        // `SetupPath::Full` guarantees a wasm source on install (see
+        // `setup_path`), so the None arm is defensive only.
         let Some(src) = src else {
-            crate::exit::fail_report("zellij", "refused — pass --wasm <path-to-zj_radar.wasm> or --download");
+            crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
             return;
         };
         if !src.is_file() {
@@ -264,7 +319,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             );
             // alias already up to date — still offer injection.
             run_layout_inject(&layout_path, inject_flag, yes, dry_run);
-            print_grant_hint();
+            print_grant_hint_if_needed(&facts);
             print_producer_hint_if_needed(&facts);
         }
         Outcome::Conflict => {
@@ -332,14 +387,21 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             } else {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
                 run_layout_inject(&layout_path, inject_flag, yes, dry_run);
-                print_grant_hint();
+                print_grant_hint_if_needed(&facts);
                 print_producer_hint_if_needed(&facts);
             }
         }
     }
 }
 
-fn print_grant_hint() {
+/// Emit the first-launch grant instructions at the tail of a `setup zellij`
+/// install, unless permissions.kdl already grants this wasm (`facts.granted`,
+/// read the same way `check_zellij` reads it) — a long-granted install
+/// re-running setup needs no onboarding walkthrough.
+fn print_grant_hint_if_needed(facts: &ZellijFacts) {
+    if facts.granted == Some(true) {
+        return;
+    }
     // The rail can't show Zellij's grant prompt legibly (it's a small borderless
     // pane — Zellij #4749). On first launch the user grants by focusing the rail
     // and pressing y; `--grant` offers an explicit floating prompt instead. The
@@ -594,6 +656,39 @@ mod tests {
                 "file:/home/user/.config/zellij/plugins/zj_radar.wasm",
             ]
         );
+    }
+
+    // ── setup_path decision table ────────────────────────────────────────────
+
+    #[test]
+    fn setup_path_covers_the_whole_ladder() {
+        use SetupPath::*;
+        // (uninstall, config_managed, has_wasm_source, inject, yes, config_exists)
+        let cases = &[
+            // A managed (symlinked) config wins over everything else.
+            ((false, true, true,  true,  true,  true ), Managed),
+            ((true,  true, false, false, false, true ), Managed),
+            // Install, no wasm source: --inject or --yes → layout-only …
+            ((false, false, false, true,  false, true ), LayoutOnlyInstall),
+            ((false, false, false, false, true,  false), LayoutOnlyInstall),
+            // … and a bare invocation refuses with guidance.
+            ((false, false, false, false, false, true ), RefuseNoWasm),
+            // Uninstall with no config.kdl on disk: only the layout can hold ours.
+            ((true,  false, false, false, false, false), LayoutOnlyUninstall),
+            // Uninstall with a config.kdl: full flow (the alias may need stripping).
+            ((true,  false, false, false, false, true ), Full),
+            // Install with a wasm source: full flow, flags notwithstanding.
+            ((false, false, true,  false, false, false), Full),
+            ((false, false, true,  true,  true,  true ), Full),
+        ];
+        for ((uninstall, managed, has_wasm, inject, yes, config_exists), want) in cases {
+            assert_eq!(
+                &setup_path(*uninstall, *managed, *has_wasm, *inject, *yes, *config_exists),
+                want,
+                "uninstall={uninstall} managed={managed} has_wasm={has_wasm} \
+                 inject={inject} yes={yes} config_exists={config_exists}"
+            );
+        }
     }
 
     #[test]

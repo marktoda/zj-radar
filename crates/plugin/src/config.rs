@@ -1,8 +1,14 @@
 //! Plugin configuration parsed from the KDL `plugin { ... }` block. Pure — no
-//! zellij-tile dependency. Parsing never fails: invalid values fall back to the
-//! field default and unknown keys are ignored (forward-compatible).
+//! zellij-tile dependency. Parsing never fails: an unrecognized value leaves
+//! the field as it was (the default on first load, the *current* value on a
+//! live `config.v1` override — a typo must not clobber set state back to
+//! default), and unknown keys are ignored (forward-compatible).
 
 use std::collections::BTreeMap;
+
+/// The live-override pipe. Payload is a JSON object of config keys (see
+/// [`overrides_from_json`]); breaking the payload shape means a new name.
+pub(crate) const CONFIG_PIPE: &str = "zj_radar.config.v1";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum NamingMode {
@@ -36,12 +42,12 @@ pub enum Density {
 }
 
 impl Density {
-    pub fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "compact" => Density::Compact,
-            "comfortable" => Density::Comfortable,
-            // Unknown/invalid values fall back to the field default (Cards).
-            _ => Density::Cards,
+            "compact" => Some(Density::Compact),
+            "comfortable" => Some(Density::Comfortable),
+            "cards" => Some(Density::Cards),
+            _ => None,
         }
     }
 }
@@ -61,11 +67,11 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "onboarding" => Role::Onboarding,
-            "sidebar" => Role::Sidebar,
-            _ => Role::default(),
+            "onboarding" => Some(Role::Onboarding),
+            "sidebar" => Some(Role::Sidebar),
+            _ => None,
         }
     }
 }
@@ -88,10 +94,11 @@ pub enum GrantHint {
 }
 
 impl GrantHint {
-    pub fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "ctrl-y" => GrantHint::CtrlY,
-            _ => GrantHint::default(),
+            "ctrl-y" => Some(GrantHint::CtrlY),
+            "generic" => Some(GrantHint::Generic),
+            _ => None,
         }
     }
 }
@@ -111,10 +118,11 @@ pub enum JumpHint {
 }
 
 impl JumpHint {
-    pub fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "alt-n" | "alt" => JumpHint::AltN,
-            _ => JumpHint::default(),
+            "alt-n" | "alt" => Some(JumpHint::AltN),
+            "hidden" | "off" => Some(JumpHint::Hidden),
+            _ => None,
         }
     }
 
@@ -175,12 +183,12 @@ fn parse_bool(v: &str) -> Option<bool> {
 }
 
 impl NamingMode {
-    pub fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "off" => NamingMode::Off,
-            "managed" => NamingMode::Managed,
-            "force" => NamingMode::Force,
-            _ => NamingMode::default(),
+            "off" => Some(NamingMode::Off),
+            "managed" => Some(NamingMode::Managed),
+            "force" => Some(NamingMode::Force),
+            _ => None,
         }
     }
 }
@@ -192,17 +200,12 @@ impl NamingMode {
 /// key keeps the field default and the two paths can't interpret a value
 /// differently. Adding a configurable field is one new row.
 ///
-/// Two parser contracts, one row group each:
-/// - `total` — `fn(&str) -> T`: the parser resolves unknown input itself (the
-///   enum `from_config`s fold to their default), so a *present* key always sets
-///   the field.
-/// - `opt` — `fn(&str) -> Option<T>`: a present-but-unparseable value is left
-///   untouched (keeps the default / current value); used by `parse_bool`.
+/// One parser contract: every parser is `fn(&str) -> Option<T>`, recognized
+/// values only. A present-but-unparseable value leaves the field untouched —
+/// the default on first load, the *current* value on a live override — so
+/// enum typos and bool garbage degrade identically.
 macro_rules! config_fields {
-    (
-        total { $( $tfield:ident : $tkey:literal => $tparser:path ),* $(,)? }
-        opt   { $( $ofield:ident : $okey:literal => $oparser:path ),* $(,)? }
-    ) => {
+    ( $( $field:ident : $key:literal => $parser:path ),* $(,)? ) => {
         impl Config {
             /// Build from the flat key→value map of the KDL `plugin { ... }`
             /// block. Unlisted keys take the field default; unknown keys are
@@ -214,14 +217,12 @@ macro_rules! config_fields {
             }
 
             /// Apply runtime overrides from a flat key→value map (e.g. parsed
-            /// from a JSON pipe payload). Unknown keys are silently ignored.
+            /// from a JSON pipe payload). Unknown keys are silently ignored;
+            /// unrecognized values keep the current setting.
             pub fn apply_overrides(&mut self, kv: &BTreeMap<String, String>) {
-                $( if let Some(v) = kv.get($tkey) {
-                    self.$tfield = $tparser(v);
-                } )*
-                $( if let Some(v) = kv.get($okey) {
-                    if let Some(parsed) = $oparser(v) {
-                        self.$ofield = parsed;
+                $( if let Some(v) = kv.get($key) {
+                    if let Some(parsed) = $parser(v) {
+                        self.$field = parsed;
                     }
                 } )*
             }
@@ -230,23 +231,19 @@ macro_rules! config_fields {
 }
 
 config_fields! {
-    total {
-        naming:  "naming"  => NamingMode::from_config,
-        density: "density" => Density::from_config,
-        glyphs:  "glyphs"  => crate::status::GlyphSet::from_config,
-        role:    "role"    => Role::from_config,
-        grant_hint: "grant_hint" => GrantHint::from_config,
-        jump_hint:  "jump_hint"  => JumpHint::from_config,
-    }
-    opt {
-        header:              "header"              => parse_bool,
-        defer_permission:    "defer_permission"    => parse_bool,
-        notify:              "notify"              => parse_bool,
-        notify_done:         "notify_done"         => parse_bool,
-        notify_error:        "notify_error"        => parse_bool,
-        notify_pending:      "notify_pending"      => parse_bool,
-        notify_when_focused: "notify_when_focused" => parse_bool,
-    }
+    naming:     "naming"     => NamingMode::from_config,
+    density:    "density"    => Density::from_config,
+    glyphs:     "glyphs"     => crate::status::GlyphSet::from_config,
+    role:       "role"       => Role::from_config,
+    grant_hint: "grant_hint" => GrantHint::from_config,
+    jump_hint:  "jump_hint"  => JumpHint::from_config,
+    header:              "header"              => parse_bool,
+    defer_permission:    "defer_permission"    => parse_bool,
+    notify:              "notify"              => parse_bool,
+    notify_done:         "notify_done"         => parse_bool,
+    notify_error:        "notify_error"        => parse_bool,
+    notify_pending:      "notify_pending"      => parse_bool,
+    notify_when_focused: "notify_when_focused" => parse_bool,
 }
 
 /// Flatten a JSON object of config overrides into the flat `BTreeMap<String,
@@ -532,14 +529,39 @@ mod tests {
 
     #[test]
     fn naming_from_config_parses_all_variants() {
-        assert_eq!(NamingMode::from_config("off"), NamingMode::Off);
-        assert_eq!(NamingMode::from_config("managed"), NamingMode::Managed);
-        assert_eq!(NamingMode::from_config("force"), NamingMode::Force);
-        // unknown → default (Managed)
-        assert_eq!(NamingMode::from_config("wat"), NamingMode::Managed);
+        assert_eq!(NamingMode::from_config("off"), Some(NamingMode::Off));
+        assert_eq!(NamingMode::from_config("managed"), Some(NamingMode::Managed));
+        assert_eq!(NamingMode::from_config("force"), Some(NamingMode::Force));
+        // unknown → None (callers keep their current value)
+        assert_eq!(NamingMode::from_config("wat"), None);
         // case-insensitive
-        assert_eq!(NamingMode::from_config("OFF"), NamingMode::Off);
-        assert_eq!(NamingMode::from_config("Force"), NamingMode::Force);
+        assert_eq!(NamingMode::from_config("OFF"), Some(NamingMode::Off));
+        assert_eq!(NamingMode::from_config("Force"), Some(NamingMode::Force));
+    }
+
+    /// Same pin as `control::tests::documented_cmd_pipe_verbs_parse`: the pipe
+    /// name users copy out of configuration.md must be the one we listen on.
+    #[test]
+    fn documented_config_pipe_name_matches() {
+        let doc = include_str!("../../../docs/configuration.md");
+        assert!(
+            doc.contains(CONFIG_PIPE),
+            "configuration.md must document the {CONFIG_PIPE} pipe by name"
+        );
+    }
+
+    #[test]
+    fn apply_overrides_typo_never_clobbers_live_state() {
+        // The property the single Option-parser contract exists to guarantee:
+        // a typo'd value on the live config pipe leaves the current setting
+        // alone instead of silently resetting it to the field default.
+        let mut c = Config::default();
+        c.apply_overrides(&map(&[("density", "compact"), ("naming", "off")]));
+        assert_eq!(c.density, Density::Compact);
+        assert_eq!(c.naming, NamingMode::Off);
+        c.apply_overrides(&map(&[("density", "compct"), ("naming", "offf")]));
+        assert_eq!(c.density, Density::Compact, "typo keeps the live value");
+        assert_eq!(c.naming, NamingMode::Off, "typo keeps the live value");
     }
 
     #[test]

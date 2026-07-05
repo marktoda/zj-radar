@@ -137,7 +137,7 @@ impl PaneUpdate {
             }
             tab_panes.entry(p.tab_pos).or_default().push(TerminalPane {
                 id: p.id,
-                title: payload::sanitize(&p.title, 40),
+                title: payload::sanitize(&p.title, payload::MAX_TAB_NAME_CHARS),
                 focused_in_tab: p.is_focused,
             });
             live.insert(p.id);
@@ -298,7 +298,7 @@ impl RadarState {
         // as pane titles: a raw ESC would inject ANSI into the rail, and a
         // newline would desync the line↔click-target lockstep.
         for t in &mut tabs {
-            t.name = payload::sanitize(&t.name, 40);
+            t.name = payload::sanitize(&t.name, payload::MAX_TAB_NAME_CHARS);
         }
         self.tabs = tabs;
         // Drop naming state for tabs that closed (the update carries the full
@@ -323,7 +323,9 @@ impl RadarState {
         // edge in this method (the exit-displace and both stores' prunes)
         // reports a pane that is either still on its pre-close topology or is
         // *about* to leave it, so the tab name it ledgers under must be the
-        // last known one, not whatever (if anything) replaces it.
+        // last known one, not whatever (if anything) replaces it. This is the
+        // one deliberate exception to `ledger_recede_now` (which captures the
+        // CURRENT topology) — see that helper's doc.
         let old_index = self.pane_tab_index();
         // Captured BEFORE `self.status.prune` runs below — mirrors `resolve`'s
         // status-wins-over-command precedence. A command-origin recede for a
@@ -332,8 +334,9 @@ impl RadarState {
         let status_tracked = self.status_tracked_pane_ids();
 
         for (pane_id, exit_status) in update.exits {
-            let displaced = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s);
-            self.ledger_receded(displaced, &old_index, &status_tracked);
+            if let Some(displaced) = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s) {
+                self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
+            }
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
@@ -373,12 +376,11 @@ impl RadarState {
         // that already runs regardless of flash state.
         self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(tick, now_epoch_s);
-        let index = self.pane_tab_index();
         // All-command-origin recedes here; no pruning is in flight on this
-        // edge, so the live status store IS the "at this moment" set — see
-        // `resolve`'s precedence and `status_tracked_pane_ids`'s doc.
-        let status_tracked = self.status_tracked_pane_ids();
-        self.ledger_receded(report.receded, &index, &status_tracked);
+        // edge, so the current topology/shadow set `ledger_recede_now`
+        // captures IS the "at this moment" set — see `resolve`'s precedence
+        // and `status_tracked_pane_ids`'s doc.
+        self.ledger_recede_now(report.receded);
         // Stale-Running expiry: an agent killed mid-turn sends no clearing
         // broadcast; its prompt-return grace clock (see `clear_on_prompt_return`)
         // runs out here. Running is not a completion — nothing to ledger — but
@@ -432,12 +434,9 @@ impl RadarState {
         let cleared = if crate::command::is_shell_prompt(command, is_foreground) {
             match self.status.clear_on_prompt_return(pane_id, tick) {
                 Some(receded) => {
-                    let index = self.pane_tab_index();
-                    // Status-origin recede: `status_tracked` never suppresses
-                    // it — the shadow filter only ever applies to
-                    // Command-origin observations.
-                    let status_tracked = self.status_tracked_pane_ids();
-                    self.ledger_receded(vec![(pane_id, receded)], &index, &status_tracked);
+                    // Status-origin recede: the shadow filter never suppresses
+                    // it — it only ever applies to Command-origin observations.
+                    self.ledger_recede_now(vec![(pane_id, receded)]);
                     true
                 }
                 None => false,
@@ -480,11 +479,9 @@ impl RadarState {
         // A Done/Error that recedes on overwrite (a new broadcast for the same
         // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
         if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
-            let index = self.pane_tab_index();
             // Status-origin recede: never suppressed (see `command_changed`'s
             // matching call site).
-            let status_tracked = self.status_tracked_pane_ids();
-            self.ledger_receded(vec![(pane_id, displaced)], &index, &status_tracked);
+            self.ledger_recede_now(vec![(pane_id, displaced)]);
         }
         if flips_to_pending {
             if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
@@ -657,6 +654,22 @@ impl RadarState {
     /// was never actually shown on the card.
     fn status_tracked_pane_ids(&self) -> HashSet<u32> {
         self.status.observations().map(|(id, _)| id).collect()
+    }
+
+    /// [`ledger_receded`](Self::ledger_receded) against the CURRENT topology:
+    /// captures the pane→tab index and the status-shadow set as of now, for
+    /// recede edges where no topology mutation is in flight (`timer`,
+    /// `command_changed`, `status_pipe`). `panes_changed` deliberately does
+    /// NOT use this — its edges must ledger against the pre-close topology it
+    /// captures before overwriting `self.tab_panes`, so it calls
+    /// `ledger_receded` with those captures directly.
+    fn ledger_recede_now(&mut self, receded: Vec<(u32, TrackedObservation)>) {
+        if receded.is_empty() {
+            return;
+        }
+        let index = self.pane_tab_index();
+        let status_tracked = self.status_tracked_pane_ids();
+        self.ledger_receded(receded, &index, &status_tracked);
     }
 
     /// Push every receded observation that resolves to a completion into the

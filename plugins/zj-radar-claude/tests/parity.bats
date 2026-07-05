@@ -38,6 +38,18 @@ parity_task_case() { # $1 = hook JSON
   parity_payloads "$1" running
 }
 
+# Both producers must DROP the broadcast: run each and assert no payload was
+# recorded. The inverse of parity_payloads — used for backstop cases where a
+# broadcast (from either producer) is the bug.
+parity_noop() { # $1 = hook JSON, $2 = status arg
+  rm -f "$RECORD"
+  echo "$1" | "$SCRIPT" "$2"
+  [ ! -s "$RECORD" ] || { echo "bash broadcast for input: $1 → $(cat "$RECORD")"; return 1; }
+  rm -f "$RECORD"
+  echo "$1" | "$CLI" notify claude --status "$2"
+  [ ! -s "$RECORD" ] || { echo "rust broadcast for input: $1 → $(cat "$RECORD")"; return 1; }
+}
+
 setup() { setup_fakes; }
 teardown() { teardown_fakes; }
 
@@ -141,6 +153,23 @@ teardown() { teardown_fakes; }
       *[!a-z0-9\ ]*) echo "verb [$verb] contains a char outside [a-z0-9 ] — unsafe in the bash ERE"; return 1;;
     esac
   done <<<"$verbs"
+}
+
+@test "parity: Notification with a real message is pending in both" {
+  # The pending backstop's positive side: a real "needs you" message rides
+  # through both producers unchanged. This was the one derive branch with no
+  # behavioral pin between them.
+  parity_payloads '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs your permission to use Bash"}' pending
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = pending ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "Claude needs your permission to use Bash" ]
+}
+
+@test "parity: generic pending backstop drops the broadcast in both" {
+  parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs attention"}' pending
+  # Whitespace-padded generic phrase and whitespace-only msg must also drop —
+  # both producers compare a TRIMMED copy (msg.trim() / the sed trim).
+  parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"  Claude needs attention  "}' pending
+  parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"   "}' pending
 }
 
 @test "parity: Stop ending in a question remaps done to pending" {

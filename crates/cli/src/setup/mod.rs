@@ -145,11 +145,22 @@ pub fn run(options: SetupOptions<'_>) {
     }
 
     if mode == Mode::Check {
-        if want_zellij {
-            check_zellij(options.layout);
+        // Bare `--check` is the doctor: inspect BOTH halves. (A bare *install*
+        // defaults to codex-only because a zellij install needs a wasm source;
+        // checking needs none, and a user asking "is my install healthy?"
+        // wants the rail's state too, not silence about it.)
+        let both = options.targets.is_empty();
+        let mut missing = false;
+        if want_zellij || both {
+            missing |= check_zellij(options.layout);
         }
-        if want_codex {
-            check_codex(options.legacy_notify);
+        if want_codex || both {
+            missing |= check_codex(options.legacy_notify);
+        }
+        if missing {
+            // The items above are the diagnostic; this sets the exit code so
+            // `zj-radar setup --check && zj-radar run` can gate on the doctor.
+            crate::exit::fail_report("zj-radar", "check found missing items (listed above)");
         }
         return;
     }

@@ -13,7 +13,7 @@
 //! `is_empty` via `PluginRuntime::render`'s onboarding-vs-rail choice.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
-use crate::payload::{sanitize, MAX_MSG_CHARS};
+use crate::payload::{sanitize, MAX_MSG_CHARS, MAX_TAB_NAME_CHARS};
 use crate::radar_state::TabId;
 use crate::status::Status;
 use serde::{Deserialize, Serialize};
@@ -89,7 +89,7 @@ impl LedgerEntry {
 /// Sanitize (strip controls/ANSI, cap like a tab name) + fall back to `"tab"`
 /// for an empty result, so a ledgered entry never shows a blank tab column.
 fn sanitized_or(name: &str) -> String {
-    let clean = sanitize(name, 40);
+    let clean = sanitize(name, MAX_TAB_NAME_CHARS);
     let trimmed = clean.trim();
     if trimmed.is_empty() {
         "tab".to_string()
@@ -182,11 +182,15 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
+///
+/// The final band starts at SATURATE_S so the rendered age stops changing
+/// exactly when `any_unsaturated` goes false and the Slow timer disarms —
+/// a frozen "1h+" is what makes full disarm safe.
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
     let age = now_epoch_s.saturating_sub(at_epoch_s);
     if age < 60 {
         "<1m".to_string()
-    } else if age < 3600 {
+    } else if age < SATURATE_S {
         format!("{}m", age / 60)
     } else {
         "1h+".to_string()

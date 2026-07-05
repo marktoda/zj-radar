@@ -7,14 +7,19 @@ version = "0.1.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/marktoda/zj-radar"
+# Floor set by `Option::is_none_or` (core's `command::contains_word`).
+rust-version = "1.82"
 
 [workspace.dependencies]
 # `version` is required alongside `path` so the CLI is publishable to
 # crates.io — `cargo publish` rejects a path dep on a workspace member that
-# carries no version requirement. Local builds use `path`. Kept at the minor
-# line ("0.1" = any 0.1.x) so per-release bumps can't drift it; bump this by
-# hand when [workspace.package] crosses to 0.2.
-zj-radar-core = { path = "crates/core", version = "0.1" }
+# carries no version requirement. Local builds use `path`. Pinned EXACT
+# (`=x.y.z`): core is an internal crate whose API is allowed to change within
+# a 0.1.x line (0.1.2 already broke 0.1.0's `to_wire`), so a caret/minor range
+# would let an older published CLI resolve a newer, incompatible core and stop
+# compiling. Bump this in lockstep with [workspace.package] version — the
+# release checklist (RELEASING.md) walks through it.
+zj-radar-core = { path = "crates/core", version = "=0.1.2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-width = "0.2"

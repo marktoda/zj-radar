@@ -58,5 +58,10 @@ dev-build:
     @echo "cli:  target/debug/zj-radar"
     @echo "wasm: target/wasm32-wasip1/release/zj_radar.wasm"
 
+# Wasm plugin compile check (matches CI's "wasm plugin compiles" step, so a
+# wasm-glue-only breakage fails locally too, not just in CI).
+build-wasm:
+    cargo build --target wasm32-wasip1 -p zj-radar-plugin
+
 # Everything a PR must pass locally.
-ci: test clippy test-bash
+ci: test clippy build-wasm test-bash

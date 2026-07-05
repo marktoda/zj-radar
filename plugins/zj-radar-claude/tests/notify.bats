@@ -72,6 +72,14 @@ teardown() { teardown_fakes; }
   [[ "$cmd" == *"notify.sh idle"* ]]
 }
 
+@test "hooks.json wires SessionEnd to notify.sh idle" {
+  # A closed session must recede its row rather than freeze the last status
+  # on the rail (the stale-Running ghost). Unmatchered: every end counts.
+  local hooks="$BATS_TEST_DIRNAME/../hooks/hooks.json"
+  local cmd; cmd="$(jq -r '.hooks.SessionEnd[0].hooks[0].command' "$hooks")"
+  [[ "$cmd" == *"notify.sh idle"* ]]
+}
+
 @test "SessionStart clear broadcasts idle with blank msg" {
   # `/clear` fires SessionStart{source:clear}; the plugin wires it to `idle`.
   # The broadcast resets the pane: status idle and no message.
