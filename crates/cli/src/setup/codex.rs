@@ -20,6 +20,16 @@ pub(crate) fn codex_hooks_text() -> Option<String> {
     codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok())
 }
 
+/// Read Claude Code's installed-plugins manifest
+/// (`~/.claude/plugins/installed_plugins.json`) for producer *detection* —
+/// the same three consumers as [`codex_hooks_text`], and the same drift class
+/// it guards against: one reader, so `run`'s advisory, `setup zellij`'s
+/// epilogue hint, and `--check` can never probe different paths.
+pub(crate) fn claude_installed_plugins_text() -> Option<String> {
+    dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok())
+}
+
 fn codex_home_dir() -> Option<PathBuf> {
     codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"))
 }

@@ -125,21 +125,15 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let config_text = std::fs::read_to_string(&config_path).ok();
-    // Same resolution as the install path: --layout, else the config's
-    // `default_layout`, else `default` — so the doctor inspects the layout
-    // Zellij actually loads (and the one a `--layout` install just wrote).
-    let layout_path = config_dir.join("layouts").join(format!(
-        "{}.kdl",
-        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref())
-    ));
+    let layout_path =
+        crate::setup::detect::resolve_layout_path(&config_dir, layout_name, config_text.as_deref());
     let env = ZellijEnv {
         config_text,
         layout_text: std::fs::read_to_string(&layout_path).ok(),
         permissions_text: crate::run::zellij_permissions_path()
             .and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks_text: super::codex_hooks_text(),
-        installed_plugins_text: dirs::home_dir()
-            .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok()),
+        installed_plugins_text: super::claude_installed_plugins_text(),
         wasm_present: wasm_dest.is_file(),
         config_managed: config_is_managed(&config_path),
         wasm_path: wasm_dest.to_string_lossy().into_owned(),

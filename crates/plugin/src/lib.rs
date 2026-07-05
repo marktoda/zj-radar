@@ -2,7 +2,9 @@
 //!
 //! # Shape
 //! - [`State`] is the per-tab plugin instance Zellij loads. It owns a
-//!   [`runtime::PluginRuntime`] (the pure, host-testable state machine) and a
+//!   [`runtime::PluginRuntime`] (the host-testable state machine — pure apart
+//!   from wall-clock reads via `clock::now_epoch_s`; the stores it drives take
+//!   epochs as arguments, which is where determinism matters) and a
 //!   [`session_files::SessionFiles`] (snapshot + permission-marker persistence).
 //! - The `#[cfg(target_arch = "wasm32")] impl ZellijPlugin for State` block is the
 //!   only code that touches the Zellij host API; everything it calls is pure logic
@@ -358,7 +360,7 @@ impl ZellijPlugin for State {
             }
         } else if message.name == CMD_PIPE {
             if let Some(raw) = &message.payload {
-                let outcome = self.runtime.command_pipe(raw);
+                let outcome = self.runtime.control_pipe(raw);
                 return self.handle_outcome(outcome);
             }
         }

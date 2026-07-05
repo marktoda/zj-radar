@@ -677,3 +677,66 @@ fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
         "claude producer wired -> the hint must not print; stdout:\n{stdout}"
     );
 }
+
+// ── Test 6: the grant hint is skipped when permissions.kdl already grants ─────
+//
+// The install path used to build its `ZellijFacts` with `permissions_text:
+// None`, so `granted` was always None and the first-launch grant walkthrough
+// printed even for a long-granted install. The probe now reads the same
+// `zellij_permissions_path()` the doctor uses: the platform cache dir under
+// HOME (macOS: `Library/Caches/org.Zellij-Contributors.Zellij`; elsewhere:
+// `$XDG_CACHE_HOME/zellij`), keyed by the absolute wasm destination path.
+
+#[test]
+fn setup_zellij_skips_grant_hint_when_already_granted() {
+    // Runs one full `setup zellij --wasm … --yes` install in an isolated HOME,
+    // optionally pre-seeding a permissions.kdl granting the destination wasm.
+    let install_stdout = |seed_grant: bool| -> String {
+        let (config_dir, wasm_dir) = isolated_zellij_install_env();
+        let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+        let home = TempDir::new().unwrap();
+        if seed_grant {
+            let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+            #[cfg(target_os = "macos")]
+            let perms_path = home
+                .path()
+                .join("Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl");
+            #[cfg(not(target_os = "macos"))]
+            let perms_path = home.path().join(".cache/zellij/permissions.kdl");
+            fs::create_dir_all(perms_path.parent().unwrap()).unwrap();
+            fs::write(
+                &perms_path,
+                format!("\"{}\" {{\n    ReadApplicationState\n}}\n", wasm_dest.display()),
+            )
+            .unwrap();
+        }
+        let output = Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let stdout = install_stdout(true);
+    assert!(
+        stdout.contains("zellij: installed"),
+        "granted install must still install; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("press y to"),
+        "already-granted install must not print the first-launch grant hint; stdout:\n{stdout}"
+    );
+
+    // Positive control: the identical install without a grant keeps the hint.
+    let stdout = install_stdout(false);
+    assert!(
+        stdout.contains("press y to"),
+        "ungranted install must keep the grant hint; stdout:\n{stdout}"
+    );
+}

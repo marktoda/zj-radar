@@ -335,8 +335,8 @@ fn display_command(command: &[String]) -> String {
     sanitize(&raw, MAX_MSG_CHARS)
 }
 
-/// Whole-word containment: is `word` present in `haystack` bounded by non
-/// `[a-z0-9]` characters (or string edges)? Used instead of a bare substring so
+/// Whole-word containment: is `word` present in `haystack` bounded by
+/// non-alphanumeric (ASCII) characters (or string edges)? Used instead of a bare substring so
 /// classification keys on the *verb* a target names, not an incidental
 /// substring — `make rebuild` is not a `build`, `make latest` is not a `test`,
 /// `make observer` is not a `serve`/`server` — while `make build-all` /
@@ -591,10 +591,10 @@ impl CommandStore {
         exit_status: Option<i32>,
         tick: u64,
         now_epoch_s: u64,
-    ) -> Vec<(u32, TrackedObservation)> {
+    ) -> Option<TrackedObservation> {
         // Dedupe: if we've already applied the same exit status, skip.
         if self.exited.get(&pane_id) == Some(&exit_status) {
-            return Vec::new();
+            return None;
         }
         // A bare exit replay must not resurrect a receded completion: Zellij
         // re-reports exited panes on every manifest update (level-triggered),
@@ -609,7 +609,7 @@ impl CommandStore {
         if !self.pending.contains_key(&pane_id)
             && self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle)
         {
-            return Vec::new();
+            return None;
         }
 
         let new_status = match exit_status {
@@ -637,7 +637,7 @@ impl CommandStore {
                 .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
         {
             self.exited.insert(pane_id, exit_status);
-            return Vec::new();
+            return None;
         }
 
         self.exited.insert(pane_id, exit_status);
@@ -646,10 +646,10 @@ impl CommandStore {
         self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
 
-        let mut receded = Vec::new();
+        let mut receded = None;
         if let Some(s) = self.store.get_mut(pane_id) {
             if matches!(s.status, Status::Done | Status::Error) {
-                receded.push((pane_id, s.clone()));
+                receded = Some(s.clone());
             }
             s.status = new_status;
             s.last_change_tick = tick;

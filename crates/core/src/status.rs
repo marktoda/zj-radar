@@ -20,8 +20,10 @@
 /// - **Severity order.** Rows are listed in ascending-severity order so the
 ///   derived `Ord` *is* the aggregation order used by the Tab Roll-Up
 ///   (`.max()` picks the most-urgent member). Reordering rows reorders severity.
-/// - **Lenient parse.** `from_wire` falls back to `$fallback` for any unknown or
-///   absent token, matching how the pipe payload parses status.
+/// - **Lenient parse.** `from_wire` falls back to `$fallback` for any unknown
+///   token (the empty string included), matching how the pipe payload parses
+///   status. `Default` is generated from the same `fallback =` declaration, so
+///   the two can never disagree.
 macro_rules! statuses {
     (
         fallback = $fallback:ident;
@@ -39,8 +41,8 @@ macro_rules! statuses {
             /// and exhaustiveness tests iterate the variants without re-typing.
             pub const ALL: &'static [Status] = &[ $( Status::$variant ),+ ];
 
-            /// Parse a wire value; anything unknown/absent is the fallback
-            /// (`Status::Idle`).
+            /// Parse a wire value; any unknown token (the empty string
+            /// included) is the fallback (`Status::Idle`).
             pub fn from_wire(s: &str) -> Status {
                 match s {
                     $( $wire => Status::$variant, )+
@@ -86,9 +88,19 @@ macro_rules! statuses {
         }
 
         // Snapshot/pipe encoding, generated from the same table. Lenient: an
-        // unknown/absent token deserializes to the `from_wire` fallback (Idle),
-        // matching how the pipe payload parses status.
+        // unknown or empty token deserializes to the `from_wire` fallback
+        // (Idle), matching how the pipe payload parses status.
         $crate::wire::wire_serde!(lenient, Status);
+
+        /// Matches `from_wire`'s fallback for an unknown or empty wire token —
+        /// generated from the same `fallback = …` table declaration `from_wire`
+        /// uses, so the two agree by construction (and the
+        /// `default_matches_from_wire_fallback` test guards the pairing).
+        impl Default for Status {
+            fn default() -> Self {
+                Status::$fallback
+            }
+        }
     };
 }
 
@@ -102,15 +114,9 @@ statuses! {
     Error   => "error",   Role::Error,     '✗', '\u{f057}';
 }
 
-/// Matches `from_wire`'s fallback for an absent/unknown wire token — see the
-/// `statuses!` table's `fallback = Idle`.
-impl Default for Status {
-    fn default() -> Self {
-        Status::Idle
-    }
-}
-
 impl Status {
+    /// Anything but `Idle` — the pane has a live story (working, waiting, or a
+    /// still-displayed completion) rather than resting.
     pub fn is_active(self) -> bool {
         self != Status::Idle
     }
@@ -130,6 +136,9 @@ impl Status {
     }
 }
 
+/// Semantic color role for rendered rail elements. The renderer styles by
+/// role, never by raw color, so what each status *means* (see `Status::role`)
+/// stays separate from how a terminal palette happens to paint it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Error,
@@ -141,6 +150,8 @@ pub enum Role {
 }
 
 impl Role {
+    /// The ANSI SGR foreground sequence for this role (16-color palette, so
+    /// the user's terminal theme decides the exact shade).
     pub fn ansi(self) -> &'static str {
         match self {
             Role::Error => "\x1b[31m",
@@ -153,6 +164,9 @@ impl Role {
     }
 }
 
+/// Which glyph vocabulary the rail renders with: `Plain` geometric shapes
+/// (the default — no special font needed) or `Nerd` font icons for users with
+/// a Nerd Font installed. Selected via the `glyphs` config key (`from_config`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphSet {
     Nerd,
@@ -209,8 +223,10 @@ mod tests {
 
     #[test]
     fn default_matches_from_wire_fallback() {
-        // `Default` must agree with `from_wire`'s fallback for absent/unknown
-        // tokens, since `StatusPayload::default()` relies on this correspondence.
+        // `Default` must agree with `from_wire`'s fallback for unknown tokens
+        // (`""` included), since `StatusPayload::default()` relies on this
+        // correspondence. Both are generated from the table's `fallback =`
+        // declaration; this pins the pairing against a macro regression.
         assert_eq!(Status::default(), Status::from_wire(""));
         assert_eq!(Status::default(), Status::Idle);
     }

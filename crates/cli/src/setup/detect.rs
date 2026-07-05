@@ -1,6 +1,7 @@
 use super::*;
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use toml_edit::Item;
 
 /// True iff `notify` exists and equals our exact marker array.
@@ -67,6 +68,21 @@ pub(crate) fn resolve_layout_name(explicit: Option<&str>, config_text: Option<&s
         .map(str::to_string)
         .or_else(|| config_text.and_then(default_layout_name))
         .unwrap_or_else(|| "default".to_string())
+}
+
+/// The layout FILE `setup`/`--check` should operate on:
+/// `<config_dir>/layouts/<name>.kdl` for the resolved layout name (see
+/// [`resolve_layout_name`]). One resolution shared by the install path and the
+/// doctor, so both inspect the layout Zellij actually loads (and the one a
+/// `--layout` install just wrote).
+pub(crate) fn resolve_layout_path(
+    config_dir: &Path,
+    explicit: Option<&str>,
+    config_text: Option<&str>,
+) -> PathBuf {
+    config_dir
+        .join("layouts")
+        .join(format!("{}.kdl", resolve_layout_name(explicit, config_text)))
 }
 
 pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {

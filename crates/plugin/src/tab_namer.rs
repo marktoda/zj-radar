@@ -84,7 +84,9 @@ impl TabNamer {
             // Sanitized exactly like the tab intake sanitizes host names: what
             // we apply must equal what `TabUpdate` echoes back, or stickiness
             // would misread our own (re-sanitized) name as a manual rename.
-            let Some(desired) = computed_name(&tab.panes).map(|n| crate::payload::sanitize(&n, 40)) else {
+            let Some(desired) = computed_name(&tab.panes)
+                .map(|n| crate::payload::sanitize(&n, crate::payload::MAX_TAB_NAME_CHARS))
+            else {
                 continue;
             };
             if desired.is_empty() || desired == tab.name {

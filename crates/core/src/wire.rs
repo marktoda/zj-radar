@@ -8,8 +8,9 @@
 //! generated from one table, so they cannot drift. There are two unknown-token
 //! policies, picked per type:
 //!
-//! - **lenient** — `from_wire(&str) -> Self`; unknown/absent tokens fall back to
-//!   a designated variant, and deserialization never fails. Used by [`Status`],
+//! - **lenient** — `from_wire(&str) -> Self`; unknown tokens (the empty string
+//!   included) fall back to a designated variant, and deserialization never
+//!   fails. Used by [`Status`],
 //!   whose `statuses!` table calls [`wire_serde!`] directly (it owns a richer
 //!   table that also carries role + glyph data, so it can't be a plain
 //!   [`wire_enum!`]).
@@ -102,9 +103,11 @@ macro_rules! wire_enum {
 
         impl $Name {
             /// Every variant, in table order. Lets callers and exhaustiveness
-            /// tests iterate without re-typing the list. The macro emits this for
-            /// every enum uniformly; some (e.g. `Status`) use it in production
-            /// while others are test-only, so allow it to go unused.
+            /// tests iterate without re-typing the list. The macro emits this
+            /// uniformly, and it can generate private enums (e.g. the test-local
+            /// `Color` below) whose `ALL` nothing consumes — so allow it to go
+            /// unused. (`ObservationOrigin` is the production user; `Status`
+            /// is built by `statuses!`, which emits its own `ALL`.)
             #[allow(dead_code)]
             pub const ALL: &'static [$Name] = &[ $( $Name::$variant ),+ ];
 
@@ -187,7 +190,7 @@ mod tests {
             }
         }
 
-        // Lenient: anything unknown/absent folds into the `Calm` fallback.
+        // Lenient: anything unknown (empty included) folds into the `Calm` fallback.
         fn from_wire(s: &str) -> Mood {
             match s {
                 "loud" => Mood::Loud,

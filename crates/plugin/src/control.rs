@@ -11,17 +11,17 @@ pub(crate) const CMD_PIPE: &str = "zj_radar.cmd.v1";
 
 /// A parsed command verb.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Command {
+pub(crate) enum Verb {
     AttentionNext,
     AttentionPrev,
 }
 
 /// Parse a bare verb string. Trims surrounding whitespace; case-sensitive
 /// lowercase verbs. Returns `None` for unknown/empty input.
-pub(crate) fn parse(s: &str) -> Option<Command> {
+pub(crate) fn parse(s: &str) -> Option<Verb> {
     match s.trim() {
-        "attention-next" => Some(Command::AttentionNext),
-        "attention-prev" => Some(Command::AttentionPrev),
+        "attention-next" => Some(Verb::AttentionNext),
+        "attention-prev" => Some(Verb::AttentionPrev),
         _ => None,
     }
 }
@@ -32,8 +32,8 @@ mod tests {
 
     #[test]
     fn parses_known_verbs_trimmed() {
-        assert_eq!(parse("attention-next"), Some(Command::AttentionNext));
-        assert_eq!(parse("  attention-prev\n"), Some(Command::AttentionPrev));
+        assert_eq!(parse("attention-next"), Some(Verb::AttentionNext));
+        assert_eq!(parse("  attention-prev\n"), Some(Verb::AttentionPrev));
     }
 
     #[test]

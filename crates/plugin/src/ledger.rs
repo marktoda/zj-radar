@@ -13,7 +13,7 @@
 //! `is_empty` via `PluginRuntime::render`'s onboarding-vs-rail choice.
 
 use crate::observation::{ObservationOrigin, TrackedObservation};
-use crate::payload::{sanitize, MAX_MSG_CHARS};
+use crate::payload::{sanitize, MAX_MSG_CHARS, MAX_TAB_NAME_CHARS};
 use crate::radar_state::TabId;
 use crate::status::Status;
 use serde::{Deserialize, Serialize};
@@ -89,7 +89,7 @@ impl LedgerEntry {
 /// Sanitize (strip controls/ANSI, cap like a tab name) + fall back to `"tab"`
 /// for an empty result, so a ledgered entry never shows a blank tab column.
 fn sanitized_or(name: &str) -> String {
-    let clean = sanitize(name, 40);
+    let clean = sanitize(name, MAX_TAB_NAME_CHARS);
     let trimmed = clean.trim();
     if trimmed.is_empty() {
         "tab".to_string()

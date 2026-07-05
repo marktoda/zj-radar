@@ -110,7 +110,12 @@ impl ObservationStore {
         self.map.get(&pane_id)
     }
 
-    pub fn get_mut(&mut self, pane_id: u32) -> Option<&mut TrackedObservation> {
+    /// `pub(crate)` on purpose: the one accessor that can mutate a status
+    /// without producing the displaced-completion recede `insert`/`prune`
+    /// return, so it stays out of the published API to protect the
+    /// ledger-edge discipline (its only user, `CommandStore`, wires its own
+    /// recedes).
+    pub(crate) fn get_mut(&mut self, pane_id: u32) -> Option<&mut TrackedObservation> {
         self.map.get_mut(&pane_id)
     }
 

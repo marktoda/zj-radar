@@ -17,19 +17,24 @@ use std::path::{Path, PathBuf};
 /// branching into a second, dead-end message.
 const GRANT_HINT: &str = "First run: a permission prompt opens — press y to enable agent status \
     (if it doesn't appear, press Ctrl-y in the session).";
-pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup` to enable.";
+/// Two producers, two wiring routes — name both, because `zj-radar setup` can
+/// only wire Codex; the Claude producer installs from inside Claude Code.
+pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. For Codex run `zj-radar setup codex`; \
+    for Claude Code run `/plugin install zj-radar-claude` inside Claude Code.";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-/// Session name from the cwd basename (sanitized) or an explicit override.
-/// Zellij session names allow `[A-Za-z0-9_-]`; other chars fold to `-`. If
-/// nothing alphanumeric survives (empty or all-symbol basename), falls back to
-/// `"radar"` rather than emitting a degenerate all-dashes name.
+/// Session name from the cwd basename or an explicit `--name` override — both
+/// sanitized. Zellij session names allow `[A-Za-z0-9_-]`; other chars fold to
+/// `-`. The override is NOT taken verbatim because the name round-trips through
+/// `zellij list-sessions` output parsing (`session_is_live` /
+/// `session_is_running` split on whitespace), so a name containing a space
+/// could never match its own session again. If nothing alphanumeric survives
+/// (empty or all-symbol input), falls back to `"radar"` rather than emitting a
+/// degenerate all-dashes name.
 pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
-    if let Some(n) = name_override {
-        return n.to_string();
-    }
-    let base = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let base = name_override
+        .unwrap_or_else(|| cwd.file_name().and_then(|s| s.to_str()).unwrap_or(""));
     let sanitized: String = base
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
@@ -363,11 +368,6 @@ pub struct RunOptions {
     pub print_cmd: bool,
 }
 
-/// Read `~/<rel>` if present. Producer/grant probes are strictly read-only.
-fn read_under_home(rel: &str) -> Option<String> {
-    dirs::home_dir().and_then(|h| std::fs::read_to_string(h.join(rel)).ok())
-}
-
 /// True iff a Zellij session named `name` exists (alive or resurrectable), per
 /// `zellij list-sessions --short` (plain names, one per line). Any error
 /// (zellij missing, no server) is treated as "does not exist" → create path.
@@ -474,8 +474,12 @@ pub fn run(opts: RunOptions) {
     // Local-wasm override (`just dev`): copy the freshly-built artifact over
     // the materialized path on every run, so the session always loads the
     // build under test — never the embedded or downloaded release wasm.
+    // Atomic (read + temp-file rename via `atomic_write`), not `fs::copy` onto
+    // the destination: a live session may load the wasm mid-copy otherwise.
     if let Some(wasm) = std::env::var_os("ZJ_RADAR_WASM").filter(|w| !w.is_empty()) {
-        if let Err(e) = std::fs::copy(&wasm, &materialized.wasm_path) {
+        let copied = std::fs::read(&wasm)
+            .and_then(|bytes| atomic_write(&materialized.wasm_path, &bytes));
+        if let Err(e) = copied {
             crate::exit::fail_report(
                 "zj-radar",
                 format!("copying ZJ_RADAR_WASM ({}) failed — {e}", Path::new(&wasm).display()),
@@ -516,7 +520,7 @@ pub fn run(opts: RunOptions) {
         resurrect_layout_defers,
         permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
         codex_hooks: crate::setup::codex_hooks_text(),
-        installed_plugins: read_under_home(".claude/plugins/installed_plugins.json"),
+        installed_plugins: crate::setup::claude_installed_plugins_text(),
     };
     let plan = plan_run(&facts);
 
@@ -572,6 +576,17 @@ mod tests {
         // All-symbol basename: nothing alphanumeric survives -> fall back, not "---".
         assert_eq!(session_name(Path::new("/Users/m/%%%"), None), "radar");
         assert_eq!(session_name(Path::new("/Users/m/dev/foo"), Some("bar")), "bar");
+    }
+
+    #[test]
+    fn session_name_sanitizes_explicit_override_too() {
+        // An explicit --name round-trips through `zellij list-sessions` parsing,
+        // which splits on whitespace — a verbatim "my proj" would never match
+        // its own session again (always the create path, which then collides).
+        assert_eq!(session_name(Path::new("/x"), Some("my proj")), "my-proj");
+        assert_eq!(session_name(Path::new("/x"), Some("a/b:c")), "a-b-c");
+        // All-symbol override takes the same fallback as an all-symbol basename.
+        assert_eq!(session_name(Path::new("/x"), Some("%%%")), "radar");
     }
 
     #[test]
@@ -749,7 +764,11 @@ mod tests {
         let wired = format!("{CODEX_HOOK_MARKER} zj-radar notify codex");
         assert!(producer_hint(Some(&wired), false).is_none());
         assert!(producer_hint(None, true).is_none());
-        assert!(producer_hint(None, false).unwrap().contains("zj-radar setup"));
+        // The hint must name BOTH wiring routes: `setup` only wires Codex; the
+        // Claude producer installs from inside Claude Code.
+        let hint = producer_hint(None, false).unwrap();
+        assert!(hint.contains("zj-radar setup codex"), "must name the Codex route: {hint}");
+        assert!(hint.contains("/plugin install zj-radar-claude"), "must name the Claude route: {hint}");
     }
 
     #[test]

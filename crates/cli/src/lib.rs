@@ -139,14 +139,15 @@ enum Command {
         layout: Option<String>,
         /// Open the plugin in a focused floating pane so Zellij can prompt for
         /// permissions (one-time grant). Exits after launching; does not run the
-        /// wasm/alias/inject steps.
-        #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall"])]
+        /// wasm/alias/inject steps. Conflicts with `dry_run`/`check` too: the
+        /// grant launches a real pane, which a "write nothing" flag must not.
+        #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall", "dry_run", "check"])]
         grant: bool,
     },
 }
 
 /// CLI entry point (called by `src/main.rs`). Returns the process exit code:
-/// failure when any orchestrator flagged a refusal/error via [`exit::fail`].
+/// failure when any orchestrator flagged a refusal/error via [`exit::fail_report`].
 pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {

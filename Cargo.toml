@@ -7,6 +7,8 @@ version = "0.1.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/marktoda/zj-radar"
+# Floor set by `Option::is_none_or` (core's `command::contains_word`).
+rust-version = "1.82"
 
 [workspace.dependencies]
 # `version` is required alongside `path` so the CLI is publishable to

@@ -14,6 +14,11 @@ pub const MAX_TASK_CHARS: usize = 60;
 pub const MAX_REPO_CHARS: usize = 40;
 /// Public-contract limit: `branch` truncates to this many chars on parse.
 pub const MAX_BRANCH_CHARS: usize = 40;
+/// Intake cap for tab names and pane titles. Not a pipe-payload field — these
+/// arrive from the Zellij host (tab/pane updates) and the plugin sanitizes
+/// them to this many chars at intake, the same discipline as the wire caps
+/// above (and the same 40 as `repo`/`branch`, the other row-column strings).
+pub const MAX_TAB_NAME_CHARS: usize = 40;
 /// Public-contract limit: `source` truncates to this many chars on parse.
 pub const MAX_SOURCE_CHARS: usize = 16;
 
@@ -26,25 +31,49 @@ pub const STATUS_PIPE_NAME: &str = "zj_radar.status.v1";
 /// Stamped into the payload's `v` field by [`to_wire`]; never read on parse.
 pub const STATUS_VERSION: u32 = 1;
 
+/// One `zj_radar.status.v1` broadcast, parsed and sanitized — what a producer
+/// says about one pane. Producers build one of these (use
+/// `..Default::default()` for anything not set — it means exactly "absent on
+/// the wire") and serialize it with [`to_wire`]; the plugin gets it back from
+/// [`parse`], which sanitizes and caps every text field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusPayload {
+    /// The Zellij terminal pane the status is about (the wire's
+    /// `pane: {"type": "terminal", "id": N}` — `parse` rejects non-terminal
+    /// panes). Required on the wire.
     pub pane_id: u32,
+    /// The pane's agent status. Required on the wire (a missing field is a
+    /// parse error), but lenient in value: an unknown or empty token parses
+    /// as `Status::Idle`.
     pub status: Status,
+    /// Repository name shown on the pane's row. Optional; sanitized and
+    /// capped at [`MAX_REPO_CHARS`] on parse.
     pub repo: String,
+    /// VCS branch, rendered next to `repo`. Optional; sanitized and capped at
+    /// [`MAX_BRANCH_CHARS`] on parse.
     pub branch: String,
+    /// One-line activity message ("running tests", the agent's question, …).
+    /// Optional; sanitized and capped at [`MAX_MSG_CHARS`] on parse.
     pub msg: String,
     /// Sticky task label (first line of the user's prompt). Wire semantics:
     /// empty/absent = leave the pane's stored task unchanged; non-empty =
     /// replace. Clearing is a plugin lifecycle rule, never a wire signal.
+    /// Sanitized and capped at [`MAX_TASK_CHARS`] on parse.
     pub task: String,
+    /// Producer identity token (`"claude"`, `"codex"`, …) — the plugin maps it
+    /// through `Kind::from_source`, so unknown sources still render (as
+    /// `Other`). Optional; sanitized and capped at [`MAX_SOURCE_CHARS`].
     pub source: String,
 }
 
 /// Mirrors what `parse` produces for a payload with every optional field
-/// absent: `status` falls back the same way `Status::from_wire` does for an
-/// unknown/absent token (`Status::Idle`), every text field defaults to `""`
-/// (an absent field's serde default on `Raw`, sanitized), and `pane_id` is
-/// `0` (the primitive default `RawPane.id` would take). So
+/// absent: every optional text field defaults to `""` (an absent field's
+/// serde default on `Raw`, sanitized), and the two *required* fields take
+/// their degenerate values — `pane_id` is `0` (the primitive default
+/// `RawPane.id` would take) and `status` is the fallback (`Status::Idle`)
+/// that `Status::from_wire` gives an unknown or empty token. (`status` cannot
+/// actually be absent — a missing field is a hard parse error — which is why
+/// the paired test drives this with `"status":""`.) So
 /// `..Default::default()` in a struct literal means exactly "absent on the
 /// wire" — this is the forward-compatible construction path for external
 /// producers: a future field addition to `StatusPayload` defaults the same
@@ -346,11 +375,17 @@ mod tests {
         // MAX_BRANCH_CHARS, msg MAX_MSG_CHARS, source MAX_SOURCE_CHARS). Pin all
         // four so nudging any cap in `parse` is caught here — the wire boundary
         // is the only thing standing between a hostile producer and an
-        // unbounded row. The literal VALUES are pinned separately below so an
-        // accidental edit to a const still fails a test, not just this one.
+        // unbounded row. The literal VALUES of every cap const are pinned here
+        // too, so an accidental edit to a const still fails a test, not just
+        // whichever behavior test happens to exercise it.
         assert_eq!(MAX_REPO_CHARS, 40);
         assert_eq!(MAX_BRANCH_CHARS, 40);
         assert_eq!(MAX_SOURCE_CHARS, 16);
+        assert_eq!(MAX_MSG_CHARS, 60);
+        assert_eq!(MAX_TASK_CHARS, 60);
+        // Not a `parse` cap, but the same class of intake bound (tab names and
+        // pane titles sanitize to it at the plugin's host intake).
+        assert_eq!(MAX_TAB_NAME_CHARS, 40);
         let json = format!(
             r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","repo":"{r}","branch":"{b}","msg":"{m}","source":"{s}"}}"#,
             r = "r".repeat(100),
