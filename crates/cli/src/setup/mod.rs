@@ -127,7 +127,9 @@ pub fn run(options: SetupOptions<'_>) {
     let mode = mode_from_flags(options.grant, options.check, options.uninstall);
 
     if mode == Mode::Grant {
-        run_grant(&zellij_config_dir());
+        if let Some(config_dir) = zellij_config_dir_or_report() {
+            run_grant(&config_dir);
+        }
         return;
     }
 

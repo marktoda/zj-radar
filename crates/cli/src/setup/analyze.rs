@@ -15,6 +15,8 @@ pub(crate) struct ZellijEnv {
     pub wasm_present:          bool,
     pub config_managed:        bool,
     pub wasm_path:             String,
+    /// `zellij --version` stdout; `None` when the binary is absent/unrunnable.
+    pub zellij_version:        Option<String>,
 }
 
 /// Every derived fact about the current Zellij setup state, in one place. Both
@@ -29,6 +31,25 @@ pub(crate) struct ZellijFacts {
     pub granted:                 Option<bool>,
     pub producer_wired:          bool,
     pub config_managed:          bool,
+    pub zellij_version:          Option<String>,
+}
+
+/// The Zellij minor the plugin ABI targets — bump alongside the `zellij-tile`
+/// pin in crates/plugin/Cargo.toml and the version claims in README/docs.
+pub(crate) const SUPPORTED_ZELLIJ_MINOR: &str = "0.44";
+
+/// Lenient version gate: warn only on a definite mismatch. `zellij --version`
+/// prints e.g. `zellij 0.44.1`; if that shape ever changes and no version-like
+/// token is found, err on the side of "supported" — a fragile parse must not
+/// fail a working install.
+pub(crate) fn zellij_version_is_supported(version_output: &str) -> bool {
+    match version_output
+        .split_whitespace()
+        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    {
+        Some(v) => v.strip_prefix(SUPPORTED_ZELLIJ_MINOR).is_some_and(|rest| rest.starts_with('.')),
+        None => true,
+    }
 }
 
 /// Pure: derive every Zellij setup fact from already-read inputs. No I/O.
@@ -60,6 +81,7 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         granted,
         producer_wired,
         config_managed: env.config_managed,
+        zellij_version: env.zellij_version.clone(),
     }
 }
 
@@ -173,6 +195,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.managed_alias_present, "managed marker must be detected");
@@ -204,6 +227,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         assert!(
             !analyze_zellij(&env_for(other_plugin_in_store)).alias_is_store_path,
@@ -231,6 +255,7 @@ mod tests {
             wasm_present: true,
             config_managed: false,
             wasm_path: wasm_path.to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, Some(true), "layout text with radar plugin has rail");
@@ -249,6 +274,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, None, "no layout file -> None, distinct from Some(false)");
@@ -267,6 +293,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired, "claude producer plugin present -> wired");
@@ -283,6 +310,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
+            zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired, "codex hooks text containing the marker -> wired");

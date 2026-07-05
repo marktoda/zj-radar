@@ -561,7 +561,14 @@ impl PluginRuntime {
     /// Spec §10 cadence function. Fast (1s) while anything tick-windowed is
     /// live; Slow (60s) while ledger ages are still changing; None once every
     /// age is saturated ("1h+") — the battery property's full-disarm state.
+    /// A *denied* rail disarms unconditionally: without `ReadApplicationState`
+    /// none of the events that clear domain work ever arrive, so a stale
+    /// `Running` loaded from a snapshot would otherwise pin Fast ticks and
+    /// repaints forever behind a static needs-permission face.
     fn desired_cadence(&self) -> Option<Cadence> {
+        if self.permission.denied() {
+            return None;
+        }
         if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
             Some(Cadence::Fast)
         } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s())

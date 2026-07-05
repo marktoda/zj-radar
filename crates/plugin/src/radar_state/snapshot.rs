@@ -139,14 +139,15 @@ fn load_v3(value: serde_json::Value) -> Option<LoadedSnapshot> {
     // `TrackedObservation` deserializes itself; an entry with an unknown origin
     // fails deserialization, which drops the whole snapshot (`.ok()?`).
     let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
+    // Free text rides the disk record verbatim; a pre-sanitize build (or a
+    // hand-edited file) may have persisted raw control chars, so scrub both
+    // observations and ledger on the way in like every other externally-
+    // sourced string.
     let observations = snapshot
         .observations
         .into_iter()
-        .map(|entry| (entry.pane_id, entry.obs))
+        .map(|entry| (entry.pane_id, entry.obs.sanitized()))
         .collect();
-    // Ledger strings ride the disk record verbatim; a pre-sanitize build (or a
-    // hand-edited file) may have persisted raw control chars, so scrub them on
-    // the way in like every other externally-sourced string.
     let ledger = snapshot.ledger.into_iter().map(LedgerEntry::sanitized).collect();
     Some((observations, snapshot.tick, ledger))
 }
@@ -166,6 +167,8 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
         .map(|pane| {
             (
                 pane.pane_id,
+                // `.sanitized()`: v1 records predate the sanitizer entirely,
+                // so their free text is always suspect.
                 TrackedObservation {
                     origin: ObservationOrigin::StatusPipe,
                     status: Status::from_wire(&pane.status),
@@ -179,7 +182,8 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
                     exit_code: None,
                     completed_epoch_s: None,
                     pending_epoch_s: None,
-                },
+                }
+                .sanitized(),
             )
         })
         .collect();

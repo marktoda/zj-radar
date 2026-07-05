@@ -63,6 +63,6 @@ incompatible core and no longer compiles) and `zj-radar-core 0.1.0` (nothing
 else may depend on it; it predates the checksum-verified installer):
 
 ```sh
-cargo yank -p zj-radar --version 0.1.0
-cargo yank -p zj-radar-core --version 0.1.0
+cargo yank zj-radar@0.1.0
+cargo yank zj-radar-core@0.1.0
 ```

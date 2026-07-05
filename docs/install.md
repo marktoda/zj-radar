@@ -115,6 +115,10 @@ zj-radar setup zellij --inject --layout my  # inject into layouts/my.kdl
 zj-radar setup zellij --uninstall           # strip the injected rail
 ```
 
+No layout file at all (a stock Zellij ships none)? `--inject` — or answering
+`y` at the prompt — creates it outright with the full rail layout instead of
+splicing.
+
 To do it manually, add this snippet to any layout file:
 
 ```kdl
@@ -201,6 +205,7 @@ component:
 ```
 zj-radar setup zellij --check
 zellij:
+  ok zellij binary: found on PATH (zellij 0.44.1)
   ok alias: radar plugin alias present in config.kdl
   ok wasm: wasm plugin file present
   missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
@@ -209,8 +214,10 @@ zellij:
 ```
 
 Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
-modifies any file. Reported items (five always; a sixth only when applicable):
+modifies any file. Reported items (six always; a seventh only when applicable):
 
+- **zellij binary** — `zellij` is on `PATH`; warns when its version is outside
+  the supported 0.44.x line (a mismatched plugin ABI loads as a blank rail).
 - **alias** — `radar` plugin alias present in `config.kdl`; warns if it points at
   a `/nix/store/` path (grant won't survive a rebuild).
 - **wasm** — plugin file exists at the expected stable path.
@@ -283,3 +290,25 @@ zjRadarWasm = pkgs.fetchurl {
 ```
 
 The old `@smartTabs@` substitution is fully retired — zj-radar owns the rail.
+
+## Files zj-radar creates (and how to fully remove them)
+
+Everything zj-radar touches, what creates it, and what `setup zellij
+--uninstall` does about it. Paths are the defaults; `ZELLIJ_CONFIG_DIR` /
+`XDG_CONFIG_HOME` move the config-dir entries with them.
+
+| File | Created by | `--uninstall` |
+|---|---|---|
+| `~/.config/zellij/config.kdl` — managed `radar` alias between `// zj-radar:` markers | `setup zellij` | **reversed** — strips only the fenced block |
+| `~/.config/zellij/layouts/<name>.kdl` — rail spliced between markers | `setup zellij --inject` into an existing layout | **reversed** — byte-for-byte inverse of the splice |
+| `~/.config/zellij/layouts/<name>.kdl` — whole file | `setup zellij --inject` when no layout existed | **left in place** (it has no splice to reverse) — delete the file to remove |
+| `<edited file>.zj-radar.bak` — pre-edit backups | every config/layout edit | left in place (they're your restore points) — delete when satisfied |
+| `~/.config/zellij/plugins/zj_radar.wasm` | `setup zellij --wasm/--download` | left in place — `rm` it to remove |
+| `permissions.kdl` grant entry (macOS `~/Library/Caches/org.Zellij-Contributors.Zellij/`, Linux `~/.cache/zellij/`) | *Zellij*, when you answer y to the permission prompt | never touched (Zellij owns this file) — edit out the `zj_radar.wasm` block to revoke |
+| `run`'s owned config dir (macOS `~/Library/Application Support/zj-radar/`, Linux `~/.local/share/zj-radar/`) | `zj-radar run` | not touched by `setup` — `rm -r` the directory; it holds nothing but re-materializable assets and session markers |
+| Per-session plugin state under Zellij's cache + `/tmp/zj-radar` fallback | the running plugin | self-pruning (24 h); safe to delete anytime |
+| `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
+
+So a complete removal is: `zj-radar setup zellij --uninstall && zj-radar setup
+codex --uninstall`, then delete the wasm, the `zj-radar` data dir, and the
+grant block — plus the binary itself, wherever you installed it.

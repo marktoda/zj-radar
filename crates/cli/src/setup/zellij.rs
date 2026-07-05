@@ -63,6 +63,13 @@ pub(crate) fn run_grant(config_dir: &Path) {
                 ),
             );
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::exit::fail_report(
+                "zj-radar",
+                "zellij not found on PATH — install Zellij 0.44.x first \
+                 (https://zellij.dev/documentation/installation)",
+            );
+        }
         Err(e) => {
             crate::exit::fail_report(
                 "zj-radar",
@@ -76,7 +83,16 @@ pub(crate) fn run_grant(config_dir: &Path) {
     }
 }
 
-pub(crate) fn zellij_config_dir() -> PathBuf {
+/// `zellij --version` stdout (trimmed), or `None` when the binary is absent
+/// or unrunnable — the raw read behind `ZellijEnv::zellij_version`.
+pub(crate) fn zellij_version_output() -> Option<String> {
+    let out = std::process::Command::new("zellij").arg("--version").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+pub(crate) fn zellij_config_dir() -> Option<PathBuf> {
     resolve_config_dir(
         std::env::var_os("ZELLIJ_CONFIG_DIR"),
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -84,24 +100,43 @@ pub(crate) fn zellij_config_dir() -> PathBuf {
     )
 }
 
+/// The resolved config dir, or `None` with the refusal already reported —
+/// callers just early-return. With every env source unset, the old fallback
+/// resolved to the *relative* path `.config/zellij` in the process CWD, so a
+/// `setup zellij --yes` from cron/a container silently grew a config tree in
+/// whatever directory it ran from (mirrors `codex_home_from`'s refusal).
+pub(crate) fn zellij_config_dir_or_report() -> Option<PathBuf> {
+    let dir = zellij_config_dir();
+    if dir.is_none() {
+        crate::exit::fail_report(
+            "zellij",
+            "skipped — set $HOME (or $ZELLIJ_CONFIG_DIR / $XDG_CONFIG_HOME) \
+             so the Zellij config dir can be resolved",
+        );
+    }
+    dir
+}
+
 /// Mirror Zellij's own config-dir resolution so `setup` writes where Zellij reads:
 /// `ZELLIJ_CONFIG_DIR` wins, then `$XDG_CONFIG_HOME/zellij`, then `~/.config/zellij`.
 /// Skipping `XDG_CONFIG_HOME` would install the alias/wasm into `~/.config` while a
 /// Linux XDG user's Zellij reads elsewhere — the rail never appears and `--check`
-/// reports everything missing. Pure (env read by the caller) so the precedence is
-/// unit-testable without mutating process-global environment.
+/// reports everything missing. `None` when every source is unset or empty — writers
+/// must refuse rather than invent a path. Pure (env read by the caller) so the
+/// precedence is unit-testable without mutating process-global environment.
 fn resolve_config_dir(
     zellij_config_dir: Option<std::ffi::OsString>,
     xdg_config_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
-) -> PathBuf {
+) -> Option<PathBuf> {
     if let Some(dir) = zellij_config_dir.filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir);
+        return Some(PathBuf::from(dir));
     }
     if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
-        return PathBuf::from(xdg).join("zellij");
+        return Some(PathBuf::from(xdg).join("zellij"));
     }
-    PathBuf::from(home.unwrap_or_default()).join(".config").join("zellij")
+    home.filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join(".config").join("zellij"))
 }
 
 pub(crate) fn zellij_config_path(config_dir: &Path) -> PathBuf {
@@ -201,7 +236,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let force       = opts.force;
     let inject_flag = opts.inject;
     let layout_name = opts.layout;
-    let config_dir = zellij_config_dir();
+    let Some(config_dir) = zellij_config_dir_or_report() else { return };
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let location = zellij_plugin_location(&wasm_dest);
@@ -225,6 +260,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         wasm_present:           wasm_dest.is_file(),
         config_managed:         config_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
+        zellij_version:         zellij_version_output(),
     });
 
     let path = setup_path(
@@ -439,7 +475,10 @@ fn print_snippet_for(layout_path: &Path) {
 
 /// Handle layout injection after the alias step. Reads `layout_path`, decides
 /// the mode, and either injects (writing a `.zj-radar.bak` backup first) or
-/// prints the tailored snippet. A missing layout → snippet only (safe fallback).
+/// prints the tailored snippet. A missing layout file takes the *create* path:
+/// with consent, the full known-good layout is written fresh — a stock Zellij
+/// ships no layout file at all, so "paste this fragment" alone is a dead end
+/// (there is nothing to paste it into).
 fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: bool) {
     use std::io::IsTerminal;
     let is_tty = std::io::stdin().is_terminal();
@@ -448,13 +487,22 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
     let text = match std::fs::read_to_string(layout_path) {
         Ok(t) => t,
         Err(_) => {
-            // Layout not found — just print the snippet, no failure.
-            let facts = crate::layout::analyze("");
-            let snippet = crate::layout::tailored_snippet(&facts);
-            println!(
-                "zellij: layout not found at {} — add the rail manually:\n\n{snippet}",
-                layout_path.display()
-            );
+            match mode {
+                InjectMode::Inject => create_full_layout(layout_path, dry_run),
+                InjectMode::Prompt => {
+                    let prompt = format!(
+                        "No layout at {} — create it with the rail layout?",
+                        layout_path.display()
+                    );
+                    if confirm(&prompt) {
+                        create_full_layout(layout_path, dry_run);
+                    } else {
+                        print_missing_layout_fallback(layout_path);
+                    }
+                }
+                // --yes / non-tty: the safe non-mutating default, as ever.
+                InjectMode::Snippet => print_missing_layout_fallback(layout_path),
+            }
             return;
         }
     };
@@ -484,6 +532,39 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
             do_inject(layout_path, &text, &facts, dry_run);
         }
     }
+}
+
+/// Write the full known-good layout (byte-pinned to `run_assets/radar.kdl`)
+/// to a path that has no layout file yet. The file is new, so `write_atomic`'s
+/// backup step is naturally skipped and there is nothing to corrupt.
+fn create_full_layout(layout_path: &Path, dry_run: bool) {
+    let layout = crate::layout::full_layout();
+    if dry_run {
+        println!(
+            "zellij: would create {} with the rail layout (dry-run)\n--- layout (dry-run) ---\n{layout}",
+            layout_path.display()
+        );
+        return;
+    }
+    match write_atomic(layout_path, &layout) {
+        Ok(()) => println!("zellij: created {} with the rail layout", layout_path.display()),
+        Err(e) => crate::exit::fail_report("zellij", format!("layout create failed — {e}")),
+    }
+}
+
+/// The declined / non-consenting fallback when no layout file exists: print
+/// the fragment snippet, but say what it needs to live in and how to get the
+/// file created — this branch must not read as a working end state (the rail
+/// will not appear without a layout).
+fn print_missing_layout_fallback(layout_path: &Path) {
+    let facts = crate::layout::analyze("");
+    let snippet = crate::layout::tailored_snippet(&facts);
+    println!(
+        "zellij: no layout at {} — the rail won't appear until one exists.\n\
+         Re-run with --inject (or answer y) to create it, or wrap the snippet\n\
+         below in a `layout {{ … }}` block yourself:\n\n{snippet}",
+        layout_path.display()
+    );
 }
 
 /// Perform the actual inject: call `layout::inject`, write backup + new text.
@@ -587,7 +668,7 @@ mod tests {
     #[test]
     fn resolve_config_dir_prefers_zellij_config_dir() {
         let got = resolve_config_dir(os("/explicit"), os("/xdg"), os("/home"));
-        assert_eq!(got, PathBuf::from("/explicit"));
+        assert_eq!(got, Some(PathBuf::from("/explicit")));
     }
 
     #[test]
@@ -596,18 +677,28 @@ mod tests {
         // skipped, so XDG users got a silently-ineffective setup).
         assert_eq!(
             resolve_config_dir(None, os("/xdg"), os("/home")),
-            PathBuf::from("/xdg/zellij"),
+            Some(PathBuf::from("/xdg/zellij")),
         );
         // No ZELLIJ_CONFIG_DIR, no XDG → ~/.config/zellij.
         assert_eq!(
             resolve_config_dir(None, None, os("/home")),
-            PathBuf::from("/home/.config/zellij"),
+            Some(PathBuf::from("/home/.config/zellij")),
         );
         // Empty env values are ignored, not treated as "" paths.
         assert_eq!(
             resolve_config_dir(os(""), os(""), os("/home")),
-            PathBuf::from("/home/.config/zellij"),
+            Some(PathBuf::from("/home/.config/zellij")),
         );
+    }
+
+    #[test]
+    fn resolve_config_dir_refuses_when_no_source_is_set() {
+        // With every env source unset (or empty), the old `unwrap_or_default`
+        // fallback produced the RELATIVE path `.config/zellij` — a setup run
+        // from cron/a container would grow a config tree in its CWD. Writers
+        // must refuse instead.
+        assert_eq!(resolve_config_dir(None, None, None), None);
+        assert_eq!(resolve_config_dir(os(""), os(""), os("")), None);
     }
 
     // ── inject_mode decision tests ───────────────────────────────────────────

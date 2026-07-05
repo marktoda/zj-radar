@@ -186,6 +186,30 @@ fn snapshot_load_scrubs_hostile_ledger_strings() {
 }
 
 #[test]
+fn snapshot_load_scrubs_hostile_observation_strings() {
+    // Same threat as the ledger case, one struct over: observation free text
+    // rides the disk record verbatim, and msg/task flow straight into the
+    // rendered grid — a raw ESC would inject ANSI, an interior newline would
+    // break rail lockstep.
+    let hostile = TrackedObservation {
+        repo: "re\x1b[31mpo".into(),
+        branch: "br\u{202e}anch".into(),
+        msg: "m\x1b[2Jsg\nline2".into(),
+        task: "ta\x07sk".into(),
+        ..TrackedObservation::command(Status::Running, String::new(), String::new(), Kind::Other, 1)
+    };
+    let mut entry = serde_json::to_value(&hostile).unwrap();
+    entry["pane_id"] = 4.into();
+    let json = format!(r#"{{"v":3,"tick":1,"observations":[{entry}]}}"#);
+    let (observations, _, _) = snapshot::load(&json).expect("valid snapshot");
+    let obs = &observations[0].1;
+    assert_eq!(obs.repo, "repo");
+    assert_eq!(obs.branch, "branch");
+    assert_eq!(obs.msg, "msg line2");
+    assert_eq!(obs.task, "task");
+}
+
+#[test]
 fn active_tab_focus_is_the_only_global_focus_transition() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "left", false), tab(20, 1, "right", true)]);

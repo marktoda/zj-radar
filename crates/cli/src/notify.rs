@@ -20,6 +20,18 @@ fn pane_id_from_env() -> Option<u32> {
         .ok()
 }
 
+/// The pane id, with a stderr hint under `--dry-run` when there isn't one.
+/// Live hooks stay silent outside Zellij (fire-and-forget must never break
+/// the calling hook), but a dry run is explicitly a debugging tool — its
+/// least debuggable outcome would be silently printing nothing.
+fn pane_id_or_dry_run_hint(dry_run: bool) -> Option<u32> {
+    let pane_id = pane_id_from_env();
+    if pane_id.is_none() && dry_run {
+        eprintln!("zj-radar: not inside Zellij (no ZELLIJ/ZELLIJ_PANE_ID) — nothing would be broadcast");
+    }
+    pane_id
+}
+
 /// Derive the repository NAME from a git "common dir" path — the output of
 /// `git rev-parse --git-common-dir` made absolute. The common dir always points
 /// at the MAIN repo's git dir, even from inside a linked worktree, so this yields
@@ -112,7 +124,7 @@ fn read_capped<R: Read>(reader: R, cap: u64) -> String {
 /// broadcast. Never panics; any failure is a silent no-op so the calling hook is
 /// never broken.
 pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: bool) {
-    let Some(pane_id) = pane_id_from_env() else {
+    let Some(pane_id) = pane_id_or_dry_run_hint(dry_run) else {
         return;
     };
     let Some(agent) = Agent::from_cli(agent) else {
@@ -151,8 +163,9 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
 /// broadcast is otherwise identical to an agent's. `source` picks the rail's
 /// kind mark (`test`/`build`/`deploy`/`server`/…); anything unrecognized —
 /// including the default `generic` — renders as the neutral `⦿ other` mark.
-/// Same fire-and-forget contract as the hook path: outside Zellij, or with a
-/// missing/unknown status token, it prints a hint and exits 0.
+/// Same fire-and-forget contract as the hook path: a missing/unknown status
+/// token prints a hint and exits 0; outside Zellij it exits 0 silently
+/// (`--dry-run` adds the not-inside-Zellij hint).
 pub fn run_generic(
     status: Option<&str>,
     msg: Option<&str>,
@@ -160,7 +173,7 @@ pub fn run_generic(
     source: Option<&str>,
     dry_run: bool,
 ) {
-    let Some(pane_id) = pane_id_from_env() else {
+    let Some(pane_id) = pane_id_or_dry_run_hint(dry_run) else {
         return;
     };
     let Some(update) = generic_update(status, msg, task) else {
@@ -231,7 +244,9 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     });
 
     if dry_run {
-        eprintln!("{payload}");
+        // Machine-readable output goes to stdout (same rule as `run
+        // --print-cmd`): `notify … --dry-run | jq` must capture the payload.
+        println!("{payload}");
         return;
     }
     let _ = Command::new("zellij")

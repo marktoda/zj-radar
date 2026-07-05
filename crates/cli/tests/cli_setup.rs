@@ -366,6 +366,59 @@ fn isolated_zellij_config(layout_text: &str) -> TempDir {
     dir
 }
 
+// ── Test 4pre: --inject with NO layout file creates the full layout ──────────
+// A stock Zellij ships no layout file at all — this is most first installs.
+// The old behavior printed a fragment snippet with nothing to paste it into
+// (a dead end); with --inject consent, the full known-good layout is created.
+
+#[test]
+fn setup_zellij_inject_creates_full_layout_when_none_exists() {
+    let config_dir = TempDir::new().unwrap(); // no layouts/ at all
+    let layout_path = config_dir.path().join("layouts").join("default.kdl");
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success();
+
+    let created = fs::read_to_string(&layout_path).unwrap();
+    assert!(
+        created.contains("plugin location=\"radar\""),
+        "created layout must carry the rail; got:\n{created}"
+    );
+    assert!(
+        created.contains("swap_tiled_layout"),
+        "created layout must carry the swap layouts; got:\n{created}"
+    );
+    assert!(
+        !layout_path.with_file_name("default.kdl.zj-radar.bak").exists(),
+        "a freshly created layout has no original to back up"
+    );
+}
+
+#[test]
+fn setup_zellij_yes_never_creates_a_layout_file() {
+    // --yes takes the safe non-mutating default: snippet + guidance only.
+    let config_dir = TempDir::new().unwrap();
+    let layout_path = config_dir.path().join("layouts").join("default.kdl");
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--yes"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!layout_path.exists(), "--yes must not create files");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--inject"),
+        "the no-layout fallback must point at the create route; got:\n{stdout}"
+    );
+}
+
 // ── Test 4a: --inject writes the rail into the layout and creates a .bak ──────
 
 #[test]

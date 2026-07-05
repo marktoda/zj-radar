@@ -205,6 +205,28 @@ pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
 }
 
+/// The per-session ownership marker `run` stamps at create time:
+/// `<owned config dir>/sessions/<name>`. Attach consults it so `run` never
+/// silently attaches a session it didn't create — Zellij takes config from the
+/// attaching client (see `attach_session_args`), so attaching a user's own
+/// session via `run` would swap their keybinds/theme for the bundled config.
+/// Session names are pre-sanitized to `[A-Za-z0-9_-]` (`session_name`), so the
+/// name is path-safe by construction. `materialize` never touches this
+/// directory, so markers survive version re-materialization.
+fn session_marker_path(config_dir: &Path, session: &str) -> PathBuf {
+    config_dir.join("sessions").join(session)
+}
+
+/// Stamp the ownership marker. Best-effort: a failed stamp costs one consent
+/// prompt on a later `run`, never the launch itself.
+fn stamp_session_marker(config_dir: &Path, session: &str) {
+    let path = session_marker_path(config_dir, session);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, "created by `zj-radar run`\n");
+}
+
 // ── Materializer ─────────────────────────────────────────────────────────────
 
 pub(crate) struct Assets {
@@ -296,6 +318,10 @@ struct RunFacts {
     wasm_path: PathBuf,
     /// Whether a Zellij session of this name already exists (attach vs create).
     session_exists: bool,
+    /// Whether the existing session carries `run`'s ownership marker (stamped at
+    /// create time). Unowned + existing = a session the user made themselves;
+    /// attaching would swap their client config, so it needs explicit consent.
+    session_owned: bool,
     /// Whether that session has a RUNNING server (not merely resurrectable). Only
     /// a running server can receive the pre-attach grant-float dispatch.
     session_running: bool,
@@ -328,6 +354,10 @@ struct RunPlan {
     advisories: Vec<String>,
     /// When set, the caller must NOT launch (we're nested) — show guidance.
     nested: bool,
+    /// When set, the target session exists but wasn't created by `run`:
+    /// the caller must get explicit consent before attaching (the attach
+    /// swaps that client onto the bundled config).
+    foreign_session: bool,
 }
 
 /// Pure decision: attach if the session exists, otherwise create with the rail
@@ -374,7 +404,14 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude) {
         advisories.push(hint);
     }
-    RunPlan { args, pre_attach, post_attach_watch, advisories, nested: facts.inside_zellij }
+    RunPlan {
+        args,
+        pre_attach,
+        post_attach_watch,
+        advisories,
+        nested: facts.inside_zellij,
+        foreign_session: facts.session_exists && !facts.session_owned,
+    }
 }
 
 pub struct RunOptions {
@@ -525,6 +562,7 @@ pub fn run(opts: RunOptions) {
         && !session_running
         && cached_session_layout(&session).is_some_and(|kdl| session_layout_defers(&kdl));
     let facts = RunFacts {
+        session_owned: session_marker_path(&materialized.config_dir, &session).exists(),
         session,
         config_dir: materialized.config_dir,
         wasm_path: materialized.wasm_path,
@@ -545,6 +583,13 @@ pub fn run(opts: RunOptions) {
         eprintln!("{advisory}");
     }
     if opts.print_cmd {
+        if plan.foreign_session {
+            eprintln!(
+                "note: session '{}' wasn't created by zj-radar — attaching with this command \
+                 switches that client to zj-radar's bundled config (keybinds, theme)",
+                facts.session
+            );
+        }
         if let Some(dispatch) = &plan.pre_attach {
             println!("zellij {}", shell_join(dispatch));
         }
@@ -560,6 +605,45 @@ pub fn run(opts: RunOptions) {
         );
         return;
     }
+    // A name-matching session the user created themselves: attaching would swap
+    // that client's keybinds/theme for the bundled config, so it takes explicit
+    // consent. Consent is remembered (the marker is stamped) — including for
+    // radar sessions created by versions that predate the marker.
+    if plan.foreign_session {
+        use std::io::IsTerminal;
+        let escape = format!(
+            "attach with your own config via `zellij attach {}`, or pick a different \
+             name with `zj-radar run --name <name>`",
+            facts.session
+        );
+        if !std::io::stdin().is_terminal() {
+            crate::exit::fail_report(
+                "zj-radar",
+                format!(
+                    "session '{}' exists but wasn't created by zj-radar; refusing to attach \
+                     non-interactively (it would switch that client to zj-radar's bundled \
+                     config) — {escape}",
+                    facts.session
+                ),
+            );
+            return;
+        }
+        let question = format!(
+            "Session '{}' exists but wasn't created by zj-radar. Attach anyway with \
+             zj-radar's bundled config (keybinds, theme)?",
+            facts.session
+        );
+        if !crate::setup::confirm(&question) {
+            eprintln!("zj-radar: not attaching — {escape}");
+            return;
+        }
+        stamp_session_marker(&facts.config_dir, &facts.session);
+    }
+    // Stamp the create path before launching: the marker records "this name is
+    // radar's" from the moment we ask Zellij to create it.
+    if !facts.session_exists {
+        stamp_session_marker(&facts.config_dir, &facts.session);
+    }
     // Best-effort: summon the grant float on the live session before we hand the
     // terminal to `attach`. Failure is non-fatal — the Ctrl-y keybind and the
     // rail's own grant prompt remain as fallbacks — so we ignore the result.
@@ -572,8 +656,31 @@ pub fn run(opts: RunOptions) {
     if let Some(dispatch) = plan.post_attach_watch.clone() {
         dispatch_when_running(facts.session.clone(), dispatch);
     }
-    if let Err(e) = std::process::Command::new("zellij").args(&plan.args).status() {
-        crate::exit::fail_report("zj-radar", format!("failed to launch zellij: {e}"));
+    match std::process::Command::new("zellij").args(&plan.args).status() {
+        // Attach/detach exits 0; a non-zero status is a real failure (old
+        // zellij without --new-session-with-layout, bad config, server crash)
+        // that `run && next` must be able to gate on.
+        Ok(status) if !status.success() => {
+            crate::exit::fail_report(
+                "zj-radar",
+                format!(
+                    "zellij exited with {status}; \
+                     try running: zellij {}",
+                    shell_join(&plan.args)
+                ),
+            );
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::exit::fail_report(
+                "zj-radar",
+                "zellij not found on PATH — install Zellij 0.44.x first \
+                 (https://zellij.dev/documentation/installation)",
+            );
+        }
+        Err(e) => {
+            crate::exit::fail_report("zj-radar", format!("failed to launch zellij: {e}"));
+        }
     }
 }
 
@@ -898,6 +1005,10 @@ mod tests {
             config_dir: PathBuf::from("/data/zj-radar/zellij"),
             wasm_path: PathBuf::from(wasm),
             session_exists: false,
+            // Existing-session tests model sessions `run` itself created, so
+            // the marker is present; `plan_run_flags_foreign_sessions` covers
+            // the unowned case.
+            session_owned: true,
             session_running: false,
             inside_zellij: false,
             resurrect_layout_defers: false,
@@ -945,6 +1056,25 @@ mod tests {
         let mut f = facts(true, true, false);
         f.inside_zellij = true;
         assert!(plan_run(&f).nested);
+    }
+
+    #[test]
+    fn plan_run_flags_foreign_sessions_but_never_fresh_creates() {
+        // An existing session without run's ownership marker is the user's own:
+        // attaching swaps their client onto the bundled config, so the plan
+        // must demand consent. A fresh create (no session) is never foreign,
+        // and neither is an existing marker-stamped session.
+        let mut f = facts(true, true, false);
+        f.session_exists = true;
+        f.session_owned = false;
+        assert!(plan_run(&f).foreign_session);
+
+        f.session_owned = true;
+        assert!(!plan_run(&f).foreign_session);
+
+        f.session_exists = false;
+        f.session_owned = false;
+        assert!(!plan_run(&f).foreign_session, "create path is never foreign");
     }
 
     #[test]

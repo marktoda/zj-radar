@@ -147,6 +147,14 @@ impl PermissionState {
         matches!(self, PermissionState::Resolved { granted: true })
     }
 
+    /// True once permission is definitively denied. Terminal like `granted`,
+    /// but the rail is a static needs-permission face and the state events
+    /// that clear domain work will never arrive — so nothing tick-windowed
+    /// can progress (gates the cadence fully off, see `desired_cadence`).
+    pub(crate) fn denied(&self) -> bool {
+        matches!(self, PermissionState::Resolved { granted: false })
+    }
+
     /// True only while a request is in-flight: the pane must be selectable so
     /// the user can reach Zellij's y/n prompt.
     pub(crate) fn selectable(&self) -> bool {

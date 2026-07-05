@@ -60,6 +60,26 @@ pub(crate) fn check_codex(legacy_notify: bool) -> bool {
 pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
     let mut items = Vec::new();
 
+    // 0. the zellij binary itself — every other item is moot without it, and
+    // an all-ok report on a zellij-less machine would be a --check lie.
+    items.push(match &f.zellij_version {
+        None => CheckItem::missing(
+            "zellij binary",
+            format!(
+                "not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.x first \
+                 (https://zellij.dev/documentation/installation)"
+            ),
+        ),
+        Some(v) if !zellij_version_is_supported(v) => CheckItem::warn(
+            "zellij binary",
+            format!(
+                "found `{v}` — the plugin targets Zellij {SUPPORTED_ZELLIJ_MINOR}.x \
+                 (a mismatched plugin ABI loads as a blank rail)"
+            ),
+        ),
+        Some(v) => CheckItem::ok("zellij binary", format!("found on PATH ({v})")),
+    });
+
     // 1. alias — "present" means managed marker OR an unmanaged alias line.
     let alias_present = f.managed_alias_present || f.unmanaged_alias_present;
     items.push(match (alias_present, f.alias_is_store_path) {
@@ -83,7 +103,10 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
 
     // 3. layout (rail)
     items.push(match f.has_rail {
-        None => CheckItem::warn("layout", "no default layout found"),
+        None => CheckItem::warn(
+            "layout",
+            "no layout file found — the rail won't appear; run `zj-radar setup zellij --inject` to create one",
+        ),
         Some(true) => CheckItem::ok("layout", "default layout has the radar rail"),
         Some(false) => CheckItem::missing(
             "layout",
@@ -121,7 +144,8 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
 
 /// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
-    let config_dir = zellij_config_dir();
+    // No resolvable config dir = nothing to inspect; the refusal is the report.
+    let Some(config_dir) = zellij_config_dir_or_report() else { return true };
     let config_path = zellij_config_path(&config_dir);
     let wasm_dest = zellij_wasm_dest(&config_dir);
     let config_text = std::fs::read_to_string(&config_path).ok();
@@ -137,6 +161,7 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
         wasm_present: wasm_dest.is_file(),
         config_managed: config_is_managed(&config_path),
         wasm_path: wasm_dest.to_string_lossy().into_owned(),
+        zellij_version: zellij_version_output(),
     };
     let items = zellij_check_items(&analyze_zellij(&env));
     println!("zellij:");
@@ -378,6 +403,7 @@ mod tests {
             granted:                 Some(true),
             producer_wired:          true,
             config_managed:          false,
+            zellij_version:          Some("zellij 0.44.1".to_string()),
         }
     }
 
@@ -388,6 +414,7 @@ mod tests {
     #[test]
     fn zellij_check_items_all_ok() {
         let items = all_good_check_items();
+        assert!(items.iter().any(|i| i.name == "zellij binary" && i.level == CheckLevel::Ok));
         assert!(items.iter().any(|i| i.name == "alias" && i.level == CheckLevel::Ok));
         assert!(items.iter().any(|i| i.name == "wasm" && i.level == CheckLevel::Ok));
         assert!(items.iter().any(|i| i.name == "layout" && i.level == CheckLevel::Ok));
@@ -395,6 +422,37 @@ mod tests {
         assert!(items.iter().any(|i| i.name == "producer" && i.level == CheckLevel::Ok));
         // managed config not emitted when false
         assert!(!items.iter().any(|i| i.name == "managed config"));
+    }
+
+    #[test]
+    fn zellij_check_flags_a_missing_or_mismatched_binary() {
+        // No zellij on PATH: every other item is moot, and an all-ok report
+        // on a zellij-less machine would be a --check lie.
+        let absent = ZellijFacts { zellij_version: None, ..all_good_facts() };
+        assert!(zellij_check_items(&absent)
+            .iter()
+            .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Missing));
+        // Wrong minor: warn (advice), not missing — version parsing is
+        // best-effort and a working install must not be failed by it.
+        let old = ZellijFacts {
+            zellij_version: Some("zellij 0.43.1".to_string()),
+            ..all_good_facts()
+        };
+        assert!(zellij_check_items(&old)
+            .iter()
+            .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Warn));
+    }
+
+    #[test]
+    fn zellij_version_gate_is_lenient_on_unparseable_output() {
+        assert!(zellij_version_is_supported("zellij 0.44.1"));
+        assert!(zellij_version_is_supported("0.44.0"));
+        assert!(!zellij_version_is_supported("zellij 0.43.1"));
+        assert!(!zellij_version_is_supported("zellij 0.45.0"));
+        // 0.440.x must not pass a starts_with-style check.
+        assert!(!zellij_version_is_supported("zellij 0.440.1"));
+        // No version-like token at all: err on the side of supported.
+        assert!(zellij_version_is_supported("zellij (unknown build)"));
     }
 
     #[test]
@@ -479,6 +537,6 @@ mod tests {
     fn zellij_check_items_order_is_stable() {
         let items = all_good_check_items();
         let names: Vec<&str> = items.iter().map(|i| i.name).collect();
-        assert_eq!(names, &["alias", "wasm", "layout", "grant", "producer"]);
+        assert_eq!(names, &["zellij binary", "alias", "wasm", "layout", "grant", "producer"]);
     }
 }

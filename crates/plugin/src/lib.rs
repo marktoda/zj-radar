@@ -400,6 +400,45 @@ mod tests {
         );
     }
 
+    /// The CLI's grant probe (`REQUIRED_PLUGIN_PERMISSIONS` in
+    /// crates/cli/src/run.rs) must cover exactly the set this plugin requests:
+    /// a permission added to the request list but not the probe makes every
+    /// existing grant partial, and Zellij's re-prompt is illegible inside the
+    /// rail (zellij#4749) — the failure presents as a silently blank rail.
+    /// Text-pinned like the pipe-name guard above, because the two lists live
+    /// on opposite sides of the wasm boundary and can't share a const.
+    #[test]
+    fn cli_grant_probe_covers_the_exact_requested_permission_set() {
+        let full_src = include_str!("lib.rs");
+        // Scan only the production half of this file (this test would match
+        // itself); there, every such token is the request list — the SDK type
+        // is referenced nowhere else in the plugin.
+        let plugin_src = &full_src[..full_src.find("mod tests").expect("tests module marker")];
+        let requested: std::collections::BTreeSet<&str> = plugin_src
+            .match_indices("PermissionType::")
+            .map(|(at, pat)| {
+                let rest = &plugin_src[at + pat.len()..];
+                &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
+            })
+            .collect();
+        assert!(!requested.is_empty(), "request list not found in lib.rs");
+
+        let cli_src = include_str!("../../cli/src/run.rs");
+        let decl = cli_src.find("const REQUIRED_PLUGIN_PERMISSIONS").expect("cli probe const present");
+        let eq = decl + cli_src[decl..].find('=').expect("const has an initializer");
+        let open = eq + cli_src[eq..].find('[').expect("initializer is an array");
+        let close = open + cli_src[open..].find(']').expect("array closes");
+        let probed: std::collections::BTreeSet<&str> =
+            cli_src[open..close].split('"').skip(1).step_by(2).collect();
+
+        assert_eq!(
+            requested, probed,
+            "the plugin's request_permission list and the CLI's \
+             REQUIRED_PLUGIN_PERMISSIONS probe drifted — update both together \
+             (a partial grant presents as a silently blank rail)"
+        );
+    }
+
     fn pane(id: u32) -> TerminalPane {
         TerminalPane {
             id,

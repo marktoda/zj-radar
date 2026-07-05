@@ -235,7 +235,11 @@ impl Line {
     /// The ONLY way to build a `Line`: owns the trailing-newline invariant
     /// (exactly one `\n`, at the end) that keeps ansi/target lockstep — an
     /// interior newline would render as two physical rows against one click
-    /// target.
+    /// target. Intake sanitize should make an interior newline unreachable;
+    /// the debug_assert flags the offending caller in tests, and the space
+    /// replacement keeps lockstep unbreakable in the release wasm (where
+    /// debug_assert compiles out) even if a future string source skips
+    /// sanitize.
     fn new(text: String, target: Option<RailTarget>, bg: LineBg) -> Self {
         debug_assert!(
             !text.trim_end_matches('\n').contains('\n'),
@@ -243,6 +247,9 @@ impl Line {
         );
         let mut text = text;
         while text.ends_with('\n') { text.pop(); }
+        if text.contains('\n') {
+            text = text.replace('\n', " ");
+        }
         text.push('\n');
         Line { text, target, bg }
     }

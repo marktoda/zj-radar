@@ -123,6 +123,36 @@ fn load_denied_marker_records_denial_without_requesting_permission() {
     );
 }
 
+#[test]
+fn denied_rail_with_running_snapshot_never_arms_the_timer() {
+    // A denied rail receives none of the state events that clear domain work
+    // (they need ReadApplicationState), so a stale `Running` rehydrated from a
+    // snapshot can never finish — arming Fast for it would pin 1 Hz ticks and
+    // repaints forever behind the static needs-permission face.
+    let mut seeded = RadarState::default();
+    seeded
+        .status_mut()
+        .apply(payload_for(9, Status::Running), 7, 0);
+    let snapshot = seeded.snapshot_json(None, 7);
+
+    let mut runtime = PluginRuntime::default();
+    let outcome = runtime.load(
+        config(),
+        Some(&snapshot),
+        PermissionProbe {
+            marker: Some(PermissionMarker::Denied),
+            lock_acquired: false,
+        },
+    );
+
+    assert!(runtime.permission.denied());
+    assert!(runtime.radar.has_running_work());
+    assert!(
+        !outcome.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+        "denied rail must not tick for work it can never observe finishing"
+    );
+}
+
 // The exhaustive probe→decision/state truth table now lives in
 // `permission.rs` (`on_load_truth_table` et al.), tested directly against
 // the state machine. Runtime tests below assert only on the derived effects.

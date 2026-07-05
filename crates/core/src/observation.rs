@@ -1,6 +1,7 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
 use crate::kind::Kind;
+use crate::payload::{sanitize, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS};
 use crate::status::Status;
 use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,19 @@ impl TrackedObservation {
             completed_epoch_s: None,
             pending_epoch_s: None,
         }
+    }
+
+    /// Re-scrub the free-text fields with the same sanitizer and caps live
+    /// intake applies at parse. Live observations are sanitized already; this
+    /// is for observations loaded off disk, where a pre-sanitize build (or a
+    /// hand-edited snapshot) may have persisted raw control characters that
+    /// would otherwise flow straight into the rendered grid.
+    pub fn sanitized(mut self) -> Self {
+        self.repo = sanitize(&self.repo, MAX_REPO_CHARS);
+        self.branch = sanitize(&self.branch, MAX_BRANCH_CHARS);
+        self.msg = sanitize(&self.msg, MAX_MSG_CHARS);
+        self.task = sanitize(&self.task, MAX_TASK_CHARS);
+        self
     }
 }
 
