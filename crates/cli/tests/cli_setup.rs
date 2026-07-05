@@ -704,9 +704,17 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
             #[cfg(not(target_os = "macos"))]
             let perms_path = home.path().join(".cache/zellij/permissions.kdl");
             fs::create_dir_all(perms_path.parent().unwrap()).unwrap();
+            // The FULL permission set the plugin requests — grant detection
+            // deliberately rejects partial grants (a stale entry makes Zellij
+            // re-prompt illegibly in the rail), so a partial seed here would
+            // read as ungranted and the hint would print.
             fs::write(
                 &perms_path,
-                format!("\"{}\" {{\n    ReadApplicationState\n}}\n", wasm_dest.display()),
+                format!(
+                    "\"{}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    \
+                     ChangeApplicationState\n    RunCommands\n}}\n",
+                    wasm_dest.display()
+                ),
             )
             .unwrap();
         }
