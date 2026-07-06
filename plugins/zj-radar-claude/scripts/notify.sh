@@ -63,6 +63,13 @@ pane_num="${ZELLIJ_PANE_ID#terminal_}"
 
 # ($input was read before the binary dispatch above — stdin is already drained.)
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
+# A real path can't exceed PATH_MAX (4 KB on Linux); anything longer is hostile
+# input. The cap also protects every downstream command that receives $cwd as
+# an ARGUMENT (`git -C`, `basename`): Linux limits a single exec argument to
+# 128 KB (MAX_ARG_STRLEN), past which execve fails E2BIG and `set -e` kills
+# the hook mid-turn — erroring into Claude. macOS has no per-arg cap, so this
+# only ever bit on Linux.
+cwd="${cwd:0:4096}"
 [[ -n "$cwd" ]] || cwd="$PWD"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
 [[ "$msg" == "Claude needs attention" ]] && msg=""
