@@ -46,17 +46,25 @@ chmod +x "$root/demo/agent.sh" "$root/demo/banner.sh"
 
 # Pre-grant the sidebar's permissions so the recording shows no prompt. Zellij
 # keys grants by the plugin's filesystem path (no `file:` prefix) in
-# permissions.kdl; seed our wasm path if it isn't already granted.
+# permissions.kdl. Always rewrite our wasm's block with the FULL set the plugin
+# requests (lib.rs `request_permission`) — a stale partial grant (e.g. from
+# before RunCommands was added) blocks the rail on an illegible re-prompt.
 case "$(uname)" in
     Darwin) zcache="$HOME/Library/Caches/org.Zellij-Contributors.Zellij" ;;
     *)      zcache="${XDG_CACHE_HOME:-$HOME/.cache}/zellij" ;;
 esac
 perm="$zcache/permissions.kdl"
 mkdir -p "$zcache"
-if ! { [ -f "$perm" ] && grep -qF "\"$wasm\"" "$perm"; }; then
-    printf '\n"%s" {\n    ReadApplicationState\n    ChangeApplicationState\n    ReadCliPipes\n}\n' "$wasm" >>"$perm"
-    echo "==> seeded permission grant for $wasm"
+if [ -f "$perm" ] && grep -qF "\"$wasm\"" "$perm"; then
+    # Drop the existing block for this wasm path (the `"path" { … }` group).
+    awk -v path="\"$wasm\"" '
+        index($0, path) == 1 { skip = 1; next }
+        skip && /^\}/        { skip = 0; next }
+        !skip                { print }
+    ' "$perm" >"$perm.tmp" && mv "$perm.tmp" "$perm"
 fi
+printf '\n"%s" {\n    ReadApplicationState\n    ChangeApplicationState\n    ReadCliPipes\n    RunCommands\n}\n' "$wasm" >>"$perm"
+echo "==> seeded permission grant for $wasm"
 
 subst() { # <src-template> <dest> — fill the absolute-path placeholders
     sed -e "s#__ROOT__#$root#g" \

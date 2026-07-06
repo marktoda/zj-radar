@@ -16,9 +16,12 @@ branch="${3:-main}"
 scenario="${4:-working}"
 
 # Hold this pane open (and its last pushed status on the rail) until the
-# recording ends. `sleep infinity` is GNU-only — stock macOS sleep rejects it —
-# so idle on a portable no-op instead.
-hold() { exec tail -f /dev/null; }
+# recording ends. Deliberately NOT `exec`: Zellij reports a pane whose root
+# process has no child as "back at the shell prompt" (is_foreground=false),
+# and the plugin rightly exit-clears the pane's pushed status on that signal —
+# so tail must run as our CHILD, keeping the process tree agent-shaped.
+# (`sleep infinity` is GNU-only — stock macOS sleep rejects it.)
+hold() { tail -f /dev/null; }
 
 # Resolve our own pane id (the sidebar keys status by pane → tab).
 [[ -n "${ZELLIJ:-}" && -n "${ZELLIJ_PANE_ID:-}" ]] || {
@@ -60,8 +63,14 @@ needs-you) # the star of the show: works with a sticky task, blocks on approval
     printf '\033[2m●\033[0m Edit  src/auth.rs\n'
     sleep 5;  emit pending "run database migration?" "$task"
     printf '\n\033[33m❯ Run migration?\033[0m (y/n) '
+    # `read` is a bash builtin: while it blocks, this script has no child
+    # process, and a childless pane root reads to Zellij (and so the plugin)
+    # as "producer exited, back at the prompt" — which would exit-clear the
+    # pending card mid-beat. Park a sleep child for the duration of the wait.
+    sleep 30 & guard=$!
     read -r -n 1 -t 20 || true   # tape types `y` (into REPLY); timeout so an
-    printf '\n\n'                # unattended run still completes
+    kill "$guard" 2>/dev/null || true   # unattended run still completes
+    printf '\n\n'
     emit running "applying migration" "$task"
     printf '\033[2m●\033[0m Bash  sqlx migrate run\n'
     sleep 2;  emit "done" "migration applied" "$task"

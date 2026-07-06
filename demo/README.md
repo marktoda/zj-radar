@@ -61,11 +61,18 @@ zellij --config target/demo/config.kdl --layout target/demo/layout.kdl
 
 ## How it stays reproducible
 
-`record.sh` handles the three things that otherwise make a Zellij-in-vhs
+`record.sh` handles the four things that otherwise make a Zellij-in-vhs
 recording flaky:
 
-- **Permissions** — seeds the grant into Zellij's `permissions.kdl` (keyed by
-  the wasm's filesystem path), so the recording shows no first-run prompt.
+- **Permissions** — rewrites this wasm's grant block in Zellij's
+  `permissions.kdl` with the full set the plugin requests, so the recording
+  shows no first-run prompt (a stale partial grant would block the rail).
+- **Process-tree shape** (in `agent.sh`) — Zellij reports a pane whose root
+  process has no child as "back at the shell prompt", and the plugin rightly
+  exit-clears the pane's pushed status on that signal (that's how it catches
+  killed agents). agent.sh therefore never sits childless while it matters:
+  the beat-3 `read` parks a `sleep` guard child, and `hold` runs `tail` as a
+  child rather than `exec`ing it.
 - **Nested Zellij** — unsets `ZELLIJ*` before launching vhs, so the inner
   session starts fresh even when you run `record.sh` from inside Zellij.
 - **Theme/glyphs** — Tokyo Night + `JetBrainsMono Nerd Font`, pinned in the
