@@ -647,6 +647,31 @@ fn rail_reference_matches() {
     let doc = include_str!("../../../docs/rail-reference.md");
     let cases = parse_cases(doc);
     eprintln!("Found {} scenarios", cases.len());
+
+    // `parse_cases` is lenient: a heading missing either fenced block silently
+    // yields no Case, so a typo'd fence (```rail-expect → ```rail-expct) would
+    // de-register a scenario while this test stayed green. Pin the parse
+    // structurally: every fence opener in the doc must have landed in exactly
+    // one Case. Count openers the way the parser does (the whole trimmed line
+    // is the fence tag) so the inline mentions in the doc's prose — set off in
+    // four-backtick spans, never alone on a line — don't count.
+    let fence_openers =
+        |tag: &str| doc.lines().filter(|l| l.trim_start() == tag).count();
+    for tag in ["```rail-input", "```rail-expect"] {
+        assert_eq!(
+            cases.len(),
+            fence_openers(tag),
+            "parsed {} scenario(s) but docs/rail-reference.md has {} `{}` fences — \
+             a scenario is malformed (typo'd fence tag, a block missing its \
+             ```rail-input/```rail-expect partner, or a pair with no `## <id>` \
+             heading above it)",
+            cases.len(),
+            fence_openers(tag),
+            tag,
+        );
+    }
+    assert!(!cases.is_empty(), "docs/rail-reference.md yielded zero scenarios");
+
     let mut failures = Vec::new();
     for case in &cases {
         let (rows, ledger, opts) = build(&case.input);

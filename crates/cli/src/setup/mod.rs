@@ -104,6 +104,8 @@ pub(crate) enum Mode {
     Install,
 }
 
+/// Clap already hard-errors on `--check --uninstall` (and `--grant` with
+/// either), so the check-beats-uninstall rung is defensive, not a CLI surface.
 pub(crate) fn mode_from_flags(grant: bool, check: bool, uninstall: bool) -> Mode {
     if grant {
         Mode::Grant

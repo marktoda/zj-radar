@@ -269,6 +269,22 @@ const FIRST_ARG_RULE: ToolRule = ToolRule {
     word_kinds: &[],
 };
 
+/// Classification columns for the python-interpreter path. The display comes
+/// from [`display_python`] (its `-m` shape doesn't fit the table's columns),
+/// but the Kind still flows through rule columns like every other tool: the
+/// word scan reads the computed display, so `python -m pytest …` classifies
+/// as a test the same way bare `pytest` does. The exe/verb columns stay empty
+/// — `python app.py` is a plain command. (`exes` is empty because routing is
+/// by [`is_python_interpreter`], not table lookup.)
+const PYTHON_RULE: ToolRule = ToolRule {
+    exes: &[],
+    subcommands: None,
+    target_verbs: &[],
+    exe_kind: None,
+    verb_kinds: &[],
+    word_kinds: &[("pytest", Kind::Test)],
+};
+
 /// The token classification and compaction both key on: a known subcommand
 /// when the rule declares them, else the first non-option arg.
 fn operative_verb<'a>(args: &'a [String], rule: &ToolRule) -> Option<(usize, &'a str)> {
@@ -349,18 +365,19 @@ fn classify(command: &[String]) -> (String, Kind) {
         return (sanitize(exe, MAX_MSG_CHARS), identity);
     }
 
-    let rule = TOOL_RULES
-        .iter()
-        .find(|r| r.exes.contains(&exe))
-        .unwrap_or(&FIRST_ARG_RULE);
     // `python -m <module>` has its own display shape (see display_python), and
     // versioned interpreter basenames (`python3`, `python3.12`, `python2`) all
     // route there; the Kind still flows through the rule columns like
-    // everything else.
-    let raw = if is_python_interpreter(exe) {
-        display_python(exe, args)
+    // everything else — PYTHON_RULE's word scan is what makes `python -m
+    // pytest` a test run, matching bare `pytest`.
+    let (raw, rule) = if is_python_interpreter(exe) {
+        (display_python(exe, args), &PYTHON_RULE)
     } else {
-        apply_tool_rule(exe, args, rule)
+        let rule = TOOL_RULES
+            .iter()
+            .find(|r| r.exes.contains(&exe))
+            .unwrap_or(&FIRST_ARG_RULE);
+        (apply_tool_rule(exe, args, rule), rule)
     };
     let display = sanitize(&raw, MAX_MSG_CHARS);
 

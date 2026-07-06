@@ -178,6 +178,10 @@
             // hand-written. Pinned as-is; the Kind is what this case is about.
             (argv(&["cargo", "test", "--features", "cli"]), "cargo test cli", Kind::Test),
             (argv(&["pytest"]), "pytest", Kind::Test),
+            // `python -m pytest` routes through the python display path but
+            // must classify like bare pytest (PYTHON_RULE's word scan), not
+            // fall to FIRST_ARG_RULE's empty kind columns.
+            (argv(&["python", "-m", "pytest", "-q", "t.py"]), "python -m pytest t.py", Kind::Test),
             (argv(&["go", "test", "./..."]), "go test ./...", Kind::Test),
             (argv(&["npm", "run", "test"]), "npm run test", Kind::Test),
             // Build.

@@ -10,7 +10,7 @@
 # download (the classic curl|sh hazard) can never execute a partial script.
 #
 # Environment overrides:
-#   ZJ_RADAR_VERSION   release tag to install (e.g. v0.1.0). Default: latest.
+#   ZJ_RADAR_VERSION   release tag to install (e.g. v0.1.2). Default: latest.
 #   ZJ_RADAR_BIN_DIR   install directory. Default: ~/.local/bin.
 #   ZJ_RADAR_REPO      owner/repo to download from. Default: marktoda/zj-radar.
 

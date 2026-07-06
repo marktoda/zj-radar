@@ -68,8 +68,10 @@ pub(crate) fn run_grant(config_dir: &Path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             crate::exit::fail_report(
                 "zj-radar",
-                "zellij not found on PATH — install Zellij 0.44.x first \
-                 (https://zellij.dev/documentation/installation)",
+                format!(
+                    "zellij not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ first \
+                     (https://zellij.dev/documentation/installation)"
+                ),
             );
         }
         Err(e) => {
@@ -290,8 +292,11 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
 
     // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
     // wasm matching this CLI's version). `downloaded` outlives the borrow in `src`.
+    // Under --dry-run the fetch is skipped ("write nothing" must also mean "works
+    // offline"): the config splice below needs only the *destination* path, and
+    // the dry-run arm never copies — `src` stays None, announced here instead.
     let downloaded: PathBuf;
-    let src: Option<&Path> = if uninstall {
+    let src: Option<&Path> = if uninstall || (download && dry_run) {
         None
     } else if download {
         match download_wasm(&wasm_download_version()) {
@@ -309,15 +314,23 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     };
 
     if !uninstall {
-        // `SetupPath::Full` guarantees a wasm source on install (see
-        // `setup_path`), so the None arm is defensive only.
-        let Some(src) = src else {
-            crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
-            return;
-        };
-        if !src.is_file() {
-            crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
-            return;
+        if download && dry_run {
+            println!(
+                "zellij: would download zj_radar.wasm v{} -> {} (dry-run)",
+                wasm_download_version(),
+                wasm_dest.display()
+            );
+        } else {
+            // `SetupPath::Full` guarantees a wasm source on install (see
+            // `setup_path`), so the None arm is defensive only.
+            let Some(src) = src else {
+                crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
+                return;
+            };
+            if !src.is_file() {
+                crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
+                return;
+            }
         }
     }
 
@@ -469,8 +482,36 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
     let is_tty = std::io::stdin().is_terminal();
     let mode = inject_mode(inject_flag, yes, dry_run, is_tty);
 
+    // Same Nix / home-manager guard config.kdl gets (`SetupPath::Managed`): the
+    // inject below writes via atomic rename, which would silently replace a
+    // symlink with a regular file — the next `home-manager switch` reverts it
+    // and the rail "mysteriously vanishes". Snippet instead, never a write.
+    if config_is_managed(layout_path) {
+        eprintln!(
+            "zellij: layout at {} is a symlink (managed by Nix / home-manager) — \
+             zj-radar will not overwrite a managed layout; add the rail via your \
+             Nix config instead. See docs/install.md for the home-manager snippet.",
+            layout_path.display()
+        );
+        print_snippet_for(layout_path);
+        return;
+    }
+
     let text = match std::fs::read_to_string(layout_path) {
         Ok(t) => t,
+        // Only a genuinely absent file takes the create path below. Any other
+        // read error (EACCES, non-UTF8, …) means a layout EXISTS but can't be
+        // read — consenting to "create it?" would replace the user's file
+        // under a prompt that lied, so refuse and leave the snippet.
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            crate::exit::fail_report(
+                "zellij",
+                format!("could not read layout {} — {e}; leaving it untouched", layout_path.display()),
+            );
+            eprintln!("        Add the rail manually using the snippet below.");
+            print_paste_snippet(&crate::layout::analyze(""));
+            return;
+        }
         Err(_) => {
             match mode {
                 InjectMode::Inject => create_full_layout(layout_path, dry_run),
@@ -619,9 +660,30 @@ fn print_swap_advisory_if_needed(facts: &crate::layout::LayoutFacts) {
 /// marker-less layout that still references the alias gets an advisory, never
 /// a delete (we don't remove files we can't prove we authored).
 fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
+    // Symlink = Nix / home-manager territory, same as the inject guard above:
+    // both the strip-rewrite and the whole-file delete below would replace or
+    // remove a file the user's Nix config owns.
+    if config_is_managed(layout_path) {
+        eprintln!(
+            "zellij: layout at {} is a symlink (managed by Nix / home-manager) — \
+             zj-radar will not modify a managed layout; remove the rail via your \
+             Nix config instead.",
+            layout_path.display()
+        );
+        return;
+    }
     let text = match std::fs::read_to_string(layout_path) {
         Ok(t) => t,
-        Err(_) => return, // layout not found — nothing to uninstall
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return, // no layout — nothing to uninstall
+        // An unreadable layout is not an absent one: report it rather than
+        // silently claiming there was nothing of ours to remove.
+        Err(e) => {
+            crate::exit::fail_report(
+                "zellij",
+                format!("could not read layout {} — {e}; leaving it untouched", layout_path.display()),
+            );
+            return;
+        }
     };
     match crate::layout::uninstall(&text) {
         None if text == crate::layout::full_layout() => {

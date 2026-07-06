@@ -14,7 +14,7 @@ What are you trying to do that's hard or impossible today?
 
 What you'd like to see. If it touches the sidebar's rendering or the status
 contract, say how it fits the **push-driven** and **lockstep** invariants (see
-[`CONTEXT.md`](../../CONTEXT.md)).
+[`CONTEXT.md`](https://github.com/marktoda/zj-radar/blob/main/CONTEXT.md)).
 
 ## Alternatives
 

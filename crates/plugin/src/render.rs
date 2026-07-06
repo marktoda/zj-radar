@@ -615,10 +615,23 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // The one surface class for everything under this row's header (pane
     // lines, detail lines, `+N more`): agent surface when the tab is active,
     // card tint otherwise.
+    //
+    // `skip_silent` is the single-pane emptiness gate (see the single-pane
+    // branch below): when set, a pane that has nothing to say — idle, or an
+    // empty identity with no rendering outcome tag — earns no lines at all.
+    // It lives here, on the same `identity` that gets emitted, so the gate
+    // can never judge a different value than the one drawn.
     let child_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
-    let pane_lines = |pane: &PaneDisplay, branch: Branch| -> Vec<Line> {
+    let pane_lines = |pane: &PaneDisplay, branch: Branch, skip_silent: bool| -> Vec<Line> {
         let pane_status = pane.render_status();
         let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
+        if skip_silent {
+            let says_something = !identity.trim().is_empty()
+                || pane.outcome().is_some_and(|o| o.renders_tag());
+            if pane_status == Status::Idle || !says_something {
+                return Vec::new();
+            }
+        }
         let identity =
             with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
@@ -656,7 +669,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             } else {
                 Branch::Tee
             };
-            lines.extend(pane_lines(pane, branch));
+            lines.extend(pane_lines(pane, branch, false));
         }
 
         if remaining > 0 {
@@ -688,15 +701,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // the single pane's line is emitted only when it says something: a
     // non-empty identity OR an outcome tag that actually renders (`Ok`'s tag
     // is empty by design — see `Outcome::renders_tag` — so an empty-msg Ok
-    // completion earns no line at all). Idle stays header-only.
+    // completion earns no line at all). Idle stays header-only. The gate
+    // itself lives inside `pane_lines` (`skip_silent`), judged on the very
+    // identity it emits.
     if let Some(pane) = row.display.panes.iter().find(|p| p.is_tracked()) {
-        let pane_status = pane.render_status();
-        let (identity, _) = identity_and_detail(pane_status, pane.task(), pane.msg());
-        let says_something = !identity.trim().is_empty()
-            || pane.outcome().is_some_and(|o| o.renders_tag());
-        if pane_status != Status::Idle && says_something {
-            lines.extend(pane_lines(pane, Branch::Elbow));
-        }
+        lines.extend(pane_lines(pane, Branch::Elbow, true));
     }
     lines
 }
@@ -1372,13 +1381,6 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
 /// keeps `ledger::LEDGER_CAP` (32) entries for cross-instance merge/dedup.
 const LEDGER_DISPLAY_CAP: usize = 10;
 
-/// The pinned footer's height: rule + tally, plus the `alt-[n] jump` hint
-/// line only when `opts.jump_hint` claims the chord exists — the one owner of
-/// the `f` (2 or 3) the spec §9 budget table is written against.
-fn footer_lines(opts: &RenderOpts) -> usize {
-    if opts.jump_hint { 3 } else { 2 }
-}
-
 /// The bottom region per the spec §9 budget table. `leftover` = height minus
 /// everything already in `flat` (i.e. `render_body`'s footprint). Returns
 /// lines ordered top→bottom (filler … ledger rule, entries newest-first,
@@ -1398,21 +1400,22 @@ fn footer_lines(opts: &RenderOpts) -> usize {
 /// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
 /// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
 fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
-    let f = footer_lines(opts);
-    let push_footer = |v: &mut Vec<Line>| {
-        v.push(footer_rule(opts));
-        v.push(footer_tally(rows, opts));
-        if opts.jump_hint {
-            v.push(footer_hint(opts));
-        }
-    };
+    // Build the footer once and derive `f` from what was actually built, so
+    // the budget math and the emitted lines can never disagree on the
+    // footer's height — a future footer line re-budgets the filler/ledger
+    // arithmetic automatically instead of underflowing it.
+    let mut footer = vec![footer_rule(opts), footer_tally(rows, opts)];
+    if opts.jump_hint {
+        footer.push(footer_hint(opts));
+    }
+    let f = footer.len();
     match leftover {
         0 | 1 => vec![],
-        2 => vec![footer_rule(opts), footer_tally(rows, opts)],
+        // Squeezed (n < f): pin the top of the footer — rule + tally survive,
+        // the hint is the first line dropped.
         n if n <= f => {
-            let mut v = Vec::with_capacity(n);
-            push_footer(&mut v);
-            v
+            footer.truncate(n);
+            footer
         }
         n => {
             let mut v = Vec::with_capacity(n);
@@ -1435,7 +1438,7 @@ fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: 
                 }
                 v.push(bottom_filler());
             }
-            push_footer(&mut v);
+            v.extend(footer);
             v
         }
     }

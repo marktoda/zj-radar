@@ -73,15 +73,6 @@ before the tag**. The order below matters; each step gates the next.
 
 ## One-time cleanup after v0.1.2 ships
 
-Yank `zj-radar 0.1.0` (its `^0.1.0` core requirement resolves to the newer,
-incompatible core and no longer compiles) and `zj-radar-core 0.1.0` (nothing
-else may depend on it; it predates the checksum-verified installer):
-
-`cargo yank` needs a crates.io token with the **yank** scope — a publish-only
-token gets `403 Forbidden`. Scope one at <https://crates.io/settings/tokens>
-(or yank from each crate's "Versions" page in the web UI):
-
-```sh
-cargo yank zj-radar@0.1.0
-cargo yank zj-radar-core@0.1.0
-```
+Done 2026-07-06: yanked `zj-radar 0.1.0` and `zj-radar-core 0.1.0`. (For future
+yanks: `cargo yank` needs a crates.io token with the **yank** scope — a
+publish-only token gets `403 Forbidden`.)

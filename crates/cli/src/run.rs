@@ -50,8 +50,29 @@ pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
     }
 }
 
+/// The shared `--config <dir>/config.kdl --config-dir <dir>` prefix of every
+/// launch. The explicit `--config` is load-bearing, not redundant: Zellij's
+/// precedence is `--config` flag > `ZELLIJ_CONFIG_FILE` env > `<config-dir>/
+/// config.kdl` (zellij-utils `cli.rs` binds the flag and the env var to the
+/// same field; `Config::try_from(&CliArgs)` returns it before ever consulting
+/// the config dir). With `--config-dir` alone, a user who exports
+/// `ZELLIJ_CONFIG_FILE` launches "owned" sessions on THEIR config — radar
+/// alias and grant keybind vanish with no diagnostic. The flag outranks the
+/// env var, and — unlike an env strip — survives into `--print-cmd` output,
+/// which can't carry environment changes. `--config-dir` stays alongside it:
+/// layouts still resolve from the owned dir's `layouts/`.
+fn owned_config_args(config_dir: &Path) -> Vec<String> {
+    vec![
+        "--config".into(),
+        config_dir.join("config.kdl").to_string_lossy().into_owned(),
+        "--config-dir".into(),
+        config_dir.to_string_lossy().into_owned(),
+    ]
+}
+
 /// Args to CREATE a new session with the rail layout:
-/// `zellij --config-dir <dir> --session <name> --new-session-with-layout radar`.
+/// `zellij --config <dir>/config.kdl --config-dir <dir> --session <name>
+/// --new-session-with-layout radar`.
 ///
 /// `--new-session-with-layout` (NOT `--layout`) is required here: when combined
 /// with `--session`, a plain `--layout` is interpreted by Zellij as "add a tab to
@@ -60,34 +81,32 @@ pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
 /// even when invoked from inside Zellij — using the named layout resolved from
 /// `--config-dir`'s `layouts/`.
 pub(crate) fn create_session_args(config_dir: &Path, session: &str, layout: &str) -> Vec<String> {
-    vec![
-        "--config-dir".into(),
-        config_dir.to_string_lossy().into_owned(),
+    let mut args = owned_config_args(config_dir);
+    args.extend([
         "--session".into(),
         session.into(),
         "--new-session-with-layout".into(),
         layout.into(),
-    ]
+    ]);
+    args
 }
 
 /// Args to attach to (or resurrect) an existing session:
-/// `zellij --config-dir <dir> attach <name>`.
+/// `zellij --config <dir>/config.kdl --config-dir <dir> attach <name>`.
 ///
-/// The layout was applied at creation, but `--config-dir` is still load-bearing
-/// here: Zellij config (keybinds included) comes from the ATTACHING client, and
-/// a resurrected session is a brand-new server started by that client. Without
-/// it, attach reads the user's default `~/.config/zellij` — where the Ctrl-y
-/// grant keybind doesn't exist (and a `clear-defaults=true` user config strips
-/// any merge path) — so the rail's "press Ctrl-y" advice was a dead end on
-/// every resurrect. Passing the owned dir makes the baked-in binds real for
-/// every client, not just the creating one.
+/// The layout was applied at creation, but the owned config is still
+/// load-bearing here: Zellij config (keybinds included) comes from the
+/// ATTACHING client, and a resurrected session is a brand-new server started
+/// by that client. Without it, attach reads the user's default
+/// `~/.config/zellij` — where the Ctrl-y grant keybind doesn't exist (and a
+/// `clear-defaults=true` user config strips any merge path) — so the rail's
+/// "press Ctrl-y" advice was a dead end on every resurrect. Passing the owned
+/// dir makes the baked-in binds real for every client, not just the creating
+/// one.
 pub(crate) fn attach_session_args(config_dir: &Path, session: &str) -> Vec<String> {
-    vec![
-        "--config-dir".into(),
-        config_dir.to_string_lossy().into_owned(),
-        "attach".into(),
-        session.into(),
-    ]
+    let mut args = owned_config_args(config_dir);
+    args.extend(["attach".into(), session.into()]);
+    args
 }
 
 /// Args to summon the grant float on a LIVE session before we attach:
@@ -269,10 +288,30 @@ pub(crate) struct Materialized {
     pub wasm_path: PathBuf,
 }
 
-/// Write the owned config dir idempotently. A no-op when the version marker
-/// matches AND all generated files are present (so a deleted file forces a
-/// rewrite). Each file is written atomically; the marker is written last, so an
-/// interrupted run is re-materialized rather than served half-written.
+/// The `.zj-radar-version` marker contents: crate version plus a hash of the
+/// embedded text assets. Folding the content in makes staleness structural —
+/// an edit to config.kdl/radar.kdl/radar-onboarding.kdl shipped WITHOUT a
+/// version bump still re-materializes every existing install, instead of
+/// relying on release discipline to remember one. The wasm is deliberately
+/// excluded: it's `None` on from-crates.io installs, so hashing it would make
+/// the marker disagree between an embedded and a downloaded install of the
+/// same version. `DefaultHasher::new()` uses fixed keys, so the hash is
+/// deterministic across processes; it is not promised stable across Rust
+/// releases, but a toolchain bump costs one harmless re-materialization.
+pub(crate) fn asset_marker(version: &str, assets: &Assets) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    assets.config_template.hash(&mut h);
+    assets.layout.hash(&mut h);
+    assets.onboarding_layout.hash(&mut h);
+    format!("{version}-{:x}", h.finish())
+}
+
+/// Write the owned config dir idempotently. A no-op when the version+content
+/// marker matches (see [`asset_marker`]) AND all generated files are present
+/// (so a deleted file forces a rewrite). Each file is written atomically; the
+/// marker is written last, so an interrupted run is re-materialized rather
+/// than served half-written.
 pub(crate) fn materialize(
     dir: &Path,
     version: &str,
@@ -283,8 +322,9 @@ pub(crate) fn materialize(
     let layout_path = dir.join("layouts").join("radar.kdl");
     let onboarding_layout_path = dir.join("layouts").join("radar-onboarding.kdl");
     let marker = dir.join(".zj-radar-version");
+    let marker_value = asset_marker(version, assets);
 
-    let up_to_date = std::fs::read_to_string(&marker).is_ok_and(|v| v == version)
+    let up_to_date = std::fs::read_to_string(&marker).is_ok_and(|v| v == marker_value)
         && wasm_path.exists()
         && config_path.exists()
         && layout_path.exists()
@@ -303,7 +343,7 @@ pub(crate) fn materialize(
     atomic_write(&config_path, config.as_bytes())?;
     atomic_write(&layout_path, assets.layout.as_bytes())?;
     atomic_write(&onboarding_layout_path, assets.onboarding_layout.as_bytes())?;
-    atomic_write(&marker, version.as_bytes())?;
+    atomic_write(&marker, marker_value.as_bytes())?;
     Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path })
 }
 
@@ -443,11 +483,24 @@ pub struct RunOptions {
     pub print_cmd: bool,
 }
 
+/// Every spawned `zellij` child starts here: `ZELLIJ_CONFIG_FILE` is stripped
+/// because it outranks `--config-dir` (Zellij precedence: `--config` flag >
+/// env > config dir — see `owned_config_args`). Launch args already carry an
+/// explicit `--config`, which outranks the env var on its own; the strip is
+/// belt-and-braces for the launches and keeps the probe/dispatch children
+/// (`list-sessions`, the grant-float action) from choking on a user-exported
+/// config file we never asked for.
+fn zellij_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("zellij");
+    cmd.env_remove("ZELLIJ_CONFIG_FILE");
+    cmd
+}
+
 /// True iff a Zellij session named `name` exists (alive or resurrectable), per
 /// `zellij list-sessions --short` (plain names, one per line). Any error
 /// (zellij missing, no server) is treated as "does not exist" → create path.
 fn session_is_live(name: &str) -> bool {
-    std::process::Command::new("zellij")
+    zellij_command()
         .args(["list-sessions", "--short"])
         .output()
         .ok()
@@ -462,7 +515,7 @@ fn session_is_live(name: &str) -> bool {
 /// `grant_float_args` action, so this gates the pre-attach dispatch. Any error is
 /// "not running" → fall back to the keybind.
 fn session_is_running(name: &str) -> bool {
-    std::process::Command::new("zellij")
+    zellij_command()
         .args(["list-sessions", "--no-formatting"])
         .output()
         .ok()
@@ -531,7 +584,7 @@ fn dispatch_when_running(session: String, dispatch: Vec<String>) {
                 // One settling beat: the server lists as running slightly
                 // before it accepts actions.
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                let _ = std::process::Command::new("zellij")
+                let _ = zellij_command()
                     .args(&dispatch)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -701,7 +754,7 @@ pub fn run(opts: RunOptions) {
     // terminal to `attach`. Failure is non-fatal — the Ctrl-y keybind and the
     // rail's own grant prompt remain as fallbacks — so we ignore the result.
     if let Some(dispatch) = &plan.pre_attach {
-        let _ = std::process::Command::new("zellij").args(dispatch).status();
+        let _ = zellij_command().args(dispatch).status();
     }
     // Resurrect path: the server only exists once `attach` below brings it up,
     // so watch for it from the background and fire the float dispatch then.
@@ -709,11 +762,22 @@ pub fn run(opts: RunOptions) {
     if let Some(dispatch) = plan.post_attach_watch.clone() {
         dispatch_when_running(facts.session.clone(), dispatch);
     }
-    match std::process::Command::new("zellij").args(&plan.args).status() {
+    // A failed launch on the create path must roll the marker stamped above
+    // back: it claims "this name is radar's" for a session Zellij never
+    // created. Left behind, a session the user later creates under the same
+    // name would read as owned and be silently attached onto the bundled
+    // config — the exact swap the foreign-session consent flow prevents.
+    let unstamp_on_failure = || {
+        if !facts.session_exists {
+            let _ = std::fs::remove_file(session_marker_path(&facts.config_dir, &facts.session));
+        }
+    };
+    match zellij_command().args(&plan.args).status() {
         // Attach/detach exits 0; a non-zero status is a real failure (old
         // zellij without --new-session-with-layout, bad config, server crash)
         // that `run && next` must be able to gate on.
         Ok(status) if !status.success() => {
+            unstamp_on_failure();
             crate::exit::fail_report(
                 "zj-radar",
                 format!(
@@ -725,13 +789,19 @@ pub fn run(opts: RunOptions) {
         }
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            unstamp_on_failure();
             crate::exit::fail_report(
                 "zj-radar",
-                "zellij not found on PATH — install Zellij 0.44.x first \
-                 (https://zellij.dev/documentation/installation)",
+                format!(
+                    "zellij not found on PATH — install Zellij {}.{}+ first \
+                     (https://zellij.dev/documentation/installation)",
+                    crate::setup::SUPPORTED_ZELLIJ_MINOR,
+                    crate::setup::MIN_SUPPORTED_ZELLIJ_PATCH,
+                ),
             );
         }
         Err(e) => {
+            unstamp_on_failure();
             crate::exit::fail_report("zj-radar", format!("failed to launch zellij: {e}"));
         }
     }
@@ -765,16 +835,22 @@ mod tests {
 
     #[test]
     fn create_and_attach_args_are_exact() {
+        // The explicit `--config` is load-bearing on BOTH: Zellij's precedence
+        // is `--config` flag > ZELLIJ_CONFIG_FILE env > `<config-dir>/config.kdl`,
+        // so without it a user-exported ZELLIJ_CONFIG_FILE silently swaps the
+        // owned config out (blank rail, dead keybinds) — including in
+        // `--print-cmd` output, which can't carry env changes.
         assert_eq!(
             create_session_args(Path::new("/cfg"), "foo", "radar"),
-            vec!["--config-dir", "/cfg", "--session", "foo", "--new-session-with-layout", "radar"]
+            vec!["--config", "/cfg/config.kdl", "--config-dir", "/cfg",
+                 "--session", "foo", "--new-session-with-layout", "radar"]
         );
-        // --config-dir on attach is load-bearing: a resurrected session is a
-        // NEW server whose config (Ctrl-y grant keybind included) comes from
+        // The owned config on attach is load-bearing: a resurrected session is
+        // a NEW server whose config (Ctrl-y grant keybind included) comes from
         // the attaching client, not from the session's creation.
         assert_eq!(
             attach_session_args(Path::new("/cfg"), "foo"),
-            vec!["--config-dir", "/cfg", "attach", "foo"]
+            vec!["--config", "/cfg/config.kdl", "--config-dir", "/cfg", "attach", "foo"]
         );
     }
 
@@ -922,25 +998,29 @@ mod tests {
         assert!(cfg.contains(&format!("file:{}", m.wasm_path.display())));
         assert!(!cfg.contains("@WASM@"));
         assert!(dir.join("layouts/radar.kdl").exists());
-        assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.1.0");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(),
+            asset_marker("0.1.0", &test_assets())
+        );
     }
 
     #[test]
-    fn materialize_is_noop_on_matching_version() {
+    fn materialize_is_noop_on_matching_version_and_assets() {
+        // The up-to-date probe is the marker (version + asset hash) plus file
+        // presence — it never re-reads file CONTENTS. So a sentinel scribbled
+        // into a generated file survives a matching re-materialize, proving
+        // the second call wrote nothing. (A changed asset flips the marker and
+        // rewrites — covered by the without-version-bump test below.)
         let d = tempdir().unwrap();
         let dir = d.path().join("c");
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
-        let first_layout = std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();
-        let sentinel = Assets {
-            config_template: "SENTINEL-CONFIG-SHOULD-NOT-BE-WRITTEN\n",
-            layout: "SENTINEL-SHOULD-NOT-BE-WRITTEN\n",
-            onboarding_layout: "SENTINEL-ONBOARDING-SHOULD-NOT-BE-WRITTEN\n",
-            wasm: Some(b"SENTINEL-WASM"),
-        };
-        materialize(&dir, "0.1.0", &sentinel).unwrap();
-        let after_layout = std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap();
-        assert_eq!(after_layout, first_layout, "matching version must be a no-op");
-        assert!(!after_layout.contains("SENTINEL"), "sentinel must not appear in layout file");
+        std::fs::write(dir.join("layouts/radar.kdl"), "SENTINEL-LOCAL-EDIT\n").unwrap();
+        materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap(),
+            "SENTINEL-LOCAL-EDIT\n",
+            "matching version + assets must be a no-op"
+        );
     }
 
     #[test]
@@ -959,7 +1039,49 @@ mod tests {
         let dir = d.path().join("c");
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         materialize(&dir, "0.2.0", &test_assets()).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(), "0.2.0");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".zj-radar-version")).unwrap(),
+            asset_marker("0.2.0", &test_assets())
+        );
+    }
+
+    #[test]
+    fn asset_marker_is_deterministic_and_covers_every_embedded_asset() {
+        // Deterministic: two builds of the same inputs agree, so a matching
+        // marker really means "same version, same assets".
+        let base = asset_marker("0.1.0", &test_assets());
+        assert_eq!(base, asset_marker("0.1.0", &test_assets()));
+        assert!(base.starts_with("0.1.0-"), "marker leads with the crate version: {base}");
+        // Structural staleness: editing ANY of the three embedded text assets
+        // changes the marker — no release-discipline version bump required.
+        let mut config_edit = test_assets();
+        config_edit.config_template = "plugins { radar location=\"file:@WASM@\" { edited } }\n";
+        assert_ne!(base, asset_marker("0.1.0", &config_edit), "config.kdl edit must change the marker");
+        let mut layout_edit = test_assets();
+        layout_edit.layout = "layout { tab { pane; pane } }\n";
+        assert_ne!(base, asset_marker("0.1.0", &layout_edit), "radar.kdl edit must change the marker");
+        let mut onboarding_edit = test_assets();
+        onboarding_edit.onboarding_layout = "layout { tab { pane } }\n";
+        assert_ne!(base, asset_marker("0.1.0", &onboarding_edit), "onboarding edit must change the marker");
+        // And a plain version bump still re-materializes, as before.
+        assert_ne!(base, asset_marker("0.2.0", &test_assets()));
+    }
+
+    #[test]
+    fn materialize_rewrites_when_asset_content_changes_without_version_bump() {
+        // The gap the content hash closes: a shipped asset edit that forgot
+        // the version bump must still reach existing installs.
+        let d = tempdir().unwrap();
+        let dir = d.path().join("c");
+        materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        let mut edited = test_assets();
+        edited.layout = "layout { tab { pane; pane } }\n";
+        materialize(&dir, "0.1.0", &edited).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("layouts/radar.kdl")).unwrap(),
+            edited.layout,
+            "same version + edited asset must re-materialize"
+        );
     }
 
     #[test]
@@ -1060,26 +1182,18 @@ mod tests {
     }
 
     #[test]
-    fn cli_version_bumped_past_alt_n_config_change() {
-        // materialize() is a no-op once the on-disk `.zj-radar-version` marker
-        // equals the running binary's CARGO_PKG_VERSION (see materialize() above,
-        // called with env!("CARGO_PKG_VERSION") at the real call site). Landing a
-        // config.kdl content change WITHOUT bumping the crate version would strand
-        // every existing `zj-radar run` install on the stale pre-alt-n binds
-        // forever, since their marker already matches. Pin the version past the
-        // last release that shipped without alt-n binds so this landing forces
-        // re-materialization. (One-off landing gate, not an evergreen regression
-        // test — the baseline below is expected to go stale once released.)
-        assert_ne!(
-            env!("CARGO_PKG_VERSION"),
-            "0.1.0",
-            "bump the workspace version so the .zj-radar-version marker changes \
-             and existing owned configs re-materialize with the new alt-n binds"
-        );
-        // (A second gate briefly lived here for the `jump_hint "alt-n"` alias
-        // key, but that key was added and removed entirely within unreleased
-        // 0.1.2 — no released binary ever materialized it, so there is no
-        // stale-marker population to force past.)
+    fn stamped_marker_is_removed_by_the_rollback_path() {
+        // The failed-create rollback in run() removes session_marker_path();
+        // this pins that stamp and rollback resolve the SAME file, so the
+        // rollback can never silently orphan a marker under a diverged path.
+        // (The run()-level trigger itself — zellij exiting non-zero — spawns a
+        // real zellij, so it's manually verified, not unit-tested.)
+        let d = tempdir().unwrap();
+        stamp_session_marker(d.path(), "proj");
+        let marker = session_marker_path(d.path(), "proj");
+        assert!(marker.exists(), "stamp must land at session_marker_path");
+        let _ = std::fs::remove_file(&marker);
+        assert!(!marker.exists(), "rollback removal must clear the stamp");
     }
 
     // ── plan_run decision matrix ──

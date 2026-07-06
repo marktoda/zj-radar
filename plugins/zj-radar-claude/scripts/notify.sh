@@ -75,7 +75,6 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 cwd="${cwd:0:4096}"
 [[ -n "$cwd" ]] || cwd="$PWD"
 msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
-[[ "$msg" == "Claude needs attention" ]] && msg=""
 task=""
 
 # Whole-word containment (mirrors zj_radar_core::command::contains_word): is $2

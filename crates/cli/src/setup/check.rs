@@ -144,12 +144,41 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
     items
 }
 
+/// Zellij's config precedence puts the `ZELLIJ_CONFIG_FILE` env var above
+/// config-dir resolution, and setup's resolver honors `ZELLIJ_CONFIG_DIR`/XDG
+/// but not this var — so setup can edit a config.kdl Zellij never reads while
+/// the doctor reports healthy. Warn when the var points somewhere other than
+/// the resolved config path. Pure (env read by the caller), mirroring
+/// `resolve_config_dir`.
+pub(crate) fn zellij_config_file_item(
+    zellij_config_file: Option<std::ffi::OsString>,
+    resolved: &std::path::Path,
+) -> Option<CheckItem> {
+    let file = std::path::PathBuf::from(zellij_config_file.filter(|v| !v.is_empty())?);
+    if file == resolved {
+        return None;
+    }
+    Some(CheckItem::warn(
+        "config env",
+        format!(
+            "Zellij will read $ZELLIJ_CONFIG_FILE={}, not {} — unset it or point setup at it",
+            file.display(),
+            resolved.display()
+        ),
+    ))
+}
+
 /// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
     let Some(config_dir) = zellij_config_dir_or_report() else { return true };
-    let (env, _) = read_zellij_env(&config_dir, layout_name);
-    let items = zellij_check_items(&analyze_zellij(&env));
+    let (env, paths) = read_zellij_env(&config_dir, layout_name);
+    let mut items = zellij_check_items(&analyze_zellij(&env));
+    if let Some(item) =
+        zellij_config_file_item(std::env::var_os("ZELLIJ_CONFIG_FILE"), &paths.config_path)
+    {
+        items.push(item);
+    }
     println!("zellij:");
     print_check_items(&items)
 }
@@ -524,6 +553,31 @@ mod tests {
         let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
         assert_eq!(producer.level, CheckLevel::Missing);
         assert!(producer.detail.contains("setup codex"), "hint must mention setup codex");
+    }
+
+    #[test]
+    fn zellij_config_file_item_warns_only_on_a_mismatched_override() {
+        use std::ffi::OsString;
+        let resolved = std::path::Path::new("/home/u/.config/zellij/config.kdl");
+        // Unset or empty: no override in play, no item.
+        assert_eq!(zellij_config_file_item(None, resolved), None);
+        assert_eq!(zellij_config_file_item(Some(OsString::new()), resolved), None);
+        // Pointing at the resolved path: consistent, no item.
+        assert_eq!(
+            zellij_config_file_item(
+                Some(OsString::from("/home/u/.config/zellij/config.kdl")),
+                resolved,
+            ),
+            None
+        );
+        // Pointing elsewhere: Zellij reads a file setup never edits — warn,
+        // naming both paths so the fix is actionable.
+        let item = zellij_config_file_item(Some(OsString::from("/etc/zellij/config.kdl")), resolved)
+            .expect("mismatched override must produce an item");
+        assert_eq!(item.level, CheckLevel::Warn, "advice, not a broken install");
+        assert!(item.detail.contains("/etc/zellij/config.kdl"), "must name the override");
+        assert!(item.detail.contains("/home/u/.config/zellij/config.kdl"), "must name the resolved path");
+        assert!(item.detail.contains("unset it"), "must say how to fix it");
     }
 
     #[test]

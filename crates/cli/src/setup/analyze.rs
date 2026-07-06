@@ -81,6 +81,17 @@ impl ZellijFacts {
 /// pin in crates/plugin/Cargo.toml and the version claims in README/docs. The
 /// plugin crate's `doctor_version_gate_matches_the_zellij_tile_pin` guard
 /// test pins this pair to that Cargo pin.
+///
+/// Zellij internals we parse — re-verify each on any version bump:
+/// - `run.rs::wasm_is_granted` — `permissions.kdl` grant-block grammar
+///   (quoted wasm path as block header, one permission per line).
+/// - `run.rs::permissions_path_in` — the macOS cache sub-folder name
+///   `org.Zellij-Contributors.Zellij` (Linux uses plain `zellij`).
+/// - `run.rs::session_is_running` / `line_is_running_session` —
+///   `zellij list-sessions --no-formatting` line grammar (`<name> [Created …]`,
+///   dead sessions tagged `EXITED` after the name).
+/// - `run.rs::cached_session_layout` — the resurrection-cache path shape
+///   `<cache>/<contract dir>/session_info/<session>/session-layout.kdl`.
 pub(crate) const SUPPORTED_ZELLIJ_MINOR: &str = "0.44";
 
 /// Earliest patch of that minor the rail actually works on: 0.44.3 carries

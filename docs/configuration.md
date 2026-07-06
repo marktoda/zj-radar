@@ -25,7 +25,7 @@ ignored and invalid values fall back to the default (parsing never fails):
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `density` | `cards` · `comfortable` · `compact` | `cards` | Card surface bands / blank separators / flush rail. |
-| `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. |
+| `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. The self-applied memory lives in plugin memory, so after a Zellij server restart previously auto-applied names read as manual — use `force`, or rename the tab back to its default (`Tab #N`) to re-enable managed naming. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
 | `jump_hint` | `alt-n` · anything else | hidden | Footer advertises ` alt-[n] jump`. Opt in only when Alt+digit actually reaches Zellij on your machine: the binds must exist in your Zellij config (`zj-radar run` sessions bake Alt-1..9 → `GoToTab`, but don't set this — window managers commonly claim Alt+digit system-wide, and macOS terminals type `¡` unless option-as-alt is on). The rail never advertises a chord it can't verify. |

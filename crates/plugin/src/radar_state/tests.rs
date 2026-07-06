@@ -371,6 +371,74 @@ fn panes_changed_requests_each_pane_cwd_only_once_even_if_unresolved() {
 }
 
 #[test]
+fn panes_changed_persists_only_on_exit_displace_or_prune() {
+    // Every tab's instance receives every PaneUpdate, and the PersistSnapshot
+    // effect is a read-merge-write of the shared /cache file — so plain
+    // topology churn (resize, title change, focus) must NOT request
+    // persistence. Only the recede edges (an exit displacing a completion, a
+    // prune dropping one) change persisted state; topology itself is never
+    // persisted.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+
+    // First sighting of the topology: nothing displaced, nothing pruned.
+    let change = radar.panes_changed(
+        pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+        1,
+        0,
+        config::NamingMode::Off,
+    );
+    assert!(!change.persist_snapshot, "topology-only update must not persist");
+
+    // A Done sits on pane 7; the same topology re-reports with only a title
+    // change — still nothing displaced or pruned.
+    radar
+        .status_mut()
+        .apply(payload_for(7, Status::Done, "repo"), 2, 100);
+    let retitled = TerminalPane {
+        id: 7,
+        title: "retitled".into(),
+        focused_in_tab: true,
+    };
+    let change = radar.panes_changed(
+        pane_update(HashMap::from([(0, vec![retitled])])),
+        3,
+        0,
+        config::NamingMode::Off,
+    );
+    assert!(!change.persist_snapshot, "title-only churn must not persist");
+
+    // The pane closes with the Done still on it → the prune is a recede edge
+    // (it also ledgers), so THIS update persists.
+    let change = radar.panes_changed(pane_update(HashMap::new()), 4, 200, config::NamingMode::Off);
+    assert!(change.persist_snapshot, "a prune that dropped a completion persists");
+}
+
+#[test]
+fn panes_changed_persists_when_an_exit_displaces_a_completion() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+
+    // A finished run leaves an Error on pane 1…
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    radar.command_mut().on_exit(1, Some(1), 3, 100);
+    assert_eq!(radar.command(1).unwrap().status, Status::Error);
+
+    // …then a fresh run starts and its exit arrives in a PaneUpdate,
+    // displacing the old Error — a recede edge, so this update persists.
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 4);
+    let update = PaneUpdate {
+        tab_panes: HashMap::from([(0, vec![pane(1)])]),
+        live: HashSet::from([1]),
+        theme: None,
+        exits: vec![(1, Some(0))],
+    };
+    let change = radar.panes_changed(update, 5, 200, config::NamingMode::Off);
+    assert!(change.persist_snapshot, "an exit that displaced a completion persists");
+}
+
+#[test]
 fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);

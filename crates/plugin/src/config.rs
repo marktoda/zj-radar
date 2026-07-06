@@ -254,6 +254,13 @@ config_fields! {
 /// than in the runtime — the runtime was otherwise the only module coupled to
 /// `serde_json::Value`.
 pub(crate) fn overrides_from_json(raw: &str) -> Option<BTreeMap<String, String>> {
+    // Same pre-parse oversize rejection as the status pipe (`payload::parse`):
+    // both pipes accept arbitrary broadcast input, and serde_json allocates a
+    // full `Value` tree before we can inspect anything, so refuse over-cap
+    // payloads up front rather than paying for them.
+    if raw.len() > crate::payload::MAX_PAYLOAD_BYTES {
+        return None;
+    }
     let val: serde_json::Value = serde_json::from_str(raw).ok()?;
     let obj = val.as_object()?;
     Some(
@@ -291,6 +298,18 @@ mod tests {
         // Non-JSON and non-object payloads yield None (the runtime no-ops on these).
         assert!(overrides_from_json("not json").is_none());
         assert!(overrides_from_json("[1,2,3]").is_none());
+    }
+
+    #[test]
+    fn overrides_from_json_rejects_oversized_payloads_before_parsing() {
+        // Mirror of the status pipe's `MAX_PAYLOAD_BYTES` cap: an over-limit
+        // config payload is dropped before serde_json allocates a Value tree.
+        let over = format!(
+            r#"{{"naming":"{}"}}"#,
+            "x".repeat(crate::payload::MAX_PAYLOAD_BYTES)
+        );
+        assert!(over.len() > crate::payload::MAX_PAYLOAD_BYTES, "sanity: fixture exceeds the cap");
+        assert!(overrides_from_json(&over).is_none());
     }
 
     #[test]
@@ -443,7 +462,7 @@ mod tests {
 
     #[test]
     fn apply_overrides_flips_two_fields_leaves_others_unchanged() {
-        // Start from defaults: naming=Managed, density=Comfortable, header=true, glyphs=Plain
+        // Start from defaults: naming=Managed, density=Cards, header=true, glyphs=Plain
         let mut c = Config::default();
         let kv = map(&[("density", "cards"), ("naming", "managed")]);
         c.apply_overrides(&kv);

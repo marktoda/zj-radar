@@ -1,6 +1,6 @@
 # Demo assets
 
-Everything needed to regenerate the README's screenshots and GIF — and a
+Everything needed to regenerate the repo's hero media and screenshots — and a
 zero-dependency way to **see the sidebar in action without wiring up a real
 agent**.
 

@@ -15,6 +15,18 @@ use std::collections::{HashMap, HashSet};
 /// mid-turn doesn't leave a "working" row spinning forever.
 pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = 15;
 
+/// Upper bound on tracked status observations across distinct pane ids. The
+/// per-payload defenses (size cap, sanitize) don't bound the number of
+/// *panes*: a looping producer broadcasting fresh pane ids would otherwise
+/// grow this store, the persisted snapshot, and the per-payload disk write
+/// without limit — and a fresh instance that hasn't seen a `PaneUpdate` yet
+/// never prunes. 256 is far beyond any legitimate session (one agent pane per
+/// rail row) while keeping the worst-case store/snapshot small. On overflow
+/// the oldest observation by `last_change_tick` is evicted. Deliberately NOT
+/// a live-pane check: a legit broadcast can arrive before the `PaneUpdate`
+/// that introduces its pane, so unknown ids must stay accepted.
+pub const MAX_TRACKED_PANES: usize = 256;
+
 #[derive(Default)]
 pub struct StatusStore {
     store: ObservationStore,
@@ -93,10 +105,37 @@ impl StatusStore {
                 pending_epoch_s,
             },
         );
+        self.evict_over_cap();
         if identical || !was_completion {
             None
         } else {
             displaced
+        }
+    }
+
+    /// Enforce [`MAX_TRACKED_PANES`] after an intake insert: while over the
+    /// cap, drop the oldest observation by `last_change_tick` (ties broken by
+    /// pane id, for determinism). An evicted completion is dropped silently —
+    /// no ledger hand-off — because the cap only ever bites under a
+    /// misbehaving producer, where ledgering its flood would be its own DoS.
+    fn evict_over_cap(&mut self) {
+        while self.store.observations().count() > MAX_TRACKED_PANES {
+            let Some(oldest) = self
+                .store
+                .observations()
+                .min_by_key(|(id, o)| (o.last_change_tick, *id))
+                .map(|(id, _)| id)
+            else {
+                return;
+            };
+            let keep: HashSet<u32> = self
+                .store
+                .observations()
+                .map(|(id, _)| id)
+                .filter(|&id| id != oldest)
+                .collect();
+            let _ = self.store.prune(&keep);
+            self.suspect_running.remove(&oldest);
         }
     }
 
@@ -484,6 +523,28 @@ mod tests {
         s.apply(payload(2, Status::Done), 1, 100);
         let displaced = s.apply(payload(2, Status::Running), 2, 200);
         assert_eq!(displaced.unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn store_caps_tracked_panes_and_evicts_the_oldest() {
+        // A looping producer sending ever-fresh pane ids must not grow the
+        // store (and with it the persisted snapshot) without bound. Insert
+        // cap+8 distinct panes, each at a later tick: the store holds exactly
+        // the cap, and the 8 oldest-by-tick observations are the ones evicted.
+        let mut s = StatusStore::default();
+        let extra = 8u32;
+        for i in 0..(MAX_TRACKED_PANES as u32 + extra) {
+            s.apply(payload(i, Status::Running), i as u64, 0);
+        }
+        assert_eq!(s.observations().count(), MAX_TRACKED_PANES);
+        for i in 0..extra {
+            assert!(s.get(i).is_none(), "oldest pane {i} must be evicted");
+        }
+        assert!(s.get(extra).is_some(), "the oldest survivor is still tracked");
+        assert!(
+            s.get(MAX_TRACKED_PANES as u32 + extra - 1).is_some(),
+            "the newest pane is still tracked"
+        );
     }
 
     #[test]

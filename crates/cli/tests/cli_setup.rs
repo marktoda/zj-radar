@@ -882,3 +882,235 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
         "ungranted install must keep the grant hint; stdout:\n{stdout}"
     );
 }
+
+// ── Test: a symlinked layout is managed — never rewritten, never deleted ──────
+// `config_is_managed` (the Nix / home-manager symlink test) used to gate only
+// config.kdl; the layout was written via atomic rename, which silently replaces
+// a symlink with a regular file — the next `home-manager switch` reverts it and
+// the rail "mysteriously vanishes". Both inject and uninstall must refuse.
+
+#[test]
+#[cfg(unix)]
+fn setup_zellij_never_writes_a_symlinked_layout() {
+    let config_dir = isolated_zellij_config(FIXTURE_LAYOUT);
+    let layouts = config_dir.path().join("layouts");
+    // Move the real layout aside and symlink default.kdl at it (home-manager style).
+    let real = config_dir.path().join("hm-source.kdl");
+    fs::rename(layouts.join("default.kdl"), &real).unwrap();
+    std::os::unix::fs::symlink(&real, layouts.join("default.kdl")).unwrap();
+
+    // Inject: refusal + snippet, symlink and target intact.
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success() // guidance, not a failure — mirrors the managed-config path
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stderr.contains("symlink"),
+        "must say WHY it refused (symlink / Nix); stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("Add the sidebar"),
+        "must still print the tailored snippet for the Nix config; stdout:\n{stdout}"
+    );
+    let link = layouts.join("default.kdl");
+    assert!(
+        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        "--inject must not replace the symlink with a regular file"
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        FIXTURE_LAYOUT,
+        "the symlink target must be untouched"
+    );
+
+    // Uninstall: same guard (no config.kdl → the layout-only uninstall path).
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--uninstall"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("symlink"),
+        "--uninstall must refuse a symlinked layout out loud; stderr:\n{stderr}"
+    );
+    assert!(
+        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        "--uninstall must leave the symlink in place"
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        FIXTURE_LAYOUT,
+        "--uninstall must leave the symlink target untouched"
+    );
+}
+
+// ── Test: an unreadable layout is not an absent one ───────────────────────────
+// A layout that exists but fails read_to_string (EACCES, non-UTF8) used to take
+// the "No layout at {path} — create it?" path: consenting replaced the user's
+// file under a prompt that lied. The error kinds must be discriminated —
+// NotFound creates, everything else refuses and leaves the file alone.
+
+#[test]
+fn setup_zellij_refuses_an_unreadable_layout_instead_of_recreating_it() {
+    let non_utf8: &[u8] = &[0xFF, 0xFE, b'l', b'a', b'y', b'o', b'u', b't'];
+    let config_dir = TempDir::new().unwrap();
+    let layouts = config_dir.path().join("layouts");
+    fs::create_dir_all(&layouts).unwrap();
+    let layout_path = layouts.join("default.kdl");
+    fs::write(&layout_path, non_utf8).unwrap();
+
+    // Inject: must NOT take the create path (which would replace the file).
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .failure() // a real error, unlike the guidance-only symlink refusal
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("could not read layout"),
+        "must report the read error, not claim the layout is absent; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read(&layout_path).unwrap(),
+        non_utf8,
+        "--inject must leave an unreadable layout byte-identical"
+    );
+
+    // Uninstall: same discrimination (unreadable != nothing to uninstall).
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--uninstall"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("could not read layout"),
+        "--uninstall must report the read error; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read(&layout_path).unwrap(),
+        non_utf8,
+        "--uninstall must leave an unreadable layout byte-identical"
+    );
+}
+
+// ── Test: --dry-run --download never touches the network ─────────────────────
+// --dry-run is documented "Show what would change; write nothing", yet it used
+// to fetch the release wasm first — and hard-fail offline. The config splice
+// needs only the destination path, so the fetch must be skipped and announced.
+
+#[test]
+fn setup_zellij_dry_run_download_skips_the_fetch_and_writes_nothing() {
+    let config_dir = TempDir::new().unwrap();
+    let emptybin = TempDir::new().unwrap(); // no curl/wget: a fetch attempt would fail
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--download", "--dry-run"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("PATH", emptybin.path()) // offline-equivalent: success proves no fetch
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("would download"),
+        "dry-run must announce the download it skipped; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dry-run"),
+        "the config preview must still print; stdout:\n{stdout}"
+    );
+    assert!(
+        !config_dir.path().join("config.kdl").exists()
+            && !config_dir.path().join("plugins").exists(),
+        "--dry-run --download must write nothing"
+    );
+}
+
+// ── Test: --check conflicts with --uninstall at the CLI boundary ──────────────
+// `setup --check --uninstall` used to silently run the doctor and never
+// uninstall — reading as "uninstalled". Clap now hard-errors, matching --grant.
+
+#[test]
+fn setup_check_conflicts_with_uninstall() {
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "--check", "--uninstall"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("cannot be used with"),
+        "clap must reject --check --uninstall as a hard conflict; stderr:\n{stderr}"
+    );
+}
+
+// ── Test: the doctor flags a ZELLIJ_CONFIG_FILE override ─────────────────────
+// Zellij's config precedence puts $ZELLIJ_CONFIG_FILE above --config-dir
+// resolution; setup's resolver honors ZELLIJ_CONFIG_DIR/XDG but not this var,
+// so setup can edit a config.kdl Zellij never reads while --check reports
+// healthy. The doctor must name both paths when they diverge.
+
+#[test]
+fn check_warns_when_zellij_config_file_points_elsewhere() {
+    let config_dir = TempDir::new().unwrap();
+    let resolved = config_dir.path().join("config.kdl");
+
+    let check = |config_file: Option<&std::path::Path>| -> String {
+        let mut cmd = Command::cargo_bin("zj-radar").unwrap();
+        cmd.args(["setup", "zellij", "--check"])
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env_remove("ZELLIJ_CONFIG_FILE");
+        if let Some(f) = config_file {
+            cmd.env("ZELLIJ_CONFIG_FILE", f);
+        }
+        // No `.success()`: the empty fixture has Missing items by design.
+        let output = cmd.output().unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    // Override pointing elsewhere: warn, naming both paths.
+    let elsewhere = config_dir.path().join("other.kdl");
+    let out = check(Some(&elsewhere));
+    assert!(
+        out.contains("warn config env") && out.contains("$ZELLIJ_CONFIG_FILE"),
+        "a diverging ZELLIJ_CONFIG_FILE must produce the config env warning; got:\n{out}"
+    );
+    assert!(
+        out.contains(elsewhere.to_str().unwrap()) && out.contains(resolved.to_str().unwrap()),
+        "the warning must name both the override and the resolved path; got:\n{out}"
+    );
+
+    // Unset, or pointing at the resolved path: no warning.
+    let out = check(None);
+    assert!(
+        !out.contains("config env"),
+        "no override -> no config env item; got:\n{out}"
+    );
+    let out = check(Some(&resolved));
+    assert!(
+        !out.contains("config env"),
+        "an override that matches the resolved path is consistent; got:\n{out}"
+    );
+}

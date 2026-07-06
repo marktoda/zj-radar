@@ -56,7 +56,7 @@ pub(crate) mod exit {
 #[command(
     name = "zj-radar",
     version,
-    about = "Broadcast agent status to the zj-radar Zellij sidebar, and wire agents up."
+    about = "Launch a Zellij session with the zj-radar sidebar, broadcast agent status to it, and wire agents up."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -120,8 +120,10 @@ enum Command {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
-        /// Check setup status without writing files.
-        #[arg(long)]
+        /// Check setup status without writing files. Conflicts with
+        /// `--uninstall`: silently running the doctor instead of uninstalling
+        /// would read as "uninstalled".
+        #[arg(long, conflicts_with = "uninstall")]
         check: bool,
         /// Use Codex's legacy single-slot notify config instead of hooks.json.
         #[arg(long)]

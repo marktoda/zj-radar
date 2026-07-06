@@ -172,6 +172,15 @@ teardown() { teardown_fakes; }
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"   "}' pending
 }
 
+@test "parity: generic phrase outside pending rides through untouched" {
+  # The generic-phrase filter is PENDING-ONLY in both producers. A done
+  # broadcast whose message happens to be a generic phrase must keep it —
+  # an unconditional filter here is the drift this case pins against.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"Claude needs attention"}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "Claude needs attention" ]
+}
+
 @test "parity: Stop ending in a question remaps done to pending" {
   # A turn that ends by asking is blocked on input: both producers must remap
   # done → pending and carry ONLY the trailing question line as the msg.

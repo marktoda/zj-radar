@@ -226,6 +226,10 @@ impl State {
     /// predecessor plugin. A successful read feeds the existing `cwd_changed`
     /// path, which performs the rename; a failure is simply dropped (the id is
     /// already marked attempted and a later `cd` will still name the tab).
+    /// Each nested outcome's `render: true` flag is intentionally dropped
+    /// (only its effects are replayed): the one emitter of `Effect::ResolveCwd`
+    /// — `panes_changed` — already returns `render: true` in the same update
+    /// cycle, so the carrying update repaints.
     fn resolve_cwd(&mut self, pane_ids: Vec<u32>) {
         for id in pane_ids {
             if let Ok(path) = get_pane_cwd(PaneId::Terminal(id)) {

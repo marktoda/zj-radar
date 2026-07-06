@@ -273,21 +273,20 @@ impl RadarState {
         cycle_attention(&pairs, active, dir)
     }
 
+    /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
+    /// sorts at intake, so this render-path call is a plain iteration.
     pub(crate) fn rows(&self, now_tick: u64) -> Vec<TabRow> {
-        let mut rows = Vec::new();
-        let mut sorted = self.tabs.clone();
-        sorted.sort_by_key(|t| t.position);
-        for t in &sorted {
-            rows.push(TabRow {
+        self.tabs
+            .iter()
+            .map(|t| TabRow {
                 number: t.position as u32 + 1,
                 name: t.name.clone(),
                 active: t.active,
                 has_bell: t.has_bell,
                 flash: self.flash_until.get(&t.id).is_some_and(|&u| now_tick < u),
                 display: self.tab_display_for(t.position),
-            });
-        }
-        rows
+            })
+            .collect()
     }
 
     /// True while any tab is still mid-flash at `now_tick` — ORed into
@@ -306,6 +305,10 @@ impl RadarState {
             t.name = payload::sanitize(&t.name, payload::MAX_TAB_NAME_CHARS);
         }
         self.tabs = tabs;
+        // Sort once at intake — this is the only writer of `self.tabs`, so the
+        // per-render `rows()` path iterates in stored order instead of paying a
+        // clone+sort on every repaint and tick.
+        self.tabs.sort_by_key(|t| t.position);
         // Drop naming state for tabs that closed (the update carries the full
         // current set), so `applied` doesn't accrete gone tabs.
         let live: HashSet<TabId> = self.tabs.iter().map(|t| t.id).collect();
@@ -338,9 +341,20 @@ impl RadarState {
         // shown on the card, so `ledger_receded` must not ghost it in.
         let status_tracked = self.status_tracked_pane_ids();
 
+        // Persist only on the recede edges below (mirroring `command_changed`'s
+        // "persist only when we actually cleared"): a plain PaneUpdate is
+        // resize/title/focus churn, and Zellij sends one to EVERY tab's
+        // instance — persisting unconditionally made each of them read-merge-
+        // write the shared /cache file per churn event. Topology itself isn't
+        // persisted, and an exit that merely flips a command to Done/Error
+        // (displacing nothing) is safe to skip too: exits ride the
+        // level-triggered pane manifest, so a late-spawned instance re-derives
+        // them from its own first PaneUpdate rather than the snapshot.
+        let mut displaced_any = false;
         for (pane_id, exit_status) in update.exits {
             if let Some(displaced) = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s) {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
+                displaced_any = true;
             }
         }
         self.live_panes = Some(update.live.clone());
@@ -350,6 +364,7 @@ impl RadarState {
         // `old_index` and `status_tracked` captured above.
         let dropped_status = self.status.prune(&update.live);
         let dropped_command = self.command.prune(&update.live);
+        let pruned_any = !dropped_status.is_empty() || !dropped_command.is_empty();
         self.ledger_receded(dropped_status, &old_index, &status_tracked);
         self.ledger_receded(dropped_command, &old_index, &status_tracked);
         self.pane_cwd.retain(|id, _| update.live.contains(id));
@@ -363,7 +378,7 @@ impl RadarState {
 
         RadarChange {
             render: true,
-            persist_snapshot: true,
+            persist_snapshot: displaced_any || pruned_any,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
             settle: true,

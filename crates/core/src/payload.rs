@@ -21,6 +21,21 @@ pub const MAX_BRANCH_CHARS: usize = 40;
 pub const MAX_TAB_NAME_CHARS: usize = 40;
 /// Public-contract limit: `source` truncates to this many chars on parse.
 pub const MAX_SOURCE_CHARS: usize = 16;
+/// Producer-side cap: [`to_wire`] truncates every free-text field to this many
+/// chars before serializing. Generous relative to the parse-side display caps
+/// above (so `parse`'s sanitizer still has content left after control-char
+/// stripping — the same reasoning as the CLI notifier's own 512-char bound),
+/// but small enough that no combination of fields can push the payload past
+/// [`MAX_PAYLOAD_BYTES`] — which would make `parse` drop the *entire* update
+/// (worst case: a lost `done` edge leaves a tab stuck "working"), breaking the
+/// crate-level promise that long text degrades to truncation, never a dropped
+/// update.
+pub const MAX_WIRE_FIELD_CHARS: usize = 512;
+// The headroom that makes the cap sufficient, checked at compile time: worst
+// case per char on the wire is 6 bytes (a `\u001b`-style JSON escape; raw
+// UTF-8 tops out at 4), so five capped free-text fields can never come close
+// to the payload cap.
+const _: () = assert!(5 * MAX_WIRE_FIELD_CHARS * 6 < MAX_PAYLOAD_BYTES / 2);
 
 /// The versioned pipe name that binds every producer to the plugin — the one
 /// string that must never drift between them. The pipe *name* carries the
@@ -155,8 +170,10 @@ fn is_bidi_control(c: char) -> bool {
 /// Strip control/ANSI chars, fold newlines/tabs/CR to spaces, truncate to `max_chars`.
 ///
 /// Stripped sequences:
-/// - CSI (`\x1b[` … final byte in 0x40–0x7E)
-/// - OSC (`\x1b]` … terminated by BEL `\x07` or ST `\x1b\`)
+/// - CSI (`\x1b[` … final byte in 0x40–0x7E; a C0 control or non-ASCII byte
+///   ends a malformed CSI without being consumed)
+/// - OSC (`\x1b]` … terminated by BEL `\x07` or ST `\x1b\`; a stray C0 control
+///   ends a malformed OSC without being consumed)
 /// - Any other ESC-introduced 2-byte sequence (`\x1b` + one byte)
 /// - C0 control chars (0x00–0x1F) — `\n`, `\t`, `\r` become a single space; all others dropped
 /// - DEL (0x7F) — dropped
@@ -171,10 +188,21 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
             let next = bytes.get(i + 1).copied();
             match next {
                 Some(b'[') => {
-                    // CSI: consume until a byte in 0x40–0x7E (inclusive)
+                    // CSI: consume until a final byte in 0x40–0x7E (inclusive).
+                    // A well-formed CSI body is parameter/intermediate bytes in
+                    // 0x20–0x3F only, so a C0 control or a non-ASCII byte ends a
+                    // malformed/unterminated CSI WITHOUT being consumed — the
+                    // outer loop reprocesses it (the same bound the OSC arm
+                    // below applies). This used to run to the next 0x40–0x7E
+                    // byte regardless, so `\x1b[` followed by non-ASCII text
+                    // (every UTF-8 byte is >= 0x80) or a newline swallowed text
+                    // that should survive.
                     i += 2;
                     while i < bytes.len() {
                         let fb = bytes[i];
+                        if !(0x20..0x80).contains(&fb) {
+                            break; // stray byte ends the CSI; leave it for the outer loop
+                        }
                         i += 1;
                         if (0x40..=0x7e).contains(&fb) {
                             break; // final byte consumed
@@ -190,7 +218,8 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
                     // to run to end-of-input and swallow the whole field, blanking
                     // it. (A fully-printable OSC with no terminator anywhere still
                     // consumes to the end — matching how a real terminal waits for a
-                    // terminator — but that is the only remaining swallow case.)
+                    // terminator. The CSI arm above keeps the analogous residual
+                    // swallow: a tail that is entirely parameter-shaped, 0x20–0x3F.)
                     i += 2;
                     while i < bytes.len() {
                         let b = bytes[i];
@@ -301,8 +330,23 @@ struct WirePane {
     id: u32,
 }
 
+/// First `max_chars` chars of `s`, sliced on a char boundary (no allocation —
+/// [`to_wire`]'s `Wire` borrows its fields).
+fn cap_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
 /// Build a `zj_radar.status.v1` JSON payload (inverse of `parse`). Shared by the
 /// CLI producer and tested against `parse` so the two can never drift.
+///
+/// Every free-text field is capped at [`MAX_WIRE_FIELD_CHARS`] chars here, on
+/// the producer side: an unbounded field would otherwise emit a payload past
+/// [`MAX_PAYLOAD_BYTES`], which `parse` rejects *whole* — turning "long
+/// message" into "dropped update". Capping here keeps the crate's promise
+/// that oversized text degrades to truncation.
 ///
 /// Takes `&StatusPayload` rather than seven positional args (four of them
 /// adjacent `&str`s) — the struct's named fields make a `msg`/`task` or
@@ -311,16 +355,16 @@ struct WirePane {
 pub fn to_wire(p: &StatusPayload) -> String {
     serde_json::to_string(&Wire {
         v: STATUS_VERSION,
-        source: &p.source,
+        source: cap_chars(&p.source, MAX_WIRE_FIELD_CHARS),
         pane: WirePane {
             kind: "terminal",
             id: p.pane_id,
         },
         status: p.status,
-        repo: &p.repo,
-        branch: &p.branch,
-        msg: &p.msg,
-        task: &p.task,
+        repo: cap_chars(&p.repo, MAX_WIRE_FIELD_CHARS),
+        branch: cap_chars(&p.branch, MAX_WIRE_FIELD_CHARS),
+        msg: cap_chars(&p.msg, MAX_WIRE_FIELD_CHARS),
+        task: cap_chars(&p.task, MAX_WIRE_FIELD_CHARS),
     })
     .expect("status payload of plain fields always serializes")
 }
@@ -368,6 +412,8 @@ mod tests {
     fn rejects_non_terminal_and_garbage_and_oversize() {
         assert!(p(r#"{"pane":{"type":"plugin","id":1},"status":"done"}"#).is_none());
         assert!(p("not json").is_none());
+        assert!(p("").is_none());
+        assert!(p("null").is_none()); // valid JSON, wrong shape
         let big = format!(
             r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","msg":"{}"}}"#,
             "x".repeat(MAX_PAYLOAD_BYTES)
@@ -491,8 +537,28 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_unterminated_csi_is_bounded() {
+        // A CSI whose next byte is outside the valid parameter/final ranges used
+        // to be swallowed along with everything up to the next 0x40–0x7E byte.
+        // Non-ASCII text (every UTF-8 byte is >= 0x80) now ends the CSI without
+        // being consumed, so the text survives.
+        assert_eq!(sanitize("\x1b[тест done", 100), "тест done");
+        // A C0 control also ends it; the newline then folds to a space.
+        assert_eq!(sanitize("\x1b[\nhello", 100), " hello");
+    }
+
+    #[test]
+    fn sanitize_parameter_shaped_unterminated_csi_still_drops() {
+        // The CSI analogue of the fully-printable OSC swallow below: a tail
+        // that is entirely parameter-shaped (0x20–0x3F) with no final byte
+        // still consumes to the end — a real terminal also keeps waiting for
+        // the final byte. Pinned so the bound above isn't mistaken for a full fix.
+        assert_eq!(sanitize("\x1b[38;2;255", 100), "");
+    }
+
+    #[test]
     fn sanitize_fully_printable_unterminated_osc_still_drops() {
-        // The one remaining swallow case: an OSC with no terminator AND no control
+        // A remaining swallow case: an OSC with no terminator AND no control
         // byte anywhere. A real terminal also waits indefinitely for a terminator,
         // so dropping (rather than emitting the raw OSC payload as text) is the
         // defensive choice. Pinned so the bound above isn't mistaken for a full fix.
@@ -586,40 +652,28 @@ mod tests {
     }
 
     #[test]
-    fn as_wire_round_trips_for_all_statuses() {
-        use crate::status::Status;
-        for &s in Status::ALL {
-            assert_eq!(Status::from_wire(s.as_wire()), s);
-        }
-    }
-
-    // ── defense-in-depth tests (ported from harness branch) ──
-
-    #[test]
-    fn rejects_oversized_payload() {
-        let big = format!(
-            r#"{{"v":1,"pane":{{"type":"terminal","id":1}},"status":"running","msg":"{}"}}"#,
-            "x".repeat(MAX_PAYLOAD_BYTES)
-        );
-        assert!(parse(&big).is_none());
-    }
-
-    #[test]
-    fn rejects_malformed_json() {
-        assert!(parse("{not json").is_none());
-        assert!(parse("").is_none());
-        assert!(parse("null").is_none());
-    }
-
-    #[test]
-    fn sanitize_strips_control_and_truncates() {
-        let dirty = "\x1b[31mred\x07\nbeep\ttab";
-        let clean = sanitize(dirty, MAX_MSG_CHARS);
-        assert!(!clean.contains('\x1b'));
-        assert!(!clean.contains('\x07'));
-        assert!(!clean.contains('\n'));
-        assert!(!clean.contains('\t'), "tab should be folded to space");
-        assert!(clean.chars().count() <= MAX_MSG_CHARS);
+    fn to_wire_caps_oversized_fields_so_parse_never_rejects() {
+        // A producer stuffing >MAX_PAYLOAD_BYTES of text into a free-text field
+        // used to emit a payload `parse` rejects WHOLE — a dropped `done` edge
+        // (tab stuck "working"), not a truncated message. `to_wire` now caps
+        // each free-text field at MAX_WIRE_FIELD_CHARS, so its output always
+        // stays under MAX_PAYLOAD_BYTES and parses with truncated fields.
+        // (The headroom argument itself — five capped fields can never reach
+        // the payload cap — is a compile-time assert next to the const.)
+        let json = to_wire(&StatusPayload {
+            pane_id: 7,
+            status: Status::Done,
+            msg: "m".repeat(2 * MAX_PAYLOAD_BYTES),
+            // Multi-byte chars: the producer-side cap must cut on a char
+            // boundary, not a byte offset.
+            task: "т".repeat(2 * MAX_PAYLOAD_BYTES),
+            ..Default::default()
+        });
+        assert!(json.len() <= MAX_PAYLOAD_BYTES, "payload is {} bytes", json.len());
+        let got = parse(&json).expect("capped wire output must parse");
+        assert_eq!(got.status, Status::Done);
+        assert_eq!(got.msg.chars().count(), MAX_MSG_CHARS);
+        assert_eq!(got.task.chars().count(), MAX_TASK_CHARS);
     }
 
     proptest::proptest! {
