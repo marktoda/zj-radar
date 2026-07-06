@@ -21,7 +21,7 @@ layout {
             plugin location="zellij:status-bar"
         }
     }
-    // Runtime tabs (Ctrl+t n — used as the demo's closing beat) get a clean
+    // Runtime tabs (Ctrl+t n — handy when exploring the demo live) get a clean
     // bash prompt via demorc.sh, instead of the recording host's shell config.
     new_tab_template {
         pane split_direction="vertical" {
@@ -42,14 +42,16 @@ layout {
         }
     }
 
-    tab name="api" focus=true {
+    // The demo OPENS focused on `web` (below) — this tab works in the rail's
+    // background, then blocks on approval; the tape jumps here for beat 3.
+    tab name="api" {
         pane command="__ROOT__/demo/agent.sh" {
             args "claude" "api" "feat/auth" "needs-you"
         }
     }
-    // Two agents in one tab → the rail rolls them up (done/total count) and
-    // expands them as a tree (├/└). We tab over to this one in the demo.
-    tab name="web" {
+    // Two agents in one tab → the rail rolls them up and expands them as a
+    // tree (├/└). Focused first so the tree is on screen from the open.
+    tab name="web" focus=true {
         pane split_direction="horizontal" {
             pane command="__ROOT__/demo/agent.sh" {
                 args "claude" "web" "fix/login" "form"

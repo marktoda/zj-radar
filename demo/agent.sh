@@ -27,14 +27,20 @@ hold() { exec tail -f /dev/null; }
 }
 pane="${ZELLIJ_PANE_ID#terminal_}"
 
-# emit <status> <msg> — one zj_radar.status.v1 broadcast for this pane.
+# emit <status> <msg> [task] — one zj_radar.status.v1 broadcast for this pane.
 # Ordering is latest-wins on the plugin side; the pipe delivers in order, so
-# each emit simply overwrites the pane's previous state.
+# each emit simply overwrites the pane's previous state. A non-empty [task]
+# becomes the sticky identity line; while pending, the rail spends an extra
+# `↳` line on <msg> (the actionable question).
 emit() {
-    local status="$1" msg="$2"
+    local status="$1" msg="$2" task="${3:-}"
     local payload
-    payload=$(printf '{"v":1,"source":"%s","pane":{"type":"terminal","id":%s},"status":"%s","repo":"%s","branch":"%s","msg":"%s"}' \
+    payload=$(printf '{"v":1,"source":"%s","pane":{"type":"terminal","id":%s},"status":"%s","repo":"%s","branch":"%s","msg":"%s"' \
         "$source_kind" "$pane" "$status" "$repo" "$branch" "$msg")
+    if [[ -n "$task" ]]; then
+        payload+=$(printf ',"task":"%s"' "$task")
+    fi
+    payload+='}'
     zellij pipe --name zj_radar.status.v1 -- "$payload"
 }
 
@@ -42,44 +48,49 @@ emit() {
 printf '\033[2m%s · %s\033[0m\n\n' "$repo" "$branch"
 
 case "$scenario" in
-needs-you) # the focused agent: works, blocks on approval, then resumes. Its
-           # stdout reads like a Claude session so the content pane mirrors the
-           # rail (an agent, not a build).
+needs-you) # the star of the show: works with a sticky task, blocks on approval
+           # while the viewer is on another tab (the rail carries the ↳
+           # question there), and resumes when the recorded `y` lands — the
+           # keystroke actually answers the read, so the beat can't misfire.
+           # Its stdout reads like a Claude session for the beat-3 jump.
+    task="add auth middleware"
     printf '> add auth middleware\n\n'
-    sleep 1;  emit running "reading auth middleware"
+    sleep 1;  emit running "reading auth middleware" "$task"
     printf '\033[2m●\033[0m Read  src/auth.rs\n'
     printf '\033[2m●\033[0m Edit  src/auth.rs\n'
-    sleep 4;  emit pending "run database migration?"
-    printf '\n\033[33m❯ Run migration?\033[0m (y/n)\n'
-    sleep 4;  emit running "applying migration"
-    printf '\n\033[2m●\033[0m Bash  sqlx migrate\n'
+    sleep 5;  emit pending "run database migration?" "$task"
+    printf '\n\033[33m❯ Run migration?\033[0m (y/n) '
+    read -r -n 1 -t 20 || true   # tape types `y` (into REPLY); timeout so an
+    printf '\n\n'                # unattended run still completes
+    emit running "applying migration" "$task"
+    printf '\033[2m●\033[0m Bash  sqlx migrate run\n'
+    sleep 2;  emit "done" "migration applied" "$task"
+    printf '\033[2m●\033[0m done\n'
     ;;
-done) # an agent that finishes; the card persists on its tab
-    sleep 1;  emit running "implementing login form"
-    sleep 7;  emit "done" "added login + 2 tests"
-    ;;
-tests) # an observed task: a test run that progresses, then passes
+tests) # an observed task: a test run that progresses, then passes late enough
+       # to land during the settle beat
     sleep 1;  emit running "running 48 tests"
-    sleep 7;  emit "done" "48 passed in 11s"
+    sleep 12; emit "done" "48 passed in 11s"
     ;;
-deploy-error) # an observed task that fails
+deploy-error) # an observed task that fails during the settle beat
     sleep 1;  emit running "terraform plan"
-    sleep 3;  emit running "terraform apply"
-    sleep 4;  emit error "apply failed: exit 1"
+    sleep 5;  emit running "terraform apply"
+    sleep 8;  emit error "apply failed: exit 1"
     ;;
-form) # one pane of a multi-pane tab: builds the form, finishes early
+form) # one pane of the multi-pane `web` tab (the opening focus): builds the
+      # form on-camera, finishes as the story settles
     printf '> build LoginForm.tsx\n\n'
     sleep 1;  emit running "implementing login form"
     printf '\033[2m●\033[0m Edit  LoginForm.tsx\n'
-    sleep 7;  emit "done" "login form done"
+    sleep 11; emit "done" "login form done"
     printf '\033[2m●\033[0m done\n'
     ;;
-suite) # second pane of the multi-pane tab: writes tests, keeps running (so a
-       # spinner is still animating during the closing dwell)
+suite) # second pane of the multi-pane tab: keeps a spinner alive longest, then
+       # completes just before the closing screenshot
     printf '> add login tests\n\n'
     sleep 1;  emit running "writing login tests"
     printf '\033[2m●\033[0m Edit  login.test.ts\n'
-    sleep 12; emit "done" "+2 tests passing"
+    sleep 13; emit "done" "+2 tests passing"
     ;;
 *) # generic: just stay working
     sleep 1;  emit running "working…"

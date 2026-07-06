@@ -9,10 +9,13 @@ so [`agent.sh`](agent.sh) just *plays* a scripted status arc for its own pane.
 Each tab runs a different arc; the rail animates the rest (the spinner and
 elapsed clock advance on the plugin's own 1-second timer).
 
-The loop: a title card → a focused Claude agent works and then blocks on
-approval → the demo tabs over to a second tab running **two** Claude agents
-(rolled up in the rail as a `├`/`└` tree) → it closes by opening a fresh tab,
-showing the sidebar follows into every tab.
+The loop ("the needs-you moment"): a title card → you open focused on a tab
+running **two** Claude agents (rolled up in the rail as a `├`/`└` tree) while
+`api`/`tests`/`infra` work in the rail → the off-screen `api` agent blocks on
+approval and the **rail** carries it: bell, header `1!` badge, footer
+`3 working · 1 need you`, and the actual question on a `↳` line → the demo
+jumps to `api` and answers `y` (the arc `read`s the keystroke, so the resume
+is input-driven, not timed) → everything settles into the `●`/`✓`/`✗` spread.
 
 ## Regenerate the assets
 
@@ -30,8 +33,8 @@ Outputs:
 | File | Beat |
 |------|------|
 | `docs/media/hero.gif` | The full loop |
-| `docs/media/needs-you.png` | The focused Claude agent blocking on a permission prompt |
-| `docs/media/states.png` | The multi-pane `web` tab + the `done`/`error`/`working` spread |
+| `docs/media/needs-you.png` | The flip, seen from the `web` tab: bell + `1!` badge + footer tally + the `↳` question in the rail |
+| `docs/media/states.png` | The settled spread — answered `api`, `✓` web tree and tests, `✗` infra |
 
 ## Try it live (no recording)
 
@@ -50,10 +53,10 @@ zellij --config target/demo/config.kdl --layout target/demo/layout.kdl
 |------|------------|
 | `agent.sh` | Broadcasts a timed status arc for `$ZELLIJ_PANE_ID`; the focused arcs also print agent-style output to fill the content pane. |
 | `banner.sh` | The intro title card (tool name + glyph legend) shown for the first ~3s. |
-| `demorc.sh` | A minimal bash rcfile giving the closing tab a clean `$ ` prompt instead of the recording host's shell config. |
+| `demorc.sh` | A minimal bash rcfile giving runtime tabs (`Ctrl+t n` while exploring live) a clean `$ ` prompt instead of the recording host's shell config. |
 | `layout.kdl` | Tabs running `agent.sh` arcs (one with two panes → a roll-up tree); radar sidebar pinned left via a direct `file:` plugin path. Template — `__WASM__`/`__ROOT__` filled at record time. |
 | `config.kdl` | Zellij config: Tokyo Night theme (drives the rail's card surfaces). Template. |
-| `hero.tape` | The vhs script: title card → status story → tab-over → fresh-tab sign-off. Template. |
+| `hero.tape` | The vhs script: title card → working elsewhere → the needs-you flip → jump + answer → settle. Template. |
 | `record.sh` | Builds the wasm, pre-grants the plugin permission, strips inherited `ZELLIJ*` env, substitutes paths, runs vhs, optimizes the GIF. |
 
 ## How it stays reproducible
@@ -78,4 +81,6 @@ recording flaky:
 - **Timing is wall-clock.** The `Sleep`s in `hero.tape` and the `sleep`s in
   `agent.sh` share one clock, offset by the ~2–3s it takes the session to start
   and the agents to begin broadcasting. If a beat lands early/late, nudge the
-  two together.
+  two together. The two exceptions are event-driven and self-syncing: the
+  tape's `Wait+Screen` anchors, and beat 3's resume (`agent.sh` blocks on
+  `read` until the tape's `y` arrives).
