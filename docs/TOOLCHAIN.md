@@ -5,6 +5,10 @@ Native `cargo` builds everything — both host tests and the WASM plugin. The
 toolchain installs it automatically the first time you build. `cargo test` (host
 target) covers the pure-logic modules and needs nothing extra.
 
+Dev tracks `stable`; the workspace MSRV is **Rust 1.95** (declared as
+`rust-version` in the root `Cargo.toml`, enforced by CI's `msrv` job, which
+builds with exactly that toolchain).
+
 ```sh
 cargo test                                          # host tests
 cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the WASM plugin

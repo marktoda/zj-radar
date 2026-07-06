@@ -21,7 +21,7 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="#how-is-this-different">How is this different?</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="https://github.com/marktoda/zj-radar/blob/main/docs/producers.md">Producers</a>
+  <a href="#producers">Producers</a>
 </p>
 
 A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
@@ -116,7 +116,7 @@ appears in every tab and survives swap-layout cycling.
 | Tool | Best for | How `zj-radar` differs |
 |---|---|---|
 | [Claude Squad](https://github.com/smtg-ai/claude-squad) | Running multiple agents in isolated git worktrees from one TUI. | `zj-radar` does not launch or own agents; it shows status inside the Zellij session you already use. |
-| cmux | A macOS terminal with vertical tabs, notifications, browser panes, and agent-aware UI. | `zj-radar` is a Zellij plugin, not a new terminal app. |
+| [cmux](https://github.com/manaflow-ai/cmux) | A macOS terminal with vertical tabs, notifications, browser panes, and agent-aware UI. | `zj-radar` is a Zellij plugin, not a new terminal app. |
 | [zjstatus](https://github.com/dj95/zjstatus) | Replacing / customizing the Zellij status bar. | `zj-radar` is an agent-status rail; it leaves your existing status bar alone. |
 | Plain Zellij tabs | Manual multiplexing. | `zj-radar` adds agent state, elapsed time, messages, and jump-to-attention behavior. |
 
@@ -189,13 +189,14 @@ schema, and a copy-paste smoke test.
   `zj-radar setup zellij --download` fetches the matching wasm. See
   [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md).
 - ✅ **crates.io / `cargo binstall`** — `cargo install zj-radar` (or
-  `cargo binstall zj-radar` for the prebuilt binary) works today; the CLI is
-  published from a three-member workspace (`zj-radar-core`, the `zj-radar` CLI,
-  `zj-radar-plugin`).
+  `cargo binstall zj-radar` for the prebuilt binary) works today. The CLI and
+  its `zj-radar-core` dependency publish to crates.io; the wasm plugin is not
+  a crates.io crate — it ships as a release artifact and is fetched by
+  `zj-radar setup zellij --download`.
 - 📋 **Not yet built** — automatic patching of *exotic* hand-rolled layouts.
   `setup zellij` injects into the common shapes and creates the layout file
   when none exists; a shape it can't recognize gets the paste snippet instead.
-  See [`docs/distribution.md`](https://github.com/marktoda/zj-radar/blob/main/docs/distribution.md).
+  See [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md).
 
 ## Development
 
@@ -228,7 +229,7 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 | `crates/cli/` | Host-side `zj-radar` CLI (package `zj-radar`). `build.rs` embeds the wasm at compile time via `include_bytes!`. Built with `-p zj-radar`. |
 | `crates/plugin/` | The Zellij sidebar **wasm plugin** (`zj_radar_plugin`, Rust → `wasm32-wasip1`): the rail renderer, roll-up, radar-state, tab naming, runtime, and the thin `register_plugin!` wasm wiring. Built with `-p zj-radar-plugin`. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
-| `docs/` | Design, plan, and postmortem docs. `design.md` is the canonical living design. |
+| `docs/` | Design, reference, and postmortem docs. `design.md` is the canonical living design. |
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |
 
 The shared wire/classification core (`command`, `kind`, `observation`, `payload`,

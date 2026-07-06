@@ -930,7 +930,7 @@ const DOC: &str = include_str!("../../../docs/rail-reference.md");
 #[test]
 fn rail_reference_matches() {
     for case in parse_cases(DOC) {                 // (id, input_dsl, expect_grid)
-        let (rows, ledger, opts) = build_state(&case.input); // DSL → StateStore/CommandStore
+        let (rows, ledger, opts) = build_state(&case.input); // DSL → StatusStore/CommandStore
                                                               //      → aggregate() per tab → TabRow[]
         let rail = render::render_rail(&rows, &ledger, &opts);
         let got = grid(&rail.ansi, opts.width);         // existing vt100 grid() helper

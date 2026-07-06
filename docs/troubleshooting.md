@@ -33,9 +33,12 @@ Diagnose in order:
    over ssh without Zellij). The Claude plugin's bash fallback additionally
    needs `jq` — without it the hook silently no-ops; installing the `zj-radar`
    CLI removes that dependency.
-4. **Version skew.** The sidebar requires Zellij 0.44.x (unstable plugin ABI);
-   on other versions the wasm can fail to load entirely, which presents as a
-   blank or missing rail rather than an idle one.
+4. **Version skew.** The sidebar requires Zellij **0.44.3 or later** (unstable
+   plugin ABI). On a mismatched minor the wasm can fail to load entirely —
+   a blank or missing rail rather than an idle one — and 0.44 patches before
+   `.3` lack the swap-layout fix, so the sidebar pops out of its column during
+   layout cycling. `zj-radar setup zellij --check` flags a version below the
+   floor.
 
 ## Can't open a new tab (the two-template rule)
 

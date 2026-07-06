@@ -33,10 +33,13 @@ core:
 - A stable Rust toolchain. `rust-toolchain.toml` requests the `wasm32-wasip1`
   target, which `rustup` auto-installs on first build. See
   [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
+- **MSRV is Rust 1.95** (`rust-version` in the root `Cargo.toml`). CI's `msrv`
+  job builds with exactly that toolchain, so language/stdlib features newer
+  than 1.95 will fail the PR. Dev otherwise tracks `stable`.
 - For the full suite: `just`, plus `bats`, `shellcheck`, and `jq` (bash hook
   tests) and `zellij` on `PATH` (live E2E).
 - Optional: Nix. `nix develop` drops you into a shell with everything pinned;
-  `nix flake check` runs the same clippy + tests + wasm build CI uses.
+  `nix flake check` runs the same checks the `hermetic` CI job uses.
 
 ## Build
 
@@ -55,6 +58,11 @@ just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-e2e    # L5: live — builds the wasm and drives a real Zellij in a PTY (needs zellij)
 just ci          # what every PR must pass locally: test + clippy + wasm build + test-bash
 ```
+
+Run a single test with `cargo test <name>` (scope it with e.g.
+`-p zj-radar-plugin`). Insta snapshots live next to their tests under
+`crates/plugin/src/`; when a rendering change intentionally alters one, accept
+it with `just review` (`cargo insta review`).
 
 - The shared core (`status`, `payload`, `command`, `kind`, `observation`,
   `wire`) lives in `crates/core`; the sidebar's own modules (`render`, `rollup`,

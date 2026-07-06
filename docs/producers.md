@@ -108,7 +108,9 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
 ```
 
 - `status`: `running` → working · `pending` → needs-you · `done` · `error` ·
-  `idle`/unknown → plain.
+  `idle` → plain. An **unknown or empty `status` folds to `idle`**, which
+  *clears* the row and resets its sticky task — a typo'd status silently erases
+  the row you meant to update, so validate before broadcasting.
 - `pane.id`: strip any `terminal_` prefix from `$ZELLIJ_PANE_ID`.
 - `task` (optional, sent only on `UserPromptSubmit`): sticky task label —
   empty/absent leaves the stored label unchanged, non-empty replaces it; the
@@ -118,9 +120,12 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
   the pane returns to its shell prompt instead — but sending it does no harm.)
 
 The plugin applies the latest broadcast per pane (the pipe delivers in order, so
-there is no sequence number). It also defends itself: it ignores oversized
-payloads, strips ANSI/control chars, folds newlines to spaces, and truncates —
-and silently ignores any unknown fields, so extra keys never break a producer.
+there is no sequence number). It also defends itself: it strips ANSI/control
+chars and Unicode bidi-control characters, folds newlines to spaces, and
+silently ignores unknown fields, so extra keys never break a producer. The
+limits, so you don't have to pre-truncate: `repo`/`branch` are cut to 40 chars,
+`msg`/`task` to 60, `source` to 16 — and a payload over **64 KB** is dropped
+whole. `pane.type` must be `"terminal"`; any other pane type is rejected.
 
 Quick smoke test (a "fake agent" — broadcast straight from your shell):
 

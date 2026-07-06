@@ -96,30 +96,31 @@ Mirror Cmux/code-notify's proven shape:
   pretty-print + compare to detect a no-op, **atomic write**. Refuse to write if
   the file exists but doesn't parse. Per format: `serde_json` for Codex
   `hooks.json` and other JSON hook configs, `toml_edit` for legacy Codex
-  `config.toml` `notify`, `serde_yaml` for Aider, or a marker-tagged template
-  file for agents that only support JS/TS plugins (opencode, amp, pi).
+  `config.toml` `notify`, and equivalent format-native editors for any future
+  agent's config.
 - **Clean uninstall:** remove only marker-tagged entries, collapse emptied
   containers, delete plugin files only if our marker is present; back up first.
 - **Safety UX:** per-file diff preview + `Proceed? [y/N]`, `--yes` for scripts,
   `--dry-run`, atomic writes, and a per-agent disable env var so a user can mute
   one agent without uninstalling.
 
-Per-agent specifics (verified):
+Shipped agent wiring:
 | Agent | File | Insert | Event → status |
 |---|---|---|---|
 | Codex | `~/.codex/hooks.json` | command hooks with `ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex` marker | `UserPromptSubmit` / tool hooks / subagents → running; `PermissionRequest` → pending; `Stop` → done |
 | Codex legacy | `~/.codex/config.toml` `notify` | `notify = ["zj-radar","notify","codex"]` only with `--legacy-notify` | `agent-turn-complete` → done |
-| Gemini (≥0.26) | `~/.gemini/settings.json` | `hooks.AfterAgent` + `hooks.Notification` | AfterAgent → done |
-| Aider | `.aider.conf.yml` | `notifications-command` (no payload — bake pane id into the cmd) | done/waiting |
-| opencode / amp / pi | a `*.ts`/`*.js` plugin file (no command-hook config) | marker-tagged template | session.idle / agent.end → done |
+
+Other agents follow the same strip-own-then-re-add installer pattern against
+their native hook/plugin config; none beyond Codex (and the Claude Code plugin
+in §1) ship today.
 
 ## 3. One universal notifier (not per-agent scripts)
 
 Both Cmux and code-notify converge here: **a single entrypoint every agent
 calls** — `zj-radar notify <agent> [event]` — which figures out the event from
 its argv subcommand + the JSON the agent passes (Codex hooks: JSON on stdin;
-Codex legacy notify: JSON on argv; Claude/Gemini: type on argv + JSON on stdin;
-Aider: bare). It maps all of them to one
+Codex legacy notify: JSON on argv; Claude: type on argv + JSON on stdin).
+It maps all of them to one
 `zellij pipe --name zj_radar.status.v1` broadcast and **no-ops when not running
 under Zellij** (gate on `$ZELLIJ`). This collapses our two shell scripts into one
 code path and keeps the "wire up with one command" promise.
@@ -178,14 +179,7 @@ zj-radar setup zellij --wasm target/wasm32-wasip1/release/zj_radar.wasm
 ---
 
 ### Sources
-- Claude Code plugins/hooks: https://code.claude.com/docs/en/plugins-reference ,
-  /plugins , /settings , /hooks-guide , /cli-reference
-- Cmux installer (firsthand): `CLI/CMUXCLI+AgentHookDefinitions.swift`,
-  `CLI/cmux.swift` (`runSetupHooks`, `installAgentHooks`, `uninstallAgentHooks`,
-  `codexConfigTomlInstallingHooksFeature`) — github.com/manaflow-ai/cmux
-- code-notify (firsthand): `lib/code-notify/{utils/detect.sh,core/config.sh,
-  core/notifier.sh}` — github.com/mylee04/code-notify
-- Codex notify/hooks: developers.openai.com/codex/config-reference , /hooks
-- Gemini CLI hooks: github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md
-- Aider notifications: aider.chat/docs/usage/notifications.html
-- opencode plugins: opencode.ai/docs/plugins/
+- Claude Code plugins/hooks: https://code.claude.com/docs/en/plugins-reference
+- Cmux installer: https://github.com/manaflow-ai/cmux
+- code-notify: https://github.com/mylee04/code-notify
+- Codex notify/hooks: https://developers.openai.com/codex/config-reference

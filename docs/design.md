@@ -192,7 +192,7 @@ tab-bar; cheap for a handful of tabs).
 **Newcomer rehydration (session snapshot).** Because the plugin lives in the tab template,
 Zellij runs *one instance per tab*, and a broadcast only reaches instances alive when it is
 sent — it is never replayed. So a tab opened after agents were already running would spawn a
-blank instance and render every tab idle. Fix: each instance mirrors its `StateStore` into a
+blank instance and render every tab idle. Fix: each instance mirrors its `RadarState` stores into a
 snapshot on every store mutation, and seeds itself from it in `load()`. `SessionFiles` chooses
 the persistence root: `/cache` first, because Zellij 0.44 mounts it as the plugin-URL-scoped
 folder shared across all instances, then `/tmp/zj-radar`, then disabled persistence if neither
