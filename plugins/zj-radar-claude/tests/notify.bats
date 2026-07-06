@@ -104,10 +104,19 @@ teardown() { teardown_fakes; }
 
 @test "oversized hook payload completes promptly (no hang/OOM)" {
   # A pathological 200 KB payload must not wedge the shell. `timeout` fires exit
-  # 124 if the hook hangs; we require a clean, prompt exit instead.
-  local big; big="$(printf 'x%.0s' {1..200000})"
-  run timeout 10 bash -c \
-    "printf '{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"%s\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"a.rs\"}}' '$big' | '$SCRIPT' running"
+  # 124 if the hook hangs; we require a clean, prompt exit instead. The payload
+  # travels via a file on stdin, NOT the command line: Linux caps a single exec
+  # argument at 128 KB (MAX_ARG_STRLEN), so interpolating it into `bash -c`
+  # dies E2BIG before the hook even runs (only on Linux — macOS has no per-arg
+  # cap, which is how the argv version passed locally while failing CI).
+  local payload; payload="$(mktemp)"
+  {
+    printf '{"hook_event_name":"PostToolUse","cwd":"'
+    printf 'x%.0s' {1..200000}
+    printf '","tool_name":"Edit","tool_input":{"file_path":"a.rs"}}'
+  } > "$payload"
+  run timeout 10 "$SCRIPT" running < "$payload"
+  rm -f "$payload"
   [ "$status" -eq 0 ]
 }
 
