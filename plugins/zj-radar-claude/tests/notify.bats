@@ -120,6 +120,18 @@ teardown() { teardown_fakes; }
   [ "$status" -eq 0 ]
 }
 
+@test "stdin past the 8 MiB cap is truncated, hook still exits cleanly" {
+  # The fallback read is `head -c 8388608`, parity with the Rust CLI's
+  # MAX_STDIN_BYTES: a stream larger than the cap must be bounded (never
+  # buffered whole) and the truncated, no-longer-valid JSON must degrade
+  # through the jq guards to a clean exit.
+  local payload; payload="$(mktemp)"
+  head -c 9000000 /dev/zero | tr '\0' 'x' > "$payload"
+  run timeout 10 "$SCRIPT" running < "$payload"
+  rm -f "$payload"
+  [ "$status" -eq 0 ]
+}
+
 @test "malformed (non-JSON) stdin exits cleanly" {
   # Garbage on stdin (a truncated or non-JSON hook payload) must degrade through
   # the jq `// empty` guards to a clean exit, never a crash.

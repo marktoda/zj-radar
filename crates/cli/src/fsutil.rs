@@ -21,12 +21,14 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// `<path>.zj-radar.tmp` — a sibling so the final `rename` stays on one
+/// `<path>.zj-radar.<pid>.tmp` — a sibling so the final `rename` stays on one
 /// filesystem. Appending to the full path (rather than replacing the extension)
-/// avoids collisions between files that differ only by extension.
+/// avoids collisions between files that differ only by extension; the pid keeps
+/// two concurrent writers of the SAME path from sharing a temp file — with a
+/// fixed name, one process could rename the other's half-written temp into place.
 fn tmp_sibling(path: &Path) -> PathBuf {
     let mut os = path.as_os_str().to_os_string();
-    os.push(".zj-radar.tmp");
+    os.push(format!(".zj-radar.{}.tmp", std::process::id()));
     PathBuf::from(os)
 }
 
@@ -41,8 +43,12 @@ mod tests {
         let target = d.path().join("a/b/c.txt");
         atomic_write(&target, b"hello").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
-        // No temp file left behind.
-        assert!(!target.with_file_name("c.txt.zj-radar.tmp").exists());
+        // No temp file left behind — the target is its directory's only entry.
+        let entries: Vec<_> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("c.txt")]);
     }
 
     #[test]

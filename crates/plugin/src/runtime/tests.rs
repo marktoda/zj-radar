@@ -376,6 +376,53 @@ fn waiting_peer_self_promotes_when_it_reclaims_the_lock() {
 }
 
 #[test]
+fn probe_is_wanted_only_while_waiting_on_a_peer() {
+    // The wasm glue stat-reads the marker file (and attempts the lock) each
+    // tick ONLY while the machine can still consume the probe. Once a request
+    // is in-flight or the state resolves, `on_timer` ignores it — so the
+    // per-tick disk probe must stop (N tabs were reading N files/sec forever).
+    let mut runtime = PluginRuntime::default();
+    let _ = runtime.load(
+        config(),
+        None,
+        PermissionProbe { marker: None, lock_acquired: false },
+    );
+    assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
+    assert!(runtime.wants_permission_probe(), "a waiting peer must keep probing");
+
+    // Still waiting after an undecided tick: the probe stays wanted — this is
+    // what lets a peer eventually reclaim a dead owner's stale lock.
+    let _ = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
+    assert!(runtime.wants_permission_probe(), "an undecided tick must keep probing");
+
+    // Promoted to an in-flight request: settled from the probe's point of view.
+    let _ = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: true });
+    assert_eq!(runtime.permission, PermissionState::Requesting);
+    assert!(!runtime.wants_permission_probe(), "an in-flight request ignores the probe");
+
+    // Resolved: terminal — the probe is never wanted again.
+    let _ = runtime.permission_result(true);
+    assert!(!runtime.wants_permission_probe(), "a resolved state ignores the probe");
+}
+
+#[test]
+fn probe_stays_wanted_for_a_deferring_rail_past_its_patience() {
+    // The stranded deferring rail relies on the per-tick re-probe to notice a
+    // reclaimable stale lock long after DEFER_PATIENCE_TICKS. Gating the disk
+    // probe must not starve that escalation path.
+    let deferring = config::Config { defer_permission: true, ..config() };
+    let mut runtime = PluginRuntime::default();
+    let _ = runtime.load(deferring, None, PermissionProbe { marker: None, lock_acquired: false });
+    runtime.permission = PermissionState::WaitingForPeer {
+        ticks: crate::permission::DEFER_PATIENCE_TICKS + 5,
+    };
+    assert!(
+        runtime.wants_permission_probe(),
+        "an impatient deferring waiter still needs fresh probes to escalate",
+    );
+}
+
+#[test]
 fn permission_result_persists_marker_and_updates_selectability() {
     let mut runtime = PluginRuntime::default();
     runtime.record_permission_request_started();

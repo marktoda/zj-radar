@@ -93,6 +93,14 @@ finishes rather than leaning on the watchdog.
 
 ## Writing your own producer
 
+Writing one in Rust? Depend on
+[`zj-radar-core`](https://crates.io/crates/zj-radar-core)
+([docs.rs](https://docs.rs/zj-radar-core)) — the same crate both halves of
+zj-radar use: build a typed `StatusPayload` and serialize it with `to_wire`,
+round-trip-tested against this schema, so your payload can't drift from what
+the sidebar accepts. Everything below applies either way; the crate just
+handles the encoding for you.
+
 The plugin's only real interface is the versioned pipe payload. Broadcast (by
 name, never `--plugin`) a `zj_radar.status.v1` message:
 
@@ -112,6 +120,9 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
   *clears* the row and resets its sticky task — a typo'd status silently erases
   the row you meant to update, so validate before broadcasting.
 - `pane.id`: strip any `terminal_` prefix from `$ZELLIJ_PANE_ID`.
+- `source`: tokens are lowercase-exact — matching is case-sensitive, so
+  `"claude"` classifies as the Claude agent while `"Claude"` falls back to the
+  neutral kind.
 - `task` (optional, sent only on `UserPromptSubmit`): sticky task label —
   empty/absent leaves the stored label unchanged, non-empty replaces it; the
   plugin clears it on idle and on return-to-shell.

@@ -134,6 +134,14 @@ impl Status {
     pub fn needs_you(self) -> bool {
         matches!(self, Status::Pending | Status::Error)
     }
+
+    /// A finished outcome (`Done` or `Error`) — the states that hand off to
+    /// the ledger when they leave the card. Distinct from `needs_attention`
+    /// (which adds the still-waiting `Pending`): this is "the story ended",
+    /// not "the user should look".
+    pub fn is_completion(self) -> bool {
+        matches!(self, Status::Done | Status::Error)
+    }
 }
 
 /// Semantic color role for rendered rail elements. The renderer styles by
@@ -341,6 +349,16 @@ mod tests {
         assert!(Status::Done.needs_attention());
         assert!(!Status::Running.needs_attention());
         assert!(!Status::Idle.needs_attention());
+    }
+
+    #[test]
+    fn is_completion_is_done_or_error_only() {
+        // The ledger's hand-off predicate: exactly the finished outcomes.
+        assert!(Status::Done.is_completion());
+        assert!(Status::Error.is_completion());
+        assert!(!Status::Pending.is_completion());
+        assert!(!Status::Running.is_completion());
+        assert!(!Status::Idle.is_completion());
     }
 
     #[test]

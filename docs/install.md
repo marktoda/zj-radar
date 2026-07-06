@@ -5,11 +5,11 @@ to your Zellij layout. For the **producer** (whatever broadcasts agent status),
 see [`producers.md`](producers.md). For a copy-paste fast path, see
 [Quick start](../README.md#quick-start).
 
-**Requirements:** Zellij **0.44.3 or later** — the plugin ABI is not yet stable
-across Zellij versions, so a sidebar built against 0.44 may fail to load
-elsewhere, and 0.44 patches before .3 lack the swap-layout fix that keeps the
-sidebar pinned (check with `zellij --version`). `--download` additionally needs
-`curl` or `wget` on PATH.
+**Requirements:** Zellij **0.44.3 – 0.44.x** — the plugin ABI is not yet stable
+across Zellij versions, so each zj-radar release targets a single Zellij minor:
+on any other minor the sidebar may fail to load, and 0.44 patches before .3
+lack the swap-layout fix that keeps the sidebar pinned (check with
+`zellij --version`). `--download` additionally needs `curl` or `wget` on PATH.
 
 There are two jobs to get a working radar:
 
@@ -217,9 +217,10 @@ zellij:
 Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
 modifies any file. Reported items (six always; a seventh only when applicable):
 
-- **zellij binary** — `zellij` is on `PATH`; warns when its version is below
-  the supported 0.44.3 floor (a mismatched plugin ABI loads as a blank rail;
-  earlier 0.44 patches let the sidebar pop out during layout swaps).
+- **zellij binary** — `zellij` is on `PATH`; warns when its version falls
+  outside the supported 0.44.3 – 0.44.x range (a mismatched plugin ABI loads
+  as a blank rail; earlier 0.44 patches let the sidebar pop out during layout
+  swaps).
 - **alias** — `radar` plugin alias present in `config.kdl`; warns if it points at
   a `/nix/store/` path (grant won't survive a rebuild).
 - **wasm** — plugin file exists at the expected stable path.

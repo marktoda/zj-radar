@@ -30,8 +30,10 @@ macro_rules! kinds {
             /// tests iterate the variants without re-typing the list.
             pub const ALL: &'static [Kind] = &[ $( Kind::$variant ),+ ];
 
-            /// Derive a `Kind` from the payload `source` field (lowercased wire
-            /// value); unknown or empty sources fall back to `Other`.
+            /// Derive a `Kind` from the payload `source` field. Expects the
+            /// lowercase wire token; matching is case-sensitive by design
+            /// (pinned by `from_source_unknown_is_other`), so an unknown,
+            /// empty, or wrong-case source falls back to `Other`.
             pub fn from_source(s: &str) -> Kind {
                 match s {
                     $( $source => Kind::$variant, )+

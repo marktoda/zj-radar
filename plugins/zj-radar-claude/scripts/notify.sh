@@ -28,7 +28,10 @@ status="${1:-running}"
 # fleets) process spawns crawl and the hook eats the 30s timeout. A running
 # ping is fire-and-forget by nature: losing one under load is harmless,
 # blocking a prompt is not.
-input="$(cat 2>/dev/null || true)"
+# Cap the read at 8 MiB (parity with the Rust CLI's MAX_STDIN_BYTES): a
+# degenerate multi-GB stream must bound memory, not buffer whole. Truncated
+# input just fails the jq parses below and no-ops — the safe degradation.
+input="$(head -c 8388608 2>/dev/null || true)"
 
 # Prefer the native CLI when present (drops the jq/bash dependency). It applies
 # the same Zellij gate, pending backstop, and payload schema. Falls back to the

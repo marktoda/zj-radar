@@ -19,6 +19,12 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
     if h.len() != 6 {
         return None;
     }
+    // All-ASCII-hexdigit or bust: these strings arrive untrusted (the
+    // terminal's reported default colors), and byte-slicing a multibyte char
+    // below would panic on a non-boundary — a wasm panic blanks the rail.
+    if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let r = u8::from_str_radix(&h[0..2], 16).ok()?;
     let g = u8::from_str_radix(&h[2..4], 16).ok()?;
     let b = u8::from_str_radix(&h[4..6], 16).ok()?;
@@ -164,6 +170,13 @@ mod tests {
         assert_eq!(parse_hex("#1a1b266"), None); // 7 digits
         assert_eq!(parse_hex("#gggggg"), None); // non-hex
         assert_eq!(parse_hex("rgb(1,2,3)"), None);
+        // Non-ASCII input that is exactly 6 BYTES long: byte-slicing &h[0..2]
+        // would land mid-char and panic ("not a char boundary") — and a wasm
+        // panic blanks the rail. These values arrive straight from the
+        // terminal's reported default_bg/default_fg, so they are untrusted.
+        assert_eq!(parse_hex("aébcd"), None); // 5 chars, 6 bytes ('é' is 2)
+        assert_eq!(parse_hex("#aébcd"), None);
+        assert_eq!(parse_hex("ＡＢ"), None); // 2 fullwidth chars, 6 bytes
     }
 
     fn lum(c: Rgb) -> u32 {

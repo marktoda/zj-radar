@@ -56,6 +56,13 @@ pub const STATUS_VERSION: u32 = 1;
 /// existing literals keep compiling and keep meaning the same thing. Pinned
 /// by `default_matches_parse_of_an_all_absent_payload`.
 ///
+/// Field addition is this contract's *designed* extension mechanism, and
+/// `..Default::default()` is the compatibility idiom that rides it: an
+/// exhaustive struct literal stops compiling the moment a field is added,
+/// while the update syntax keeps meaning "absent on the wire" for anything
+/// new. (Deliberately not `#[non_exhaustive]` — that would break the
+/// `..Default::default()` construction path itself.)
+///
 /// **Adding a field** (the extension this contract is designed for) touches a
 /// fixed set of sites — do them together:
 /// 1. this struct (doc the cap + wire semantics),

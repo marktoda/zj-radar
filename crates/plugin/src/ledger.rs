@@ -62,15 +62,18 @@ impl LedgerEntry {
             _ => return None,
         };
         let at_epoch_s = obs.completed_epoch_s?;
-        let label = match obs.origin {
-            ObservationOrigin::Command => obs.msg.clone(),
-            ObservationOrigin::StatusPipe => {
-                if obs.msg.trim().is_empty() {
-                    "turn done".to_string()
-                } else {
-                    obs.msg.clone()
-                }
+        // An empty msg still needs a row identity — a ledger line never reads
+        // blank. Agent turns fall back to "turn done"; a command completion
+        // with no recorded command string (an exit that beat every
+        // `CommandChanged` edge) falls back to its kind's own token
+        // ("command", "test", …), the same identity the card's mark carries.
+        let label = if obs.msg.trim().is_empty() {
+            match obs.origin {
+                ObservationOrigin::Command => obs.kind.as_source().to_string(),
+                ObservationOrigin::StatusPipe => "turn done".to_string(),
             }
+        } else {
+            obs.msg.clone()
         };
         Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name), label, pane_id })
     }
@@ -242,6 +245,17 @@ mod tests {
         assert_eq!(e.tab_name, "work");
         assert_eq!(e.at_epoch_s, 100);
         assert_eq!(e.pane_id, 1);
+
+        // Command-origin with an empty message falls back to the kind's own
+        // token — never a blank ledger row.
+        let mut o = obs(Status::Error, ObservationOrigin::Command, "  ", Some(150));
+        o.kind = crate::kind::Kind::Command;
+        let e = LedgerEntry::from_observation(6, &o, TabId::new(0), "work").unwrap();
+        assert_eq!(e.label, "command");
+        let mut o = obs(Status::Done, ObservationOrigin::Command, "", Some(160));
+        o.kind = crate::kind::Kind::Test;
+        let e = LedgerEntry::from_observation(7, &o, TabId::new(0), "work").unwrap();
+        assert_eq!(e.label, "test");
 
         // Agent-origin (status pipe) with an empty message falls back to
         // "turn done".

@@ -73,7 +73,7 @@ impl StatusStore {
             Status::Pending => Some(now_epoch_s),
             _ => None,
         };
-        let was_completion = prev.is_some_and(|s| matches!(s.status, Status::Done | Status::Error));
+        let was_completion = prev.is_some_and(|s| s.status.is_completion());
         let displaced = self.store.insert(
             p.pane_id,
             TrackedObservation {
@@ -183,16 +183,13 @@ impl StatusStore {
     }
 
     /// Prune panes no longer live, returning the dropped completions
-    /// (`Done`/`Error`) — a pane closing with an unreceded completion still on
-    /// it is a recede edge for the future ledger. Non-completion drops (Running,
-    /// Idle, Pending) are filtered out here since they carry nothing to ledger.
+    /// (`Done`/`Error` — `ObservationStore::prune`'s contract): a pane closing
+    /// with an unreceded completion still on it is a recede edge for the
+    /// ledger; non-completion drops (Running, Idle, Pending) carry nothing to
+    /// ledger.
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
         self.suspect_running.retain(|id, _| live.contains(id));
-        self.store
-            .prune(live)
-            .into_iter()
-            .filter(|(_, obs)| matches!(obs.status, Status::Done | Status::Error))
-            .collect()
+        self.store.prune(live)
     }
 
     pub fn get(&self, pane_id: u32) -> Option<&TrackedObservation> {

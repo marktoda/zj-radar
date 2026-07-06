@@ -56,11 +56,11 @@ wrapping your agents. It's a status rail for the session you already run.
 
 ## Quick start
 
-> **Requires Zellij 0.44.3+.** Zellij's plugin ABI is not yet stable across
-> versions; the sidebar is built and tested against 0.44 (`zellij --version`
-> to check). On another minor the wasm may simply fail to load, and 0.44
-> patches before .3 lack the fix that keeps the sidebar pinned during
-> layout swaps.
+> **Requires Zellij 0.44.3 – 0.44.x.** Zellij's plugin ABI is not yet stable
+> across versions, so each zj-radar release targets one Zellij minor
+> (`zellij --version` to check). On another minor the wasm may simply fail
+> to load, and 0.44 patches before .3 lack the fix that keeps the sidebar
+> pinned during layout swaps.
 
 ```sh
 # 1. Install the zj-radar CLI (prebuilt: Linux x86_64/aarch64, Apple Silicon macOS;
@@ -80,7 +80,10 @@ zellij
 > **Just want to see it?** `zj-radar run` launches a throwaway Zellij session
 > with the rail already wired in — its own config, no edits to yours. (The flip
 > side: inside `run` sessions your own Zellij keybinds/theme don't apply, and
-> attaching to a session `run` didn't create asks first.) It uses the wasm
+> attaching to a session `run` didn't create asks first.) Its config also binds
+> `Ctrl y` (summon the permission-grant float) and `Alt 1`–`Alt 9` (tab jumps)
+> on top of the Zellij defaults, so those chords won't reach apps inside the
+> panes — readline's yank and emacs's `M-digit` among them. It uses the wasm
 > bundled into the binary (or, if you installed via `cargo install`, downloads
 > the matching wasm on first use).
 
@@ -197,6 +200,9 @@ schema, and a copy-paste smoke test.
   `setup zellij` injects into the common shapes and creates the layout file
   when none exists; a shape it can't recognize gets the paste snippet instead.
   See [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md).
+
+The changelog is the [GitHub Releases page](https://github.com/marktoda/zj-radar/releases) —
+each tag's notes cover what changed.
 
 ## Development
 

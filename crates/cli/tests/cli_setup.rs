@@ -598,6 +598,87 @@ fn setup_zellij_uninstall_reverses_injection() {
     );
 }
 
+// ── Test 4c2: --uninstall deletes a layout that setup created whole ───────────
+// The no-layout `--inject` path writes `full_layout()` as a new file — no
+// markers, but it references the `radar` alias. Uninstall strips the alias, so
+// leaving that layout behind would strand the next plain Zellij launch on a
+// dead alias. Byte-identical to the generated layout → it is entirely ours →
+// delete it.
+
+#[test]
+fn setup_zellij_uninstall_deletes_layout_setup_created_whole() {
+    let config_dir = TempDir::new().unwrap(); // no layouts/: --inject creates whole
+    let layout_path = config_dir.path().join("layouts").join("default.kdl");
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success();
+    assert!(layout_path.exists(), "prerequisite: --inject must have created the layout");
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--uninstall"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success();
+
+    assert!(
+        !layout_path.exists(),
+        "--uninstall must delete a layout setup created whole (it references the \
+         removed `radar` alias and contains nothing of the user's)"
+    );
+}
+
+// ── Test 4c3: --uninstall never deletes an edited marker-less layout ──────────
+// Same starting point, but the user has edited the file since: no longer
+// byte-identical to `full_layout()`, so it must survive — with an advisory
+// naming the dead `radar` alias reference instead of a silent strand.
+
+#[test]
+fn setup_zellij_uninstall_advises_on_edited_whole_created_layout() {
+    let config_dir = TempDir::new().unwrap();
+    let layout_path = config_dir.path().join("layouts").join("default.kdl");
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success();
+
+    // A user edit: the file is no longer provably ours.
+    let mut edited = fs::read_to_string(&layout_path).unwrap();
+    edited.push_str("// my customization\n");
+    fs::write(&layout_path, &edited).unwrap();
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--uninstall"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert!(
+        layout_path.exists(),
+        "an edited layout is the user's — uninstall must never delete it"
+    );
+    assert_eq!(
+        fs::read_to_string(&layout_path).unwrap(),
+        edited,
+        "uninstall must not rewrite a marker-less layout it can't prove it authored"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("still references the removed `radar` alias"),
+        "must warn about the stranded alias reference; stdout:\n{stdout}"
+    );
+}
+
 // ── Test 4d: --dry-run prints what would change, writes nothing ────────────────
 
 #[test]

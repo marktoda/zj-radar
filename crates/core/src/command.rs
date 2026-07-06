@@ -291,6 +291,15 @@ fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
     raw_display(&[exe, verb])
 }
 
+/// Is this exe basename a Python interpreter (`python`, `python3`,
+/// `python3.12`, `python2`)? Anything after the literal `python` must be
+/// version-shaped (digits/dots only), so python-adjacent tools
+/// (`python-config`, `python-build`) keep the ordinary first-arg treatment.
+fn is_python_interpreter(exe: &str) -> bool {
+    exe.strip_prefix("python")
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
 /// `python -m <module>` has its own shape (the `-m` flag, plus a `pytest`
 /// target), so it stays a dedicated path rather than bending the table.
 fn display_python(exe: &str, args: &[String]) -> String {
@@ -344,11 +353,14 @@ fn classify(command: &[String]) -> (String, Kind) {
         .iter()
         .find(|r| r.exes.contains(&exe))
         .unwrap_or(&FIRST_ARG_RULE);
-    let raw = match exe {
-        // `python -m <module>` has its own display shape (see display_python);
-        // its Kind still routes through the rule columns like everything else.
-        "python" | "python3" => display_python(exe, args),
-        _ => apply_tool_rule(exe, args, rule),
+    // `python -m <module>` has its own display shape (see display_python), and
+    // versioned interpreter basenames (`python3`, `python3.12`, `python2`) all
+    // route there; the Kind still flows through the rule columns like
+    // everything else.
+    let raw = if is_python_interpreter(exe) {
+        display_python(exe, args)
+    } else {
+        apply_tool_rule(exe, args, rule)
     };
     let display = sanitize(&raw, MAX_MSG_CHARS);
 
@@ -528,7 +540,7 @@ impl CommandStore {
                     }
                 }
                 if let Some(prev) = self.store.insert(pane_id, obs) {
-                    if matches!(prev.status, Status::Done | Status::Error) {
+                    if prev.status.is_completion() {
                         receded.push((pane_id, prev));
                     }
                 }
@@ -591,6 +603,14 @@ impl CommandStore {
     ///
     /// Returns the prior completion this exit displaced (a Done/Error that was
     /// still on the pane from an earlier run), if any, for the ledger.
+    ///
+    /// An exit can beat the 2-tick debounce promotion (a fast run-pane
+    /// command, or the manifest exit arriving first). When it does, the
+    /// still-`pending` entry carries the run's identity — command, kind, and
+    /// cwd (exactly what promotion would have stamped) — and the completion
+    /// takes it, so the row is labeled with the run that actually exited
+    /// rather than a blank row (untracked pane) or the *previous* run's
+    /// leftovers (a quick re-run).
     pub fn on_exit(
         &mut self,
         pane_id: u32,
@@ -648,14 +668,25 @@ impl CommandStore {
 
         self.exited.insert(pane_id, exit_status);
         // Clear any pending / tentative-done entry for this pane — the exit is
-        // authoritative.
-        self.pending.remove(&pane_id);
+        // authoritative. A surviving `pending` entry is a run whose exit beat
+        // the debounce promotion: its identity (repo derived from the cwd, the
+        // same way promotion derives it) labels the completion below.
+        let pending = self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
+        let identity =
+            pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
 
         let mut receded = None;
         if let Some(s) = self.store.get_mut(pane_id) {
-            if matches!(s.status, Status::Done | Status::Error) {
+            if s.status.is_completion() {
                 receded = Some(s.clone());
+            }
+            // A pre-promotion exit on a tracked pane is a re-run: without the
+            // pending identity the failure would wear the PREVIOUS run's msg.
+            if let Some((repo, msg, kind)) = identity {
+                s.repo = repo;
+                s.msg = msg;
+                s.kind = kind;
             }
             s.status = new_status;
             s.last_change_tick = tick;
@@ -672,18 +703,14 @@ impl CommandStore {
             // shell that exits is removed from the manifest (never reported
             // `exited=true`), so it never reaches here. Do not "guard to tracked
             // panes" — that would drop legitimate run-pane completions.
+            let (repo, msg, kind) =
+                identity.unwrap_or_else(|| (String::new(), String::new(), Kind::Command));
             let _ = self.store.insert(
                 pane_id,
                 TrackedObservation {
                     exit_code: exit_status,
                     completed_epoch_s: Some(now_epoch_s),
-                    ..TrackedObservation::command(
-                        new_status,
-                        String::new(),
-                        String::new(),
-                        Kind::Command,
-                        tick,
-                    )
+                    ..TrackedObservation::command(new_status, repo, msg, kind, tick)
                 },
             );
         }
@@ -691,17 +718,15 @@ impl CommandStore {
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
-    /// Returns the dropped Done/Error observations (an in-progress Running or
-    /// muted Idle pane closing carries no completion to ledger).
+    /// Returns the dropped Done/Error observations (`ObservationStore::prune`'s
+    /// contract — an in-progress Running or muted Idle pane closing carries no
+    /// completion to ledger).
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
         let dropped = self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
         dropped
-            .into_iter()
-            .filter(|(_, obs)| matches!(obs.status, Status::Done | Status::Error))
-            .collect()
     }
 
     /// Resolved displayable state for a pane, or None.

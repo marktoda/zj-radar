@@ -309,8 +309,12 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::Timer(elapsed_s) => {
-                // Re-probe (marker + lock) each tick so a waiting peer can take
-                // over a prompt whose owner died holding a now-stale lock.
+                // Re-probe (marker + lock) each tick — but only while the
+                // permission machine is still waiting on a peer, so it can take
+                // over a prompt whose owner died holding a now-stale lock. Once
+                // the state settles (request in-flight or resolved) the runtime
+                // ignores the probe, so skip the disk reads: with one instance
+                // per tab, probing forever is N marker reads per second.
                 // Upstream documents `elapsed_s` only as the timer-expiry
                 // payload: elapsed seconds since the `set_timeout` call, which
                 // for a fired one-shot is ~= the duration it was armed with —
@@ -318,7 +322,11 @@ impl ZellijPlugin for State {
                 // needs: its 5s stale-fire threshold discriminates a ~1s (Fast)
                 // arm from a ~60s (Slow) one with wide margin either way, so
                 // scheduler jitter can't flip the classification.
-                let probe = self.session_files.refresh_permission_probe();
+                let probe = if self.runtime.wants_permission_probe() {
+                    self.session_files.refresh_permission_probe()
+                } else {
+                    crate::permission::PermissionProbe::default()
+                };
                 let outcome = self.runtime.timer(probe, elapsed_s);
                 self.handle_outcome(outcome)
             }

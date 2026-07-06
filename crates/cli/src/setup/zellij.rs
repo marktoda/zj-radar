@@ -611,12 +611,44 @@ fn print_swap_advisory_if_needed(facts: &crate::layout::LayoutFacts) {
 }
 
 /// Handle `--uninstall` for the layout: strip the injected rail if present.
+/// A layout with no injection markers can still be ours: the no-layout install
+/// path writes `full_layout()` whole (see `create_full_layout`). Since the
+/// config step has just stripped the `radar` alias, leaving that layout behind
+/// strands the next plain Zellij launch on a dead alias — so a byte-identical
+/// generated layout is deleted (it is entirely ours), and any OTHER
+/// marker-less layout that still references the alias gets an advisory, never
+/// a delete (we don't remove files we can't prove we authored).
 fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
     let text = match std::fs::read_to_string(layout_path) {
         Ok(t) => t,
         Err(_) => return, // layout not found — nothing to uninstall
     };
     match crate::layout::uninstall(&text) {
+        None if text == crate::layout::full_layout() => {
+            if dry_run {
+                println!(
+                    "zellij: would delete {} (dry-run) — created whole by setup, and it \
+                     references the removed `radar` alias",
+                    layout_path.display()
+                );
+                return;
+            }
+            match std::fs::remove_file(layout_path) {
+                Ok(()) => println!(
+                    "zellij: deleted {} (created whole by setup; it referenced the \
+                     removed `radar` alias)",
+                    layout_path.display()
+                ),
+                Err(e) => crate::exit::fail_report("zellij", format!("layout delete failed — {e}")),
+            }
+        }
+        None if text.contains("plugin location=\"radar\"") => {
+            println!(
+                "zellij: note — {} still references the removed `radar` alias — delete it \
+                 or restore the alias, or the next Zellij launch will fail to resolve it",
+                layout_path.display()
+            );
+        }
         None => {
             // no injected rail present — nothing to do
         }

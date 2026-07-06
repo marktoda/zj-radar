@@ -357,6 +357,16 @@ impl PluginRuntime {
         }
     }
 
+    /// True while [`timer`](Self::timer) still consumes a fresh
+    /// [`PermissionProbe`] — i.e. the permission machine is waiting on a peer's
+    /// marker/lock. Once a request is in-flight or the state is resolved,
+    /// `on_timer` ignores the probe entirely, so the host glue can skip the
+    /// per-tick marker read + lock attempt (N tabs were stat-reading N files
+    /// per second forever) and pass `PermissionProbe::default()` instead.
+    pub(crate) fn wants_permission_probe(&self) -> bool {
+        self.permission.is_waiting()
+    }
+
     pub(crate) fn permission_result(&mut self, granted: bool) -> Outcome {
         self.record_permission_result(granted);
         let mut effects = vec![

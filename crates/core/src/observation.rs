@@ -140,12 +140,16 @@ impl ObservationStore {
         self.map.insert(pane_id, observation)
     }
 
-    /// Prune, returning the dropped entries (see `insert`).
+    /// Prune every entry not in `live`, returning the dropped *completions*
+    /// (`Done`/`Error` — see `insert`): a pane closing with an unreceded
+    /// completion still on it is a recede edge the caller may ledger. A
+    /// Running/Idle/Pending pane closing carries nothing to ledger, so those
+    /// drops are filtered here — both stores want exactly this cut.
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
         let dropped: Vec<(u32, TrackedObservation)> = self
             .map
             .iter()
-            .filter(|(id, _)| !live.contains(id))
+            .filter(|(id, obs)| !live.contains(id) && obs.status.is_completion())
             .map(|(&id, obs)| (id, obs.clone()))
             .collect();
         self.map.retain(|id, _| live.contains(id));
@@ -207,15 +211,18 @@ mod tests {
     }
 
     #[test]
-    fn insert_returns_displaced_and_prune_returns_dropped() {
+    fn insert_returns_displaced_and_prune_returns_dropped_completions() {
         let mut s = ObservationStore::default();
         assert!(s.insert(1, sample()).is_none());
         let displaced = s.insert(1, TrackedObservation { status: Status::Done, ..sample() });
         assert_eq!(displaced.unwrap().status, Status::Error, "old entry comes back out");
         s.insert(2, sample());
+        s.insert(3, TrackedObservation { status: Status::Running, ..sample() });
         let dropped = s.prune(&[2].into_iter().collect());
-        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped.len(), 1, "only completions come back out — Running carries nothing to ledger");
         assert_eq!(dropped[0].0, 1);
+        assert!(s.get(3).is_none(), "the non-completion is still dropped from the map");
+        assert!(s.get(2).is_some());
     }
 
     #[test]

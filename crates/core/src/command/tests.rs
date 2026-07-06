@@ -137,6 +137,17 @@
             (&["python", "-m"], "python"),                      // `-m` with no module → bare exe
             (&["python", "path/to/app.py", "--v"], "python app.py"), // script basename
             (&["python3"], "python3"),                          // no args → bare exe
+            // Versioned interpreter basenames route to the python shape too —
+            // `python3.12 app.py` must not fall to FIRST_ARG_RULE and show the
+            // un-basenamed script path.
+            (&["python3.12", "-m", "pytest", "-q", "t.py"], "python3.12 -m pytest t.py"),
+            (&["python3.12", "path/to/app.py"], "python3.12 app.py"),
+            (&["python2", "path/to/app.py"], "python2 app.py"),
+            (&["/usr/bin/python3.12", "serve.py"], "python3.12 serve.py"),
+            // …but a python-*tool* is not an interpreter: only a digits/dots
+            // suffix counts, so `python-config` keeps the first-arg treatment
+            // (its arg is NOT basenamed like a script would be).
+            (&["python-config", "a/b"], "python-config a/b"),
             // Deliberate post-refactor behavior: the uniform target dash-guard
             // drops a bare "-" target (old cargo nextest / go test kept it).
             (&["go", "test", "-"], "go test"),
@@ -982,6 +993,51 @@
         assert_eq!(got.status, Status::Error);
         assert_eq!(got.exit_code, Some(2));
         assert_eq!(got.completed_epoch_s, Some(999), "the new outcome stamps fresh");
+    }
+
+    #[test]
+    fn exit_before_promotion_wears_the_pending_commands_label() {
+        // A run-pane command can exit inside the debounce window (fast command,
+        // or the manifest exit landing first) — before promotion ever inserted
+        // an observation. The completion must wear the pending run's identity
+        // (command, kind, cwd-derived repo — exactly what promotion would have
+        // stamped), never a blank Kind::Command row.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["cargo", "build"]), true, Some("/work/myrepo"), 1);
+        s.on_exit(1, Some(1), 2, 100); // beats the debounce promotion
+        let got = s.get(1).unwrap();
+        assert_eq!(got.status, Status::Error);
+        assert_eq!(got.msg, "cargo build", "labeled with the run that exited");
+        assert_eq!(got.kind, Kind::Build);
+        assert_eq!(got.repo, "myrepo", "repo derived from the pending cwd, like promotion");
+        assert_eq!(got.exit_code, Some(1));
+        assert_eq!(got.completed_epoch_s, Some(100));
+    }
+
+    #[test]
+    fn rerun_exit_before_promotion_does_not_wear_the_previous_runs_label() {
+        // First run finishes as `cargo test` (Done). A re-run of `cargo build`
+        // in the same held pane exits before its debounce promotion: the
+        // failure must read "cargo build", not resurrect "cargo test" — and
+        // the displaced Done still hands off to the ledger under ITS label.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/work/myrepo"), 1);
+        let promote = 1 + DEBOUNCE_TICKS;
+        s.on_timer(promote, 100);
+        s.on_exit(1, Some(0), promote + 1, 200);
+        assert_eq!(s.get(1).unwrap().status, Status::Done);
+        assert_eq!(s.get(1).unwrap().msg, "cargo test");
+
+        let rerun = promote + 2;
+        s.on_command_changed(1, &argv(&["cargo", "build"]), true, Some("/work/myrepo"), rerun);
+        let receded = s.on_exit(1, Some(101), rerun + 1, 300).expect("the old Done is displaced");
+        assert_eq!(receded.status, Status::Done);
+        assert_eq!(receded.msg, "cargo test", "the ledgered completion is the OLD run");
+        let got = s.get(1).unwrap();
+        assert_eq!(got.status, Status::Error);
+        assert_eq!(got.msg, "cargo build", "the failure wears the NEW run's label");
+        assert_eq!(got.kind, Kind::Build);
+        assert_eq!(got.completed_epoch_s, Some(300));
     }
 
     #[test]

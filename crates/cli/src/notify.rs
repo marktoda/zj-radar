@@ -107,7 +107,17 @@ fn git_repo_branch(cwd: &str) -> (String, String) {
 const MAX_STDIN_BYTES: u64 = 8 << 20;
 
 fn read_stdin() -> String {
-    read_capped(std::io::stdin().lock(), MAX_STDIN_BYTES)
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    // Hooks always pipe their payload; a TTY on stdin means a human invoked
+    // this directly (typically `--dry-run`), where a silent read-until-Ctrl-D
+    // presents as a hang. Skip the read and say so — one line, stderr, so a
+    // `--dry-run | jq` pipeline's stdout stays machine-readable.
+    if stdin.is_terminal() {
+        eprintln!("zj-radar: no piped stdin; using empty payload");
+        return String::new();
+    }
+    read_capped(stdin.lock(), MAX_STDIN_BYTES)
 }
 
 /// Read up to `cap` bytes as UTF-8, ignoring IO/UTF-8 errors (the caller derives
@@ -232,7 +242,11 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // the plugin's 60-char display cap so its sanitizer still has content after
     // control-char stripping.
     let msg: String = update.msg.chars().take(512).collect();
-    let task = update.task.unwrap_or_default();
+    // Same bound for the task label, for the same reason — the adapters cap
+    // their own derivations, but `notify generic --task` arrives verbatim, and
+    // an uncapped label can blow the wire cap (or Linux's per-arg E2BIG limit)
+    // all on its own. Defense-in-depth here covers every path.
+    let task: String = update.task.unwrap_or_default().chars().take(512).collect();
     let payload = to_wire(&StatusPayload {
         pane_id,
         status: update.status,

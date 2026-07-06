@@ -45,7 +45,10 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
         std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
     }
     let url = wasm_release_url(version);
-    println!("zj-radar: downloading wasm {version} from {url}");
+    // Progress is prose → stderr: `run` reaches this download BEFORE its
+    // `--print-cmd` branch prints, so anything on stdout here would be
+    // captured by `$(zj-radar run --print-cmd)` and corrupt the command.
+    eprintln!("zj-radar: downloading wasm {version} from {url}");
     // Download to a `.part` sibling and rename into place only after the
     // transfer AND checksum both succeed. curl/wget write `dest` incrementally,
     // so an interrupted transfer straight to `dest` would leave a partial file
@@ -114,7 +117,8 @@ fn verify_checksum(version: &str, wasm: &Path) -> Result<(), String> {
         return Ok(());
     };
     if actual.eq_ignore_ascii_case(&expected) {
-        println!("zj-radar: wasm checksum verified");
+        // Prose → stderr, like the download progress line above.
+        eprintln!("zj-radar: wasm checksum verified");
         Ok(())
     } else {
         let _ = std::fs::remove_file(wasm); // don't leave a mismatched wasm staged

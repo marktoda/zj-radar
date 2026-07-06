@@ -94,8 +94,7 @@ pub(crate) const SWAP_BLOCKS: &str = r#"    swap_tiled_layout name="vertical" {
 
 /// The full rail layout (3 templates + swaps), assembled from the canonical
 /// fragments. Kept byte-equal to `run_assets/radar.kdl`, which `run` embeds
-/// directly; the drift-guard test enforces this. Used by tests only on this build.
-#[allow(dead_code)]
+/// directly; the drift-guard test enforces this.
 pub(crate) fn full_layout() -> String {
     format!(
         "layout {{\n{DEFAULT_TAB_TEMPLATE}\n\n{NEW_TAB_TEMPLATE}\n\n{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}\n\n    tab name=\"shell\" focus=true {{\n        pane\n    }}\n}}\n"

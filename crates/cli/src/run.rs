@@ -24,9 +24,10 @@ pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. 
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-/// Session name from the cwd basename or an explicit `--name` override — both
-/// sanitized. Zellij session names allow `[A-Za-z0-9_-]`; other chars fold to
-/// `-`. The override is NOT taken verbatim because the name round-trips through
+/// Session name from the cwd basename or an explicit name argument
+/// (`zj-radar run <name>`) — both sanitized. Zellij session names allow
+/// `[A-Za-z0-9_-]`; other chars fold to `-`. The override is NOT taken
+/// verbatim because the name round-trips through
 /// `zellij list-sessions` output parsing (`session_is_live` /
 /// `session_is_running` split on whitespace), so a name containing a space
 /// could never match its own session again. If nothing alphanumeric survives
@@ -467,10 +468,24 @@ fn session_is_running(name: &str) -> bool {
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| {
-            String::from_utf8_lossy(&o.stdout).lines().any(|l| {
-                l.split_whitespace().next() == Some(name) && !l.contains("EXITED")
-            })
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| line_is_running_session(l, name))
         })
+}
+
+/// Pure classifier behind [`session_is_running`]: does this `zellij
+/// list-sessions --no-formatting` line describe session `name`, running?
+/// The format is `<name> [Created …]` for a live session (possibly tagged
+/// `(current)`), with dead ones appending `(EXITED - attach to resurrect)`.
+/// The name is exactly the first whitespace-delimited token, and the EXITED
+/// marker only ever appears after it — so only the REMAINDER is scanned for
+/// it. Session names allow uppercase (`[A-Za-z0-9_-]`), so a whole-line
+/// `contains("EXITED")` would misread a live session literally named
+/// `EXITED-tests` as dead.
+fn line_is_running_session(line: &str, name: &str) -> bool {
+    let mut tokens = line.split_whitespace();
+    tokens.next() == Some(name) && !tokens.any(|t| t.contains("EXITED"))
 }
 
 /// True iff a cached resurrection layout will rebuild `defer_permission "true"`
@@ -643,15 +658,6 @@ pub fn run(opts: RunOptions) {
         }
         return;
     }
-    if plan.nested {
-        crate::exit::fail_report(
-            "zj-radar",
-            "you're already inside Zellij. `run` starts a NEW session — detach first \
-             (Ctrl-o d by default) and re-run, or use `zj-radar setup` to add the rail to your \
-             current Zellij config.",
-        );
-        return;
-    }
     // A name-matching session the user created themselves: attaching would swap
     // that client's keybinds/theme for the bundled config, so it takes explicit
     // consent. Consent is remembered (the marker is stamped) — including for
@@ -660,7 +666,7 @@ pub fn run(opts: RunOptions) {
         use std::io::IsTerminal;
         let escape = format!(
             "attach with your own config via `zellij attach {}`, or pick a different \
-             name with `zj-radar run --name <name>`",
+             name with `zj-radar run <name>`",
             facts.session
         );
         if !std::io::stdin().is_terminal() {
@@ -748,7 +754,7 @@ mod tests {
 
     #[test]
     fn session_name_sanitizes_explicit_override_too() {
-        // An explicit --name round-trips through `zellij list-sessions` parsing,
+        // An explicit name argument round-trips through `zellij list-sessions`,
         // which splits on whitespace — a verbatim "my proj" would never match
         // its own session again (always the create path, which then collides).
         assert_eq!(session_name(Path::new("/x"), Some("my proj")), "my-proj");
@@ -770,6 +776,23 @@ mod tests {
             attach_session_args(Path::new("/cfg"), "foo"),
             vec!["--config-dir", "/cfg", "attach", "foo"]
         );
+    }
+
+    #[test]
+    fn running_line_parse_scans_only_the_tail_for_exited() {
+        // A dead session appends `(EXITED - attach to resurrect)` after the name.
+        assert!(!line_is_running_session(
+            "proj [Created 5m ago] (EXITED - attach to resurrect)", "proj"
+        ));
+        // Live lines — bare or `(current)`-tagged — are running.
+        assert!(line_is_running_session("proj [Created 2s ago]", "proj"));
+        assert!(line_is_running_session("proj [Created 5m ago] (current)", "proj"));
+        // Hostile-but-legal name: session names allow uppercase, so a LIVE
+        // session literally named `EXITED-tests` must not read as dead.
+        assert!(line_is_running_session("EXITED-tests [Created 2s ago]", "EXITED-tests"));
+        // The name must match the whole first token, and only its own line.
+        assert!(!line_is_running_session("proj-2 [Created 5m ago]", "proj"));
+        assert!(!line_is_running_session("other [Created 5m ago]", "proj"));
     }
 
     #[test]
