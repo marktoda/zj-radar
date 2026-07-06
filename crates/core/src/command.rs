@@ -30,6 +30,24 @@ pub const DEBOUNCE_TICKS: u64 = 2;
 /// exempt — failures persist until re-run or prune.
 pub const DONE_TTL_TICKS: u64 = 60;
 
+/// An instant on the plugin's per-instance tick counter. One of the two
+/// clocks this store is driven by — see [`EpochSecs`] for why they are
+/// distinct types.
+#[derive(Copy, Clone, Debug)]
+pub struct Tick(pub u64);
+
+/// An instant in Unix epoch seconds — the wall clock shared across plugin
+/// instances. The other clock is [`Tick`]: per-instance and reset on load,
+/// so the two are never interchangeable. `on_timer`/`on_exit` take both side
+/// by side, and as bare `u64`s a swapped call compiles — stamping
+/// `completed_epoch_s` from a tick, which is exactly the cross-instance
+/// ledger divergence the epoch stamp exists to prevent (`CONTEXT.md` →
+/// *Ledger*, Timestamps). The newtypes make that swap a type error. Storage
+/// and wire stay bare `u64` (`TrackedObservation`, the snapshot); the wrap
+/// exists only at this call seam.
+#[derive(Copy, Clone, Debug)]
+pub struct EpochSecs(pub u64);
+
 /// What a tick did to the command store: whether any observation changed (the
 /// snapshot-persist trigger, exactly the old bool), and the completions that
 /// left the card this tick (TTL recede or promotion-displaced) for the ledger.
@@ -534,7 +552,8 @@ impl CommandStore {
     /// snapshotted. `TimerReport::receded` carries every completion that left
     /// the card this tick (a Done/Error displaced by re-promotion, or a Done
     /// that TTL-receded to Idle) for the ledger.
-    pub fn on_timer(&mut self, tick: u64, now_epoch_s: u64) -> TimerReport {
+    pub fn on_timer(&mut self, tick: Tick, now_epoch_s: EpochSecs) -> TimerReport {
+        let (Tick(tick), EpochSecs(now_epoch_s)) = (tick, now_epoch_s);
         let mut changed = false;
         let mut receded = Vec::new();
         let to_promote: Vec<u32> = self
@@ -632,9 +651,10 @@ impl CommandStore {
         &mut self,
         pane_id: u32,
         exit_status: Option<i32>,
-        tick: u64,
-        now_epoch_s: u64,
+        tick: Tick,
+        now_epoch_s: EpochSecs,
     ) -> Option<TrackedObservation> {
+        let (Tick(tick), EpochSecs(now_epoch_s)) = (tick, now_epoch_s);
         // Dedupe: if we've already applied the same exit status, skip.
         if self.exited.get(&pane_id) == Some(&exit_status) {
             return None;

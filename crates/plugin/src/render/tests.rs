@@ -76,6 +76,37 @@ fn display(
 /// tests can use this to assert the single-pane child line routes to the pane.
 const FIXTURE_PANE_ID: u32 = 900;
 
+/// Base `TabRow` — the varying three (number, name, display), everything else
+/// defaulted (inactive, no bell, no flash). Distinctive fields stay visible
+/// via struct update: `TabRow { active: true, ..tab(1, "web", d) }` — so a
+/// new `TabRow` field touches this constructor, not every fixture.
+fn tab(number: u32, name: impl Into<String>, display: TabDisplay) -> TabRow {
+    TabRow { number, name: name.into(), active: false, has_bell: false, flash: false, display }
+}
+
+/// Base `PrimaryDetail` — the varying four (repo, branch, msg, status),
+/// everything else defaulted (Claude, no task, tick 0, no outcome, no pending
+/// stamp). Distinctive fields stay visible via struct update:
+/// `PrimaryDetail { kind: Kind::Build, ..pd("r", "b", "", Status::Running) }`.
+fn pd(
+    repo: impl Into<String>,
+    branch: impl Into<String>,
+    msg: impl Into<String>,
+    status: Status,
+) -> PrimaryDetail {
+    PrimaryDetail {
+        repo: repo.into(),
+        branch: branch.into(),
+        msg: msg.into(),
+        task: String::new(),
+        since_tick: 0,
+        status,
+        kind: Kind::Claude,
+        outcome: None,
+        pending_epoch_s: None,
+    }
+}
+
 // Tests default to `jump_hint: true` (the fuller, pre-gating footer shape) so
 // line-offset expectations stay put; hint-hidden shapes are exercised by the
 // explicit `jump_hint: false` tests.
@@ -191,13 +222,7 @@ fn is_painted(line: &str) -> bool {
 
 #[test]
 fn header_is_title_then_rule_two_lines() {
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 0, None),
-    }];
+    let rows = vec![tab(1, "a", display(Status::Running, 0, 0, None))];
     assert_eq!(
         header_lines(true, crate::config::Density::Compact, true),
         2
@@ -246,44 +271,22 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
     assert_eq!(clamped.line_count(), 2);
     assert_eq!(clamped.ansi, "a\nb");
 
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "repo".into(),
-        branch: "main".into(),
-        msg: "approve".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
+    let detail = pd("repo", "main", "approve", Status::Pending);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "team".into(),
-            active: false,
-            has_bell: false,
-            display: TabDisplay {
-                status: Status::Pending,
-                progress: ProgressCounts {
-                    done: 0,
-                    total: 2,
-                    pending: 1,
-                },
-                detail: Some(detail),
-                panes: vec![
-                    pe(10, Kind::Claude, Status::Pending, "approve"),
-                    pe(11, Kind::Claude, Status::Running, "tests"),
-                ],
+        tab(1, "team", TabDisplay {
+            status: Status::Pending,
+            progress: ProgressCounts {
+                done: 0,
+                total: 2,
+                pending: 1,
             },
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "plain".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+            detail: Some(detail),
+            panes: vec![
+                pe(10, Kind::Claude, Status::Pending, "approve"),
+                pe(11, Kind::Claude, Status::Running, "tests"),
+            ],
+        }),
+        tab(2, "plain", display(Status::Idle, 0, 0, None)),
     ];
 
     let rail = render_rail(&rows, &[], &ro(40, 0));
@@ -323,13 +326,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
 
 #[test]
 fn plain_tab_renders_name_only_no_second_line() {
-    let rows = vec![TabRow { flash: false,
-        number: 4,
-        name: "notes".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![tab(4, "notes", display(Status::Idle, 0, 0, None))];
     let s = render(&rows, &tight(&rows, ro(24, 0)));
     assert!(s.contains("notes"));
     assert_eq!(s.lines().count(), 3); // always-on header (2) + tab row (1)
@@ -339,29 +336,13 @@ fn plain_tab_renders_name_only_no_second_line() {
 #[test]
 fn render_row_lines_by_state() {
     let opts = ro(40, 0);
-    let mk_row = |d: TabDisplay, active: bool| TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active,
-        has_bell: false,
-        display: d,
-    };
+    let mk_row = |d: TabDisplay, active: bool| TabRow { active, ..tab(1, "t", d) };
     let rl = |d: TabDisplay, active: bool| render_row(&mk_row(d, active), &opts).len();
 
     assert_eq!(rl(display(Status::Idle, 0, 0, None), false), 1);
 
     let detail = |status, msg: &str| {
-        Some(PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: msg.into(),
-            task: String::new(),
-            kind: Kind::Claude,
-            since_tick: 0,
-            outcome: None,
-            status,
-        })
+        Some(pd("r", "b", msg, status))
     };
     assert_eq!(
         rl(display(Status::Done, 1, 1, detail(Status::Done, "")), false),
@@ -395,20 +376,8 @@ fn render_row_lines_by_state() {
 #[test]
 fn active_row_has_accent_bar_idle_does_not() {
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "a".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "b".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+        TabRow { active: true, ..tab(1, "a", display(Status::Idle, 0, 0, None)) },
+        tab(2, "b", display(Status::Idle, 0, 0, None)),
     ];
     let s = render(&rows, &ro(24, 0));
     let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
@@ -419,24 +388,9 @@ fn active_row_has_accent_bar_idle_does_not() {
 
 #[test]
 fn active_and_waiting_row_bar_is_attention_not_accent() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "p".into(),
-        branch: "fix".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 3,
-        name: "pinky".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Pending, 0, 0, Some(detail)),
-    }];
+    let detail = pd("p", "fix", "", Status::Pending);
+    let rows = vec![TabRow { active: true,
+        ..tab(3, "pinky", display(Status::Pending, 0, 0, Some(detail))) }];
     let s = render(&rows, &ro(30, 5));
     let line1 = s.lines().nth(2).unwrap();
     assert!(line1.contains('▌'));
@@ -452,24 +406,8 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
     // "  ‹mark› " prefix with no activity. A Failed outcome DOES render a tag,
     // so it keeps its line 2 even with an empty msg.
     let row = |status, outcome| {
-        let d = PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: "".into(),
-            task: String::new(),
-            kind: Kind::Command,
-            since_tick: 0,
-            outcome,
-            status,
-        };
-        TabRow { flash: false,
-            number: 1,
-            name: "n".into(),
-            active: false,
-            has_bell: false,
-            display: display(status, 1, 1, Some(d)),
-        }
+        let d = PrimaryDetail { kind: Kind::Command, outcome, ..pd("r", "b", "", status) };
+        tab(1, "n", display(status, 1, 1, Some(d)))
     };
 
     let ok_lines = render_row(&row(Status::Done, Some(Outcome::Ok)), &ro(30, 0));
@@ -490,24 +428,8 @@ fn right_slot_per_state() {
     // Right slot is intentionally empty (removed per design). Verify no
     // elapsed/status text appears in the rendered output.
     let mk = |status, done, total| {
-        let d = PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: "".into(),
-            task: String::new(),
-            kind: Kind::Claude,
-            since_tick: 0,
-            outcome: None,
-            status,
-        };
-        TabRow { flash: false,
-            number: 1,
-            name: "n".into(),
-            active: false,
-            has_bell: false,
-            display: display(status, done, total, Some(d)),
-        }
+        let d = pd("r", "b", "", status);
+        tab(1, "n", display(status, done, total, Some(d)))
     };
     assert!(!render(&[mk(Status::Done, 1, 1)], &ro(30, 0)).contains("done"));
     assert!(!render(&[mk(Status::Error, 0, 1)], &ro(30, 0)).contains("failed"));
@@ -520,24 +442,8 @@ fn right_slot_per_state() {
 #[test]
 fn working_slot_is_dim_not_role_colored() {
     // Right slot is now empty; verify no elapsed appears in output.
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "n".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(d)),
-    }];
+    let d = pd("r", "b", "", Status::Running);
+    let rows = vec![tab(1, "n", display(Status::Running, 0, 1, Some(d)))];
     let opts = ro(30, 14);
     let s = render(&rows, &opts);
     // No elapsed in the right slot.
@@ -546,24 +452,8 @@ fn working_slot_is_dim_not_role_colored() {
 
 #[test]
 fn working_glyph_spins_with_tick() {
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let row = |_t| TabRow { flash: false,
-        number: 1,
-        name: "n".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(d.clone())),
-    };
+    let d = pd("r", "b", "", Status::Running);
+    let row = |_t| tab(1, "n", display(Status::Running, 0, 1, Some(d.clone())));
     let f0 = render(&[row(0)], &ro(30, 0));
     let f1 = render(&[row(1)], &ro(30, 1));
     assert!(f0.contains('⠋'));
@@ -572,13 +462,7 @@ fn working_glyph_spins_with_tick() {
 
 #[test]
 fn idle_row_is_single_line_with_no_right_slot_text() {
-    let rows = vec![TabRow { flash: false,
-        number: 7,
-        name: "logs".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![tab(7, "logs", display(Status::Idle, 0, 0, None))];
     let s = render(&rows, &tight(&rows, ro(24, 0)));
     assert_eq!(s.lines().skip(2).count(), 1); // exactly one body line
     assert!(s.contains('○'));
@@ -587,13 +471,7 @@ fn idle_row_is_single_line_with_no_right_slot_text() {
 
 #[test]
 fn narrow_width_truncates_with_ellipsis() {
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a-very-long-tab-name-indeed".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![tab(1, "a-very-long-tab-name-indeed", display(Status::Idle, 0, 0, None))];
     let s = render(&rows, &ro(12, 0));
     assert!(s.contains('…'));
 }
@@ -601,24 +479,10 @@ fn narrow_width_truncates_with_ellipsis() {
 #[test]
 fn no_emitted_line_exceeds_width() {
     let width = 20;
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix/x".into(),
-        msg: "abcdefghijklmnopqrstuvwxyz".into(), // longer than width
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 2,
-        name: "a-very-long-tab-name-indeed".into(),
-        active: true, // exercises BOLD escapes too
-        has_bell: false,
-        display: display(Status::Running, 2, 4, Some(detail)),
-    }];
+    // msg longer than width
+    let detail = pd("pinky", "fix/x", "abcdefghijklmnopqrstuvwxyz", Status::Running);
+    let rows = vec![TabRow { active: true, // exercises BOLD escapes too
+        ..tab(2, "a-very-long-tab-name-indeed", display(Status::Running, 2, 4, Some(detail))) }];
     let s = render(&rows, &tight(&rows, ro(width, 14)));
     // header (2) + two tab lines emitted (Running+detail = 2 lines)
     assert_eq!(s.lines().count(), 4);
@@ -636,24 +500,14 @@ fn no_emitted_line_exceeds_width() {
 
 #[test]
 fn pending_detail_lines_never_exceed_width() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "averylongreponame".into(),
-        branch: "feature/some-long-branch".into(),
-        msg: "should we proceed with this long question".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Pending,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 3,
-        name: "a-long-tab-name".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, Some(detail)),
-    }];
+    let detail = pd(
+        "averylongreponame",
+        "feature/some-long-branch",
+        "should we proceed with this long question",
+        Status::Pending,
+    );
+    let rows = vec![TabRow { active: true,
+        ..tab(3, "a-long-tab-name", display(Status::Pending, 0, 1, Some(detail))) }];
     for width in [16usize, 20, 24, 30] {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
@@ -675,13 +529,8 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
     // bell used to spill 2 cells past the edge — breaking the width invariant
     // and the card-padding math. Every width down to 1 must still fit.
     for active in [true, false] {
-        let rows = vec![TabRow { flash: false,
-            number: 7,
-            name: "infra".into(),
-            active,
-            has_bell: true,
-            display: display(Status::Running, 0, 1, None),
-        }];
+        let rows = vec![TabRow { active, has_bell: true,
+            ..tab(7, "infra", display(Status::Running, 0, 1, None)) }];
         // From width 4 up: the bell bug reproduced here (prefix fits but the
         // 2-col bell spilled past the edge). Widths 1–3 are a separate,
         // pre-existing degenerate case (the spine+glyph alone can't fit a
@@ -704,95 +553,35 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
 
 #[test]
 fn running_has_no_warning_glyph() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 1, 1, Some(detail)),
-    }];
+    let detail = pd("r", "b", "", Status::Running);
+    let rows = vec![tab(1, "t", display(Status::Running, 1, 1, Some(detail)))];
     assert!(!render(&rows, &ro(30, 599)).contains('⚠'));
 }
 
 #[test]
 fn done_has_no_warning_glyph() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Done,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Done, 1, 1, Some(detail)),
-    }];
+    let detail = pd("r", "b", "", Status::Done);
+    let rows = vec![tab(1, "t", display(Status::Done, 1, 1, Some(detail)))];
     assert!(!render(&rows, &ro(30, 10_000)).contains('⚠'));
 }
 
 #[test]
 fn bell_renders_marker() {
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active: false,
-        has_bell: true,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![TabRow { has_bell: true, ..tab(1, "t", display(Status::Idle, 0, 0, None)) }];
     assert!(render(&rows, &ro(24, 0)).contains('⚑'));
 }
 
 #[test]
 fn no_bell_no_marker() {
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![tab(1, "t", display(Status::Idle, 0, 0, None))];
     assert!(!render(&rows, &ro(24, 0)).contains('⚑'));
 }
 
 #[test]
 fn error_word_narrows_when_tight() {
     // Right slot is now empty; verify "failed"/"err" do not appear.
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "infra".into(),
-        branch: "".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Error,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 5,
-        name: "infra".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Error, 0, 1, Some(d)),
-    }];
+    let d = pd("infra", "", "", Status::Error);
+    let rows = vec![tab(5, "infra", display(Status::Error, 0, 1, Some(d)))];
     // Right slot is empty; no "failed" or "err" in output.
     assert!(!render(&rows, &ro(30, 0)).contains("failed"));
     let narrow = render(&rows, &ro(14, 0));
@@ -802,24 +591,8 @@ fn error_word_narrows_when_tight() {
 
 #[test]
 fn working_detail_drops_branch_before_message_when_narrow() {
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "web".into(),
-        branch: "main".into(),
-        msg: "running tests".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "api".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(d)),
-    }];
+    let d = pd("web", "main", "running tests", Status::Running);
+    let rows = vec![tab(1, "api", display(Status::Running, 0, 1, Some(d)))];
     let narrow = render(&rows, &ro(16, 5));
     for line in narrow.lines() {
         assert!(visible_width(line) <= 16);
@@ -829,13 +602,7 @@ fn working_detail_drops_branch_before_message_when_narrow() {
 }
 
 fn idle_row(n: u32) -> TabRow {
-    TabRow { flash: false,
-        number: n,
-        name: format!("t{}", n),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }
+    tab(n, format!("t{}", n), display(Status::Idle, 0, 0, None))
 }
 
 
@@ -855,24 +622,8 @@ fn overflow_folds_idle_into_strip_and_marks_header() {
 fn overflow_keeps_non_idle_rows_visible() {
     let mut rows: Vec<TabRow> = (1..=18).map(idle_row).collect();
     // an urgent waiting tab at the very end (high position)
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "p".into(),
-        branch: "x".into(),
-        msg: "approve?".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    rows.push(TabRow { flash: false,
-        number: 19,
-        name: "pinky".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, Some(d)),
-    });
+    let d = pd("p", "x", "approve?", Status::Pending);
+    rows.push(tab(19, "pinky", display(Status::Pending, 0, 1, Some(d))));
     let s = render(&rows, &RenderOpts { height: 8, ..ro(30, 2) });
     assert!(s.contains("pinky")); // urgent row never folded
     assert!(s.contains("approve?")); // activity (msg) survives on line 2
@@ -894,59 +645,20 @@ fn render_glyph_role_colors_are_present() {
     // truecolor foregrounds; card surfaces use truecolor backgrounds in Cards
     // density — but glyphs remain role-colored ANSI-16.)
 
-    let mk_detail = |status: Status| PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix/x".into(),
-        msg: "some message".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status,
-    };
+    let mk_detail = |status: Status| pd("pinky", "fix/x", "some message", status);
 
     let rows = vec![
         // idle — one line, no detail
-        TabRow { flash: false,
-            number: 1,
-            name: "idle-tab".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+        tab(1, "idle-tab", display(Status::Idle, 0, 0, None)),
         // running — two lines, with detail
-        TabRow { flash: false,
-            number: 2,
-            name: "run-tab".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
-        },
+        TabRow { active: true,
+            ..tab(2, "run-tab", display(Status::Running, 1, 2, Some(mk_detail(Status::Running)))) },
         // pending with msg — three lines
-        TabRow { flash: false,
-            number: 3,
-            name: "pend-tab".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
-        },
+        tab(3, "pend-tab", display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending)))),
         // done — one line
-        TabRow { flash: false,
-            number: 4,
-            name: "done-tab".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
-        },
+        tab(4, "done-tab", display(Status::Done, 1, 1, Some(mk_detail(Status::Done)))),
         // error — two lines
-        TabRow { flash: false,
-            number: 5,
-            name: "err-tab".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Error, 0, 1, Some(mk_detail(Status::Error))),
-        },
+        tab(5, "err-tab", display(Status::Error, 0, 1, Some(mk_detail(Status::Error)))),
     ];
 
     let s = render(&rows, &ro(30, 7));
@@ -995,24 +707,8 @@ fn pending_line2_shows_mark_and_activity() {
     // With msg → 2 lines; without msg → 1 line (line 2 suppressed).
 
     // Case 1: pending with msg — 2 lines, mark + activity in attention color.
-    let detail_with_msg = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "proj".into(),
-        branch: "fix".into(),
-        msg: "approve the push?".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Pending,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "agents".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 3, Some(detail_with_msg)),
-    }];
+    let detail_with_msg = pd("proj", "fix", "approve the push?", Status::Pending);
+    let rows = vec![tab(1, "agents", display(Status::Pending, 0, 3, Some(detail_with_msg)))];
     let s = render(&rows, &ro(30, 0));
     // line 2 must show the mark and the activity text
     assert!(
@@ -1041,46 +737,19 @@ fn pending_line2_shows_mark_and_activity() {
     assert_eq!(render_row(&rows[0], &ro(30, 0)).len(), 2);
 
     // Case 2: pending without msg → 1 line only, no line 2.
-    let detail_no_msg = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "proj".into(),
-        branch: "fix".into(),
-        msg: "".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Pending,
-    };
-    let rows2 = [TabRow { flash: false,
-        number: 2,
-        name: "solo".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, Some(detail_no_msg)),
-    }];
+    let detail_no_msg = pd("proj", "fix", "", Status::Pending);
+    let rows2 = [tab(2, "solo", display(Status::Pending, 0, 1, Some(detail_no_msg)))];
     // full_lines = 1 (no msg → no line 2)
     assert_eq!(render_row(&rows2[0], &ro(30, 0)).len(), 1);
 
     // Width constraint: pending detail line must not exceed width
-    let detail_long = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "averylongreponame".into(),
-        branch: "feature/some-very-long-branch".into(),
-        msg: "a very long question that should be truncated appropriately here".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Pending,
-    };
-    let rows3 = vec![TabRow { flash: false,
-        number: 3,
-        name: "multi".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 5, Some(detail_long)),
-    }];
+    let detail_long = pd(
+        "averylongreponame",
+        "feature/some-very-long-branch",
+        "a very long question that should be truncated appropriately here",
+        Status::Pending,
+    );
+    let rows3 = vec![tab(3, "multi", display(Status::Pending, 0, 5, Some(detail_long)))];
     for width in [20usize, 24, 30] {
         let s3 = render(&rows3, &ro(width, 0));
         assert!(
@@ -1107,33 +776,17 @@ fn multi_pending_detail_never_exceeds_width() {
     // With msg:"" → no line 2, so only line 1 (the status line) is rendered.
     // This tests the width-safety of the first line at narrow widths.
     // (Kept as a regression guard; previously tested "N needs you" overflow.)
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "averylongreponame".into(),
-        branch: "feature/some-very-long-branch-name".into(),
-        msg: "".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
+    let detail = pd("averylongreponame", "feature/some-very-long-branch-name", "", Status::Pending);
+    let rows = vec![tab(1, "m", TabDisplay {
         status: Status::Pending,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "m".into(),
-        active: false,
-        has_bell: false,
-        display: TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts {
-                done: 0,
-                total: 1,
-                pending: 3,
-            },
-            detail: Some(detail),
-            panes: vec![],
+        progress: ProgressCounts {
+            done: 0,
+            total: 1,
+            pending: 3,
         },
-    }];
+        detail: Some(detail),
+        panes: vec![],
+    })];
     for width in [14usize, 16, 17, 20, 24] {
         let s = render(&rows, &ro(width, 0));
         for line in s.lines() {
@@ -1243,24 +896,9 @@ fn idle_strip_never_exceeds_width() {
 fn cjk_and_emoji_names_never_exceed_width() {
     // CJK: each char is 2 display columns. "作業中デプロイ" = 7 chars = 14 cols.
     // Emoji in msg: 🚀 = 2 cols.
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "proj".into(),
-        branch: "main".into(),
-        msg: "🚀 deploying now".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Pending,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "作業中デプロイ".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, Some(detail)),
-    }];
+    let detail = pd("proj", "main", "🚀 deploying now", Status::Pending);
+    let rows = vec![TabRow { active: true,
+        ..tab(1, "作業中デプロイ", display(Status::Pending, 0, 1, Some(detail))) }];
     for width in [16usize, 20, 24, 30] {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
@@ -1277,13 +915,7 @@ fn cjk_and_emoji_names_never_exceed_width() {
 
 #[test]
 fn header_false_emits_no_header_lines() {
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 0, None),
-    }];
+    let rows = vec![tab(1, "a", display(Status::Running, 0, 0, None))];
     assert_eq!(
         header_lines(false, crate::config::Density::Compact, true),
         0
@@ -1429,24 +1061,8 @@ fn error_tag_is_exit_n_without_duplicate_cross() {
 #[test]
 fn finished_command_line2_shows_role_colored_tag() {
     let mk = |status, outcome, msg: &str| {
-        let d = PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "".into(),
-            msg: msg.into(),
-            task: String::new(),
-            since_tick: 0,
-            status,
-            kind: Kind::Build,
-            outcome,
-        };
-        TabRow { flash: false,
-            number: 1,
-            name: "web".into(),
-            active: false,
-            has_bell: false,
-            display: display(status, 1, 1, Some(d)),
-        }
+        let d = PrimaryDetail { kind: Kind::Build, outcome, ..pd("r", "", msg, status) };
+        tab(1, "web", display(status, 1, 1, Some(d)))
     };
     let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
@@ -1474,13 +1090,7 @@ fn multi_pane_finished_command_shows_outcome_tag() {
         pe(1, Kind::Build, Status::Running, "cargo build"),
         pe_outcome(2, Kind::Test, Status::Done, "cargo test", Outcome::Ok),
     ]);
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "ci".into(),
-        active: false,
-        has_bell: false,
-        display: a,
-    };
+    let row = tab(1, "ci", a);
     let s = render(&[row], &ro(30, 0));
     let line = s.lines().find(|l| l.contains("cargo test")).unwrap();
     // No outcome tag for Ok — the pane's own status glyph (still green, from
@@ -1495,24 +1105,8 @@ fn multi_pane_finished_command_shows_outcome_tag() {
 
 #[test]
 fn nerd_set_renders_robot_mark_for_claude() {
-    let d = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "thinking".into(),
-        task: String::new(),
-        since_tick: 0,
-        status: Status::Running,
-        kind: Kind::Claude,
-        outcome: None,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "agent".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(d)),
-    }];
+    let d = pd("r", "b", "thinking", Status::Running);
+    let rows = vec![tab(1, "agent", display(Status::Running, 0, 1, Some(d)))];
     let opts = RenderOpts {
         glyphs: GlyphSet::Nerd,
         ..ro(30, 0)
@@ -1545,17 +1139,8 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             status: pane_status,
             msg,
             ..
-        } if *pane_status == status => Some(PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: msg.clone(),
-            task: String::new(),
-            kind: *kind,
-            since_tick: 0,
-            outcome: None,
-            status: *pane_status,
-        }),
+        } if *pane_status == status => Some(PrimaryDetail { kind: *kind,
+            ..pd("r", "b", msg.clone(), *pane_status) }),
         _ => None,
     });
     TabDisplay {
@@ -1580,8 +1165,8 @@ fn multi_pane_render_row_counts_header_and_children() {
         pe(3, Kind::Claude, Status::Running, "y"),
         pe(4, Kind::Claude, Status::Running, "z"),
     ]);
-    let row_inactive = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a.clone() };
-    let row_active = TabRow { flash: false, number: 1, name: "t".into(), active: true, has_bell: false, display: a };
+    let row_inactive = tab(1, "t", a.clone());
+    let row_active = TabRow { active: true, ..tab(1, "t", a) };
     assert_eq!(render_row(&row_inactive, &opts).len(), 5, "header + 4 pane lines");
     assert_eq!(render_row(&row_active, &opts).len(), 5, "same regardless of active");
 }
@@ -1595,13 +1180,7 @@ fn multi_pane_render_emits_header_child_and_collapse_lines() {
         pe(3, Kind::Claude, Status::Running, "y"),
         pe(4, Kind::Claude, Status::Running, "z"),
     ]);
-    let row = TabRow { flash: false,
-        number: 7,
-        name: "monorepo".into(),
-        active: false,
-        has_bell: false,
-        display: a,
-    };
+    let row = tab(7, "monorepo", a);
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
@@ -1642,13 +1221,7 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
         pe(1, Kind::Claude, Status::Running, "x"),
         pe(2, Kind::Codex, Status::Running, "y"),
     ]);
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "team".into(),
-        active: false,
-        has_bell: false,
-        display: a,
-    };
+    let row = tab(1, "team", a);
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1665,25 +1238,19 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
 fn multi_pane_untracked_only_summary_names_panes() {
     // New design: 0 tracked panes → is_multi_pane = false → single-pane path.
     // Idle status → 1 line only (no detail line).
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "shells".into(),
-        active: false,
-        has_bell: false,
-        display: TabDisplay {
-            status: Status::Idle,
-            progress: ProgressCounts {
-                done: 0,
-                total: 0,
-                pending: 0,
-            },
-            detail: None,
-            panes: vec![
-                PaneDisplay::untracked(1, "shell"),
-                PaneDisplay::untracked(2, "logs"),
-            ],
+    let row = tab(1, "shells", TabDisplay {
+        status: Status::Idle,
+        progress: ProgressCounts {
+            done: 0,
+            total: 0,
+            pending: 0,
         },
-    };
+        detail: None,
+        panes: vec![
+            PaneDisplay::untracked(1, "shell"),
+            PaneDisplay::untracked(2, "logs"),
+        ],
+    });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1696,35 +1263,20 @@ fn multi_pane_untracked_only_summary_names_panes() {
 
 #[test]
 fn multi_pane_mixed_untracked_summary_names_panes() {
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "mixed".into(),
-        active: false,
-        has_bell: false,
-        display: TabDisplay {
-            status: Status::Running,
-            progress: ProgressCounts {
-                done: 0,
-                total: 1,
-                pending: 0,
-            },
-            detail: Some(PrimaryDetail {
-                pending_epoch_s: None,
-                repo: "r".into(),
-                branch: "b".into(),
-                msg: "tests".into(),
-                task: String::new(),
-                since_tick: 0,
-                outcome: None,
-                status: Status::Running,
-                kind: Kind::Codex,
-            }),
-            panes: vec![
-                pe(1, Kind::Codex, Status::Running, "tests"),
-                PaneDisplay::untracked(2, "shell"),
-            ],
+    let row = tab(1, "mixed", TabDisplay {
+        status: Status::Running,
+        progress: ProgressCounts {
+            done: 0,
+            total: 1,
+            pending: 0,
         },
-    };
+        detail: Some(PrimaryDetail { kind: Kind::Codex,
+            ..pd("r", "b", "tests", Status::Running) }),
+        panes: vec![
+            pe(1, Kind::Codex, Status::Running, "tests"),
+            PaneDisplay::untracked(2, "shell"),
+        ],
+    });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1747,13 +1299,7 @@ fn multi_pane_active_expands_all_no_collapse() {
         pe(1, Kind::Claude, Status::Running, "a"),
         pe(2, Kind::Claude, Status::Done, "b"),
     ]);
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "team".into(),
-        active: true,
-        has_bell: false,
-        display: a,
-    };
+    let row = TabRow { active: true, ..tab(1, "team", a) };
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1788,13 +1334,7 @@ fn multi_pane_child_and_collapse_lines_never_exceed_width() {
             pe(2, Kind::Claude, Status::Running, "x"),
             pe(3, Kind::Claude, Status::Running, "y"),
         ]);
-        let row = TabRow { flash: false,
-            number: 1,
-            name: "tab".into(),
-            active: false,
-            has_bell: false,
-            display: a,
-        };
+        let row = tab(1, "tab", a);
         let s = render(&[row], &ro(width, 5));
         let body: Vec<&str> = s.lines().skip(2).collect(); // skip 2-line header
                                                            // body = [card header line, expanded child, collapse line]; check the
@@ -1817,19 +1357,13 @@ fn single_pane_tab_unchanged_no_tree() {
     let a = display_multi(vec![pe(1, Kind::Claude, Status::Pending, "approve?")]);
     assert!(!is_multi_pane(&a), "one pane is not multi-pane");
     let opts = ro(30, 0);
-    let row_check = TabRow { flash: false, number: 1, name: "solo".into(), active: false, has_bell: false, display: a.clone() };
+    let row_check = tab(1, "solo", a.clone());
     assert_eq!(
         render_row(&row_check, &opts).len(),
         2,
         "single-pane pending+msg = 2 lines (chunk-1)"
     );
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "solo".into(),
-        active: false,
-        has_bell: false,
-        display: a,
-    };
+    let row = tab(1, "solo", a);
     let s = render(&[row], &ro(30, 0));
     // No tree chars, no collapse line.
     assert!(
@@ -1855,58 +1389,14 @@ fn overflow_compresses_calm_before_urgent() {
     // We pick height = 7 → body_budget = 5.
     // Compression: Running rows compressed to 1 line each (3 lines saved);
     //   3×1 + 2 = 5 ≤ 5. Done. Pending keeps its activity line (2 lines total).
-    let detail_running = |n: u8| PrimaryDetail {
-        pending_epoch_s: None,
-        repo: format!("repo{}", n),
-        branch: "main".into(),
-        msg: "working".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let detail_pending = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "urgent-proj".into(),
-        branch: "fix/thing".into(),
-        msg: "please review".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
+    let detail_running = |n: u8| pd(format!("repo{}", n), "main", "working", Status::Running);
+    let detail_pending = pd("urgent-proj", "fix/thing", "please review", Status::Pending);
 
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "r1".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail_running(1))),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "r2".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail_running(2))),
-        },
-        TabRow { flash: false,
-            number: 3,
-            name: "r3".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail_running(3))),
-        },
-        TabRow { flash: false,
-            number: 4,
-            name: "urgent".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(detail_pending)),
-        },
+        tab(1, "r1", display(Status::Running, 0, 1, Some(detail_running(1)))),
+        tab(2, "r2", display(Status::Running, 0, 1, Some(detail_running(2)))),
+        tab(3, "r3", display(Status::Running, 0, 1, Some(detail_running(3)))),
+        tab(4, "urgent", display(Status::Pending, 0, 1, Some(detail_pending))),
     ];
 
     // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
@@ -1966,32 +1456,10 @@ fn overflow_compresses_calm_before_urgent() {
 /// 1 line; no panic; total output lines ≤ budget.
 #[test]
 fn overflow_all_one_line_when_extreme() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "msg".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
+    let detail = pd("r", "b", "msg", Status::Pending);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "pending".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(detail.clone())),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "run".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail.clone())),
-        },
+        tab(1, "pending", display(Status::Pending, 0, 1, Some(detail.clone()))),
+        tab(2, "run", display(Status::Running, 0, 1, Some(detail.clone()))),
     ];
     // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
     let s = render(&rows, &RenderOpts { height: 3, ..ro(24, 0) });
@@ -2087,25 +1555,9 @@ fn cards_content_lines_differ_from_comfortable() {
     // Cards paints a background band on AGENT rows — so a session with at
     // least one agent differs from Comfortable. (An all-idle session would
     // now render identically, since idle rows are bare in the hybrid.)
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "working".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("r", "b", "working", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "work".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "work", display(Status::Running, 0, 1, Some(detail))),
         idle_row(2),
     ];
     let comfortable = render(&rows, &ro_comfortable(24, 100));
@@ -2198,32 +1650,10 @@ fn ro_cards(width: usize, height: usize) -> RenderOpts {
 fn cards_paint_content_lines_with_bg() {
     // Render an idle tab and an active working tab at normal width with Cards.
     // Every content line carries a truecolor band; gap lines and header must NOT.
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "repo".into(),
-        branch: "main".into(),
-        msg: "working".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("repo", "main", "working", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "work".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "idle", display(Status::Idle, 0, 0, None)),
+        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     let lines: Vec<&str> = s.lines().collect();
@@ -2295,24 +1725,8 @@ fn cards_paint_content_lines_with_bg() {
 fn cards_band_fills_full_width() {
     // Short-name agent (done) tab at width 24, Cards: the painted band fills
     // the full width.
-    let done = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Done,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "x".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Done, 1, 1, Some(done)),
-    }];
+    let done = pd("r", "", "", Status::Done);
+    let rows = vec![tab(1, "x", display(Status::Done, 1, 1, Some(done)))];
     let width = 24usize;
     let s = render(&rows, &ro_cards(width, 100));
     // Cards has a 1-line header (no rule); first body line is the painted content line.
@@ -2351,24 +1765,9 @@ fn active_card_bg_spans_full_width_on_every_line() {
 
     for width in [20usize, 24, 30] {
         for has_bell in [false, true] {
-            let detail = PrimaryDetail {
-                pending_epoch_s: None,
-                repo: "repo".into(),
-                branch: "main".into(),
-                msg: "working".into(),
-                task: String::new(),
-                kind: Kind::Claude,
-                since_tick: 0,
-                outcome: None,
-                status: Status::Running,
-            };
-            let rows = vec![TabRow { flash: false,
-                number: 1,
-                name: "focus".into(),
-                active: true,
-                has_bell,
-                display: display(Status::Running, 0, 1, Some(detail)),
-            }];
+            let detail = pd("repo", "main", "working", Status::Running);
+            let rows = vec![TabRow { active: true, has_bell,
+                ..tab(1, "focus", display(Status::Running, 0, 1, Some(detail))) }];
             let raw = render(&rows, &ro_cards(width, 100));
             let lines: Vec<&str> = raw.lines().collect();
             // The active card is header (active band) + child detail line
@@ -2424,24 +1823,9 @@ fn cards_rearm_bg_after_resets() {
     // Active working tab (line has multiple role-colored tokens with \x1b[0m
     // resets) under Cards: the active truecolor tint must re-arm after every reset,
     // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix/x".into(),
-        msg: "some work".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "agent".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(detail)),
-    }];
+    let detail = pd("pinky", "fix/x", "some work", Status::Running);
+    let rows = vec![TabRow { active: true,
+        ..tab(1, "agent", display(Status::Running, 0, 1, Some(detail))) }];
     let s = render(&rows, &ro_cards(30, 100));
     // After a role-reset (\x1b[0m) the active surface band must be re-armed
     // immediately, so the focused card stays painted across token boundaries.
@@ -2458,32 +1842,10 @@ fn cards_rearm_bg_after_resets() {
 fn cards_use_truecolor_not_256color() {
     // Card surfaces use theme-derived truecolor (48;2;r;g;b) — not fixed 256-color
     // indices, not truecolor foreground (38;2;), and not raw hex literals.
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "work".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("r", "b", "work", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "work".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "idle", display(Status::Idle, 0, 0, None)),
+        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     // Card surfaces must emit truecolor backgrounds.
@@ -2509,32 +1871,10 @@ fn cards_use_truecolor_not_256color() {
 /// content right. Guards against re-introducing a second pad column.
 #[test]
 fn cards_left_chrome_is_single_column() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "x".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("r", "b", "x", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "work".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "idle", display(Status::Idle, 0, 0, None)),
+        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     let lines: Vec<String> = s.lines().map(strip_sgr).collect();
@@ -2569,13 +1909,7 @@ fn child_line_status_glyph_precedes_spaced_mark() {
         pe(1, Kind::Claude, Status::Running, "searching web"),
         pe(2, Kind::Claude, Status::Done, "done thing"),
     ]);
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "t".into(),
-        active: true,
-        has_bell: false,
-        display: a,
-    };
+    let row = TabRow { active: true, ..tab(1, "t", a) };
     let s = render(&[row], &ro_cards(30, 100));
     // Find the running pane line (active → has spine ▌, contains ⠋ and ✳).
     let pane_lines: Vec<String> = s
@@ -2614,32 +1948,10 @@ fn child_line_status_glyph_precedes_spaced_mark() {
 #[test]
 fn comfortable_and_compact_emit_no_bg() {
     // Same tabs with Comfortable and Compact must contain NO card band.
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "working".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("r", "b", "working", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "work".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "idle", display(Status::Idle, 0, 0, None)),
+        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
     ];
     for density in [
         crate::config::Density::Comfortable,
@@ -2659,24 +1971,9 @@ fn comfortable_and_compact_emit_no_bg() {
 fn no_emitted_line_exceeds_width_cards() {
     // The no_emitted_line_exceeds_width invariant holds for Cards density too.
     let width = 20usize;
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix/x".into(),
-        msg: "abcdefghijklmnopqrstuvwxyz".into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: None,
-        kind: Kind::Claude,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 2,
-        name: "a-very-long-tab-name-indeed".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 2, 4, Some(detail)),
-    }];
+    let detail = pd("pinky", "fix/x", "abcdefghijklmnopqrstuvwxyz", Status::Running);
+    let rows = vec![TabRow { active: true,
+        ..tab(2, "a-very-long-tab-name-indeed", display(Status::Running, 2, 4, Some(detail))) }];
     let s = render(&rows, &ro_cards(width, 100));
     for line in s.lines() {
         assert!(
@@ -2723,7 +2020,7 @@ fn card_spacing_per_density() {
 fn card_block_lines_is_pad_y_plus_content_plus_gap() {
     // The single footprint source: pad_y + full_lines + gap.
     let opts = ro(40, 0);
-    let idle_row_val = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: display(Status::Idle, 0, 0, None) };
+    let idle_row_val = tab(1, "t", display(Status::Idle, 0, 0, None));
     let full_lines = render_row(&idle_row_val, &opts).len();
     assert_eq!(full_lines, 1);
     // Cards: 0 pad_y + 1 content + 1 gap = 2.
@@ -2747,13 +2044,7 @@ fn card_block_lines_is_pad_y_plus_content_plus_gap() {
 fn cards_have_rail_gap_row() {
     // A cards-rendered tab emits a TRAILING gap row painted with the dark
     // rail panel base (rail_bg), and that row is blank once ANSI is stripped.
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "idle".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Idle, 0, 0, None),
-    }];
+    let rows = vec![tab(1, "idle", display(Status::Idle, 0, 0, None))];
     let s = render(&rows, &ro_cards(24, 100));
     let lines: Vec<&str> = s.lines().collect();
     // line 0 = header (rail). line 1 = idle card content. line 2 = trailing gap row.
@@ -2794,13 +2085,8 @@ fn flash_outranks_active_in_card_tint() {
     // `surface_flash`, not `surface_active`. The `Surface` oracle enum (used
     // by `tint_map`) has no `Flash` variant, so assert directly on the raw
     // ANSI background escape instead.
-    let rows = vec![TabRow { flash: true,
-        number: 1,
-        name: "a".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, None),
-    }];
+    let rows = vec![TabRow { flash: true, active: true,
+        ..tab(1, "a", display(Status::Running, 0, 1, None)) }];
     let s = render(&rows, &ro_cards(24, 100));
     let lines: Vec<&str> = s.lines().collect();
     // line 0 = header (rail); line 1 = this row's card content.
@@ -2856,39 +2142,11 @@ fn cards_tint_per_row_class() {
     //   focused (active) row → brightest (240),
     //   agent row (active status, not focused) → mid (238),
     //   idle/plain row → dimmest (236).
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "repo".into(),
-        branch: "main".into(),
-        msg: "working".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
+    let detail = pd("repo", "main", "working", Status::Running);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "agent".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail.clone())),
-        },
-        TabRow { flash: false,
-            number: 3,
-            name: "focus".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(detail)),
-        },
+        tab(1, "idle", display(Status::Idle, 0, 0, None)),
+        tab(2, "agent", display(Status::Running, 0, 1, Some(detail.clone()))),
+        TabRow { active: true, ..tab(3, "focus", display(Status::Running, 0, 1, Some(detail))) },
     ];
     let s = render(&rows, &tight(&rows, ro_cards(30, 100)));
     // Cards header is 1 line (no rule); each card emits content then a
@@ -2919,16 +2177,10 @@ fn cards_active_multi_pane_children_use_subordinate_tint() {
     // Active multi-pane tabs should not paint every child row as selected:
     // the parent header owns the active tint; child rows step down to the
     // normal agent tint so the hierarchy remains legible.
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "team".into(),
-        active: true,
-        has_bell: false,
-        display: display_multi(vec![
-            pe(1, Kind::Codex, Status::Running, "codex"),
-            pe(2, Kind::Test, Status::Running, "cargo test"),
-        ]),
-    };
+    let row = TabRow { active: true, ..tab(1, "team", display_multi(vec![
+        pe(1, Kind::Codex, Status::Running, "codex"),
+        pe(2, Kind::Test, Status::Running, "cargo test"),
+    ])) };
     let s = render(&[row], &ro_cards(30, 100));
     let lines: Vec<&str> = s.lines().collect();
     // line 0 = header/rail, line 1 = tab parent, lines 2-3 = child panes.
@@ -2953,75 +2205,15 @@ fn cards_3tint_layout_snapshot() {
     // Golden tint-map for the canonical sidebar.dc.html "cards" session:
     // active running agent, pending agent, done agent, then two idle panes.
     // Every tab is a card; cards are adjacent (no gap rows); tints encode the class.
-    let running = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "web".into(),
-        branch: "".into(),
-        msg: "building…".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let pending = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "api".into(),
-        branch: "fix".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    let done = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "worker".into(),
-        branch: "".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Done,
-    };
+    let running = pd("web", "", "building…", Status::Running);
+    let pending = pd("api", "fix", "", Status::Pending);
+    let done = pd("worker", "", "", Status::Done);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "Claude".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(running)),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "api".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(pending)),
-        },
-        TabRow { flash: false,
-            number: 3,
-            name: "worker".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Done, 1, 1, Some(done)),
-        },
-        TabRow { flash: false,
-            number: 4,
-            name: "Pane #1".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
-        TabRow { flash: false,
-            number: 5,
-            name: "Pane #1".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+        TabRow { active: true, ..tab(1, "Claude", display(Status::Running, 0, 1, Some(running))) },
+        tab(2, "api", display(Status::Pending, 0, 1, Some(pending))),
+        tab(3, "worker", display(Status::Done, 1, 1, Some(done))),
+        tab(4, "Pane #1", display(Status::Idle, 0, 0, None)),
+        tab(5, "Pane #1", display(Status::Idle, 0, 0, None)),
     ];
     let s = render(&rows, &tight(&rows, ro_cards(24, 100)));
     // Cards is now a cohesive dark panel: the 1-line header (no rule) is
@@ -3064,43 +2256,11 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
     // encodes *activity*, so every non-idle row — including error — is bold.)
     //   waiting → `\x1b[91m` (bright red) + ◆ glyph
     //   error   → `\x1b[31m` (red)        + ✗ glyph
-    let pending = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    let err = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "infra".into(),
-        branch: "".into(),
-        msg: "boom".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Error,
-    };
+    let pending = pd("pinky", "fix", "", Status::Pending);
+    let err = pd("infra", "", "boom", Status::Error);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "pinky".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(pending)),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "infra".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Error, 0, 1, Some(err)),
-        },
+        tab(1, "pinky", display(Status::Pending, 0, 1, Some(pending))),
+        tab(2, "infra", display(Status::Error, 0, 1, Some(err))),
     ];
     let s = render(&rows, &ro_cards(30, 100));
     let lines: Vec<&str> = s.lines().collect();
@@ -3162,25 +2322,9 @@ fn header_shows_radar_and_urgent_count() {
     // marker (design rule 7) stays gone — the needs-you badge is a
     // separate, space-joined `{n}!` token (see `header_badge_*` below), not
     // a revival of the old format.
-    let pending = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "p".into(),
-        branch: "x".into(),
-        msg: "approve?".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
+    let pending = pd("p", "x", "approve?", Status::Pending);
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "pinky".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(pending)),
-        },
+        tab(1, "pinky", display(Status::Pending, 0, 1, Some(pending))),
         idle_row(2),
         idle_row(3),
     ];
@@ -3228,34 +2372,10 @@ fn header_badge_counts_pending_and_error_tabs_only() {
     // Done, Pending, Error, Running → census ·4, badge counts only the two
     // needs-you rows (Pending + Error) — Done and Running don't count.
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "a".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Done, 1, 1, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "b".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, None),
-        },
-        TabRow { flash: false,
-            number: 3,
-            name: "c".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Error, 0, 1, None),
-        },
-        TabRow { flash: false,
-            number: 4,
-            name: "d".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, None),
-        },
+        tab(1, "a", display(Status::Done, 1, 1, None)),
+        tab(2, "b", display(Status::Pending, 0, 1, None)),
+        tab(3, "c", display(Status::Error, 0, 1, None)),
+        tab(4, "d", display(Status::Running, 0, 1, None)),
     ];
     let s = render(&rows, &ro(30, 0));
     let header = strip_sgr(s.lines().next().unwrap());
@@ -3271,13 +2391,7 @@ fn header_badge_absent_at_zero() {
     // All Running/Idle rows → no needs-you row at all, so no badge — just
     // the plain census.
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "a".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, None),
-        },
+        tab(1, "a", display(Status::Running, 0, 1, None)),
         idle_row(2),
     ];
     let s = render(&rows, &ro(30, 0));
@@ -3292,20 +2406,8 @@ fn header_badge_survives_narrow_width_over_census() {
     // 2) can't join the badge in that budget, so it's dropped entirely and
     // the bare badge stands alone — no leftover "·2 2!" truncation debris.
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "a".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "b".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Error, 0, 1, None),
-        },
+        tab(1, "a", display(Status::Pending, 0, 1, None)),
+        tab(2, "b", display(Status::Error, 0, 1, None)),
     ];
     let s = render(&rows, &tight(&rows, ro(8, 0)));
     let header = strip_sgr(s.lines().next().unwrap());
@@ -3328,13 +2430,7 @@ fn header_overflow_marker_survives_over_badge_when_combined_does_not_fit() {
     // alone does, the badge is dropped and `{n}▲` survives — the mirror image
     // of `header_badge_survives_narrow_width_over_census`, which drops the
     // plain census (not the marker) to keep the badge.
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, None),
-    }];
+    let rows = vec![tab(1, "a", display(Status::Pending, 0, 1, None))];
     // width 10: avail = 10 - len(" RADAR") = 4; combined "1▲ 1!" needs 5.
     let lines = render_header(&rows, &ro(10, 0), true, true, false);
     let header = strip_sgr(&lines[0].text);
@@ -3361,13 +2457,7 @@ fn header_overflow_marker_survives_over_badge_when_combined_does_not_fit() {
 fn heartbeat_marches_one_column_per_tick_while_working() {
     // A single Running row: the rule carries one ◆ that marches one column
     // per tick, wrapping at `width`.
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, None),
-    }];
+    let rows = vec![tab(1, "a", display(Status::Running, 0, 1, None))];
     let s0 = render(&rows, &ro(10, 3));
     let s1 = render(&rows, &ro(10, 4));
     let rule0 = strip_sgr(s0.lines().nth(1).unwrap());
@@ -3412,13 +2502,7 @@ fn heartbeat_absent_when_idle_and_in_cards() {
 
     // A Running row IS present, but density is Cards — no `═` rule line
     // exists at all, so there's nowhere for the heartbeat to appear.
-    let running_rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, None),
-    }];
+    let running_rows = vec![tab(1, "a", display(Status::Running, 0, 1, None))];
     let mut cards_opts = ro(10, 3);
     cards_opts.density = crate::config::Density::Cards;
     let s = render(&running_rows, &cards_opts);
@@ -3434,20 +2518,8 @@ fn heartbeat_absent_when_idle_and_in_cards() {
 #[test]
 fn color_is_purely_additive_over_a_fixed_layout() {
     let rows = vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "agent".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, None),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "idle".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+        TabRow { active: true, ..tab(1, "agent", display(Status::Pending, 0, 1, None)) },
+        tab(2, "idle", display(Status::Idle, 0, 0, None)),
     ];
     let out = render(&rows, &ro(30, 0));
     // Stripping all SGR leaves a clean character grid (no escape residue),
@@ -3499,98 +2571,20 @@ proptest! {
 
 // ── Stage 3b: snapshot / proptest / overflow / color-glyph-axis tests ──────
 
-/// Render raw output into the visible character grid (ANSI stripped via a real
-/// VT parser), one line per terminal row — the human-readable snapshot.
-fn grid(raw: &str, width: u16) -> String {
-    // +1 row of headroom so a trailing newline (Cards/Comfortable emit a
-    // trailing gap row) cannot scroll the " RADAR" title off the top. The
-    // extra blank row is removed by the trailing-blank trim below.
-    let height = (raw.lines().count().max(1) + 1) as u16;
-    let mut parser = vt100::Parser::new(height, width, 0);
-    let joined = raw.replace('\n', "\r\n");
-    parser.process(joined.as_bytes());
-    let screen = parser.screen();
-    (0..height)
-        .map(|r| {
-            (0..width)
-                .map(|c| {
-                    screen
-                        .cell(r, c)
-                        .map(|cell| cell.contents())
-                        .unwrap_or_default()
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+// The vt100 `grid` oracle is shared with `reference_tests` — see
+// `render::test_util`.
+use super::test_util::grid;
 
 /// A representative multi-state session used by several snapshot tests.
 fn scenario_canonical() -> Vec<TabRow> {
-    let running = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "web".into(),
-        branch: "".into(),
-        msg: "building\u{2026}".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let pending = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "api".into(),
-        branch: "fix".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    let done = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "worker".into(),
-        branch: "".into(),
-        msg: "".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Done,
-    };
+    let running = pd("web", "", "building\u{2026}", Status::Running);
+    let pending = pd("api", "fix", "", Status::Pending);
+    let done = pd("worker", "", "", Status::Done);
     vec![
-        TabRow { flash: false,
-            number: 1,
-            name: "web".into(),
-            active: true,
-            has_bell: false,
-            display: display(Status::Running, 0, 1, Some(running)),
-        },
-        TabRow { flash: false,
-            number: 2,
-            name: "api".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(pending)),
-        },
-        TabRow { flash: false,
-            number: 3,
-            name: "worker".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Done, 1, 1, Some(done)),
-        },
-        TabRow { flash: false,
-            number: 4,
-            name: "notes".into(),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        },
+        TabRow { active: true, ..tab(1, "web", display(Status::Running, 0, 1, Some(running))) },
+        tab(2, "api", display(Status::Pending, 0, 1, Some(pending))),
+        tab(3, "worker", display(Status::Done, 1, 1, Some(done))),
+        tab(4, "notes", display(Status::Idle, 0, 0, None)),
     ]
 }
 
@@ -3647,24 +2641,14 @@ fn snapshot_canonical_tint_map() {
 /// the full column. Uses deliberately long content so the clamp is visible.
 #[test]
 fn snapshot_cards_narrow_width_grid() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "payments-service".into(),
-        branch: "feature/long-branch".into(),
-        msg: "refactoring the auth middleware".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "payments-service".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(detail)),
-    }];
+    let detail = pd(
+        "payments-service",
+        "feature/long-branch",
+        "refactoring the auth middleware",
+        Status::Running,
+    );
+    let rows = vec![TabRow { active: true,
+        ..tab(1, "payments-service", display(Status::Running, 0, 1, Some(detail))) }];
     let opts = tight(
         &rows,
         ro_full(16, 100, crate::config::Density::Cards, GlyphSet::Plain),
@@ -3692,24 +2676,8 @@ fn snapshot_cards_nerd_glyphs_grid() {
 #[test]
 fn snapshot_overflow_fold_grid() {
     let mut rows: Vec<TabRow> = (1..=14).map(idle_row).collect();
-    let urgent = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "pinky".into(),
-        branch: "fix".into(),
-        msg: "approve?".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Pending,
-    };
-    rows.push(TabRow { flash: false,
-        number: 15,
-        name: "pinky".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Pending, 0, 1, Some(urgent)),
-    });
+    let urgent = pd("pinky", "fix", "approve?", Status::Pending);
+    rows.push(tab(15, "pinky", display(Status::Pending, 0, 1, Some(urgent))));
     let raw = render(
         &rows,
         &ro_full(30, 8, crate::config::Density::Compact, GlyphSet::Plain),
@@ -3729,13 +2697,7 @@ fn snapshot_cards_multi_pane() {
         pe(2, Kind::Codex, Status::Pending, "approve?"),
         pe(3, Kind::Test, Status::Done, "cargo test"),
     ];
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "team".into(),
-        active: true,
-        has_bell: false,
-        display: display_multi(panes),
-    }];
+    let rows = vec![TabRow { active: true, ..tab(1, "team", display_multi(panes)) }];
     let opts = tight(&rows, ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain));
     let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_multi_pane_grid", grid(&raw, 30));
@@ -3794,33 +2756,11 @@ fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
     // At width=8, height=6 overflow mode: count+urgent combined can exceed width.
     // The renderer must clamp the assembled header line to width.
     let mut rows: Vec<TabRow> = (1u32..=5)
-        .map(|n| TabRow { flash: false,
-            number: n,
-            name: format!("t{}", n),
-            active: false,
-            has_bell: false,
-            display: display(Status::Idle, 0, 0, None),
-        })
+        .map(|n| tab(n, format!("t{}", n), display(Status::Idle, 0, 0, None)))
         .collect();
     for n in 6u32..=15 {
-        let d = PrimaryDetail {
-            pending_epoch_s: None,
-            repo: "r".into(),
-            branch: "b".into(),
-            msg: "".into(),
-            task: String::new(),
-            kind: Kind::Claude,
-            since_tick: 0,
-            outcome: None,
-            status: Status::Pending,
-        };
-        rows.push(TabRow { flash: false,
-            number: n,
-            name: format!("t{}", n),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, Some(d)),
-        });
+        let d = pd("r", "b", "", Status::Pending);
+        rows.push(tab(n, format!("t{}", n), display(Status::Pending, 0, 1, Some(d))));
     }
     let s = render(
         &rows,
@@ -3872,24 +2812,9 @@ fn both_glyph_sets_keep_columns_within_width() {
 
 #[test]
 fn wide_and_combining_chars_do_not_break_alignment() {
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "caf\u{00e9}".into(),
-        branch: "".into(),
-        msg: "测试 \u{1f680} e\u{0301}".into(),
-        task: String::new(),
-        kind: Kind::Claude,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let rows = vec![TabRow { flash: false,
-        number: 1,
-        name: "测试caf\u{00e9}\u{1f680}".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(detail)),
-    }];
+    let detail = pd("caf\u{00e9}", "", "测试 \u{1f680} e\u{0301}", Status::Running);
+    let rows = vec![TabRow { active: true,
+        ..tab(1, "测试caf\u{00e9}\u{1f680}", display(Status::Running, 0, 1, Some(detail))) }];
     let width = 24u16;
     let raw = render(
         &rows,
@@ -3988,9 +2913,9 @@ fn budget_table_boundaries() {
 #[test]
 fn tally_counts_running_and_needs_you_not_done() {
     let rows = vec![
-        TabRow { flash: false, number: 1, name: "a".into(), active: false, has_bell: false, display: display(Status::Running, 0, 1, None) },
-        TabRow { flash: false, number: 2, name: "b".into(), active: false, has_bell: false, display: display(Status::Done, 1, 1, None) },
-        TabRow { flash: false, number: 3, name: "c".into(), active: false, has_bell: false, display: display(Status::Error, 0, 1, None) },
+        tab(1, "a", display(Status::Running, 0, 1, None)),
+        tab(2, "b", display(Status::Done, 1, 1, None)),
+        tab(3, "c", display(Status::Error, 0, 1, None)),
     ];
     let content_height = tight(&rows, ro(30, 0)).height;
     let opts = RenderOpts { height: content_height + 3, ..ro(30, 0) };
@@ -4169,13 +3094,7 @@ fn cards_never_lose_budget_to_the_bottom_region() {
     // as if the bottom region did not exist — no footer squeezed in over
     // dropped rows.
     let rows: Vec<TabRow> = (1..=20)
-        .map(|n| TabRow { flash: false,
-            number: n,
-            name: format!("t{}", n),
-            active: false,
-            has_bell: false,
-            display: display(Status::Pending, 0, 1, None),
-        })
+        .map(|n| tab(n, format!("t{}", n), display(Status::Pending, 0, 1, None)))
         .collect();
     let opts = ro_cards(24, 10);
     let leftover = opts.height.saturating_sub(body_line_count(&rows, &[], &opts));
@@ -4293,29 +3212,13 @@ prop_compose! {
             display_multi(panes)
         } else {
             let detail = if total > 0 {
-                Some(PrimaryDetail {
-                    pending_epoch_s: None,
-                    repo: "r".into(),
-                    branch: "".into(),
-                    msg: "m".into(),
-                    task,
-                    kind: Kind::Claude,
-                    since_tick: 0,
-                    outcome: None,
-                    status,
-                })
+                Some(PrimaryDetail { task, ..pd("r", "", "m", status) })
             } else {
                 None
             };
             display(status, 0, total, detail)
         };
-        TabRow { flash: false,
-            number: 1,
-            name,
-            active,
-            has_bell: false,
-            display,
-        }
+        TabRow { active, ..tab(1, name, display) }
     }
 }
 
@@ -4498,7 +3401,7 @@ prop_compose! {
                 .collect();
             display_multi(panes)
         };
-        TabRow { flash: false, number: 1, name, active, has_bell: false, display }
+        TabRow { active, ..tab(1, name, display) }
     }
 }
 
@@ -4560,7 +3463,7 @@ fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
         pe(11, Kind::Claude, Status::Running, "building"),
         pe(12, Kind::Claude, Status::Running, "testing"),
     ]);
-    let row = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+    let row = tab(1, "t", a);
     assert_eq!(render_row(&row, &opts).len(), 4, "header + 3 pane lines");
 }
 
@@ -4571,7 +3474,7 @@ fn single_running_pane_with_detail_is_two_content_lines() {
     // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
     let opts = ro(40, 0);
     let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
-    let row = TabRow { flash: false, number: 1, name: "t".into(), active: false, has_bell: false, display: a };
+    let row = tab(1, "t", a);
     assert_eq!(render_row(&row, &opts).len(), 2, "tab 0 should be 2 content lines");
 }
 
@@ -4639,13 +3542,7 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
     let panes: Vec<PaneDisplay> = (1u32..=8)
         .map(|id| pe(id, Kind::Claude, Status::Running, "working"))
         .collect();
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "team".into(),
-        active: true,
-        has_bell: false,
-        display: display_multi(panes),
-    };
+    let row = TabRow { active: true, ..tab(1, "team", display_multi(panes)) };
     let s = render(&[row], &ro_cards(30, 100));
 
     // All pane child lines in an active multi-pane tab use the subordinate
@@ -4678,13 +3575,7 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
 fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
-    let active_row = TabRow { flash: false,
-        number: 1,
-        name: "a".into(),
-        active: true,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, None),
-    };
+    let active_row = TabRow { active: true, ..tab(1, "a", display(Status::Running, 0, 1, None)) };
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
@@ -4768,21 +3659,15 @@ fn identity_and_detail_rules() {
 fn pending_pane_with_task_renders_identity_plus_question_line() {
     // Multi-pane tab: pending pane shows task on its line and the question on
     // a `↳` line that carries the SAME pane click target (lockstep).
-    let row = TabRow { flash: false,
-        number: 1,
-        name: "review".into(),
-        active: false,
-        has_bell: false,
-        display: TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts { done: 0, total: 2, pending: 1 },
-            detail: None,
-            panes: vec![
-                pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
-                pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
-            ],
-        },
-    };
+    let row = tab(1, "review", TabDisplay {
+        status: Status::Pending,
+        progress: ProgressCounts { done: 0, total: 2, pending: 1 },
+        detail: None,
+        panes: vec![
+            pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
+            pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
+        ],
+    });
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper
     assert!(grid.contains("├ ◆ ✳ migrate schema"), "task is the identity line:\n{grid}");
@@ -4857,25 +3742,8 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     // must render the eased two-frame blink glyph on line 1, not the
     // full-speed spinner — a strip_sgr grid check, per the brief.
     let now = EASE_AFTER_TICKS + 100;
-    let detail = PrimaryDetail {
-        pending_epoch_s: None,
-        repo: "r".into(),
-        branch: "b".into(),
-        msg: "long build".into(),
-        task: String::new(),
-        kind: Kind::Build,
-        since_tick: 0,
-        outcome: None,
-        status: Status::Running,
-    };
-    let row = TabRow {
-        flash: false,
-        number: 1,
-        name: "runner".into(),
-        active: false,
-        has_bell: false,
-        display: display(Status::Running, 0, 1, Some(detail)),
-    };
+    let detail = PrimaryDetail { kind: Kind::Build, ..pd("r", "b", "long build", Status::Running) };
+    let row = tab(1, "runner", display(Status::Running, 0, 1, Some(detail)));
     // `tight` drops the bottom-region footer (whose own tally spinner isn't
     // eased by this task and would otherwise pollute the full-speed check
     // below), leaving exactly the header + this row's card lines.

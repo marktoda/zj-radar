@@ -602,43 +602,10 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────
 
-/// Render ANSI output through vt100 and return visible rows joined by '\n',
-/// each row trimmed of trailing spaces, with trailing blank lines removed.
-fn grid(ansi: &str, width: usize) -> String {
-    // +1 row of headroom: when `ansi` ends with a trailing newline (e.g. Cards
-    // and Comfortable emit a trailing gap row), processing that final newline
-    // advances the cursor past the last row and scrolls the top line (the
-    // " RADAR" title) off the screen. The extra blank row is removed by the
-    // trailing-blank trim below, so scenarios that don't scroll are unaffected.
-    let height = (ansi.lines().count().max(1) + 1) as u16;
-    let w = width as u16;
-    let mut parser = vt100::Parser::new(height, w, 0);
-    let joined = ansi.replace('\n', "\r\n");
-    parser.process(joined.as_bytes());
-    let screen = parser.screen();
-    let lines: Vec<String> = (0..height)
-        .map(|r| {
-            (0..w)
-                .map(|c| {
-                    screen
-                        .cell(r, c)
-                        .map(|cell| cell.contents())
-                        .unwrap_or_default()
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect();
-
-    // Trim trailing blank lines
-    let trimmed_end = lines
-        .iter()
-        .rposition(|l| !l.is_empty())
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    lines[..trimmed_end].join("\n")
-}
+// The vt100 `grid` oracle is shared with the insta snapshot suite — see
+// `render::test_util`. One helper, two oracles: the doc spec and the
+// snapshots always judge the renderer by the same visible grid.
+use crate::render::test_util::grid;
 
 // ── The test ─────────────────────────────────────────────────────────────────
 
@@ -676,7 +643,7 @@ fn rail_reference_matches() {
     for case in &cases {
         let (rows, ledger, opts) = build(&case.input);
         let rail = crate::render::render_rail(&rows, &ledger, &opts);
-        let got = grid(&rail.ansi, opts.width);
+        let got = grid(&rail.ansi, opts.width as u16);
         if got.trim_end() == case.expect.trim_end() {
             eprintln!("PASS: {}", case.id);
         } else {

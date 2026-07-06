@@ -43,16 +43,15 @@ mod runtime;
 mod session_files;
 mod status_store;
 mod tab_namer;
+#[cfg(test)]
+mod test_fixtures;
 mod theme;
 
-// RadarTab/TabId are used by the wasm glue (and tests); on a plain host build
-// both the glue and tests are cfg'd out, so the import is allowed to go unused
-// there. TerminalPane is only ever a test fixture, so gate it on `test` directly
-// — that keeps the shipped wasm build (where unused_imports is denied) clean.
-#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(unused_imports))]
+// RadarTab/TabId are used only by the wasm glue (tests build tabs through
+// `test_fixtures`); on any host build the glue is cfg'd out, so the import is
+// allowed to go unused there.
+#[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
 use radar_state::{RadarTab, TabId};
-#[cfg(test)]
-use rollup::TerminalPane;
 #[cfg(test)]
 use rollup::TabRow;
 use runtime::PluginRuntime;
@@ -386,6 +385,7 @@ mod tests {
     use super::*;
     use crate::payload::StatusPayload;
     use crate::status::Status;
+    use crate::test_fixtures::{pane, payload_for, tab};
 
     /// The bash fallback producer can't import `payload::STATUS_PIPE_NAME`, so
     /// its hand-typed literal is pinned here — one drifted character in a pipe
@@ -472,26 +472,13 @@ mod tests {
         );
     }
 
-    fn pane(id: u32) -> TerminalPane {
-        TerminalPane {
-            id,
-            ..Default::default()
-        }
-    }
-
     fn make_state_with_tabs(tab_specs: &[(usize, &str, bool)]) -> State {
         // tab_specs: (position, name, active)
         // Uses Compact density so existing click-mapping tests (which hard-code
         // line numbers assuming no gap lines) continue to pass unchanged.
         let tabs = tab_specs
             .iter()
-            .map(|&(pos, name, active)| RadarTab {
-                id: TabId::new(pos + 1),
-                position: pos,
-                name: name.to_string(),
-                active,
-                has_bell: false,
-            })
+            .map(|&(pos, name, active)| tab(pos, name, active))
             .collect();
         let mut state = State::default();
         state.runtime.tabs_changed(tabs);
@@ -515,13 +502,8 @@ mod tests {
     ) {
         let _ = state.runtime.radar.status_mut().apply(
             StatusPayload {
-                pane_id,
-                status,
-                repo: "repo".into(),
-                branch: "branch".into(),
                 msg: msg.into(),
-                task: String::new(),
-                source: "test".into(),
+                ..payload_for(pane_id, status)
             },
             tick,
             0,
@@ -1091,7 +1073,7 @@ mod tests {
 
     #[test]
     fn command_pane_walks_idle_running_done() {
-        use crate::command::DEBOUNCE_TICKS;
+        use crate::command::{DEBOUNCE_TICKS, EpochSecs, Tick};
 
         let mut state = make_state_with_tabs(&[(0, "t", true)]);
         state
@@ -1111,7 +1093,7 @@ mod tests {
             tick,
         );
         tick += 1;
-        state.runtime.radar.command_mut().on_timer(tick, 0);
+        state.runtime.radar.command_mut().on_timer(Tick(tick), EpochSecs(0));
         assert!(
             state.runtime.radar.command_store().get(5).is_none(),
             "shell prompt must leave pane idle"
@@ -1130,7 +1112,7 @@ mod tests {
         );
         // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
         tick += DEBOUNCE_TICKS;
-        state.runtime.radar.command_mut().on_timer(tick, 0);
+        state.runtime.radar.command_mut().on_timer(Tick(tick), EpochSecs(0));
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Running),
@@ -1141,7 +1123,7 @@ mod tests {
 
         // 3) pane exits with code 0 → Done (and stays Done; focus no longer clears it)
         tick += 1;
-        state.runtime.radar.command_mut().on_exit(5, Some(0), tick, 0);
+        state.runtime.radar.command_mut().on_exit(5, Some(0), Tick(tick), EpochSecs(0));
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Done),

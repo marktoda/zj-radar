@@ -1485,3 +1485,8 @@ fn render(rows: &[TabRow], opts: &RenderOpts) -> String {
 
 #[cfg(test)]
 mod tests;
+
+// Shared vt100 grid oracle — used by `tests` above AND `crate::reference_tests`,
+// so the snapshot suite and the executable spec can never drift apart.
+#[cfg(test)]
+pub(crate) mod test_util;

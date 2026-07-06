@@ -216,7 +216,7 @@
         for (args, want_msg, want_kind) in cases {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &argv(args), true, Some("/work/repo"), 1);
-            store.on_timer(1 + DEBOUNCE_TICKS, 0);
+            store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
             let s = store
                 .get(1)
                 .unwrap_or_else(|| panic!("{args:?} should be tracked"));
@@ -231,7 +231,7 @@
         // open a command lifecycle even behind a wrapper.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &argv(&["sudo", "claude"]), true, Some("/work/repo"), 1);
-        store.on_timer(2, 0);
+        store.on_timer(Tick(2), EpochSecs(0));
         assert!(store.get(1).is_none(), "wrapped agent must stay suppressed");
     }
 
@@ -242,7 +242,7 @@
         // (no regression vs. not peeling). It still tracks as a generic command.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &argv(&["sudo", "-u", "user", "make"]), true, Some("/r"), 1);
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         let s = store.get(1).expect("should still be tracked");
         assert_eq!(s.kind, Kind::Command);
     }
@@ -350,7 +350,7 @@
         let mut store = CommandStore::default();
         let cmd = argv(&["cargo", "test", "--features", "cli"]);
         store.on_command_changed(1, &cmd, true, Some("/home/u/repo"), 1);
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         let obs = store.get(1).expect("fg command promoted to resolved");
         assert_eq!(obs.kind, Kind::Test);
     }
@@ -371,18 +371,18 @@
         assert!(store.pending.contains_key(&1), "must be in pending");
 
         // t=1: timer fires at same tick → not past debounce (0 < DEBOUNCE_TICKS)
-        store.on_timer(1, 0);
+        store.on_timer(Tick(1), EpochSecs(0));
         assert!(store.get(1).is_none(), "still pending at same tick");
 
         // One tick short of the debounce window → still pending. Only exercises
         // something when the floor is above 1.
         if DEBOUNCE_TICKS > 1 {
-            store.on_timer(DEBOUNCE_TICKS, 0);
+            store.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(0));
             assert!(store.get(1).is_none(), "still pending one tick short of debounce");
         }
 
         // t = 1 + DEBOUNCE_TICKS: timer fires past debounce → promote
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         let s = store.get(1).expect("must be Running after debounce");
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.msg, "sleep 5");
@@ -403,18 +403,18 @@
         let mut store = CommandStore::default();
         let cmd = vec!["cargo".to_string(), "test".to_string()];
 
-        assert!(!store.on_timer(1, 0).changed, "empty store: quiet tick");
+        assert!(!store.on_timer(Tick(1), EpochSecs(0)).changed, "empty store: quiet tick");
 
         store.on_command_changed(1, &cmd, true, Some("/w/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        assert!(store.on_timer(promote_tick, 0).changed, "debounced promotion mutates the store");
-        assert!(!store.on_timer(promote_tick + 1, 0).changed, "already Running: quiet tick");
+        assert!(store.on_timer(Tick(promote_tick), EpochSecs(0)).changed, "debounced promotion mutates the store");
+        assert!(!store.on_timer(Tick(promote_tick + 1), EpochSecs(0)).changed, "already Running: quiet tick");
 
         let leave_tick = promote_tick + 2;
         store.on_command_changed(1, &[], false, None, leave_tick); // leaves foreground
         let done_tick = leave_tick + DEBOUNCE_TICKS;
-        assert!(store.on_timer(done_tick, 0).changed, "confirmed Done-flip mutates the store");
-        assert!(!store.on_timer(done_tick + 1, 0).changed, "terminal Done: quiet tick");
+        assert!(store.on_timer(Tick(done_tick), EpochSecs(0)).changed, "confirmed Done-flip mutates the store");
+        assert!(!store.on_timer(Tick(done_tick + 1), EpochSecs(0)).changed, "terminal Done: quiet tick");
     }
 
     // ── Test 2: fg blip filtered (real command then is_foreground=false before timer)
@@ -436,7 +436,7 @@
         );
 
         // t=5: timer fires — nothing to promote
-        store.on_timer(5, 0);
+        store.on_timer(Tick(5), EpochSecs(0));
         assert!(store.get(1).is_none(), "must never become Running");
     }
 
@@ -465,7 +465,7 @@
         // A real command runs and is promoted to Running.
         store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
 
@@ -480,7 +480,7 @@
         );
 
         // Debounce → Done, still identified as the cargo test, not direnv.
-        store.on_timer(direnv_tick + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(direnv_tick + DEBOUNCE_TICKS), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.msg, "cargo test", "the finished command is cargo test, not direnv");
@@ -497,7 +497,7 @@
         store.on_command_changed(1, &cmd, true, Some("/repo"), 1);
         // promote to Running after the debounce floor
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
         // return-to-shell (is_foreground=false) → tentative, still Running
@@ -506,7 +506,7 @@
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         // timer past debounce → Done
         let done_tick = leave_tick + DEBOUNCE_TICKS;
-        store.on_timer(done_tick, 0);
+        store.on_timer(Tick(done_tick), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.last_change_tick, done_tick);
@@ -519,12 +519,12 @@
         let mut store = CommandStore::default();
 
         // Exit 0 → Done
-        store.on_exit(1, Some(0), 5, 0);
+        store.on_exit(1, Some(0), Tick(5), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
 
         // Repeated identical exit → no-op (tick unchanged)
-        store.on_exit(1, Some(0), 10, 0);
+        store.on_exit(1, Some(0), Tick(10), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(
             s.last_change_tick, 5,
@@ -532,12 +532,12 @@
         );
 
         // Pane 2: nonzero exit → Error
-        store.on_exit(2, Some(3), 6, 0);
+        store.on_exit(2, Some(3), Tick(6), EpochSecs(0));
         let s = store.get(2).unwrap();
         assert_eq!(s.status, Status::Error);
 
         // Repeated identical exit for pane 2 → no-op
-        store.on_exit(2, Some(3), 99, 0);
+        store.on_exit(2, Some(3), Tick(99), EpochSecs(0));
         assert_eq!(
             store.get(2).unwrap().last_change_tick,
             6,
@@ -557,20 +557,20 @@
         // First run: promote to Running, then exit 0 → Done.
         store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), 1);
         let promote1 = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote1, 0);
+        store.on_timer(Tick(promote1), EpochSecs(0));
         assert_eq!(store.get(7).unwrap().status, Status::Running);
-        store.on_exit(7, Some(0), promote1 + 1, 0);
+        store.on_exit(7, Some(0), Tick(promote1 + 1), EpochSecs(0));
         assert_eq!(store.get(7).unwrap().status, Status::Done);
 
         // Re-run in the same (still-live) pane: back to Running.
         let rerun_tick = promote1 + 2;
         store.on_command_changed(7, &argv(&["sleep", "5"]), true, Some("/r"), rerun_tick);
         let promote2 = rerun_tick + DEBOUNCE_TICKS;
-        store.on_timer(promote2, 0);
+        store.on_timer(Tick(promote2), EpochSecs(0));
         assert_eq!(store.get(7).unwrap().status, Status::Running);
 
         // Second run exits with the SAME code — must resolve to Done, not stay Running.
-        store.on_exit(7, Some(0), promote2 + 1, 0);
+        store.on_exit(7, Some(0), Tick(promote2 + 1), EpochSecs(0));
         assert_eq!(
             store.get(7).unwrap().status,
             Status::Done,
@@ -594,7 +594,7 @@
         ];
 
         store.on_command_changed(1, &cmd, true, Some("/home/user/myproject"), 1);
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         let s = store.get(1).expect("must be Running");
         assert_eq!(s.msg, "cargo build", "basename of nix path must be used");
         assert_eq!(s.kind, Kind::Build);
@@ -611,9 +611,9 @@
         store.on_command_changed(1, &["vim".to_string()], true, None, 1);
         // Set up pane 2: resolved Running
         store.on_command_changed(2, &["cargo".to_string()], true, None, 1);
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         // Set up pane 3: has exit record
-        store.on_exit(3, Some(0), 1, 0);
+        store.on_exit(3, Some(0), Tick(1), EpochSecs(0));
 
         // Keep only pane 2
         let live: HashSet<u32> = [2].into_iter().collect();
@@ -645,7 +645,7 @@
 
         // Promote to Running
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert!(store.has_pending_or_active(), "true while Running");
 
         // Return to shell → tentative; still active (Running) until debounce.
@@ -657,7 +657,7 @@
         );
 
         // Timer past debounce → Done (no pending, no Running).
-        store.on_timer(leave_tick + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(leave_tick + DEBOUNCE_TICKS), EpochSecs(0));
         assert!(
             !store.has_pending_or_active(),
             "false once Done (no pending, no Running)"
@@ -709,7 +709,7 @@
 
         // A pane that exited without a recorded code (e.g. killed by signal)
         // → Done (not Error).
-        store.on_exit(1, None, 5, 0);
+        store.on_exit(1, None, Tick(5), EpochSecs(0));
         let s = store
             .get(1)
             .expect("must have a resolved entry after on_exit(None)");
@@ -735,14 +735,14 @@
             1,
         );
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert_eq!(store.get(1).unwrap().status, Status::Running);
         assert_eq!(store.get(1).unwrap().repo, "pinky");
         assert_eq!(store.get(1).unwrap().msg, "cargo test");
         assert_eq!(store.get(1).unwrap().kind, Kind::Test);
 
         // Exit 0 → Done, but repo and msg preserved
-        store.on_exit(1, Some(0), promote_tick + 1, 0);
+        store.on_exit(1, Some(0), Tick(promote_tick + 1), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.repo, "pinky", "repo must be preserved");
@@ -767,7 +767,7 @@
                 !store.pending.contains_key(&1),
                 "{agent} must not enter pending"
             );
-            store.on_timer(2, 0);
+            store.on_timer(Tick(2), EpochSecs(0));
             assert!(
                 store.get(1).is_none(),
                 "{agent} must leave no resolved command state"
@@ -783,7 +783,7 @@
         // its own `Kind::Gemini` source so it renders with the gemini mark.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["gemini".to_string()], true, Some("/work/repo"), 1);
-        store.on_timer(1 + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
         let s = store
             .get(1)
             .expect("gemini must leave a resolved command observation");
@@ -798,7 +798,7 @@
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
         // Return-to-shell: tentative — must still read Running this instant.
@@ -812,7 +812,7 @@
 
         // Timer past the debounce window → now Done.
         let done_tick = leave_tick + DEBOUNCE_TICKS;
-        store.on_timer(done_tick, 0);
+        store.on_timer(Tick(done_tick), EpochSecs(0));
         let s = store.get(1).unwrap();
         assert_eq!(s.status, Status::Done);
         assert_eq!(s.last_change_tick, done_tick);
@@ -826,14 +826,14 @@
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["make".to_string()], true, Some("/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        store.on_timer(promote_tick, 0);
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
         assert_eq!(store.get(1).unwrap().status, Status::Running);
 
         let blip_tick = promote_tick + 1;
         store.on_command_changed(1, &[], false, None, blip_tick);
         store.on_command_changed(1, &["rg".to_string(), "needle".to_string()], true, Some("/repo"), blip_tick);
 
-        store.on_timer(blip_tick + DEBOUNCE_TICKS, 0);
+        store.on_timer(Tick(blip_tick + DEBOUNCE_TICKS), EpochSecs(0));
         assert_eq!(
             store.get(1).unwrap().status,
             Status::Running,
@@ -851,7 +851,7 @@
             !store.pending.contains_key(&1),
             "empty fg argv must not enter pending"
         );
-        store.on_timer(2, 0);
+        store.on_timer(Tick(2), EpochSecs(0));
         assert!(
             store.get(1).is_none(),
             "empty fg command must leave no resolved state (no blank Running row)"
@@ -864,18 +864,18 @@
     fn done_recedes_to_idle_after_ttl_and_reports_the_recede() {
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 0);
-        s.on_timer(DEBOUNCE_TICKS, 100);                       // promote at debounce
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));                       // promote at debounce
         s.on_command_changed(1, &argv(&["zsh"]), true, None, 3); // back to prompt
         let done_tick = DEBOUNCE_TICKS + 3;
-        s.on_timer(done_tick, 200);                            // confirm Done
+        s.on_timer(Tick(done_tick), EpochSecs(200));                            // confirm Done
         assert_eq!(s.get(1).unwrap().status, Status::Done);
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(200), "stamped at completion");
 
-        let before = s.on_timer(done_tick + DONE_TTL_TICKS - 1, 300);
+        let before = s.on_timer(Tick(done_tick + DONE_TTL_TICKS - 1), EpochSecs(300));
         assert!(before.receded.is_empty(), "still inside the TTL window");
         assert_eq!(s.get(1).unwrap().status, Status::Done);
 
-        let after = s.on_timer(done_tick + DONE_TTL_TICKS, 301);
+        let after = s.on_timer(Tick(done_tick + DONE_TTL_TICKS), EpochSecs(301));
         assert_eq!(s.get(1).unwrap().status, Status::Idle, "receded");
         assert!(s.get(1).unwrap().ever_active, "idle row stays a muted row, not removed");
         assert!(after.changed);
@@ -887,8 +887,8 @@
     #[test]
     fn error_is_exempt_from_ttl_but_counts_nothing_toward_arming() {
         let mut s = CommandStore::default();
-        s.on_exit(1, Some(2), 5, 100);
-        let r = s.on_timer(5 + DONE_TTL_TICKS + 10, 200);
+        s.on_exit(1, Some(2), Tick(5), EpochSecs(100));
+        let r = s.on_timer(Tick(5 + DONE_TTL_TICKS + 10), EpochSecs(200));
         assert_eq!(s.get(1).unwrap().status, Status::Error, "errors persist");
         assert!(r.receded.is_empty());
         assert!(!s.has_done_awaiting_recede(), "Error must not pin the timer");
@@ -897,9 +897,9 @@
     #[test]
     fn done_awaiting_recede_arms_until_ttl_fires() {
         let mut s = CommandStore::default();
-        s.on_exit(1, Some(0), 5, 100);
+        s.on_exit(1, Some(0), Tick(5), EpochSecs(100));
         assert!(s.has_done_awaiting_recede());
-        s.on_timer(5 + DONE_TTL_TICKS, 200);
+        s.on_timer(Tick(5 + DONE_TTL_TICKS), EpochSecs(200));
         assert!(!s.has_done_awaiting_recede());
     }
 
@@ -909,19 +909,19 @@
         // "entered Running" tick, or a long-runner never eases (spec §8).
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 0);
-        s.on_timer(DEBOUNCE_TICKS, 100);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         let t0 = s.get(1).unwrap().last_change_tick;
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 50); // re-report
-        s.on_timer(50 + DEBOUNCE_TICKS, 150);                                // re-promote
+        s.on_timer(Tick(50 + DEBOUNCE_TICKS), EpochSecs(150));                                // re-promote
         assert_eq!(s.get(1).unwrap().last_change_tick, t0, "same command keeps its start tick");
     }
 
     #[test]
     fn promotion_over_a_done_reports_the_displaced_completion() {
         let mut s = CommandStore::default();
-        s.on_exit(1, Some(0), 5, 100); // Done sitting on the pane
+        s.on_exit(1, Some(0), Tick(5), EpochSecs(100)); // Done sitting on the pane
         s.on_command_changed(1, &argv(&["make"]), true, None, 6);
-        let r = s.on_timer(6 + DEBOUNCE_TICKS, 200);
+        let r = s.on_timer(Tick(6 + DEBOUNCE_TICKS), EpochSecs(200));
         assert_eq!(r.receded.len(), 1, "the old Done left the card via overwrite");
         assert_eq!(r.receded[0].1.status, Status::Done);
         assert_eq!(s.get(1).unwrap().status, Status::Running);
@@ -933,10 +933,10 @@
         // After the TTL recede, those replays must be inert — no Done flap, no
         // fresh completion stamp.
         let mut s = CommandStore::default();
-        s.on_exit(9, Some(0), 5, 100);
-        s.on_timer(5 + DONE_TTL_TICKS, 200); // recede
+        s.on_exit(9, Some(0), Tick(5), EpochSecs(100));
+        s.on_timer(Tick(5 + DONE_TTL_TICKS), EpochSecs(200)); // recede
         assert_eq!(s.get(9).unwrap().status, Status::Idle);
-        s.on_exit(9, Some(0), 5 + DONE_TTL_TICKS + 1, 300); // manifest replay
+        s.on_exit(9, Some(0), Tick(5 + DONE_TTL_TICKS + 1), EpochSecs(300)); // manifest replay
         assert_eq!(s.get(9).unwrap().status, Status::Idle, "no resurrection");
         assert_eq!(s.get(9).unwrap().completed_epoch_s, None, "no fresh stamp");
     }
@@ -961,7 +961,7 @@
             };
             s.insert_snapshot_observation(9, obs);
 
-            let receded = s.on_exit(9, code, 50, 999);
+            let receded = s.on_exit(9, code, Tick(50), EpochSecs(999));
             assert!(receded.is_none(), "{status:?}: an identical replay must not ghost-ledger");
             let got = s.get(9).unwrap();
             assert_eq!(got.status, status, "{status:?}: unchanged");
@@ -969,7 +969,7 @@
             assert_eq!(got.last_change_tick, 5, "{status:?}: no tick bump — the TTL clock must keep running");
 
             // The dedup map is primed: a second identical replay no-ops too.
-            let receded = s.on_exit(9, code, 51, 1000);
+            let receded = s.on_exit(9, code, Tick(51), EpochSecs(1000));
             assert!(receded.is_none(), "{status:?}: dedup primed after the first swallow");
             assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(100));
         }
@@ -989,7 +989,7 @@
         };
         s.insert_snapshot_observation(9, obs);
 
-        let receded = s.on_exit(9, Some(2), 50, 999)
+        let receded = s.on_exit(9, Some(2), Tick(50), EpochSecs(999))
             .expect("the displayed Done leaves via displacement");
         assert_eq!(receded.status, Status::Done);
         assert_eq!(receded.completed_epoch_s, Some(100));
@@ -1008,7 +1008,7 @@
         // stamped), never a blank Kind::Command row.
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, Some("/work/myrepo"), 1);
-        s.on_exit(1, Some(1), 2, 100); // beats the debounce promotion
+        s.on_exit(1, Some(1), Tick(2), EpochSecs(100)); // beats the debounce promotion
         let got = s.get(1).unwrap();
         assert_eq!(got.status, Status::Error);
         assert_eq!(got.msg, "cargo build", "labeled with the run that exited");
@@ -1027,14 +1027,14 @@
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/work/myrepo"), 1);
         let promote = 1 + DEBOUNCE_TICKS;
-        s.on_timer(promote, 100);
-        s.on_exit(1, Some(0), promote + 1, 200);
+        s.on_timer(Tick(promote), EpochSecs(100));
+        s.on_exit(1, Some(0), Tick(promote + 1), EpochSecs(200));
         assert_eq!(s.get(1).unwrap().status, Status::Done);
         assert_eq!(s.get(1).unwrap().msg, "cargo test");
 
         let rerun = promote + 2;
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, Some("/work/myrepo"), rerun);
-        let receded = s.on_exit(1, Some(101), rerun + 1, 300).expect("the old Done is displaced");
+        let receded = s.on_exit(1, Some(101), Tick(rerun + 1), EpochSecs(300)).expect("the old Done is displaced");
         assert_eq!(receded.status, Status::Done);
         assert_eq!(receded.msg, "cargo test", "the ledgered completion is the OLD run");
         let got = s.get(1).unwrap();
@@ -1049,11 +1049,11 @@
         // A genuine new lifecycle (CommandChanged → pending) re-lights the pane
         // even if its exit lands before the debounce promotion.
         let mut s = CommandStore::default();
-        s.on_exit(9, Some(0), 5, 100);
-        s.on_timer(5 + DONE_TTL_TICKS, 200); // recede
+        s.on_exit(9, Some(0), Tick(5), EpochSecs(100));
+        s.on_timer(Tick(5 + DONE_TTL_TICKS), EpochSecs(200)); // recede
         let t = 5 + DONE_TTL_TICKS + 2;
         s.on_command_changed(9, &argv(&["make"]), true, None, t); // new run opens
-        s.on_exit(9, Some(0), t + 1, 300);                        // exits pre-promotion
+        s.on_exit(9, Some(0), Tick(t + 1), EpochSecs(300));                        // exits pre-promotion
         assert_eq!(s.get(9).unwrap().status, Status::Done, "new run's completion applies");
         assert_eq!(s.get(9).unwrap().completed_epoch_s, Some(300));
     }
@@ -1066,7 +1066,7 @@
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cd"]), true, None, 0);
         s.on_command_changed(1, &argv(&["zsh"]), true, None, 0); // returns within the window
-        let r = s.on_timer(DEBOUNCE_TICKS, 100);
+        let r = s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         assert!(s.get(1).is_none(), "never promoted");
         assert!(!r.changed);
     }
@@ -1080,7 +1080,7 @@
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["cd"]), true, None, 0);
         // no follow-up event at all
-        s.on_timer(DEBOUNCE_TICKS, 100);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         assert_eq!(s.get(1).unwrap().status, Status::Running, "documented failure mode");
     }
 

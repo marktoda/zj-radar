@@ -1,7 +1,7 @@
 //! Session radar state: live tabs/panes plus source-specific observations.
 //! No zellij-tile dependency.
 
-use crate::command::CommandStore;
+use crate::command::{CommandStore, EpochSecs, Tick};
 use crate::config;
 use crate::ledger::{Ledger, LedgerEntry, LedgerOutcome};
 use crate::observation::{ObservationOrigin, TrackedObservation};
@@ -352,7 +352,7 @@ impl RadarState {
         // them from its own first PaneUpdate rather than the snapshot.
         let mut displaced_any = false;
         for (pane_id, exit_status) in update.exits {
-            if let Some(displaced) = self.command.on_exit(pane_id, exit_status, tick, now_epoch_s) {
+            if let Some(displaced) = self.command.on_exit(pane_id, exit_status, Tick(tick), EpochSecs(now_epoch_s)) {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
                 displaced_any = true;
             }
@@ -395,7 +395,7 @@ impl RadarState {
         // the map itself is only ever pruned here, on the one `&mut self` tick
         // that already runs regardless of flash state.
         self.flash_until.retain(|_, &mut u| tick < u);
-        let report = self.command.on_timer(tick, now_epoch_s);
+        let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence

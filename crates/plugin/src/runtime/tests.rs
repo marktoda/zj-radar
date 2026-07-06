@@ -1,40 +1,12 @@
 use super::*;
-use crate::command::DEBOUNCE_TICKS;
+use crate::command::{DEBOUNCE_TICKS, EpochSecs, Tick};
 use crate::config::{Density, NamingMode};
 use crate::payload::{self, StatusPayload};
 use crate::radar_state::TabId;
 use crate::rollup::TerminalPane;
 use crate::status::{GlyphSet, Status};
+use crate::test_fixtures::{pane, payload_for, tab};
 use std::collections::{HashMap, HashSet};
-
-fn tab(position: usize, name: &str, active: bool) -> RadarTab {
-    RadarTab {
-        id: TabId::new(position + 1),
-        position,
-        name: name.into(),
-        active,
-        has_bell: false,
-    }
-}
-
-fn pane(id: u32) -> TerminalPane {
-    TerminalPane {
-        id,
-        ..Default::default()
-    }
-}
-
-fn payload_for(pane_id: u32, status: Status) -> StatusPayload {
-    StatusPayload {
-        pane_id,
-        status,
-        repo: "repo".into(),
-        branch: "main".into(),
-        msg: "working".into(),
-        task: String::new(),
-        source: "claude".into(),
-    }
-}
 
 fn config() -> config::Config {
     config::Config {
@@ -532,7 +504,7 @@ fn panes_changed_prunes_focuses_and_persists_snapshot() {
         .radar
         .status_mut()
         .apply(payload_for(11, Status::Running), 1, 0);
-    runtime.radar.command_mut().on_exit(12, Some(0), 1, 0);
+    runtime.radar.command_mut().on_exit(12, Some(0), Tick(1), EpochSecs(0));
 
     let mut live = HashSet::new();
     live.insert(10);
@@ -851,7 +823,7 @@ fn project_emits_effects_in_canonical_order() {
     // SetTimeout → notify. Seed a background Done so `settle` actually
     // produces a Notify, exercising all five effect kinds in one change.
     let mut rt = two_tab_runtime_with_running_commands();
-    rt.radar.command_mut().on_exit(7, Some(0), rt.tick, 0);
+    rt.radar.command_mut().on_exit(7, Some(0), Tick(rt.tick), EpochSecs(0));
     // `TimerChain::arm` self-guards on the armed cadence; the setup helper's
     // timer tick already armed it, so force the disarmed state to let
     // `project`'s unconditional arm call actually produce a `SetTimeout`.
@@ -957,7 +929,7 @@ fn focused_done_emits_no_notify_effect() {
 fn restored_snapshot_does_not_notify() {
     // Build a snapshot containing an already-Done command pane.
     let mut seeded = crate::radar_state::RadarState::default();
-    seeded.command_mut().on_exit(7, Some(0), 1, 0);
+    seeded.command_mut().on_exit(7, Some(0), Tick(1), EpochSecs(0));
     // Confirm the observation is present as Done.
     assert_eq!(seeded.command(7).unwrap().status, Status::Done);
     let snapshot = seeded.snapshot_json(None, 2);

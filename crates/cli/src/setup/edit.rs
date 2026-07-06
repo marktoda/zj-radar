@@ -199,13 +199,26 @@ fn join_lines(lines: &[String]) -> String {
     }
 }
 
-pub(crate) fn brace_delta(line: &str) -> isize {
-    let mut delta = 0;
-    let mut chars = line.chars().peekable();
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Brace {
+    Open,
+    Close,
+}
+
+/// The single string/escape/`//`-comment line scanner behind [`brace_delta`]
+/// and [`one_line_block_spans`]: yields (byte offset, brace) for every
+/// *structural* brace on `line`. Braces inside `"…"` strings (backslash-escape
+/// aware) don't count, and scanning stops at a `//` line comment. KDL raw
+/// strings and `/* */` block comments are not modeled — neither consumer ever
+/// did, and the fail-closed KDL re-parse in [`edit_zellij`] backstops any
+/// mis-scan on such input.
+fn kdl_line_braces(line: &str) -> Vec<(usize, Brace)> {
+    let mut braces = Vec::new();
+    let mut chars = line.char_indices().peekable();
     let mut in_string = false;
     let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if !in_string && c == '/' && chars.peek() == Some(&'/') {
+    while let Some((i, c)) = chars.next() {
+        if !in_string && c == '/' && chars.peek().map(|&(_, c)| c) == Some('/') {
             break;
         }
         if in_string {
@@ -220,12 +233,19 @@ pub(crate) fn brace_delta(line: &str) -> isize {
         }
         match c {
             '"' => in_string = true,
-            '{' => delta += 1,
-            '}' => delta -= 1,
+            '{' => braces.push((i, Brace::Open)),
+            '}' => braces.push((i, Brace::Close)),
             _ => {}
         }
     }
-    delta
+    braces
+}
+
+pub(crate) fn brace_delta(line: &str) -> isize {
+    kdl_line_braces(line)
+        .iter()
+        .map(|(_, b)| if *b == Brace::Open { 1 } else { -1 })
+        .sum()
 }
 
 fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
@@ -294,31 +314,14 @@ fn find_plugins_insert(lines: &[String]) -> Option<(usize, String)> {
 
 /// Byte positions of a self-contained one-line block on `line`: the `{` that
 /// opens depth 1 and the `}` that closes back to depth 0, string- and
-/// comment-aware like [`brace_delta`]. `None` when the line doesn't both open
-/// and close a block, or opens another one after closing.
+/// comment-aware via [`kdl_line_braces`]. `None` when the line doesn't both
+/// open and close a block, or opens another one after closing.
 fn one_line_block_spans(line: &str) -> Option<(usize, usize)> {
     let (mut open, mut close) = (None, None);
     let mut depth = 0isize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut chars = line.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if !in_string && c == '/' && chars.peek().map(|&(_, c)| c) == Some('/') {
-            break;
-        }
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => in_string = true,
-            '{' => {
+    for (i, brace) in kdl_line_braces(line) {
+        match brace {
+            Brace::Open => {
                 depth += 1;
                 if depth == 1 {
                     if close.is_some() {
@@ -327,13 +330,12 @@ fn one_line_block_spans(line: &str) -> Option<(usize, usize)> {
                     open.get_or_insert(i);
                 }
             }
-            '}' => {
+            Brace::Close => {
                 depth -= 1;
                 if depth == 0 {
                     close = Some(i);
                 }
             }
-            _ => {}
         }
     }
     match (open, close, depth) {
@@ -726,6 +728,47 @@ mod tests {
         assert!(edit_codex_hooks(r#"{"hooks":[]}"#, true).is_err());
         assert!(edit_codex_hooks(r#"{"hooks":{"Stop":{}}}"#, true).is_err());
         assert!(edit_codex_hooks(r#"{"hooks":{"Stop":[{"hooks":{}}]}}"#, true).is_err());
+    }
+
+    /// Direct coverage of the shared scanner. `brace_delta` and
+    /// `one_line_block_spans` used to duplicate this state machine; both were
+    /// only covered indirectly (via `edit_zellij` / the detect-mask tests), so
+    /// these cases now exercise the string/escape/`//`-comment handling for
+    /// both consumers at once.
+    #[test]
+    fn kdl_line_braces_ignores_strings_and_comments() {
+        // Structural braces, with byte offsets.
+        assert_eq!(
+            kdl_line_braces("plugins {}"),
+            vec![(8, Brace::Open), (9, Brace::Close)]
+        );
+        // Braces inside strings don't count; the string's braces are skipped
+        // but the real closing brace after it is still seen.
+        assert_eq!(kdl_line_braces(r#"radar name="{not a block}" {"#), vec![(27, Brace::Open)]);
+        // An escaped quote does not close the string.
+        assert_eq!(kdl_line_braces(r#"radar x="a\"{" {"#), vec![(15, Brace::Open)]);
+        // Everything after a `//` line comment is ignored…
+        assert_eq!(kdl_line_braces("plugins { // }"), vec![(8, Brace::Open)]);
+        // …but a `//` inside a string is content, not a comment.
+        assert_eq!(kdl_line_braces(r#"radar url="https://x" {"#), vec![(22, Brace::Open)]);
+    }
+
+    #[test]
+    fn brace_delta_matches_scanner_semantics() {
+        assert_eq!(brace_delta("plugins {"), 1);
+        assert_eq!(brace_delta("}"), -1);
+        assert_eq!(brace_delta("plugins {}"), 0);
+        assert_eq!(brace_delta(r#"radar name="{" { // }"#), 1);
+    }
+
+    #[test]
+    fn one_line_block_spans_finds_self_contained_blocks() {
+        assert_eq!(one_line_block_spans("plugins {}"), Some((8, 9)));
+        assert_eq!(one_line_block_spans("plugins { a { b } }"), Some((8, 18)));
+        // Unbalanced, multi-block, or comment-hidden closers are rejected.
+        assert_eq!(one_line_block_spans("plugins {"), None);
+        assert_eq!(one_line_block_spans("plugins {} keybinds {}"), None);
+        assert_eq!(one_line_block_spans("plugins { // }"), None);
     }
 
     #[test]
