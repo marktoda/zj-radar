@@ -1,6 +1,6 @@
 {
   "name": "zj-radar-claude",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Broadcast Claude Code agent status to the zj-radar Zellij sidebar (working/waiting/done), with zero settings.json editing.",
   "author": { "name": "Mark Toda" },
   "homepage": "https://github.com/marktoda/zj-radar"
