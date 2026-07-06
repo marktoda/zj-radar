@@ -430,6 +430,36 @@ mod tests {
         );
     }
 
+    /// The doctor's version gate (`SUPPORTED_ZELLIJ_MINOR` +
+    /// `MIN_SUPPORTED_ZELLIJ_PATCH` in the CLI's setup/analyze.rs) and this
+    /// crate's exact `zellij-tile` pin must move together: the pin is what the
+    /// ABI actually targets, the gate is what `--check` tells users about it.
+    /// Text-pinned like the grant-probe guard above, for the same reason.
+    #[test]
+    fn doctor_version_gate_matches_the_zellij_tile_pin() {
+        let manifest = include_str!("../Cargo.toml");
+        let pin_line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("zellij-tile"))
+            .expect("plugin Cargo.toml declares zellij-tile");
+        let analyze_src = include_str!("../../cli/src/setup/analyze.rs");
+        let const_value = |name: &str| {
+            let decl = analyze_src.find(&format!("const {name}")).expect("const present in analyze.rs");
+            let eq = decl + analyze_src[decl..].find('=').expect("const has an initializer");
+            analyze_src[eq + 1..].split(';').next().unwrap().trim().trim_matches('"').to_string()
+        };
+        let gate = format!(
+            "\"={}.{}\"",
+            const_value("SUPPORTED_ZELLIJ_MINOR"),
+            const_value("MIN_SUPPORTED_ZELLIJ_PATCH")
+        );
+        assert!(
+            pin_line.contains(&gate),
+            "the doctor's version gate targets {gate} but the plugin pins: `{pin_line}` — \
+             update SUPPORTED_ZELLIJ_MINOR / MIN_SUPPORTED_ZELLIJ_PATCH alongside the pin"
+        );
+    }
+
     fn pane(id: u32) -> TerminalPane {
         TerminalPane {
             id,

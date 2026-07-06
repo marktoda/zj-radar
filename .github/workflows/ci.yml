@@ -81,6 +81,30 @@ jobs:
       - name: deterministic suite (L1-L4)
         run: nix develop -c cargo test --workspace --all-features
 
+  # ── MSRV honesty check ─────────────────────────────────────────────────────
+  # `rust-version` in Cargo.toml is a published claim, but dev and the jobs
+  # above all track stable — nothing else would notice the real floor silently
+  # rising past the claim. Builds with exactly the declared toolchain; the
+  # version is read from the manifest, so bumping Cargo.toml is the whole edit.
+  msrv:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: read rust-version from Cargo.toml
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check on the declared MSRV
+        run: cargo check --workspace --all-features --locked
+        env:
+          # rust-toolchain.toml pins `stable` for dev shells; override it so
+          # the MSRV toolchain is the one that actually builds here.
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
+
   # ── Hermetic crane build (slow, ~10 min) ───────────────────────────────────
   # The ONLY thing that exercises crane's source filter, so it catches
   # source-filter / reproducibility regressions the cargo jobs miss — e.g. an

@@ -7,8 +7,11 @@ version = "0.1.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/marktoda/zj-radar"
-# Floor set by `Option::is_none_or` (core's `command::contains_word`).
-rust-version = "1.82"
+# Floor set by the dependency tree (`kdl` 6.x declares 1.95; clap 4.6 needs
+# edition2024 ≥ 1.85), not by our own code. CI's `msrv` job builds with
+# exactly this toolchain, so the claim stays honest — bump it there-and-here
+# by editing only this line (the job reads it from this file).
+rust-version = "1.95"
 
 [workspace.dependencies]
 # `version` is required alongside `path` so the CLI is publishable to

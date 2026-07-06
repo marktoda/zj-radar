@@ -66,15 +66,16 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
         None => CheckItem::missing(
             "zellij binary",
             format!(
-                "not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.x first \
+                "not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ first \
                  (https://zellij.dev/documentation/installation)"
             ),
         ),
         Some(v) if !zellij_version_is_supported(v) => CheckItem::warn(
             "zellij binary",
             format!(
-                "found `{v}` — the plugin targets Zellij {SUPPORTED_ZELLIJ_MINOR}.x \
-                 (a mismatched plugin ABI loads as a blank rail)"
+                "found `{v}` — the plugin needs Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ \
+                 (a mismatched plugin ABI loads as a blank rail; 0.44 patches before \
+                 .{MIN_SUPPORTED_ZELLIJ_PATCH} let the sidebar pop out during layout swaps)"
             ),
         ),
         Some(v) => CheckItem::ok("zellij binary", format!("found on PATH ({v})")),
@@ -389,7 +390,7 @@ mod tests {
             codex_producer:          true,
             claude_producer:         false,
             config_managed:          false,
-            zellij_version:          Some("zellij 0.44.1".to_string()),
+            zellij_version:          Some("zellij 0.44.3".to_string()),
         }
     }
 
@@ -431,14 +432,20 @@ mod tests {
 
     #[test]
     fn zellij_version_gate_is_lenient_on_unparseable_output() {
-        assert!(zellij_version_is_supported("zellij 0.44.1"));
-        assert!(zellij_version_is_supported("0.44.0"));
+        assert!(zellij_version_is_supported("zellij 0.44.3"));
+        assert!(zellij_version_is_supported("0.44.10"));
+        // Same minor but predates the swap-layout pinning fix: the ABI loads,
+        // the sidebar pops out during layout cycling — must warn.
+        assert!(!zellij_version_is_supported("zellij 0.44.1"));
+        assert!(!zellij_version_is_supported("0.44.0"));
         assert!(!zellij_version_is_supported("zellij 0.43.1"));
         assert!(!zellij_version_is_supported("zellij 0.45.0"));
         // 0.440.x must not pass a starts_with-style check.
         assert!(!zellij_version_is_supported("zellij 0.440.1"));
         // No version-like token at all: err on the side of supported.
         assert!(zellij_version_is_supported("zellij (unknown build)"));
+        // Recognized minor with unparseable patch digits: likewise lenient.
+        assert!(zellij_version_is_supported("zellij 0.44.x"));
     }
 
     #[test]

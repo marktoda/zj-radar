@@ -78,20 +78,34 @@ impl ZellijFacts {
 }
 
 /// The Zellij minor the plugin ABI targets — bump alongside the `zellij-tile`
-/// pin in crates/plugin/Cargo.toml and the version claims in README/docs.
+/// pin in crates/plugin/Cargo.toml and the version claims in README/docs. The
+/// plugin crate's `doctor_version_gate_matches_the_zellij_tile_pin` guard
+/// test pins this pair to that Cargo pin.
 pub(crate) const SUPPORTED_ZELLIJ_MINOR: &str = "0.44";
 
+/// Earliest patch of that minor the rail actually works on: 0.44.3 carries
+/// the swap-layout pinning fix, so on 0.44.0-.2 the ABI loads fine but the
+/// sidebar pops out during layout cycling — a green doctor on a broken rail.
+pub(crate) const MIN_SUPPORTED_ZELLIJ_PATCH: u32 = 3;
+
 /// Lenient version gate: warn only on a definite mismatch. `zellij --version`
-/// prints e.g. `zellij 0.44.1`; if that shape ever changes and no version-like
-/// token is found, err on the side of "supported" — a fragile parse must not
-/// fail a working install.
+/// prints e.g. `zellij 0.44.3`; if that shape ever changes and no version-like
+/// token is found (or the patch digits don't parse), err on the side of
+/// "supported" — a fragile parse must not fail a working install.
 pub(crate) fn zellij_version_is_supported(version_output: &str) -> bool {
-    match version_output
+    let Some(v) = version_output
         .split_whitespace()
         .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
-    {
-        Some(v) => v.strip_prefix(SUPPORTED_ZELLIJ_MINOR).is_some_and(|rest| rest.starts_with('.')),
-        None => true,
+    else {
+        return true;
+    };
+    match v.strip_prefix(SUPPORTED_ZELLIJ_MINOR).and_then(|rest| rest.strip_prefix('.')) {
+        // A different minor outright: the plugin ABI won't load.
+        None => false,
+        Some(patch) => {
+            let digits: String = patch.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u32>().map_or(true, |p| p >= MIN_SUPPORTED_ZELLIJ_PATCH)
+        }
     }
 }
 
@@ -241,7 +255,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.managed_alias_present, "managed marker must be detected");
@@ -273,7 +287,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         assert!(
             !analyze_zellij(&env_for(other_plugin_in_store)).alias_is_store_path,
@@ -301,7 +315,7 @@ mod tests {
             wasm_present: true,
             config_managed: false,
             wasm_path: wasm_path.to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, Some(true), "layout text with radar plugin has rail");
@@ -320,7 +334,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, None, "no layout file -> None, distinct from Some(false)");
@@ -339,7 +353,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired(), "claude producer plugin present -> wired");
@@ -356,7 +370,7 @@ mod tests {
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
-            zellij_version: Some("zellij 0.44.1".to_string()),
+            zellij_version: Some("zellij 0.44.3".to_string()),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired(), "codex hooks text containing the marker -> wired");

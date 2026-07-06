@@ -599,6 +599,20 @@ pub fn run(opts: RunOptions) {
     };
     let plan = plan_run(&facts);
 
+    // The nested refusal comes before the advisories: they advise the launch,
+    // and nested means there is no launch — "press y at the prompt" followed
+    // by "detach first" reads as advice for a run that never happens.
+    // (`--print-cmd` still prints below: the user can run the printed command
+    // after detaching, so its advisories still apply.)
+    if plan.nested && !opts.print_cmd {
+        crate::exit::fail_report(
+            "zj-radar",
+            "you're already inside Zellij. `run` starts a NEW session — detach first \
+             (Ctrl-o d by default) and re-run, or use `zj-radar setup` to add the rail to your \
+             current Zellij config.",
+        );
+        return;
+    }
     // Advisories are guidance, which belongs on stderr (see the `exit` module
     // doc) — and `--print-cmd`'s stdout must stay machine-readable: a shell
     // doing `$(zj-radar run --print-cmd)` must capture the command, not prose.

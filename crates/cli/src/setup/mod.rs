@@ -127,6 +127,12 @@ pub fn run(options: SetupOptions<'_>) {
     let mode = mode_from_flags(options.grant, options.check, options.uninstall);
 
     if mode == Mode::Grant {
+        // Same cross-target hygiene as --inject/--layout below: --grant opens
+        // the ZELLIJ permission float, so `setup codex --grant` silently
+        // granting zellij would read as "codex got wired".
+        for a in options.targets.iter().filter(|a| a.as_str() != "zellij") {
+            eprintln!("zj-radar: --grant applies to the zellij target only — ignoring '{a}'");
+        }
         if let Some(config_dir) = zellij_config_dir_or_report() {
             run_grant(&config_dir);
         }
