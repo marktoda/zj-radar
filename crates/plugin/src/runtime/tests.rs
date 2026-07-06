@@ -817,7 +817,7 @@ fn project_emits_effects_in_canonical_order() {
         cwd_bootstrap: vec![7],
         settle: true,
     };
-    let outcome = rt.project(vec![], change);
+    let outcome = rt.project(vec![], change, 0);
 
     let kind = |e: &Effect| match e {
         Effect::RenameTab { .. } => 0,
@@ -1192,7 +1192,11 @@ fn saturated_history_fully_disarms() {
         label: "cargo test".into(),
         pane_id: 5,
     });
-    assert_eq!(rt.desired_cadence(), None, "a saturated ledger has nothing left worth ticking for");
+    assert_eq!(
+        rt.desired_cadence(crate::clock::now_epoch_s()),
+        None,
+        "a saturated ledger has nothing left worth ticking for"
+    );
 
     let outcome = rt.tabs_changed(vec![]);
     assert!(

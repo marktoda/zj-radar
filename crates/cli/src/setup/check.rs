@@ -121,14 +121,15 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
         Some(false) => CheckItem::missing("grant", "wasm not granted — run `zj-radar setup zellij --grant`"),
     });
 
-    // 5. producer
-    items.push(if f.producer_wired {
-        CheckItem::ok("producer", "a producer is wired (Codex hooks or Claude plugin)")
-    } else {
-        CheckItem::missing(
+    // 5. producer — diagnosis, not a guess: say WHICH producer the doctor saw.
+    items.push(match (f.codex_producer, f.claude_producer) {
+        (true, true) => CheckItem::ok("producer", "Codex hooks and Claude plugin wired"),
+        (true, false) => CheckItem::ok("producer", "Codex hooks wired"),
+        (false, true) => CheckItem::ok("producer", "Claude plugin wired"),
+        (false, false) => CheckItem::missing(
             "producer",
             "no producer detected — run `zj-radar setup codex` or enable the Claude plugin",
-        )
+        ),
     });
 
     // 6. managed config (only emit when true)
@@ -146,23 +147,7 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
 pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
     let Some(config_dir) = zellij_config_dir_or_report() else { return true };
-    let config_path = zellij_config_path(&config_dir);
-    let wasm_dest = zellij_wasm_dest(&config_dir);
-    let config_text = std::fs::read_to_string(&config_path).ok();
-    let layout_path =
-        crate::setup::detect::resolve_layout_path(&config_dir, layout_name, config_text.as_deref());
-    let env = ZellijEnv {
-        config_text,
-        layout_text: std::fs::read_to_string(&layout_path).ok(),
-        permissions_text: crate::run::zellij_permissions_path()
-            .and_then(|p| std::fs::read_to_string(p).ok()),
-        codex_hooks_text: super::codex_hooks_text(),
-        installed_plugins_text: super::claude_installed_plugins_text(),
-        wasm_present: wasm_dest.is_file(),
-        config_managed: config_is_managed(&config_path),
-        wasm_path: wasm_dest.to_string_lossy().into_owned(),
-        zellij_version: zellij_version_output(),
-    };
+    let (env, _) = read_zellij_env(&config_dir, layout_name);
     let items = zellij_check_items(&analyze_zellij(&env));
     println!("zellij:");
     print_check_items(&items)
@@ -401,7 +386,8 @@ mod tests {
             wasm_present:            true,
             has_rail:                Some(true),
             granted:                 Some(true),
-            producer_wired:          true,
+            codex_producer:          true,
+            claude_producer:         false,
             config_managed:          false,
             zellij_version:          Some("zellij 0.44.1".to_string()),
         }
@@ -526,7 +512,7 @@ mod tests {
     #[test]
     fn zellij_check_items_no_producer_is_missing() {
         let mut f = all_good_facts();
-        f.producer_wired = false;
+        f.codex_producer = false;
         let items = zellij_check_items(&f);
         let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
         assert_eq!(producer.level, CheckLevel::Missing);

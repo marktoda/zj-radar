@@ -254,20 +254,16 @@ impl PluginRuntime {
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
         let change = self.radar.tabs_changed(tabs);
-        self.project(vec![], change)
+        self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
+        let now = crate::clock::now_epoch_s();
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        let change = self.radar.panes_changed(
-            update,
-            self.tick,
-            crate::clock::now_epoch_s(),
-            self.config.naming,
-        );
-        self.project(vec![], change)
+        let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
+        self.project(vec![], change, now)
     }
 
     /// `elapsed_s` is the duration Zellij reports on `Event::Timer` — the
@@ -282,6 +278,9 @@ impl PluginRuntime {
         if let Fire::Stale = self.timer_chain.on_fire(elapsed_s) {
             return Outcome::none();
         }
+        // One clock capture per event: every consumer below (store timer,
+        // cadence decision, re-arm via project) sees the same "now".
+        let now = crate::clock::now_epoch_s();
         let mut effects = Vec::new();
         let permission_changed =
             self.check_deferred_permission_request(permission, &mut effects);
@@ -296,7 +295,7 @@ impl PluginRuntime {
         // Running→Done confirm). Persist the snapshot when it does, or a tab
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
-        let store_changed = self.radar.timer(self.tick, crate::clock::now_epoch_s());
+        let store_changed = self.radar.timer(self.tick, now);
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
@@ -306,7 +305,7 @@ impl PluginRuntime {
             || self.timer_should_continue()
             // A Slow tick exists precisely to repaint ledger ages — even
             // when nothing else changed, `format_age` output may have moved.
-            || self.desired_cadence() == Some(Cadence::Slow);
+            || self.desired_cadence(now) == Some(Cadence::Slow);
         let change = RadarChange {
             render,
             settle: true,
@@ -314,7 +313,7 @@ impl PluginRuntime {
             renames: vec![],
             cwd_bootstrap: vec![],
         };
-        self.project(effects, change)
+        self.project(effects, change, now)
     }
 
     pub(crate) fn mouse_click(&self, line: isize) -> Outcome {
@@ -379,7 +378,7 @@ impl PluginRuntime {
 
     pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String) -> Outcome {
         let change = self.radar.cwd_changed(pane_id, path, self.config.naming);
-        self.project(vec![], change)
+        self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn command_changed(
@@ -388,26 +387,16 @@ impl PluginRuntime {
         command: &[String],
         is_foreground: bool,
     ) -> Outcome {
-        let change = self.radar.command_changed(
-            pane_id,
-            command,
-            is_foreground,
-            self.tick,
-            crate::clock::now_epoch_s(),
-        );
-        self.project(vec![], change)
+        let change = self.radar.command_changed(pane_id, command, is_foreground, self.tick);
+        self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn status_pipe(&mut self, raw: &str) -> Outcome {
-        let Some(change) = self.radar.status_pipe(
-            raw,
-            self.tick,
-            crate::clock::now_epoch_s(),
-            self.config.naming,
-        ) else {
+        let now = crate::clock::now_epoch_s();
+        let Some(change) = self.radar.status_pipe(raw, self.tick, now, self.config.naming) else {
             return Outcome::none();
         };
-        self.project(vec![], change)
+        self.project(vec![], change, now)
     }
 
     pub(crate) fn snapshot_json(&self, existing: Option<&str>) -> String {
@@ -427,7 +416,7 @@ impl PluginRuntime {
             persist_snapshot: false,
             cwd_bootstrap: vec![],
         };
-        self.project(vec![], change)
+        self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
@@ -534,7 +523,7 @@ impl PluginRuntime {
         // Zellij withholds the state events that would otherwise trigger a paint
         // (they need ReadApplicationState), so this timer is the only thing that
         // gets the needs_permission screen onto the rail.
-        self.arm_timer_if_needed(&mut effects);
+        self.arm_timer_if_needed(crate::clock::now_epoch_s(), &mut effects);
         // Load always initializes the sidebar's selectability, every arm.
         effects.push(Effect::SetSelectable(self.permission.selectable()));
         Outcome::with_effects(false, effects)
@@ -565,14 +554,17 @@ impl PluginRuntime {
     /// none of the events that clear domain work ever arrive, so a stale
     /// `Running` loaded from a snapshot would otherwise pin Fast ticks and
     /// repaints forever behind a static needs-permission face.
-    fn desired_cadence(&self) -> Option<Cadence> {
+    /// `now_epoch_s` is the event's single clock capture (the stores already
+    /// take epochs as arguments; this extends that discipline up through the
+    /// runtime so one event never sees two different "now"s).
+    fn desired_cadence(&self, now_epoch_s: u64) -> Option<Cadence> {
         if self.permission.denied() {
             return None;
         }
         if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
             Some(Cadence::Fast)
-        } else if self.radar.ledger_any_unsaturated(crate::clock::now_epoch_s())
-            || self.radar.pending_wait_unsaturated(crate::clock::now_epoch_s())
+        } else if self.radar.ledger_any_unsaturated(now_epoch_s)
+            || self.radar.pending_wait_unsaturated(now_epoch_s)
         {
             // Slow ticks exist to advance minute-granular ages: ledger rows'
             // relative ages and pending rows' `· Nm` wait tags. Both freeze at
@@ -586,8 +578,8 @@ impl PluginRuntime {
     /// Arm (or re-arm) the one-shot timer at `desired_cadence()` — a thin
     /// bridge from [`TimerChain::arm`]'s decision to the effect vec, so the
     /// "arm returned ⇒ SetTimeout emitted" pairing has exactly one home.
-    fn arm_timer_if_needed(&mut self, effects: &mut Vec<Effect>) {
-        if let Some(cadence) = self.timer_chain.arm(self.desired_cadence()) {
+    fn arm_timer_if_needed(&mut self, now_epoch_s: u64, effects: &mut Vec<Effect>) {
+        if let Some(cadence) = self.timer_chain.arm(self.desired_cadence(now_epoch_s)) {
             effects.push(Effect::SetTimeout(cadence));
         }
     }
@@ -668,7 +660,7 @@ impl PluginRuntime {
     /// `begin_permission_flow`). `TimerChain::arm` self-guards on the armed cadence and on
     /// whether there's anything to arm for, so calling it unconditionally
     /// here is a no-op wherever a handler has no pending work to arm for.
-    fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange) -> Outcome {
+    fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         fx.extend(self.effects_from_renames(c.renames));
         if c.persist_snapshot {
             fx.push(Effect::PersistSnapshot);
@@ -676,7 +668,7 @@ impl PluginRuntime {
         if !c.cwd_bootstrap.is_empty() {
             fx.push(Effect::ResolveCwd { pane_ids: c.cwd_bootstrap });
         }
-        self.arm_timer_if_needed(&mut fx);
+        self.arm_timer_if_needed(now_epoch_s, &mut fx);
         if c.settle {
             fx.extend(self.notify_effects());
         }

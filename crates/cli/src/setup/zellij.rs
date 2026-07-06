@@ -19,13 +19,15 @@ pub(crate) enum InjectMode {
 ///
 /// 1. `--inject` → `Inject` (unconditional explicit consent).
 /// 2. `--yes` → `Snippet`  (take the safe default; never mutate silently).
-/// 3. Not a tty → `Snippet` (no way to ask).
-/// 4. Otherwise → `Prompt`  (interactive).
-pub(crate) fn inject_mode(inject_flag: bool, yes: bool, is_tty: bool) -> InjectMode {
+/// 3. `--dry-run` → `Snippet` (same safe default — a write-nothing flag must
+///    never block on stdin; combine with `--inject` to preview the inject).
+/// 4. Not a tty → `Snippet` (no way to ask).
+/// 5. Otherwise → `Prompt`  (interactive).
+pub(crate) fn inject_mode(inject_flag: bool, yes: bool, dry_run: bool, is_tty: bool) -> InjectMode {
     if inject_flag {
         return InjectMode::Inject;
     }
-    if yes || !is_tty {
+    if yes || dry_run || !is_tty {
         return InjectMode::Snippet;
     }
     InjectMode::Prompt
@@ -237,31 +239,14 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let inject_flag = opts.inject;
     let layout_name = opts.layout;
     let Some(config_dir) = zellij_config_dir_or_report() else { return };
-    let config_path = zellij_config_path(&config_dir);
-    let wasm_dest = zellij_wasm_dest(&config_dir);
+
+    // One reader, shared with `check` (`read_zellij_env`): current state into
+    // Facts. The env's config text is reused below for the `edit_zellij`
+    // splice; the resolved paths are what every write below aims at.
+    let (env, paths) = read_zellij_env(&config_dir, layout_name);
+    let ZellijPaths { config_path, wasm_dest, layout_path } = paths;
     let location = zellij_plugin_location(&wasm_dest);
-
-    // One derivation, shared with `check`: read current state into Facts. The
-    // config text is reused below for the `edit_zellij` splice and for the
-    // layout-name resolution.
-    let config_text = std::fs::read_to_string(&config_path).ok();
-
-    // Resolve the target layout path up front (needed whether or not a managed
-    // config short-circuits).
-    let layout_path =
-        crate::setup::detect::resolve_layout_path(&config_dir, layout_name, config_text.as_deref());
-    let facts = analyze_zellij(&ZellijEnv {
-        config_text:            config_text.clone(),
-        layout_text:            None, // the layout is read later by the inject flow
-        permissions_text:       crate::run::zellij_permissions_path()
-            .and_then(|p| std::fs::read_to_string(p).ok()),
-        codex_hooks_text:       super::codex_hooks_text(),
-        installed_plugins_text: super::claude_installed_plugins_text(),
-        wasm_present:           wasm_dest.is_file(),
-        config_managed:         config_is_managed(&config_path),
-        wasm_path:              wasm_dest.to_string_lossy().into_owned(),
-        zellij_version:         zellij_version_output(),
-    });
+    let facts = analyze_zellij(&env);
 
     let path = setup_path(
         uninstall,
@@ -336,7 +321,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         }
     }
 
-    let existing = config_text.unwrap_or_default();
+    let existing = env.config_text.unwrap_or_default();
     let Some(outcome) = edit_or_report("zellij", edit_zellij(&existing, &location, !uninstall, force))
     else {
         return;
@@ -454,7 +439,7 @@ fn print_grant_hint_if_needed(facts: &ZellijFacts) {
 /// per `facts.producer_wired` (derived from Codex hooks + the Claude plugin
 /// manifest, same as `run`'s detection — see `analyze_zellij`).
 fn print_producer_hint_if_needed(facts: &ZellijFacts) {
-    if !facts.producer_wired {
+    if !facts.producer_wired() {
         println!("zellij: {}", crate::run::PRODUCER_HINT);
     }
 }
@@ -482,7 +467,7 @@ fn print_snippet_for(layout_path: &Path) {
 fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: bool) {
     use std::io::IsTerminal;
     let is_tty = std::io::stdin().is_terminal();
-    let mode = inject_mode(inject_flag, yes, is_tty);
+    let mode = inject_mode(inject_flag, yes, dry_run, is_tty);
 
     let text = match std::fs::read_to_string(layout_path) {
         Ok(t) => t,
@@ -705,29 +690,39 @@ mod tests {
 
     #[test]
     fn inject_flag_forces_inject() {
-        assert_eq!(inject_mode(true, false, false), InjectMode::Inject);
-        assert_eq!(inject_mode(true, false, true), InjectMode::Inject);
-        assert_eq!(inject_mode(true, true, false), InjectMode::Inject);
-        assert_eq!(inject_mode(true, true, true), InjectMode::Inject);
+        assert_eq!(inject_mode(true, false, false, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, false, false, true), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, false, false), InjectMode::Inject);
+        assert_eq!(inject_mode(true, true, false, true), InjectMode::Inject);
     }
 
     #[test]
     fn yes_takes_safe_default_snippet() {
         // --yes without --inject → Snippet regardless of tty
-        assert_eq!(inject_mode(false, true, true),  InjectMode::Snippet);
-        assert_eq!(inject_mode(false, true, false), InjectMode::Snippet);
+        assert_eq!(inject_mode(false, true, false, true),  InjectMode::Snippet);
+        assert_eq!(inject_mode(false, true, false, false), InjectMode::Snippet);
+    }
+
+    #[test]
+    fn dry_run_never_prompts() {
+        // A write-nothing flag must never block on stdin — even on a tty, a
+        // bare `--download --dry-run` takes the snippet preview, not a prompt.
+        assert_eq!(inject_mode(false, false, true, true), InjectMode::Snippet);
+        assert_eq!(inject_mode(false, false, true, false), InjectMode::Snippet);
+        // With explicit --inject it previews the inject itself instead.
+        assert_eq!(inject_mode(true, false, true, true), InjectMode::Inject);
     }
 
     #[test]
     fn non_tty_takes_safe_default_snippet() {
         // non-tty without --inject or --yes → Snippet
-        assert_eq!(inject_mode(false, false, false), InjectMode::Snippet);
+        assert_eq!(inject_mode(false, false, false, false), InjectMode::Snippet);
     }
 
     #[test]
     fn prompt_when_interactive() {
-        // interactive tty, no --inject, no --yes → Prompt
-        assert_eq!(inject_mode(false, false, true), InjectMode::Prompt);
+        // interactive tty, no --inject, no --yes, no --dry-run → Prompt
+        assert_eq!(inject_mode(false, false, false, true), InjectMode::Prompt);
     }
 
     // ── grant_args tests ─────────────────────────────────────────────────────

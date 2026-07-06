@@ -53,10 +53,15 @@
         assert!(!is_agent_foreground(&argv(&[]), true));
     }
 
+    /// Test shorthand for the display half of `classify`.
+    fn display(command: &[String]) -> String {
+        classify(command).0
+    }
+
     #[test]
-    fn display_command_keeps_useful_subcommands_and_drops_flags() {
+    fn classify_display_keeps_useful_subcommands_and_drops_flags() {
         assert_eq!(
-            display_command(&argv(&[
+            display(&argv(&[
                 "cargo",
                 "test",
                 "render::tests",
@@ -68,7 +73,7 @@
             "cargo test render::tests"
         );
         assert_eq!(
-            display_command(&argv(&[
+            display(&argv(&[
                 "codex",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--model",
@@ -77,17 +82,17 @@
             "codex"
         );
         assert_eq!(
-            display_command(&argv(&["npm", "run", "build", "--", "--watch"])),
+            display(&argv(&["npm", "run", "build", "--", "--watch"])),
             "npm run build"
         );
         assert_eq!(
-            display_command(&argv(&["python", "-m", "pytest", "-q", "tests/render.rs"])),
+            display(&argv(&["python", "-m", "pytest", "-q", "tests/render.rs"])),
             "python -m pytest tests/render.rs"
         );
-        assert_eq!(display_command(&argv(&["sleep", "5"])), "sleep 5");
+        assert_eq!(display(&argv(&["sleep", "5"])), "sleep 5");
     }
 
-    /// Pin `display_command` output across every branch of the table-driven
+    /// Pin the display half of `classify` across every branch of the table-driven
     /// model: each `ToolRule` shape (`subcommands: Some` known-sub lookup vs
     /// `None` first-arg), in/out of `target_verbs`, the `FIRST_ARG_RULE`
     /// fallback (proving the former pytest|ruff|make|just arm still resolves
@@ -95,7 +100,7 @@
     /// collapse. One case per code path so the refactor's equivalence is
     /// verifiable, not merely asserted.
     #[test]
-    fn display_command_covers_every_tool_rule_path() {
+    fn classify_display_covers_every_tool_rule_path() {
         let cases: &[(&[&str], &str)] = &[
             // cargo: known-subcommand lookup; target appended only for target_verbs.
             (&["cargo", "build"], "cargo build"),               // sub, not a target verb
@@ -138,13 +143,16 @@
             (&["cargo", "nextest", "-"], "cargo nextest"),
         ];
         for (args, want) in cases {
-            assert_eq!(&display_command(&argv(args)), want, "display for {args:?}");
+            assert_eq!(&display(&argv(args)), want, "display for {args:?}");
         }
     }
 
-    /// Representative `(argv, display, expected Kind)` covering every `Kind`
-    /// that `command_kind` can emit. Shared by the classification test and the
-    /// Kind-round-trip guard so both exercise exactly the same set.
+    /// Representative `(argv, expected display, expected Kind)` covering every
+    /// `Kind` that `classify` can emit. Shared by the classification test and
+    /// the Kind-round-trip guard so both exercise exactly the same set. The
+    /// display column is ASSERTED, not passed in — `classify` owns the
+    /// display↔kind pairing, so a hand-written display here can no longer
+    /// silently diverge from what production computes.
     fn kind_classification_cases() -> Vec<(Vec<String>, &'static str, Kind)> {
         use crate::kind::Kind;
         vec![
@@ -153,7 +161,11 @@
             (argv(&["codex", "--dangerously-bypass-sandbox"]), "codex", Kind::Codex),
             (argv(&["gemini"]), "gemini", Kind::Gemini),
             // Test runners across ecosystems.
-            (argv(&["cargo", "test", "--features", "cli"]), "cargo test", Kind::Test),
+            // The `--features` VALUE reads as a target ("cargo test cli") — a
+            // pre-existing display wart (value-taking flags aren't modeled),
+            // surfaced the moment this column became asserted instead of
+            // hand-written. Pinned as-is; the Kind is what this case is about.
+            (argv(&["cargo", "test", "--features", "cli"]), "cargo test cli", Kind::Test),
             (argv(&["pytest"]), "pytest", Kind::Test),
             (argv(&["go", "test", "./..."]), "go test ./...", Kind::Test),
             (argv(&["npm", "run", "test"]), "npm run test", Kind::Test),
@@ -221,24 +233,26 @@
     }
 
     #[test]
-    fn command_kind_classifies_every_emitted_kind() {
-        for (cmd, display, expected) in kind_classification_cases() {
-            assert_eq!(command_kind(&cmd, display), expected, "classify {display:?}");
+    fn classify_emits_every_kind_with_its_paired_display() {
+        for (cmd, want_display, want_kind) in kind_classification_cases() {
+            let (display, kind) = classify(&cmd);
+            assert_eq!(kind, want_kind, "kind for {want_display:?}");
+            assert_eq!(display, want_display, "display for {cmd:?}");
         }
     }
 
     #[test]
-    fn command_kind_is_case_insensitive_over_verbs() {
-        // `contains_word` requires a lowercased haystack; command_kind owns the
+    fn classify_is_case_insensitive_over_verbs() {
+        // `contains_word` requires a lowercased haystack; classify owns the
         // lowering, so uppercase targets/scripts must still classify.
-        let cases: &[(&[&str], &str, Kind)] = &[
-            (&["make", "TEST"], "make TEST", Kind::Test),
-            (&["npm", "run", "BUILD"], "npm run BUILD", Kind::Build),
-            (&["just", "Serve"], "just Serve", Kind::Server),
-            (&["make", "Deploy-Prod"], "make Deploy-Prod", Kind::Deploy),
+        let cases: &[(&[&str], Kind)] = &[
+            (&["make", "TEST"], Kind::Test),
+            (&["npm", "run", "BUILD"], Kind::Build),
+            (&["just", "Serve"], Kind::Server),
+            (&["make", "Deploy-Prod"], Kind::Deploy),
         ];
-        for (cmd, display, expected) in cases {
-            assert_eq!(command_kind(&argv(cmd), display), *expected, "classify {display:?}");
+        for (cmd, expected) in cases {
+            assert_eq!(classify(&argv(cmd)).1, *expected, "classify {cmd:?}");
         }
     }
 
@@ -264,26 +278,26 @@
         use crate::kind::Kind;
         // A keyword embedded in a larger target token must NOT classify: these
         // are the false positives an unanchored `contains` produced.
-        let plain: &[(&[&str], &str)] = &[
-            (&["make", "latest"], "make latest"),     // not `test`
-            (&["make", "rebuild"], "make rebuild"),   // not `build`
-            (&["make", "observer"], "make observer"), // not `serve`/`server`
-            (&["just", "codev"], "just codev"),       // not `dev`
-            (&["npm", "run", "latest"], "npm run latest"),
+        let plain: &[&[&str]] = &[
+            &["make", "latest"],     // not `test`
+            &["make", "rebuild"],    // not `build`
+            &["make", "observer"],   // not `serve`/`server`
+            &["just", "codev"],      // not `dev`
+            &["npm", "run", "latest"],
         ];
-        for (argv_, display) in plain {
-            assert_eq!(command_kind(&argv(argv_), display), Kind::Command, "classify {display:?}");
+        for argv_ in plain {
+            assert_eq!(classify(&argv(argv_)).1, Kind::Command, "classify {argv_:?}");
         }
         // A keyword as a whole token — including across `-`/`_` boundaries —
         // still classifies.
-        let routed: &[(&[&str], &str, Kind)] = &[
-            (&["make", "build-all"], "make build-all", Kind::Build),
-            (&["make", "deploy-prod"], "make deploy-prod", Kind::Deploy),
-            (&["just", "unit-test"], "just unit-test", Kind::Test),
-            (&["make", "server"], "make server", Kind::Server),
+        let routed: &[(&[&str], Kind)] = &[
+            (&["make", "build-all"], Kind::Build),
+            (&["make", "deploy-prod"], Kind::Deploy),
+            (&["just", "unit-test"], Kind::Test),
+            (&["make", "server"], Kind::Server),
         ];
-        for (argv_, display, want) in routed {
-            assert_eq!(command_kind(&argv(argv_), display), *want, "classify {display:?}");
+        for (argv_, want) in routed {
+            assert_eq!(classify(&argv(argv_)).1, *want, "classify {argv_:?}");
         }
     }
 
@@ -291,7 +305,7 @@
     fn command_source_round_trips_through_kind() {
         // Twin of the agent-side `source_round_trips_through_kind` (see
         // CONTEXT.md "Information source"). The command path stores
-        // `command_kind(..).as_source()` and the roll-up reads it back via
+        // `classify(..).1.as_source()` and the roll-up reads it back via
         // `Kind::from_source`, so every classified command must survive that
         // round-trip to the SAME kind — and never degrade to `Kind::Other`,
         // the reserved sentinel for a genuinely-unknown source. (Kind's own
@@ -299,7 +313,7 @@
         // command boundary actually rides that seam.)
         use crate::kind::Kind;
         for (cmd, display, _) in kind_classification_cases() {
-            let kind = command_kind(&cmd, display);
+            let (_, kind) = classify(&cmd);
             assert_ne!(kind, Kind::Other, "{display:?} classified as the Other sentinel");
             assert_eq!(
                 Kind::from_source(kind.as_source()),
@@ -315,7 +329,7 @@
         // End-to-end twin: drive a command through the store and confirm the
         // *persisted* observation `source` (not just the classifier output)
         // round-trips to the kind the classifier picked. Guards the wiring in
-        // `on_command_changed` → `on_timer`, not only `command_kind` in
+        // `on_command_changed` → `on_timer`, not only `classify` in
         // isolation.
         use crate::kind::Kind;
         let mut store = CommandStore::default();

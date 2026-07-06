@@ -33,6 +33,7 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 | `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
 | `Stop` | `done` (clears when the pane returns to its shell prompt, or on the next broadcast) |
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
+| `SessionEnd` | `idle` (clears the row when the Claude session exits) |
 
 Each fires a `zellij pipe --name zj_radar.status.v1` broadcast. It is a **no-op
 outside Zellij**, so it's safe to leave enabled everywhere.

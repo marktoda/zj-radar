@@ -352,23 +352,14 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
-        if message.name == PIPE_NAME {
-            if let Some(raw) = &message.payload {
-                let outcome = self.runtime.status_pipe(raw);
-                return self.handle_outcome(outcome);
-            }
-        } else if message.name == CONFIG_PIPE {
-            if let Some(raw) = &message.payload {
-                let outcome = self.runtime.config_pipe(raw);
-                return self.handle_outcome(outcome);
-            }
-        } else if message.name == CMD_PIPE {
-            if let Some(raw) = &message.payload {
-                let outcome = self.runtime.control_pipe(raw);
-                return self.handle_outcome(outcome);
-            }
-        }
-        false
+        let Some(raw) = &message.payload else { return false };
+        let outcome = match message.name.as_str() {
+            PIPE_NAME => self.runtime.status_pipe(raw),
+            CONFIG_PIPE => self.runtime.config_pipe(raw),
+            CMD_PIPE => self.runtime.control_pipe(raw),
+            _ => return false,
+        };
+        self.handle_outcome(outcome)
     }
 
     fn render(&mut self, rows: usize, cols: usize) {

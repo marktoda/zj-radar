@@ -210,7 +210,7 @@ zellij:
   ok wasm: wasm plugin file present
   missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
   missing grant: wasm not granted — run `zj-radar setup zellij --grant`
-  ok producer: a producer is wired (Codex hooks or Claude plugin)
+  ok producer: Claude plugin wired
 ```
 
 Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
@@ -223,7 +223,7 @@ modifies any file. Reported items (six always; a seventh only when applicable):
 - **wasm** — plugin file exists at the expected stable path.
 - **layout** — default layout contains the injected radar rail.
 - **grant** — `permissions.kdl` records a grant for the wasm path.
-- **producer** — Codex hooks or Claude plugin is wired up.
+- **producer** — Codex hooks and/or Claude plugin wired up (names which).
 - **managed config** — emitted only when `config.kdl` is a symlink
   (home-manager); warns that direct edits may be overwritten.
 

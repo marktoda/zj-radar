@@ -81,29 +81,6 @@ pub enum PaneDisplay {
 }
 
 impl PaneDisplay {
-    #[allow(clippy::too_many_arguments)] // mirrors the variant's fields 1:1
-    pub(crate) fn tracked(
-        pane_id: u32,
-        kind: Kind,
-        status: Status,
-        msg: String,
-        task: String,
-        since_tick: u64,
-        outcome: Option<Outcome>,
-        pending_epoch_s: Option<u64>,
-    ) -> Self {
-        Self::Tracked {
-            pane_id,
-            kind,
-            status,
-            msg,
-            task,
-            since_tick,
-            outcome,
-            pending_epoch_s,
-        }
-    }
-
     pub(crate) fn untracked(pane_id: u32, title: &str) -> Self {
         let title = if title.trim().is_empty() {
             "terminal".to_string()
@@ -232,16 +209,16 @@ pub fn roll_up<'a>(
             if s.status == Status::Pending {
                 pending += 1;
             }
-            pane_displays.push(PaneDisplay::tracked(
-                pane.id,
-                s.kind,
-                s.status,
-                s.msg.clone(),
-                s.task.clone(),
-                s.last_change_tick,
-                pane_outcome(s),
-                s.pending_epoch_s,
-            ));
+            pane_displays.push(PaneDisplay::Tracked {
+                pane_id: pane.id,
+                kind: s.kind,
+                status: s.status,
+                msg: s.msg.clone(),
+                task: s.task.clone(),
+                since_tick: s.last_change_tick,
+                outcome: pane_outcome(s),
+                pending_epoch_s: s.pending_epoch_s,
+            });
         } else {
             pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
         }

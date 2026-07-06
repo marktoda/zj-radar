@@ -48,9 +48,16 @@ fn display(
     let panes = detail
         .as_ref()
         .map(|d| {
-            vec![crate::rollup::PaneDisplay::tracked(
-                FIXTURE_PANE_ID, d.kind, d.status, d.msg.clone(), d.task.clone(), d.since_tick, d.outcome, d.pending_epoch_s,
-            )]
+            vec![crate::rollup::PaneDisplay::Tracked {
+                pane_id: FIXTURE_PANE_ID,
+                kind: d.kind,
+                status: d.status,
+                msg: d.msg.clone(),
+                task: d.task.clone(),
+                since_tick: d.since_tick,
+                outcome: d.outcome,
+                pending_epoch_s: d.pending_epoch_s,
+            }]
         })
         .unwrap_or_default();
     TabDisplay {
@@ -265,8 +272,8 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 },
                 detail: Some(detail),
                 panes: vec![
-                    PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve".into(), String::new(), 0, None, None),
-                    PaneDisplay::tracked(11, Kind::Claude, Status::Running, "tests".into(), String::new(), 0, None, None),
+                    pe(10, Kind::Claude, Status::Pending, "approve"),
+                    pe(11, Kind::Claude, Status::Running, "tests"),
                 ],
             },
         },
@@ -1293,12 +1300,44 @@ fn header_false_emits_no_header_lines() {
 
 /// Build a PaneDisplay for tree tests.
 fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, None, None)
+    PaneDisplay::Tracked {
+        pane_id: id,
+        kind,
+        status,
+        msg: msg.into(),
+        task: String::new(),
+        since_tick: 0,
+        outcome: None,
+        pending_epoch_s: None,
+    }
 }
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
 fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
-    PaneDisplay::tracked(id, kind, status, msg.into(), String::new(), 0, Some(outcome), None)
+    PaneDisplay::Tracked {
+        pane_id: id,
+        kind,
+        status,
+        msg: msg.into(),
+        task: String::new(),
+        since_tick: 0,
+        outcome: Some(outcome),
+        pending_epoch_s: None,
+    }
+}
+
+/// Build a PaneDisplay carrying a sticky task label, for identity-line tests.
+fn pe_task(id: u32, kind: Kind, status: Status, msg: &str, task: &str) -> PaneDisplay {
+    PaneDisplay::Tracked {
+        pane_id: id,
+        kind,
+        status,
+        msg: msg.into(),
+        task: task.into(),
+        since_tick: 0,
+        outcome: None,
+        pending_epoch_s: None,
+    }
 }
 
 // ── End-result outcome tag rendering ──
@@ -1681,7 +1720,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
                 kind: Kind::Codex,
             }),
             panes: vec![
-                PaneDisplay::tracked(1, Kind::Codex, Status::Running, "tests".into(), String::new(), 0, None, None),
+                pe(1, Kind::Codex, Status::Running, "tests"),
                 PaneDisplay::untracked(2, "shell"),
             ],
         },
@@ -4218,7 +4257,16 @@ prop_compose! {
                 1 => "running a fairly long migration command across the cluster now",
                 _ => "日本語のメッセージ表示テスト中です", // CJK wide glyphs
             };
-            PaneDisplay::tracked(id, kind, status, msg.to_string(), task, 0, None, None)
+            PaneDisplay::Tracked {
+                pane_id: id,
+                kind,
+                status,
+                msg: msg.to_string(),
+                task,
+                since_tick: 0,
+                outcome: None,
+                pending_epoch_s: None,
+            }
         }
     }
 }
@@ -4730,8 +4778,8 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             progress: ProgressCounts { done: 0, total: 2, pending: 1 },
             detail: None,
             panes: vec![
-                PaneDisplay::tracked(10, Kind::Claude, Status::Pending, "approve git push?".into(), "migrate schema".into(), 0, None, None),
-                PaneDisplay::tracked(11, Kind::Codex, Status::Running, "editing retry.rs".into(), "write tests".into(), 0, None, None),
+                pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
+                pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
             ],
         },
     };

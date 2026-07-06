@@ -7,11 +7,17 @@ on:
   schedule:
     - cron: "0 6 * * *" # nightly hermetic check (see the `hermetic` job)
 
+# These jobs only read the repo; scope the default token down accordingly.
+permissions:
+  contents: read
+
 # Cancel superseded runs on the same ref so a quick follow-up push doesn't pay
-# for the previous run's remaining minutes.
+# for the previous run's remaining minutes — but never cancel an in-flight
+# MAIN build: back-to-back merges would leave main unverified until the last
+# run finishes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # ── Fast feedback on every push / PR (~2-3 min) ────────────────────────────

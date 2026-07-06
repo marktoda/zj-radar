@@ -7,6 +7,10 @@ on:
   push:
     tags: ["v*"]
 
+# Read-only jobs; scope the default token down accordingly.
+permissions:
+  contents: read
+
 jobs:
   e2e:
     strategy:

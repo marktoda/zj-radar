@@ -145,6 +145,21 @@ pub fn run(options: SetupOptions<'_>) {
     {
         crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: codex, zellij). Skipping."));
     }
+    // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
+    // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
+    // `--layout` do not — silently ignoring them on a codex-only invocation
+    // would read as "injected". Say so instead.
+    if !want_zellij {
+        if options.inject {
+            eprintln!("zj-radar: --inject applies to the zellij target only — add `zellij` to the targets to use it");
+        }
+        if options.layout.is_some() {
+            eprintln!("zj-radar: --layout applies to the zellij target only — add `zellij` to the targets to use it");
+        }
+    }
+    if want_zellij && options.legacy_notify && !want_codex {
+        eprintln!("zj-radar: --legacy-notify applies to the codex target only — add `codex` to the targets to use it");
+    }
 
     if mode == Mode::Check {
         // Bare `--check` is the doctor: inspect BOTH halves. (A bare *install*

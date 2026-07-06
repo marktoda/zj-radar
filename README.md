@@ -4,7 +4,10 @@
   <a href="https://github.com/marktoda/zj-radar/actions/workflows/ci.yml">
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/marktoda/zj-radar/ci.yml?branch=main&label=ci">
   </a>
-  <a href="LICENSE">
+  <a href="https://crates.io/crates/zj-radar">
+    <img alt="crates.io" src="https://img.shields.io/crates/v/zj-radar">
+  </a>
+  <a href="https://github.com/marktoda/zj-radar/blob/main/LICENSE">
     <img alt="License" src="https://img.shields.io/github/license/marktoda/zj-radar">
   </a>
   <img alt="Zellij plugin" src="https://img.shields.io/badge/zellij-plugin-8A2BE2">
@@ -18,7 +21,7 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="#how-is-this-different">How is this different?</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="docs/producers.md">Producers</a>
+  <a href="https://github.com/marktoda/zj-radar/blob/main/docs/producers.md">Producers</a>
 </p>
 
 A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
@@ -49,7 +52,7 @@ wrapping your agents. It's a status rail for the session you already run.
 - Keep your existing Zellij workflow — **no new terminal, no tmux wrapper, no agent orchestrator**.
 - **Push-driven** updates via `zellij pipe`; no pane polling, no blocking host queries.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
-  [custom producer](docs/producers.md#writing-your-own-producer) that can send JSON.
+  [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
 
 ## Quick start
 
@@ -88,8 +91,8 @@ these **inside Claude Code** (they're `/plugin` slash commands, not shell):
 ```
 
 Prefer building from source (or using Nix / home-manager)? Full details, manual
-setup, and layout templates are in **[`docs/install.md`](docs/install.md)**.
-Codex and custom producers are in **[`docs/producers.md`](docs/producers.md)**.
+setup, and layout templates are in **[`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md)**.
+Codex and custom producers are in **[`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md)**.
 
 ## How it works
 
@@ -98,7 +101,7 @@ zj-radar is **push-driven, not poll-driven**: status arrives via an explicit
 host queries (`get_pane_running_command`, etc.). This is a deliberate, hard
 constraint — the predecessor plugin (`smart-tabs`) melted a many-agent session
 by polling every pane on every output event; see
-[`docs/smart-tabs-postmortem.md`](docs/smart-tabs-postmortem.md).
+[`docs/smart-tabs-postmortem.md`](https://github.com/marktoda/zj-radar/blob/main/docs/smart-tabs-postmortem.md).
 
 The wire format is a single versioned JSON payload (`zj_radar.status.v1`), so a
 "producer" is anything that can broadcast it — the bundled Claude Code plugin,
@@ -146,7 +149,7 @@ zellij pipe --name zj_radar.config.v1 -- '{"density":"compact","header":false}'
 
 The full option table, keybindings for runtime config, and `attention-next` /
 `attention-prev` command bindings are in
-**[`docs/configuration.md`](docs/configuration.md)**.
+**[`docs/configuration.md`](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md)**.
 
 ## Producers
 
@@ -158,19 +161,19 @@ documents the wire format so you can write your own:
 - **Codex / native CLI** — `zj-radar notify` + `zj-radar setup codex`.
 - **Custom** — broadcast a `zj_radar.status.v1` JSON payload from anything.
 
-See **[`docs/producers.md`](docs/producers.md)** for install steps, the payload
+See **[`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md)** for install steps, the payload
 schema, and a copy-paste smoke test.
 
 ## Documentation
 
 | Doc | What's in it |
 |-----|--------------|
-| [`docs/install.md`](docs/install.md) | Full sidebar install: CLI + manual setup, layout templates, permissions, remote-URL caveat, Nix / home-manager. |
-| [`docs/producers.md`](docs/producers.md) | Claude Code, Codex, and writing your own producer (payload schema + smoke test). |
-| [`docs/configuration.md`](docs/configuration.md) | Density/naming/header/glyphs, runtime config, and keybindings. |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | The two-template rule, first-run prompt coordination, and reload quirks. |
-| [`docs/design.md`](docs/design.md) | The canonical living design. |
-| [`docs/smart-tabs-postmortem.md`](docs/smart-tabs-postmortem.md) | Why the polling predecessor was scrapped (the push-driven origin story). |
+| [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md) | Full sidebar install: CLI + manual setup, layout templates, permissions, remote-URL caveat, Nix / home-manager. |
+| [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, and writing your own producer (payload schema + smoke test). |
+| [`docs/configuration.md`](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md) | Density/naming/header/glyphs, runtime config, and keybindings. |
+| [`docs/troubleshooting.md`](https://github.com/marktoda/zj-radar/blob/main/docs/troubleshooting.md) | The two-template rule, first-run prompt coordination, and reload quirks. |
+| [`docs/design.md`](https://github.com/marktoda/zj-radar/blob/main/docs/design.md) | The canonical living design. |
+| [`docs/smart-tabs-postmortem.md`](https://github.com/marktoda/zj-radar/blob/main/docs/smart-tabs-postmortem.md) | Why the polling predecessor was scrapped (the push-driven origin story). |
 
 ## Status & roadmap
 
@@ -178,17 +181,19 @@ schema, and a copy-paste smoke test.
   overflow folding, theme-derived card surfaces, runtime config.
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
 - ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
-  conflict-aware `setup`; see [`docs/producers.md`](docs/producers.md#codex-and-the-native-cli).
+  conflict-aware `setup`; see [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#codex-and-the-native-cli).
 - ✅ **Prebuilt releases** — a tagged release ships static Linux + macOS CLI
   binaries, a one-line `curl | sh` installer, and the sidebar wasm;
   `zj-radar setup zellij --download` fetches the matching wasm. See
-  [`docs/install.md`](docs/install.md).
+  [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md).
 - ✅ **crates.io / `cargo binstall`** — `cargo install zj-radar` (or
   `cargo binstall zj-radar` for the prebuilt binary) works today; the CLI is
   published from a three-member workspace (`zj-radar-core`, the `zj-radar` CLI,
   `zj-radar-plugin`).
-- 📋 **Not yet built** — a fully automatic layout patcher. See
-  [`docs/distribution.md`](docs/distribution.md).
+- 📋 **Not yet built** — automatic patching of *exotic* hand-rolled layouts.
+  `setup zellij` injects into the common shapes and creates the layout file
+  when none exists; a shape it can't recognize gets the paste snippet instead.
+  See [`docs/distribution.md`](https://github.com/marktoda/zj-radar/blob/main/docs/distribution.md).
 
 ## Development
 
@@ -211,7 +216,7 @@ Run it from a plain terminal — `zj-radar run` refuses to nest inside Zellij.
 `nix develop -c just dev`.
 
 The hero GIF is reproducible — its VHS tape and recording script live in
-[`demo/`](demo/) (`demo/record.sh`).
+[`demo/`](https://github.com/marktoda/zj-radar/tree/main/demo) (`demo/record.sh`).
 
 ### Repo layout
 
@@ -231,15 +236,15 @@ The shared wire/classification core (`command`, `kind`, `observation`, `payload`
 `zellij-tile` dependency and are fully host-testable. Only `crates/plugin/src/lib.rs`
 touches the Zellij host API, and that surface is gated behind
 `#[cfg(target_arch = "wasm32")]` (the dependency itself is scoped to the wasm target
-in `crates/plugin/Cargo.toml`). See [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md).
+in `crates/plugin/Cargo.toml`). See [`docs/TOOLCHAIN.md`](https://github.com/marktoda/zj-radar/blob/main/docs/TOOLCHAIN.md).
 
 ## Contributing
 
-Issues and PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for build/test
+Issues and PRs welcome. See [`CONTRIBUTING.md`](https://github.com/marktoda/zj-radar/blob/main/CONTRIBUTING.md) for build/test
 layers, the no-`rustfmt` rule, and the two load-bearing invariants
-(push-driven, rail lockstep). [`CONTEXT.md`](CONTEXT.md) is the domain glossary —
+(push-driven, rail lockstep). [`CONTEXT.md`](https://github.com/marktoda/zj-radar/blob/main/CONTEXT.md) is the domain glossary —
 the fastest way to orient before touching the core.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](https://github.com/marktoda/zj-radar/blob/main/LICENSE).

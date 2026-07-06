@@ -2,6 +2,7 @@ use super::*;
 
 use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, strip_managed_zellij_alias};
 
+use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
 
 /// Raw, already-read environment for Zellij setup. The ONLY layer that touched
@@ -19,6 +20,39 @@ pub(crate) struct ZellijEnv {
     pub zellij_version:        Option<String>,
 }
 
+/// The paths [`read_zellij_env`] resolved along the way. Callers splice/copy
+/// against these, so resolving them once keeps the reader and the writers
+/// aimed at the same files.
+pub(crate) struct ZellijPaths {
+    pub config_path: PathBuf,
+    pub wasm_dest:   PathBuf,
+    pub layout_path: PathBuf,
+}
+
+/// The one IO gathering point behind [`ZellijEnv`]: read every input
+/// `analyze_zellij` grades, resolved against `config_dir`. Shared by the
+/// installer (`setup_zellij`) and the doctor (`check_zellij`) so "what state
+/// is this machine in?" cannot diverge between them.
+pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (ZellijEnv, ZellijPaths) {
+    let config_path = zellij_config_path(config_dir);
+    let wasm_dest = zellij_wasm_dest(config_dir);
+    let config_text = std::fs::read_to_string(&config_path).ok();
+    let layout_path =
+        crate::setup::detect::resolve_layout_path(config_dir, layout_name, config_text.as_deref());
+    let env = ZellijEnv {
+        layout_text:            std::fs::read_to_string(&layout_path).ok(),
+        permissions_text:       crate::run::zellij_permissions_text(),
+        codex_hooks_text:       codex_hooks_text(),
+        installed_plugins_text: claude_installed_plugins_text(),
+        wasm_present:           wasm_dest.is_file(),
+        config_managed:         config_is_managed(&config_path),
+        wasm_path:              wasm_dest.to_string_lossy().into_owned(),
+        zellij_version:         zellij_version_output(),
+        config_text,
+    };
+    (env, ZellijPaths { config_path, wasm_dest, layout_path })
+}
+
 /// Every derived fact about the current Zellij setup state, in one place. Both
 /// `check` (renders) and `install` (gates) read these; the derivation is here so
 /// "is our alias present?" has exactly one definition.
@@ -29,9 +63,18 @@ pub(crate) struct ZellijFacts {
     pub wasm_present:            bool,
     pub has_rail:                Option<bool>,
     pub granted:                 Option<bool>,
-    pub producer_wired:          bool,
+    pub codex_producer:          bool,
+    pub claude_producer:         bool,
     pub config_managed:          bool,
     pub zellij_version:          Option<String>,
+}
+
+impl ZellijFacts {
+    /// Any producer at all — what install gating and the doctor's pass/fail
+    /// care about; the per-producer bools let the doctor SAY which one.
+    pub(crate) fn producer_wired(&self) -> bool {
+        self.codex_producer || self.claude_producer
+    }
 }
 
 /// The Zellij minor the plugin ABI targets — bump alongside the `zellij-tile`
@@ -59,19 +102,21 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
     let mut lines_without_managed = lines.clone();
     strip_managed_zellij_alias(&mut lines_without_managed);
     let unmanaged_alias_present = has_unmanaged_radar_alias(&lines_without_managed);
-    // Scoped to radar alias lines: other plugins legitimately live in the
-    // store (e.g. `room location="file:/nix/store/…"`) and must not trip the
-    // radar grant-persistence warning.
-    let alias_is_store_path =
-        lines.iter().any(|l| is_unmanaged_radar_alias_line(l) && l.contains("/nix/store/"));
+    // Scoped to radar alias lines inside a plugins block: other plugins
+    // legitimately live in the store (e.g. `room location="file:/nix/store/…"`)
+    // and must not trip the radar grant-persistence warning — nor should a
+    // radar-shaped node in some non-plugins block.
+    let plugins_mask = crate::setup::detect::in_plugins_block_mask(&lines);
+    let alias_is_store_path = lines.iter().zip(&plugins_mask).any(|(l, in_plugins)| {
+        *in_plugins && is_unmanaged_radar_alias_line(l) && l.contains("/nix/store/")
+    });
     let has_rail = env.layout_text.as_deref().map(|t| crate::layout::analyze(t).has_rail);
     let granted = env
         .permissions_text
         .as_deref()
         .map(|t| crate::run::wasm_is_granted(t, &env.wasm_path));
-    let claude_present = crate::run::claude_producer_wired(env.installed_plugins_text.as_deref());
-    let producer_wired =
-        crate::run::producer_hint(env.codex_hooks_text.as_deref(), claude_present).is_none();
+    let claude_producer = crate::run::claude_producer_wired(env.installed_plugins_text.as_deref());
+    let codex_producer = crate::run::codex_producer_wired(env.codex_hooks_text.as_deref());
     ZellijFacts {
         managed_alias_present,
         unmanaged_alias_present,
@@ -79,7 +124,8 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         wasm_present: env.wasm_present,
         has_rail,
         granted,
-        producer_wired,
+        codex_producer,
+        claude_producer,
         config_managed: env.config_managed,
         zellij_version: env.zellij_version.clone(),
     }
@@ -279,7 +325,7 @@ mod tests {
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, None, "no layout file -> None, distinct from Some(false)");
         assert_eq!(f.granted, None, "no permissions file -> None");
-        assert!(!f.producer_wired, "no codex hooks and no claude plugin -> not wired");
+        assert!(!f.producer_wired(), "no codex hooks and no claude plugin -> not wired");
     }
 
     #[test]
@@ -296,7 +342,7 @@ mod tests {
             zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
-        assert!(f.producer_wired, "claude producer plugin present -> wired");
+        assert!(f.producer_wired(), "claude producer plugin present -> wired");
     }
 
     #[test]
@@ -313,7 +359,7 @@ mod tests {
             zellij_version: Some("zellij 0.44.1".to_string()),
         };
         let f = analyze_zellij(&env);
-        assert!(f.producer_wired, "codex hooks text containing the marker -> wired");
+        assert!(f.producer_wired(), "codex hooks text containing the marker -> wired");
     }
 
     #[test]

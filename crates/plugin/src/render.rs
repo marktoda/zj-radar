@@ -1,4 +1,16 @@
 //! Pure renderer: per-tab rows → ANSI string. No zellij-tile dependency.
+//!
+//! Reading order — the file is five stages, top to bottom:
+//! 1. **Primitives** — `Seg` (colored ⇒ RESET-terminated), `LineBg`, `Line`
+//!    (the lockstep unit: one text line + its click target + surface class),
+//!    and `RenderedRail::from_lines`, the single derive point where ansi,
+//!    targets, and footprint all come from one `Vec<Line>`.
+//! 2. **Row emission** — `render_row` and the pane/detail line emitters, each
+//!    producing `Line`s through `prefixed_line`'s narrow-width guard.
+//! 3. **Layout planning** — delegated to `layout.rs` (pure, no ANSI, no
+//!    targets): overflow folding, card spacing, per-row line budgets.
+//! 4. **Assembly & paint** — body assembly, `paint_card_line`/`LineBg` tinting.
+//! 5. **Bottom region** — ledger lines, footer (rule + tally + hint), filler.
 
 use crate::config::Density;
 use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
@@ -332,6 +344,20 @@ fn spine_role(status: Status) -> Role {
     }
 }
 
+/// The rendered col-0 spine cell: status-hued `▌` on the active tab, a plain
+/// space otherwise. The one call path from `spine_role` to emitted ANSI — the
+/// three colored spine sites (line-1 header, pane detail line, child prefix)
+/// all route through here, so the color rule can't be applied at one site and
+/// forgotten at another. (The SGR-free width closures keep their own literal
+/// `if active { "▌" } else { " " }` — they measure, they don't color.)
+fn spine_seg(active: bool, tab_status: Status) -> String {
+    if active {
+        Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
+    } else {
+        " ".to_string()
+    }
+}
+
 /// A tab is "multi-pane" for tree purposes when it has more than one tracked pane.
 /// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the line-per-pane design.
@@ -463,17 +489,14 @@ fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, n
     }
 }
 
-/// Emit one row's body into `out`, respecting `max_lines`.
-///
-/// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted.
-/// PrimaryDetail/roster lines are emitted in priority order. Returns the full
-/// untruncated set of lines; caller applies `.take(max_lines)` for overflow.
-fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
-    let mut lines: Vec<Line> = Vec::new();
+/// The row's line 1: spine + glyph + tab number + name + bell, every column
+/// budget clamped so the emitted line never exceeds `width`. This is the
+/// densest width-math in the file, self-contained here so `render_row` reads
+/// as pane-roster logic.
+fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: RailTarget) -> Line {
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.display.status;
-    let tab_target = target_for_row(row);
 
     // Status HUES are always ANSI-16 role codes so the terminal renders them in
     // its OWN theme (any theme, zero config): attention `\x1b[91m` (waiting),
@@ -486,11 +509,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 
     // col 0: spine column — ALWAYS reserved so every row's glyph/number/name
     // start at fixed columns; `▌` when active, plain space otherwise.
-    let bar = if row.active {
-        Seg::new(&hue(spine_role(st)), "▌").to_string()
-    } else {
-        " ".to_string()
-    };
+    let bar = spine_seg(row.active, st);
 
     // Internal left padding: `pad_x` cells after the col-0 spine/space, before
     // the glyph. At extreme-narrow widths clamp pad_x then num so the prefix
@@ -562,11 +581,26 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         bold: label_bold,
         text: label_text.into(),
     };
-    lines.push(Line::new(
+    Line::new(
         format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
         Some(tab_target),
         LineBg::Card,
-    ));
+    )
+}
+
+/// Emit one row's body into `out`, respecting `max_lines`.
+///
+/// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted (via
+/// [`tab_header_line`]). PrimaryDetail/roster lines are emitted in priority
+/// order. Returns the full untruncated set of lines; caller applies
+/// `.take(max_lines)` for overflow.
+fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    let width = opts.width;
+    let st = row.display.status;
+    let tab_target = target_for_row(row);
+
+    lines.push(tab_header_line(row, opts, tab_target));
 
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
     // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
@@ -578,20 +612,23 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // optional subordinate `↳ question` line, both click-targeting the pane
     // itself. The multi-pane roster and the single-pane branch below differ
     // only in which panes earn lines and which Branch connector they carry.
+    // The one surface class for everything under this row's header (pane
+    // lines, detail lines, `+N more`): agent surface when the tab is active,
+    // card tint otherwise.
+    let child_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
     let pane_lines = |pane: &PaneDisplay, branch: Branch| -> Vec<Line> {
         let pane_status = pane.render_status();
         let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
         let identity =
             with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
-        let pane_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
         let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
-        let mut out = vec![Line::new(text, Some(pane_target), pane_bg)];
+        let mut out = vec![Line::new(text, Some(pane_target), child_bg)];
         if let Some(q) = detail {
             let text = emit_pane_detail_line(
                 q, row.active, st, pane_status, branch, &idle_color, width,
             );
-            out.push(Line::new(text, Some(pane_target), pane_bg));
+            out.push(Line::new(text, Some(pane_target), child_bg));
         }
         out
     };
@@ -633,11 +670,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                 child_prefix(row.active, st, Branch::Elbow, &idle_color),
                 Seg::new(&idle_color, clamped),
             );
-            lines.push(Line::new(
-                text,
-                Some(tab_target),
-                if row.active { LineBg::ActiveChild } else { LineBg::Card },
-            ));
+            lines.push(Line::new(text, Some(tab_target), child_bg));
         }
         return lines;
     }
@@ -844,14 +877,9 @@ fn emit_pane_detail_line(
             format!("{spine}{cont}   ↳ {question}")
         },
         |avail| {
-            let spine = if tab_active {
-                Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
-            } else {
-                " ".to_string()
-            };
             format!(
                 "{}{}   {}",
-                spine,
+                spine_seg(tab_active, tab_status),
                 Seg::new(conn_color, cont),
                 Seg::new(pane_status.role().ansi(), format!("↳ {}", truncate(question, avail))),
             )
@@ -889,12 +917,7 @@ impl Branch {
 /// keeps the glyph aligned at column 3 across all child lines, so the per-line
 /// truncation budget is constant (`prefix_vis` in [`emit_pane_line`]).
 fn child_prefix(active: bool, tab_status: Status, branch: Branch, conn_color: &str) -> String {
-    let spine = if active {
-        Seg::new(spine_role(tab_status).ansi(), "▌").to_string()
-    } else {
-        " ".to_string()
-    };
-    format!("{}{} ", spine, Seg::new(conn_color, branch.glyph()))
+    format!("{}{} ", spine_seg(active, tab_status), Seg::new(conn_color, branch.glyph()))
 }
 
 /// Measure visible (display) width of a string that may contain ANSI SGR escapes.
@@ -1324,7 +1347,10 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
                 Seg::new(glyph_role.ansi(), glyph),
                 Seg::new(&dim_strong, name),
             );
-            if label_budget > 0 {
+            // Gate on the label too, not just budget: an empty command-origin
+            // label would otherwise emit a trailing space plus an SGR pair
+            // wrapped around nothing.
+            if label_budget > 0 && !line.label.is_empty() {
                 let label = truncate(&line.label, label_budget);
                 text.push(' ');
                 text.push_str(&Seg::new(&idle, label).to_string());

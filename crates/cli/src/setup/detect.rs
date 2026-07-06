@@ -122,8 +122,47 @@ pub(crate) fn is_unmanaged_radar_alias_line(line: &str) -> bool {
         || trimmed.starts_with("radar{")
 }
 
+/// Per-line mask: is line `i` inside a `plugins { … }` block? The radar-alias
+/// detectors scope to this — a user node that happens to be named `radar` in
+/// some OTHER block (a keybind, a theme) is not a plugin alias, must not trip
+/// `Outcome::Conflict`, and above all must never be deleted by `--force`'s
+/// alias replacement. String- and comment-aware via `edit::brace_delta`.
+pub(crate) fn in_plugins_block_mask(lines: &[String]) -> Vec<bool> {
+    let mut mask = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if !super::edit::is_plugins_node_line(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        let mut depth = super::edit::brace_delta(&lines[i]);
+        if depth <= 0 {
+            // Self-contained `plugins {}` one-liner: nothing inside it.
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < lines.len() {
+            depth += super::edit::brace_delta(&lines[j]);
+            if depth <= 0 {
+                break;
+            }
+            mask[j] = true;
+            j += 1;
+        }
+        i = j + 1;
+    }
+    mask
+}
+
+/// An unmanaged `radar` alias *inside a `plugins` block*. Lines outside any
+/// plugins block never count, however radar-shaped they look.
 pub(crate) fn has_unmanaged_radar_alias(lines: &[String]) -> bool {
-    lines.iter().any(|line| is_unmanaged_radar_alias_line(line))
+    let mask = in_plugins_block_mask(lines);
+    lines
+        .iter()
+        .zip(&mask)
+        .any(|(line, in_plugins)| *in_plugins && is_unmanaged_radar_alias_line(line))
 }
 
 #[cfg(test)]
@@ -213,18 +252,63 @@ mod tests {
         assert_eq!(lines.len(), 3);
     }
 
+    fn in_plugins(lines: &[&str]) -> Vec<String> {
+        let mut v = vec!["plugins {".to_string()];
+        v.extend(lines.iter().map(|l| format!("    {l}")));
+        v.push("}".to_string());
+        v
+    }
+
     #[test]
     fn has_unmanaged_radar_alias_detects_bare_and_block_forms() {
-        assert!(has_unmanaged_radar_alias(&["radar".to_string()]));
-        assert!(has_unmanaged_radar_alias(&["radar location=\"x\"".to_string()]));
-        assert!(has_unmanaged_radar_alias(&["radar{".to_string()]));
+        assert!(has_unmanaged_radar_alias(&in_plugins(&["radar"])));
+        assert!(has_unmanaged_radar_alias(&in_plugins(&["radar location=\"x\""])));
+        assert!(has_unmanaged_radar_alias(&in_plugins(&["radar{"])));
     }
 
     #[test]
     fn has_unmanaged_radar_alias_ignores_comments_and_unrelated_lines() {
-        assert!(!has_unmanaged_radar_alias(&["// radar".to_string()]));
-        assert!(!has_unmanaged_radar_alias(&["/- radar".to_string()]));
-        assert!(!has_unmanaged_radar_alias(&["tab-bar location=\"zellij:tab-bar\"".to_string()]));
+        assert!(!has_unmanaged_radar_alias(&in_plugins(&["// radar"])));
+        assert!(!has_unmanaged_radar_alias(&in_plugins(&["/- radar"])));
+        assert!(!has_unmanaged_radar_alias(&in_plugins(&["tab-bar location=\"zellij:tab-bar\""])));
+    }
+
+    #[test]
+    fn radar_nodes_outside_a_plugins_block_are_not_aliases() {
+        // A user's own node that happens to be named `radar` — in a keybind
+        // block, a theme, or at top level — must not read as a plugin alias:
+        // it would trip Outcome::Conflict, and `--force` would DELETE it.
+        let keybind_radar: Vec<String> = vec![
+            "keybinds {".into(),
+            "    shared_except \"locked\" {".into(),
+            "        radar location=\"whatever\"".into(),
+            "    }".into(),
+            "}".into(),
+            "radar".into(), // top-level stray
+        ];
+        assert!(!has_unmanaged_radar_alias(&keybind_radar));
+
+        // The same node INSIDE plugins still counts.
+        let mut with_alias = keybind_radar.clone();
+        with_alias.extend(in_plugins(&["radar location=\"file:/x.wasm\""]));
+        assert!(has_unmanaged_radar_alias(&with_alias));
+    }
+
+    #[test]
+    fn in_plugins_block_mask_tracks_nesting_and_one_liners() {
+        let lines: Vec<String> = vec![
+            "plugins {".into(),         // 0: opener, not inside
+            "    radar {".into(),       // 1: inside
+            "        naming \"x\"".into(), // 2: inside (nested)
+            "    }".into(),             // 3: inside
+            "}".into(),                 // 4: closer, not inside
+            "plugins {}".into(),        // 5: one-liner, nothing inside
+            "radar".into(),             // 6: outside
+        ];
+        assert_eq!(
+            in_plugins_block_mask(&lines),
+            vec![false, true, true, true, false, false, false],
+        );
     }
 
     #[test]

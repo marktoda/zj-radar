@@ -178,7 +178,7 @@ fn effective_command(command: &[String]) -> &[String] {
 /// Declarative rule for one family of tools: how its argv compacts into a
 /// display string AND how it classifies into a [`Kind`]. The per-exe special
 /// cases all reduce to a handful of columns, so adding a tool is one table
-/// row rather than a nested match arm here plus an if-chain in `command_kind`
+/// row rather than a nested match arm here plus an if-chain in `classify`
 /// that must agree with it.
 struct ToolRule {
     /// Exe basenames this rule matches.
@@ -190,7 +190,7 @@ struct ToolRule {
     /// Verbs after which the next non-option arg is appended as a target
     /// (`cargo test <name>`, `npm run <script>`).
     target_verbs: &'static [&'static str],
-    /// Classification columns, checked in order by `command_kind`:
+    /// Classification columns, checked in order by `classify`:
     /// `exe_kind` — the exe alone decides (`pytest` is always a test run);
     /// `verb_kinds` — exact match on the operative verb, for closed
     ///   vocabularies (`cargo run test-runner` must NOT read as a test);
@@ -310,29 +310,66 @@ fn display_python(exe: &str, args: &[String]) -> String {
     }
 }
 
-/// Compact foreground argv into a rail-friendly activity string. Keep useful
-/// verbs/subcommands (`cargo test`, `npm run build`) while dropping noisy flags
-/// (`--dangerously-bypass-...`, `--features`, `--watch`) that make the sidebar
-/// read like shell history instead of intent.
-fn display_command(command: &[String]) -> String {
+/// Classify a (peeled) foreground argv in one pass: the compacted,
+/// rail-friendly activity string AND the `Kind` that owns the pane. The
+/// display keeps useful verbs/subcommands (`cargo test`, `npm run build`)
+/// while dropping noisy flags; the kind's `as_source()` token is what gets
+/// stored as the observation's `source` and round-tripped back through
+/// `Kind::from_source` at roll-up, so classification flows through the `Kind`
+/// seam as a type, never a loose string.
+///
+/// One entry point owns the rule lookup and the display↔kind pairing. The old
+/// `command_kind(command, display)` shape required callers to pass exactly
+/// `display_command(command)` — a discipline the tests exercised with
+/// hand-written display strings that could silently diverge from what
+/// production computed. Here the display the classifier word-scans is by
+/// construction the display the rail shows.
+fn classify(command: &[String]) -> (String, Kind) {
     let Some(first) = command.first() else {
-        return String::new();
+        return (String::new(), Kind::Command);
     };
     let exe = basename(first);
     let args = &command[1..];
+
+    // Agents classify by identity, not by rule: an exe that IS an agent's
+    // wire-source token owns its pane under that Kind — even without a push
+    // adapter (Gemini renders under its own mark via ordinary tracking). The
+    // display is the bare name for the same reason.
+    let identity = Kind::from_source(exe);
+    if identity.is_agent() {
+        return (sanitize(exe, MAX_MSG_CHARS), identity);
+    }
+
+    let rule = TOOL_RULES
+        .iter()
+        .find(|r| r.exes.contains(&exe))
+        .unwrap_or(&FIRST_ARG_RULE);
     let raw = match exe {
-        // Agents own their pane (pushed or not); show only the bare name.
-        _ if Kind::from_source(exe).is_agent() => exe.to_string(),
+        // `python -m <module>` has its own display shape (see display_python);
+        // its Kind still routes through the rule columns like everything else.
         "python" | "python3" => display_python(exe, args),
-        _ => {
-            let rule = TOOL_RULES
-                .iter()
-                .find(|r| r.exes.contains(&exe))
-                .unwrap_or(&FIRST_ARG_RULE);
-            apply_tool_rule(exe, args, rule)
-        }
+        _ => apply_tool_rule(exe, args, rule),
     };
-    sanitize(&raw, MAX_MSG_CHARS)
+    let display = sanitize(&raw, MAX_MSG_CHARS);
+
+    // Classification columns, in rule order: exe_kind, then a known operative
+    // verb, then the word-bounded scan over the display. `contains_word`
+    // requires a lowercased haystack; this is the one place that owns the
+    // lowering (`make TEST`, `npm run BUILD` must still classify).
+    let kind = if let Some(kind) = rule.exe_kind {
+        kind
+    } else if let Some(kind) = operative_verb(args, rule).and_then(|(_, verb)| {
+        rule.verb_kinds.iter().find(|&&(v, _)| v == verb).map(|&(_, k)| k)
+    }) {
+        kind
+    } else {
+        let lowered = display.to_lowercase();
+        rule.word_kinds
+            .iter()
+            .find(|&&(word, _)| contains_word(&lowered, word))
+            .map_or(Kind::Command, |&(_, kind)| kind)
+    };
+    (display, kind)
 }
 
 /// Whole-word containment: is `word` present in `haystack` bounded by
@@ -353,68 +390,39 @@ pub fn contains_word(haystack: &str, word: &str) -> bool {
     })
 }
 
-/// Classify a foreground command into the `Kind` that owns its pane. The
-/// resulting kind's `as_source()` token is what gets stored as the
-/// observation's `source` and later round-tripped back through
-/// `Kind::from_source` at roll-up — so classification flows through the `Kind`
-/// seam as a type, never a loose string.
-fn command_kind(command: &[String], display: &str) -> Kind {
-    // `contains_word` requires a lowercased haystack (its documented
-    // precondition); argv case must not defeat classification (`make TEST`,
-    // `npm run BUILD`). Exe names stay case-sensitive — they name binaries.
-    let display = display.to_lowercase();
-    let exe = command.first().map(|s| basename(s)).unwrap_or("");
-    // Agents classify by identity, not by rule: an exe that IS an agent's
-    // wire-source token owns its pane under that Kind — even without a push
-    // adapter (Gemini renders under its own mark via ordinary tracking).
-    let identity = Kind::from_source(exe);
-    if identity.is_agent() {
-        return identity;
-    }
-    let rule = TOOL_RULES
-        .iter()
-        .find(|r| r.exes.contains(&exe))
-        .unwrap_or(&FIRST_ARG_RULE);
-    if let Some(kind) = rule.exe_kind {
-        return kind;
-    }
-    let args = command.get(1..).unwrap_or_default();
-    if let Some((_, verb)) = operative_verb(args, rule) {
-        if let Some(&(_, kind)) = rule.verb_kinds.iter().find(|&&(v, _)| v == verb) {
-            return kind;
-        }
-    }
-    rule.word_kinds
-        .iter()
-        .find(|&&(word, _)| contains_word(&display, word))
-        .map_or(Kind::Command, |&(_, kind)| kind)
+/// Peel env-prefixes/wrappers, then name the program that actually owns the
+/// pane: `(effective argv, program name)`. The single peel point shared by
+/// the prompt check, the agent check, and command intake — all three must
+/// classify the same real command, and routing them through one helper makes
+/// that structural rather than comment-held ("peels like `is_shell_prompt`").
+fn effective_program(command: &[String]) -> (&[String], &str) {
+    let command = effective_command(command);
+    let name = command.first().map(|s| program_name(s)).unwrap_or("");
+    (command, name)
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
 /// than running something we (or an agent) own. True when there is no foreground
 /// command, or the foreground is a shell/prompt program (`IGNORE_NAMES`). An
 /// agent (`AGENT_NAMES`) in the foreground is deliberately NOT "at the prompt" —
-/// the agent still owns the pane and drives it via the push pipe. Peels
-/// env-prefixes/wrappers first, mirroring `on_command_changed`.
+/// the agent still owns the pane and drives it via the push pipe.
 pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
     if !is_foreground {
         return true;
     }
-    let command = effective_command(command);
-    let name = command.first().map(|s| program_name(s)).unwrap_or("");
+    let (_, name) = effective_program(command);
     IGNORE_NAMES.contains(&name)
 }
 
 /// Whether an instrumented agent (`AGENT_NAMES`) itself is the pane's live
 /// foreground command — direct evidence the pushed status's producer is still
 /// running. Used to cancel the stale-Running grace clock after a mid-turn
-/// foreground flicker resolves back to the agent. Peels like `is_shell_prompt`.
+/// foreground flicker resolves back to the agent.
 pub fn is_agent_foreground(command: &[String], is_foreground: bool) -> bool {
     if !is_foreground {
         return false;
     }
-    let command = effective_command(command);
-    let name = command.first().map(|s| program_name(s)).unwrap_or("");
+    let (_, name) = effective_program(command);
     AGENT_NAMES.contains(&name)
 }
 
@@ -433,8 +441,7 @@ impl CommandStore {
     ) {
         // Peel env-prefixes/wrappers once at intake so the ignore check, the
         // display string, and the Kind all classify the real command.
-        let command = effective_command(command);
-        let name = command.first().map(|s| program_name(s)).unwrap_or("");
+        let (command, name) = effective_program(command);
         // Shells and agents are both "not a real command we track here": shells
         // mean back-to-the-prompt; agents are owned by the push pipe (see
         // AGENT_NAMES). Either way we never open a command lifecycle for them.
@@ -459,13 +466,12 @@ impl CommandStore {
             // A real foreground command is running: it is no longer leaving, so
             // cancel any tentative-done.
             self.pending_done.remove(&pane_id);
-            // Build the cleaned command string.
-            let cmd_string = display_command(command);
+            // Build the cleaned command string and its Kind in one pass.
+            let (cmd_string, kind) = classify(command);
             if cmd_string.is_empty() {
                 // Unknown/empty argv — never surface a blank Running row.
                 return;
             }
-            let kind = command_kind(command, &cmd_string);
 
             // A genuine new run opens here: forget any prior run's exit so its
             // exit is applied fresh. The `exited` dedup only exists to absorb

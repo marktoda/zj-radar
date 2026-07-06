@@ -131,6 +131,11 @@ impl PaneUpdate {
             };
             if let Some(c) = colors {
                 any_colors.get_or_insert(c);
+                // Zellij reports one focused pane PER TAB, so this is
+                // "last focused pane with colors wins" across tabs, following
+                // iteration order — an accepted simplification: terminal
+                // colors are uniform across panes in practice, so which
+                // focused pane wins doesn't change the derived theme.
                 if p.is_focused {
                     focused_colors = Some(c);
                 }
@@ -404,13 +409,18 @@ impl RadarState {
         }
     }
 
+    /// Unlike the other mutating entry points, this one takes no `now_epoch_s`:
+    /// the displaced observation `clear_on_prompt_return` hands back already
+    /// carries its own `completed_epoch_s` stamp from when it first completed,
+    /// so `LedgerEntry::from_observation` needs no fresh epoch here — and
+    /// `CommandChanged` is the chattiest event in the system, so the caller
+    /// shouldn't pay a clock read for a value nothing consumes.
     pub(crate) fn command_changed(
         &mut self,
         pane_id: u32,
         command: &[String],
         is_foreground: bool,
         tick: u64,
-        now_epoch_s: u64,
     ) -> RadarChange {
         let cwd = self.pane_cwd.get(&pane_id).map(String::as_str);
         self.command
@@ -423,14 +433,6 @@ impl RadarState {
         // instead, so a mid-turn foreground flicker to a shell can't be
         // mistaken for the agent exiting, while an agent killed mid-turn still
         // expires to idle on the timer (`expire_stale_running`).
-        //
-        // `now_epoch_s` stays unused here (kept for signature symmetry with the
-        // other three mutating entry points): the
-        // displaced observation `clear_on_prompt_return` hands back already
-        // carries its own `completed_epoch_s` stamp from when it first
-        // completed, so `LedgerEntry::from_observation` needs no fresh epoch
-        // from this call site.
-        let _ = now_epoch_s;
         let cleared = if crate::command::is_shell_prompt(command, is_foreground) {
             match self.status.clear_on_prompt_return(pane_id, tick) {
                 Some(receded) => {

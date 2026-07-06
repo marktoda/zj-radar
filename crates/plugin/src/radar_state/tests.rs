@@ -52,7 +52,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
-    let change = radar.command_changed(7, &["zsh".into()], true, 5, 0);
+    let change = radar.command_changed(7, &["zsh".into()], true, 5);
 
     // The stale `done` is cleared to idle, repo kept for tab naming. This rides
     // the shared CommandChanged signal, so every tab's instance clears alike.
@@ -71,7 +71,7 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
         .status_mut()
         .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
     // A mid-turn foreground flicker to a shell must NOT be read as an exit.
-    let change = radar.command_changed(7, &["bash".into()], true, 5, 0);
+    let change = radar.command_changed(7, &["bash".into()], true, 5);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
     assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
 }
@@ -104,7 +104,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar
         .status_mut()
         .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5, 0);
+    radar.command_changed(7, &["bash".into()], true, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
         changed |= radar.timer(t, 0);
@@ -122,8 +122,8 @@ fn agent_foreground_cancels_a_prompt_return_suspect() {
     radar
         .status_mut()
         .apply(payload_for(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5, 0);
-    radar.command_changed(7, &["claude".into()], true, 6, 0);
+    radar.command_changed(7, &["bash".into()], true, 5);
+    radar.command_changed(7, &["claude".into()], true, 6);
     for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
         radar.timer(t, 0);
     }
@@ -263,7 +263,7 @@ fn observation_origin_is_source_specific() {
     radar
         .status_mut()
         .apply(payload_for(1, Status::Running, "status"), 1, 0);
-    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     assert_eq!(
@@ -496,7 +496,7 @@ fn same_pane_status_observation_wins_over_command() {
     radar.set_tab_panes_for_position(0, vec![focused_pane(5)]);
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
@@ -522,7 +522,7 @@ fn notify_views_status_wins_over_command_for_same_pane() {
     let mut radar = RadarState::default();
 
     // A command observation on pane 5 (foreground command, promoted to Running).
-    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(5, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(5).unwrap().status, Status::Running);
 
@@ -549,7 +549,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
@@ -565,7 +565,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
 #[test]
 fn snapshot_round_trip_preserves_command_exit_code() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
     radar.command_mut().on_exit(7, Some(3), 3, 0);
     assert_eq!(radar.command(7).unwrap().exit_code, Some(3));
@@ -607,7 +607,7 @@ fn snapshot_round_trip_preserves_status_observations_and_tick() {
 #[test]
 fn snapshot_round_trip_preserves_command_observations() {
     let mut radar = RadarState::default();
-    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.command_changed(7, &["cargo".into(), "test".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
 
     let json = radar.snapshot_json(None, 2);
@@ -718,18 +718,18 @@ fn snapshot_v3_round_trips_ledger_and_completion_stamps() {
     radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
 
     // Pane 1: TTL-recede all the way to a ledger entry.
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
-    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS);
     let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
     radar.timer(confirm_tick, 500); // Done, stamped at epoch 500
     radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede → ledgers
     assert_eq!(radar.ledger().entries().count(), 1, "sanity: one ledger entry seeded");
 
     // Pane 2: still-live Done observation, stamped with its own completion epoch.
-    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    radar.command_changed(2, &["cargo".into(), "test".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
-    radar.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS);
     radar.timer(confirm_tick, 700); // Done, stamped at epoch 700
     assert_eq!(radar.command(2).unwrap().status, Status::Done);
     assert_eq!(radar.command(2).unwrap().completed_epoch_s, Some(700));
@@ -771,9 +771,9 @@ fn snapshot_merge_unions_ledgers_across_instances() {
     let mut existing = RadarState::default();
     existing.tabs_changed(vec![tab(10, 0, "work", true)]);
     existing.set_tab_panes_for_position(0, vec![pane(1)]);
-    existing.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    existing.command_changed(1, &["cargo".into(), "build".into()], true, 1);
     existing.timer(1 + DEBOUNCE_TICKS, 0);
-    existing.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    existing.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS);
     let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
     existing.timer(confirm_tick, 500);
     existing.timer(confirm_tick + DONE_TTL_TICKS, 900); // ledgers "cargo build" @500
@@ -782,9 +782,9 @@ fn snapshot_merge_unions_ledgers_across_instances() {
     let mut current = RadarState::default();
     current.tabs_changed(vec![tab(20, 0, "other", true)]);
     current.set_tab_panes_for_position(0, vec![pane(2)]);
-    current.command_changed(2, &["cargo".into(), "test".into()], true, 1, 0);
+    current.command_changed(2, &["cargo".into(), "test".into()], true, 1);
     current.timer(1 + DEBOUNCE_TICKS, 0);
-    current.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    current.command_changed(2, &["zsh".into()], true, 1 + DEBOUNCE_TICKS);
     current.timer(confirm_tick, 600);
     current.timer(confirm_tick + DONE_TTL_TICKS, 1000); // ledgers "cargo test" @600
 
@@ -922,7 +922,7 @@ fn mutating_events_request_a_render() {
     );
     assert!(
         radar
-            .command_changed(1, &["cargo".into(), "build".into()], true, 0, 0)
+            .command_changed(1, &["cargo".into(), "build".into()], true, 0)
             .render,
         "command_changed must request a render"
     );
@@ -1198,7 +1198,6 @@ proptest! {
                         &["cargo".to_string(), "build".to_string()],
                         *fg,
                         tick,
-                        0,
                     );
                 }
                 Op::Timer => {
@@ -1391,11 +1390,11 @@ fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
     // foreground command runs, leaves the foreground (back to a shell), the
     // debounce window confirms Done (stamped with THIS timer's epoch), and a
     // later timer far past DONE_TTL_TICKS recedes it.
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
-    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    radar.command_changed(1, &["zsh".into()], true, 1 + DEBOUNCE_TICKS); // leaves fg → tentative-done
     let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
     radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
     assert_eq!(radar.command(1).unwrap().status, Status::Done);
@@ -1435,7 +1434,7 @@ fn ledger_any_unsaturated_reflects_the_saturate_window() {
         ..payload_for(1, Status::Done, "repo")
     });
     radar.status_pipe(&wire, 1, 1000, config::NamingMode::Off);
-    radar.command_changed(1, &["zsh".into()], true, 5, 9999); // recedes → ledgers at epoch 1000
+    radar.command_changed(1, &["zsh".into()], true, 5); // recedes → ledgers at its own epoch 1000
 
     assert!(radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S - 1));
     assert!(!radar.ledger_any_unsaturated(1000 + crate::ledger::SATURATE_S));
@@ -1456,7 +1455,7 @@ fn prompt_return_clear_ledgers_the_agent_completion() {
 
     // The pane returns to a shell prompt — the agent that pushed the Done is
     // gone — so `clear_on_prompt_return` recedes it to idle.
-    radar.command_changed(7, &["zsh".into()], true, 5, 999);
+    radar.command_changed(7, &["zsh".into()], true, 5);
     assert_eq!(radar.status(7).unwrap().status, Status::Idle);
 
     let lines = radar.ledger_lines();
@@ -1465,7 +1464,7 @@ fn prompt_return_clear_ledgers_the_agent_completion() {
     assert!(!lines[0].error);
     assert_eq!(
         lines[0].at_epoch_s, 100,
-        "the completion's own stamp survives, not command_changed's now_epoch_s"
+        "the completion's own stamp survives — command_changed takes no clock at all"
     );
 }
 
@@ -1507,7 +1506,7 @@ fn pending_and_running_never_ledger() {
     radar.set_tab_panes_for_position(0, vec![pane(1), pane(2)]);
 
     // pane 1: a live Running command.
-    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(1, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
     assert_eq!(radar.command(1).unwrap().status, Status::Running);
 
@@ -1546,10 +1545,10 @@ fn shadowed_command_completion_never_ledgers() {
 
     // 1. Drive a command Done on pane 7: a foreground command runs, leaves
     // the foreground, and the debounce window confirms Done.
-    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0); // promote pending → Running
     assert_eq!(radar.command(7).unwrap().status, Status::Running);
-    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0); // leaves fg → tentative-done
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS); // leaves fg → tentative-done
     let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
     radar.timer(confirm_tick, 500); // debounce confirms Done, stamped at epoch 500
     assert_eq!(radar.command(7).unwrap().status, Status::Done);
@@ -1599,9 +1598,9 @@ fn unshadowed_command_completion_still_ledgers() {
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
     radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
-    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1, 0);
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1);
     radar.timer(1 + DEBOUNCE_TICKS, 0);
-    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS, 0);
+    radar.command_changed(7, &["zsh".into()], true, 1 + DEBOUNCE_TICKS);
     let confirm_tick = 1 + 2 * DEBOUNCE_TICKS;
     radar.timer(confirm_tick, 500);
     assert_eq!(radar.command(7).unwrap().status, Status::Done);
@@ -1625,7 +1624,7 @@ fn ledger_lines_resolve_live_tab_position_or_none() {
         ..payload_for(1, Status::Done, "repo")
     });
     radar.status_pipe(&wire, 1, 42, config::NamingMode::Off);
-    radar.command_changed(1, &["zsh".into()], true, 5, 100); // recedes → ledgers
+    radar.command_changed(1, &["zsh".into()], true, 5); // recedes → ledgers
 
     let lines = radar.ledger_lines();
     assert_eq!(lines.len(), 1);

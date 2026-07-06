@@ -39,8 +39,11 @@ pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
         .collect();
+    // Trim the dash a trailing folded char leaves ("My Proj!" → "My-Proj",
+    // not "My-Proj-") — pure cosmetics for the session list.
+    let sanitized = sanitized.trim_end_matches('-');
     if sanitized.chars().any(|c| c.is_ascii_alphanumeric()) {
-        sanitized
+        sanitized.to_string()
     } else {
         "radar".to_string()
     }
@@ -130,22 +133,36 @@ const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
 pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> bool {
     let needle = format!("\"{wasm_abs_path}\"");
     let mut lines = permissions_kdl.lines().map(str::trim_start);
-    if !lines.any(|l| l.starts_with(&needle) && l.contains('{')) {
-        return false;
+    // ANY matching block with the full set counts, not just the first: after a
+    // Zellij re-prompt, a stale partial block can coexist with a later full
+    // block for the same path — stopping at the partial one would re-summon
+    // the grant float forever.
+    loop {
+        if !lines.by_ref().any(|l| l.starts_with(&needle) && l.contains('{')) {
+            return false;
+        }
+        let granted: Vec<&str> =
+            lines.by_ref().take_while(|l| !l.starts_with('}')).map(str::trim_end).collect();
+        if REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.contains(required)) {
+            return true;
+        }
     }
-    let granted: Vec<&str> = lines.take_while(|l| !l.starts_with('}')).map(str::trim_end).collect();
-    REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.contains(required))
 }
 
 /// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
 /// hooks lack our marker AND the Claude producer plugin is absent), else `None`.
 pub(crate) fn producer_hint(codex_hooks: Option<&str>, claude_present: bool) -> Option<String> {
-    let codex = codex_hooks.is_some_and(|h| h.contains(CODEX_HOOK_MARKER));
-    if codex || claude_present {
+    if codex_producer_wired(codex_hooks) || claude_present {
         None
     } else {
         Some(PRODUCER_HINT.to_string())
     }
+}
+
+/// True iff Codex's hooks file carries our marker — the Codex producer's
+/// detection route, twin of [`claude_producer_wired`].
+pub(crate) fn codex_producer_wired(codex_hooks: Option<&str>) -> bool {
+    codex_hooks.is_some_and(|h| h.contains(CODEX_HOOK_MARKER))
 }
 
 /// True iff Claude Code's installed-plugins manifest lists zj-radar's producer
@@ -203,6 +220,12 @@ pub(crate) fn owned_config_dir() -> Option<PathBuf> {
 /// dir is unknown.
 pub(crate) fn zellij_permissions_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| permissions_path_in(&c, cfg!(target_os = "macos")))
+}
+
+/// `permissions.kdl` contents when the cache dir resolves and the file reads —
+/// the shared read behind every grant probe (`run`, the installer, the doctor).
+pub(crate) fn zellij_permissions_text() -> Option<String> {
+    zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 /// The per-session ownership marker `run` stamps at create time:
@@ -570,7 +593,7 @@ pub fn run(opts: RunOptions) {
         session_running,
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
         resurrect_layout_defers,
-        permissions_kdl: zellij_permissions_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        permissions_kdl: zellij_permissions_text(),
         codex_hooks: crate::setup::codex_hooks_text(),
         installed_plugins: crate::setup::claude_installed_plugins_text(),
     };
@@ -594,6 +617,16 @@ pub fn run(opts: RunOptions) {
             println!("zellij {}", shell_join(dispatch));
         }
         println!("zellij {}", shell_join(&plan.args));
+        // The resurrect path's float dispatch is inherently a background
+        // action `run` would fire once the server is up — it can't be one of
+        // the printed commands, but omitting it silently would make the
+        // printed transcript incomplete. Stderr, like all prose.
+        if let Some(watch) = &plan.post_attach_watch {
+            eprintln!(
+                "# zj-radar would also run, once the resurrected server is up: zellij {}",
+                shell_join(watch)
+            );
+        }
         return;
     }
     if plan.nested {
@@ -692,7 +725,7 @@ mod tests {
     #[test]
     fn session_name_sanitizes_falls_back_and_overrides() {
         assert_eq!(session_name(Path::new("/Users/m/dev/zj-radar"), None), "zj-radar");
-        assert_eq!(session_name(Path::new("/Users/m/dev/My Proj!"), None), "My-Proj-");
+        assert_eq!(session_name(Path::new("/Users/m/dev/My Proj!"), None), "My-Proj");
         assert_eq!(session_name(Path::new("/"), None), "radar");
         // All-symbol basename: nothing alphanumeric survives -> fall back, not "---".
         assert_eq!(session_name(Path::new("/Users/m/%%%"), None), "radar");
@@ -911,6 +944,23 @@ mod tests {
         let hint = producer_hint(None, false).unwrap();
         assert!(hint.contains("zj-radar setup codex"), "must name the Codex route: {hint}");
         assert!(hint.contains("/plugin install zj-radar-claude"), "must name the Claude route: {hint}");
+    }
+
+    #[test]
+    fn producer_detection_covers_every_instrumented_agent() {
+        // Producer detection knows exactly two wiring routes: the Codex hooks
+        // marker (`codex_producer_wired`) and the Claude plugin manifest
+        // (`claude_producer_wired`). This is the ONE wiring point the agent
+        // guard lattice doesn't reach: a third instrumented agent would wire
+        // fine but `run` would still say "no producer wired". If this list is
+        // out of date, teach detection the new agent's route (here, PRODUCER_HINT,
+        // and the doctor's producer item in setup/check.rs), then extend it.
+        let covered = ["claude", "codex"];
+        let sources: Vec<&str> = crate::agents::Agent::ALL.iter().map(|a| a.source()).collect();
+        assert_eq!(
+            sources, covered,
+            "Agent::ALL grew — add a producer-detection route for the new agent"
+        );
     }
 
     #[test]

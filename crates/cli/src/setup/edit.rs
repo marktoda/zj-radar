@@ -199,7 +199,7 @@ fn join_lines(lines: &[String]) -> String {
     }
 }
 
-fn brace_delta(line: &str) -> isize {
+pub(crate) fn brace_delta(line: &str) -> isize {
     let mut delta = 0;
     let mut chars = line.chars().peekable();
     let mut in_string = false;
@@ -231,8 +231,12 @@ fn brace_delta(line: &str) -> isize {
 fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
     let mut changed = false;
     let mut i = 0;
+    // Recomputed after every drain (indexes shift). Scoping to plugins blocks
+    // is what keeps `--force` surgical: a user's `radar` node in some other
+    // block (a keybind, a theme) must never be deleted here.
+    let mut mask = crate::setup::detect::in_plugins_block_mask(lines);
     while i < lines.len() {
-        if !is_unmanaged_radar_alias_line(&lines[i]) {
+        if !(mask[i] && is_unmanaged_radar_alias_line(&lines[i])) {
             i += 1;
             continue;
         }
@@ -244,6 +248,7 @@ fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
             depth += brace_delta(&lines[end]);
         }
         lines.drain(i..=end);
+        mask = crate::setup::detect::in_plugins_block_mask(lines);
         changed = true;
     }
     changed
@@ -252,7 +257,7 @@ fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
 /// Is this line the opening of the KDL `plugins` block — not a sibling node
 /// whose name merely starts with "plugins" (e.g. `plugins_extra {`)? The node
 /// name must be followed by whitespace or the opening brace.
-fn is_plugins_node_line(line: &str) -> bool {
+pub(crate) fn is_plugins_node_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     !trimmed.starts_with("//")
         && line.contains('{')

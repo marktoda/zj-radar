@@ -529,7 +529,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                 let argv: Vec<String> = pane.msg.split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
-                radar.command_changed(pane.pane_id, &argv, true, 0, 0);
+                radar.command_changed(pane.pane_id, &argv, true, 0);
                 command_exits.push((pane.pane_id, code));
             }
         }

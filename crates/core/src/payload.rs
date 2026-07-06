@@ -27,6 +27,16 @@ pub const MAX_SOURCE_CHARS: usize = 16;
 /// contract version: a breaking change means a new name (`…v2`), so old plugins
 /// simply never see payloads they can't parse. The payload's `v` field is
 /// informational only: [`to_wire`] stamps it, `parse` ignores it.
+///
+/// What counts as breaking, for this contract:
+/// - **Not breaking**: adding an optional payload field (absent = default, see
+///   [`StatusPayload`]'s checklist) — old plugins drop the unknown key unread.
+/// - **Compatible but degrading**: adding a `Status` token. An old plugin's
+///   lenient parse folds the unknown token to `Idle` — which per the status
+///   store's semantics *clears the row and resets its sticky task*. Ship a new
+///   token knowing old rails will blank that row's story until upgraded.
+/// - **Breaking** (new pipe name): removing/renaming a token or field, or
+///   changing the semantics of an existing one.
 pub const STATUS_PIPE_NAME: &str = "zj_radar.status.v1";
 /// Stamped into the payload's `v` field by [`to_wire`]; never read on parse.
 pub const STATUS_VERSION: u32 = 1;
@@ -36,7 +46,26 @@ pub const STATUS_VERSION: u32 = 1;
 /// `..Default::default()` for anything not set — it means exactly "absent on
 /// the wire") and serialize it with [`to_wire`]; the plugin gets it back from
 /// [`parse`], which sanitizes and caps every text field.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `#[derive(Default)]` is semantic here, not just convenient: every field's
+/// derive-default is exactly what `parse` produces for that field when it is
+/// absent on the wire (`""` for optional text; the degenerate `0`/`Idle` for
+/// the two required fields, which can't actually be absent). That is what
+/// makes `..Default::default()` the forward-compatible construction path —
+/// a future field defaults the same way an absent wire field would, so
+/// existing literals keep compiling and keep meaning the same thing. Pinned
+/// by `default_matches_parse_of_an_all_absent_payload`.
+///
+/// **Adding a field** (the extension this contract is designed for) touches a
+/// fixed set of sites — do them together:
+/// 1. this struct (doc the cap + wire semantics),
+/// 2. `Raw` (`#[serde(default)]` so absence parses),
+/// 3. `parse`'s field list (sanitize + cap),
+/// 4. `to_wire`'s named-field emitter,
+/// 5. the proptest generator inputs (`parse_to_wire_round_trip`) so the
+///    round-trip law actually covers it,
+/// 6. the pinned-bytes test (`to_wire_emits_the_exact_pinned_wire_bytes`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusPayload {
     /// The Zellij terminal pane the status is about (the wire's
     /// `pane: {"type": "terminal", "id": N}` — `parse` rejects non-terminal
@@ -64,33 +93,6 @@ pub struct StatusPayload {
     /// through `Kind::from_source`, so unknown sources still render (as
     /// `Other`). Optional; sanitized and capped at [`MAX_SOURCE_CHARS`].
     pub source: String,
-}
-
-/// Mirrors what `parse` produces for a payload with every optional field
-/// absent: every optional text field defaults to `""` (an absent field's
-/// serde default on `Raw`, sanitized), and the two *required* fields take
-/// their degenerate values — `pane_id` is `0` (the primitive default
-/// `RawPane.id` would take) and `status` is the fallback (`Status::Idle`)
-/// that `Status::from_wire` gives an unknown or empty token. (`status` cannot
-/// actually be absent — a missing field is a hard parse error — which is why
-/// the paired test drives this with `"status":""`.) So
-/// `..Default::default()` in a struct literal means exactly "absent on the
-/// wire" — this is the forward-compatible construction path for external
-/// producers: a future field addition to `StatusPayload` defaults the same
-/// way an absent wire field would, so existing `..Default::default()`
-/// literals keep compiling and keep meaning the same thing.
-impl Default for StatusPayload {
-    fn default() -> Self {
-        StatusPayload {
-            pane_id: 0,
-            status: Status::default(),
-            repo: String::new(),
-            branch: String::new(),
-            msg: String::new(),
-            task: String::new(),
-            source: String::new(),
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -247,7 +249,10 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
 }
 
 /// Parse a broadcast payload. Returns None on oversize, invalid JSON, or a
-/// non-terminal pane. Unknown status maps to Idle (never errors).
+/// non-terminal pane. Unknown status maps to Idle (never errors). The single
+/// `None` carries no diagnostics *by design*: the consumer is a wasm plugin
+/// with no error channel — producer-side typo hints live in the CLI
+/// (`Status::try_from_wire`), where there is a stderr to print to.
 pub fn parse(raw: &str) -> Option<StatusPayload> {
     if raw.len() > MAX_PAYLOAD_BYTES {
         return None;

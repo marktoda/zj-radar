@@ -39,7 +39,7 @@ pub struct TrackedObservation {
     #[serde(default)]
     pub task: String,
     /// The source kind that produced this observation. Classified once at intake
-    /// (`StatusStore::apply` / `command_kind`); the renderer reads it directly
+    /// (`StatusStore::apply` / `command::classify`); the renderer reads it directly
     /// rather than re-parsing a string. Serializes under the `source` wire key as
     /// its `as_source()` token, so the persisted snapshot format is unchanged.
     #[serde(rename = "source")]
