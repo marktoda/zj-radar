@@ -177,25 +177,10 @@ Want the column on the **right**? Put `children` (and the runtime
 `pane focus=true`) before the radar pane in each vertical split. Different
 width? Change `size`.
 
-## Grant permissions (`--grant`)
+## Permissions
 
-Zellij requires an explicit permission grant the first time a plugin loads from a
-given path. `--grant` opens the wasm in a focused floating pane so Zellij surfaces
-the prompt without you having to open a full layout first:
-
-```sh
-zj-radar setup zellij --grant
-```
-
-This is a standalone action: it skips wasm copy, alias edit, and layout injection,
-and exits after launching the floating pane. After you approve inside the pane,
-close it and subsequent sidebar instances at the same path will use Zellij's
-cached grant.
-
-## First-run permission prompt
-
-On first load the sidebar shows an onboarding face and requests four
-permissions — press `y` to grant:
+Zellij requires an explicit permission grant the first time a plugin loads from
+a given path. The sidebar requests four:
 
 - `ReadApplicationState` — read tab/pane state to draw the rail.
 - `ReadCliPipes` — receive the `zj_radar.status.v1` broadcasts from producers.
@@ -206,10 +191,31 @@ permissions — press `y` to grant:
   [configuration](configuration.md)), and without this grant they are
   silently skipped while everything else keeps working.
 
-The sidebar stays focusable only for that prompt, then goes back to passive
-sidebar behavior.
+**By default you never meet a prompt for these:** `setup zellij` asks for your
+consent at install time and, if you agree, writes the grant into Zellij's
+`permissions.kdl` itself (merge-safe — other plugins' entries are untouched,
+a `.zj-radar.bak` is left beside the file, and an unparseable file is refused
+rather than edited). Zellij re-reads that file every time a plugin loads, so
+the sidebar comes up live on the next launch — and in already-running
+sessions, on the next new tab or restart. To revoke, edit the
+`zj_radar.wasm` block out of `permissions.kdl`.
 
-After approval, the per-tab sidebars should use the cached grant. For how the
+## If you skipped the pre-authorization
+
+Declining the install-time consent leaves Zellij's normal first-run flow: on
+first load the sidebar pane hosts Zellij's native y/n prompt. Be warned that
+at rail width that prompt is unreadable — the pane just looks **blank**
+([zellij #4749](https://github.com/zellij-org/zellij/issues/4749)); the rail
+is waiting, not broken. Two ways to grant:
+
+- focus the (blank) rail pane and press `y`, or
+- from inside the session, run `zj-radar setup zellij --grant` — it opens the
+  wasm in a focused **floating pane**, where the same prompt renders legibly.
+  This is a standalone action: it skips wasm copy, alias edit, and layout
+  injection, and exits after launching the pane. Approve there, close it, and
+  every sidebar instance at the same path uses Zellij's cached grant.
+
+After approval, the per-tab sidebars reuse the cached grant. For how the
 per-tab instances coordinate that single prompt (and what happens when session
 files aren't writable), see
 [First-run prompt coordination](troubleshooting.md#first-run-prompt-coordination).
@@ -226,7 +232,7 @@ zellij:
   ok alias: radar plugin alias present in config.kdl
   ok wasm: wasm plugin file present
   missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
-  missing grant: wasm not granted — run `zj-radar setup zellij --grant`
+  missing grant: wasm not granted — re-run `zj-radar setup zellij` to pre-authorize (or `--grant` from inside Zellij)
   ok producer: Claude plugin wired
 ```
 
@@ -323,7 +329,7 @@ Everything zj-radar touches, what creates it, and what `setup zellij
 | `~/.config/zellij/layouts/<name>.kdl` — whole file | `setup zellij --inject` when no layout existed | **left in place** (it has no splice to reverse) — delete the file to remove |
 | `<edited file>.zj-radar.bak` — pre-edit backups | every config/layout edit | left in place (they're your restore points) — delete when satisfied |
 | `~/.config/zellij/plugins/zj_radar.wasm` | `setup zellij --wasm/--download` | left in place — `rm` it to remove |
-| `permissions.kdl` grant entry (macOS `~/Library/Caches/org.Zellij-Contributors.Zellij/`, Linux `~/.cache/zellij/`) | *Zellij*, when you answer y to the permission prompt | never touched (Zellij owns this file) — edit out the `zj_radar.wasm` block to revoke |
+| `permissions.kdl` grant entry (macOS `~/Library/Caches/org.Zellij-Contributors.Zellij/`, Linux `~/.cache/zellij/`) | `setup zellij` (pre-authorized with your consent at install, merge-safe with a `.zj-radar.bak`), or *Zellij* when you answer y to a prompt | left in place (Zellij also writes this file) — edit out the `zj_radar.wasm` block to revoke |
 | `run`'s owned config dir (macOS `~/Library/Application Support/zj-radar/`, Linux `~/.local/share/zj-radar/`) | `zj-radar run` | not touched by `setup` — `rm -r` the directory; it holds nothing but re-materializable assets and session markers |
 | Per-session plugin state under Zellij's cache + `/tmp/zj-radar` fallback | the running plugin | self-pruning (24 h); safe to delete anytime |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |

@@ -502,15 +502,15 @@ fn print_grant_hint_if_needed(facts: &ZellijFacts) {
     if facts.granted == Some(true) {
         return;
     }
-    // The rail can't show Zellij's grant prompt legibly (it's a small borderless
-    // pane — Zellij #4749). On first launch the user grants by focusing the rail
-    // and pressing y; `--grant` offers an explicit floating prompt instead. The
-    // turnkey `zj-radar run` handles this automatically. One coherent line — the
-    // merge with main's onboarding work otherwise printed two overlapping notes.
+    // Only reached when the pre-seed didn't land (declined, unresolvable cache
+    // dir, or a malformed permissions.kdl we refused to edit). The rail can't
+    // show Zellij's grant prompt legibly (it's a small borderless pane —
+    // Zellij #4749), so say plainly what the user will see: a blank rail.
     println!(
-        "zellij: on first launch, focus the RADAR rail (the left column) and press y to \
-         allow access — or run `zj-radar setup zellij --grant` to grant via a floating \
-         pane. Zellij asks once, then remembers."
+        "zellij: permissions not pre-authorized — on first launch the rail will look \
+         BLANK while Zellij's prompt (unreadable at rail width) waits. Focus the rail \
+         and press y to allow access, or run `zj-radar setup zellij --grant` from \
+         inside Zellij for a legible floating prompt. Zellij asks once, then remembers."
     );
 }
 
