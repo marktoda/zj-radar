@@ -101,6 +101,20 @@ pub(crate) fn full_layout() -> String {
     )
 }
 
+/// Every byte-shape `setup` has written whole via `create_full_layout`: the
+/// current [`full_layout`] plus historical variants. Uninstall recognizes a
+/// marker-less layout as setup-authored by byte-equality against this set —
+/// matching only the CURRENT shape would strand every older-CLI-created
+/// layout on a dead `radar` alias after the alias strip. v0.1.3 named the
+/// starter tab "shell" (removed in 0.1.4: an explicitly named tab reads as a
+/// manual rename to the plugin's TabNamer and permanently disables smart
+/// naming).
+pub(crate) fn setup_authored_layouts() -> [String; 2] {
+    let current = full_layout();
+    let v013 = current.replace("    tab focus=true {", "    tab name=\"shell\" focus=true {");
+    [current, v013]
+}
+
 /// Facts inferred from a raw layout string by pure substring scanning.
 #[derive(Default)]
 pub(crate) struct LayoutFacts {

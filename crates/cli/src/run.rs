@@ -139,11 +139,18 @@ pub(crate) fn grant_float_args(session: &str, wasm_path: &Path) -> Vec<String> {
 pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
     ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
 
-/// True iff `permissions.kdl` contains a top-level grant block whose quoted key
-/// equals `wasm_abs_path` AND that block covers the full permission set the
-/// plugin requests. Zellij keys grants by the literal path string, so an exact
-/// match (closing quote included) is correct; the `{` guard skips a bare quoted
-/// string that isn't a block header.
+/// True iff `permissions.kdl`'s EFFECTIVE grant for `wasm_abs_path` covers the
+/// full permission set the plugin requests. Zellij keys grants by the literal
+/// path string, so an exact match (closing quote included) is correct; the `{`
+/// guard skips a bare quoted string that isn't a block header.
+///
+/// Duplicate blocks follow Zellij's own semantics: the file loads into a map
+/// keyed by path, so the LAST block for a path is the one Zellij consults —
+/// a stale partial block before a later full one is granted (the preseed
+/// appends exactly that shape), and a trailing partial block overrides an
+/// earlier full one. An inline-closed block (`"path" { A; B }`) carries its
+/// grant set on the header line; reading it any other way would swallow the
+/// NEXT entry's lines as this block's permissions.
 ///
 /// The full-set requirement is load-bearing: when an upgraded plugin requests a
 /// permission its old grant lacks, Zellij re-prompts — and that prompt is
@@ -153,20 +160,25 @@ pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
 pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> bool {
     let needle = format!("\"{wasm_abs_path}\"");
     let mut lines = permissions_kdl.lines().map(str::trim_start);
-    // ANY matching block with the full set counts, not just the first: after a
-    // Zellij re-prompt, a stale partial block can coexist with a later full
-    // block for the same path — stopping at the partial one would re-summon
-    // the grant float forever.
-    loop {
-        if !lines.by_ref().any(|l| l.starts_with(&needle) && l.contains('{')) {
-            return false;
-        }
-        let granted: Vec<&str> =
-            lines.by_ref().take_while(|l| !l.starts_with('}')).map(str::trim_end).collect();
-        if REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.contains(required)) {
-            return true;
-        }
+    let mut last: Option<Vec<String>> = None;
+    while let Some(header) = lines.by_ref().find(|l| l.starts_with(&needle) && l.contains('{')) {
+        let body = &header[header.find('{').map_or(0, |i| i + 1)..];
+        last = Some(match body.find('}') {
+            Some(end) => body[..end]
+                .split([';', ' '])
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => lines
+                .by_ref()
+                .take_while(|l| !l.starts_with('}'))
+                .map(|l| l.trim_end().to_string())
+                .collect(),
+        });
     }
+    last.is_some_and(|granted| {
+        REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.iter().any(|t| t == required))
+    })
 }
 
 /// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
@@ -942,6 +954,42 @@ mod tests {
         assert!(!wasm_is_granted(STALE_SAMPLE, p));
         // An empty grant block is not a grant either.
         assert!(!wasm_is_granted(&format!("\"{p}\" {{\n}}\n"), p));
+    }
+
+    #[test]
+    fn grant_detection_follows_zellijs_later_block_wins() {
+        // Zellij loads permissions.kdl into a map keyed by path: with
+        // duplicate blocks the LATER one is the effective grant. The preseed
+        // appends full blocks on that assumption, so this probe must agree —
+        // an any-block match would report AlreadyGranted while Zellij
+        // re-prompts on the trailing partial entry.
+        let p = "/x/zj_radar.wasm";
+        let full = format!(
+            "\"{p}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n"
+        );
+        let partial = format!("\"{p}\" {{\n    ReadApplicationState\n}}\n");
+        assert!(wasm_is_granted(&format!("{partial}{full}"), p), "stale partial + later full = granted");
+        assert!(!wasm_is_granted(&format!("{full}{partial}"), p), "later partial overrides the full block");
+    }
+
+    #[test]
+    fn grant_detection_reads_inline_closed_blocks() {
+        // A hand-tightened one-line entry is valid KDL; its body sits on the
+        // header line. Misreading it used to swallow the NEXT entry's lines
+        // as this block's grant set.
+        let p = "/x/zj_radar.wasm";
+        let inline_full = format!(
+            "\"{p}\" {{ ReadApplicationState; ReadCliPipes; ChangeApplicationState; RunCommands }}\n"
+        );
+        assert!(wasm_is_granted(&inline_full, p), "inline full block is a grant");
+        let inline_partial_then_foreign = format!(
+            "\"{p}\" {{ ReadApplicationState }}\n\
+             \"/other.wasm\" {{\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n    ReadApplicationState\n}}\n"
+        );
+        assert!(
+            !wasm_is_granted(&inline_partial_then_foreign, p),
+            "a foreign block's permissions must not bleed into an inline-closed block's grant set"
+        );
     }
 
     #[test]
