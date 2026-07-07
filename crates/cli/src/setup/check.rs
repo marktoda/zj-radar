@@ -129,7 +129,7 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
         (false, true) => CheckItem::ok("producer", "Claude plugin wired"),
         (false, false) => CheckItem::missing(
             "producer",
-            "no producer detected — run `zj-radar setup codex` or enable the Claude plugin",
+            "no producer detected — run `zj-radar setup claude` or `zj-radar setup codex`",
         ),
     });
 
@@ -166,6 +166,32 @@ pub(crate) fn zellij_config_file_item(
             resolved.display()
         ),
     ))
+}
+
+/// Returns true when any item is `Missing` — see [`check_codex`]. The claude
+/// producer is wired through Claude Code's plugin marketplace, so the doctor
+/// has exactly two facts to verify: the binary and the installed plugin.
+pub(crate) fn check_claude() -> bool {
+    let wired =
+        crate::run::claude_producer_wired(claude_installed_plugins_text().as_deref());
+    let items = claude_check_items(which("claude"), wired);
+    println!("claude:");
+    print_check_items(&items)
+}
+
+pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
+    vec![
+        if on_path {
+            CheckItem::ok("claude binary", "found on PATH")
+        } else {
+            CheckItem::missing("claude binary", "not found on PATH")
+        },
+        if wired {
+            CheckItem::ok("plugin", "zj-radar-claude plugin installed")
+        } else {
+            CheckItem::missing("plugin", "zj-radar-claude not installed — run `zj-radar setup claude`")
+        },
+    ]
 }
 
 /// Returns true when any item is `Missing` — see [`check_codex`].

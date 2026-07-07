@@ -1,3 +1,5 @@
+#![allow(dead_code)] // shared across test binaries; each uses a subset
+
 use std::ffi::OsString;
 use std::fs;
 use tempfile::TempDir;

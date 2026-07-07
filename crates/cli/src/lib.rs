@@ -102,7 +102,7 @@ enum Command {
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
-        /// Targets to set up (default: detected agents only). Supported: codex, zellij.
+        /// Targets to set up (default: detected agents only). Supported: claude, codex, zellij.
         targets: Vec<String>,
         /// Wasm artifact to install when setting up Zellij.
         #[arg(long, value_name = "PATH")]
