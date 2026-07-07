@@ -66,12 +66,14 @@ wrapping your agents. It's a status rail for the session you already run.
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
 
-# 2. Install the sidebar wasm + register the `radar` alias in config.kdl.
-#    Prompts to inject the rail into your default layout — answer y, or paste
-#    the printed snippet. (--download fetches the wasm for this CLI's version)
+# 2. Install the sidebar: the wasm, the `radar` alias in config.kdl, the rail
+#    in your default layout, and Zellij's permission grant — each behind its
+#    own y/N prompt. (--download fetches the wasm for this CLI's version)
 zj-radar setup zellij --download
 
-# 3. Start (or restart) Zellij
+# 3. Start (or restart) Zellij — the sidebar comes up live. (Declined the
+#    permission grant? The rail starts BLANK until you grant it — see
+#    docs/install.md "Permissions".)
 zellij
 ```
 

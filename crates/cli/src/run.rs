@@ -136,7 +136,7 @@ pub(crate) fn grant_float_args(session: &str, wasm_path: &Path) -> Vec<String> {
 
 /// Every permission the plugin requests on load — keep in lockstep with the
 /// `Effect::RequestPermission` list in `crates/plugin/src/lib.rs`.
-const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
+pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
     ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
 
 /// True iff `permissions.kdl` contains a top-level grant block whose quoted key

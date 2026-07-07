@@ -3,6 +3,35 @@
 The sidebar lives in your tab templates and exists once per tab, which bumps
 into a few sharp edges in Zellij itself. Here is what they look like and why.
 
+## Sidebar is completely blank
+
+**Symptom:** the rail pane shows nothing at all — no header, no tab rows — and
+tab naming doesn't work either.
+
+**Why (most likely):** the plugin is parked at Zellij's permission prompt.
+Zellij paints that prompt *into* the plugin's pane, and at rail width it is
+unreadable ([zellij #4749](https://github.com/zellij-org/zellij/issues/4749)) —
+the pane looks empty while Zellij waits for a `y`. An unanswered plugin is
+frozen (no render, no events), which is why everything else looks dead too.
+You end up here when the install-time pre-authorization was skipped: an older
+CLI, a declined consent prompt, or a `permissions.kdl` the installer refused
+to edit.
+
+**Fix:** `zj-radar setup zellij --check` — a non-`ok` `grant` item confirms
+this is the problem. Then any one of:
+
+- re-run `zj-radar setup zellij` (0.1.4+) and accept the pre-authorization,
+  then open a new tab or restart Zellij;
+- from inside the session, run `zj-radar setup zellij --grant` and press `y`
+  in the floating pane it opens;
+- focus the blank rail and press `y` blind — the prompt is there, just
+  invisible.
+
+The other blank-rail cause is version skew (see
+[Version skew](#sidebar-renders-but-no-status-ever-appears) below): a wasm
+built for a different Zellij minor fails to load outright, and no grant will
+wake it.
+
 ## Sidebar renders, but no status ever appears
 
 **Symptom:** the rail draws your tabs, but agents work and finish invisibly —
@@ -111,9 +140,9 @@ shared plugin cache when available and fall back to `/tmp/zj-radar`.
 
 **If neither is writable:** the sidebar still runs, but late-spawned sidebars may
 start empty until the next broadcast, and first-run prompt coordination may be
-noisier (more than one instance may prompt). Pre-approving the plugin URL once in
-a floating pane — see
-[First-run permission prompt](install.md#first-run-permission-prompt) — gives
+noisier (more than one instance may prompt). The install-time pre-authorization
+(or a one-off floating-pane grant) — see
+[Permissions](install.md#permissions) — gives
 every later per-tab sidebar a cached grant to reuse.
 
 ## Session crashes with "too many open files" (EMFILE)
