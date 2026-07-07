@@ -55,6 +55,7 @@ zj-radar setup zellij --download --inject --yes
 doctor="$(zj-radar setup zellij --check 2>&1)"; echo "$doctor"
 check "doctor: grant ok"  grep -q 'ok grant'  <<<"$doctor"
 check "doctor: layout ok" grep -q 'ok layout' <<<"$doctor"
+# shellcheck disable=SC2016  # $1 expands in the INNER bash, fed via _ "$doctor"
 check "doctor: producer is the only missing item" \
     bash -c '! grep -E "missing (grant|wasm|alias|layout|zellij)" <<<"$1"' _ "$doctor"
 
@@ -72,6 +73,7 @@ for _ in $(seq 1 20); do
     case "$names" in *srv*) break ;; esac
     sleep 1
 done
+# shellcheck disable=SC2016  # $1 expands in the INNER bash, fed via _ "$names"
 check "smart naming followed cd (want srv, got: ${names:-none})" \
     bash -c 'case "$1" in *srv*) exit 0 ;; *) exit 1 ;; esac' _ "$names"
 

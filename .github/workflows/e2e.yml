@@ -1,23 +1,51 @@
 name: E2E
 
+# The live L5 suite (real Zellij in a PTY) runs:
+#  - nightly, on both OSes — the broad regression net;
+#  - on PRs that touch what E2E actually exercises (plugin + core + the
+#    notify.sh producer the harness drives, and the toolchain/lockfiles) —
+#    ubuntu-only there, for pre-merge signal at half the cost;
+#  - as a release gate: release.yml `uses:` this workflow via workflow_call,
+#    so nothing publishes over a red E2E (this replaced the old `tags` trigger,
+#    which raced the release instead of gating it);
+#  - on demand via workflow_dispatch.
 on:
   schedule:
     - cron: "0 7 * * *"   # nightly 07:00 UTC
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+  workflow_call:
+  pull_request:
+    paths:
+      - "crates/plugin/**"
+      - "crates/core/**"
+      - "plugins/zj-radar-claude/scripts/**"
+      - "Cargo.lock"
+      - "justfile"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/e2e.yml"
 
-# Read-only jobs; scope the default token down accordingly.
 permissions:
   contents: read
+
+# A force-push to a PR shouldn't stack serial PTY suites; never cancel the
+# scheduled/release runs.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   e2e:
     strategy:
       fail-fast: false
+      # PRs run ubuntu only (fast feedback); nightly and release runs cover
+      # both OSes.
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      issues: write   # nightly-failure-issue (scheduled runs only)
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v30
@@ -30,3 +58,8 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: live e2e (L5)
         run: nix develop -c just test-e2e
+      - name: file a failure issue (nightly visibility)
+        if: failure() && github.event_name == 'schedule'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ github.token }}

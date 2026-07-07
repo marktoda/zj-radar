@@ -73,8 +73,9 @@ it with `just review` (`cargo insta review`).
   render change, review and accept with `just review` (`cargo insta review`).
   CI fails on unreviewed snapshot drift.
 - **E2E is serial by design** (`--test-threads=1`): each test spawns its own
-  Zellij session and parallel sessions contend at startup. It runs nightly and
-  on tags, not on every push.
+  Zellij session and parallel sessions contend at startup. It runs nightly on
+  both OSes, on PRs that touch the plugin/core/producer paths (ubuntu only),
+  and as a release gate — not on every push.
 
 ## Lint & formatting
 

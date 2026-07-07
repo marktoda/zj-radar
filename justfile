@@ -2,12 +2,15 @@
 test:
     cargo test --all-features
 
-# Bash hook tests (requires bats + shellcheck + jq on PATH). Builds the CLI
-# first: parity.bats compares the bash producer against target/debug/zj-radar.
+# Bash hook + installer tests (requires bats + shellcheck + jq on PATH).
+# Builds the CLI first: parity.bats compares the bash producer against
+# target/debug/zj-radar. Covers every shipped shell script: notify.sh (the
+# Claude producer hook), install.sh (the curl|sh release asset — see
+# scripts/tests/install.bats), and funnel.sh (the fresh-machine CI check).
 test-bash:
     cargo build -p zj-radar
-    shellcheck plugins/zj-radar-claude/scripts/notify.sh
-    bats plugins/zj-radar-claude/tests
+    shellcheck plugins/zj-radar-claude/scripts/notify.sh scripts/install.sh scripts/funnel.sh
+    bats plugins/zj-radar-claude/tests scripts/tests
 
 # Live E2E (L5): builds the wasm plugin, drives a real Zellij in a PTY.
 # `--test-threads=1` is REQUIRED: each test spawns its own Zellij session, and

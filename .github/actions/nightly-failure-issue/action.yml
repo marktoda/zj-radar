@@ -1,0 +1,38 @@
+name: nightly-failure-issue
+description: >
+  File (or bump) a tracking issue when a scheduled workflow fails. Scheduled
+  runs have no PR to go red on — by default a broken nightly only emails the
+  workflow-file author, which is easy to miss. One open issue per workflow,
+  matched by exact title: first failure opens it, repeats comment on it, and
+  closing it re-arms the alert. Uses actions/github-script (not `gh`) so it
+  also works in bare containers like the funnel's ubuntu:24.04.
+
+inputs:
+  token:
+    description: "GitHub token with issues: write (pass github.token)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const title = `nightly failure: ${context.workflow}`;
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          const body = `Scheduled **${context.workflow}** run failed: ${runUrl}`;
+          const { data: issues } = await github.rest.issues.listForRepo({
+            ...context.repo, state: 'open', per_page: 100,
+          });
+          const existing = issues.find(i => i.title === title);
+          if (existing) {
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: existing.number, body: `Still failing: ${runUrl}`,
+            });
+          } else {
+            await github.rest.issues.create({
+              ...context.repo, title,
+              body: `${body}\n\nRepeat failures will be added as comments. Close this issue once the nightly is green again — a later failure re-opens a fresh one.`,
+            });
+          }
