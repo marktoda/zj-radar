@@ -1,9 +1,12 @@
-//! `zj-radar setup [codex|zellij]` — idempotent, conflict-aware local wiring.
-//! Claude is handled by the marketplace plugin; Zellij setup installs the wasm
-//! at a stable path and manages the `radar` plugin alias in `config.kdl`.
+//! `zj-radar setup [claude|codex|zellij]` — idempotent, conflict-aware local
+//! wiring. Claude is wired through Claude Code's own plugin marketplace (we
+//! drive the `claude plugin` CLI, never its files); Codex gets hooks.json
+//! entries; Zellij setup installs the wasm at a stable path and manages the
+//! `radar` alias in `config.kdl`.
 
 mod analyze;
 mod check;
+mod claude;
 mod codex;
 mod detect;
 mod download;
@@ -12,6 +15,7 @@ mod preseed;
 mod zellij;
 pub(crate) use analyze::*;
 pub(crate) use check::*;
+pub(crate) use claude::*;
 pub(crate) use codex::*;
 pub(crate) use download::*;
 pub(crate) use edit::*;
@@ -142,17 +146,20 @@ pub fn run(options: SetupOptions<'_>) {
         return;
     }
 
-    let want_codex = (options.targets.is_empty() && options.wasm.is_none() && !options.download)
-        || options.targets.iter().any(|a| a == "codex");
+    let bare = options.targets.is_empty() && options.wasm.is_none() && !options.download;
+    let want_codex = bare || options.targets.iter().any(|a| a == "codex");
+    // Bare `setup` = detected agents only: claude joins codex there, and
+    // `setup_claude` itself skips gracefully when the binary is absent.
+    let want_claude = bare || options.targets.iter().any(|a| a == "claude");
     let want_zellij = options.targets.iter().any(|a| a == "zellij")
         || options.wasm.is_some()
         || options.download;
     for a in options
         .targets
         .iter()
-        .filter(|a| !matches!(a.as_str(), "codex" | "zellij"))
+        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "zellij"))
     {
-        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: codex, zellij). Skipping."));
+        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, zellij). Skipping."));
     }
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
     // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
@@ -182,6 +189,13 @@ pub fn run(options: SetupOptions<'_>) {
         }
         if want_codex || both {
             missing |= check_codex(options.legacy_notify);
+        }
+        // Explicit `setup claude --check` always reports; the bare doctor
+        // includes claude only when the binary is present (detected agents),
+        // so a claude-less machine's doctor isn't failed by an agent it
+        // doesn't have.
+        if options.targets.iter().any(|a| a == "claude") || (both && which("claude")) {
+            missing |= check_claude();
         }
         if missing {
             // The items above are the diagnostic; this sets the exit code so
@@ -226,6 +240,9 @@ pub fn run(options: SetupOptions<'_>) {
                 yes:           options.yes,
             },
         );
+    }
+    if want_claude {
+        setup_claude(uninstall, options.dry_run, options.yes);
     }
 }
 

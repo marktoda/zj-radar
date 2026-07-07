@@ -19,8 +19,8 @@ const GRANT_HINT: &str = "First run: a permission prompt opens — press y to en
     (if it doesn't appear, press Ctrl-y in the session).";
 /// Two producers, two wiring routes — name both, because `zj-radar setup` can
 /// only wire Codex; the Claude producer installs from inside Claude Code.
-pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. For Codex run `zj-radar setup codex`; \
-    for Claude Code run `/plugin install zj-radar-claude` inside Claude Code.";
+pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup claude` \
+    (Claude Code) or `zj-radar setup codex` (Codex).";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -1098,11 +1098,11 @@ mod tests {
         let wired = format!("{CODEX_HOOK_MARKER} zj-radar notify codex");
         assert!(producer_hint(Some(&wired), false).is_none());
         assert!(producer_hint(None, true).is_none());
-        // The hint must name BOTH wiring routes: `setup` only wires Codex; the
-        // Claude producer installs from inside Claude Code.
+        // The hint must name BOTH wiring routes — `setup <agent>` covers each
+        // agent symmetrically (claude drives Claude Code's plugin marketplace).
         let hint = producer_hint(None, false).unwrap();
         assert!(hint.contains("zj-radar setup codex"), "must name the Codex route: {hint}");
-        assert!(hint.contains("/plugin install zj-radar-claude"), "must name the Claude route: {hint}");
+        assert!(hint.contains("zj-radar setup claude"), "must name the Claude route: {hint}");
     }
 
     #[test]

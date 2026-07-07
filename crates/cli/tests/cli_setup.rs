@@ -11,7 +11,10 @@
 //! guard inside setup.rs accepts a pre-existing hooks.json, so we seed the
 //! tempdir with an empty `{}` to satisfy it without needing a fake binary on PATH.
 
+mod support;
+
 use assert_cmd::Command;
+use support::ShimDir;
 use std::fs;
 use tempfile::TempDir;
 
@@ -1304,4 +1307,155 @@ fn check_warns_when_zellij_config_file_points_elsewhere() {
         !out.contains("config env"),
         "an override that matches the resolved path is consistent; got:\n{out}"
     );
+}
+
+// ── setup claude: drives Claude Code's real plugin CLI ───────────────────────
+//
+// Symmetry with `setup codex`, but through the agent's NATIVE mechanism: the
+// `claude plugin` CLI (marketplace add + install), never by editing Claude
+// Code's files directly — the marketplace owns the plugin's update channel,
+// and a second hand-written wiring would double-fire events.
+
+fn claude_home(wired: bool) -> TempDir {
+    let home = TempDir::new().unwrap();
+    if wired {
+        let plugins = home.path().join(".claude/plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(
+            plugins.join("installed_plugins.json"),
+            r#"{"plugins":["zj-radar-claude"]}"#,
+        )
+        .unwrap();
+    }
+    home
+}
+
+fn claude_args(shim: &ShimDir) -> Vec<String> {
+    shim.recorded("claude").into_iter().map(|r| r.args.join(" ")).collect()
+}
+
+#[test]
+fn setup_claude_installs_via_the_plugin_cli() {
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(false);
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--yes"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(
+        claude_args(&shim),
+        vec![
+            "plugin marketplace add marktoda/zj-radar".to_string(),
+            "plugin install zj-radar-claude@zj-radar".to_string(),
+        ],
+        "must add the marketplace, then install the plugin; stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("claude: installed"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn setup_claude_already_wired_is_a_no_op() {
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(true);
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--yes"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(claude_args(&shim).is_empty(), "no plugin CLI calls when already wired");
+    assert!(stdout.contains("already wired"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn setup_claude_dry_run_runs_nothing() {
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(false);
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--dry-run"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(claude_args(&shim).is_empty(), "dry-run must not invoke the plugin CLI");
+    assert!(
+        stdout.contains("plugin marketplace add") && stdout.contains("plugin install"),
+        "dry-run must announce both commands; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn setup_claude_uninstall_runs_plugin_uninstall() {
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(true);
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--uninstall", "--yes"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .assert()
+        .success();
+    assert_eq!(
+        claude_args(&shim),
+        vec!["plugin uninstall zj-radar-claude".to_string()],
+        "uninstall must go through the plugin CLI too"
+    );
+}
+
+#[test]
+fn setup_claude_skips_when_binary_missing() {
+    let empty_path = TempDir::new().unwrap();
+    let home = claude_home(false);
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--yes"])
+        .env("PATH", empty_path.path())
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("claude: skipped"),
+        "a claude-less machine skips gracefully, like codex; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn setup_claude_declined_runs_nothing() {
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(false);
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .write_stdin("")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(claude_args(&shim).is_empty(), "declined consent must not invoke the plugin CLI");
+    assert!(stdout.contains("skipped (declined)"), "stdout:\n{stdout}");
 }
