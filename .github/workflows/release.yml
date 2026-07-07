@@ -9,6 +9,40 @@ permissions:
   contents: write # required to create the GitHub Release
 
 jobs:
+  # ── Gates: nothing publishes from a red tree ─────────────────────────────────
+  # Tags are cut by a human (RELEASING.md); nothing structurally guarantees the
+  # tagged commit ever saw CI, so the release re-earns it here. `test` re-runs
+  # the fast deterministic + bash suites on THIS commit; `e2e` runs the live
+  # L5 suite on both OSes (the reusable E2E workflow — before this, e2e.yml's
+  # own `tags` trigger raced the publish instead of gating it). The build jobs
+  # start in parallel — only the publish step below waits on the gates.
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CI: "1"
+      INSTA_UPDATE: "no"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - uses: Swatinem/rust-cache@v2
+      - name: deterministic suite (L1-L4)
+        run: nix develop -c cargo test --workspace --all-features
+      - name: bash hook + installer tests
+        run: nix develop -c just test-bash
+
+  e2e:
+    uses: ./.github/workflows/e2e.yml
+    permissions:
+      contents: read
+      issues: write
+
   # ── The wasm, built once on nix ────────────────────────────────────────────
   # nix cleanly handles zellij-tile's openssl-sys build dep (plain cargo would
   # need apt libssl-dev/pkg-config), and every CLI build embeds THIS artifact
@@ -93,7 +127,7 @@ jobs:
           path: zj-radar-${{ matrix.target }}.tar.gz
 
   release:
-    needs: [build-wasm, build-cli]
+    needs: [build-wasm, build-cli, test, e2e]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
