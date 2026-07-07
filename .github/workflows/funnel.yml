@@ -1,0 +1,32 @@
+name: Funnel
+
+# The fresh-machine funnel (scripts/funnel.sh): the README quickstart run
+# verbatim on a pristine container against PUBLISHED release assets — the
+# stranger's first five minutes, asserted. Release runs pin the tag via
+# release.yml's verify-funnel job; this workflow is the on-demand / nightly
+# canary against whatever `latest` serves (catches yanked assets, upstream
+# zellij drift, and installer rot between releases).
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # nightly, after e2e.yml's 07:00
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to test (empty = latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  funnel:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04   # pristine userland: no preinstalled zellij, clean HOME
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the fresh-machine funnel
+        env:
+          ZJ_RADAR_VERSION: ${{ inputs.version }}
+        run: bash scripts/funnel.sh
