@@ -20,7 +20,7 @@ to edit.
 **Fix:** `zj-radar setup zellij --check` — a non-`ok` `grant` item confirms
 this is the problem. Then any one of:
 
-- re-run `zj-radar setup zellij` (0.1.4+) and accept the pre-authorization,
+- re-run `zj-radar setup zellij -y` (0.1.4+) to pre-authorize,
   then open a new tab or restart Zellij;
 - from inside the session, run `zj-radar setup zellij --grant` and press `y`
   in the floating pane it opens;

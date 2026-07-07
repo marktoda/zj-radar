@@ -232,7 +232,7 @@ zellij:
   ok alias: radar plugin alias present in config.kdl
   ok wasm: wasm plugin file present
   missing layout: default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet
-  missing grant: wasm not granted — re-run `zj-radar setup zellij` to pre-authorize (or `--grant` from inside Zellij)
+  missing grant: wasm not granted — run `zj-radar setup zellij -y` to pre-authorize (or `--grant` from inside Zellij)
   ok producer: Claude plugin wired
 ```
 
