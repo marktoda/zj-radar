@@ -1459,3 +1459,102 @@ fn setup_claude_declined_runs_nothing() {
     assert!(claude_args(&shim).is_empty(), "declined consent must not invoke the plugin CLI");
     assert!(stdout.contains("skipped (declined)"), "stdout:\n{stdout}");
 }
+
+// ── Review fixes: cross-version uninstall, grant recovery path, dry-run copy ──
+
+#[test]
+fn setup_zellij_uninstall_deletes_a_v013_authored_layout() {
+    // v0.1.3's create_full_layout named the starter tab "shell"; 0.1.4 removed
+    // the name. Uninstall must still recognize the OLD byte-shape as
+    // setup-authored, or every 0.1.3-created layout is stranded on a dead
+    // alias after the alias strip.
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    let run = |args: &[&str]| {
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(args)
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success();
+    };
+    run(&["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--inject", "--yes"]);
+    let layout_path = config_dir.path().join("layouts/default.kdl");
+    let current = fs::read_to_string(&layout_path).unwrap();
+    let legacy = current.replace("    tab focus=true {", "    tab name=\"shell\" focus=true {");
+    assert_ne!(current, legacy, "fixture must actually differ (tab line drifted?)");
+    fs::write(&layout_path, &legacy).unwrap();
+
+    run(&["setup", "zellij", "--uninstall", "--yes"]);
+    assert!(
+        !layout_path.exists(),
+        "a layout authored whole by v0.1.3 setup must still be deleted on uninstall"
+    );
+}
+
+#[test]
+fn setup_zellij_yes_preseeds_when_wasm_already_installed() {
+    // The doctor's grant remedy says to re-run setup: with the wasm already at
+    // the stable path, `setup zellij -y` (no wasm source) must be able to
+    // pre-authorize — the grant is keyed by the destination path, which
+    // exists. This used to dead-end in RefuseNoWasm/LayoutOnlyInstall.
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    let run = |args: &[&str]| {
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(args)
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success();
+    };
+    run(&["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--inject", "--yes"]);
+    fs::remove_file(permissions_path(home.path())).unwrap(); // grant lost (e.g. answered n once)
+
+    run(&["setup", "zellij", "--yes"]); // the doctor's advertised recovery
+    assert!(
+        permissions_path(home.path()).exists(),
+        "wasm-less re-run must restore the grant when the wasm is already installed"
+    );
+}
+
+#[test]
+fn setup_zellij_dry_run_never_contradicts_itself_about_the_grant() {
+    // Unchanged arm + --dry-run: "would pre-authorize" and "permissions not
+    // pre-authorized — the rail will look BLANK" must not both print.
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"];
+        args.extend_from_slice(extra);
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(&args)
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+    run(&[]); // real install -> config now up to date
+    fs::remove_file(permissions_path(home.path())).unwrap(); // grant gone again
+    let output = run(&["--dry-run"]); // Unchanged arm under dry-run
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("would pre-authorize"),
+        "dry-run must announce the pre-seed; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("permissions not pre-authorized"),
+        "the BLANK-rail warning contradicts the would-pre-authorize line; stdout:\n{stdout}"
+    );
+}

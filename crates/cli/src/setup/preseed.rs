@@ -46,42 +46,20 @@ pub(crate) fn merge_grant(existing: Option<&str>, wasm_abs_path: &str) -> Result
     if crate::run::wasm_is_granted(text, wasm_abs_path) {
         return Ok(Preseed::AlreadyGranted);
     }
-    let merged = extend_last_block(text, wasm_abs_path)
-        .unwrap_or_else(|| append_block(text, wasm_abs_path));
+    let merged = append_block(text, wasm_abs_path);
     merged.parse::<kdl::KdlDocument>().map_err(|e| {
         format!("merged permissions.kdl would not parse — refusing to write it ({e})")
     })?;
     Ok(Preseed::Merged(merged))
 }
 
-/// Widen the LAST existing block for this path to the full permission set,
-/// or `None` when no block exists. Last, not first: Zellij loads the file
-/// into a map keyed by path, so with duplicate blocks the later one wins —
-/// widening an earlier one would change nothing.
-fn extend_last_block(text: &str, wasm_abs_path: &str) -> Option<String> {
-    let needle = format!("\"{wasm_abs_path}\"");
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let open = lines
-        .iter()
-        .rposition(|l| l.trim_start().starts_with(&needle) && l.contains('{'))?;
-    let close = (open + 1..lines.len()).find(|&j| lines[j].trim_start().starts_with('}'))?;
-    let granted: Vec<&str> = lines[open + 1..close].iter().map(|l| l.trim()).collect();
-
-    let mut out = String::with_capacity(text.len() + 128);
-    for (j, line) in lines.iter().enumerate() {
-        if j == close {
-            for perm in REQUIRED_PLUGIN_PERMISSIONS.iter().filter(|p| !granted.contains(p)) {
-                out.push_str("    ");
-                out.push_str(perm);
-                out.push('\n');
-            }
-        }
-        out.push_str(line);
-    }
-    Some(out)
-}
-
 /// Append a fresh full-grant block, preserving the existing text byte-for-byte.
+/// Append-ONLY by design: Zellij loads the file into a map keyed by path, so
+/// with duplicate blocks the later one wins — a trailing full block is always
+/// the effective grant, and never editing existing bytes removes the whole
+/// class of splice bugs (an in-place widener once bled our permissions into a
+/// neighboring plugin's inline-closed block). `wasm_is_granted` follows the
+/// same later-block-wins rule, which is what makes the merge idempotent.
 fn append_block(text: &str, wasm_abs_path: &str) -> String {
     let mut out = String::with_capacity(text.len() + 160);
     out.push_str(text);
@@ -133,20 +111,48 @@ mod tests {
     }
 
     #[test]
-    fn partial_block_is_extended_to_the_full_set() {
+    fn partial_block_gets_a_later_full_block() {
         // An older plugin version's narrower grant: Zellij would re-prompt
         // (illegibly) because the cached entry must be a superset of the
-        // request. The merge widens the existing block instead of appending a
-        // duplicate.
+        // request. The merge APPENDS a full block — Zellij loads the file
+        // into a map keyed by path, so the later block wins; splicing into
+        // the existing block was retired after it proved able to bleed
+        // permissions into a neighboring entry (see
+        // inline_closed_block_never_bleeds_into_the_next_entry).
         let existing = format!("\"{WASM}\" {{\n    ReadApplicationState\n    ReadCliPipes\n}}\n");
         let out = merged(Some(&existing));
-        assert!(block_grants_all(&out, WASM), "block must now cover the full set:\n{out}");
-        assert_eq!(
-            out.matches(&format!("\"{WASM}\"")).count(),
-            1,
-            "extend the block, don't append a duplicate:\n{out}"
-        );
+        assert!(out.starts_with(existing.as_str()), "existing text is never edited:\n{out}");
+        assert!(block_grants_all(&out, WASM), "the later block must cover the full set:\n{out}");
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
+    }
+
+    #[test]
+    fn inline_closed_block_never_bleeds_into_the_next_entry() {
+        // A hand-tightened one-line entry is valid KDL and passes both parse
+        // guards; the retired splice bound its closing brace to the NEXT
+        // entry and wrote our permissions into a foreign plugin's grant.
+        let foreign = "\"/nix/store/abc-room.wasm\" {\n    ReadApplicationState\n    ChangeApplicationState\n}\n";
+        let existing = format!("\"{WASM}\" {{ ReadApplicationState }}\n{foreign}");
+        let out = merged(Some(&existing));
+        assert!(
+            out.starts_with(existing.as_str()),
+            "no existing byte may change — especially not the foreign block:\n{out}"
+        );
+        assert!(block_grants_all(&out, WASM), "our grant lands as a later full block:\n{out}");
+        assert!(out.parse::<kdl::KdlDocument>().is_ok());
+    }
+
+    #[test]
+    fn full_then_partial_is_not_granted_and_gets_a_new_block() {
+        // Later-wins means a trailing partial block overrides an earlier full
+        // one: Zellij would re-prompt, so AlreadyGranted would be a lie.
+        let existing = format!(
+            "\"{WASM}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n\
+             \"{WASM}\" {{\n    ReadApplicationState\n}}\n"
+        );
+        let out = merged(Some(&existing));
+        assert!(out.starts_with(existing.as_str()));
+        assert!(block_grants_all(&out, WASM), "the appended block restores the full grant:\n{out}");
     }
 
     #[test]

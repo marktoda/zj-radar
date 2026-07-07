@@ -117,9 +117,9 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
 
     // 4. grant
     items.push(match f.granted {
-        None => CheckItem::warn("grant", "no permissions.kdl found — re-run `zj-radar setup zellij` to pre-authorize"),
+        None => CheckItem::warn("grant", "no permissions.kdl found — run `zj-radar setup zellij -y` to pre-authorize"),
         Some(true) => CheckItem::ok("grant", "wasm is granted in permissions.kdl"),
-        Some(false) => CheckItem::missing("grant", "wasm not granted — re-run `zj-radar setup zellij` to pre-authorize (or `--grant` from inside Zellij)"),
+        Some(false) => CheckItem::missing("grant", "wasm not granted — run `zj-radar setup zellij -y` to pre-authorize (or `--grant` from inside Zellij)"),
     });
 
     // 5. producer — diagnosis, not a guess: say WHICH producer the doctor saw.

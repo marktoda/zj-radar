@@ -169,14 +169,18 @@ fn title_name(title: &str) -> Option<String> {
 }
 
 fn is_pane_placeholder(title: &str) -> bool {
-    title
-        .strip_prefix("Pane #")
+    is_numbered_placeholder(title, "Pane #")
+}
+
+/// Zellij's auto-numbered defaults ("Tab #N", "Pane #N"): a prefix plus a
+/// non-empty run of ASCII digits, nothing else.
+fn is_numbered_placeholder(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
         .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn is_default_name(name: &str) -> bool {
-    name.strip_prefix("Tab #")
-        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+    is_numbered_placeholder(name, "Tab #")
 }
 
 fn cwd_basename(path: &str) -> Option<String> {

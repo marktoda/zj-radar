@@ -277,6 +277,13 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         }
         SetupPath::LayoutOnlyInstall => {
             run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+            // The doctor's grant remedy sends users here (`setup zellij -y`):
+            // with a wasm already installed at the stable path, the grant can
+            // be seeded without a wasm source — it is keyed by the
+            // destination path, which exists.
+            if wasm_dest.is_file() && !run_preseed(&wasm_dest, facts.granted, yes, dry_run) {
+                print_grant_hint_if_needed(&facts);
+            }
             return;
         }
         SetupPath::LayoutOnlyUninstall => {
@@ -463,10 +470,18 @@ fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool
             "zellij: would pre-authorize the sidebar's permissions in {} (dry-run)",
             perms_path.display()
         );
-        return false;
+        // The announcement covers the topic: returning false would make the
+        // caller print the "not pre-authorized — the rail will look BLANK"
+        // hint right under the "would pre-authorize" line, contradicting it.
+        return true;
     }
     // Its own consent line, separate from the config/layout prompts: this one
     // writes a *grant* into a file Zellij owns, so name every permission.
+    // `--yes` accepts it — the same blanket consent it gives the config.kdl
+    // and wasm writes (`confirm_and_write`). The layout is the deliberate
+    // exception (`--yes` → snippet, mutation needs `--inject`): it is the
+    // one file the user hand-authors; permissions.kdl is a cache we edit
+    // merge-safely with a .bak.
     let prompt = format!(
         "Pre-authorize the sidebar's Zellij permissions ({}) in {}?",
         crate::run::REQUIRED_PLUGIN_PERMISSIONS.join(", "),
@@ -752,7 +767,7 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
         }
     };
     match crate::layout::uninstall(&text) {
-        None if text == crate::layout::full_layout() => {
+        None if crate::layout::setup_authored_layouts().contains(&text) => {
             if dry_run {
                 println!(
                     "zellij: would delete {} (dry-run) — created whole by setup, and it \
