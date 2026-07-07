@@ -85,20 +85,15 @@ zellij
 
 Then add a **producer** so the rail has something to show — without one, agent
 panes stay dark (the sidebar deliberately doesn't guess at agents it can't
-hear from). For Claude Code, run these **inside Claude Code** (they're
-`/plugin` slash commands, not shell):
-
-```text
-/plugin marketplace add marktoda/zj-radar
-/plugin install zj-radar-claude@zj-radar
-```
-
-For Codex, run this once in a shell, then `/hooks` inside Codex to trust the
-zj-radar hook:
+hear from). One command per agent:
 
 ```sh
-zj-radar setup codex
+zj-radar setup claude   # installs the zj-radar-claude plugin via Claude Code's marketplace
+zj-radar setup codex    # wires Codex hooks — then run `/hooks` inside Codex to trust them
 ```
+
+(Prefer Claude Code's own UI? `/plugin install zj-radar-claude@zj-radar` inside
+Claude Code does the same thing — `setup claude` drives that same marketplace.)
 
 Prefer building from source (or using Nix / home-manager)? Full details, manual
 setup, and layout templates are in **[`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md)**.
