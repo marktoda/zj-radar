@@ -59,8 +59,12 @@ before the tag**. The order below matters; each step gates the next.
    a tag message.
 
    `release.yml` builds the wasm (nix) + portable CLI tarballs, checksums
-   everything, and creates the GitHub release. `e2e.yml` also runs on the tag
-   but does **not** gate the release — check its result before announcing.
+   everything, and creates the GitHub release — but only after its gates pass:
+   the fast deterministic + bash suites re-run on the tagged commit, and the
+   live E2E suite runs on both OSes (via the reusable `e2e.yml`). A red gate
+   means nothing publishes; fix, delete the tag, re-tag. After publish,
+   `verify-funnel` runs the README quickstart against the published assets —
+   check it before announcing.
 
 6. **Verify the release assets** from a clean machine (or at least a clean
    shell):
