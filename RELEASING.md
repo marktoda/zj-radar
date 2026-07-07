@@ -62,9 +62,7 @@ before the tag**. The order below matters; each step gates the next.
    everything, and creates the GitHub release — but only after its gates pass:
    the fast deterministic + bash suites re-run on the tagged commit, and the
    live E2E suite runs on both OSes (via the reusable `e2e.yml`). A red gate
-   means nothing publishes; fix, delete the tag, re-tag. After publish,
-   `verify-funnel` runs the README quickstart against the published assets —
-   check it before announcing.
+   means nothing publishes; fix, delete the tag, re-tag.
 
 6. **Verify the release assets.** The `verify-funnel` job in `release.yml`
    does this automatically after the release is created: it runs the README
