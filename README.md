@@ -46,7 +46,7 @@ wrapping your agents. It's a status rail for the session you already run.
 ## Highlights
 
 - See which Claude Code / Codex tabs are **working, done, errored, or waiting for you**.
-- **Jump directly** to the tab that needs attention (bind `attention-next` — see [Configuration](#configuration)).
+- **Jump directly** to the tab that needs attention (bind `attention-next` — see [binding keys to commands](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md#binding-keys-to-commands)).
 - Keep your existing Zellij workflow — **no new terminal, no tmux wrapper, no agent orchestrator**.
 - **Push-driven** updates via `zellij pipe`; no pane polling, no blocking host queries.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
@@ -54,11 +54,11 @@ wrapping your agents. It's a status rail for the session you already run.
 
 ## Quick start
 
-> **Requires Zellij 0.44.3 – 0.44.x.** Zellij's plugin ABI is not yet stable
-> across versions, so each zj-radar release targets one Zellij minor
-> (`zellij --version` to check). On another minor the wasm may simply fail
-> to load, and 0.44 patches before .3 lack the fix that keeps the sidebar
-> pinned during layout swaps.
+> **Requires Zellij 0.44.3 – 0.44.x** (don't have Zellij? [install it](https://zellij.dev/documentation/installation)
+> first). Zellij's plugin ABI is not yet stable across versions, so each
+> zj-radar release targets one Zellij minor (`zellij --version` to check).
+> On another minor the wasm may simply fail to load, and 0.44 patches
+> before .3 lack the fix that keeps the sidebar pinned during layout swaps.
 
 ```sh
 # 1. Install the zj-radar CLI (prebuilt: Linux x86_64/aarch64, Apple Silicon macOS;

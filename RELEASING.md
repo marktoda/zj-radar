@@ -43,6 +43,11 @@ before the tag**. The order below matters; each step gates the next.
    exact pin is what protects previously published CLIs. Never loosen it to a
    caret/minor range.
 
+   Publishing before the tag opens a short window where crates.io serves the
+   new version but its GitHub release assets don't exist yet — `cargo binstall`
+   falls back to a source build until `release.yml` finishes. Harmless, but
+   don't announce until step 6 passes.
+
 5. **Tag and push the tag:**
 
    ```sh

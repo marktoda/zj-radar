@@ -40,7 +40,9 @@
           # Pulled in at compile time via include_str! in src/reference_tests.rs.
           || (pkgs.lib.hasSuffix "/docs/rail-reference.md" path)
           # include_str!'d by the CLI's `run` command (crates/cli/src/run.rs).
-          || (pkgs.lib.hasInfix "/crates/cli/src/run_assets/" path);
+          || (pkgs.lib.hasInfix "/crates/cli/src/run_assets/" path)
+          # include_str!'d by the example-layout guard test (crates/cli/src/layout.rs).
+          || (pkgs.lib.hasSuffix "/examples/radar-sidebar.kdl" path);
       };
       commonArgs = {
         inherit src;
