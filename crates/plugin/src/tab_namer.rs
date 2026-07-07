@@ -157,11 +157,21 @@ fn name_supported(panes: &[PaneFacts], name: &str) -> bool {
 fn title_name(title: &str) -> Option<String> {
     let trimmed = title.trim_start();
     let stable = strip_activity_prefix(trimmed).trim();
-    if stable.is_empty() {
+    // "Pane #N" is Zellij's placeholder for an untitled terminal pane — no
+    // information, and it never changes, so once applied it would justify
+    // itself forever and stickiness would veto every later cwd rename.
+    // Filtered exactly like `is_default_name` filters "Tab #N".
+    if stable.is_empty() || is_pane_placeholder(stable) {
         None
     } else {
         Some(stable.to_string())
     }
+}
+
+fn is_pane_placeholder(title: &str) -> bool {
+    title
+        .strip_prefix("Pane #")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn is_default_name(name: &str) -> bool {
@@ -265,6 +275,39 @@ mod tests {
         assert!(!is_default_name("Tab #"));
         assert!(!is_default_name("Tab #x"));
         assert!(!is_default_name("custom"));
+    }
+
+    #[test]
+    fn pane_placeholder_title_is_not_a_name_candidate() {
+        // Zellij titles an untitled terminal pane "Pane #N" (its own
+        // placeholder, not information). Naming a tab after it is wrong twice
+        // over: the name is meaningless, and because the placeholder never
+        // changes it justifies the applied name forever — stickiness then
+        // vetoes every later cwd-derived rename (observed live: a container
+        // shell booted at `/` left the tab stuck on "Pane #1" through every
+        // cd). Filter it like `is_default_name` filters "Tab #N".
+        assert_eq!(title_name("Pane #1"), None);
+        assert_eq!(title_name("Pane #12"), None);
+        assert_eq!(title_name("Pane #"), Some("Pane #".into()));
+        assert_eq!(title_name("Pane #x"), Some("Pane #x".into()));
+        assert_eq!(title_name("pane #1"), Some("pane #1".into()));
+    }
+
+    #[test]
+    fn placeholder_titled_tab_stays_default_until_a_cwd_arrives_then_renames() {
+        let mut namer = TabNamer::default();
+        let placeholder = PaneFacts { title: "Pane #1".into(), focused: true, ..PaneFacts::default() };
+
+        // No cwd fact yet: the placeholder title must produce NO rename — the
+        // tab keeps Zellij's default (which stays overwritable) rather than
+        // being branded "Pane #1" (which would read as a manual name forever).
+        let tabs = vec![tab(1, "Tab #1", vec![placeholder.clone()])];
+        assert_eq!(namer.rename(&tabs, NamingMode::Managed), Vec::new());
+
+        // The cwd fact lands (bootstrap or CwdChanged): the tab takes it.
+        let with_cwd = PaneFacts { cwd: Some("/opt".into()), ..placeholder };
+        let tabs = vec![tab(1, "Tab #1", vec![with_cwd])];
+        assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("opt"));
     }
 
     #[test]
