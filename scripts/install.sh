@@ -145,4 +145,10 @@ main() {
   say "next: 'zj-radar setup zellij --download' to install the sidebar, then 'zj-radar setup' to wire Codex (Claude Code: install the plugin from inside Claude — see the README)"
 }
 
-main "$@"
+# Test seam: scripts/tests/install.bats sources this file with
+# ZJ_RADAR_INSTALL_TEST=1 to exercise the functions above in isolation
+# (stubbing uname/download). A curl|sh run falls through to main, and the
+# guard keeps the truncation property: cut anywhere above, nothing executes.
+if [ "${ZJ_RADAR_INSTALL_TEST:-0}" != 1 ]; then
+  main "$@"
+fi
