@@ -86,7 +86,7 @@ layout {
         }
     }
 
-    tab name="shell" focus=true {
+    tab focus=true {
         pane
     }
 }

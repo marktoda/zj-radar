@@ -97,7 +97,7 @@ pub(crate) const SWAP_BLOCKS: &str = r#"    swap_tiled_layout name="vertical" {
 /// directly; the drift-guard test enforces this.
 pub(crate) fn full_layout() -> String {
     format!(
-        "layout {{\n{DEFAULT_TAB_TEMPLATE}\n\n{NEW_TAB_TEMPLATE}\n\n{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}\n\n    tab name=\"shell\" focus=true {{\n        pane\n    }}\n}}\n"
+        "layout {{\n{DEFAULT_TAB_TEMPLATE}\n\n{NEW_TAB_TEMPLATE}\n\n{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}\n\n    tab focus=true {{\n        pane\n    }}\n}}\n"
     )
 }
 
@@ -499,6 +499,25 @@ mod tests {
         assert!(l.contains("tab_template name=\"ui\""));
         assert_eq!(l.matches("swap_tiled_layout").count(), 3);
         assert!(l.contains("plugin location=\"radar\""));
+    }
+
+    #[test]
+    fn full_layout_starter_tab_is_unnamed_so_the_namer_can_rename_it() {
+        // An explicitly named tab reads as a *manual* rename to the plugin's
+        // TabNamer (which only overwrites Zellij's `Tab #N` default or its own
+        // applied names), permanently disabling smart tab naming on the
+        // starter tab of every setup-created layout and every `run` session.
+        // The explicit tab NODE must stay (a default_tab_template drops a
+        // tab's floating_panes) — only the name attribute must go.
+        let l = full_layout();
+        assert!(
+            l.contains("tab focus=true"),
+            "the explicit starter tab node must remain:\n{l}"
+        );
+        assert!(
+            !l.contains("tab name="),
+            "a named starter tab permanently opts out of smart naming:\n{l}"
+        );
     }
 
     #[test]
