@@ -141,3 +141,21 @@ jobs:
             dist/zj-radar-*.tar.gz.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  # ── The stranger test: README quickstart verbatim against THESE assets ──────
+  # RELEASING.md step 6, automated: a pristine container runs the installer,
+  # `setup zellij --download --inject --yes`, and a real Zellij on a PTY —
+  # asserting the pre-seeded grant (rail renders, no permission prompt) and
+  # cwd-driven tab naming. ZJ_RADAR_VERSION pins every download to this tag,
+  # so prereleases are covered and there is no `latest` race. Don't announce
+  # a release until this job is green.
+  verify-funnel:
+    needs: release
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the fresh-machine funnel against the published assets
+        env:
+          ZJ_RADAR_VERSION: ${{ github.ref_name }}
+        run: bash scripts/funnel.sh
