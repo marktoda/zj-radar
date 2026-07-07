@@ -351,9 +351,11 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 "zellij: config already up to date ({})",
                 config_path.display()
             );
-            // alias already up to date — still offer injection.
+            // alias already up to date — still offer injection and the grant.
             run_layout_inject(&layout_path, inject_flag, yes, dry_run);
-            print_grant_hint_if_needed(&facts);
+            if !run_preseed(&wasm_dest, facts.granted, yes, dry_run) {
+                print_grant_hint_if_needed(&facts);
+            }
             print_producer_hint_if_needed(&facts);
         }
         Outcome::Conflict => {
@@ -382,6 +384,7 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                     run_layout_uninstall(&layout_path, dry_run);
                 } else {
                     run_layout_inject(&layout_path, inject_flag, yes, dry_run);
+                    run_preseed(&wasm_dest, facts.granted, yes, dry_run);
                 }
                 return;
             }
@@ -421,11 +424,74 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             } else {
                 println!("zellij: wasm installed at {}", wasm_dest.display());
                 run_layout_inject(&layout_path, inject_flag, yes, dry_run);
-                print_grant_hint_if_needed(&facts);
+                if !run_preseed(&wasm_dest, facts.granted, yes, dry_run) {
+                    print_grant_hint_if_needed(&facts);
+                }
                 print_producer_hint_if_needed(&facts);
             }
         }
     }
+}
+
+/// Pre-authorize the sidebar's permissions in Zellij's `permissions.kdl` at
+/// the tail of a `setup zellij` install. Returns whether the grant is in
+/// place afterwards (pre-existing or just written) — `false` routes the
+/// caller to the manual first-launch hint. Zellij reads the file fresh on
+/// every plugin load, so the sidebar's own `request_permission` auto-resolves
+/// against this entry and the user never meets Zellij's native prompt, which
+/// is illegible at rail width (zellij#4749). Best-effort by design: every
+/// refusal degrades to the hint, never to a failed install.
+fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool) -> bool {
+    use super::preseed::{merge_grant, Preseed};
+    if granted == Some(true) {
+        return true;
+    }
+    let Some(perms_path) = crate::run::zellij_permissions_path() else {
+        return false; // no resolvable cache dir — the hint still covers first launch
+    };
+    let existing = std::fs::read_to_string(&perms_path).ok();
+    let merged = match merge_grant(existing.as_deref(), &wasm_dest.display().to_string()) {
+        Ok(Preseed::AlreadyGranted) => return true,
+        Ok(Preseed::Merged(text)) => text,
+        Err(e) => {
+            eprintln!("zellij: not pre-authorizing permissions — {e}");
+            return false;
+        }
+    };
+    if dry_run {
+        println!(
+            "zellij: would pre-authorize the sidebar's permissions in {} (dry-run)",
+            perms_path.display()
+        );
+        return false;
+    }
+    // Its own consent line, separate from the config/layout prompts: this one
+    // writes a *grant* into a file Zellij owns, so name every permission.
+    let prompt = format!(
+        "Pre-authorize the sidebar's Zellij permissions ({}) in {}?",
+        crate::run::REQUIRED_PLUGIN_PERMISSIONS.join(", "),
+        perms_path.display()
+    );
+    if !yes && !super::confirm(&prompt) {
+        println!("zellij: skipped permission pre-authorization");
+        return false;
+    }
+    if let Some(parent) = perms_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("zellij: not pre-authorizing permissions — create cache dir failed ({e})");
+            return false;
+        }
+    }
+    if let Err(e) = super::write_atomic(&perms_path, &merged) {
+        eprintln!("zellij: not pre-authorizing permissions — write failed ({e})");
+        return false;
+    }
+    println!(
+        "zellij: pre-authorized the sidebar ({}) — the rail is live on next launch; \
+         already-running sessions pick it up on a new tab or restart",
+        perms_path.display()
+    );
+    true
 }
 
 /// Emit the first-launch grant instructions at the tail of a `setup zellij`

@@ -8,6 +8,7 @@ mod codex;
 mod detect;
 mod download;
 mod edit;
+mod preseed;
 mod zellij;
 pub(crate) use analyze::*;
 pub(crate) use check::*;

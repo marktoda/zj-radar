@@ -875,11 +875,202 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
         "already-granted install must not print the first-launch grant hint; stdout:\n{stdout}"
     );
 
-    // Positive control: the identical install without a grant keeps the hint.
+    // With no prior grant, a consented install now pre-seeds the grant itself
+    // (see the pre-seed section below) — the first-launch hint is superseded.
     let stdout = install_stdout(false);
     assert!(
+        stdout.contains("pre-authorized"),
+        "ungranted install must pre-seed the grant; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("press y to"),
+        "a pre-seeded install needs no first-launch walkthrough; stdout:\n{stdout}"
+    );
+}
+
+// ── Pre-seeded permission grant ───────────────────────────────────────────────
+//
+// Zellij reads permissions.kdl fresh on every plugin load, so a grant written
+// at install time auto-resolves the sidebar's first-run prompt — the user
+// never meets Zellij's native y/n overlay, which is illegible at rail width
+// (zellij#4749) and used to present as a silently blank sidebar. The merge is
+// conservative: foreign entries survive byte-for-byte, malformed files are
+// refused (Zellij silently resets an unparseable file on its next write), and
+// dry-run announces without writing.
+
+/// Zellij's permissions.kdl under an isolated HOME, matching
+/// `run::permissions_path_in` per OS (tests set both HOME and XDG_CACHE_HOME).
+fn permissions_path(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    return home.join("Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl");
+    #[cfg(not(target_os = "macos"))]
+    return home.join(".cache/zellij/permissions.kdl");
+}
+
+/// One consented full install (`--wasm … --yes`) against isolated config,
+/// HOME, and cache dirs. Returns (config_dir, home, stdout, stderr).
+fn preseed_install(seed_permissions: Option<&str>) -> (TempDir, TempDir, String, String) {
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    if let Some(seed) = seed_permissions {
+        let perms = permissions_path(home.path());
+        fs::create_dir_all(perms.parent().unwrap()).unwrap();
+        fs::write(&perms, seed).unwrap();
+    }
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    (config_dir, home, stdout, stderr)
+}
+
+const FULL_PERMISSION_SET: [&str; 4] =
+    ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
+
+#[test]
+fn setup_zellij_preseeds_grant_on_install() {
+    let (config_dir, home, stdout, _) = preseed_install(None);
+    let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+
+    let perms = fs::read_to_string(permissions_path(home.path()))
+        .expect("a consented install must write permissions.kdl");
+    assert!(
+        perms.contains(&format!("\"{}\"", wasm_dest.display())),
+        "grant must be keyed by the absolute wasm destination:\n{perms}"
+    );
+    for perm in FULL_PERMISSION_SET {
+        assert!(perms.contains(perm), "{perm} missing from the grant:\n{perms}");
+    }
+    assert!(
+        stdout.contains("pre-authorized"),
+        "the install epilogue must say the grant was written; stdout:\n{stdout}"
+    );
+
+    // The doctor reads the same file the same way: grant must now be ok.
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--check"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .assert()
+        .get_output()
+        .clone();
+    let check = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        check.contains("ok grant"),
+        "the doctor must see the pre-seeded grant; check output:\n{check}"
+    );
+}
+
+#[test]
+fn setup_zellij_preseed_preserves_foreign_entries() {
+    let foreign = "\"/nix/store/abc-room.wasm\" {\n    ReadApplicationState\n    ChangeApplicationState\n}\n";
+    let (config_dir, home, _, _) = preseed_install(Some(foreign));
+    let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+
+    let perms = fs::read_to_string(permissions_path(home.path())).unwrap();
+    assert!(
+        perms.starts_with(foreign),
+        "another plugin's grant must survive byte-for-byte:\n{perms}"
+    );
+    assert!(
+        perms.contains(&format!("\"{}\"", wasm_dest.display())),
+        "our grant must be appended alongside:\n{perms}"
+    );
+    // Zellij owns this file: the standard .bak restore point must exist.
+    let bak = permissions_path(home.path()).with_file_name("permissions.kdl.zj-radar.bak");
+    assert_eq!(
+        fs::read_to_string(&bak).expect(".bak must be written before we touch the file"),
+        foreign,
+        ".bak must hold the pre-edit contents"
+    );
+}
+
+#[test]
+fn setup_zellij_preseed_refuses_malformed_permissions_kdl() {
+    // An unclosed block: Zellij would treat the whole file as empty and reset
+    // it on its next write — we must not touch it, and the install must still
+    // succeed with the manual first-launch hint as the fallback.
+    let malformed = "\"/a.wasm\" {\n    ReadApplicationState\n";
+    let (_config_dir, home, stdout, stderr) = preseed_install(Some(malformed));
+
+    assert_eq!(
+        fs::read_to_string(permissions_path(home.path())).unwrap(),
+        malformed,
+        "a malformed permissions.kdl must be left untouched"
+    );
+    assert!(
+        stderr.contains("refusing"),
+        "the refusal must be reported; stderr:\n{stderr}"
+    );
+    assert!(
         stdout.contains("press y to"),
-        "ungranted install must keep the grant hint; stdout:\n{stdout}"
+        "with no pre-seed the first-launch hint must return; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn setup_zellij_dry_run_would_preseed_but_writes_nothing() {
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--dry-run"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout.contains("would pre-authorize"),
+        "dry-run must announce the pre-seed; stdout:\n{stdout}"
+    );
+    assert!(
+        !permissions_path(home.path()).exists(),
+        "dry-run must not create permissions.kdl"
+    );
+}
+
+#[test]
+fn setup_zellij_preseed_declined_falls_back_to_hint() {
+    let (config_dir, wasm_dir) = isolated_zellij_install_env();
+    let wasm_path = wasm_dir.path().join("zj_radar.wasm");
+    let home = TempDir::new().unwrap();
+    // Interactive run: accept the wasm/config prompt ("y"), then EOF declines
+    // the layout and pre-authorization prompts.
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap()])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        !permissions_path(home.path()).exists(),
+        "a declined pre-authorization must write nothing"
+    );
+    assert!(
+        stdout.contains("press y to"),
+        "declining the pre-seed must fall back to the first-launch hint; stdout:\n{stdout}"
     );
 }
 
