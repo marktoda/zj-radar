@@ -71,8 +71,7 @@ before the tag**. The order below matters; each step gates the next.
    (The installer prints a "not on your PATH" note for the sandbox dir —
    expected; invoke by full path.)
 
-## One-time cleanup after v0.1.2 ships
+## Yanking
 
-Done 2026-07-06: yanked `zj-radar 0.1.0` and `zj-radar-core 0.1.0`. (For future
-yanks: `cargo yank` needs a crates.io token with the **yank** scope — a
-publish-only token gets `403 Forbidden`.)
+`cargo yank` needs a crates.io token with the **yank** scope — a publish-only
+token gets `403 Forbidden`.

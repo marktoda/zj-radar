@@ -849,8 +849,7 @@ fn dispatched_grant_float_enables_ungranted_attached_session() {
 ///
 /// A 41-outer-width sweep and live mid-session resizes were also run during
 /// the investigation and found zero gap at every point; those aren't kept
-/// here (too slow for CI) — see `.superpowers/sdd/task-3-probe-report.md` for
-/// the full investigation. This test is the load-bearing pin: it proves the
+/// here (too slow for CI). This test is the load-bearing pin: it proves the
 /// plugin-output → outer-terminal seam is gap-free, so the live shortfall is
 /// a ghostty-side presentation artifact, not a zj-radar under-paint bug.
 #[test]

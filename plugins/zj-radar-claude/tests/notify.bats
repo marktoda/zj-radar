@@ -239,3 +239,19 @@ EOF
   (( SECONDS - start < 10 ))
   [ -s "$RECORD" ]  # the broadcast was still attempted before the hang
 }
+
+@test "malformed ZJ_RADAR_PIPE_TIMEOUT falls back to the 5s deadline (fail closed)" {
+  # The watchdog subshell inherits `set -e`: an override that `sleep` rejects
+  # would kill the subshell before its `kill` line runs, silently making the
+  # send unbounded again. The producer must sanitize the value instead.
+  cat >"$FAKEBIN/zellij" <<EOF
+#!/usr/bin/env bash
+printf '%s\t\n' "\$*" >> "$RECORD"
+exec sleep 60
+EOF
+  chmod +x "$FAKEBIN/zellij"
+  local start=$SECONDS
+  run bash -c "echo '{\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp\"}' | ZJ_RADAR_PIPE_TIMEOUT=abc '$SCRIPT' done"
+  [ "$status" -eq 0 ]
+  (( SECONDS - start < 30 ))  # 5s fallback + slack, nowhere near the 60s hang
+}

@@ -57,6 +57,22 @@ prints the snippet, never mutates a layout), and `--force` only if you want to
 replace an existing unmanaged `radar` alias. The installer also honors
 `ZJ_RADAR_VERSION` (release tag) and `ZJ_RADAR_BIN_DIR` (install directory).
 
+## Try it without touching your config (`zj-radar run`)
+
+`zj-radar run` launches a throwaway Zellij session with the rail already wired
+in — it owns its session config, so nothing in your `~/.config/zellij` is read
+or edited. The fine print of that ownership:
+
+- Your own Zellij keybinds and theme don't apply inside `run` sessions.
+- Attaching to a session `run` didn't create asks first.
+- On top of the Zellij defaults, its config binds `Ctrl y` (summon the
+  permission-grant float) and `Alt 1`–`Alt 9` (tab jumps), so those chords
+  won't reach apps inside the panes — readline's yank and emacs's `M-digit`
+  among them.
+- It uses the wasm bundled into the binary; if you installed via
+  `cargo install` (no bundled wasm), it downloads the matching wasm on first
+  use.
+
 ## Build from source instead
 
 No prebuilt binary for your platform, or hacking on zj-radar? Build the wasm and
@@ -150,7 +166,7 @@ Zellij discard its built-in swap layouts, so `Alt+[` / `Alt+]` cycling stops
 working (and a swap that doesn't include the rail would swap it away). Copy the
 `tab_template name="ui"` + `swap_tiled_layout` blocks from the example layout
 below, or let `--inject` add them — and if your layout already has its own
-swaps, see [Alt+] hides the rail](troubleshooting.md#alt-hides-the-rail-or-stops-cycling).
+swaps, see [swap-layout cycling stops working](troubleshooting.md#alt-hides-the-rail-or-stops-cycling).
 
 Prefer a complete starting layout? Copy
 [`examples/radar-sidebar.kdl`](../examples/radar-sidebar.kdl) to
@@ -283,7 +299,7 @@ plugins {
 ```
 
 Tagged releases also publish a prebuilt wasm artifact that can be pinned without
-a Rust toolchain (mirrors the older `room`/`smart-tabs` vendoring this replaces):
+a Rust toolchain (so pinned Nix setups need no Rust toolchain):
 
 ```nix
 zjRadarWasm = pkgs.fetchurl {

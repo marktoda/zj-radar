@@ -133,8 +133,8 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
 The plugin applies the latest broadcast per pane (the pipe delivers in order, so
 there is no sequence number). It also defends itself: it strips ANSI/control
 chars and Unicode bidi-control characters, folds newlines to spaces, and
-silently ignores unknown fields, so extra keys never break a producer. The
-limits, so you don't have to pre-truncate: `repo`/`branch` are cut to 40 chars,
+silently ignores unknown fields, so extra keys never break a producer. The plugin
+also enforces field limits, so you don't have to pre-truncate: `repo`/`branch` are cut to 40 chars,
 `msg`/`task` to 60, `source` to 16 — and a payload over **64 KB** is dropped
 whole. `pane.type` must be `"terminal"`; any other pane type is rejected.
 

@@ -265,12 +265,20 @@ fi
 # stay sequential and an expired send was going nowhere anyway. GNU `timeout`
 # isn't on stock macOS, hence the hand-rolled sleep+kill pair.
 pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-5}"
+# Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
+# so a value `sleep` rejects would kill it before the `kill` line runs and the
+# send would silently be unbounded again — the exact hazard this exists to
+# prevent. Whole seconds only (suffix forms like `10s` parse in GNU sleep but
+# not in the Rust producer's u64 parse; the two must stay in sync).
+[[ "$pipe_deadline" =~ ^[0-9]+$ ]] || pipe_deadline=5
 zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 &
 pipe_pid=$!
 ( sleep "$pipe_deadline"; kill "$pipe_pid" ) >/dev/null 2>&1 &
 watchdog=$!
 wait "$pipe_pid" 2>/dev/null || true
-# Disarm the watchdog after a normal send so it can't kill a recycled pid.
+# Disarm the watchdog after a normal send — narrows (doesn't fully close) the
+# window where its expiring `kill` could target a recycled pid; the residual
+# race is microseconds wide against a pid-reuse cycle, accepted.
 # Its orphaned sleep lingers ≤ $pipe_deadline seconds and exits without acting
 # (the kill line is unreachable once the subshell is gone) — accepted noise;
 # killing the whole group would need job control, which hook scripts don't get.

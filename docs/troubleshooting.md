@@ -116,6 +116,28 @@ a floating pane — see
 [First-run permission prompt](install.md#first-run-permission-prompt) — gives
 every later per-tab sidebar a cached grant to reuse.
 
+## Session crashes with "too many open files" (EMFILE)
+
+**Symptom:** in a long-lived session with active producers, `zellij pipe`
+calls (and hooks that fire them) hang, stuck `zellij pipe` processes pile up,
+and eventually the whole Zellij server crashes with `Too many open files` in
+its log.
+
+**Why:** `zellij pipe` is not fire-and-forget — Zellij holds the client
+process until *every* loaded plugin instance consumes the message. A sidebar
+instance parked at an unanswered **permission prompt** consumes nothing, so
+each broadcast leaves one blocked client pinning two server file descriptors,
+at hook rate, until the server hits its FD limit.
+
+**Fix:** grant the prompt so no instance stays wedged (see
+[First-run prompt coordination](#first-run-prompt-coordination) above), and
+make sure your producers are current: bundled producers bound every send with
+a 5-second deadline (`ZJ_RADAR_PIPE_TIMEOUT`, integer seconds, to override),
+so a wedged sidebar can no longer accumulate blocked clients. Killing a
+deadline-expired client loses nothing — the message is already queued
+server-side. Third-party producers should apply the same bound — see
+[Bound your sends](producers.md#writing-your-own-producer).
+
 ## Cards look flat — no colored row backgrounds
 
 **Symptom:** the rail renders and the status dots are colored, but the per-row

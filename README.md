@@ -1,5 +1,10 @@
 # zj-radar
 
+A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
+status for every tab — *working*, *waiting for you*, *done*, or *error* — with
+repo·branch, elapsed time, and the last message. Click a row to jump to that
+tab.
+
 <p align="center">
   <a href="https://github.com/marktoda/zj-radar/actions/workflows/ci.yml">
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/marktoda/zj-radar/ci.yml?branch=main&label=ci">
@@ -24,18 +29,9 @@
   <a href="#producers">Producers</a>
 </p>
 
-A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
-status for every tab — *working*, *waiting for you*, *done*, or *error* — with
-repo·branch, elapsed time, and the last message. Click a row to jump to that
-tab.
-
-![zj-radar — every agent, every tab, at a glance](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/zj-radar-hero.png)
+![zj-radar — live per-tab agent and command status in a Zellij sidebar](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/hero.gif)
 
 `◆ needs you` · `⠋ working` · `● done` · `✗ error` · `○ idle / plain terminal`
-
-*Live in a real session:*
-
-![zj-radar — live per-tab agent and command status in a Zellij sidebar](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/hero.gif)
 
 ## What is it?
 
@@ -44,6 +40,8 @@ permission prompt or finish. In a many-tab Zellij session it's easy to lose
 track of which agent needs you. zj-radar surfaces that at a glance, in a pinned
 left column that survives swap-layout cycling — without launching, owning, or
 wrapping your agents. It's a status rail for the session you already run.
+
+![zj-radar — every agent, every tab, at a glance](https://raw.githubusercontent.com/marktoda/zj-radar/main/docs/media/zj-radar-hero.png)
 
 ## Highlights
 
@@ -68,24 +66,20 @@ wrapping your agents. It's a status rail for the session you already run.
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
 
-# 2. Install the sidebar wasm + register the `radar` alias in config.kdl
-#    (--download fetches the wasm built from this CLI's own version)
+# 2. Install the sidebar wasm + register the `radar` alias in config.kdl.
+#    Prompts to inject the rail into your default layout — answer y, or paste
+#    the printed snippet. (--download fetches the wasm for this CLI's version)
 zj-radar setup zellij --download
 
-# 3. Prompts to inject the rail into your default layout; answer y or paste the
-#    printed snippet manually. Then start (or restart) Zellij:
+# 3. Start (or restart) Zellij
 zellij
 ```
 
 > **Just want to see it?** `zj-radar run` launches a throwaway Zellij session
-> with the rail already wired in — its own config, no edits to yours. (The flip
-> side: inside `run` sessions your own Zellij keybinds/theme don't apply, and
-> attaching to a session `run` didn't create asks first.) Its config also binds
-> `Ctrl y` (summon the permission-grant float) and `Alt 1`–`Alt 9` (tab jumps)
-> on top of the Zellij defaults, so those chords won't reach apps inside the
-> panes — readline's yank and emacs's `M-digit` among them. It uses the wasm
-> bundled into the binary (or, if you installed via `cargo install`, downloads
-> the matching wasm on first use).
+> with the rail already wired in — its own config, no edits to yours. Because
+> it owns the session config, your usual keybinds/theme don't apply inside it;
+> the fine print is in
+> [docs/install.md](https://github.com/marktoda/zj-radar/blob/main/docs/install.md#try-it-without-touching-your-config-zj-radar-run).
 
 Then add a **producer** so the rail has something to show. For Claude Code, run
 these **inside Claude Code** (they're `/plugin` slash commands, not shell):

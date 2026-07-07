@@ -148,9 +148,10 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 | Source event                                  | Status    |
 |-----------------------------------------------|-----------|
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running` |
-| Claude `Notification` (permission/idle/elicitation)      | `pending` |
+| Claude `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
 | Claude `Stop`                                 | `done`    |
 | Claude `SessionStart` (`source:"clear"` only) | `idle` (resets a stale row on `/clear`) |
+| Claude `SessionEnd`                           | `idle` (a closed session recedes instead of freezing its last status) |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
 | Codex `PermissionRequest`                     | `pending` |
 | Codex `Stop`                                  | `done`    |
