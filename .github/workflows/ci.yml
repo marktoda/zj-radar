@@ -80,6 +80,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: deterministic suite (L1-L4)
         run: nix develop -c cargo test --workspace --all-features
+      # notify.sh and install.sh run on real macOS machines (BSD userland, not
+      # GNU) — the E2BIG argv bug only surfaced when Linux CI first ran the
+      # bash suite, and the mirror-image platform bug would need this.
+      - name: bash hook + installer tests (L3)
+        run: nix develop -c just test-bash
 
   # ── MSRV honesty check ─────────────────────────────────────────────────────
   # `rust-version` in Cargo.toml is a published claim, but dev and the jobs
@@ -114,6 +119,9 @@ jobs:
   hermetic:
     if: github.event_name == 'schedule' || github.base_ref == 'main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write   # nightly-failure-issue (scheduled runs only)
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v30
@@ -126,3 +134,31 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: nix flake check (hermetic clippy + tests + wasm build)
         run: nix flake check -L
+      - name: file a failure issue (nightly visibility)
+        if: failure() && github.event_name == 'schedule'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ github.token }}
+
+  # ── Dependency advisories (nightly) ──────────────────────────────────────────
+  # zj-radar ships static binaries and a wasm artifact to end users; a RUSTSEC
+  # advisory in a transitive dep would otherwise surface only via a user
+  # report. Nightly (not per-PR) on purpose: the advisory DB updates daily, so
+  # a per-PR gate fails PRs for problems they didn't introduce. Config in
+  # deny.toml; run `cargo deny check` locally to reproduce.
+  deny:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write   # nightly-failure-issue
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses sources
+      - name: file a failure issue (nightly visibility)
+        if: failure() && github.event_name == 'schedule'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ github.token }}

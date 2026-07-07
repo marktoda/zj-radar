@@ -24,9 +24,17 @@ jobs:
   funnel:
     runs-on: ubuntu-latest
     container: ubuntu:24.04   # pristine userland: no preinstalled zellij, clean HOME
+    permissions:
+      contents: read
+      issues: write   # nightly-failure-issue (scheduled runs only)
     steps:
       - uses: actions/checkout@v4
       - name: Run the fresh-machine funnel
         env:
           ZJ_RADAR_VERSION: ${{ inputs.version }}
         run: bash scripts/funnel.sh
+      - name: file a failure issue (nightly visibility)
+        if: failure() && github.event_name == 'schedule'
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ github.token }}

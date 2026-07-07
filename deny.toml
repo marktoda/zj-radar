@@ -1,0 +1,52 @@
+# cargo-deny config — run by ci.yml's nightly `deny` job; reproduce locally
+# with `cargo deny check` (cargo install cargo-deny / nix run nixpkgs#cargo-deny).
+#
+# Scope: advisories (RUSTSEC vulns in the tree we ship to users), licenses
+# (everything we statically link must be permissive), and sources (all deps
+# from crates.io — no surprise git/registry pulls). `bans` is deliberately
+# absent: duplicate-version noise without a policy need here.
+
+# Scan the SHIPPED tree only: dev-deps (the E2E PTY harness pulls portable-pty
+# → the unmaintained `serial` crate, RUSTSEC-2017-0008) never reach a user's
+# machine. Build-dependencies stay in scope.
+[graph]
+exclude-dev = true
+
+[advisories]
+version = 2
+# Both are UNMAINTAINED notices (not vulns) pinned by zellij-tile 0.44's
+# clap 3 — nothing to upgrade on our side. Revisit on the next zellij bump;
+# cargo-deny warns if an ignore stops matching, so these can't go stale
+# silently.
+ignore = [
+  { id = "RUSTSEC-2024-0375", reason = "atty, via zellij-tile → zellij-utils → clap 3 (upstream pin)" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, via zellij-tile → clap_derive 3 (compile-time only, upstream pin)" },
+]
+
+# Every license below is present in the shipped tree today (cargo-deny warns
+# on unmatched allowances, keeping this list honest). All permissive or
+# weak-copyleft (MPL-2.0 is file-level; we don't modify those deps).
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "0BSD",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+  "Unicode-3.0",
+]
+
+# No multiple-versions policy: duplicate minor versions in a plugin+CLI tree
+# are noise, not risk. Advisories/licenses/sources are the signal here.
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
