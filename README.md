@@ -83,17 +83,26 @@ zellij
 > the fine print is in
 > [docs/install.md](https://github.com/marktoda/zj-radar/blob/main/docs/install.md#try-it-without-touching-your-config-zj-radar-run).
 
-Then add a **producer** so the rail has something to show. For Claude Code, run
-these **inside Claude Code** (they're `/plugin` slash commands, not shell):
+Then add a **producer** so the rail has something to show — without one, agent
+panes stay dark (the sidebar deliberately doesn't guess at agents it can't
+hear from). For Claude Code, run these **inside Claude Code** (they're
+`/plugin` slash commands, not shell):
 
 ```text
 /plugin marketplace add marktoda/zj-radar
 /plugin install zj-radar-claude@zj-radar
 ```
 
+For Codex, run this once in a shell, then `/hooks` inside Codex to trust the
+zj-radar hook:
+
+```sh
+zj-radar setup codex
+```
+
 Prefer building from source (or using Nix / home-manager)? Full details, manual
 setup, and layout templates are in **[`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md)**.
-Codex and custom producers are in **[`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md)**.
+Custom producers are in **[`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md)**.
 
 ## How it works
 
