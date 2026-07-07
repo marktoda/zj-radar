@@ -36,6 +36,26 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
+    /// Install a fake `name` binary that records argv like `add_recorder`, then
+    /// hangs for `secs` — models a `zellij pipe` blocked by a wedged plugin
+    /// (Zellij's CLI-pipe backpressure). `exec` so the shim process IS the
+    /// sleeper: a kill from the code under test must reap the hung process
+    /// itself, not an intermediate shell.
+    #[allow(dead_code)] // each tests/*.rs is its own crate; not all use this
+    pub fn add_hanging_recorder(&self, name: &str, secs: u32) {
+        let log = self.dir.path().join(format!("{name}.log"));
+        let script = format!(
+            "#!/usr/bin/env bash\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
+            log = log
+        );
+        let bin = self.dir.path().join(name);
+        fs::write(&bin, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin, perms).unwrap();
+    }
+
     /// Install a fake `git` that answers the `-C <cwd>` rev-parse/branch calls
     /// that `cli/notify.rs` makes.
     ///

@@ -263,9 +263,46 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         println!("{payload}");
         return;
     }
-    let _ = Command::new("zellij")
+    // Bounded send. `zellij pipe` blocks until every loaded plugin instance
+    // consumes the message (CLI-pipe backpressure) — a rail wedged at the
+    // permission prompt blocks it forever, and hooks fire per tool call, so an
+    // unbounded wait leaks one blocked client + two server FDs per call until
+    // the Zellij server EMFILEs and the whole session crashes. The message is
+    // queued server-side the moment it's sent; killing the client past the
+    // deadline retracts nothing and keeps sends sequential (latest-wins holds).
+    let Ok(mut child) = Command::new("zellij")
         .args(["pipe", "--name", STATUS_PIPE_NAME, "--", &payload])
-        .output();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return; // zellij missing/unspawnable — same silent no-op as before
+    };
+    let deadline = std::time::Instant::now() + pipe_send_timeout();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return, // sent (or zellij errored) — done either way
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => break, // deadline hit, or wait itself failed
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait(); // reap — kill without wait leaves a zombie per hook
+}
+
+/// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
+/// seconds — shared with notify.sh's bash fallback, keep the two in sync)
+/// overrides for tests; 5s is orders of magnitude above a healthy send
+/// (milliseconds) yet caps a wedged one at hook rate.
+fn pipe_send_timeout() -> std::time::Duration {
+    std::env::var("ZJ_RADAR_PIPE_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(5))
 }
 
 #[cfg(test)]

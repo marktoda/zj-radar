@@ -217,3 +217,25 @@ EOF
   run last_payload
   [[ "$output" == *'"repo":"scratch"'* ]]
 }
+
+@test "hung zellij pipe is killed at the send deadline (server FD-leak guard)" {
+  # A rail instance wedged at Zellij's permission prompt blocks `zellij pipe`
+  # forever (backpressure: the client is held until every plugin consumes the
+  # message). Hooks fire per tool call, so unbounded blocked clients each pin
+  # two server FDs until the server EMFILEs and the whole session crashes.
+  # The producer must bound the send; killing the client never retracts the
+  # message (it is already queued server-side), so latest-wins still holds.
+  # `exec` so the shim process IS the sleeper — the watchdog's kill must reap
+  # the actual hung process, not an intermediate shell.
+  cat >"$FAKEBIN/zellij" <<EOF
+#!/usr/bin/env bash
+printf '%s\t\n' "\$*" >> "$RECORD"
+exec sleep 60
+EOF
+  chmod +x "$FAKEBIN/zellij"
+  local start=$SECONDS
+  run bash -c "echo '{\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp\"}' | ZJ_RADAR_PIPE_TIMEOUT=1 '$SCRIPT' done"
+  [ "$status" -eq 0 ]
+  (( SECONDS - start < 10 ))
+  [ -s "$RECORD" ]  # the broadcast was still attempted before the hang
+}

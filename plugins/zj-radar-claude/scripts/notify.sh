@@ -255,4 +255,23 @@ fi
 # overtaken by the preceding PostToolUse→running — the stale spinner stuck
 # until the next event. `zellij pipe` is a fast local write; `|| true` keeps
 # a dead/absent server from erroring into Claude.
-zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 || true
+#
+# …but bounded: a rail instance wedged at Zellij's permission prompt blocks
+# `zellij pipe` forever (backpressure — the client is held until every plugin
+# consumes the message), and hooks fire per tool call, so unbounded blocked
+# clients each pin two server FDs until the server EMFILEs and the session
+# crashes. A watchdog caps the wait; killing the client never retracts the
+# message (it is already queued server-side), so ordering still holds — sends
+# stay sequential and an expired send was going nowhere anyway. GNU `timeout`
+# isn't on stock macOS, hence the hand-rolled sleep+kill pair.
+pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-5}"
+zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 &
+pipe_pid=$!
+( sleep "$pipe_deadline"; kill "$pipe_pid" ) >/dev/null 2>&1 &
+watchdog=$!
+wait "$pipe_pid" 2>/dev/null || true
+# Disarm the watchdog after a normal send so it can't kill a recycled pid.
+# Its orphaned sleep lingers ≤ $pipe_deadline seconds and exits without acting
+# (the kill line is unreachable once the subshell is gone) — accepted noise;
+# killing the whole group would need job control, which hook scripts don't get.
+kill "$watchdog" 2>/dev/null || true

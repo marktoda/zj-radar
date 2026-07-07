@@ -144,3 +144,13 @@ Quick smoke test (a "fake agent" — broadcast straight from your shell):
 zellij pipe --name zj_radar.status.v1 -- \
   '{"v":1,"source":"test","pane":{"type":"terminal","id":12},"status":"running","repo":"demo","branch":"main","msg":"hello"}'
 ```
+
+**Bound your sends.** `zellij pipe` is not fire-and-forget: Zellij holds the
+client process until *every* loaded plugin instance consumes the message
+(CLI-pipe backpressure). A plugin instance stuck at its permission prompt
+blocks the client **forever** — and a producer that fires per tool-call then
+leaks one blocked process plus two Zellij-server FDs per event, until the
+server hits EMFILE and the whole session crashes. Wrap the call in a timeout
+(the bundled producers use 5 s, `ZJ_RADAR_PIPE_TIMEOUT` to override); killing
+the client past the deadline loses nothing — the message is already queued
+server-side.

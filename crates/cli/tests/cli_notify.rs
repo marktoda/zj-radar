@@ -98,3 +98,42 @@ fn no_zellij_env_exits_clean_without_broadcast() {
         "must not broadcast outside Zellij"
     );
 }
+
+#[test]
+fn hung_zellij_pipe_is_killed_at_the_send_deadline() {
+    // A rail instance wedged at Zellij's permission prompt blocks `zellij pipe`
+    // forever (CLI-pipe backpressure: the client is held until every plugin
+    // consumes the message). Hooks fire per tool call, so an unbounded send
+    // leaks one blocked client + two server FDs per call until the Zellij
+    // server EMFILEs and the session crashes. The producer must cap the wait
+    // and reap the child; the message itself is already queued server-side,
+    // so killing the client loses nothing.
+    let shims = ShimDir::new();
+    shims.add_hanging_recorder("zellij", 60);
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    let hook = r#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}"#;
+
+    let start = std::time::Instant::now();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .arg("notify")
+        .arg("claude")
+        .arg("--status")
+        .arg("done")
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "1")
+        .timeout(std::time::Duration::from_secs(15))
+        .write_stdin(hook)
+        .assert()
+        .success();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "notify must return at the send deadline, not ride a wedged pipe ({}s)",
+        start.elapsed().as_secs()
+    );
+    // The broadcast was still attempted (payload handed to zellij pre-hang).
+    assert_eq!(shims.recorded("zellij").len(), 1);
+}
