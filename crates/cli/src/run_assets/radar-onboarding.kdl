@@ -100,7 +100,7 @@ layout {
     }
 
     // Initial tab: explicit rail structure + the floating onboarding pane.
-    tab name="shell" focus=true {
+    tab focus=true {
         pane split_direction="vertical" {
             pane size=32 borderless=true {
                 plugin location="radar" {
