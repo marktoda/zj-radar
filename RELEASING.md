@@ -62,8 +62,13 @@ before the tag**. The order below matters; each step gates the next.
    everything, and creates the GitHub release. `e2e.yml` also runs on the tag
    but does **not** gate the release — check its result before announcing.
 
-6. **Verify the release assets** from a clean machine (or at least a clean
-   shell):
+6. **Verify the release assets.** The `verify-funnel` job in `release.yml`
+   does this automatically after the release is created: it runs the README
+   quickstart verbatim in a pristine container against the tag's published
+   assets (installer, `--download`, pre-seeded grant, live rail, tab naming).
+   **Don't announce until it is green.** `funnel.yml` re-runs the same script
+   nightly against `latest` (and on `workflow_dispatch`). Manual fallback from
+   a clean shell:
 
    ```sh
    # Sandbox the install so it doesn't overwrite your daily binary:
