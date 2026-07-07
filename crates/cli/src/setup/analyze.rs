@@ -77,12 +77,18 @@ impl ZellijFacts {
     }
 }
 
-/// The Zellij minor the plugin ABI targets — bump alongside the `zellij-tile`
-/// pin in crates/plugin/Cargo.toml and the version claims in README/docs. The
-/// plugin crate's `doctor_version_gate_matches_the_zellij_tile_pin` guard
-/// test pins this pair to that Cargo pin.
+/// The oldest Zellij the rail works on — a floor, not a pinned minor: Zellij
+/// keeps compiled plugins working on newer releases (protobuf-serialized
+/// plugin API since 0.38), so later versions pass the gate. The floor is
+/// behavioral — 0.44.3 carries the swap-layout pinning fix; on 0.44.0-.2 the
+/// plugin loads fine but the sidebar pops out during layout cycling — a green
+/// doctor on a broken rail. Bump alongside the `zellij-tile` pin in
+/// crates/plugin/Cargo.toml and the version claims in README/docs; the plugin
+/// crate's `doctor_version_gate_matches_the_zellij_tile_pin` guard test welds
+/// this triple to that Cargo pin.
 ///
-/// Zellij internals we parse — re-verify each on any version bump:
+/// Zellij internals we parse, with no compatibility promise — re-verify each
+/// when a new Zellij minor lands:
 /// - `run.rs::wasm_is_granted` — `permissions.kdl` grant-block grammar
 ///   (quoted wasm path as block header, one permission per line).
 /// - `run.rs::permissions_path_in` — the macOS cache sub-folder name
@@ -92,17 +98,18 @@ impl ZellijFacts {
 ///   dead sessions tagged `EXITED` after the name).
 /// - `run.rs::cached_session_layout` — the resurrection-cache path shape
 ///   `<cache>/<contract dir>/session_info/<session>/session-layout.kdl`.
-pub(crate) const SUPPORTED_ZELLIJ_MINOR: &str = "0.44";
+pub(crate) const MIN_SUPPORTED_ZELLIJ: (u32, u32, u32) = (0, 44, 3);
 
-/// Earliest patch of that minor the rail actually works on: 0.44.3 carries
-/// the swap-layout pinning fix, so on 0.44.0-.2 the ABI loads fine but the
-/// sidebar pops out during layout cycling — a green doctor on a broken rail.
-pub(crate) const MIN_SUPPORTED_ZELLIJ_PATCH: u32 = 3;
+/// The floor as user-facing messages spell it, e.g. `0.44.3`.
+pub(crate) fn min_supported_zellij_display() -> String {
+    let (major, minor, patch) = MIN_SUPPORTED_ZELLIJ;
+    format!("{major}.{minor}.{patch}")
+}
 
-/// Lenient version gate: warn only on a definite mismatch. `zellij --version`
-/// prints e.g. `zellij 0.44.3`; if that shape ever changes and no version-like
-/// token is found (or the patch digits don't parse), err on the side of
-/// "supported" — a fragile parse must not fail a working install.
+/// Lenient version-floor gate: warn only on a definitely-too-old version.
+/// `zellij --version` prints e.g. `zellij 0.44.3`; if that shape ever changes
+/// and no version-like token is found (or its digits don't parse), err on the
+/// side of "supported" — a fragile parse must not fail a working install.
 pub(crate) fn zellij_version_is_supported(version_output: &str) -> bool {
     let Some(v) = version_output
         .split_whitespace()
@@ -110,13 +117,20 @@ pub(crate) fn zellij_version_is_supported(version_output: &str) -> bool {
     else {
         return true;
     };
-    match v.strip_prefix(SUPPORTED_ZELLIJ_MINOR).and_then(|rest| rest.strip_prefix('.')) {
-        // A different minor outright: the plugin ABI won't load.
-        None => false,
-        Some(patch) => {
-            let digits: String = patch.chars().take_while(|c| c.is_ascii_digit()).collect();
-            digits.parse::<u32>().map_or(true, |p| p >= MIN_SUPPORTED_ZELLIJ_PATCH)
-        }
+    let mut nums = v.split('.').map(|part| {
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse::<u32>().ok()
+    });
+    let (Some(Some(major)), Some(Some(minor))) = (nums.next(), nums.next()) else {
+        return true;
+    };
+    let (floor_major, floor_minor, floor_patch) = MIN_SUPPORTED_ZELLIJ;
+    match (major, minor).cmp(&(floor_major, floor_minor)) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less    => false,
+        // On the floor minor the patch decides; a missing/unparseable patch
+        // is lenient, like every other parse failure here.
+        std::cmp::Ordering::Equal   => nums.next().flatten().is_none_or(|p| p >= floor_patch),
     }
 }
 

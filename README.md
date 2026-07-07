@@ -54,11 +54,10 @@ wrapping your agents. It's a status rail for the session you already run.
 
 ## Quick start
 
-> **Requires Zellij 0.44.3 – 0.44.x** (don't have Zellij? [install it](https://zellij.dev/documentation/installation)
-> first). Zellij's plugin ABI is not yet stable across versions, so each
-> zj-radar release targets one Zellij minor (`zellij --version` to check).
-> On another minor the wasm may simply fail to load, and 0.44 patches
-> before .3 lack the fix that keeps the sidebar pinned during layout swaps.
+> **Requires Zellij 0.44.3 or newer** (don't have Zellij? [install it](https://zellij.dev/documentation/installation)
+> first — `zellij --version` to check). Newer Zellij releases keep compiled
+> plugins working, but 0.44 patches before .3 lack the fix that keeps the
+> sidebar pinned during layout swaps.
 
 ```sh
 # 1. Install the zj-radar CLI (prebuilt: Linux x86_64/aarch64, Apple Silicon macOS;

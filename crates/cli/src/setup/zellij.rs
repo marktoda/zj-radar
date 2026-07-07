@@ -69,8 +69,9 @@ pub(crate) fn run_grant(config_dir: &Path) {
             crate::exit::fail_report(
                 "zj-radar",
                 format!(
-                    "zellij not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ first \
-                     (https://zellij.dev/documentation/installation)"
+                    "zellij not found on PATH — install Zellij {}+ first \
+                     (https://zellij.dev/documentation/installation)",
+                    min_supported_zellij_display(),
                 ),
             );
         }

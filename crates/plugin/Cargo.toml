@@ -30,9 +30,10 @@ unicode-width = { workspace = true }
 # Zellij's plugin SDK is only used by the wasm `_start`/`load`/`render` wiring
 # (all `#[cfg(target_arch = "wasm32")]`). Scoping it to the wasm target keeps
 # its native transitive chain (zellij-utils → isahc → curl → openssl-sys) out
-# of host builds. Pinned exact: the plugin ABI is unstable across zellij-tile
-# releases and there is no runtime version handshake (a skewed build loads as
-# a blank rail) — bump deliberately, alongside the supported-version docs.
+# of host builds. Pinned exact: this pin IS the supported-version floor — Zellij
+# keeps compiled plugins working on newer hosts, so the doctor gate only checks
+# a minimum, and the `doctor_version_gate_matches_the_zellij_tile_pin` guard
+# test welds that floor to this line. Bump deliberately, alongside the docs.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 zellij-tile = "=0.44.3"
 

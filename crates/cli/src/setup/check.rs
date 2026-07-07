@@ -62,20 +62,21 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
 
     // 0. the zellij binary itself — every other item is moot without it, and
     // an all-ok report on a zellij-less machine would be a --check lie.
+    let floor = min_supported_zellij_display();
     items.push(match &f.zellij_version {
         None => CheckItem::missing(
             "zellij binary",
             format!(
-                "not found on PATH — install Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ first \
+                "not found on PATH — install Zellij {floor}+ first \
                  (https://zellij.dev/documentation/installation)"
             ),
         ),
         Some(v) if !zellij_version_is_supported(v) => CheckItem::warn(
             "zellij binary",
             format!(
-                "found `{v}` — the plugin needs Zellij {SUPPORTED_ZELLIJ_MINOR}.{MIN_SUPPORTED_ZELLIJ_PATCH}+ \
-                 (a mismatched plugin ABI loads as a blank rail; 0.44 patches before \
-                 .{MIN_SUPPORTED_ZELLIJ_PATCH} let the sidebar pop out during layout swaps)"
+                "found `{v}` — the sidebar needs Zellij {floor}+ (newer is fine; older \
+                 versions predate the plugin API this build targets, and 0.44 patches \
+                 before .3 let the sidebar pop out during layout swaps)"
             ),
         ),
         Some(v) => CheckItem::ok("zellij binary", format!("found on PATH ({v})")),
@@ -474,7 +475,7 @@ mod tests {
         assert!(zellij_check_items(&absent)
             .iter()
             .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Missing));
-        // Wrong minor: warn (advice), not missing — version parsing is
+        // Below the floor: warn (advice), not missing — version parsing is
         // best-effort and a working install must not be failed by it.
         let old = ZellijFacts {
             zellij_version: Some("zellij 0.43.1".to_string()),
@@ -489,17 +490,22 @@ mod tests {
     fn zellij_version_gate_is_lenient_on_unparseable_output() {
         assert!(zellij_version_is_supported("zellij 0.44.3"));
         assert!(zellij_version_is_supported("0.44.10"));
-        // Same minor but predates the swap-layout pinning fix: the ABI loads,
-        // the sidebar pops out during layout cycling — must warn.
+        // Same minor but predates the swap-layout pinning fix: the plugin
+        // loads, the sidebar pops out during layout cycling — must warn.
         assert!(!zellij_version_is_supported("zellij 0.44.1"));
         assert!(!zellij_version_is_supported("0.44.0"));
         assert!(!zellij_version_is_supported("zellij 0.43.1"));
-        assert!(!zellij_version_is_supported("zellij 0.45.0"));
-        // 0.440.x must not pass a starts_with-style check.
-        assert!(!zellij_version_is_supported("zellij 0.440.1"));
+        // Newer releases keep compiled plugins working — the gate is a floor,
+        // not a pinned minor, so later versions must pass.
+        assert!(zellij_version_is_supported("zellij 0.45.0"));
+        assert!(zellij_version_is_supported("zellij 1.0.0"));
+        // Numeric comparison, not a starts_with-style prefix check: 0.440 is
+        // genuinely above the floor, 0.4.4 genuinely below it.
+        assert!(zellij_version_is_supported("zellij 0.440.1"));
+        assert!(!zellij_version_is_supported("zellij 0.4.4"));
         // No version-like token at all: err on the side of supported.
         assert!(zellij_version_is_supported("zellij (unknown build)"));
-        // Recognized minor with unparseable patch digits: likewise lenient.
+        // Floor minor with unparseable patch digits: likewise lenient.
         assert!(zellij_version_is_supported("zellij 0.44.x"));
     }
 

@@ -5,11 +5,11 @@ to your Zellij layout. For the **producer** (whatever broadcasts agent status),
 see [`producers.md`](producers.md). For a copy-paste fast path, see
 [Quick start](../README.md#quick-start).
 
-**Requirements:** Zellij **0.44.3 – 0.44.x** — the plugin ABI is not yet stable
-across Zellij versions, so each zj-radar release targets a single Zellij minor:
-on any other minor the sidebar may fail to load, and 0.44 patches before .3
-lack the swap-layout fix that keeps the sidebar pinned (check with
-`zellij --version`). `--download` additionally needs `curl` or `wget` on PATH.
+**Requirements:** Zellij **0.44.3 or newer** — the sidebar is built against the
+0.44 plugin API, and Zellij keeps compiled plugins working on newer releases;
+the floor exists because 0.44 patches before .3 lack the swap-layout fix that
+keeps the sidebar pinned (check with `zellij --version`). `--download`
+additionally needs `curl` or `wget` on PATH.
 
 There are two jobs to get a working radar:
 
@@ -39,8 +39,8 @@ zj-radar setup zellij --download
 `setup zellij --download`:
 
 - downloads the wasm **built from this CLI's own version** (set `ZJ_RADAR_VERSION`
-  to pin a different release tag) — so the CLI and wasm can't drift apart across
-  Zellij's unstable plugin ABI
+  to pin a different release tag) — so the CLI and the sidebar it manages can't
+  drift apart on the status contract and setup expectations they share
 - verifies it against the release's published `.sha256` checksum before installing
   (a mismatch aborts; releases without a checksum fall back to TLS-only with a
   warning) — needs `sha256sum` or `shasum` on `PATH`
@@ -239,10 +239,9 @@ zellij:
 Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
 modifies any file. Reported items (six always; a seventh only when applicable):
 
-- **zellij binary** — `zellij` is on `PATH`; warns when its version falls
-  outside the supported 0.44.3 – 0.44.x range (a mismatched plugin ABI loads
-  as a blank rail; earlier 0.44 patches let the sidebar pop out during layout
-  swaps).
+- **zellij binary** — `zellij` is on `PATH`; warns when its version is below
+  the supported floor of 0.44.3 (earlier 0.44 patches let the sidebar pop out
+  during layout swaps; newer Zellij releases keep compiled plugins working).
 - **alias** — `radar` plugin alias present in `config.kdl`; warns if it points at
   a `/nix/store/` path (grant won't survive a rebuild).
 - **wasm** — plugin file exists at the expected stable path.

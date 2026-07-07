@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 /// The release URL for the wasm artifact built from a given crate version.
 /// `setup zellij --download` fetches the wasm matching the CLI's own version so
-/// the two halves shipped from one tag can't drift across Zellij's unstable
-/// plugin ABI (a CLI and a hand-downloaded wasm of different versions otherwise
-/// can). Pure so the version→asset mapping is unit-tested; the fetch itself is
-/// thin IO below.
+/// the two halves shipped from one tag can't drift apart on the status contract
+/// and setup expectations they share (a CLI and a hand-downloaded wasm of
+/// different versions otherwise can). Pure so the version→asset mapping is
+/// unit-tested; the fetch itself is thin IO below.
 fn wasm_release_url(version: &str) -> String {
     format!("https://github.com/{}/releases/download/v{version}/zj_radar.wasm", repo_slug())
 }

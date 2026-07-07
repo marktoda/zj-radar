@@ -805,10 +805,9 @@ pub fn run(opts: RunOptions) {
             crate::exit::fail_report(
                 "zj-radar",
                 format!(
-                    "zellij not found on PATH — install Zellij {}.{}+ first \
+                    "zellij not found on PATH — install Zellij {}+ first \
                      (https://zellij.dev/documentation/installation)",
-                    crate::setup::SUPPORTED_ZELLIJ_MINOR,
-                    crate::setup::MIN_SUPPORTED_ZELLIJ_PATCH,
+                    crate::setup::min_supported_zellij_display(),
                 ),
             );
         }
