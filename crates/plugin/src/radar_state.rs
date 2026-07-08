@@ -82,7 +82,7 @@ pub(crate) struct RadarTab {
     pub has_bell: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PaneUpdate {
     pub tab_panes: HashMap<usize, Vec<TerminalPane>>,
     pub live: HashSet<u32>,
@@ -215,6 +215,18 @@ pub(crate) struct RadarState {
     /// lazily by `timer` — `rows` stays `&self` so it can be called freely from
     /// render paths without needing `&mut`.
     flash_until: HashMap<TabId, u64>,
+    /// Tracked panes absent from the latest pane manifest, awaiting their
+    /// second absence before `panes_changed` prunes them — Zellij's break-pane
+    /// family reports session state while the moved pane is extracted and in
+    /// no tab, so a single absence can't distinguish a close from a mid-move
+    /// flash. The value is the pane's tab identity captured when it first went
+    /// absent (the last manifest that still carried it): by the confirming
+    /// second absence the pane is long gone from `pane_tab_index`, and the
+    /// ledger still needs a tab name to file the recede under. `None` when the
+    /// pane was never seen in any topology (a broadcast that beat the pane's
+    /// first manifest). Level-triggered: recomputed from the current manifest
+    /// every `panes_changed`, so a pane that reappears simply drops out.
+    absent_once: HashMap<u32, Option<(TabId, String)>>,
 }
 
 impl RadarState {
@@ -359,17 +371,54 @@ impl RadarState {
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
+        // An absent pane gets one manifest of grace before it's pruned:
+        // Zellij's break-pane family reports session state while the moved
+        // pane is extracted and in no tab (zellij screen.rs: `extract_pane` →
+        // `switch_active_tab` → `log_and_report_session_state` → only then
+        // `add_tiled_pane`), so a single absence is ambiguous between a close
+        // and a mid-move flash. The flash's corrective manifest arrives
+        // immediately (`add_tiled_pane` reports again), so a mid-move agent
+        // keeps its status in every store; a real close stays absent and
+        // prunes on the next update. Pruning on the flash would drop a live
+        // Pending from every store — and broadcasts are not replayed, so a
+        // silently-waiting agent's needs-you row would only come back on its
+        // next hook event. (A graced observation also survives any mid-flash
+        // persist: `snapshot::to_json` re-inserts current-store entries
+        // unconditionally; only *existing* snapshot entries are live-filtered.)
+        let absent_before = std::mem::take(&mut self.absent_once);
+        let graced: HashMap<u32, Option<(TabId, String)>> = self
+            .status
+            .observations()
+            .map(|(id, _)| id)
+            .chain(self.command.tracked_pane_ids())
+            .filter(|id| !update.live.contains(id) && !absent_before.contains_key(id))
+            .map(|id| (id, old_index.get(&id).cloned()))
+            .collect();
+        let effective_live: HashSet<u32> =
+            update.live.iter().copied().chain(graced.keys().copied()).collect();
+        // A confirmed-gone pane left the topology one manifest ago, so
+        // `old_index` no longer carries it — the ledger files its recede under
+        // the tab identity captured at first absence instead.
+        let mut prune_index = old_index.clone();
+        prune_index.extend(absent_before.into_iter().filter_map(|(id, entry)| Some((id, entry?))));
+        self.absent_once = graced;
         // A pane closing with an unreceded Done/Error still on it is a recede
         // edge for both stores; both prunes ledger against the pre-close
-        // `old_index` and `status_tracked` captured above.
-        let dropped_status = self.status.prune(&update.live);
-        let dropped_command = self.command.prune(&update.live);
+        // `prune_index` and `status_tracked` captured above (`ledger_receded`
+        // filters to the completions itself). Any drop — completion or not —
+        // requests a persist: an unpersisted drop leaves the shared snapshot
+        // carrying a status no live store holds, and the next spawned
+        // instance seeds it back (`snapshot::to_json` only scrubs existing
+        // entries for panes missing from the manifest, and by the confirming
+        // second absence that filter agrees the pane is gone).
+        let dropped_status = self.status.prune(&effective_live);
+        let dropped_command = self.command.prune(&effective_live);
         let pruned_any = !dropped_status.is_empty() || !dropped_command.is_empty();
-        self.ledger_receded(dropped_status, &old_index, &status_tracked);
-        self.ledger_receded(dropped_command, &old_index, &status_tracked);
-        self.pane_cwd.retain(|id, _| update.live.contains(id));
+        self.ledger_receded(dropped_status, &prune_index, &status_tracked);
+        self.ledger_receded(dropped_command, &prune_index, &status_tracked);
+        self.pane_cwd.retain(|id, _| effective_live.contains(id));
         self.cwd_bootstrap_attempted
-            .retain(|id| update.live.contains(id));
+            .retain(|id| effective_live.contains(id));
         // Track this update's fresh focus for notification suppression. It no
         // longer drives rail state (no focus recede) — see `note_focus`. `settle`
         // still gates the notifier: `panes_changed` carries trustworthy focus, so
@@ -733,6 +782,14 @@ impl RadarState {
     #[cfg(test)]
     pub(crate) fn status_mut(&mut self) -> &mut StatusStore {
         &mut self.status
+    }
+
+    /// Panes currently holding the one-manifest prune grace — see
+    /// `absent_once`. Test-only: the invariant suite needs to distinguish
+    /// "kept because graced" from "prune failed".
+    #[cfg(test)]
+    pub(crate) fn graced_pane_ids(&self) -> HashSet<u32> {
+        self.absent_once.keys().copied().collect()
     }
 
     #[cfg(test)]

@@ -118,6 +118,14 @@ impl StatusStore {
     /// pane id, for determinism). An evicted completion is dropped silently —
     /// no ledger hand-off — because the cap only ever bites under a
     /// misbehaving producer, where ledgering its flood would be its own DoS.
+    ///
+    /// Known divergence: the shared snapshot keeps the evicted entry. The
+    /// evicted pane is still live, so `snapshot::to_json`'s existing-entry
+    /// filter never scrubs it, and no persist from here could either — the
+    /// merge has no way to say "deliberately forgotten" for a live pane. The
+    /// pane's next broadcast overwrites it; until then a freshly spawned
+    /// instance may seed one flood-stale row. Accepted: reaching this path at
+    /// all means a producer is flooding past the cap.
     fn evict_over_cap(&mut self) {
         while self.store.observations().count() > MAX_TRACKED_PANES {
             let Some(oldest) = self
@@ -221,11 +229,12 @@ impl StatusStore {
         Some(old)
     }
 
-    /// Prune panes no longer live, returning the dropped completions
-    /// (`Done`/`Error` — `ObservationStore::prune`'s contract): a pane closing
-    /// with an unreceded completion still on it is a recede edge for the
-    /// ledger; non-completion drops (Running, Idle, Pending) carry nothing to
-    /// ledger.
+    /// Prune panes no longer live, returning every dropped observation
+    /// (`ObservationStore::prune`'s contract): the caller reads emptiness as
+    /// "persisted state changed" and the ledger sink filters to the
+    /// completions (a pane closing with an unreceded Done/Error is a recede
+    /// edge; a dropped Running/Idle/Pending ledgers nothing but must still
+    /// reach the snapshot).
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
         self.suspect_running.retain(|id, _| live.contains(id));
         self.store.prune(live)
@@ -429,16 +438,20 @@ mod tests {
     }
 
     #[test]
-    fn prune_returns_only_dropped_completions() {
+    fn prune_returns_every_drop_not_just_completions() {
         let mut s = StatusStore::default();
-        s.apply(payload(1, Status::Running), 1, 0); // dropped, but not a completion
+        s.apply(payload(1, Status::Running), 1, 0);
         s.apply(payload(2, Status::Done), 1, 100);
-        s.apply(payload(3, Status::Idle), 1, 0); // dropped, but not a completion
+        s.apply(payload(3, Status::Idle), 1, 0);
         let live: HashSet<u32> = HashSet::new();
-        let dropped = s.prune(&live);
-        assert_eq!(dropped.len(), 1);
-        assert_eq!(dropped[0].0, 2);
-        assert_eq!(dropped[0].1.status, Status::Done);
+        let mut dropped = s.prune(&live);
+        dropped.sort_by_key(|(id, _)| *id);
+        // All three come back out: emptiness is the caller's persist signal,
+        // and the ledger filters to the completion (pane 2) itself.
+        assert_eq!(dropped.len(), 3);
+        assert_eq!((dropped[0].0, dropped[0].1.status), (1, Status::Running));
+        assert_eq!((dropped[1].0, dropped[1].1.status), (2, Status::Done));
+        assert_eq!((dropped[2].0, dropped[2].1.status), (3, Status::Idle));
     }
 
     #[test]

@@ -517,15 +517,24 @@ fn panes_changed_prunes_focuses_and_persists_snapshot() {
         }],
     );
 
+    let first = runtime.panes_changed(PaneUpdate {
+        tab_panes: tab_panes.clone(),
+        live: live.clone(),
+        theme: Some(theme::DerivedColors::default()),
+        exits: vec![(10, Some(0))],
+    });
+    assert!(first.render);
+    assert_eq!(runtime.radar.last_focused(), Some(10));
+    // Panes 11/12 are absent for the first time — the break-pane grace keeps
+    // their observations for one manifest; the second absence prunes.
     let outcome = runtime.panes_changed(PaneUpdate {
         tab_panes,
         live,
         theme: Some(theme::DerivedColors::default()),
-        exits: vec![(10, Some(0))],
+        exits: Vec::new(),
     });
 
     assert!(outcome.render);
-    assert_eq!(runtime.radar.last_focused(), Some(10));
     assert!(runtime.radar.status_store().get(11).is_none());
     assert!(runtime.radar.command_store().get(12).is_none());
     assert!(outcome
@@ -719,14 +728,17 @@ fn no_tabs_with_history_renders_ledger_not_scanning() {
         .status_mut()
         .apply(payload_for(5, Status::Done), 1, 1_000);
 
-    // The pane closes with a still-lit Done: pruning hands it to the
+    // The pane closes with a still-lit Done: the second absence confirms the
+    // close (the first is the break-pane grace) and pruning hands it to the
     // ledger (spec §4.2).
-    runtime.panes_changed(PaneUpdate {
-        tab_panes: HashMap::new(),
-        live: HashSet::new(),
-        theme: None,
-        exits: Vec::new(),
-    });
+    for _ in 0..2 {
+        runtime.panes_changed(PaneUpdate {
+            tab_panes: HashMap::new(),
+            live: HashSet::new(),
+            theme: None,
+            exits: Vec::new(),
+        });
+    }
     assert!(!runtime.radar.ledger_is_empty(), "setup: ledger must be seeded");
 
     // The tab itself closes too — zero tabs, but history remains.

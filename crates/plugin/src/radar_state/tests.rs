@@ -354,8 +354,8 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
     // effect is a read-merge-write of the shared /cache file — so plain
     // topology churn (resize, title change, focus) must NOT request
     // persistence. Only the recede edges (an exit displacing a completion, a
-    // prune dropping one) change persisted state; topology itself is never
-    // persisted.
+    // prune dropping any observation) change persisted state; topology itself
+    // is never persisted.
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
 
@@ -386,11 +386,96 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
     );
     assert!(!change.persist_snapshot, "title-only churn must not persist");
 
-    // The pane closes with the Done still on it → the prune is a recede edge
-    // (it also ledgers), so THIS update persists.
+    // The pane closes with the Done still on it. The first absence is the
+    // grace manifest (a break-pane flash looks identical) — no prune, no
+    // persist. The second absence confirms the close → the prune is a recede
+    // edge (it also ledgers), so THAT update persists.
     let change = radar.panes_changed(pane_update(HashMap::new()), 4, 200, config::NamingMode::Off);
+    assert!(!change.persist_snapshot, "first absence is the grace manifest — nothing pruned yet");
+    let change = radar.panes_changed(pane_update(HashMap::new()), 5, 300, config::NamingMode::Off);
     assert!(change.persist_snapshot, "a prune that dropped a completion persists");
 }
+
+#[test]
+fn panes_changed_persists_when_a_prune_drops_a_non_completion() {
+    // A pane staying absent for two manifests is a real close. Its live
+    // Pending ledgers nothing, but the removal itself must reach the shared
+    // snapshot: `snapshot::to_json` only scrubs entries for panes missing
+    // from the manifest at persist time, so if THIS edge doesn't persist, a
+    // snapshot written later (when the id could be reused and live again)
+    // keeps carrying a status no store holds, and the next spawned instance
+    // seeds it back.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.panes_changed(
+        pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+        1,
+        0,
+        config::NamingMode::Off,
+    );
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Pending, "repo"), 2, 100);
+
+    radar.panes_changed(pane_update(HashMap::new()), 3, 200, config::NamingMode::Off);
+    let change = radar.panes_changed(pane_update(HashMap::new()), 4, 300, config::NamingMode::Off);
+    assert!(
+        change.persist_snapshot,
+        "a confirmed prune that dropped a Pending must persist the snapshot"
+    );
+    assert!(radar.status(7).is_none(), "the Pending is gone from the store");
+}
+
+#[test]
+fn break_pane_manifest_flash_does_not_prune_a_live_pending() {
+    // Zellij's break-pane family reports session state while the moved pane
+    // is extracted and in no tab, then reports again once it lands in the new
+    // tab. The flash manifest must not prune the pane's status: broadcasts
+    // are not replayed, and a Pending agent waiting on its question emits no
+    // further hooks — pruning here would silently drop the needs-you row
+    // everywhere until the user happens to interact with the agent.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.panes_changed(
+        pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+        1,
+        0,
+        config::NamingMode::Off,
+    );
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Pending, "repo"), 2, 100);
+
+    // The flash: pane 7 is in no tab for exactly one manifest.
+    let change = radar.panes_changed(pane_update(HashMap::new()), 3, 200, config::NamingMode::Off);
+    assert!(!change.persist_snapshot, "the flash is not a recede edge");
+    assert_eq!(
+        radar.status(7).map(|o| o.status),
+        Some(Status::Pending),
+        "the graced Pending survives the flash"
+    );
+
+    // The corrective manifest lands the pane in its new tab; the grace clears
+    // and a later real close still gets its own two-manifest confirmation.
+    radar.tabs_changed(vec![tab(10, 0, "work", true), tab(11, 1, "moved", false)]);
+    radar.panes_changed(
+        pane_update(HashMap::from([(1, vec![focused_pane(7)])])),
+        4,
+        300,
+        config::NamingMode::Off,
+    );
+    assert_eq!(radar.status(7).map(|o| o.status), Some(Status::Pending));
+    radar.panes_changed(pane_update(HashMap::new()), 5, 400, config::NamingMode::Off);
+    assert_eq!(
+        radar.status(7).map(|o| o.status),
+        Some(Status::Pending),
+        "reappearing reset the grace — a fresh absence starts over"
+    );
+    let change = radar.panes_changed(pane_update(HashMap::new()), 6, 500, config::NamingMode::Off);
+    assert!(change.persist_snapshot, "the second consecutive absence is the real prune");
+    assert!(radar.status(7).is_none());
+}
+
 
 #[test]
 fn panes_changed_persists_when_an_exit_displaces_a_completion() {
@@ -1216,18 +1301,30 @@ proptest! {
                     };
                     st.panes_changed(update, tick, 0, config::NamingMode::Off);
 
-                    // Prune contract: immediately after panes_changed every
-                    // stored observation belongs to a live pane.
+                    // Prune contract: after panes_changed every stored
+                    // observation belongs to a live pane, or holds the
+                    // one-manifest grace (its first absence — the break-pane
+                    // flash window). A graced pane is by construction pruned
+                    // on the NEXT panes_changed unless it reappears, so the
+                    // grace set can never accumulate stale entries.
+                    let graced = st.graced_pane_ids();
                     for (id, _) in st.status_store().observations() {
                         prop_assert!(
-                            live.contains(&id),
-                            "status store kept observation for non-live pane {id}"
+                            live.contains(&id) || graced.contains(&id),
+                            "status store kept observation for non-live, non-graced pane {id}"
                         );
                     }
                     for (id, _) in st.command_store().observations() {
                         prop_assert!(
-                            live.contains(&id),
-                            "command store kept observation for non-live pane {id}"
+                            live.contains(&id) || graced.contains(&id),
+                            "command store kept observation for non-live, non-graced pane {id}"
+                        );
+                    }
+                    // And the grace itself only ever covers non-live panes.
+                    for id in &graced {
+                        prop_assert!(
+                            !live.contains(id),
+                            "pane {id} is live but still marked graced"
                         );
                     }
                 }
@@ -1534,7 +1631,12 @@ fn prune_ledgers_completions_with_the_pre_close_tab_name() {
         theme: None,
         exits: Vec::new(),
     };
-    radar.panes_changed(update, 2, 999, config::NamingMode::Off);
+    // Two updates: the first absence is the break-pane grace manifest; the
+    // second confirms the close and prunes. By then the pane is long gone
+    // from the topology, so the ledger rides the tab identity captured at
+    // first absence.
+    radar.panes_changed(update.clone(), 2, 999, config::NamingMode::Off);
+    radar.panes_changed(update, 3, 999, config::NamingMode::Off);
 
     let lines = radar.ledger_lines();
     assert_eq!(lines.len(), 1);
@@ -1628,7 +1730,9 @@ fn shadowed_command_completion_never_ledgers() {
         theme: None,
         exits: Vec::new(),
     };
-    radar.panes_changed(update, confirm_tick + DONE_TTL_TICKS + 1, 999, config::NamingMode::Off);
+    // Second absence confirms the close (the first is the break-pane grace).
+    radar.panes_changed(update.clone(), confirm_tick + DONE_TTL_TICKS + 1, 999, config::NamingMode::Off);
+    radar.panes_changed(update, confirm_tick + DONE_TTL_TICKS + 2, 999, config::NamingMode::Off);
 
     let lines = radar.ledger_lines();
     assert_eq!(lines.len(), 1, "exactly one ledger entry — the status completion");

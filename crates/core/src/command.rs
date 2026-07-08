@@ -755,15 +755,30 @@ impl CommandStore {
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
-    /// Returns the dropped Done/Error observations (`ObservationStore::prune`'s
-    /// contract — an in-progress Running or muted Idle pane closing carries no
-    /// completion to ledger).
+    /// Returns every dropped observation (`ObservationStore::prune`'s
+    /// contract): the caller reads emptiness as "persisted state changed" and
+    /// the ledger sink filters to completions. The pending / exit-dedup maps
+    /// are bookkeeping, never persisted, so their retains don't report.
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
         let dropped = self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
         dropped
+    }
+
+    /// Every pane id this store holds any state for — resolved observations
+    /// plus the pending / exit-dedup bookkeeping. `RadarState::panes_changed`
+    /// grants absent panes one manifest of grace before pruning, and the grace
+    /// must see the bookkeeping too, or a mid-move manifest flash would drop a
+    /// debounce promotion or exit-dedup marker in flight.
+    pub fn tracked_pane_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.store
+            .observations()
+            .map(|(id, _)| id)
+            .chain(self.pending.keys().copied())
+            .chain(self.pending_done.keys().copied())
+            .chain(self.exited.keys().copied())
     }
 
     /// Resolved displayable state for a pane, or None.
