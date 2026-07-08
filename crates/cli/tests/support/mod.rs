@@ -23,11 +23,16 @@ impl ShimDir {
 
     /// Install a fake `name` binary that records argv + stdin to
     /// `<dir>/<name>.log` (one tab-separated line per invocation) and exits 0.
+    ///
+    /// All shims are POSIX `#!/bin/sh`: the hermetic Nix sandbox has no
+    /// `/usr/bin/env` (nor bash), and a shim that fails to exec makes
+    /// `notify`'s spawn a silent no-op — the suite then fails with zero
+    /// recorded broadcasts instead of pointing at the real problem.
     pub fn add_recorder(&self, name: &str) {
         let log = self.dir.path().join(format!("{name}.log"));
         let script = format!(
-            "#!/usr/bin/env bash\nstdin=\"$(cat)\"\n\
-             printf '%s\\t%s\\n' \"$*\" \"${{stdin//$'\\n'/ }}\" >> {log:?}\nexit 0\n",
+            "#!/bin/sh\nstdin=\"$(cat)\"\n\
+             printf '%s\\t%s\\n' \"$*\" \"$(printf '%s' \"$stdin\" | tr '\\n' ' ')\" >> {log:?}\nexit 0\n",
             log = log
         );
         let bin = self.dir.path().join(name);
@@ -47,7 +52,7 @@ impl ShimDir {
     pub fn add_hanging_recorder(&self, name: &str, secs: u32) {
         let log = self.dir.path().join(format!("{name}.log"));
         let script = format!(
-            "#!/usr/bin/env bash\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
+            "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
             log = log
         );
         let bin = self.dir.path().join(name);
@@ -68,7 +73,7 @@ impl ShimDir {
     /// `$3` is the subcommand after `-C <cwd>`.
     pub fn add_fake_git(&self, repo_toplevel: &str, branch: &str) {
         let script = format!(
-            "#!/usr/bin/env bash\n\
+            "#!/bin/sh\n\
              # $1=-C  $2=<cwd>  $3=rev-parse|branch  $4=--show-toplevel|--show-current\n\
              case \"$3 $4\" in\n\
                'rev-parse --show-toplevel') echo {repo:?};;\n\

@@ -42,7 +42,11 @@
           # include_str!'d by the CLI's `run` command (crates/cli/src/run.rs).
           || (pkgs.lib.hasInfix "/crates/cli/src/run_assets/" path)
           # include_str!'d by the example-layout guard test (crates/cli/src/layout.rs).
-          || (pkgs.lib.hasSuffix "/examples/radar-sidebar.kdl" path);
+          || (pkgs.lib.hasSuffix "/examples/radar-sidebar.kdl" path)
+          # include_str!'d by the plugin (config.rs, control.rs docs guard tests).
+          || (pkgs.lib.hasSuffix "/docs/configuration.md" path)
+          # include_str!'d by the plugin's producer-script guard test (lib.rs).
+          || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path);
       };
       commonArgs = {
         inherit src;
