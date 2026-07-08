@@ -124,7 +124,12 @@ fn hung_zellij_pipe_is_killed_at_the_send_deadline() {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
-        .env("ZJ_RADAR_PIPE_TIMEOUT", "1")
+        // 3s, not 1: the shim must exec and write its log line BEFORE the
+        // deadline kill, or the recorded-broadcast assertion below races the
+        // reaper. Under full-parallel test load (nix check builds) a 1s
+        // deadline lost that race; 3s keeps the property (return at the
+        // deadline, not at the 60s hang) with real scheduling headroom.
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "3")
         .timeout(std::time::Duration::from_secs(15))
         .write_stdin(hook)
         .assert()

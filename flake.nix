@@ -46,7 +46,11 @@
           # include_str!'d by the plugin (config.rs, control.rs docs guard tests).
           || (pkgs.lib.hasSuffix "/docs/configuration.md" path)
           # include_str!'d by the plugin's producer-script guard test (lib.rs).
-          || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path);
+          || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path)
+          # insta snapshots (crates/*/src/**/snapshots/*.snap): filterCargoSources
+          # keeps only Rust/cargo files, and without the recorded snapshots every
+          # insta test "re-records" and fails in the sandbox.
+          || (pkgs.lib.hasSuffix ".snap" path);
       };
       commonArgs = {
         inherit src;
@@ -111,14 +115,23 @@
 
       checks = {
         inherit zj-radar;
+        # The workspace checks compile the CLI member, whose build.rs embeds a
+        # wasm: without ZJ_RADAR_WASM_PATH it falls back to a NESTED
+        # `cargo build --target wasm32-wasip1` into the same workspace, which
+        # deadlocks inside the sandbox (the inner cargo waits on the build-dir
+        # lock the outer cargo holds while running build scripts, with no
+        # network to fail fast) — the job hangs until the CI timeout. Feed the
+        # prebuilt wasm here exactly like cliArgs does.
         clippy = craneLib.cargoClippy (commonArgs
           // {
             cargoArtifacts = cargoArtifactsHost;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
+            ZJ_RADAR_WASM_PATH = "${zj-radar}/bin/zj_radar.wasm";
           });
         test = craneLib.cargoTest (commonArgs
           // {
             cargoArtifacts = cargoArtifactsHost;
+            ZJ_RADAR_WASM_PATH = "${zj-radar}/bin/zj_radar.wasm";
           });
         cli-test = craneLib.cargoTest (cliArgs
           // {
