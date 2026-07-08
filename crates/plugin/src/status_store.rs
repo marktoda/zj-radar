@@ -221,12 +221,12 @@ impl StatusStore {
         Some(old)
     }
 
-    /// Prune panes no longer live, returning the dropped completions
-    /// (`Done`/`Error` — `ObservationStore::prune`'s contract): a pane closing
-    /// with an unreceded completion still on it is a recede edge for the
-    /// ledger; non-completion drops (Running, Idle, Pending) carry nothing to
-    /// ledger.
-    pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+    /// Prune panes no longer live, returning the dropped completions plus
+    /// whether anything was removed (`Done`/`Error` — `ObservationStore::
+    /// prune`'s contract): a pane closing with an unreceded completion still
+    /// on it is a recede edge for the ledger; non-completion drops (Running,
+    /// Idle, Pending) carry nothing to ledger but must still be persisted.
+    pub fn prune(&mut self, live: &HashSet<u32>) -> (Vec<(u32, TrackedObservation)>, bool) {
         self.suspect_running.retain(|id, _| live.contains(id));
         self.store.prune(live)
     }
@@ -435,10 +435,11 @@ mod tests {
         s.apply(payload(2, Status::Done), 1, 100);
         s.apply(payload(3, Status::Idle), 1, 0); // dropped, but not a completion
         let live: HashSet<u32> = HashSet::new();
-        let dropped = s.prune(&live);
+        let (dropped, removed_any) = s.prune(&live);
         assert_eq!(dropped.len(), 1);
         assert_eq!(dropped[0].0, 2);
         assert_eq!(dropped[0].1.status, Status::Done);
+        assert!(removed_any, "non-completion drops still report removal");
     }
 
     #[test]

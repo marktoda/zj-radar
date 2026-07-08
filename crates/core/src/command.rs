@@ -755,10 +755,11 @@ impl CommandStore {
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
-    /// Returns the dropped Done/Error observations (`ObservationStore::prune`'s
-    /// contract — an in-progress Running or muted Idle pane closing carries no
-    /// completion to ledger).
-    pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+    /// Returns the dropped Done/Error observations plus whether anything was
+    /// removed (`ObservationStore::prune`'s contract — an in-progress Running
+    /// or muted Idle pane closing carries no completion to ledger, but its
+    /// removal must still reach the snapshot).
+    pub fn prune(&mut self, live: &HashSet<u32>) -> (Vec<(u32, TrackedObservation)>, bool) {
         let dropped = self.store.prune(live);
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));

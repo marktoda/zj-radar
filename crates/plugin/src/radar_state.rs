@@ -361,10 +361,16 @@ impl RadarState {
         self.tab_panes = update.tab_panes;
         // A pane closing with an unreceded Done/Error still on it is a recede
         // edge for both stores; both prunes ledger against the pre-close
-        // `old_index` and `status_tracked` captured above.
-        let dropped_status = self.status.prune(&update.live);
-        let dropped_command = self.command.prune(&update.live);
-        let pruned_any = !dropped_status.is_empty() || !dropped_command.is_empty();
+        // `old_index` and `status_tracked` captured above. Non-completion
+        // drops ledger nothing but still count toward `pruned_any`: Zellij's
+        // break-pane family flashes a manifest that omits the moved pane, and
+        // the new tab it creates spawns a fresh rail instance that seeds from
+        // the snapshot at load — if the prune of a Pending/Running never
+        // persists, the snapshot keeps a status no live store holds anymore
+        // and that instance resurrects it forever.
+        let (dropped_status, status_removed) = self.status.prune(&update.live);
+        let (dropped_command, command_removed) = self.command.prune(&update.live);
+        let pruned_any = status_removed || command_removed;
         self.ledger_receded(dropped_status, &old_index, &status_tracked);
         self.ledger_receded(dropped_command, &old_index, &status_tracked);
         self.pane_cwd.retain(|id, _| update.live.contains(id));

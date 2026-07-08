@@ -140,20 +140,24 @@ impl ObservationStore {
         self.map.insert(pane_id, observation)
     }
 
-    /// Prune every entry not in `live`, returning the dropped *completions*
-    /// (`Done`/`Error` — see `insert`): a pane closing with an unreceded
-    /// completion still on it is a recede edge the caller may ledger. A
-    /// Running/Idle/Pending pane closing carries nothing to ledger, so those
-    /// drops are filtered here — both stores want exactly this cut.
-    pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
+    /// Prune every entry not in `live`. Returns the dropped *completions*
+    /// (`Done`/`Error` — see `insert`) plus whether *anything* was removed:
+    /// a pane closing with an unreceded completion still on it is a recede
+    /// edge the caller may ledger, while a Running/Idle/Pending drop carries
+    /// nothing to ledger and is filtered from the vec — but it still mutated
+    /// persisted state, and the caller must know (an unpersisted Pending drop
+    /// leaves the shared snapshot carrying a status no live store holds, and
+    /// late-spawned instances resurrect it — see `RadarState::panes_changed`).
+    pub fn prune(&mut self, live: &HashSet<u32>) -> (Vec<(u32, TrackedObservation)>, bool) {
         let dropped: Vec<(u32, TrackedObservation)> = self
             .map
             .iter()
             .filter(|(id, obs)| !live.contains(id) && obs.status.is_completion())
             .map(|(&id, obs)| (id, obs.clone()))
             .collect();
+        let before = self.map.len();
         self.map.retain(|id, _| live.contains(id));
-        dropped
+        (dropped, self.map.len() != before)
     }
 
     pub fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
@@ -218,9 +222,10 @@ mod tests {
         assert_eq!(displaced.unwrap().status, Status::Error, "old entry comes back out");
         s.insert(2, sample());
         s.insert(3, TrackedObservation { status: Status::Running, ..sample() });
-        let dropped = s.prune(&[2].into_iter().collect());
+        let (dropped, removed_any) = s.prune(&[2].into_iter().collect());
         assert_eq!(dropped.len(), 1, "only completions come back out — Running carries nothing to ledger");
         assert_eq!(dropped[0].0, 1);
+        assert!(removed_any, "the drop is still reported so callers persist it");
         assert!(s.get(3).is_none(), "the non-completion is still dropped from the map");
         assert!(s.get(2).is_some());
     }

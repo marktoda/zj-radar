@@ -354,8 +354,8 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
     // effect is a read-merge-write of the shared /cache file — so plain
     // topology churn (resize, title change, focus) must NOT request
     // persistence. Only the recede edges (an exit displacing a completion, a
-    // prune dropping one) change persisted state; topology itself is never
-    // persisted.
+    // prune dropping any observation) change persisted state; topology itself
+    // is never persisted.
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "work", true)]);
 
@@ -390,6 +390,34 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
     // (it also ledgers), so THIS update persists.
     let change = radar.panes_changed(pane_update(HashMap::new()), 4, 200, config::NamingMode::Off);
     assert!(change.persist_snapshot, "a prune that dropped a completion persists");
+}
+
+#[test]
+fn panes_changed_persists_when_a_prune_drops_a_non_completion() {
+    // Zellij's break-pane family can flash a manifest that omits the moved
+    // pane while it sits between tabs. The prune drops the live Pending —
+    // nothing to ledger — but the removal itself must reach the shared
+    // snapshot: break-pane spawns a fresh rail instance in the new tab, and
+    // that instance seeds from the snapshot at load. An unpersisted prune
+    // leaves the stale Pending in the snapshot with no live observation left
+    // anywhere to overwrite it, so the new instance resurrects it forever.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.panes_changed(
+        pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
+        1,
+        0,
+        config::NamingMode::Off,
+    );
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Pending, "repo"), 2, 100);
+
+    let change = radar.panes_changed(pane_update(HashMap::new()), 3, 200, config::NamingMode::Off);
+    assert!(
+        change.persist_snapshot,
+        "a prune that dropped a Pending must persist the snapshot"
+    );
 }
 
 #[test]
