@@ -2,7 +2,21 @@
 
 use std::ffi::OsString;
 use std::fs;
+use std::path::PathBuf;
 use tempfile::TempDir;
+
+/// Absolute path to `bash`, resolved from PATH. The shim scripts are generated
+/// at test runtime, so a `#!/usr/bin/env bash` shebang is the one thing a
+/// hermetic build sandbox can't service: nix's sandbox has no `/usr/bin/env`,
+/// and shebang interpreters must be absolute paths — PATH lookup only applies
+/// to the command itself, and `patchShebangs` only rewrites files that exist
+/// at build time.
+fn bash() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("bash"))
+        .find(|candidate| candidate.is_file())
+        .expect("no `bash` on PATH — the shim scripts need one")
+}
 
 pub struct ShimDir {
     pub dir: TempDir,
@@ -26,8 +40,9 @@ impl ShimDir {
     pub fn add_recorder(&self, name: &str) {
         let log = self.dir.path().join(format!("{name}.log"));
         let script = format!(
-            "#!/usr/bin/env bash\nstdin=\"$(cat)\"\n\
+            "#!{bash}\nstdin=\"$(cat)\"\n\
              printf '%s\\t%s\\n' \"$*\" \"${{stdin//$'\\n'/ }}\" >> {log:?}\nexit 0\n",
+            bash = bash().display(),
             log = log
         );
         let bin = self.dir.path().join(name);
@@ -47,7 +62,8 @@ impl ShimDir {
     pub fn add_hanging_recorder(&self, name: &str, secs: u32) {
         let log = self.dir.path().join(format!("{name}.log"));
         let script = format!(
-            "#!/usr/bin/env bash\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
+            "#!{bash}\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
+            bash = bash().display(),
             log = log
         );
         let bin = self.dir.path().join(name);
@@ -68,12 +84,13 @@ impl ShimDir {
     /// `$3` is the subcommand after `-C <cwd>`.
     pub fn add_fake_git(&self, repo_toplevel: &str, branch: &str) {
         let script = format!(
-            "#!/usr/bin/env bash\n\
+            "#!{bash}\n\
              # $1=-C  $2=<cwd>  $3=rev-parse|branch  $4=--show-toplevel|--show-current\n\
              case \"$3 $4\" in\n\
                'rev-parse --show-toplevel') echo {repo:?};;\n\
                'branch --show-current') echo {branch:?};;\n\
                *) exit 0;;\nesac\n",
+            bash = bash().display(),
             repo = repo_toplevel,
             branch = branch
         );
