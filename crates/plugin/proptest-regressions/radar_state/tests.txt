@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 099b2a6bd9dd75e013326464073898d97dd5b4f500bbe1969b63edd00797bbe5 # shrinks to ops = [Status(2, Idle), Panes([], [], None)]
