@@ -268,6 +268,16 @@ impl State {
                     // itself mutates nothing (`Effect::BroadcastStatus`'s
                     // doc), so this instance's own convergence rides the
                     // echo like everyone else's.
+                    //
+                    // ACCEPTED RISK: The spawned `zellij pipe` blocks until
+                    // every rail instance consumes the message; unlike the
+                    // CLI producer's broadcast (`crates/cli/src/notify.rs`),
+                    // the plugin's `run_command` returns no handle, so no
+                    // deadline/kill is possible — a wedged receiver (e.g.
+                    // stuck at a permission prompt) would orphan the process.
+                    // Accepted: the trigger is a human-paced right-click,
+                    // orders of magnitude rarer than producer hooks, and
+                    // fan-out is bounded by one tab's pending panes.
                     run_command(
                         &["zellij", "pipe", "--name", PIPE_NAME, "--", &payload],
                         std::collections::BTreeMap::new(),
