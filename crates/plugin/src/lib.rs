@@ -34,6 +34,7 @@ mod control;
 mod ledger;
 mod notify_rules;
 mod permission;
+mod presence;
 mod radar_state;
 #[cfg(test)]
 mod reference_tests;
@@ -41,6 +42,7 @@ mod render;
 mod rollup;
 mod runtime;
 mod session_files;
+mod sessions;
 mod status_store;
 mod tab_namer;
 #[cfg(test)]
@@ -167,11 +169,16 @@ impl State {
 impl State {
     fn handle_outcome(&mut self, outcome: runtime::Outcome) -> bool {
         let render = outcome.render;
-        self.handle_effects(outcome.effects);
-        render
+        self.handle_effects(outcome.effects) || render
     }
 
-    fn handle_effects(&mut self, effects: Vec<Effect>) {
+    /// Returns whether any *re-entrant* outcome handled along the way (see
+    /// `Effect::ReadPresences`) wants a repaint. Most effects are
+    /// fire-and-forget host calls with nothing to report; `ResolveCwd`
+    /// deliberately drops its nested render flag (see `resolve_cwd`'s doc
+    /// comment) rather than folding it in here.
+    fn handle_effects(&mut self, effects: Vec<Effect>) -> bool {
+        let mut render = false;
         for effect in effects {
             match effect {
                 // Keep in lockstep with REQUIRED_PLUGIN_PERMISSIONS in
@@ -214,8 +221,71 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
+                Effect::PersistPresence => {
+                    self.session_files.persist_presence(&self.runtime.presence_json())
+                }
+                Effect::ReadPresences => {
+                    let raw = self
+                        .session_files
+                        .read_peer_presences()
+                        .into_iter()
+                        .map(|p| (p.json, p.age_secs))
+                        .collect();
+                    let outcome = self.runtime.presences_changed(raw);
+                    render |= self.handle_outcome(outcome);
+                }
+                Effect::SwitchSession { name, tab_position } => match tab_position {
+                    Some(pos) => switch_session_with_focus(&name, Some(pos), None),
+                    None => switch_session(Some(&name)),
+                },
+                Effect::DismissPresence { name } => {
+                    // The predicate parses each candidate file the same way
+                    // the read path does (`Presence::parse`), so a dismiss
+                    // matches names exactly as leniently as the badge that
+                    // showed them — while `remove_presences_matching` itself
+                    // stays parse-agnostic (see its doc for the layering).
+                    self.session_files.remove_presences_matching(|json| {
+                        crate::presence::Presence::parse(json)
+                            .is_some_and(|p| p.session_name == name)
+                    });
+                }
+                Effect::BroadcastStatus { payload } => {
+                    // Same delivery every CLI producer already uses
+                    // (`crates/cli/src/notify.rs`'s `broadcast`): `zellij
+                    // pipe --name zj_radar.status.v1 -- <payload>`, spawned
+                    // via `run_command` (the `RunCommands` grant this plugin
+                    // already requests). The alternative considered —
+                    // zellij-tile's `pipe_message_to_plugin` — was rejected:
+                    // its `MessageToPlugin` addresses ONE destination plugin
+                    // (`destination_plugin_id`/`plugin_url`; see
+                    // zellij-utils 0.44.3's `data.rs`), not every instance
+                    // subscribed to a named pipe, so it can't fan out to
+                    // every tab's rail the way this gesture's convergence
+                    // requires. `zellij pipe` already does exactly that —
+                    // it's the same host route every producer's broadcast
+                    // takes, proven in production — and reaches THIS
+                    // instance too, which is the whole point: the click
+                    // itself mutates nothing (`Effect::BroadcastStatus`'s
+                    // doc), so this instance's own convergence rides the
+                    // echo like everyone else's.
+                    //
+                    // ACCEPTED RISK: The spawned `zellij pipe` blocks until
+                    // every rail instance consumes the message; unlike the
+                    // CLI producer's broadcast (`crates/cli/src/notify.rs`),
+                    // the plugin's `run_command` returns no handle, so no
+                    // deadline/kill is possible — a wedged receiver (e.g.
+                    // stuck at a permission prompt) would orphan the process.
+                    // Accepted: the trigger is a human-paced right-click,
+                    // orders of magnitude rarer than producer hooks, and
+                    // fan-out is bounded by one tab's pending panes.
+                    run_command(
+                        &["zellij", "pipe", "--name", PIPE_NAME, "--", &payload],
+                        std::collections::BTreeMap::new(),
+                    );
+                }
             }
         }
+        render
     }
 
     /// Bootstrap tab names for freshly-opened panes by reading each pane's cwd
@@ -252,6 +322,23 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            // Replaces `SessionUpdate`: stock zj-radar never calls the
+            // blocking `get_session_list()` host fn that's the ONLY thing
+            // that repopulates `SessionUpdate`'s peer list in zellij 0.44.3
+            // (task-8-report.md's root-cause dive) — only Zellij's own
+            // session-manager plugin does, so a user without it open would
+            // see an empty cross-session badge forever. `ModeUpdate` fires
+            // automatically right after this plugin loads (Zellij's
+            // `RequestStateUpdateForPlugins` → `Tab::update_input_modes`,
+            // unconditional on every successful plugin load — no polling,
+            // no other plugin required) and carries `ModeInfo.session_name`,
+            // which is all this plugin ever needed from `SessionUpdate` in
+            // the first place; liveness itself now comes from the presence
+            // files' own mtimes, turned into a per-entry stale/fresh state
+            // (`sessions::STALE_AFTER_SECS`) rather than a Zellij-reported
+            // peer list — and, per task-14, a peer past that age dims
+            // rather than vanishing.
+            EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
@@ -337,9 +424,17 @@ impl ZellijPlugin for State {
                 let outcome = self.runtime.mouse_click(line);
                 self.handle_outcome(outcome)
             }
+            Event::Mouse(Mouse::RightClick(line, _col)) => {
+                let outcome = self.runtime.mouse_right_click(line);
+                self.handle_outcome(outcome)
+            }
             Event::PermissionRequestResult(status) => {
                 let granted = status == PermissionStatus::Granted;
                 let outcome = self.runtime.permission_result(granted);
+                self.handle_outcome(outcome)
+            }
+            Event::ModeUpdate(mode_info) => {
+                let outcome = self.runtime.session_name_changed(mode_info.session_name);
                 self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {

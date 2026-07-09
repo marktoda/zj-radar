@@ -220,6 +220,7 @@ fn peer_waits_then_requests_after_granted_marker() {
             Effect::RequestPermission,
             Effect::SetSelectable(true),
             Effect::HeartbeatPermissionLock,
+            Effect::ReadPresences,
             Effect::SetTimeout(Cadence::Fast),
         ]
     );
@@ -596,7 +597,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
         let quiet = runtime.timer_fast(PermissionProbe::default());
         assert_eq!(
             quiet.effects,
-            vec![Effect::SetTimeout(Cadence::Fast)],
+            vec![Effect::ReadPresences, Effect::SetTimeout(Cadence::Fast)],
             "still pending short of the debounce window"
         );
     }
@@ -605,7 +606,10 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     assert!(timer.render);
     // The promotion mutates the command store, so this tick persists the
     // snapshot too (late-spawned instances must see the Running command).
-    assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]);
+    assert_eq!(
+        timer.effects,
+        vec![Effect::ReadPresences, Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
+    );
     let state = runtime
         .radar
         .command_store()
@@ -794,13 +798,512 @@ fn command_no_op_when_no_attention() {
 
 #[test]
 fn control_pipe_unknown_verb_is_no_op() {
-    let runtime = PluginRuntime {
+    let mut runtime = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
         ..Default::default()
     };
     assert_eq!(runtime.control_pipe("attention-top"), Outcome::default());
     assert_eq!(runtime.control_pipe(""), Outcome::default());
+}
+
+// ── Cross-session presence + cycling ───────────────────────────────────────
+
+/// A granted runtime whose own session name is already known (as it would be
+/// in production once Zellij's first `ModeUpdate` lands) — needed for the
+/// presence edge in `project` to ever fire.
+fn runtime_with_granted_permission() -> PluginRuntime {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.session_name_changed(Some("work".into()));
+    rt
+}
+
+/// One tab (position 0), one tracked pane (id 7) — the minimal topology a
+/// status edge needs to land on a row `presence_json` can see.
+fn drive_tabs_and_panes(rt: &mut PluginRuntime) {
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+}
+
+/// A `zj_radar.status.v1` wire payload for `pane_id` at `status` ("running" /
+/// "pending" / etc.) — `payload_for` takes the typed `Status`, so this bridges
+/// from the wire vocabulary the way a real producer would send it.
+fn payload_json(pane_id: u32, status: &str) -> String {
+    payload::to_wire(&payload_for(pane_id, Status::from_wire(status)))
+}
+
+/// A peer presence JSON literal paired with a fresh (age-0) mtime — the
+/// shape `presences_changed` now takes (`session_files::read_peer_presences`'s
+/// `(json, age_secs)` pairing). Most tests want a live-looking peer; use the
+/// tuple literal directly when a test needs to exercise staleness.
+fn fresh(json: &str) -> (String, u64) {
+    (json.to_string(), 0)
+}
+
+/// `fresh`'s stale counterpart: the same JSON paired with an mtime age just
+/// past `STALE_AFTER_SECS`, so the entry dims on the badge — the state the
+/// right-click dismiss tests need to hit.
+fn stale(json: &str) -> (String, u64) {
+    (json.to_string(), crate::sessions::STALE_AFTER_SECS + 1)
+}
+
+/// Shared setup for the right-click tests: one tab + one "alpha" peer, then
+/// a real render so `last_rendered` carries the badge's click targets. The
+/// resulting line indices follow `clicking_a_session_line_emits_switch_session`'s
+/// bookkeeping — 0/1 header, 2 own "work" line (click-inert), 3 peer "alpha"
+/// line, 4 the badge's blank separator, 5 the tab header.
+fn render_with_badge(rt: &mut PluginRuntime, peer: (String, u64)) {
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.presences_changed(vec![peer]);
+    let ansi = rt.render(100, 80);
+    assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
+}
+
+#[test]
+fn status_edge_persists_presence_once_and_not_on_identical_state() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+
+    let out = rt.status_pipe(&payload_json(7, "running"));
+    assert!(out.effects.contains(&Effect::PersistPresence), "running-count edge publishes presence, got {:?}", out.effects);
+
+    let again = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!again.effects.contains(&Effect::PersistPresence), "identical state does not re-publish, got {:?}", again.effects);
+}
+
+#[test]
+fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
+    // Finding 1 pin: `presence_json` embeds `updated_epoch_s`, which on Fast
+    // cadence moves every tick. If `project`'s change check compared the raw
+    // JSON (epoch included), advancing the epoch alone — with unchanged
+    // counts — would look like an edge and re-fire `PersistPresence` every
+    // second. It must not: only a real content change (running/attention/
+    // attention_tab_position) counts, mirroring `sessions.rs::set_own`'s
+    // badge-derived check, which already excludes `updated_epoch_s`.
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+
+    let first = rt.status_pipe(&payload_json(7, "running"));
+    assert!(first.effects.contains(&Effect::PersistPresence), "setup: first edge publishes, got {:?}", first.effects);
+
+    // Drive `project` directly (as `project_emits_effects_in_canonical_order`
+    // does) with a no-op domain change but a strictly advancing epoch each
+    // call — the seam that lets this test move "now" without sleeping.
+    let noop = RadarChange::default();
+    let same_epoch_advanced_once = rt.project(vec![], noop.clone(), 1_000);
+    assert!(
+        !same_epoch_advanced_once.effects.contains(&Effect::PersistPresence),
+        "epoch-only change (unchanged counts) must not republish, got {:?}",
+        same_epoch_advanced_once.effects
+    );
+    let same_epoch_advanced_again = rt.project(vec![], noop, 2_000);
+    assert!(
+        !same_epoch_advanced_again.effects.contains(&Effect::PersistPresence),
+        "epoch-only change (unchanged counts, again) must not republish, got {:?}",
+        same_epoch_advanced_again.effects
+    );
+
+    // A real content edge (attention 0 -> 1) evaluated at the SAME epoch as
+    // the call just above still publishes — the exclusion is timestamp-only,
+    // not a blanket suppression of `PersistPresence`.
+    rt.radar.status_mut().apply(payload_for(7, Status::Pending), rt.tick, 2_000);
+    let content_edge = rt.project(vec![], RadarChange::default(), 2_000);
+    assert!(
+        content_edge.effects.contains(&Effect::PersistPresence),
+        "a counts change at an unchanged epoch must still publish, got {:?}",
+        content_edge.effects
+    );
+}
+
+#[test]
+fn presence_withheld_until_own_session_name_is_known() {
+    // Same status edge as above, but WITHOUT `session_name_changed` ever landing —
+    // an unnamed presence file is useless to peers, so `project` must not
+    // emit `PersistPresence` no matter what the own counts do.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    drive_tabs_and_panes(&mut rt);
+
+    let out = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!out.effects.contains(&Effect::PersistPresence), "no session name yet, got {:?}", out.effects);
+}
+
+#[test]
+fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+    // "alpha" needs no separate liveness registration anymore — its presence
+    // report IS its liveness (task-8b-brief.md: no more `SessionUpdate` peer
+    // list to cross-check against).
+    rt.presences_changed(vec![
+        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#),
+    ]);
+
+    let out = rt.control_pipe("session-next");
+    assert!(out.render, "selection highlight renders");
+
+    // The Fast fire covering the tap itself must not commit (task-14: the
+    // taps-since-last-fire flag resets the deadline instead) — only the
+    // NEXT, fully quiet fire may.
+    let covering = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !covering.effects.iter().any(|e| matches!(e, Effect::SwitchSession { .. })),
+        "the fire covering the tap must not commit, got {:?}",
+        covering.effects
+    );
+    let tick = rt.timer_fast(PermissionProbe::default()); // the next, quiet Fast tick
+    assert!(
+        tick.effects.iter().any(|e| matches!(
+            e, Effect::SwitchSession { name, tab_position: Some(1) } if name == "alpha"
+        )),
+        "idle tick commits the pending selection, got {:?}",
+        tick.effects
+    );
+}
+
+#[test]
+fn session_cycle_is_inert_without_permission() {
+    let mut rt = PluginRuntime::default();
+    rt.session_name_changed(Some("work".into()));
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
+    assert_eq!(rt.control_pipe("session-next"), Outcome::default());
+}
+
+#[test]
+fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
+    let mut rt = runtime_with_granted_permission();
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
+    let out = rt.control_pipe("session-next");
+    assert!(
+        out.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+        "a pending cycle selection must arm Fast so the idle-commit fires promptly, got {:?}",
+        out.effects
+    );
+}
+
+#[test]
+fn clicking_a_session_line_emits_switch_session() {
+    // Two live sessions (own "work" + peer "alpha") put two badge lines
+    // between the header and the first tab card (`render::render_session_badge`,
+    // wired into the body in Task 7). Mirrors
+    // `render_records_targets_and_mouse_click_returns_host_effect`'s line-index
+    // bookkeeping: Compact density + header:true is a 2-line header (title,
+    // rule — "line 2 = tab header" there), so with the badge inserted here:
+    // line 0 = title, 1 = rule, 2 = own "work" badge line (click-inert, no
+    // cross-session target), 3 = peer "alpha" badge line (clickable).
+    let mut rt = runtime_with_granted_permission(); // own session name "work"
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.presences_changed(vec![
+        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#),
+    ]);
+
+    let ansi = rt.render(100, 80);
+    assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
+
+    let own_click = rt.mouse_click(2);
+    assert_eq!(
+        own_click,
+        Outcome::default(),
+        "the own-session badge line has no click target, got {:?}",
+        own_click
+    );
+
+    let peer_click = rt.mouse_click(3);
+    assert_eq!(
+        peer_click.effects,
+        vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
+    );
+}
+
+#[test]
+fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    let out = rt.mouse_right_click(3);
+
+    assert_eq!(
+        out,
+        Outcome {
+            render: true,
+            effects: vec![Effect::DismissPresence { name: "alpha".into() }],
+        }
+    );
+    assert!(
+        !rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "dismissed stale peer must disappear from this runtime's badge"
+    );
+}
+
+#[test]
+fn right_click_on_fresh_session_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, fresh(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    let out = rt.mouse_right_click(3);
+
+    assert_eq!(out, Outcome::default());
+    assert!(
+        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "fresh peer must remain on the badge"
+    );
+}
+
+#[test]
+fn right_click_on_own_session_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(2), Outcome::default());
+}
+
+#[test]
+fn right_click_on_tab_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(5), Outcome::default());
+}
+
+#[test]
+fn right_click_on_empty_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(99), Outcome::default());
+}
+
+#[test]
+fn right_click_without_permission_is_inert_even_on_stale_session_line() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+    rt.permission = PermissionState::default();
+
+    assert_eq!(rt.mouse_right_click(3), Outcome::default());
+    assert!(
+        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "ungranted right-click must not mutate the badge"
+    );
+}
+
+// ── Right-click: pending-pane acknowledge (issue #5) ───────────────────────
+
+/// Two tabs for the pending-pane acknowledge tests: tab 0 has panes 10
+/// (Pending), 11 (Running), 12 (Pending); tab 1 has one pane, 20 (Pending).
+/// Rendered once so `last_rendered` carries the click-target map. Line
+/// layout, pinned by inspection the same way every other click-mapping test
+/// in this file hard-codes its lines (Compact density, header:true):
+///   0/1 global header
+///   2   tab0 header line   → (tab_position: 0, pane_id: None)
+///   3   tab0 pane 10 line  → (0, Some(10)) — Pending
+///   4   tab0 pane 11 line  → (0, Some(11)) — Running
+///   5   tab0 pane 12 line  → (0, Some(12)) — Pending
+///   6   tab1 header line   → (1, None)
+///   7   tab1 pane 20 line  → (1, Some(20)) — Pending
+fn runtime_with_pending_panes() -> PluginRuntime {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.tabs_changed(vec![tab(0, "a", false), tab(1, "b", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
+    rt.radar.set_tab_panes_for_position(1, vec![pane(20)]);
+    rt.status_pipe(&payload_json(10, "pending"));
+    rt.status_pipe(&payload_json(11, "running"));
+    rt.status_pipe(&payload_json(12, "pending"));
+    rt.status_pipe(&payload_json(20, "pending"));
+    let _ = rt.render(100, 80);
+    rt
+}
+
+#[test]
+fn right_click_on_pending_pane_broadcasts_and_leaves_local_state_untouched_until_the_echo_lands() {
+    let mut rt = runtime_with_pending_panes();
+
+    let out = rt.mouse_right_click(3); // tab0 pane 10, Pending
+    assert!(!out.render, "the click itself must not mutate local state — see Effect::BroadcastStatus's doc");
+    assert_eq!(out.effects.len(), 1, "exactly one pending pane on this line, got {:?}", out.effects);
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+
+    // Pending survives the click alone — convergence rides the pipe, not a
+    // local write (the design constraint issue #5 leads with: a local clear
+    // would repeat the removed focus-clear mistake).
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Pending, "no local mutation from the click alone");
+
+    // Only once the payload is driven back through `status_pipe` — exactly
+    // how every instance, including this one, receives the broadcast it
+    // just emitted — does the row actually converge.
+    let payload = payload.clone();
+    rt.status_pipe(&payload);
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Done, "the echo converges Pending -> Done");
+}
+
+#[test]
+fn right_click_on_tab_row_broadcasts_every_pending_pane_in_that_tab_only() {
+    let mut rt = runtime_with_pending_panes();
+
+    let out = rt.mouse_right_click(2); // tab0 header line, pane_id: None
+    assert!(!out.render);
+    let acked: Vec<u32> = out
+        .effects
+        .iter()
+        .map(|e| {
+            let Effect::BroadcastStatus { payload } = e else {
+                panic!("expected BroadcastStatus, got {e:?}");
+            };
+            payload::parse(payload).expect("synthetic payload must parse").pane_id
+        })
+        .collect();
+    assert_eq!(acked.len(), 2, "tab0 has exactly 2 pending panes (10 and 12), got {acked:?}");
+    assert!(acked.contains(&10) && acked.contains(&12));
+    assert!(!acked.contains(&11), "pane 11 is Running, not Pending — untouched");
+    assert!(!acked.contains(&20), "tab1's pending pane must be untouched by a tab0 click");
+}
+
+#[test]
+fn right_click_on_a_running_pane_row_is_a_strict_no_op() {
+    let mut rt = runtime_with_pending_panes();
+    assert_eq!(rt.mouse_right_click(4), Outcome::default(), "pane 11 is Running, not Pending");
+}
+
+#[test]
+fn right_click_on_a_tab_row_with_no_tracked_panes_is_a_strict_no_op() {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    let _ = rt.render(100, 80);
+    assert_eq!(rt.mouse_right_click(2), Outcome::default(), "no panes at all in this tab");
+}
+
+#[test]
+fn acknowledge_payload_round_trips_and_carries_the_original_source_and_kind() {
+    let mut rt = runtime_with_pending_panes();
+    let out = rt.mouse_right_click(3); // pane 10, Pending, source "claude" via payload_for
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+
+    let parsed = payload::parse(payload).expect("synthetic payload must parse (wire-compat)");
+    assert_eq!(parsed.pane_id, 10);
+    assert_eq!(parsed.status, Status::Done);
+    assert_eq!(parsed.repo, "repo");
+    assert_eq!(parsed.branch, "main");
+    assert_eq!(parsed.msg, "working", "the original msg is carried forward unchanged");
+    assert_eq!(parsed.source, "claude", "Kind::as_source must round-trip the original classification");
+    assert_eq!(crate::kind::Kind::from_source(&parsed.source), crate::kind::Kind::Claude);
+}
+
+#[test]
+fn double_delivery_of_the_acknowledge_broadcast_is_idempotent() {
+    let mut rt = runtime_with_pending_panes();
+    let out = rt.mouse_right_click(3);
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+    let payload = payload.clone();
+
+    rt.status_pipe(&payload);
+    let completed_at_first = rt.radar.status(10).unwrap().completed_epoch_s;
+    assert!(completed_at_first.is_some(), "Done must stamp a completion epoch");
+
+    // A second, later delivery of the SAME payload — e.g. a duplicate fire of
+    // the pipe, or another instance's echo racing this one — must be a
+    // no-op: `StatusStore::apply`'s identical-(status,msg)-rebroadcast rule
+    // keeps the ORIGINAL completion stamp rather than re-stamping it.
+    rt.status_pipe(&payload);
+    assert_eq!(
+        rt.radar.status(10).unwrap().completed_epoch_s,
+        completed_at_first,
+        "an identical re-delivery must not re-stamp the completion"
+    );
+}
+
+#[test]
+fn acknowledge_echo_never_fires_a_done_notification() {
+    // Right-click means "I've seen this, stop flagging it" — so the synthetic
+    // Done it broadcasts must never itself pop a notification. The echo rides
+    // the same intake as every real broadcast (by design), and a background
+    // Pending → Done edge WOULD normally notify (`needs_attention` includes
+    // Done, `notify_done` defaults true) — the ack has to be exempt.
+    let mut rt = runtime_with_pending_panes();
+    // First settle advances the notify baseline past the seeded Pendings
+    // (firing THEIR notifications — the flagging the user is responding to).
+    let _ = rt.timer_fast(PermissionProbe::default());
+
+    let out = rt.mouse_right_click(3); // pane 10, Pending, background
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+    let payload = payload.clone();
+    rt.status_pipe(&payload); // the echo lands: Pending → Done
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Done, "setup: the echo must converge");
+
+    // No later settle may notify for the acknowledged pane — not the first
+    // (which carries the deferred edge) nor any that follow.
+    for _ in 0..4 {
+        let t = rt.timer_fast(PermissionProbe::default());
+        assert!(
+            !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "an acknowledge must never notify; effects = {:?}", t.effects
+        );
+    }
+}
+
+#[test]
+fn a_real_pending_to_done_broadcast_still_notifies() {
+    // The companion bound to the test above: the ack exemption must be carried
+    // by the PAYLOAD, not inferred from the Pending → Done edge shape — that
+    // edge happens for real (answer a question, tab away, a short no-tool turn
+    // ends in Done) and that completion notification is wanted.
+    let mut rt = runtime_with_pending_panes();
+    let _ = rt.timer_fast(PermissionProbe::default()); // baseline: Pending
+
+    rt.status_pipe(&payload_json(10, "done")); // a genuine producer Done
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert_eq!(
+        tick.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
+        1,
+        "a real background Pending → Done must still notify; effects = {:?}", tick.effects
+    );
+}
+
+#[test]
+fn own_badge_row_updates_live_as_running_and_attention_move() {
+    // Task-6 flagged `Sessions::set_own` as dead code: nothing called it, so
+    // the own row of the cross-session badge never reflected the running/
+    // attention counts actually moving underneath it — it would render
+    // whatever it started at (0/0) forever. task-8b-brief.md revives it by
+    // having `project` call it every pass once the name is known; this pins
+    // that the own row's rendered counts actually track a later status edge,
+    // not just its state at the moment the name became known.
+    let mut rt = runtime_with_granted_permission(); // own session name "work"
+    // A second session must exist for the badge to render at all
+    // (`render_session_badge` renders zero lines for `entries.len() <= 1`).
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
+    drive_tabs_and_panes(&mut rt); // tab 0, pane 7
+
+    let before = rt.render(100, 80);
+    assert!(!before.contains("work 1"), "setup: own row must start at zero running, got {before:?}");
+
+    rt.status_pipe(&payload_json(7, "running"));
+    let after = rt.render(100, 80);
+    let running_glyph = Status::Running.glyph_for(GlyphSet::Plain);
+    assert!(
+        after.contains(&format!("work 1{running_glyph}")),
+        "own badge row must show the fresh running count, got {after:?}"
+    );
 }
 
 // ── Effect::Notify integration ─────────────────────────────────────────────
@@ -1208,6 +1711,10 @@ fn idle_with_fresh_history_arms_slow_and_repaints() {
 
 #[test]
 fn saturated_history_fully_disarms() {
+    // The battery property's full-disarm pin — deliberately PRE-NAME (no
+    // `session_name_changed` ever lands, so `own_session_name` stays at its
+    // Default empty). Once a name is known the presence-liveness heartbeat
+    // keeps Slow armed instead — see the sibling test below.
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
@@ -1236,6 +1743,67 @@ fn saturated_history_fully_disarms() {
         outcome.effects
     );
     assert!(rt.timer_chain.armed().is_none());
+}
+
+#[test]
+fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
+    // Sibling of `saturated_history_fully_disarms`, adding the one
+    // ingredient that test leaves out: a learned own-session name. Once the
+    // name is known this session owns a presence file, and that file's
+    // mtime is the signal peers read to tell fresh from stale
+    // (`sessions::STALE_AFTER_SECS`) — refreshed solely by `timer`'s
+    // Slow-fire heartbeat. Were the chain to fully disarm on a saturated
+    // idle rail, that heartbeat would never fire again, the mtime would
+    // freeze, and after 90s every peer would dim this still-alive session's
+    // badge to stale (never drop it — task-14 — but still a needless false
+    // alarm) — exactly the idle-but-visible case the feature exists for.
+    // So: saturation may step the cadence down to Slow, but never to None
+    // while the name is known.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+        at_epoch_s: 0,
+        outcome: crate::ledger::LedgerOutcome::Done,
+        tab_id: TabId::new(1),
+        tab_name: "work".into(),
+        label: "cargo test".into(),
+        pane_id: 5,
+    });
+    // Seed `last_now_epoch_s` with a real wall-clock capture (any entry
+    // point that owns an epoch does) BEFORE the name lands, so the arm
+    // decision inside `session_name_changed`'s project pass evaluates at
+    // true "now" — where the 0-stamped ledger entry above reads as
+    // saturated — and not at the Default epoch 0, where that entry would
+    // still look fresh and arm Slow for the wrong reason.
+    let nameless = rt.tabs_changed(vec![]);
+    assert!(
+        !nameless.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+        "setup: nameless + saturated must stay fully disarmed, got {:?}",
+        nameless.effects
+    );
+
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(
+        named.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+        "learning the name must arm the Slow heartbeat, got {:?}",
+        named.effects
+    );
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
+
+    // The Slow fire must refresh the presence mtime AND re-arm itself —
+    // the self-sustaining loop that keeps an idle session inside the TTL.
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(
+        slow.effects.contains(&Effect::PersistPresence),
+        "the heartbeat refreshes the presence file, got {:?}", slow.effects
+    );
+    assert!(
+        slow.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+        "the heartbeat chain re-arms itself, got {:?}", slow.effects
+    );
 }
 
 #[test]
@@ -1404,3 +1972,488 @@ fn lone_slow_fire_processes_as_the_live_chain() {
         tick.effects
     );
 }
+
+#[test]
+fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
+    // An idle-but-alive session (nothing fast-worthy happening) has no
+    // content edge to trigger `project`'s compare-and-cache `PersistPresence`
+    // — but its presence file's mtime is the signal peers use to tell fresh
+    // from stale (`sessions::STALE_AFTER_SECS`; liveness is no longer
+    // `SessionUpdate`-derived at all, and past task-14 it's never a hard
+    // drop either — just a dim). The Slow (60s) heartbeat must therefore
+    // emit `PersistPresence` unconditionally, bypassing the content-compare
+    // gate; Fast (1s) fires must NOT — that would be needless per-second
+    // churn for a signal that only needs to beat a 90s staleness window.
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+
+    // A Fast fire with nothing changed must stay quiet — the edge gate
+    // already published once, inside `runtime_with_granted_permission`'s
+    // `session_name_changed` call.
+    let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    assert!(
+        !fast.effects.contains(&Effect::PersistPresence),
+        "a fast fire with unchanged content must not republish, got {:?}", fast.effects
+    );
+
+    // A Slow fire, even with identical content, must heartbeat anyway —
+    // exactly once, not doubled up with `project`'s own (correctly
+    // no-op, since content is unchanged) edge-gated push.
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    let persists = slow.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    assert_eq!(
+        persists, 1,
+        "an idle session's slow heartbeat must refresh its presence file's \
+         mtime unconditionally, exactly once, got {:?}", slow.effects
+    );
+}
+
+#[test]
+fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
+    // Sibling of `idle_alive_session_heartbeats_presence_unconditionally_
+    // on_slow_fires_only`, but for the case that test's own comment waves
+    // off as "correctly no-op": here the Slow fire's OWN tick is what
+    // produces the content edge, not an unrelated prior call. A live Slow
+    // fire that promotes a debounced command to Running crosses `project`'s
+    // edge gate (running 0 -> 1) on the exact same pass where `timer`'s
+    // unconditional Slow heartbeat has already seeded a `PersistPresence`
+    // — two independently-correct pushes landing in the same `fx`, which
+    // must still collapse to one effect.
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+    drive_tabs_and_panes(&mut rt); // tab 0 / pane 7, the row `own_presence` reads
+
+    rt.command_changed(7, &["cargo".into(), "test".into()], true); // pending, not yet Running
+
+    // The named-idle heartbeat pre-armed Slow inside the helper's
+    // `session_name_changed`, so `command_changed`'s Fast arm above was a
+    // Slow→Fast top-up: TWO fires are now in flight, and the probe below
+    // needs its Slow fire to land as the LIVE chain. Retire the stale
+    // slow-armed fire first (the "rare order" of
+    // `stale_slow_fire_landing_first_is_swallowed`): swallowed whole, so it
+    // doesn't advance the debounce tick count either.
+    let stale = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert_eq!(stale, Outcome::none(), "setup: the pre-armed slow fire is stale and swallowed");
+
+    // Ticks short of the debounce window: quiet, and don't disturb the fire
+    // count `timer`'s final Slow fire below needs to land as the live chain.
+    for _ in 1..DEBOUNCE_TICKS {
+        rt.timer_fast(PermissionProbe::default());
+    }
+
+    // The debounce-completing tick, reported as a Slow (60s) fire — the
+    // reviewer's exact probe: a live Slow fire whose own tick promotes
+    // pending -> Running, landing a genuine content edge.
+    let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    let persists = tick.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    assert_eq!(
+        persists, 1,
+        "a Slow heartbeat coinciding with a real content edge must still \
+         publish exactly once, got {:?}", tick.effects
+    );
+}
+
+#[test]
+fn read_presences_is_bound_to_fast_fires_only() {
+    // Finding 2 pin: the brief bounds `Effect::ReadPresences` to "one
+    // directory scan per second, only while Fast is armed" — it must not
+    // ride along on the Slow (60s) heartbeat, which exists purely to repaint
+    // ledger ages. `timer` tells Fast from Slow the same way `TimerChain::
+    // on_fire` tells live from stale: by `elapsed_s` against
+    // `STALE_FIRE_ELAPSED_S`.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+
+    let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    assert!(fast.effects.contains(&Effect::ReadPresences), "a Fast fire must scan peers, got {:?}", fast.effects);
+
+    // A lone Slow fire (nothing else in flight, so it's the live chain, not
+    // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
+    // must not.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
+}
+
+// ── Fast-decay heartbeat survival (task-13 investigation) ───────────────
+//
+// Field reports: sessions that had Fast-cadence activity and then decayed
+// to idle stopped heartbeating (their presence file's mtime froze), while
+// a session idle from birth (never armed Fast) kept heartbeating forever.
+// Suspected mechanism: the Fast→Slow decay stranding `TimerChain` — the
+// original stale Slow arm from before the top-up lands, gets swallowed as
+// stale (`TimerChain::on_fire`'s elapsed+pending check), and the chain
+// never re-arms. The tests below drive `PluginRuntime::timer` through a
+// real fire-order simulation (`FireSim`, not hand-picked `elapsed_s`
+// values) across the exact interleaving, a long sustained-busy variant, a
+// flapping-activity variant, and a property-fuzzed search over thousands
+// of random event/fire orderings (`timer_chain_fuzz` below) — all confirm
+// the *current* `arm`/`on_fire` bookkeeping self-corrects: whichever fire
+// is chronologically last to land is always the one treated as live, and
+// it always re-arms (see task-13-report.md for the full trace). Kept as
+// permanent regression coverage for this exact hypothesis, not as a
+// reproduction of a confirmed bug.
+
+/// A one-shot, non-cancellable `set_timeout` queue, exactly like Zellij's:
+/// every `Effect::SetTimeout` schedules a real future fire at `now + dur`,
+/// and fires are delivered in absolute-time order (never reordered) —
+/// mirroring lib.rs's `set_timeout(cadence.seconds())` and Zellij's own
+/// single-threaded event loop. Used to drive `PluginRuntime::timer` the way
+/// production actually does, instead of hand-picking `elapsed_s` values.
+struct FireSim {
+    now_ms: u64,
+    queue: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64)>>,
+}
+impl FireSim {
+    fn new() -> Self {
+        Self { now_ms: 0, queue: Default::default() }
+    }
+    fn schedule_from(&mut self, effects: &[Effect]) {
+        for e in effects {
+            if let Effect::SetTimeout(c) = e {
+                let dur_ms = (c.seconds() * 1000.0).round() as u64;
+                self.queue.push(std::cmp::Reverse((self.now_ms + dur_ms, dur_ms)));
+            }
+        }
+    }
+    /// Pop the earliest scheduled fire and report it as `timer()` wants:
+    /// `elapsed_s` = the duration it was armed with (matches lib.rs's
+    /// documented approximation).
+    fn pop(&mut self) -> Option<f64> {
+        let std::cmp::Reverse((at, dur_ms)) = self.queue.pop()?;
+        self.now_ms = at;
+        Some(dur_ms as f64 / 1000.0)
+    }
+}
+
+#[test]
+fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
+    // The exact suspected interleaving: Slow-armed idle, a Fast top-up,
+    // several Fast fires driving real work, activity ends, and the
+    // ORIGINAL stale Slow arm lands somewhere in the stream. Run it out
+    // past 15 minutes of virtual time and assert every live Slow fire
+    // still re-arms and still heartbeats.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    let mut sim = FireSim::new();
+
+    // name-known: arms Slow immediately (idle from birth so far).
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    // busy: a running command tops up Fast on top of the still-outstanding
+    // Slow arm — exactly the "TWO in flight" case 24968b1's tests pinned.
+    let busy = rt.status_pipe(&payload_json(7, "running"));
+    sim.schedule_from(&busy.effects);
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: busy tops up Fast");
+
+    // Drive real fires for a few seconds of Fast-cadence "work", then end
+    // the activity (status -> done, which settles and lets the row go
+    // idle), continuing to drain the FireSim exactly as Zellij would
+    // deliver it — including the original stale Slow fire, whenever in
+    // this stream it actually lands.
+    let mut ended_activity = false;
+    let mut stale_swallows = 0;
+    for i in 0.. {
+        let Some(elapsed) = sim.pop() else { break };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        if out == Outcome::none() {
+            stale_swallows += 1;
+        }
+        sim.schedule_from(&out.effects);
+
+        if i == 3 && !ended_activity {
+            ended_activity = true;
+            let done = rt.status_pipe(&payload_json(7, "done"));
+            sim.schedule_from(&done.effects);
+        }
+        // Stop once we've drained past the point business has settled AND
+        // the chain has decayed back to Slow-only (no Fast desire left).
+        if ended_activity && rt.timer_chain.armed() == Some(Cadence::Slow) && sim.queue.len() <= 1 {
+            break;
+        }
+        if i > 500 {
+            panic!("setup: never settled back to a single Slow chain");
+        }
+    }
+    assert!(
+        stale_swallows >= 1,
+        "setup: the original Slow arm must actually land and get swallowed as \
+         stale during this drain — otherwise this test never exercises the \
+         'two in flight' interleaving at all"
+    );
+
+    // Now simulate 15 minutes of virtual time purely via the FireSim queue
+    // — no more domain events, exactly an idle-but-alive session. Every
+    // live fire must be a Slow fire that (a) re-arms and (b) heartbeats.
+    let mut live_fires = 0;
+    while sim.now_ms < 15 * 60 * 1000 {
+        let Some(elapsed) = sim.pop() else {
+            panic!(
+                "TimerChain starved: nothing scheduled at virtual t={:.1}s \
+                 (armed={:?}) — the chain believes itself armed with no \
+                 timeout outstanding",
+                sim.now_ms as f64 / 1000.0,
+                rt.timer_chain.armed(),
+            );
+        };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+
+        if out == Outcome::none() {
+            continue; // correctly-swallowed stale fire
+        }
+        live_fires += 1;
+        assert!(
+            elapsed > STALE_FIRE_ELAPSED_S,
+            "expected only Slow fires once idle, got elapsed={elapsed} at t={:.1}s",
+            sim.now_ms as f64 / 1000.0
+        );
+        assert!(
+            out.effects.contains(&Effect::PersistPresence),
+            "live Slow fire at t={:.1}s must heartbeat, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+        assert!(
+            out.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+            "live Slow fire at t={:.1}s must re-arm, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+    }
+    assert!(
+        live_fires >= 10,
+        "expected at least 10 live Slow heartbeats over 15 virtual minutes, got {live_fires}"
+    );
+}
+
+/// Drain `sim`/`rt` until the chain is Slow-only-armed with nothing else
+/// outstanding, feeding every fire (live or stale) back through `timer`.
+/// Panics past a generous bound instead of looping forever on a genuine
+/// stall, so a hang shows up as a normal test failure.
+fn drain_to_settled_slow(rt: &mut PluginRuntime, sim: &mut FireSim) {
+    for _ in 0..2000 {
+        if rt.timer_chain.armed() == Some(Cadence::Slow) && sim.queue.len() <= 1 {
+            return;
+        }
+        let Some(elapsed) = sim.pop() else { panic!("starved before settling to Slow") };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+    }
+    panic!("never settled back to a single Slow chain");
+}
+
+/// Run `sim`/`rt` forward for `minutes` of pure idle virtual time (no more
+/// domain events), asserting every live fire is a heartbeating Slow fire.
+/// Returns the live-fire count.
+fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64) -> u64 {
+    let deadline_ms = sim.now_ms + minutes * 60_000;
+    let mut live_fires = 0;
+    while sim.now_ms < deadline_ms {
+        let Some(elapsed) = sim.pop() else {
+            panic!(
+                "TimerChain starved at virtual t={:.1}s (armed={:?})",
+                sim.now_ms as f64 / 1000.0,
+                rt.timer_chain.armed(),
+            );
+        };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+        if out == Outcome::none() {
+            continue;
+        }
+        live_fires += 1;
+        assert!(
+            out.effects.contains(&Effect::PersistPresence),
+            "live fire at t={:.1}s must heartbeat, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+    }
+    live_fires
+}
+
+#[test]
+fn slow_heartbeat_survives_a_long_sustained_busy_period() {
+    // Variant where the original stale Slow fire's 60s deadline actually
+    // elapses WHILE Fast activity is still ongoing (not right at the
+    // boundary), so it gets swallowed mid-burst rather than right at the
+    // busy/idle seam.
+    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    let busy = rt.status_pipe(&payload_json(7, "running"));
+    sim.schedule_from(&busy.effects);
+
+    // Sustain Fast for 200 virtual seconds (>> the 60s Slow deadline) of
+    // pure timer-driven work — no further domain events.
+    for _ in 0..200 {
+        let Some(elapsed) = sim.pop() else { panic!("starved mid-burst") };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+    }
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: still busy at t=200s");
+
+    let done = rt.status_pipe(&payload_json(7, "done"));
+    sim.schedule_from(&done.effects);
+    drain_to_settled_slow(&mut rt, &mut sim);
+
+    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(live_fires >= 10, "expected >=10 heartbeats, got {live_fires}");
+}
+
+#[test]
+fn slow_heartbeat_survives_flapping_activity_then_settling() {
+    // The "actively-used agent" shape: many short bursts with brief idle
+    // gaps in between (too short for even one Slow fire to land), each one
+    // a fresh Slow->Fast top-up stacking a fresh stale-Slow-to-be behind
+    // the last — then a final, permanent idle settle.
+    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    for cycle in 0..40 {
+        let busy = rt.status_pipe(&payload_json(7, "running"));
+        sim.schedule_from(&busy.effects);
+        for _ in 0..3 {
+            let Some(elapsed) = sim.pop() else { panic!("starved in flap cycle {cycle}") };
+            let out = rt.timer(PermissionProbe::default(), elapsed);
+            sim.schedule_from(&out.effects);
+        }
+        let done = rt.status_pipe(&payload_json(7, "done"));
+        sim.schedule_from(&done.effects);
+        // A couple settle ticks, then straight into the next burst — no
+        // time for the chain to fully decay to a lone Slow.
+        for _ in 0..2 {
+            let Some(elapsed) = sim.pop() else { panic!("starved settling flap cycle {cycle}") };
+            let out = rt.timer(PermissionProbe::default(), elapsed);
+            sim.schedule_from(&out.effects);
+        }
+    }
+
+    drain_to_settled_slow(&mut rt, &mut sim);
+    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(live_fires >= 10, "expected >=10 heartbeats after flapping settled, got {live_fires}");
+}
+
+mod timer_chain_fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Clone, Debug)]
+    enum Step {
+        /// Pop and deliver the earliest scheduled fire (real FIFO order).
+        Fire,
+        /// A domain edge that can flip `has_running_work` — the real trigger
+        /// for a Slow<->Fast cadence transition.
+        SetRunning(bool),
+        /// The cross-session cycle's own direct `arm_timer_if_needed` call
+        /// site (`control()`), which bypasses `project()` entirely.
+        SessionCycle,
+    }
+
+    fn arb_step() -> impl Strategy<Value = Step> {
+        prop_oneof![
+            4 => Just(Step::Fire),
+            1 => any::<bool>().prop_map(Step::SetRunning),
+            1 => Just(Step::SessionCycle),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn timer_chain_never_starves_a_named_granted_session(
+            steps in proptest::collection::vec(arb_step(), 0..300)
+        ) {
+            let mut rt = PluginRuntime {
+                permission: PermissionState::Resolved { granted: true },
+                config: config(),
+                ..Default::default()
+            };
+            let mut sim = FireSim::new();
+            let named = rt.session_name_changed(Some("work".into()));
+            sim.schedule_from(&named.effects);
+            drive_tabs_and_panes(&mut rt);
+
+            for step in steps {
+                match step {
+                    Step::Fire => {
+                        if let Some(elapsed) = sim.pop() {
+                            let out = rt.timer(PermissionProbe::default(), elapsed);
+                            sim.schedule_from(&out.effects);
+                        }
+                    }
+                    Step::SetRunning(running) => {
+                        let status = if running { "running" } else { "done" };
+                        let out = rt.status_pipe(&payload_json(7, status));
+                        sim.schedule_from(&out.effects);
+                    }
+                    Step::SessionCycle => {
+                        let out = rt.control(Verb::SessionNext);
+                        sim.schedule_from(&out.effects);
+                    }
+                }
+                // The invariant: a named, permission-granted session's
+                // `desired_cadence` is NEVER `None` (barring denial, which
+                // never happens on this path) — so the moment nothing is
+                // physically outstanding, the chain has permanently
+                // stranded itself; no future event will ever revive it,
+                // because nothing left to arm/on_fire from.
+                prop_assert!(
+                    !sim.queue.is_empty(),
+                    "TimerChain starved: no physical timer outstanding \
+                     (armed={:?}) after step, session still named+granted",
+                    rt.timer_chain.armed(),
+                );
+            }
+
+            // Stronger post-condition, independent of the starve check
+            // above: after the random churn stops, force any dangling
+            // `status_pipe`-origin busy edge closed (a *still-running*
+            // agent legitimately keeps Fast armed forever — that's correct,
+            // not a bug, so it must not be mistaken for one here) and let
+            // no more domain events land. A generous drain (well past
+            // DONE_TTL_TICKS=60 and any plausible stacked-stale-fire
+            // backlog) must still reach a genuine Slow heartbeat —
+            // catching a chain that's stuck "armed" on paper but only ever
+            // fires (or only ever gets swallowed as stale) without ever
+            // landing a live, presence-persisting Slow fire again.
+            let close = rt.status_pipe(&payload_json(7, "done"));
+            sim.schedule_from(&close.effects);
+            let mut settled = false;
+            for _ in 0..5000 {
+                let Some(elapsed) = sim.pop() else { break };
+                let out = rt.timer(PermissionProbe::default(), elapsed);
+                sim.schedule_from(&out.effects);
+                if elapsed > STALE_FIRE_ELAPSED_S && out.effects.contains(&Effect::PersistPresence) {
+                    settled = true;
+                    break;
+                }
+            }
+            prop_assert!(
+                settled,
+                "no live Slow heartbeat landed within 5000 drained fires after churn stopped \
+                 (armed={:?}, queue_len={})",
+                rt.timer_chain.armed(),
+                sim.queue.len(),
+            );
+        }
+    }
+}
+

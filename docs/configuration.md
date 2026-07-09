@@ -115,6 +115,13 @@ keybinds {
         bind "Alt p" {
             MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "attention-prev"; }
         }
+        // Cycle the badge selection across sessions; commits ~1s after the last tap.
+        bind "Alt s" {
+            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-next"; }
+        }
+        bind "Alt Shift s" {
+            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-prev"; }
+        }
     }
 }
 ```
@@ -122,5 +129,36 @@ keybinds {
 `attention-next` / `attention-prev` walk the tabs whose agents are *waiting for
 you*, *errored*, or *done* — in tab order, wrapping around — and switch focus to
 each. Tabs that are merely *running* or *idle* are skipped. Repeated presses
-sweep every attention tab and cycle. Like every command pipe, an unknown verb is
-ignored, and the action is inert until the sidebar has been granted permissions.
+sweep every attention tab and cycle.
+
+`session-next` / `session-prev` step the cross-session badge's highlighted
+selection (see [Cross-session badge](../README.md#cross-session-badge)) through
+the same order the badge itself renders in — current session first, then any
+session that needs attention, then the rest — wrapping around, with the
+current session included as a normal stop. Each tap only moves the highlight;
+nothing switches yet. The selection **commits** on the first idle tick after
+about a second with no further tap — landing back on the current session
+cancels instead of switching. A committed switch jumps to the target
+session's attention tab if it has one, otherwise it leaves Zellij to restore
+that session's last focus. The badge — and therefore cycling — only has
+something to step through once a second zj-radar session is live; with just
+one session running, `session-next`/`session-prev` are no-ops.
+
+Dimmed (stale) badge entries are skipped by cycling, but you can dismiss one
+by right-clicking it directly in the rail — a mouse gesture, not a `cmd.v1`
+verb; a dismissed session that turns out to be alive reappears on its next
+heartbeat.
+
+Right-click is the rail's general acknowledge/dismiss gesture, not only a
+badge thing — the rule is **left-click navigates, right-click
+acknowledges** everywhere on the rail. Beyond a stale badge entry (above),
+right-clicking a pane or tab row still flagged `◆ needs you` acknowledges
+it: the row downgrades to `done`, and — because a click lands in exactly one
+plugin instance — it converges by re-broadcasting a `done` update over
+`zj_radar.status.v1`, the same pipe a real agent hook uses, rather than
+mutating this instance's state directly. Every tab's instance (including the
+one you clicked in) picks up the change through the normal status-pipe
+intake. A row with nothing pending is a no-op.
+
+Like every command pipe, an unknown verb is ignored, and the action is inert
+until the sidebar has been granted permissions.

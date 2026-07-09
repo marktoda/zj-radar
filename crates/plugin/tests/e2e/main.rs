@@ -1011,3 +1011,142 @@ fn rail_paints_every_column_of_its_pane() {
          rendering artifact rather than a plugin under-paint bug."
     );
 }
+
+/// Cross-session e2e: TWO independently-started, real Zellij servers — not
+/// two tabs of one server (that's `command_activity_reaches_background_tab_
+/// instances`) — proving the whole cross-session feature works between
+/// separate processes, WITHOUT any session-manager trigger: B's plugin
+/// learns its own name from `Event::ModeUpdate` (push, automatic on load —
+/// no `get_session_list()` call needed) and persists presence to the shared
+/// `/cache` root; A's plugin reads that back directly off disk on a Fast
+/// tick and renders a badge line for B; A's `session-next` (+ idle-commit
+/// ~1s later) really calls Zellij's `switch_session`, physically
+/// reattaching A's PTY client onto B.
+///
+/// HISTORY: an earlier design had liveness riding on `Event::SessionUpdate`
+/// instead of the presence files themselves. That never worked in a stock
+/// zj-radar session: zellij-server 0.44.3 only repopulates
+/// `SessionUpdate`'s peer list (`peer_sessions_cache`) when some plugin
+/// calls the blocking host fn `get_session_list()`, which only Zellij's own
+/// `session-manager` plugin does — zj-radar's plugin never does, by design
+/// (CLAUDE.md: "push-driven, never poll-driven"). See task-8-report.md for
+/// the full root-cause dive (this test used to fail with a STOP-CONDITION
+/// panic pointing at exactly that). task-8b-brief.md's amendment drops
+/// `SessionUpdate` from the design entirely: liveness is now the presence
+/// files' own mtimes, turned into a per-entry fresh/stale state
+/// (`sessions::STALE_AFTER_SECS`) rather than a read-time drop (task-14),
+/// and this session's own name comes from `ModeUpdate` instead — both
+/// push-style, neither needing any other plugin to be running.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn session_next_switches_to_the_session_with_attention() {
+    use std::time::Duration;
+    use zj_radar_core::status::GlyphSet;
+    use zj_radar_core::Status;
+
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {wasm:?}. Build it:\n  cargo build --release --target wasm32-wasip1 -p zj-radar-plugin"
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let pid = std::process::id();
+    let layout = sidebar_layout(&wasm);
+
+    // `a` owns the temp HOME (deletes it on drop); `b` is a sibling on the
+    // SAME server socket dir + cache root (see `start_sibling`'s doc) — the
+    // two servers are otherwise completely independent processes, exactly
+    // like two real terminal windows a user opened separately.
+    let a = ZellijSession::start(&format!("zjr_xsess_a_{pid}"), &layout, &wasm, temp_home);
+    eprintln!("[e2e] session A ({}) loaded", a.name);
+    let b = a.start_sibling(&format!("zjr_xsess_b_{pid}"), &layout);
+    eprintln!("[e2e] session B ({}) loaded (sibling of A, shared HOME)", b.name);
+
+    // Give B a tracked agent needing attention. This is what B's plugin folds
+    // into its own `Presence` (attention=1, running=0) and persists to the
+    // shared /cache root — the fact A's badge assertion below actually needs
+    // to have crossed the wire to pass.
+    let pane_b = b.discover_terminal_pane_id();
+    eprintln!("[e2e] B terminal pane_id={pane_b}");
+    let b_payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_b}}},"status":"pending","repo":"radar-b-repo","msg":"pick one"}}"#
+    );
+    b.pipe_status(&b_payload);
+
+    // `Effect::ReadPresences` (A reading the shared /cache root back) is
+    // gated to Fast timer fires only (runtime.rs `timer`), and A has nothing
+    // of its own yet to arm Fast — it would otherwise idle on the 60s Slow
+    // heartbeat and this test would need up to a minute of real wall time to
+    // stay honest. Piping a `running` status into A's OWN terminal arms A's
+    // Fast cadence indefinitely (an active `Running` row animates every
+    // tick — see `timer_should_continue`/`has_running_work`) without giving A
+    // any attention of its own, so it doesn't interfere with the ordering
+    // assertion below (B is still the only attention>0 peer).
+    let pane_a = a.discover_terminal_pane_id();
+    eprintln!("[e2e] A terminal pane_id={pane_a}");
+    let a_payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_a}}},"status":"running","repo":"radar-a-repo","msg":"keep-fast"}}"#
+    );
+    a.pipe_status(&a_payload);
+
+    // A's badge must show B's name TOGETHER WITH the attention glyph+count —
+    // not just B's bare name. Under the new design, B's presence entry is
+    // ALL A ever learns about B (there is no separate "live session roster"
+    // to have populated a bare-name-only row from) — so this needle also
+    // rules out the degenerate case of a badge line with a name but zero
+    // counts (e.g. a peer file that parsed but was empty).
+    let attention_glyph = Status::Pending.glyph_for(GlyphSet::Plain);
+    let needle = format!("{} 1{attention_glyph}", b.name);
+    let saw_badge = a.wait_until(Duration::from_secs(10), |s| {
+        sidebar_region(&s.screen(), 32).contains(&needle)
+    });
+    eprintln!("[e2e] A's rail (32 cols):\n{}", sidebar_region(&a.screen(), 32));
+    assert!(
+        saw_badge,
+        "A's badge never showed {needle:?}. Either B never learned its own session name from \
+         `Event::ModeUpdate` (so `project` withheld `Effect::PersistPresence`), or B's presence \
+         file (written under the shared /cache root) never reached A (A's `Effect::ReadPresences` \
+         is Fast-tick-gated — see the rail above for whether A even looks fast-armed). Since \
+         task-14, a stale peer still renders (dimmed) rather than being dropped, so a bare \
+         name with the wrong (or missing) counts, not an absent line, is the sign of a genuine \
+         presence-plumbing failure here. See the printed rail above.",
+    );
+    eprintln!("[e2e] PASS: A's badge shows B needing attention (presence crossed /cache)");
+
+    // Cycle from A. `Sessions::ordered()` puts the current session first,
+    // then attention>0 peers by name, then the rest — B is the only
+    // attention>0 peer, so a single `session-next` tap selects it outright.
+    // The actual switch is a LATER idle-commit (`timer`'s `Sessions::tick`),
+    // firing on the very next Fast tick after the tap (~1s here, since A's
+    // `running` row above keeps Fast armed) — not an immediate effect of the
+    // pipe call itself.
+    a.run_action(&["pipe", "--name", "zj_radar.cmd.v1", "--", "session-next"]);
+
+    // After the idle-commit fires, `Effect::SwitchSession` calls Zellij's
+    // `switch_session_with_focus`, which reattaches A's OWN PTY CLIENT onto
+    // session B — session "radar-a" itself keeps running (headless), so
+    // `a.dump_screen()` (which explicitly targets session A BY NAME through
+    // a fresh `--session radar-a action ...` connection) would keep dumping
+    // A's own terminal FOREVER and could never observe this. Only A's raw
+    // PTY buffer (`pty_text()`) reflects what the physical client is
+    // actually attached to now. The marker `discover_terminal_pane_id`
+    // already echoed into B's terminal (`ZPID=<pane_b>`) is still on B's
+    // screen (nothing since has overwritten it), so it can only show up in
+    // A's PTY stream if that PTY is now rendering B's screen — the same
+    // marker-based external-signal technique `click_on_a_tab_row_switches_
+    // the_active_tab` uses to confirm a real `SwitchTab`, applied here to a
+    // real `SwitchSession`.
+    let marker = format!("ZPID={pane_b}");
+    let switched = a.wait_until(Duration::from_secs(8), |s| s.pty_text().contains(&marker));
+    if !switched {
+        let tail: String = a.pty_text().chars().rev().take(1000).collect::<String>().chars().rev().collect();
+        eprintln!("[e2e] A's PTY tail after failed switch wait:\n{tail}");
+    }
+    assert!(
+        switched,
+        "session-next's idle-commit must switch_session A's client onto B; A's PTY never \
+         showed B's marker {marker:?} (session-next tapped, ~1 Fast tick should commit it)"
+    );
+    eprintln!("[e2e] PASS: session-next committed and A's client switched onto B");
+}

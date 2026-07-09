@@ -712,6 +712,29 @@ impl RadarState {
         index
     }
 
+    /// Pane ids currently seated in tab `position`, in `self.tab_panes`'s
+    /// stored order — `PluginRuntime::mouse_right_click` reads this to
+    /// resolve a tab-row acknowledge (no `pane_id` on the click target) into
+    /// the set of panes it should check for a dismissible `Pending`. Empty
+    /// for an unknown position, same as every other `tab_panes` lookup here.
+    pub(crate) fn pane_ids_for_tab(&self, position: usize) -> Vec<u32> {
+        self.tab_panes
+            .get(&position)
+            .map(|panes| panes.iter().map(|p| p.id).collect())
+            .unwrap_or_default()
+    }
+
+    /// The STATUS-PIPE observation for `pane_id`, or `None` if the status
+    /// store isn't tracking it. Deliberately narrower than `resolve` (which
+    /// also falls back to the command store): the pending-pane acknowledge
+    /// gesture is status-pipe-only by design — a command-origin `Pending`
+    /// doesn't exist (`CommandStore` never produces one), so this is really
+    /// "is there anything here to acknowledge at all", read through the one
+    /// store that can say `Pending`.
+    pub(crate) fn status_observation(&self, pane_id: u32) -> Option<&TrackedObservation> {
+        self.status.get(pane_id)
+    }
+
     /// Pane ids the status store currently holds an observation for,
     /// regardless of its status value — mirrors `resolve`'s precedence check
     /// (`status.get(...).or_else(command.get(...))`: mere PRESENCE in the

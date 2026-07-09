@@ -133,6 +133,11 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
 - `task` (optional, sent only on `UserPromptSubmit`): sticky task label —
   empty/absent leaves the stored label unchanged, non-empty replaces it; the
   plugin clears it on idle and on return-to-shell.
+- `ack` (optional, default `false`): "the user has already seen this status" —
+  the plugin converges state as usual but never fires a desktop notification
+  for it. Set by the rail's own right-click acknowledge broadcast; producers
+  reporting real events should leave it absent (an acknowledged `done` would
+  otherwise skip the completion notification the user wanted).
 - Unknown fields are ignored, so it's safe to send extras. (A former `on_focus`
   clear-on-focus hint is no longer used — the plugin clears a finished status when
   the pane returns to its shell prompt instead — but sending it does no harm.)

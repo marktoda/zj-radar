@@ -103,6 +103,7 @@ impl StatusStore {
                 exit_code: None,
                 completed_epoch_s,
                 pending_epoch_s,
+                acknowledged: p.ack,
             },
         );
         self.evict_over_cap();
@@ -224,6 +225,7 @@ impl StatusStore {
                 exit_code: None,
                 completed_epoch_s: None,
                 pending_epoch_s: None,
+                acknowledged: false,
             },
         );
         Some(old)
@@ -287,6 +289,7 @@ mod tests {
             msg: "m".into(),
             task: String::new(),
             source: "test".into(),
+            ack: false,
         }
     }
 
@@ -558,6 +561,20 @@ mod tests {
             s.get(MAX_TRACKED_PANES as u32 + extra - 1).is_some(),
             "the newest pane is still tracked"
         );
+    }
+
+    #[test]
+    fn apply_stamps_acknowledged_from_the_payload_and_a_fresh_payload_clears_it() {
+        let mut s = StatusStore::default();
+        s.apply(payload(1, Status::Pending), 1, 100);
+        assert!(!s.get(1).unwrap().acknowledged);
+        // The right-click acknowledge echo lands with `ack: true`.
+        s.apply(StatusPayload { ack: true, ..payload(1, Status::Done) }, 2, 200);
+        assert!(s.get(1).unwrap().acknowledged);
+        // The exemption lasts exactly as long as the acknowledged status: the
+        // next real broadcast overwrites it.
+        s.apply(payload(1, Status::Running), 3, 300);
+        assert!(!s.get(1).unwrap().acknowledged);
     }
 
     #[test]

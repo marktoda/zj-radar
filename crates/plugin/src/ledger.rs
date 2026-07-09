@@ -218,6 +218,7 @@ mod tests {
             exit_code: None,
             completed_epoch_s,
             pending_epoch_s: None,
+            acknowledged: false,
         }
     }
 

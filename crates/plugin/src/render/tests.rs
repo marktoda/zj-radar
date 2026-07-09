@@ -121,6 +121,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         jump_hint: true,
+        badge: vec![],
     }
 }
 
@@ -299,6 +300,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: None,
+            session: None,
         })
     );
     assert_eq!(
@@ -306,6 +308,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: Some(10),
+            session: None,
         })
     );
     assert_eq!(
@@ -313,6 +316,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: Some(11),
+            session: None,
         })
     );
     assert_eq!(
@@ -320,6 +324,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 1,
             pane_id: None,
+            session: None,
         })
     );
 }
@@ -2976,7 +2981,7 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
 
     assert_eq!(
         rail.target_at_line(entry1_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: None }),
+        Some(RailTarget { tab_position: 0, pane_id: None, session: None }),
         "the newer, still-open entry is clickable to its tab"
     );
     assert_eq!(
@@ -3480,11 +3485,11 @@ fn single_running_pane_with_detail_is_two_content_lines() {
 
 #[test]
 fn from_lines_derives_ansi_and_targets_in_lockstep() {
-    let t = RailTarget { tab_position: 2, pane_id: None };
+    let t = RailTarget { tab_position: 2, pane_id: None, session: None };
     let lines = vec![
-        Line::new("alpha\n".into(), Some(t), LineBg::None),
+        Line::new("alpha\n".into(), Some(t.clone()), LineBg::None),
         Line::new("beta\n".into(),  None,    LineBg::None),
-        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9) }), LineBg::None),
+        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }), LineBg::None),
     ];
     let rr = RenderedRail::from_lines(lines);
     // ansi: joined, trailing newline popped.
@@ -3493,7 +3498,7 @@ fn from_lines_derives_ansi_and_targets_in_lockstep() {
     assert_eq!(rr.line_count(), 3);
     assert_eq!(rr.target_at_line(0), Some(t));
     assert_eq!(rr.target_at_line(1), None);
-    assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9) }));
+    assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }));
     assert_eq!(rr.target_at_line(3), None);
     // Structural lockstep: every '\n'-terminated segment has a target slot.
     assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
@@ -3677,7 +3682,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
     let q_line = grid.lines().position(|l| l.contains('↳')).unwrap();
     assert_eq!(
         rendered.target_at_line(q_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: Some(10) }),
+        Some(RailTarget { tab_position: 0, pane_id: Some(10), session: None }),
     );
 }
 
@@ -3764,5 +3769,176 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     assert!(
         !grid.contains(full_speed),
         "full-speed glyph must not leak through once eased:\n{grid}"
+    );
+}
+
+// ── Cross-session badge ─────────────────────────────────────────────────────
+
+/// Local test helper: field order matches `BadgeEntry`'s declaration EXCEPT
+/// `is_current` moves up next to `name` — the shape most test call sites
+/// read naturally ("work, current, 3 running, 0 attention, no attention tab,
+/// not selected, not stale").
+fn badge_entry(
+    name: &str,
+    is_current: bool,
+    running: usize,
+    attention: usize,
+    attention_tab_position: Option<usize>,
+    selected: bool,
+) -> BadgeEntry {
+    stale_badge_entry(name, is_current, running, attention, attention_tab_position, selected, false)
+}
+/// As `badge_entry`, with an explicit trailing `stale` flag — for the
+/// dimmed/clickable/skip-cycle pins.
+fn stale_badge_entry(
+    name: &str,
+    is_current: bool,
+    running: usize,
+    attention: usize,
+    attention_tab_position: Option<usize>,
+    selected: bool,
+    stale: bool,
+) -> BadgeEntry {
+    BadgeEntry {
+        name: name.to_string(),
+        running,
+        attention,
+        attention_tab_position,
+        is_current,
+        selected,
+        stale,
+    }
+}
+
+#[test]
+fn badge_absent_with_single_session_and_lockstep_with_many() {
+    let solo = vec![badge_entry("work", true, 1, 0, None, false)];
+    assert!(render_session_badge(&solo, &ro(24, 0)).is_empty(), "solo session renders nothing");
+
+    let many = vec![
+        badge_entry("work", true, 3, 0, None, false),
+        badge_entry("alpha", false, 0, 1, Some(2), true),
+    ];
+    let lines = render_session_badge(&many, &ro(24, 0));
+    // 2 entry lines + 1 trailing blank separator (only emitted because the
+    // badge itself emitted lines — see the doc comment on
+    // `render_session_badge`), so the section reads distinct from the cards
+    // below it.
+    assert_eq!(lines.len(), 3, "2 badge lines + 1 blank separator line");
+    assert_eq!(lines[0].target, None, "own session line is not a cross-session click");
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(t.session.as_deref(), Some("alpha"));
+    assert_eq!(t.tab_position, 2);
+    assert_eq!(lines[2].target, None, "separator line is click-inert");
+}
+
+#[test]
+fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
+    // A peer with NOTHING needing attention (`attention_tab_position: None`)
+    // must not resolve to "tab 0" — that would force-focus a real tab in a
+    // session that has nothing to jump to. `RailTarget::for_session` bakes
+    // this in via a sentinel rather than `unwrap_or(0)`; `session_tab_position`
+    // is the one place that decodes it back, and both directions are pinned
+    // here so a future edit to either side trips this test, not a live click.
+    let many = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 0, None, false),
+    ];
+    let lines = render_session_badge(&many, &ro(24, 0));
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(
+        t.session_tab_position(), None,
+        "no attention tab must decode back to None, not Some(0)"
+    );
+
+    let with_attention = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 1, Some(0), false),
+    ];
+    let lines = render_session_badge(&with_attention, &ro(24, 0));
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(
+        t.session_tab_position(), Some(0),
+        "attention genuinely at tab 0 must still resolve to Some(0)"
+    );
+}
+
+// -- Pinning: stale badge entries (task-14) ---------------------------------
+// A remembered session must never silently vanish from the badge; it dims
+// to stale instead. The renderer's job is narrow: paint it in a receded
+// color and keep its click target — `Sessions::cycle` (sessions.rs's own
+// tests) is what actually keeps Alt+[/] from landing on it.
+
+#[test]
+fn stale_badge_entry_renders_dimmed_but_stays_clickable() {
+    let opts = ro(24, 0);
+    let idle_color = tc_fg(opts.theme.idle_text);
+    let stale_color = tc_fg(crate::theme::blend(opts.theme.idle_text, opts.theme.rail_bg, 0.5));
+
+    let entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        stale_badge_entry("alpha", false, 0, 0, None, false, true),
+    ];
+    let lines = render_session_badge(&entries, &opts);
+
+    // Still fully clickable — a click on a stale entry is a deliberate act;
+    // `entry.stale` only ever affects color, never the target.
+    let t = lines[1].target.clone().expect("a stale peer line must still be clickable");
+    assert_eq!(t.session.as_deref(), Some("alpha"));
+
+    // Its label paints in the receded stale color, not the ordinary muted
+    // idle_text every fresh line uses.
+    assert!(
+        lines[1].text.contains(&format!("{stale_color}alpha")),
+        "stale label must render in the receded stale color, got {:?}",
+        lines[1].text
+    );
+    assert!(
+        !lines[1].text.contains(&format!("{idle_color}alpha")),
+        "stale label must not render in the plain idle color, got {:?}",
+        lines[1].text
+    );
+}
+
+#[test]
+fn stale_entry_undims_once_superseded_by_a_fresh_entry() {
+    // The recreation case: the exact same name, now reported fresh, must
+    // render in the ordinary idle color again — nothing about a name alone
+    // pins a line to stale forever.
+    let opts = ro(24, 0);
+    let idle_color = tc_fg(opts.theme.idle_text);
+    let stale_color = tc_fg(crate::theme::blend(opts.theme.idle_text, opts.theme.rail_bg, 0.5));
+
+    let stale_entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        stale_badge_entry("alpha", false, 0, 0, None, false, true),
+    ];
+    let stale_lines = render_session_badge(&stale_entries, &opts);
+    assert!(stale_lines[1].text.contains(&format!("{stale_color}alpha")));
+
+    let fresh_entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 0, None, false), // same name, now fresh
+    ];
+    let fresh_lines = render_session_badge(&fresh_entries, &opts);
+    assert!(
+        fresh_lines[1].text.contains(&format!("{idle_color}alpha")),
+        "a superseding fresh presence must undim the line back to the plain idle color"
+    );
+    assert!(!fresh_lines[1].text.contains(&format!("{stale_color}alpha")));
+}
+
+#[test]
+fn lone_fresh_own_entry_with_only_stale_peers_still_renders() {
+    // The single-session zero-line rule counts `entries.len()`, not fresh
+    // entries — a stale peer still counts toward the 2+ threshold, since the
+    // roster's whole point is remembering (task-14).
+    let entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        stale_badge_entry("alpha", false, 0, 0, None, false, true),
+    ];
+    assert!(
+        !render_session_badge(&entries, &ro(24, 0)).is_empty(),
+        "a lone fresh own-entry plus only stale peers must still render the badge"
     );
 }

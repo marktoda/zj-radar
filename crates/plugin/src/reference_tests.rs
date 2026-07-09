@@ -485,6 +485,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     msg: pane.msg.clone(),
                     task: pane.task.clone(),
                     source: source.to_string(),
+                    ack: false,
                 });
                 radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
@@ -496,6 +497,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     msg: pane.msg.clone(),
                     task: "".into(),
                     source: source.to_string(),
+                    ack: false,
                 });
                 radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
@@ -507,6 +509,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     msg: pane.msg.clone(),
                     task: pane.task.clone(),
                     source: source.to_string(),
+                    ack: false,
                 });
                 // Applied "now" relative to the render epoch, backdated by the
                 // `waiting <N>m` trailer — how the doc's pending scenarios earn
@@ -583,6 +586,10 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         theme,
         now_epoch_s: LEDGER_NOW_EPOCH_S,
         jump_hint,
+        // The reference doc's scenarios are all single-session — the badge
+        // stays invisible (`render_session_badge`'s `len() <= 1` gate), same
+        // as every rail-reference.md fixture predates this field.
+        badge: vec![],
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no

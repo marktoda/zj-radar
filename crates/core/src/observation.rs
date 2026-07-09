@@ -67,6 +67,14 @@ pub struct TrackedObservation {
     /// wait tag; rides the snapshot so rehydrated rows keep the true wait.
     #[serde(default)]
     pub pending_epoch_s: Option<u64>,
+    /// The user has already seen this status (the payload rode in with
+    /// `ack: true` — the rail's right-click acknowledge). The notifier skips
+    /// acknowledged observations outright; everything else treats them like
+    /// any other status. Overwritten fresh on every intake, so the exemption
+    /// lasts exactly as long as the acknowledged status itself. Serde-defaulted
+    /// so pre-ack snapshots still load.
+    #[serde(default)]
+    pub acknowledged: bool,
 }
 
 impl TrackedObservation {
@@ -88,6 +96,7 @@ impl TrackedObservation {
             exit_code: None,
             completed_epoch_s: None,
             pending_epoch_s: None,
+            acknowledged: false,
         }
     }
 
@@ -199,6 +208,7 @@ mod tests {
             exit_code: Some(1),
             completed_epoch_s: None,
             pending_epoch_s: None,
+            acknowledged: false,
         }
     }
 

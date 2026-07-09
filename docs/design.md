@@ -453,7 +453,10 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
 
 ## 12. Out of scope (follow-ups)
 
-- Floating cross-session **dashboard** overlay (`MOD+a`).
+- Floating cross-session **dashboard** overlay (`MOD+a`). Distinct from the
+  inline cross-session **badge** shipped in §13 — the badge is a few
+  additional lines in the existing rail, not a separate panel; the floating
+  dashboard non-goal stands unchanged.
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
 - Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
 - Moving notification logic into the plugin. **Update:** the plugin now owns OS desktop
@@ -480,3 +483,125 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
   pane, approving it there, then starting the per-tab sidebar layout.
 - **Horizontal/compact bar mode** (top-level pane like zjstatus, no nesting, no #3247) — would
   need a from-scratch compact renderer; `render.rs` is vertical/card-per-tab today.
+
+## 13. Cross-session badge & session cycling
+
+Cross-session awareness — one session's rail showing counts for every other
+zj-radar session on the same host, with click/cycle-to-switch — added
+without ever calling Zellij's session list. Pure state in `sessions.rs`
+(`Sessions`/`Presence`), file IO in `session_files.rs`, wiring in
+`runtime.rs`; render in `render.rs::render_session_badge`.
+
+**Presence files.** Each session's plugin writes
+`zj-radar.presence.<zellij_pid>.json` — `{session_name, running, attention,
+attention_tab_position, updated_epoch_s}` — into the same plugin-URL-scoped
+`/cache` root persistence already uses (§5's "Newcomer rehydration"; same
+temp-file + atomic-rename write discipline). Writes are content-edge-gated:
+`project` diffs the freshly computed `Presence` against the last one
+actually published, with `updated_epoch_s` zeroed out of the compare (the
+same "write on edges only" rule `PersistSnapshot` follows) — so the clock
+ticking alone on an unchanged session never re-writes the file. Withheld
+entirely while `own_session_name` is empty (see below), since an unnamed
+presence file is useless to a peer.
+
+**Liveness heartbeat + staleness (task-14: never a hard drop).** Peers never
+call `SessionUpdate`/`get_session_list` to learn who's out there (see "Why
+not `SessionUpdate`" below) — liveness is read from the filesystem, not
+asked for. Peer sessions re-read the shared directory only on Fast (1 Hz)
+timer fires (`Effect::ReadPresences`; never on the Slow heartbeat — one
+directory scan per second, only while Fast is armed). `read_peer_presences`
+returns every peer file it finds, unconditionally, each paired with its
+file's mtime age; `Sessions::update_presences` turns that age into a
+per-entry fresh/stale state (`STALE_AFTER_SECS`, 90s) rather than dropping
+the entry — a session the badge has ever shown must never silently vanish
+from it (user decision, task-14). A stale entry dims on the badge and is
+unreachable via `session-next`/`session-prev`, but stays visible; nothing is
+ever deleted by a reader, which only ever judges a peer's file, never
+mutates it. Staleness mostly bites a session with nothing to report:
+because `PersistPresence` is content-edge-gated, a session sitting fully
+idle (no Fast-cadence work, no count change) would otherwise let its file's
+mtime age past 90s and dim on every peer's badge while still alive. The fix
+is a **liveness heartbeat**: `timer` unconditionally re-emits
+`PersistPresence` on every Slow (60s) fire, bypassing the edge gate, purely
+to keep the mtime fresh — 60s heartbeat against a 90s stale threshold is
+50% margin against one missed beat. Separately, a `6h` sweep
+(`PRESENCE_MAX_AGE`) deletes genuinely abandoned presence files at plugin
+`load()` — the only true forgetting, unrelated to (and much looser than)
+the 90s stale threshold.
+
+**Own session name.** Zellij's `Event::ModeUpdate` carries
+`ModeInfo.session_name`; the plugin already subscribes to `ModeUpdate` for
+other reasons, and `session_name_changed` threads the field straight into
+`own_session_name`. This is push-style and can legitimately arrive `None`
+before Zellij has assigned the session a name yet — handled as a true no-op,
+not an error.
+
+**Why not `SessionUpdate` (or `get_session_list`).** An earlier iteration of
+this feature subscribed to `Event::SessionUpdate` and cross-checked a peer
+roster against presence files to decide who's live. E2E testing against real
+Zellij 0.44.3 proved the roster idea itself was broken: `SessionUpdate` only
+delivers peers after some plugin has called the blocking `get_session_list()`
+host function (in practice, only the built-in session-manager plugin does) —
+so a sidebar with no session-manager pane running never sees peers via that
+event at all. Polling `get_session_list()` from the plugin to force it would
+reintroduce exactly the blocking-host-query shape the whole plugin exists to
+avoid (`smart-tabs-postmortem.md`). The fix (task-8b) drops `SessionUpdate`
+entirely: liveness is derived purely from the presence files' own mtimes,
+and the session's own name arrives push-style via `Event::ModeUpdate`
+instead of a session-list lookup. Net effect: presence is entirely
+peer-published and liveness is entirely mtime-based — whatever a
+Fast-cadence directory read hands back IS the peer set for that tick, every
+member forever (task-14 dropped the read-time filter too); staleness is a
+display/cycle-eligibility state derived from that same mtime, not a
+membership filter. No membership roster to keep in sync with a second
+signal, no `get_session_list` call anywhere in the plugin.
+
+**Badge.** `Sessions::badge()` (pure, re-derived on every call — never
+cached, so it can't drift from `peers`/`own`) renders **zero lines** while
+only the current session's presence is known (a lone fresh own-entry plus
+only stale peers still clears that threshold — task-14: the roster's whole
+point is remembering); from 2+ entries on, one line per session in a single
+fixed order shared with cycling: current session first, then any FRESH peer
+with `attention > 0` by name, then the rest of the fresh peers by name, then
+every STALE peer by name (a stale peer's attention count isn't actionable,
+so staleness outranks attention for ordering). Each line shows the session
+name plus a running count and an attention count when nonzero, using the
+same glyphs the per-tab rows use for those statuses. The current line is
+marked (dimmed, a small `•`) and carries no click target — you can't switch
+to the session you're already in. A pending cycle selection renders
+bold+accent; a stale entry renders one step dimmer than the ordinary muted
+line color, but stays fully clickable — a click on it is a deliberate act.
+Clicking any other line switches to that session, landing on its
+`attention_tab_position` if it has one.
+
+**Cycling.** `session-next`/`session-prev`, delivered on the `zj_radar.cmd.v1`
+pipe (documented for operators in `docs/configuration.md`), advance a
+highlighted selection through that same shared order, wrapping, with the
+current session included as a normal stop and every STALE peer excluded
+entirely (task-14: switching onto a likely-dead session would have Zellij
+resurrect it as an empty zombie pane). A tap only moves the highlight
+(`Sessions::cycle`, which arms a per-selection "a tap landed" flag) — the
+actual switch is a later **idle-commit**: `Sessions::tick` runs on every
+timer fire while a selection is pending, and a fire whose covered interval
+saw a tap (the flag is set) clears it and skips, resetting the deadline;
+only a fire whose entire interval was tap-free commits. This guarantees a
+commit at least one full quiet interval after the LAST tap, at the cost of
+at most one extra (skipped) fire — replacing an earlier tick-counter
+comparison that could commit instantly on a tap landing just before an
+already-scheduled fire, or stall at the first tap in a fast burst instead of
+the last. The commit target is re-resolved by the selected session's *name*,
+never a remembered list position, so a peer joining, leaving, or going
+stale mid-cycle can't silently retarget the selection (a selection that
+lapsed into staleness before its commit is dropped, the same as a vanished
+one). Landing the commit back on the current session is the cancel
+gesture — no effect, selection just clears. A real commit emits
+`Effect::SwitchSession { name, tab_position }`, which switches sessions and,
+when the target had an `attention_tab_position`, jumps straight to it;
+otherwise it leaves Zellij to restore that session's last focus.
+
+**Degradation.** No writable shared cache root (`SessionFiles` falls back to
+`/tmp/zj-radar`, or disables persistence altogether when neither is
+writable) means no presence file is ever written and no peer reads happen —
+the badge simply never appears. Every other rail behavior (status, ledger,
+naming, notifications) is unaffected, exactly as persistence being
+unavailable degrades only snapshot rehydration, never live rendering (§5).

@@ -14,6 +14,8 @@ pub(crate) const CMD_PIPE: &str = "zj_radar.cmd.v1";
 pub(crate) enum Verb {
     AttentionNext,
     AttentionPrev,
+    SessionNext,
+    SessionPrev,
 }
 
 /// Parse a bare verb string. Trims surrounding whitespace; case-sensitive
@@ -22,6 +24,8 @@ pub(crate) fn parse(s: &str) -> Option<Verb> {
     match s.trim() {
         "attention-next" => Some(Verb::AttentionNext),
         "attention-prev" => Some(Verb::AttentionPrev),
+        "session-next"   => Some(Verb::SessionNext),
+        "session-prev"   => Some(Verb::SessionPrev),
         _ => None,
     }
 }
@@ -41,6 +45,12 @@ mod tests {
         assert_eq!(parse(""), None);
         assert_eq!(parse("attention-top"), None);
         assert_eq!(parse("ATTENTION-NEXT"), None);
+    }
+
+    #[test]
+    fn session_cycle_verbs_parse() {
+        assert_eq!(parse("session-next"), Some(Verb::SessionNext));
+        assert_eq!(parse("session-prev"), Some(Verb::SessionPrev));
     }
 
     /// docs/configuration.md is where users copy their `MessagePlugin`
