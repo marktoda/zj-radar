@@ -238,6 +238,17 @@ impl State {
                     Some(pos) => switch_session_with_focus(&name, Some(pos), None),
                     None => switch_session(Some(&name)),
                 },
+                Effect::DismissPresence { name } => {
+                    // The predicate parses each candidate file the same way
+                    // the read path does (`Presence::parse`), so a dismiss
+                    // matches names exactly as leniently as the badge that
+                    // showed them — while `remove_presences_matching` itself
+                    // stays parse-agnostic (see its doc for the layering).
+                    self.session_files.remove_presences_matching(|json| {
+                        crate::presence::Presence::parse(json)
+                            .is_some_and(|p| p.session_name == name)
+                    });
+                }
             }
         }
         render
@@ -377,6 +388,10 @@ impl ZellijPlugin for State {
             }
             Event::Mouse(Mouse::LeftClick(line, _col)) => {
                 let outcome = self.runtime.mouse_click(line);
+                self.handle_outcome(outcome)
+            }
+            Event::Mouse(Mouse::RightClick(line, _col)) => {
+                let outcome = self.runtime.mouse_right_click(line);
                 self.handle_outcome(outcome)
             }
             Event::PermissionRequestResult(status) => {

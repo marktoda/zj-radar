@@ -160,6 +160,28 @@ impl Sessions {
         self.badge() != before
     }
 
+    /// Manually forget a peer by name — the in-memory half of the right-click
+    /// dismiss gesture (`PluginRuntime::mouse_right_click`), the user-driven
+    /// complement to the 6h open-time sweep for a session the user already
+    /// knows is dead. Removing the entry here gives instant visual feedback
+    /// (the badge row vanishes on this instance without waiting for the next
+    /// file read); the on-disk half is `Effect::DismissPresence`. Only
+    /// shrinks `peers` — ordering, dedup, and cycle semantics of the
+    /// survivors are untouched, and `own` is never touched (the caller gates
+    /// on staleness, and the own entry is never stale). Safe against a
+    /// misjudged dismiss by construction: if the session is secretly still
+    /// alive, its next heartbeat/edge re-publishes a presence file and the
+    /// next `update_presences` simply brings it back, fresh — dismiss is
+    /// never destructive to a live session
+    /// (`dismissed_but_alive_session_reappears_fresh_on_next_presence_write`).
+    /// Returns whether the derived badge actually changed, same contract as
+    /// the other mutators here.
+    pub(crate) fn dismiss(&mut self, name: &str) -> bool {
+        let before = self.badge();
+        self.peers.retain(|p| p.presence.session_name != name);
+        self.badge() != before
+    }
+
     /// Advance (or start) the cycle selection and arm its tap-since-fire
     /// flag (see `SelectionState`'s doc). Re-derives the shared ordering
     /// fresh each call, so a selection started before a
@@ -509,6 +531,44 @@ mod tests {
         s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
         assert!(s.cycle(Direction::Next), "starting a selection flips a `selected` flag in the badge");
         assert!(s.cycle(Direction::Next), "advancing the selection moves the `selected` flag");
+    }
+
+    #[test]
+    fn dismiss_removes_peer_entry() {
+        let mut s = Sessions::default();
+        s.set_own(own("work"));
+        s.update_presences(vec![presence("alpha", 2, 1)]);
+
+        assert!(s.dismiss("alpha"), "dismissing an existing peer changes the badge");
+        assert!(
+            !s.badge().iter().any(|b| b.name == "alpha"),
+            "dismissed peer must no longer appear on the badge"
+        );
+    }
+
+    #[test]
+    fn dismiss_absent_name_is_noop() {
+        let mut s = Sessions::default();
+        s.set_own(own("work"));
+        s.update_presences(vec![presence("alpha", 2, 1)]);
+        let before = s.badge();
+
+        assert!(!s.dismiss("beta"), "dismissing a missing peer must report no badge change");
+        assert_eq!(s.badge(), before, "missing-name dismiss must not disturb the badge");
+    }
+
+    #[test]
+    fn dismissed_but_alive_session_reappears_fresh_on_next_presence_write() {
+        let mut s = Sessions::default();
+        s.set_own(own("work"));
+        s.update_presences(vec![presence_aged("alpha", 2, 1, STALE_AFTER_SECS + 1)]);
+        assert!(s.dismiss("alpha"), "setup: stale peer is dismissed locally");
+        assert!(!s.badge().iter().any(|b| b.name == "alpha"));
+
+        s.update_presences(vec![presence_aged("alpha", 2, 1, 0)]);
+
+        let alpha = s.badge().into_iter().find(|b| b.name == "alpha").expect("fresh write makes alpha reappear");
+        assert!(!alpha.stale, "a live session's fresh write must reappear as fresh, not stale");
     }
 
     // -- Selection identity (not positional index) ---------------------------

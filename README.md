@@ -135,6 +135,13 @@ each tap moves the highlight, wrapping, and the selection commits about a
 second after your last tap — or cancels if you land back on your own
 session.
 
+A session that stops heartbeating dims rather than disappearing, so a
+crashed machine or killed server never silently drops off your radar.
+Right-click a dimmed entry to dismiss it immediately — the manual
+complement to the automatic sweep, for a session you already know is dead.
+Dismissing is never destructive: if the session turns out to be alive, its
+next heartbeat simply brings it back, fresh.
+
 This rides the same shared `/cache` mount the sidebar already uses for
 snapshot persistence; if no writable shared root is found, the badge simply
 never appears and nothing else about the sidebar is affected.

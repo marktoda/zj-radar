@@ -144,5 +144,10 @@ that session's last focus. The badge — and therefore cycling — only has
 something to step through once a second zj-radar session is live; with just
 one session running, `session-next`/`session-prev` are no-ops.
 
+Dimmed (stale) badge entries are skipped by cycling, but you can dismiss one
+by right-clicking it directly in the rail — a mouse gesture, not a `cmd.v1`
+verb; a dismissed session that turns out to be alive reappears on its next
+heartbeat.
+
 Like every command pipe, an unknown verb is ignored, and the action is inert
 until the sidebar has been granted permissions.

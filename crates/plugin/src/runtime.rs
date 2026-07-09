@@ -132,6 +132,17 @@ pub(crate) enum Effect {
     /// there, jump straight to the tab that needs attention (if any).
     /// Emitted by `timer` when `Sessions::tick` reports an idle commit.
     SwitchSession { name: String, tab_position: Option<usize> },
+    /// Delete every on-disk presence file whose `session_name` matches
+    /// `name` — all of them, since a name can have multiple pid-keyed
+    /// corpses (`sessions.rs`'s dedup doc). Emitted by `mouse_right_click`
+    /// right after `Sessions::dismiss` has already dropped the name from
+    /// THIS instance's in-memory roster (the instant-feedback half); this
+    /// is the on-disk half, so every peer's next Fast read converges too.
+    /// Never destructive to a live session: if the dismissed name is
+    /// secretly still alive, its next heartbeat/edge re-publishes a fresh
+    /// presence file and it simply reappears, fresh (see
+    /// `Sessions::dismiss`).
+    DismissPresence { name: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -436,6 +447,42 @@ impl PluginRuntime {
             Effect::SwitchTab { position: target.tab_position }
         };
         Outcome::with_effects(false, vec![effect])
+    }
+
+    /// Right-click: dismiss a STALE cross-session badge entry — the manual
+    /// complement to the 6h open-time sweep (`session_files`'s
+    /// `PRESENCE_MAX_AGE`), for a session the user already knows is dead.
+    /// Resolves the clicked line exactly like `mouse_click` (same cached
+    /// `RenderedRail`, same permission gate), but acts only when the target
+    /// is a peer-session line (`session: Some(name)`) whose name currently
+    /// reads stale on the badge. Everything else — a fresh peer, this
+    /// session's own line (click-inert: no target), a tab/pane line, an
+    /// empty line — is a strict no-op; right-click grows no behavior beyond
+    /// this one gesture. A hit does two things: `Sessions::dismiss` drops
+    /// the name from this instance's in-memory roster right away (the entry
+    /// vanishes without waiting on a file read), and `Effect::DismissPresence`
+    /// deletes the on-disk files so every peer converges on its own next
+    /// Fast read. `&mut self` where `mouse_click` is `&self` — dismissing
+    /// mutates the roster, not just reads it.
+    pub(crate) fn mouse_right_click(&mut self, line: isize) -> Outcome {
+        if !self.permission.granted() {
+            return Outcome::none();
+        }
+        let Some(target) = self.last_rendered.target_at_line(line) else {
+            return Outcome::none();
+        };
+        let Some(name) = target.session else {
+            return Outcome::none();
+        };
+        // Staleness is judged against the CURRENT badge, not anything baked
+        // into the click target at render time — the entry may have gone
+        // fresh (its session came back) between the paint and the click, and
+        // a dismiss must never race a live session's heartbeat.
+        if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
+            return Outcome::none();
+        }
+        let render = self.sessions.dismiss(&name);
+        Outcome::with_effects(render, vec![Effect::DismissPresence { name }])
     }
 
     /// Run an imperative command verb. `AttentionNext/Prev` resolve a

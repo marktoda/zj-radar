@@ -844,6 +844,25 @@ fn fresh(json: &str) -> (String, u64) {
     (json.to_string(), 0)
 }
 
+/// `fresh`'s stale counterpart: the same JSON paired with an mtime age just
+/// past `STALE_AFTER_SECS`, so the entry dims on the badge — the state the
+/// right-click dismiss tests need to hit.
+fn stale(json: &str) -> (String, u64) {
+    (json.to_string(), crate::sessions::STALE_AFTER_SECS + 1)
+}
+
+/// Shared setup for the right-click tests: one tab + one "alpha" peer, then
+/// a real render so `last_rendered` carries the badge's click targets. The
+/// resulting line indices follow `clicking_a_session_line_emits_switch_session`'s
+/// bookkeeping — 0/1 header, 2 own "work" line (click-inert), 3 peer "alpha"
+/// line, 4 the badge's blank separator, 5 the tab header.
+fn render_with_badge(rt: &mut PluginRuntime, peer: (String, u64)) {
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.presences_changed(vec![peer]);
+    let ansi = rt.render(100, 80);
+    assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
+}
+
 #[test]
 fn status_edge_persists_presence_once_and_not_on_identical_state() {
     let mut rt = runtime_with_granted_permission();
@@ -999,6 +1018,77 @@ fn clicking_a_session_line_emits_switch_session() {
     assert_eq!(
         peer_click.effects,
         vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
+    );
+}
+
+#[test]
+fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    let out = rt.mouse_right_click(3);
+
+    assert_eq!(
+        out,
+        Outcome {
+            render: true,
+            effects: vec![Effect::DismissPresence { name: "alpha".into() }],
+        }
+    );
+    assert!(
+        !rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "dismissed stale peer must disappear from this runtime's badge"
+    );
+}
+
+#[test]
+fn right_click_on_fresh_session_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, fresh(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    let out = rt.mouse_right_click(3);
+
+    assert_eq!(out, Outcome::default());
+    assert!(
+        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "fresh peer must remain on the badge"
+    );
+}
+
+#[test]
+fn right_click_on_own_session_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(2), Outcome::default());
+}
+
+#[test]
+fn right_click_on_tab_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(5), Outcome::default());
+}
+
+#[test]
+fn right_click_on_empty_line_is_inert() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+
+    assert_eq!(rt.mouse_right_click(99), Outcome::default());
+}
+
+#[test]
+fn right_click_without_permission_is_inert_even_on_stale_session_line() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+    rt.permission = PermissionState::default();
+
+    assert_eq!(rt.mouse_right_click(3), Outcome::default());
+    assert!(
+        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "ungranted right-click must not mutate the badge"
     );
 }
 
