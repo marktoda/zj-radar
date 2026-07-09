@@ -56,7 +56,7 @@ const PRESENCE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 /// itself and does not delete anything (the open-time sweep above still owns
 /// deletion; a stale-but-not-yet-swept file is simply skipped here).
 const PRESENCE_LIVE_TTL: Duration = Duration::from_secs(180);
-/// Deliberately distinct from `SNAPSHOT_PREFIX` (`zj-radar.<pid>`) so
+/// Deliberately distinct from the pid-scoped `session_prefix` (`zj-radar.<pid>`) so
 /// `is_owned_session_file` / `is_current_session_file` and the snapshot sweep
 /// never match a presence file — presence gets its own recognizer and sweep
 /// horizon (see `PRESENCE_MAX_AGE`).
