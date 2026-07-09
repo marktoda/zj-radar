@@ -3806,11 +3806,16 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
         badge_entry("alpha", false, 0, 1, Some(2), true),
     ];
     let lines = render_session_badge(&many, &ro(24, 0));
-    assert_eq!(lines.len(), 2);
+    // 2 entry lines + 1 trailing blank separator (only emitted because the
+    // badge itself emitted lines — see the doc comment on
+    // `render_session_badge`), so the section reads distinct from the cards
+    // below it.
+    assert_eq!(lines.len(), 3, "2 badge lines + 1 blank separator line");
     assert_eq!(lines[0].target, None, "own session line is not a cross-session click");
     let t = lines[1].target.clone().expect("peer line is clickable");
     assert_eq!(t.session.as_deref(), Some("alpha"));
     assert_eq!(t.tab_position, 2);
+    assert_eq!(lines[2].target, None, "separator line is click-inert");
 }
 
 #[test]

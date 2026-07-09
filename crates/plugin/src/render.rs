@@ -1232,6 +1232,18 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// target) renders bold+accent; everything else — including the current
 /// line — renders in the muted `idle_text`, so the badge reads as a status
 /// strip, not a second row of cards.
+///
+/// A trailing blank separator line closes the block (live-use feedback: the
+/// badge read as glued to the first card below it without one) — appended
+/// HERE, inside the same early-return guard, rather than by the `render_body`
+/// caller: entries.len() <= 1 already returns zero lines above, so tying the
+/// spacer to that same guard is how "spacer only when the badge itself
+/// emitted lines" stays a single fact instead of two functions agreeing on
+/// it. It rides through the same `Vec<Line>` as every other badge line (empty
+/// text via `Line::new`, no click target, `LineBg::Rail` — the same class the
+/// per-entry lines use), so `render_body`'s `badge_lines.len()` subtraction
+/// from the body budget and the `for line in badge_lines` paint loop pick it
+/// up for free, exactly as they do the entry lines above it.
 fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> {
     if entries.len() <= 1 {
         return vec![];
@@ -1241,7 +1253,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let accent = Role::Accent.ansi();
     let running_glyph = Status::Running.glyph_for(opts.glyphs);
     let attention_glyph = Status::Pending.glyph_for(opts.glyphs);
-    entries
+    let mut lines: Vec<Line> = entries
         .iter()
         .map(|entry| {
             let mut label = entry.name.clone();
@@ -1274,7 +1286,9 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                 .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
             Line::new(text, target, LineBg::Rail)
         })
-        .collect()
+        .collect();
+    lines.push(Line::new("\n".to_string(), None, LineBg::Rail));
+    lines
 }
 
 /// Produce the idle-strip line as a raw (unpainted) `Line` value.
