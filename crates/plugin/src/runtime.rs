@@ -116,8 +116,10 @@ pub(crate) enum Effect {
     PersistPresence,
     /// Re-read every peer session's presence file and feed the result back
     /// through `presences_changed` — mirrors `ResolveCwd`'s
-    /// request/read-back pattern, except the read is unconditional each
-    /// timer fire rather than gated on a fresh set of pane ids.
+    /// request/read-back pattern, except the read is gated on cadence
+    /// (Fast fires only — see `timer`) rather than on a fresh set of pane
+    /// ids: one directory scan per second, only while Fast is armed, never
+    /// on the Slow heartbeat.
     ReadPresences,
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
@@ -254,10 +256,19 @@ pub(crate) struct PluginRuntime {
     /// session-list event lands — `project` withholds `Effect::PersistPresence`
     /// while empty, since an unnamed presence file is useless to peers.
     own_session_name: String,
-    /// The last own-`Presence` JSON actually published, so `project` can
+    /// The last own-`Presence` actually published, canonicalized with
+    /// `updated_epoch_s` zeroed before compare-and-cache — so `project` can
     /// content-compare and emit `Effect::PersistPresence` only on a real
-    /// edge — the same "write on edges only" rule `PersistSnapshot` follows.
-    last_presence_json: Option<String>,
+    /// *content* edge, the same "write on edges only" rule `PersistSnapshot`
+    /// follows. Comparing the raw JSON (epoch included) would fire on every
+    /// Fast tick even with unchanged counts, since `last_now_epoch_s` moves
+    /// every second — mirrors `sessions.rs::set_own`, whose badge-derived
+    /// change check already excludes `updated_epoch_s` the same way. The
+    /// real epoch still reaches peers: it's stamped fresh into whatever
+    /// `presence_json()` returns when the host actually handles the effect,
+    /// so it reads as "epoch of the last content edge", not "epoch of the
+    /// last tick".
+    last_presence: Option<Presence>,
     /// The most recent `now_epoch_s` any entry point has captured. Reused
     /// (never re-read from the clock) by call paths that have no epoch of
     /// their own to work with — `presence_json`, `session_update`,
@@ -333,14 +344,23 @@ impl PluginRuntime {
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
-        // Cross-session peers: re-read every fire (Fast or Slow both fine —
-        // on Slow ticks peers refresh at most once a minute, acceptable for a
-        // badge) and, BEFORE re-arming below, commit an idle cycle selection
-        // if one is pending. Committing here — not after `project` re-arms —
-        // matters: a commit clears `Sessions::wants_fast_cadence`, and the
-        // chain must be free to decay to Slow on this same pass rather than
-        // one fire late.
-        effects.push(Effect::ReadPresences);
+        // Cross-session peers: re-read the directory bound to Fast fires only
+        // — "one directory scan per second, only while Fast is armed", never
+        // on the Slow heartbeat (which exists solely to repaint ledger ages
+        // and has no business paying for a peer scan). `elapsed_s` is also
+        // how `TimerChain::on_fire` above tells a stale fire from a live one:
+        // Fast fires report ~1s, Slow ~60s, and `STALE_FIRE_ELAPSED_S` sits
+        // safely between the two, so reusing it here (rather than inventing
+        // parallel state) is the same discrimination, applied to cadence
+        // instead of staleness.
+        if elapsed_s <= STALE_FIRE_ELAPSED_S {
+            effects.push(Effect::ReadPresences);
+        }
+        // BEFORE re-arming below, commit an idle cycle selection if one is
+        // pending. Committing here — not after `project` re-arms — matters:
+        // a commit clears `Sessions::wants_fast_cadence`, and the chain must
+        // be free to decay to Slow on this same pass rather than one fire
+        // late.
         let session_commit = self.sessions.tick(self.tick);
         if let Some(CommitTarget { name, attention_tab_position }) = session_commit {
             effects.push(Effect::SwitchSession { name, tab_position: attention_tab_position });
@@ -448,7 +468,7 @@ impl PluginRuntime {
     /// drift from what's on screen. `attention_tab_position` is the first
     /// (lowest-position) row that `needs_you()`, matching the position
     /// `Sessions`/`BadgeEntry` expect for a same-repo jump-on-arrival.
-    pub(crate) fn presence_json(&self) -> String {
+    fn own_presence(&self) -> Presence {
         let rows = self.radar.rows(self.tick);
         let running = rows.iter().filter(|r| r.display.status == Status::Running).count();
         let mut attention = 0usize;
@@ -468,7 +488,16 @@ impl PluginRuntime {
             attention_tab_position,
             updated_epoch_s: self.last_now_epoch_s,
         }
-        .to_json()
+    }
+
+    /// JSON the host actually writes to disk on `Effect::PersistPresence` —
+    /// see `own_presence` for the field derivation. Only the wasm glue
+    /// (Task 6) calls this in production; on a host build nothing here
+    /// invokes it (that wiring is still `project`'s `own_presence`
+    /// comparison), so it would otherwise read as dead code.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn presence_json(&self) -> String {
+        self.own_presence().to_json()
     }
 
     /// True while [`timer`](Self::timer) still consumes a fresh
@@ -797,12 +826,15 @@ impl PluginRuntime {
     /// domain-change entry point funnels through here with its `now_epoch_s`,
     /// which this stores (`last_now_epoch_s`) for the call paths that have no
     /// epoch of their own — `presence_json`, `session_update`,
-    /// `presences_changed`. The freshly computed own-`Presence` JSON is
-    /// content-compared against the last one published; a real edge pushes
-    /// the effect and updates the cache, mirroring `PersistSnapshot`'s
-    /// "write on edges only" rule. Withheld while `own_session_name` is empty
-    /// — a presence file with no name is useless to peers — so it stays
-    /// quiet until `session_update` (also routed through here) learns it.
+    /// `presences_changed`. The freshly computed own-`Presence` is
+    /// content-compared against the last one published, EXCLUDING
+    /// `updated_epoch_s` (zeroed on both sides before the compare/cache) —
+    /// see `last_presence`'s doc for why a raw compare would defeat the edge
+    /// gate on Fast cadence. A real content edge pushes the effect and
+    /// updates the cache, mirroring `PersistSnapshot`'s "write on edges only"
+    /// rule. Withheld while `own_session_name` is empty — a presence file
+    /// with no name is useless to peers — so it stays quiet until
+    /// `session_update` (also routed through here) learns it.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
@@ -810,9 +842,10 @@ impl PluginRuntime {
             fx.push(Effect::PersistSnapshot);
         }
         if !self.own_session_name.is_empty() {
-            let fresh = self.presence_json();
-            if self.last_presence_json.as_deref() != Some(fresh.as_str()) {
-                self.last_presence_json = Some(fresh);
+            let mut fresh = self.own_presence();
+            fresh.updated_epoch_s = 0;
+            if self.last_presence.as_ref() != Some(&fresh) {
+                self.last_presence = Some(fresh);
                 fx.push(Effect::PersistPresence);
             }
         }

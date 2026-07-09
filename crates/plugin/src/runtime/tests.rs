@@ -849,6 +849,50 @@ fn status_edge_persists_presence_once_and_not_on_identical_state() {
 }
 
 #[test]
+fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
+    // Finding 1 pin: `presence_json` embeds `updated_epoch_s`, which on Fast
+    // cadence moves every tick. If `project`'s change check compared the raw
+    // JSON (epoch included), advancing the epoch alone — with unchanged
+    // counts — would look like an edge and re-fire `PersistPresence` every
+    // second. It must not: only a real content change (running/attention/
+    // attention_tab_position) counts, mirroring `sessions.rs::set_own`'s
+    // badge-derived check, which already excludes `updated_epoch_s`.
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+
+    let first = rt.status_pipe(&payload_json(7, "running"));
+    assert!(first.effects.contains(&Effect::PersistPresence), "setup: first edge publishes, got {:?}", first.effects);
+
+    // Drive `project` directly (as `project_emits_effects_in_canonical_order`
+    // does) with a no-op domain change but a strictly advancing epoch each
+    // call — the seam that lets this test move "now" without sleeping.
+    let noop = RadarChange::default();
+    let same_epoch_advanced_once = rt.project(vec![], noop.clone(), 1_000);
+    assert!(
+        !same_epoch_advanced_once.effects.contains(&Effect::PersistPresence),
+        "epoch-only change (unchanged counts) must not republish, got {:?}",
+        same_epoch_advanced_once.effects
+    );
+    let same_epoch_advanced_again = rt.project(vec![], noop, 2_000);
+    assert!(
+        !same_epoch_advanced_again.effects.contains(&Effect::PersistPresence),
+        "epoch-only change (unchanged counts, again) must not republish, got {:?}",
+        same_epoch_advanced_again.effects
+    );
+
+    // A real content edge (attention 0 -> 1) evaluated at the SAME epoch as
+    // the call just above still publishes — the exclusion is timestamp-only,
+    // not a blanket suppression of `PersistPresence`.
+    rt.radar.status_mut().apply(payload_for(7, Status::Pending), rt.tick, 2_000);
+    let content_edge = rt.project(vec![], RadarChange::default(), 2_000);
+    assert!(
+        content_edge.effects.contains(&Effect::PersistPresence),
+        "a counts change at an unchanged epoch must still publish, got {:?}",
+        content_edge.effects
+    );
+}
+
+#[test]
 fn presence_withheld_until_own_session_name_is_known() {
     // Same status edge as above, but WITHOUT `session_update` ever landing —
     // an unnamed presence file is useless to peers, so `project` must not
@@ -1513,4 +1557,33 @@ fn lone_slow_fire_processes_as_the_live_chain() {
         "the lone slow chain re-arms itself, got {:?}",
         tick.effects
     );
+}
+
+#[test]
+fn read_presences_is_bound_to_fast_fires_only() {
+    // Finding 2 pin: the brief bounds `Effect::ReadPresences` to "one
+    // directory scan per second, only while Fast is armed" — it must not
+    // ride along on the Slow (60s) heartbeat, which exists purely to repaint
+    // ledger ages. `timer` tells Fast from Slow the same way `TimerChain::
+    // on_fire` tells live from stale: by `elapsed_s` against
+    // `STALE_FIRE_ELAPSED_S`.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+
+    let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    assert!(fast.effects.contains(&Effect::ReadPresences), "a Fast fire must scan peers, got {:?}", fast.effects);
+
+    // A lone Slow fire (nothing else in flight, so it's the live chain, not
+    // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
+    // must not.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }
