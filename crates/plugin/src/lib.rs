@@ -33,6 +33,7 @@ mod config;
 mod control;
 mod ledger;
 mod notify_rules;
+mod presence;
 mod permission;
 mod radar_state;
 #[cfg(test)]
