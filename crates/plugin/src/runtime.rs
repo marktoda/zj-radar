@@ -339,25 +339,16 @@ impl PluginRuntime {
         if !self.permission.granted() {
             return Outcome::none();
         }
-        match verb {
-            Verb::AttentionNext => {
-                let dir = Direction::Next;
-                match self.radar.next_attention_tab(dir) {
-                    Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
-                    None => Outcome::none(),
-                }
-            }
-            Verb::AttentionPrev => {
-                let dir = Direction::Prev;
-                match self.radar.next_attention_tab(dir) {
-                    Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
-                    None => Outcome::none(),
-                }
-            }
-            Verb::SessionNext | Verb::SessionPrev => {
-                // Session-cycle dispatch wiring is a later task; verbs parse but are inert for now.
-                Outcome::none()
-            }
+        let dir = match verb {
+            Verb::AttentionNext => Direction::Next,
+            Verb::AttentionPrev => Direction::Prev,
+            // Parsed but not yet dispatched — session cycling lands with the
+            // sessions state machine in a later change.
+            Verb::SessionNext | Verb::SessionPrev => return Outcome::none(),
+        };
+        match self.radar.next_attention_tab(dir) {
+            Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
+            None => Outcome::none(),
         }
     }
 
