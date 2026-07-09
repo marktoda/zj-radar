@@ -24,6 +24,7 @@ tab.
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#cross-session-badge">Cross-session badge</a> ·
   <a href="#how-is-this-different">How is this different?</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#producers">Producers</a>
@@ -51,6 +52,9 @@ wrapping your agents. It's a status rail for the session you already run.
 - **Push-driven** updates via `zellij pipe`; no pane polling, no blocking host queries.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
   [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
+- Running more than one Zellij session? A **cross-session badge** shows every
+  other session's running/attention counts, with click-to-switch and a
+  `session-next`/`session-prev` cycle — see below.
 
 ## Quick start
 
@@ -112,6 +116,28 @@ The wire format is a single versioned JSON payload (`zj_radar.status.v1`), so a
 the `zj-radar notify` CLI for Codex, or your own script. The sidebar pins itself
 into your tab templates (the same mechanism Zellij's own status bar uses), so it
 appears in every tab and survives swap-layout cycling.
+
+## Cross-session badge
+
+Run zj-radar in more than one Zellij session on the same machine (e.g. one
+per project) and each session's rail quietly publishes its own counts for
+the others to see — no setup needed. Once a second session is live, every
+rail grows a line per session: current session first, then any session that
+needs your attention, then the rest — name plus running/attention counts.
+With just one session running, the badge renders nothing; the feature stays
+invisible until there's genuinely something cross-session to show.
+
+Click a peer's line to switch straight to that session (landing on its
+attention tab, if it has one). Or cycle the highlight with `session-next` /
+`session-prev` on the `zj_radar.cmd.v1` pipe (unbound by default — see
+[binding keys to commands](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md#binding-keys-to-commands)):
+each tap moves the highlight, wrapping, and the selection commits about a
+second after your last tap — or cancels if you land back on your own
+session.
+
+This rides the same shared `/cache` mount the sidebar already uses for
+snapshot persistence; if no writable shared root is found, the badge simply
+never appears and nothing else about the sidebar is affected.
 
 ## How is this different?
 
@@ -183,6 +209,8 @@ schema, and a copy-paste smoke test.
 
 - ✅ **Sidebar plugin** — tab list, click-to-switch, per-tab agent aggregation,
   overflow folding, theme-derived card surfaces, runtime config.
+- ✅ **Cross-session badge** — see [Cross-session badge](#cross-session-badge)
+  above; click-to-switch and `session-next`/`session-prev` cycling.
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
 - ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
   conflict-aware `setup`; see [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#codex-and-the-native-cli).

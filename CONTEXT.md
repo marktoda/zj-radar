@@ -278,3 +278,44 @@ low-level primitive detectors (`notify_is_ours`, `has_unmanaged_radar_alias`,
 `crates/cli/src/setup/detect.rs`, a neutral module that both `analyze` and `edit`
 depend on. The legacy-notify vs hooks choice is a flag the consumer projects on,
 never a fact.
+
+## Cross-session presence
+
+How one session's rail learns another session's counts, without ever asking
+Zellij "what sessions exist." Each session's plugin writes its own tiny
+`zj-radar.presence.<zellij_pid>.json` (`{session_name, running, attention,
+attention_tab_position, updated_epoch_s}`) into the same plugin-URL-scoped
+`/cache` root snapshots already use (`session_files.rs`); peers read that
+directory back on Fast-cadence timer fires only (see `Cadence`, above) and
+feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
+`zellij-tile`, that derives the cross-session badge on demand from
+`peers`/`own`, exactly like `RadarState` never caches a derived value.
+
+**Liveness is the mtime, not a roster.** An earlier iteration subscribed to
+`Event::SessionUpdate` and cross-checked a peer list against presence files.
+E2E against real Zellij 0.44.3 showed `SessionUpdate` only delivers peers
+after some plugin has called the blocking `get_session_list()` host
+function — which nothing in this stack does, and which would violate the
+push-driven doctrine (`CONTRIBUTING.md`; `smart-tabs-postmortem.md`) if it
+did. `SessionUpdate` was dropped entirely (task-8b): liveness is now judged
+purely by a presence file's mtime (`PRESENCE_LIVE_TTL`, 180s) at read time —
+a stale file's row is skipped, never deleted by the reader; a separate 6h
+sweep at plugin `load()` deletes genuine debris. A session with nothing new
+to report still heartbeats — an unconditional `PersistPresence` on every
+Slow (60s) tick, bypassing the normal content-edge gate — so an idle-but-alive
+session's file never ages past the TTL and vanishes from peers' badges. The
+session's own name arrives the same push-style way its liveness does:
+`Event::ModeUpdate`'s `ModeInfo.session_name`, not a session-list lookup.
+
+**Badge and cycling share one order.** `Sessions::badge()` (what the rail
+shows) and `Sessions::cycle()`/`tick()` (what `session-next`/`session-prev`
+step through and idle-commit) both derive from the same `ordered()`:
+current session first, then attention-bearing peers by name, then the rest
+by name — so "what's shown" and "what Alt+[/] steps through" can never
+disagree. The pending cycle selection is tracked by session *name*, never a
+list position, so peers joining or leaving mid-cycle can't silently retarget
+it (the same identity-over-position lesson `RailTarget` already applies to
+clicks). The badge renders zero lines with only one session known — the
+feature is invisible until there's genuinely something cross-session to
+show — and degrades the same way persistence does: no writable shared
+`/cache` root means no presence file and no badge, nothing else affected.

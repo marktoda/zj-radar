@@ -129,6 +129,20 @@ keybinds {
 `attention-next` / `attention-prev` walk the tabs whose agents are *waiting for
 you*, *errored*, or *done* — in tab order, wrapping around — and switch focus to
 each. Tabs that are merely *running* or *idle* are skipped. Repeated presses
-sweep every attention tab and cycle. `session-next` / `session-prev` cycle the
-badge selection across sessions. Like every command pipe, an unknown verb is
-ignored, and the action is inert until the sidebar has been granted permissions.
+sweep every attention tab and cycle.
+
+`session-next` / `session-prev` step the cross-session badge's highlighted
+selection (see [Cross-session badge](../README.md#cross-session-badge)) through
+the same order the badge itself renders in — current session first, then any
+session that needs attention, then the rest — wrapping around, with the
+current session included as a normal stop. Each tap only moves the highlight;
+nothing switches yet. The selection **commits** on the first idle tick after
+about a second with no further tap — landing back on the current session
+cancels instead of switching. A committed switch jumps to the target
+session's attention tab if it has one, otherwise it leaves Zellij to restore
+that session's last focus. The badge — and therefore cycling — only has
+something to step through once a second zj-radar session is live; with just
+one session running, `session-next`/`session-prev` are no-ops.
+
+Like every command pipe, an unknown verb is ignored, and the action is inert
+until the sidebar has been granted permissions.
