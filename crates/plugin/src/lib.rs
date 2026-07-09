@@ -249,6 +249,30 @@ impl State {
                             .is_some_and(|p| p.session_name == name)
                     });
                 }
+                Effect::BroadcastStatus { payload } => {
+                    // Same delivery every CLI producer already uses
+                    // (`crates/cli/src/notify.rs`'s `broadcast`): `zellij
+                    // pipe --name zj_radar.status.v1 -- <payload>`, spawned
+                    // via `run_command` (the `RunCommands` grant this plugin
+                    // already requests). The alternative considered —
+                    // zellij-tile's `pipe_message_to_plugin` — was rejected:
+                    // its `MessageToPlugin` addresses ONE destination plugin
+                    // (`destination_plugin_id`/`plugin_url`; see
+                    // zellij-utils 0.44.3's `data.rs`), not every instance
+                    // subscribed to a named pipe, so it can't fan out to
+                    // every tab's rail the way this gesture's convergence
+                    // requires. `zellij pipe` already does exactly that —
+                    // it's the same host route every producer's broadcast
+                    // takes, proven in production — and reaches THIS
+                    // instance too, which is the whole point: the click
+                    // itself mutates nothing (`Effect::BroadcastStatus`'s
+                    // doc), so this instance's own convergence rides the
+                    // echo like everyone else's.
+                    run_command(
+                        &["zellij", "pipe", "--name", PIPE_NAME, "--", &payload],
+                        std::collections::BTreeMap::new(),
+                    );
+                }
             }
         }
         render

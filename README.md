@@ -3,7 +3,8 @@
 A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
 status for every tab — *working*, *waiting for you*, *done*, or *error* — with
 repo·branch, elapsed time, and the last message. Click a row to jump to that
-tab.
+tab; right-click to acknowledge — a pane still flagged "needs you" after
+you've already seen it, or a dead peer session (details below).
 
 <p align="center">
   <a href="https://github.com/marktoda/zj-radar/actions/workflows/ci.yml">
@@ -145,6 +146,27 @@ next heartbeat simply brings it back, fresh.
 This rides the same shared `/cache` mount the sidebar already uses for
 snapshot persistence; if no writable shared root is found, the badge simply
 never appears and nothing else about the sidebar is affected.
+
+### Mouse gestures
+
+The rail follows one rule everywhere: **left-click navigates, right-click
+acknowledges.** Left-click always just switches — to a tab, a pane, or (as
+above) a peer session, landing on its attention tab. Right-click means "I've
+seen this, stop flagging it" and does one of two things depending on the row:
+
+- **A dimmed peer session** (above) — dismiss it from the badge; alive-but-quiet
+  sessions simply reappear on their next heartbeat.
+- **A pane or tab row still flagged `◆ needs you`** — acknowledge it. The row
+  downgrades to `done` for every tab's copy of the rail, not just this one:
+  the click never mutates state locally, it re-broadcasts a `done` update over
+  `zj_radar.status.v1` the same way a real agent hook would, so every
+  instance converges through the normal status pipe. This is the fix for an
+  agent that ends an otherwise-finished turn with a courtesy question ("want
+  me to also...?") — a genuinely blocking question still clears the usual way,
+  by you typing a reply.
+
+Right-clicking anything else — a fresh peer, your own session's line, a row
+with nothing pending — is a no-op.
 
 ## How is this different?
 

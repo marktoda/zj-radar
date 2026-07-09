@@ -149,5 +149,16 @@ by right-clicking it directly in the rail — a mouse gesture, not a `cmd.v1`
 verb; a dismissed session that turns out to be alive reappears on its next
 heartbeat.
 
+Right-click is the rail's general acknowledge/dismiss gesture, not only a
+badge thing — the rule is **left-click navigates, right-click
+acknowledges** everywhere on the rail. Beyond a stale badge entry (above),
+right-clicking a pane or tab row still flagged `◆ needs you` acknowledges
+it: the row downgrades to `done`, and — because a click lands in exactly one
+plugin instance — it converges by re-broadcasting a `done` update over
+`zj_radar.status.v1`, the same pipe a real agent hook uses, rather than
+mutating this instance's state directly. Every tab's instance (including the
+one you clicked in) picks up the change through the normal status-pipe
+intake. A row with nothing pending is a no-op.
+
 Like every command pipe, an unknown verb is ignored, and the action is inert
 until the sidebar has been granted permissions.

@@ -1092,6 +1092,144 @@ fn right_click_without_permission_is_inert_even_on_stale_session_line() {
     );
 }
 
+// ── Right-click: pending-pane acknowledge (issue #5) ───────────────────────
+
+/// Two tabs for the pending-pane acknowledge tests: tab 0 has panes 10
+/// (Pending), 11 (Running), 12 (Pending); tab 1 has one pane, 20 (Pending).
+/// Rendered once so `last_rendered` carries the click-target map. Line
+/// layout, pinned by inspection the same way every other click-mapping test
+/// in this file hard-codes its lines (Compact density, header:true):
+///   0/1 global header
+///   2   tab0 header line   → (tab_position: 0, pane_id: None)
+///   3   tab0 pane 10 line  → (0, Some(10)) — Pending
+///   4   tab0 pane 11 line  → (0, Some(11)) — Running
+///   5   tab0 pane 12 line  → (0, Some(12)) — Pending
+///   6   tab1 header line   → (1, None)
+///   7   tab1 pane 20 line  → (1, Some(20)) — Pending
+fn runtime_with_pending_panes() -> PluginRuntime {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.tabs_changed(vec![tab(0, "a", false), tab(1, "b", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
+    rt.radar.set_tab_panes_for_position(1, vec![pane(20)]);
+    rt.status_pipe(&payload_json(10, "pending"));
+    rt.status_pipe(&payload_json(11, "running"));
+    rt.status_pipe(&payload_json(12, "pending"));
+    rt.status_pipe(&payload_json(20, "pending"));
+    let _ = rt.render(100, 80);
+    rt
+}
+
+#[test]
+fn right_click_on_pending_pane_broadcasts_and_leaves_local_state_untouched_until_the_echo_lands() {
+    let mut rt = runtime_with_pending_panes();
+
+    let out = rt.mouse_right_click(3); // tab0 pane 10, Pending
+    assert!(!out.render, "the click itself must not mutate local state — see Effect::BroadcastStatus's doc");
+    assert_eq!(out.effects.len(), 1, "exactly one pending pane on this line, got {:?}", out.effects);
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+
+    // Pending survives the click alone — convergence rides the pipe, not a
+    // local write (the design constraint issue #5 leads with: a local clear
+    // would repeat the removed focus-clear mistake).
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Pending, "no local mutation from the click alone");
+
+    // Only once the payload is driven back through `status_pipe` — exactly
+    // how every instance, including this one, receives the broadcast it
+    // just emitted — does the row actually converge.
+    let payload = payload.clone();
+    rt.status_pipe(&payload);
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Done, "the echo converges Pending -> Done");
+}
+
+#[test]
+fn right_click_on_tab_row_broadcasts_every_pending_pane_in_that_tab_only() {
+    let mut rt = runtime_with_pending_panes();
+
+    let out = rt.mouse_right_click(2); // tab0 header line, pane_id: None
+    assert!(!out.render);
+    let acked: Vec<u32> = out
+        .effects
+        .iter()
+        .map(|e| {
+            let Effect::BroadcastStatus { payload } = e else {
+                panic!("expected BroadcastStatus, got {e:?}");
+            };
+            payload::parse(payload).expect("synthetic payload must parse").pane_id
+        })
+        .collect();
+    assert_eq!(acked.len(), 2, "tab0 has exactly 2 pending panes (10 and 12), got {acked:?}");
+    assert!(acked.contains(&10) && acked.contains(&12));
+    assert!(!acked.contains(&11), "pane 11 is Running, not Pending — untouched");
+    assert!(!acked.contains(&20), "tab1's pending pane must be untouched by a tab0 click");
+}
+
+#[test]
+fn right_click_on_a_running_pane_row_is_a_strict_no_op() {
+    let mut rt = runtime_with_pending_panes();
+    assert_eq!(rt.mouse_right_click(4), Outcome::default(), "pane 11 is Running, not Pending");
+}
+
+#[test]
+fn right_click_on_a_tab_row_with_no_tracked_panes_is_a_strict_no_op() {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    let _ = rt.render(100, 80);
+    assert_eq!(rt.mouse_right_click(2), Outcome::default(), "no panes at all in this tab");
+}
+
+#[test]
+fn acknowledge_payload_round_trips_and_carries_the_original_source_and_kind() {
+    let mut rt = runtime_with_pending_panes();
+    let out = rt.mouse_right_click(3); // pane 10, Pending, source "claude" via payload_for
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+
+    let parsed = payload::parse(payload).expect("synthetic payload must parse (wire-compat)");
+    assert_eq!(parsed.pane_id, 10);
+    assert_eq!(parsed.status, Status::Done);
+    assert_eq!(parsed.repo, "repo");
+    assert_eq!(parsed.branch, "main");
+    assert_eq!(parsed.msg, "working", "the original msg is carried forward unchanged");
+    assert_eq!(parsed.source, "claude", "Kind::as_source must round-trip the original classification");
+    assert_eq!(crate::kind::Kind::from_source(&parsed.source), crate::kind::Kind::Claude);
+}
+
+#[test]
+fn double_delivery_of_the_acknowledge_broadcast_is_idempotent() {
+    let mut rt = runtime_with_pending_panes();
+    let out = rt.mouse_right_click(3);
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+    let payload = payload.clone();
+
+    rt.status_pipe(&payload);
+    let completed_at_first = rt.radar.status(10).unwrap().completed_epoch_s;
+    assert!(completed_at_first.is_some(), "Done must stamp a completion epoch");
+
+    // A second, later delivery of the SAME payload — e.g. a duplicate fire of
+    // the pipe, or another instance's echo racing this one — must be a
+    // no-op: `StatusStore::apply`'s identical-(status,msg)-rebroadcast rule
+    // keeps the ORIGINAL completion stamp rather than re-stamping it.
+    rt.status_pipe(&payload);
+    assert_eq!(
+        rt.radar.status(10).unwrap().completed_epoch_s,
+        completed_at_first,
+        "an identical re-delivery must not re-stamp the completion"
+    );
+}
+
 #[test]
 fn own_badge_row_updates_live_as_running_and_attention_move() {
     // Task-6 flagged `Sessions::set_own` as dead code: nothing called it, so
@@ -2269,3 +2407,4 @@ mod timer_chain_fuzz {
         }
     }
 }
+

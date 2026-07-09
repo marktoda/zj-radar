@@ -143,6 +143,22 @@ pub(crate) enum Effect {
     /// presence file and it simply reappears, fresh (see
     /// `Sessions::dismiss`).
     DismissPresence { name: String },
+    /// Re-broadcast a `zj_radar.status.v1` payload over the shared pipe —
+    /// `payload` is already wire-encoded (`payload::to_wire`), ready to hand
+    /// to `zellij pipe`. Emitted by `mouse_right_click`'s pending-pane
+    /// acknowledge: dismissing a pending pane must be a SHARED signal (issue
+    /// #5's design constraint — clearing it only in the clicking instance
+    /// repeats the removed focus-clear mistake, where a background tab's
+    /// rail never learns the card changed). So the click never mutates
+    /// `radar` directly; it only ever produces this effect, and every
+    /// instance — including the one that clicked, via the same fan-out a
+    /// real producer's broadcast gets — converges through the normal
+    /// `status_pipe` → `StatusStore::apply` intake once the pipe echoes it
+    /// back. `apply`'s existing identical-rebroadcast no-op (same
+    /// `(status, msg)` twice: no `completed_epoch_s` re-stamp, no second
+    /// ledger edge) is what makes that convergence idempotent rather than a
+    /// second race.
+    BroadcastStatus { payload: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -449,21 +465,25 @@ impl PluginRuntime {
         Outcome::with_effects(false, vec![effect])
     }
 
-    /// Right-click: dismiss a STALE cross-session badge entry — the manual
-    /// complement to the 6h open-time sweep (`session_files`'s
-    /// `PRESENCE_MAX_AGE`), for a session the user already knows is dead.
-    /// Resolves the clicked line exactly like `mouse_click` (same cached
-    /// `RenderedRail`, same permission gate), but acts only when the target
-    /// is a peer-session line (`session: Some(name)`) whose name currently
-    /// reads stale on the badge. Everything else — a fresh peer, this
-    /// session's own line (click-inert: no target), a tab/pane line, an
-    /// empty line — is a strict no-op; right-click grows no behavior beyond
-    /// this one gesture. A hit does two things: `Sessions::dismiss` drops
-    /// the name from this instance's in-memory roster right away (the entry
-    /// vanishes without waiting on a file read), and `Effect::DismissPresence`
-    /// deletes the on-disk files so every peer converges on its own next
-    /// Fast read. `&mut self` where `mouse_click` is `&self` — dismissing
-    /// mutates the roster, not just reads it.
+    /// Right-click: the rail's acknowledge/dismiss verb (left-click stays
+    /// pure navigation). Resolves the clicked line exactly like `mouse_click`
+    /// (same cached `RenderedRail`, same permission gate), then branches on
+    /// what the target resolved to:
+    ///
+    /// - **A peer-session badge line** (`session: Some(name)`) — dismiss a
+    ///   STALE cross-session entry, the manual complement to the 6h
+    ///   open-time sweep (`session_files`'s `PRESENCE_MAX_AGE`), for a
+    ///   session the user already knows is dead. This branch is untouched
+    ///   from before issue #5 and takes precedence: a session target never
+    ///   also carries a `pane_id`, but checking it first keeps the cases
+    ///   visibly exclusive rather than relying on that absence. Everything
+    ///   else about it — fresh peer / own line / no-op — is exactly as
+    ///   documented at `Effect::DismissPresence`.
+    /// - **A pane or tab row** — acknowledge a pending pane: see
+    ///   `acknowledge_pending_targets`. This is issue #5's fix for the
+    ///   completed-turn-ending-in-a-courtesy-question trap: `Pending` has no
+    ///   exit besides another broadcast, so a click that means "I saw it,
+    ///   stop asking" has to BE one.
     pub(crate) fn mouse_right_click(&mut self, line: isize) -> Outcome {
         if !self.permission.granted() {
             return Outcome::none();
@@ -471,18 +491,75 @@ impl PluginRuntime {
         let Some(target) = self.last_rendered.target_at_line(line) else {
             return Outcome::none();
         };
-        let Some(name) = target.session else {
-            return Outcome::none();
-        };
-        // Staleness is judged against the CURRENT badge, not anything baked
-        // into the click target at render time — the entry may have gone
-        // fresh (its session came back) between the paint and the click, and
-        // a dismiss must never race a live session's heartbeat.
-        if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
-            return Outcome::none();
+        // `.clone()`, not a move: a session-line miss falls through to the
+        // pane/tab branch below, which still needs the rest of `target`.
+        if let Some(name) = target.session.clone() {
+            // Staleness is judged against the CURRENT badge, not anything
+            // baked into the click target at render time — the entry may
+            // have gone fresh (its session came back) between the paint and
+            // the click, and a dismiss must never race a live session's
+            // heartbeat.
+            if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
+                return Outcome::none();
+            }
+            let render = self.sessions.dismiss(&name);
+            return Outcome::with_effects(render, vec![Effect::DismissPresence { name }]);
         }
-        let render = self.sessions.dismiss(&name);
-        Outcome::with_effects(render, vec![Effect::DismissPresence { name }])
+        Outcome::with_effects(false, self.acknowledge_pending_targets(&target))
+    }
+
+    /// The pane-or-tab half of `mouse_right_click`: every pane a click on
+    /// `target` should check for a dismissible `Pending` — one pane for a
+    /// pane row (`target.pane_id: Some(p)`), every pane in the tab for a tab
+    /// row (`target.pane_id: None` — a tab's header line, or a plain tab with
+    /// no per-pane detail line at all) — turned into one `Effect::BroadcastStatus`
+    /// per pane whose STATUS-PIPE observation (`RadarState::status_observation`;
+    /// never command-origin, which is untouched by design) currently reads
+    /// `Pending`. A target with nothing Pending on it — including every
+    /// other status, and a tab with no tracked panes at all — produces no
+    /// effects: `Outcome::with_effects(false, vec![])` equals `Outcome::none()`,
+    /// so this is a strict no-op, not a render with nothing to show for it.
+    /// Deliberately returns `render: false` from the caller regardless: this
+    /// gesture never mutates `radar` — see `Effect::BroadcastStatus`'s doc for
+    /// why the convergence has to ride the pipe instead.
+    fn acknowledge_pending_targets(&self, target: &render::RailTarget) -> Vec<Effect> {
+        let pane_ids = match target.pane_id {
+            Some(pane_id) => vec![pane_id],
+            None => self.radar.pane_ids_for_tab(target.tab_position),
+        };
+        pane_ids
+            .into_iter()
+            .filter_map(|pane_id| self.acknowledge_pending_payload(pane_id))
+            .map(|payload| Effect::BroadcastStatus { payload })
+            .collect()
+    }
+
+    /// The synthetic `zj_radar.status.v1` payload that acknowledges `pane_id`
+    /// — `None` unless the status store currently reads it as `Pending`
+    /// (anything else, including a command-origin observation the status
+    /// store never held in the first place, is left alone). Carries the
+    /// observation's own repo/branch/msg forward — only `status` moves,
+    /// Pending → Done — and re-derives `source` from its already-classified
+    /// `kind` via `Kind::as_source`, the exact inverse of the intake
+    /// classification (`Kind::from_source`), so the pane's `Kind` survives
+    /// the round trip unchanged. `task` is left absent (empty): `StatusStore::apply`
+    /// treats an empty `task` on a non-Idle status as "leave the sticky label
+    /// alone", so the turn's task stays put rather than this dismiss quietly
+    /// erasing it.
+    fn acknowledge_pending_payload(&self, pane_id: u32) -> Option<String> {
+        let obs = self.radar.status_observation(pane_id)?;
+        if obs.status != Status::Pending {
+            return None;
+        }
+        Some(crate::payload::to_wire(&crate::payload::StatusPayload {
+            pane_id,
+            status: Status::Done,
+            repo: obs.repo.clone(),
+            branch: obs.branch.clone(),
+            msg: obs.msg.clone(),
+            task: String::new(),
+            source: obs.kind.as_source().to_string(),
+        }))
     }
 
     /// Run an imperative command verb. `AttentionNext/Prev` resolve a
