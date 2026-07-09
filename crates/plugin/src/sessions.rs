@@ -395,4 +395,41 @@ mod tests {
         assert_eq!(s.tick(2), None, "a vanished selection must not commit");
         assert!(!s.wants_fast_cadence(), "the cleared selection must not keep fast cadence armed");
     }
+
+    // -- Pinning: cycle restart after vanish and no-op change report -----------
+    // Cycle selection must restart fresh when the previously-selected session
+    // disappears and a new cycle() call advances the selection. A no-op cycle
+    // (nothing to select) must not set up a pending selection or report a
+    // badge change.
+
+    #[test]
+    fn cycle_restarts_fresh_after_selected_session_vanishes() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false)]));
+        s.update_presences(vec![presence("alpha", 0, 1), presence("beta", 1, 0)]);
+        // Order: work (current), alpha (attention), beta.
+
+        s.cycle(Direction::Next, 1); // selects alpha
+
+        // alpha vanishes
+        s.update_live(live(&[("work", true), ("beta", false)]));
+
+        // Next cycle should restart and select beta (first non-current in fresh order).
+        // A regression that defaulted to index 0 (work/current) would fail via
+        // the cancel path returning None when tick() later lands on current.
+        s.cycle(Direction::Next, 2);
+        let t = s.tick(3).expect("idle tick commits");
+        assert_eq!(t.name, "beta", "after vanished selection, cycle must restart and select the first non-current entry");
+    }
+
+    #[test]
+    fn cycle_returns_false_on_noop_with_only_current_session() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true)]));
+        // No presences, no peers — work is the only session.
+
+        let changed = s.cycle(Direction::Next, 1);
+        assert!(!changed, "cycle with nothing to select must return false (no badge change)");
+        assert!(!s.wants_fast_cadence(), "cycle with nothing to select must not set up a pending selection");
+    }
 }
