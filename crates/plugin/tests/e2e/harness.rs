@@ -64,9 +64,35 @@ pub struct ZellijSession {
     /// (rows, cols) of the PTY at session start; `screen()` sizes its vt100
     /// parser from this.
     size: Mutex<(u16, u16)>,
-    /// Isolated temp HOME for this session. Kept alive so Zellij's cache dir
-    /// survives for the session duration and is auto-cleaned on Drop.
-    _temp_home: tempfile::TempDir,
+    /// HOME used by this session's Zellij subprocesses. Either an owned temp
+    /// dir (deleted on Drop) or a path borrowed from a sibling's owned dir
+    /// (see `HomeHandle`) — never both, or `start_sibling` and its parent
+    /// would race to delete the same directory.
+    _temp_home: HomeHandle,
+}
+
+/// Who owns the on-disk lifetime of a session's HOME directory.
+///
+/// `start_sibling` needs a second Zellij session to use the SAME HOME as an
+/// existing one (so both resolve to the same Zellij cache dir — and thus the
+/// same plugin `/cache` mount — for presence files to actually cross), but
+/// exactly ONE of the two `ZellijSession`s must delete that directory on
+/// Drop. `Owned` is the original `tempfile::TempDir` (deletes on drop);
+/// `Shared` is just the path, borrowed from the owner and inert on drop.
+#[cfg(feature = "e2e")]
+enum HomeHandle {
+    Owned(tempfile::TempDir),
+    Shared(std::path::PathBuf),
+}
+
+#[cfg(feature = "e2e")]
+impl HomeHandle {
+    fn path(&self) -> &Path {
+        match self {
+            HomeHandle::Owned(t) => t.path(),
+            HomeHandle::Shared(p) => p.as_path(),
+        }
+    }
 }
 
 #[cfg(feature = "e2e")]
@@ -100,8 +126,40 @@ impl ZellijSession {
         rows: u16,
         cols: u16,
     ) -> Self {
+        Self::start_internal(name, layout_kdl, HomeHandle::Owned(temp_home), rows, cols)
+    }
+
+    /// Second session on the SAME server socket dir + cache as `self`, so the
+    /// two servers exchange `SessionUpdate` and share the plugin cache root.
+    ///
+    /// Reuses `self`'s temp HOME path (not `isolated_temp_home()`) — same
+    /// permissions.kdl (no re-prompt) and, critically, the same Zellij cache
+    /// dir, which is where zellij maps each plugin's `/cache` mount. Two
+    /// sessions on DIFFERENT HOMEs get DIFFERENT `/cache` roots and never see
+    /// each other's presence files no matter how long they wait; sharing
+    /// HOME is the one thing that makes the two servers' plugin instances
+    /// agree on where presence lives. (Zellij's own session socket dir turns
+    /// out to be keyed by OS temp dir + uid, not HOME, so `--session
+    /// <name>`-addressed sessions already see each other in `SessionUpdate`
+    /// regardless of HOME — verified empirically against 0.44.3 — but the
+    /// shared `/cache` mount is NOT: that one really does require the same
+    /// HOME, which is what this constructor buys.)
+    ///
+    /// The returned session does NOT own the temp HOME directory — `self`
+    /// does, and must outlive it (drop `self` last).
+    #[allow(dead_code)]
+    pub fn start_sibling(&self, name: &str, layout_kdl: &str) -> ZellijSession {
+        let (rows, cols) = *self.size.lock().unwrap();
+        let shared_home = HomeHandle::Shared(self._temp_home.path().to_path_buf());
+        Self::start_internal(name, layout_kdl, shared_home, rows, cols)
+    }
+
+    /// Shared implementation behind `start_with_size` (owned HOME) and
+    /// `start_sibling` (borrowed HOME) — everything past HOME lifetime is
+    /// identical.
+    fn start_internal(name: &str, layout_kdl: &str, home: HomeHandle, rows: u16, cols: u16) -> Self {
         assert_zellij_version();
-        let temp_home_path = temp_home.path().to_path_buf();
+        let temp_home_path = home.path().to_path_buf();
 
         // Kill any previous session with this name to avoid conflicts.
         let _ = Command::new("zellij")
@@ -175,7 +233,7 @@ impl ZellijSession {
             _reader,
             buf,
             size: Mutex::new((rows, cols)),
-            _temp_home: temp_home,
+            _temp_home: home,
         };
         s.wait_until_ready();
         s
