@@ -810,7 +810,7 @@ fn control_pipe_unknown_verb_is_no_op() {
 // ── Cross-session presence + cycling ───────────────────────────────────────
 
 /// A granted runtime whose own session name is already known (as it would be
-/// in production once Zellij's first `SessionUpdate` lands) — needed for the
+/// in production once Zellij's first `ModeUpdate` lands) — needed for the
 /// presence edge in `project` to ever fire.
 fn runtime_with_granted_permission() -> PluginRuntime {
     let mut rt = PluginRuntime {
@@ -818,7 +818,7 @@ fn runtime_with_granted_permission() -> PluginRuntime {
         config: config(),
         ..Default::default()
     };
-    rt.session_update(vec![SessionLite { name: "work".into(), is_current: true }]);
+    rt.session_name_changed(Some("work".into()));
     rt
 }
 
@@ -911,10 +911,9 @@ fn presence_withheld_until_own_session_name_is_known() {
 #[test]
 fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
-    rt.session_update(vec![
-        SessionLite { name: "work".into(), is_current: true },
-        SessionLite { name: "alpha".into(), is_current: false },
-    ]);
+    // "alpha" needs no separate liveness registration anymore — its presence
+    // report IS its liveness (task-8b-brief.md: no more `SessionUpdate` peer
+    // list to cross-check against).
     rt.presences_changed(vec![
         r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#.into(),
     ]);
@@ -935,20 +934,15 @@ fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
 #[test]
 fn session_cycle_is_inert_without_permission() {
     let mut rt = PluginRuntime::default();
-    rt.session_update(vec![
-        SessionLite { name: "work".into(), is_current: true },
-        SessionLite { name: "alpha".into(), is_current: false },
-    ]);
+    rt.session_name_changed(Some("work".into()));
+    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
     assert_eq!(rt.control_pipe("session-next"), Outcome::default());
 }
 
 #[test]
 fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
     let mut rt = runtime_with_granted_permission();
-    rt.session_update(vec![
-        SessionLite { name: "work".into(), is_current: true },
-        SessionLite { name: "alpha".into(), is_current: false },
-    ]);
+    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
     let out = rt.control_pipe("session-next");
     assert!(
         out.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
@@ -969,10 +963,6 @@ fn clicking_a_session_line_emits_switch_session() {
     // cross-session target), 3 = peer "alpha" badge line (clickable).
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     rt.tabs_changed(vec![tab(0, "team", false)]);
-    rt.session_update(vec![
-        SessionLite { name: "work".into(), is_current: true },
-        SessionLite { name: "alpha".into(), is_current: false },
-    ]);
     rt.presences_changed(vec![
         r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.into(),
     ]);
@@ -992,6 +982,33 @@ fn clicking_a_session_line_emits_switch_session() {
     assert_eq!(
         peer_click.effects,
         vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
+    );
+}
+
+#[test]
+fn own_badge_row_updates_live_as_running_and_attention_move() {
+    // Task-6 flagged `Sessions::set_own` as dead code: nothing called it, so
+    // the own row of the cross-session badge never reflected the running/
+    // attention counts actually moving underneath it — it would render
+    // whatever it started at (0/0) forever. task-8b-brief.md revives it by
+    // having `project` call it every pass once the name is known; this pins
+    // that the own row's rendered counts actually track a later status edge,
+    // not just its state at the moment the name became known.
+    let mut rt = runtime_with_granted_permission(); // own session name "work"
+    // A second session must exist for the badge to render at all
+    // (`render_session_badge` renders zero lines for `entries.len() <= 1`).
+    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
+    drive_tabs_and_panes(&mut rt); // tab 0, pane 7
+
+    let before = rt.render(100, 80);
+    assert!(!before.contains("work 1"), "setup: own row must start at zero running, got {before:?}");
+
+    rt.status_pipe(&payload_json(7, "running"));
+    let after = rt.render(100, 80);
+    let running_glyph = Status::Running.glyph_for(GlyphSet::Plain);
+    assert!(
+        after.contains(&format!("work 1{running_glyph}")),
+        "own badge row must show the fresh running count, got {after:?}"
     );
 }
 
@@ -1594,6 +1611,40 @@ fn lone_slow_fire_processes_as_the_live_chain() {
         tick.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
         "the lone slow chain re-arms itself, got {:?}",
         tick.effects
+    );
+}
+
+#[test]
+fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
+    // An idle-but-alive session (nothing fast-worthy happening) has no
+    // content edge to trigger `project`'s compare-and-cache `PersistPresence`
+    // — but its presence file's mtime is the ONLY signal peers use to tell
+    // it apart from a dead session (`session_files::PRESENCE_LIVE_TTL`, the
+    // amendment's whole point: liveness is no longer `SessionUpdate`-derived
+    // at all). The Slow (60s) heartbeat must therefore emit `PersistPresence`
+    // unconditionally, bypassing the content-compare gate; Fast (1s) fires
+    // must NOT — that would be needless per-second churn for a signal that
+    // only needs to beat a 180s TTL.
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+
+    // A Fast fire with nothing changed must stay quiet — the edge gate
+    // already published once, inside `runtime_with_granted_permission`'s
+    // `session_name_changed` call.
+    let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    assert!(
+        !fast.effects.contains(&Effect::PersistPresence),
+        "a fast fire with unchanged content must not republish, got {:?}", fast.effects
+    );
+
+    // A Slow fire, even with identical content, must heartbeat anyway —
+    // exactly once, not doubled up with `project`'s own (correctly
+    // no-op, since content is unchanged) edge-gated push.
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    let persists = slow.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    assert_eq!(
+        persists, 1,
+        "an idle session's slow heartbeat must refresh its presence file's \
+         mtime unconditionally, exactly once, got {:?}", slow.effects
     );
 }
 

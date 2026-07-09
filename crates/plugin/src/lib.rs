@@ -64,8 +64,6 @@ use runtime::Effect;
 #[cfg(target_arch = "wasm32")]
 use session_files::SessionFileIds;
 #[cfg(target_arch = "wasm32")]
-use sessions::SessionLite;
-#[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
@@ -274,7 +272,21 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
-            EventType::SessionUpdate,
+            // Replaces `SessionUpdate`: stock zj-radar never calls the
+            // blocking `get_session_list()` host fn that's the ONLY thing
+            // that repopulates `SessionUpdate`'s peer list in zellij 0.44.3
+            // (task-8-report.md's root-cause dive) — only Zellij's own
+            // session-manager plugin does, so a user without it open would
+            // see an empty cross-session badge forever. `ModeUpdate` fires
+            // automatically right after this plugin loads (Zellij's
+            // `RequestStateUpdateForPlugins` → `Tab::update_input_modes`,
+            // unconditional on every successful plugin load — no polling,
+            // no other plugin required) and carries `ModeInfo.session_name`,
+            // which is all this plugin ever needed from `SessionUpdate` in
+            // the first place; liveness itself now comes from the presence
+            // files' own mtimes (`session_files::PRESENCE_LIVE_TTL`), not
+            // from a Zellij-reported peer list at all.
+            EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
@@ -365,12 +377,8 @@ impl ZellijPlugin for State {
                 let outcome = self.runtime.permission_result(granted);
                 self.handle_outcome(outcome)
             }
-            Event::SessionUpdate(sessions, _resurrectable) => {
-                let live = sessions
-                    .into_iter()
-                    .map(|s| SessionLite { name: s.name, is_current: s.is_current_session })
-                    .collect();
-                let outcome = self.runtime.session_update(live);
+            Event::ModeUpdate(mode_info) => {
+                let outcome = self.runtime.session_name_changed(mode_info.session_name);
                 self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {

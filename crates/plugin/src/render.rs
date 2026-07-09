@@ -133,8 +133,9 @@ pub struct RenderOpts {
     pub jump_hint: bool,
     /// The cross-session badge, current-first (`Sessions::badge()`'s
     /// contract) — rendered by [`render_session_badge`] as zero lines
-    /// whenever `len() <= 1` (only this session, or the `SessionUpdate` event
-    /// hasn't landed yet), so every caller that never populates this (every
+    /// whenever `len() <= 1` (only this session, or no peer presence has
+    /// crossed the shared `/cache` root yet), so every caller that never
+    /// populates this (every
     /// pre-existing test, and any host that hasn't wired Task 5/6's session
     /// plumbing) renders byte-identical to before this field existed.
     pub badge: Vec<BadgeEntry>,
@@ -219,7 +220,7 @@ fn truncate(s: &str, max: usize) -> String {
 /// needs to carry "no attention tab" (`Option::None`) losslessly through a
 /// field that stays a plain `usize` for every other target — see that
 /// method's doc. `session: Option<String>` (owned: a peer's name, read off
-/// its live `SessionLite`, isn't a value this module can borrow from) is why
+/// its `Presence`, isn't a value this module can borrow from) is why
 /// the struct can no longer derive `Copy`; every call site that used to rely
 /// on implicit-copy semantics now clones explicitly at its last use.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1208,8 +1209,9 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// (current-first, per its ordering contract — this function trusts that
 /// order and does not re-sort), inserted between the header and the first
 /// card. Renders ZERO lines when `entries.len() <= 1` — only the current
-/// session, or the `SessionUpdate` event hasn't landed yet — so the feature
-/// is invisible until there's genuinely something cross-session to show, and
+/// session, or no peer presence has crossed the shared `/cache` root yet —
+/// so the feature is invisible until there's genuinely something
+/// cross-session to show, and
 /// every existing single-session snapshot/test stays byte-identical (the
 /// badge is additive, never a subtraction from the render surface).
 ///

@@ -22,8 +22,15 @@
 //!   [`control`](PluginRuntime::control) /
 //!   [`control_pipe`](PluginRuntime::control_pipe) — runtime config + remote
 //!   commands.
-//! - [`session_update`](PluginRuntime::session_update) — Zellij's live
-//!   session list (also how the runtime learns its own session's name).
+//! - [`session_name_changed`](PluginRuntime::session_name_changed) —
+//!   `Event::ModeUpdate`'s `session_name`, the push-style source that
+//!   replaced `SessionUpdate` for learning this session's own name
+//!   (task-8b-brief.md: `SessionUpdate`'s peer list never populates without
+//!   a plugin calling the blocking `get_session_list()`, which stock
+//!   zj-radar never does — see `task-8-report.md`). Liveness itself no
+//!   longer comes from a Zellij-reported peer list at all: it's implicit in
+//!   which presence files `session_files::read_peer_presences` returns
+//!   (its mtime gate IS the liveness signal).
 //! - [`presences_changed`](PluginRuntime::presences_changed) — peer presence
 //!   files, freshly read from disk.
 //! - [`timer`](PluginRuntime::timer) — periodic tick (animation +
@@ -40,7 +47,7 @@ use crate::presence::Presence;
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
 use crate::render::{self, RenderedRail};
 use crate::rollup::TabRow;
-use crate::sessions::{CommitTarget, SessionLite, Sessions};
+use crate::sessions::{CommitTarget, Sessions};
 use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -251,9 +258,9 @@ pub(crate) struct PluginRuntime {
     notify_prev: BTreeMap<u32, crate::status::Status>,
     /// Cross-session peer state + the Alt+[/] cycle selection machine.
     sessions: Sessions,
-    /// This session's own name, learned from `session_update` (the
-    /// `SessionLite` with `is_current == true`). Empty until Zellij's first
-    /// session-list event lands — `project` withholds `Effect::PersistPresence`
+    /// This session's own name, learned from `session_name_changed`
+    /// (`Event::ModeUpdate`'s `ModeInfo.session_name`). Empty until Zellij's
+    /// first `ModeUpdate` lands — `project` withholds `Effect::PersistPresence`
     /// while empty, since an unnamed presence file is useless to peers.
     own_session_name: String,
     /// The last own-`Presence` actually published, canonicalized with
@@ -355,6 +362,19 @@ impl PluginRuntime {
         // instead of staleness.
         if elapsed_s <= STALE_FIRE_ELAPSED_S {
             effects.push(Effect::ReadPresences);
+        } else if !self.own_session_name.is_empty() {
+            // Idle-but-alive heartbeat, the Slow-cadence complement of the
+            // Fast-only `ReadPresences` gate above. `project`'s own
+            // `PersistPresence` is content-edge-gated (`last_presence`'s
+            // compare-and-cache), which is right for Fast cadence — but a
+            // session with nothing new to report can sit on an unchanged
+            // edge forever, and its presence file's mtime (the only
+            // liveness signal peers read — `session_files::PRESENCE_LIVE_TTL`)
+            // would go stale even though the session is still up. Bypass the
+            // edge gate here, unconditionally, so an idle session's file
+            // still gets touched at least once per Slow (60s) tick — well
+            // inside the 180s TTL even with a skipped/delayed fire.
+            effects.push(Effect::PersistPresence);
         }
         // BEFORE re-arming below, commit an idle cycle selection if one is
         // pending. Committing here — not after `project` re-arms — matters:
@@ -451,16 +471,22 @@ impl PluginRuntime {
         }
     }
 
-    /// Zellij's live session list. Also how the runtime learns its own
-    /// session's name (the entry with `is_current == true`) — needed by
-    /// `presence_json` and gating `Effect::PersistPresence` in `project`.
-    pub(crate) fn session_update(&mut self, live: Vec<SessionLite>) -> Outcome {
-        if let Some(me) = live.iter().find(|s| s.is_current) {
-            self.own_session_name = me.name.clone();
-        }
-        let render = self.sessions.update_live(live);
-        let change = RadarChange { render, settle: false, persist_snapshot: false, renames: vec![], cwd_bootstrap: vec![] };
-        self.project(vec![], change, self.last_now_epoch_s)
+    /// Learn (or relearn) this session's own name — the push-style source
+    /// that replaced `SessionUpdate` (task-8b-brief.md): `Event::ModeUpdate`'s
+    /// `ModeInfo.session_name`. `None` is a true no-op: Zellij can in
+    /// principle fire `ModeUpdate` before the session has a name, and there
+    /// is nothing to do with that yet — re-projecting on every such event
+    /// would waste a `project()` pass for nothing new to report. A `Some`
+    /// always re-projects, even a repeat of the already-known name:
+    /// `ModeUpdate` fires on far more than name changes (any mode/keybind/
+    /// pane-group change too), and letting `project`'s own idempotent
+    /// content-compares (`PersistPresence`'s cache, `Sessions::set_own`'s
+    /// badge diff) absorb the repeats is simpler, and no less correct, than
+    /// hand-rolling an equality check here.
+    pub(crate) fn session_name_changed(&mut self, name: Option<String>) -> Outcome {
+        let Some(name) = name else { return Outcome::none() };
+        self.own_session_name = name;
+        self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
     }
 
     /// A fresh read of every peer session's presence file
@@ -836,7 +862,7 @@ impl PluginRuntime {
     /// Also the single point deciding `Effect::PersistPresence`: every
     /// domain-change entry point funnels through here with its `now_epoch_s`,
     /// which this stores (`last_now_epoch_s`) for the call paths that have no
-    /// epoch of their own — `presence_json`, `session_update`,
+    /// epoch of their own — `presence_json`, `session_name_changed`,
     /// `presences_changed`. The freshly computed own-`Presence` is
     /// content-compared against the last one published, EXCLUDING
     /// `updated_epoch_s` (zeroed on both sides before the compare/cache) —
@@ -845,18 +871,30 @@ impl PluginRuntime {
     /// updates the cache, mirroring `PersistSnapshot`'s "write on edges only"
     /// rule. Withheld while `own_session_name` is empty — a presence file
     /// with no name is useless to peers — so it stays quiet until
-    /// `session_update` (also routed through here) learns it.
+    /// `session_name_changed` (also routed through here) learns it.
+    ///
+    /// Same gate also feeds `Sessions::set_own` — the single path for own
+    /// counts into the OWN badge row (task-8b-brief.md un-deads it: nothing
+    /// called it before this). Unlike `PersistPresence`, this is NOT
+    /// edge-gated by `last_presence`'s cache — `Sessions::set_own` already
+    /// does its own badge-derived content-compare and reports whether the
+    /// badge actually changed, so calling it every `project` pass (once the
+    /// name is known) is correct AND is what closes the gap where the own
+    /// row never updated as running/attention moved.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
         if c.persist_snapshot {
             fx.push(Effect::PersistSnapshot);
         }
+        let mut render = c.render;
         if !self.own_session_name.is_empty() {
-            let mut fresh = self.own_presence();
-            fresh.updated_epoch_s = 0;
-            if self.last_presence.as_ref() != Some(&fresh) {
-                self.last_presence = Some(fresh);
+            let fresh = self.own_presence();
+            render |= self.sessions.set_own(fresh.clone());
+            let mut compare = fresh;
+            compare.updated_epoch_s = 0;
+            if self.last_presence.as_ref() != Some(&compare) {
+                self.last_presence = Some(compare);
                 fx.push(Effect::PersistPresence);
             }
         }
@@ -867,7 +905,7 @@ impl PluginRuntime {
         if c.settle {
             fx.extend(self.notify_effects());
         }
-        Outcome::with_effects(c.render, fx)
+        Outcome::with_effects(render, fx)
     }
 }
 
