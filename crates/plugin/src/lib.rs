@@ -42,6 +42,7 @@ mod render;
 mod rollup;
 mod runtime;
 mod session_files;
+mod sessions;
 mod status_store;
 mod tab_namer;
 #[cfg(test)]
