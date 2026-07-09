@@ -405,19 +405,33 @@ mod tests {
     #[test]
     fn cycle_restarts_fresh_after_selected_session_vanishes() {
         let mut s = Sessions::default();
-        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false)]));
-        s.update_presences(vec![presence("alpha", 0, 1), presence("beta", 1, 0)]);
-        // Order: work (current), alpha (attention), beta.
+        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false), ("gamma", false)]));
+        // No attention: order is work (current), then alpha, beta, gamma by name.
 
-        s.cycle(Direction::Next, 1); // selects alpha
+        s.cycle(Direction::Next, 1); // selects alpha (first non-current)
 
-        // alpha vanishes
-        s.update_live(live(&[("work", true), ("beta", false)]));
+        // alpha vanishes, leaving a fresh order with *two* non-current entries
+        // (beta, gamma) — order: work, beta, gamma.
+        s.update_live(live(&[("work", true), ("beta", false), ("gamma", false)]));
 
-        // Next cycle should restart and select beta (first non-current in fresh order).
-        // A regression that defaulted to index 0 (work/current) would fail via
-        // the cancel path returning None when tick() later lands on current.
-        s.cycle(Direction::Next, 2);
+        // Cycling with Prev is what actually discriminates restart-fresh from
+        // an index-0 fallback: restart-fresh ignores the stale direction and
+        // always selects the first non-current entry (beta). A regression
+        // that resolved the vanished name to index 0 ("as if `work`/current
+        // were selected") would instead advance *backward* from there and
+        // land on the last entry (gamma) — the same bug that, under
+        // Direction::Next, would coincidentally land on beta too and pass
+        // silently.
+        s.cycle(Direction::Prev, 2);
+        let badge = s.badge();
+        let selected: Vec<&str> = badge.iter().filter(|b| b.selected).map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            selected,
+            vec!["beta"],
+            "restart-fresh must ignore the stale direction and pick the first \
+             non-current entry, not fall back to advancing from index 0"
+        );
+
         let t = s.tick(3).expect("idle tick commits");
         assert_eq!(t.name, "beta", "after vanished selection, cycle must restart and select the first non-current entry");
     }
