@@ -23,6 +23,7 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         exit_code: None,
         completed_epoch_s: None,
         pending_epoch_s: None,
+        acknowledged: false,
     }
 }
 
@@ -238,6 +239,7 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     exit_code,
                     completed_epoch_s: None,
                     pending_epoch_s: None,
+                    acknowledged: false,
                 },
             );
         }

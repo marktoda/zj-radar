@@ -182,6 +182,7 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
                     exit_code: None,
                     completed_epoch_s: None,
                     pending_epoch_s: None,
+                    acknowledged: false,
                 }
                 .sanitized(),
             )

@@ -1231,6 +1231,55 @@ fn double_delivery_of_the_acknowledge_broadcast_is_idempotent() {
 }
 
 #[test]
+fn acknowledge_echo_never_fires_a_done_notification() {
+    // Right-click means "I've seen this, stop flagging it" — so the synthetic
+    // Done it broadcasts must never itself pop a notification. The echo rides
+    // the same intake as every real broadcast (by design), and a background
+    // Pending → Done edge WOULD normally notify (`needs_attention` includes
+    // Done, `notify_done` defaults true) — the ack has to be exempt.
+    let mut rt = runtime_with_pending_panes();
+    // First settle advances the notify baseline past the seeded Pendings
+    // (firing THEIR notifications — the flagging the user is responding to).
+    let _ = rt.timer_fast(PermissionProbe::default());
+
+    let out = rt.mouse_right_click(3); // pane 10, Pending, background
+    let Effect::BroadcastStatus { payload } = &out.effects[0] else {
+        panic!("expected BroadcastStatus, got {:?}", out.effects);
+    };
+    let payload = payload.clone();
+    rt.status_pipe(&payload); // the echo lands: Pending → Done
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Done, "setup: the echo must converge");
+
+    // No later settle may notify for the acknowledged pane — not the first
+    // (which carries the deferred edge) nor any that follow.
+    for _ in 0..4 {
+        let t = rt.timer_fast(PermissionProbe::default());
+        assert!(
+            !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
+            "an acknowledge must never notify; effects = {:?}", t.effects
+        );
+    }
+}
+
+#[test]
+fn a_real_pending_to_done_broadcast_still_notifies() {
+    // The companion bound to the test above: the ack exemption must be carried
+    // by the PAYLOAD, not inferred from the Pending → Done edge shape — that
+    // edge happens for real (answer a question, tab away, a short no-tool turn
+    // ends in Done) and that completion notification is wanted.
+    let mut rt = runtime_with_pending_panes();
+    let _ = rt.timer_fast(PermissionProbe::default()); // baseline: Pending
+
+    rt.status_pipe(&payload_json(10, "done")); // a genuine producer Done
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert_eq!(
+        tick.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
+        1,
+        "a real background Pending → Done must still notify; effects = {:?}", tick.effects
+    );
+}
+
+#[test]
 fn own_badge_row_updates_live_as_running_and_attention_move() {
     // Task-6 flagged `Sessions::set_own` as dead code: nothing called it, so
     // the own row of the cross-session badge never reflected the running/

@@ -545,7 +545,10 @@ impl PluginRuntime {
     /// the round trip unchanged. `task` is left absent (empty): `StatusStore::apply`
     /// treats an empty `task` on a non-Idle status as "leave the sticky label
     /// alone", so the turn's task stays put rather than this dismiss quietly
-    /// erasing it.
+    /// erasing it. Rides with `ack: true`: this Done means "the user has seen
+    /// it", so the notifier must stay silent in EVERY instance the echo
+    /// reaches — a gesture that means "stop flagging this" must not flag it
+    /// one more time (`notify_rules::diff` skips acknowledged observations).
     fn acknowledge_pending_payload(&self, pane_id: u32) -> Option<String> {
         let obs = self.radar.status_observation(pane_id)?;
         if obs.status != Status::Pending {
@@ -559,6 +562,7 @@ impl PluginRuntime {
             msg: obs.msg.clone(),
             task: String::new(),
             source: obs.kind.as_source().to_string(),
+            ack: true,
         }))
     }
 
