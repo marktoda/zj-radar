@@ -17,6 +17,8 @@
 //! and `cycle()` (what Alt+[/] steps through): current session first, then
 //! `attention > 0` sessions by name, then the rest by name.
 
+use std::collections::HashMap;
+
 use crate::presence::Presence;
 use crate::radar_state::Direction;
 
@@ -82,7 +84,26 @@ impl Sessions {
     /// the runtime only repaints on real content change.
     pub(crate) fn update_presences(&mut self, raw: Vec<String>) -> bool {
         let before = self.badge();
-        self.peers = raw.iter().filter_map(|s| Presence::parse(s)).collect();
+        // WHY: presence files are keyed by server pid on disk, not by
+        // session name. A session killed and recreated under the same name
+        // gets a fresh presence file at a new pid path, but the old one (a
+        // "corpse") isn't unlinked — it just sits there parsing as a second
+        // live peer under the same name until PRESENCE_LIVE_TTL reaps it
+        // (up to 3 minutes). Left undeduped, `badge()` would render that
+        // name twice. Collapse by `session_name` here, keeping the presence
+        // with the greatest `updated_epoch_s` — that's the newest write, i.e.
+        // the live session; the corpse is whatever was on disk before the
+        // kill. On a tie, `>` (not `>=`) below makes the later entry in
+        // `raw` win deterministically, without needing separate tie-break
+        // code.
+        let mut by_name: HashMap<String, Presence> = HashMap::new();
+        for p in raw.iter().filter_map(|s| Presence::parse(s)) {
+            match by_name.get(&p.session_name) {
+                Some(existing) if existing.updated_epoch_s > p.updated_epoch_s => {} // existing is strictly fresher: keep it
+                _ => { by_name.insert(p.session_name.clone(), p); }
+            }
+        }
+        self.peers = by_name.into_values().collect();
         self.badge() != before
     }
 
@@ -198,7 +219,20 @@ impl Sessions {
     fn ordered(&self) -> Vec<OrderedEntry<'_>> {
         let mut attention: Vec<OrderedEntry> = Vec::new();
         let mut rest: Vec<OrderedEntry> = Vec::new();
+        let own_name = self.own.as_ref().map(|p| p.session_name.as_str());
         for p in &self.peers {
+            // WHY: a peer presence sharing our own session's name is
+            // necessarily either a stale corpse of this very session (pid-
+            // keyed presence files: a restarted session under the same name
+            // can coexist with a peer-visible copy of its old self) or a
+            // race between reading peer files and set_own. `own`'s counts
+            // come from set_own's direct knowledge, never from a peer file
+            // (see its doc comment) — it must always win a name collision,
+            // so the colliding peer is dropped outright rather than shown
+            // as a second line for the same name.
+            if own_name == Some(p.session_name.as_str()) {
+                continue;
+            }
             let entry = OrderedEntry { presence: p, is_current: false };
             if p.attention > 0 {
                 attention.push(entry);
@@ -429,6 +463,48 @@ mod tests {
 
         let t = s.tick(3).expect("idle tick commits");
         assert_eq!(t.name, "beta", "after vanished selection, cycle must restart and select the first non-current entry");
+    }
+
+    // -- Pinning: duplicate-name dedup (killed-then-recreated session) ------
+    // Presence files are pid-keyed on disk, not name-keyed: a session killed
+    // and recreated under the same name leaves its old presence file (a
+    // "corpse") coexisting with the fresh one until PRESENCE_LIVE_TTL reaps
+    // it. Without a dedup, `badge()` would render the same name twice for up
+    // to 3 minutes — exactly the bug the user observed.
+
+    #[test]
+    fn update_presences_dedupes_by_name_keeping_freshest() {
+        let mut s = Sessions::default();
+        let stale = r#"{"session_name":"alpha","running":1,"attention":0,"updated_epoch_s":10}"#;
+        let fresh = r#"{"session_name":"alpha","running":5,"attention":2,"updated_epoch_s":20}"#;
+        s.update_presences(vec![stale.to_string(), fresh.to_string()]);
+        let badge = s.badge();
+        let alphas: Vec<&BadgeEntry> = badge.iter().filter(|b| b.name == "alpha").collect();
+        assert_eq!(alphas.len(), 1, "two presences for the same name must collapse to one badge entry");
+        assert_eq!(alphas[0].running, 5, "the surviving entry must carry the fresher (greater updated_epoch_s) counts");
+        assert_eq!(alphas[0].attention, 2, "the surviving entry must carry the fresher (greater updated_epoch_s) counts");
+    }
+
+    #[test]
+    fn peer_presence_claiming_own_name_does_not_duplicate_own_entry() {
+        // A killed-then-recreated session's corpse can also collide with
+        // OUR OWN name specifically (the pid changed, the name didn't).
+        // `own` is this session's own direct knowledge (set_own's doc
+        // comment: never read back from disk) and must win outright, not
+        // merely "whichever is fresher" — the peer here claims a higher
+        // updated_epoch_s and larger counts, and must still lose.
+        let mut s = Sessions::default();
+        s.set_own(Presence { session_name: "work".into(), running: 3, attention: 0,
+                             attention_tab_position: None, updated_epoch_s: 50 });
+        s.update_presences(vec![
+            r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(),
+        ]);
+        let badge = s.badge();
+        let work_entries: Vec<&BadgeEntry> = badge.iter().filter(|b| b.name == "work").collect();
+        assert_eq!(work_entries.len(), 1, "a peer claiming our own name must not add a second badge line");
+        assert!(work_entries[0].is_current, "the surviving line must be the own entry");
+        assert_eq!(work_entries[0].running, 3, "own's own-known counts must win over a peer claiming the same name");
+        assert_eq!(work_entries[0].attention, 0, "own's own-known counts must win over a peer claiming the same name");
     }
 
     #[test]
