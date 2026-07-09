@@ -64,6 +64,8 @@ use runtime::Effect;
 #[cfg(target_arch = "wasm32")]
 use session_files::SessionFileIds;
 #[cfg(target_arch = "wasm32")]
+use sessions::SessionLite;
+#[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
@@ -169,11 +171,16 @@ impl State {
 impl State {
     fn handle_outcome(&mut self, outcome: runtime::Outcome) -> bool {
         let render = outcome.render;
-        self.handle_effects(outcome.effects);
-        render
+        self.handle_effects(outcome.effects) || render
     }
 
-    fn handle_effects(&mut self, effects: Vec<Effect>) {
+    /// Returns whether any *re-entrant* outcome handled along the way (see
+    /// `Effect::ReadPresences`) wants a repaint. Most effects are
+    /// fire-and-forget host calls with nothing to report; `ResolveCwd`
+    /// deliberately drops its nested render flag (see `resolve_cwd`'s doc
+    /// comment) rather than folding it in here.
+    fn handle_effects(&mut self, effects: Vec<Effect>) -> bool {
+        let mut render = false;
         for effect in effects {
             match effect {
                 // Keep in lockstep with REQUIRED_PLUGIN_PERMISSIONS in
@@ -216,8 +223,21 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
+                Effect::PersistPresence => {
+                    self.session_files.persist_presence(&self.runtime.presence_json())
+                }
+                Effect::ReadPresences => {
+                    let raw = self.session_files.read_peer_presences();
+                    let outcome = self.runtime.presences_changed(raw);
+                    render |= self.handle_outcome(outcome);
+                }
+                Effect::SwitchSession { name, tab_position } => match tab_position {
+                    Some(pos) => switch_session_with_focus(&name, Some(pos), None),
+                    None => switch_session(Some(&name)),
+                },
             }
         }
+        render
     }
 
     /// Bootstrap tab names for freshly-opened panes by reading each pane's cwd
@@ -254,6 +274,7 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            EventType::SessionUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
@@ -342,6 +363,14 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(status) => {
                 let granted = status == PermissionStatus::Granted;
                 let outcome = self.runtime.permission_result(granted);
+                self.handle_outcome(outcome)
+            }
+            Event::SessionUpdate(sessions, _resurrectable) => {
+                let live = sessions
+                    .into_iter()
+                    .map(|s| SessionLite { name: s.name, is_current: s.is_current_session })
+                    .collect();
+                let outcome = self.runtime.session_update(live);
                 self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {
