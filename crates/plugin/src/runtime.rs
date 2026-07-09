@@ -22,8 +22,12 @@
 //!   [`control`](PluginRuntime::control) /
 //!   [`control_pipe`](PluginRuntime::control_pipe) — runtime config + remote
 //!   commands.
+//! - [`session_update`](PluginRuntime::session_update) — Zellij's live
+//!   session list (also how the runtime learns its own session's name).
+//! - [`presences_changed`](PluginRuntime::presences_changed) — peer presence
+//!   files, freshly read from disk.
 //! - [`timer`](PluginRuntime::timer) — periodic tick (animation +
-//!   permission-flow coordination).
+//!   permission-flow coordination + cross-session cycle commit).
 //! - [`mouse_click`](PluginRuntime::mouse_click) — resolved against the cached
 //!   [`RenderedRail`] for click-to-switch.
 //! - [`permission_result`](PluginRuntime::permission_result) — Zellij's grant /
@@ -32,9 +36,12 @@
 use crate::control::Verb;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
+use crate::presence::Presence;
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
 use crate::render::{self, RenderedRail};
 use crate::rollup::TabRow;
+use crate::sessions::{CommitTarget, SessionLite, Sessions};
+use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
@@ -103,6 +110,19 @@ pub(crate) enum Effect {
     /// key to elect exactly one dispatcher (`SessionFiles::claim_notification`)
     /// so N visited tabs don't produce N identical toasts.
     Notify { key: String, title: String, body: String },
+    /// Publish this session's own [`Presence`] for peer rails to read.
+    /// Content-compared at the edge in `project` — lib.rs does
+    /// `files.persist_presence(&runtime.presence_json())`.
+    PersistPresence,
+    /// Re-read every peer session's presence file and feed the result back
+    /// through `presences_changed` — mirrors `ResolveCwd`'s
+    /// request/read-back pattern, except the read is unconditional each
+    /// timer fire rather than gated on a fresh set of pane ids.
+    ReadPresences,
+    /// Commit a cross-session cycle selection: switch to `name` and, once
+    /// there, jump straight to the tab that needs attention (if any).
+    /// Emitted by `timer` when `Sessions::tick` reports an idle commit.
+    SwitchSession { name: String, tab_position: Option<usize> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -227,6 +247,23 @@ pub(crate) struct PluginRuntime {
     pub(crate) theme: theme::DerivedColors,
     last_rendered: RenderedRail,
     notify_prev: BTreeMap<u32, crate::status::Status>,
+    /// Cross-session peer state + the Alt+[/] cycle selection machine.
+    sessions: Sessions,
+    /// This session's own name, learned from `session_update` (the
+    /// `SessionLite` with `is_current == true`). Empty until Zellij's first
+    /// session-list event lands — `project` withholds `Effect::PersistPresence`
+    /// while empty, since an unnamed presence file is useless to peers.
+    own_session_name: String,
+    /// The last own-`Presence` JSON actually published, so `project` can
+    /// content-compare and emit `Effect::PersistPresence` only on a real
+    /// edge — the same "write on edges only" rule `PersistSnapshot` follows.
+    last_presence_json: Option<String>,
+    /// The most recent `now_epoch_s` any entry point has captured. Reused
+    /// (never re-read from the clock) by call paths that have no epoch of
+    /// their own to work with — `presence_json`, `session_update`,
+    /// `presences_changed` — so a single event's "now" never forks in two
+    /// directions.
+    last_now_epoch_s: u64,
 }
 
 impl PluginRuntime {
@@ -296,6 +333,18 @@ impl PluginRuntime {
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
+        // Cross-session peers: re-read every fire (Fast or Slow both fine —
+        // on Slow ticks peers refresh at most once a minute, acceptable for a
+        // badge) and, BEFORE re-arming below, commit an idle cycle selection
+        // if one is pending. Committing here — not after `project` re-arms —
+        // matters: a commit clears `Sessions::wants_fast_cadence`, and the
+        // chain must be free to decay to Slow on this same pass rather than
+        // one fire late.
+        effects.push(Effect::ReadPresences);
+        let session_commit = self.sessions.tick(self.tick);
+        if let Some(CommitTarget { name, attention_tab_position }) = session_commit {
+            effects.push(Effect::SwitchSession { name, tab_position: attention_tab_position });
+        }
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
         let awaiting_permission = self.sidebar_should_be_selectable();
@@ -332,32 +381,94 @@ impl PluginRuntime {
         Outcome::with_effects(false, vec![effect])
     }
 
-    /// Run an imperative command verb. Read-only navigation today: resolves a
-    /// deterministic target tab and emits `SwitchTab`. Inert until permission is
-    /// granted, mirroring `mouse_click`.
-    pub(crate) fn control(&self, verb: Verb) -> Outcome {
+    /// Run an imperative command verb. `AttentionNext/Prev` resolve a
+    /// deterministic target tab and emit `SwitchTab`; `SessionNext/Prev`
+    /// advance the cross-session cycle selection (`Sessions::cycle`) and
+    /// render the highlight move — the actual switch is a *later* idle-commit
+    /// (see `timer`), not an immediate effect here. Inert until permission is
+    /// granted, mirroring `mouse_click`: session switching is
+    /// `ChangeApplicationState` territory, same as `SwitchTab`.
+    pub(crate) fn control(&mut self, verb: Verb) -> Outcome {
         if !self.permission.granted() {
             return Outcome::none();
         }
-        let dir = match verb {
-            Verb::AttentionNext => Direction::Next,
-            Verb::AttentionPrev => Direction::Prev,
-            // Parsed but not yet dispatched — session cycling lands with the
-            // sessions state machine in a later change.
-            Verb::SessionNext | Verb::SessionPrev => return Outcome::none(),
-        };
-        match self.radar.next_attention_tab(dir) {
-            Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
-            None => Outcome::none(),
+        match verb {
+            Verb::AttentionNext | Verb::AttentionPrev => {
+                let dir = if verb == Verb::AttentionNext { Direction::Next } else { Direction::Prev };
+                match self.radar.next_attention_tab(dir) {
+                    Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
+                    None => Outcome::none(),
+                }
+            }
+            Verb::SessionNext | Verb::SessionPrev => {
+                let dir = if verb == Verb::SessionNext { Direction::Next } else { Direction::Prev };
+                let render = self.sessions.cycle(dir, self.tick);
+                // A fresh tap must arm Fast immediately (not wait for the next
+                // domain change to pass through `project`), so the idle-commit
+                // in `timer` fires promptly rather than stalling behind a Slow
+                // or fully-disarmed chain.
+                let mut effects = Vec::new();
+                self.arm_timer_if_needed(self.last_now_epoch_s, &mut effects);
+                Outcome::with_effects(render, effects)
+            }
         }
     }
 
     /// Parse a `cmd.v1` payload and dispatch it. Unknown verbs are a no-op.
-    pub(crate) fn control_pipe(&self, payload: &str) -> Outcome {
+    pub(crate) fn control_pipe(&mut self, payload: &str) -> Outcome {
         match crate::control::parse(payload) {
             Some(verb) => self.control(verb),
             None => Outcome::none(),
         }
+    }
+
+    /// Zellij's live session list. Also how the runtime learns its own
+    /// session's name (the entry with `is_current == true`) — needed by
+    /// `presence_json` and gating `Effect::PersistPresence` in `project`.
+    pub(crate) fn session_update(&mut self, live: Vec<SessionLite>) -> Outcome {
+        if let Some(me) = live.iter().find(|s| s.is_current) {
+            self.own_session_name = me.name.clone();
+        }
+        let render = self.sessions.update_live(live);
+        let change = RadarChange { render, settle: false, persist_snapshot: false, renames: vec![], cwd_bootstrap: vec![] };
+        self.project(vec![], change, self.last_now_epoch_s)
+    }
+
+    /// A fresh read of every peer session's presence file
+    /// (`Effect::ReadPresences`'s read-back). Renders only when the derived
+    /// badge actually changed.
+    pub(crate) fn presences_changed(&mut self, raw: Vec<String>) -> Outcome {
+        let render = self.sessions.update_presences(raw);
+        let change = RadarChange { render, settle: false, persist_snapshot: false, renames: vec![], cwd_bootstrap: vec![] };
+        self.project(vec![], change, self.last_now_epoch_s)
+    }
+
+    /// This session's own `Presence`, derived from the same rows the rail
+    /// renders (`radar.rows`) — never a separately-tracked count that could
+    /// drift from what's on screen. `attention_tab_position` is the first
+    /// (lowest-position) row that `needs_you()`, matching the position
+    /// `Sessions`/`BadgeEntry` expect for a same-repo jump-on-arrival.
+    pub(crate) fn presence_json(&self) -> String {
+        let rows = self.radar.rows(self.tick);
+        let running = rows.iter().filter(|r| r.display.status == Status::Running).count();
+        let mut attention = 0usize;
+        let mut attention_tab_position = None;
+        for r in &rows {
+            if r.display.status.needs_you() {
+                attention += 1;
+                if attention_tab_position.is_none() {
+                    attention_tab_position = Some(r.number as usize - 1);
+                }
+            }
+        }
+        Presence {
+            session_name: self.own_session_name.clone(),
+            running,
+            attention,
+            attention_tab_position,
+            updated_epoch_s: self.last_now_epoch_s,
+        }
+        .to_json()
     }
 
     /// True while [`timer`](Self::timer) still consumes a fresh
@@ -574,7 +685,14 @@ impl PluginRuntime {
         if self.permission.denied() {
             return None;
         }
-        if self.permission.is_waiting() || self.permission.selectable() || self.timer_should_continue() {
+        if self.permission.is_waiting()
+            || self.permission.selectable()
+            || self.timer_should_continue()
+            // A pending cross-session cycle selection needs the idle-commit
+            // in `timer` to fire promptly, not wait out a Slow (or fully
+            // disarmed) chain.
+            || self.sessions.wants_fast_cadence()
+        {
             Some(Cadence::Fast)
         } else if self.radar.ledger_any_unsaturated(now_epoch_s)
             || self.radar.pending_wait_unsaturated(now_epoch_s)
@@ -665,18 +783,38 @@ impl PluginRuntime {
     /// The sole projection from a domain [`RadarChange`] to host [`Effect`]s.
     /// `fx` is a caller-supplied seed so the `timer` handler's permission
     /// effects come first, without a post-hoc splice. Canonical order: renames
-    /// → snapshot → cwd → `SetTimeout` → notify — identical to today's
-    /// `panes_changed`, so that handler is byte-for-byte unchanged. `settle`
-    /// is the per-handler stamp described in `## Settle` (`CONTEXT.md`): this
-    /// is the sole caller of `notify_effects`, and the only *domain-change* path
-    /// that arms the timer (the permission flow arms it separately in
-    /// `begin_permission_flow`). `TimerChain::arm` self-guards on the armed cadence and on
-    /// whether there's anything to arm for, so calling it unconditionally
-    /// here is a no-op wherever a handler has no pending work to arm for.
+    /// → snapshot → presence → cwd → `SetTimeout` → notify — identical to
+    /// today's `panes_changed` apart from the presence edge, so that handler
+    /// is otherwise byte-for-byte unchanged. `settle` is the per-handler stamp
+    /// described in `## Settle` (`CONTEXT.md`): this is the sole caller of
+    /// `notify_effects`, and the only *domain-change* path that arms the timer
+    /// (the permission flow arms it separately in `begin_permission_flow`).
+    /// `TimerChain::arm` self-guards on the armed cadence and on whether
+    /// there's anything to arm for, so calling it unconditionally here is a
+    /// no-op wherever a handler has no pending work to arm for.
+    ///
+    /// Also the single point deciding `Effect::PersistPresence`: every
+    /// domain-change entry point funnels through here with its `now_epoch_s`,
+    /// which this stores (`last_now_epoch_s`) for the call paths that have no
+    /// epoch of their own — `presence_json`, `session_update`,
+    /// `presences_changed`. The freshly computed own-`Presence` JSON is
+    /// content-compared against the last one published; a real edge pushes
+    /// the effect and updates the cache, mirroring `PersistSnapshot`'s
+    /// "write on edges only" rule. Withheld while `own_session_name` is empty
+    /// — a presence file with no name is useless to peers — so it stays
+    /// quiet until `session_update` (also routed through here) learns it.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
+        self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
         if c.persist_snapshot {
             fx.push(Effect::PersistSnapshot);
+        }
+        if !self.own_session_name.is_empty() {
+            let fresh = self.presence_json();
+            if self.last_presence_json.as_deref() != Some(fresh.as_str()) {
+                self.last_presence_json = Some(fresh);
+                fx.push(Effect::PersistPresence);
+            }
         }
         if !c.cwd_bootstrap.is_empty() {
             fx.push(Effect::ResolveCwd { pane_ids: c.cwd_bootstrap });

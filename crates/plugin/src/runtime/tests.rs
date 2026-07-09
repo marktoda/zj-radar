@@ -220,6 +220,7 @@ fn peer_waits_then_requests_after_granted_marker() {
             Effect::RequestPermission,
             Effect::SetSelectable(true),
             Effect::HeartbeatPermissionLock,
+            Effect::ReadPresences,
             Effect::SetTimeout(Cadence::Fast),
         ]
     );
@@ -596,7 +597,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
         let quiet = runtime.timer_fast(PermissionProbe::default());
         assert_eq!(
             quiet.effects,
-            vec![Effect::SetTimeout(Cadence::Fast)],
+            vec![Effect::ReadPresences, Effect::SetTimeout(Cadence::Fast)],
             "still pending short of the debounce window"
         );
     }
@@ -605,7 +606,10 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     assert!(timer.render);
     // The promotion mutates the command store, so this tick persists the
     // snapshot too (late-spawned instances must see the Running command).
-    assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]);
+    assert_eq!(
+        timer.effects,
+        vec![Effect::ReadPresences, Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
+    );
     let state = runtime
         .radar
         .command_store()
@@ -794,13 +798,119 @@ fn command_no_op_when_no_attention() {
 
 #[test]
 fn control_pipe_unknown_verb_is_no_op() {
-    let runtime = PluginRuntime {
+    let mut runtime = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
         ..Default::default()
     };
     assert_eq!(runtime.control_pipe("attention-top"), Outcome::default());
     assert_eq!(runtime.control_pipe(""), Outcome::default());
+}
+
+// ── Cross-session presence + cycling ───────────────────────────────────────
+
+/// A granted runtime whose own session name is already known (as it would be
+/// in production once Zellij's first `SessionUpdate` lands) — needed for the
+/// presence edge in `project` to ever fire.
+fn runtime_with_granted_permission() -> PluginRuntime {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.session_update(vec![SessionLite { name: "work".into(), is_current: true }]);
+    rt
+}
+
+/// One tab (position 0), one tracked pane (id 7) — the minimal topology a
+/// status edge needs to land on a row `presence_json` can see.
+fn drive_tabs_and_panes(rt: &mut PluginRuntime) {
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+}
+
+/// A `zj_radar.status.v1` wire payload for `pane_id` at `status` ("running" /
+/// "pending" / etc.) — `payload_for` takes the typed `Status`, so this bridges
+/// from the wire vocabulary the way a real producer would send it.
+fn payload_json(pane_id: u32, status: &str) -> String {
+    payload::to_wire(&payload_for(pane_id, Status::from_wire(status)))
+}
+
+#[test]
+fn status_edge_persists_presence_once_and_not_on_identical_state() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+
+    let out = rt.status_pipe(&payload_json(7, "running"));
+    assert!(out.effects.contains(&Effect::PersistPresence), "running-count edge publishes presence, got {:?}", out.effects);
+
+    let again = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!again.effects.contains(&Effect::PersistPresence), "identical state does not re-publish, got {:?}", again.effects);
+}
+
+#[test]
+fn presence_withheld_until_own_session_name_is_known() {
+    // Same status edge as above, but WITHOUT `session_update` ever landing —
+    // an unnamed presence file is useless to peers, so `project` must not
+    // emit `PersistPresence` no matter what the own counts do.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    drive_tabs_and_panes(&mut rt);
+
+    let out = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!out.effects.contains(&Effect::PersistPresence), "no session name yet, got {:?}", out.effects);
+}
+
+#[test]
+fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+    rt.session_update(vec![
+        SessionLite { name: "work".into(), is_current: true },
+        SessionLite { name: "alpha".into(), is_current: false },
+    ]);
+    rt.presences_changed(vec![
+        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#.into(),
+    ]);
+
+    let out = rt.control_pipe("session-next");
+    assert!(out.render, "selection highlight renders");
+
+    let tick = rt.timer_fast(PermissionProbe::default()); // next Fast tick, no tap since
+    assert!(
+        tick.effects.iter().any(|e| matches!(
+            e, Effect::SwitchSession { name, tab_position: Some(1) } if name == "alpha"
+        )),
+        "idle tick commits the pending selection, got {:?}",
+        tick.effects
+    );
+}
+
+#[test]
+fn session_cycle_is_inert_without_permission() {
+    let mut rt = PluginRuntime::default();
+    rt.session_update(vec![
+        SessionLite { name: "work".into(), is_current: true },
+        SessionLite { name: "alpha".into(), is_current: false },
+    ]);
+    assert_eq!(rt.control_pipe("session-next"), Outcome::default());
+}
+
+#[test]
+fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
+    let mut rt = runtime_with_granted_permission();
+    rt.session_update(vec![
+        SessionLite { name: "work".into(), is_current: true },
+        SessionLite { name: "alpha".into(), is_current: false },
+    ]);
+    let out = rt.control_pipe("session-next");
+    assert!(
+        out.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+        "a pending cycle selection must arm Fast so the idle-commit fires promptly, got {:?}",
+        out.effects
+    );
 }
 
 // ── Effect::Notify integration ─────────────────────────────────────────────
