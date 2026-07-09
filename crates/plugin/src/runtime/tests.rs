@@ -957,6 +957,44 @@ fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
     );
 }
 
+#[test]
+fn clicking_a_session_line_emits_switch_session() {
+    // Two live sessions (own "work" + peer "alpha") put two badge lines
+    // between the header and the first tab card (`render::render_session_badge`,
+    // wired into the body in Task 7). Mirrors
+    // `render_records_targets_and_mouse_click_returns_host_effect`'s line-index
+    // bookkeeping: Compact density + header:true is a 2-line header (title,
+    // rule — "line 2 = tab header" there), so with the badge inserted here:
+    // line 0 = title, 1 = rule, 2 = own "work" badge line (click-inert, no
+    // cross-session target), 3 = peer "alpha" badge line (clickable).
+    let mut rt = runtime_with_granted_permission(); // own session name "work"
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.session_update(vec![
+        SessionLite { name: "work".into(), is_current: true },
+        SessionLite { name: "alpha".into(), is_current: false },
+    ]);
+    rt.presences_changed(vec![
+        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.into(),
+    ]);
+
+    let ansi = rt.render(100, 80);
+    assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
+
+    let own_click = rt.mouse_click(2);
+    assert_eq!(
+        own_click,
+        Outcome::default(),
+        "the own-session badge line has no click target, got {:?}",
+        own_click
+    );
+
+    let peer_click = rt.mouse_click(3);
+    assert_eq!(
+        peer_click.effects,
+        vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
+    );
+}
+
 // ── Effect::Notify integration ─────────────────────────────────────────────
 
 /// Helper: two tabs; pane 5 focused in active tab 0, pane 7 in background

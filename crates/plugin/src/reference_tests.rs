@@ -583,6 +583,10 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         theme,
         now_epoch_s: LEDGER_NOW_EPOCH_S,
         jump_hint,
+        // The reference doc's scenarios are all single-session — the badge
+        // stays invisible (`render_session_badge`'s `len() <= 1` gate), same
+        // as every rail-reference.md fixture predates this field.
+        badge: vec![],
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no

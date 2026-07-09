@@ -121,6 +121,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         theme: crate::theme::DerivedColors::default(),
         now_epoch_s: 0,
         jump_hint: true,
+        badge: vec![],
     }
 }
 
@@ -299,6 +300,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: None,
+            session: None,
         })
     );
     assert_eq!(
@@ -306,6 +308,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: Some(10),
+            session: None,
         })
     );
     assert_eq!(
@@ -313,6 +316,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 0,
             pane_id: Some(11),
+            session: None,
         })
     );
     assert_eq!(
@@ -320,6 +324,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
         Some(RailTarget {
             tab_position: 1,
             pane_id: None,
+            session: None,
         })
     );
 }
@@ -2976,7 +2981,7 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
 
     assert_eq!(
         rail.target_at_line(entry1_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: None }),
+        Some(RailTarget { tab_position: 0, pane_id: None, session: None }),
         "the newer, still-open entry is clickable to its tab"
     );
     assert_eq!(
@@ -3480,11 +3485,11 @@ fn single_running_pane_with_detail_is_two_content_lines() {
 
 #[test]
 fn from_lines_derives_ansi_and_targets_in_lockstep() {
-    let t = RailTarget { tab_position: 2, pane_id: None };
+    let t = RailTarget { tab_position: 2, pane_id: None, session: None };
     let lines = vec![
-        Line::new("alpha\n".into(), Some(t), LineBg::None),
+        Line::new("alpha\n".into(), Some(t.clone()), LineBg::None),
         Line::new("beta\n".into(),  None,    LineBg::None),
-        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9) }), LineBg::None),
+        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }), LineBg::None),
     ];
     let rr = RenderedRail::from_lines(lines);
     // ansi: joined, trailing newline popped.
@@ -3493,7 +3498,7 @@ fn from_lines_derives_ansi_and_targets_in_lockstep() {
     assert_eq!(rr.line_count(), 3);
     assert_eq!(rr.target_at_line(0), Some(t));
     assert_eq!(rr.target_at_line(1), None);
-    assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9) }));
+    assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }));
     assert_eq!(rr.target_at_line(3), None);
     // Structural lockstep: every '\n'-terminated segment has a target slot.
     assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
@@ -3677,7 +3682,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
     let q_line = grid.lines().position(|l| l.contains('↳')).unwrap();
     assert_eq!(
         rendered.target_at_line(q_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: Some(10) }),
+        Some(RailTarget { tab_position: 0, pane_id: Some(10), session: None }),
     );
 }
 
@@ -3764,5 +3769,77 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     assert!(
         !grid.contains(full_speed),
         "full-speed glyph must not leak through once eased:\n{grid}"
+    );
+}
+
+// ── Cross-session badge ─────────────────────────────────────────────────────
+
+/// Local test helper: field order matches `BadgeEntry`'s declaration EXCEPT
+/// `is_current` moves up next to `name` — the shape most test call sites
+/// read naturally ("work, current, 3 running, 0 attention, no attention tab,
+/// not selected").
+fn badge_entry(
+    name: &str,
+    is_current: bool,
+    running: usize,
+    attention: usize,
+    attention_tab_position: Option<usize>,
+    selected: bool,
+) -> BadgeEntry {
+    BadgeEntry {
+        name: name.to_string(),
+        running,
+        attention,
+        attention_tab_position,
+        is_current,
+        selected,
+    }
+}
+
+#[test]
+fn badge_absent_with_single_session_and_lockstep_with_many() {
+    let solo = vec![badge_entry("work", true, 1, 0, None, false)];
+    assert!(render_session_badge(&solo, &ro(24, 0)).is_empty(), "solo session renders nothing");
+
+    let many = vec![
+        badge_entry("work", true, 3, 0, None, false),
+        badge_entry("alpha", false, 0, 1, Some(2), true),
+    ];
+    let lines = render_session_badge(&many, &ro(24, 0));
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].target, None, "own session line is not a cross-session click");
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(t.session.as_deref(), Some("alpha"));
+    assert_eq!(t.tab_position, 2);
+}
+
+#[test]
+fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
+    // A peer with NOTHING needing attention (`attention_tab_position: None`)
+    // must not resolve to "tab 0" — that would force-focus a real tab in a
+    // session that has nothing to jump to. `RailTarget::for_session` bakes
+    // this in via a sentinel rather than `unwrap_or(0)`; `session_tab_position`
+    // is the one place that decodes it back, and both directions are pinned
+    // here so a future edit to either side trips this test, not a live click.
+    let many = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 0, None, false),
+    ];
+    let lines = render_session_badge(&many, &ro(24, 0));
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(
+        t.session_tab_position(), None,
+        "no attention tab must decode back to None, not Some(0)"
+    );
+
+    let with_attention = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 1, Some(0), false),
+    ];
+    let lines = render_session_badge(&with_attention, &ro(24, 0));
+    let t = lines[1].target.clone().expect("peer line is clickable");
+    assert_eq!(
+        t.session_tab_position(), Some(0),
+        "attention genuinely at tab 0 must still resolve to Some(0)"
     );
 }

@@ -392,11 +392,20 @@ impl PluginRuntime {
         let Some(target) = self.last_rendered.target_at_line(line) else {
             return Outcome::none();
         };
-        let effect = match target.pane_id {
-            Some(pane_id) => Effect::ShowPane { pane_id },
-            None => Effect::SwitchTab {
-                position: target.tab_position,
-            },
+        // A cross-session badge line (`session: Some(name)`) always wins the
+        // match — those targets never carry a `pane_id`, but checking
+        // `session` first (rather than falling into the `pane_id`/`tab_position`
+        // arms below) keeps the three cases visibly mutually exclusive rather
+        // than relying on that absence. `tab_position` is read through
+        // `session_tab_position` (not the raw field), which undoes the
+        // `RailTarget::for_session` sentinel encoding back into the
+        // `Option<usize>` the effect needs — see both docs.
+        let effect = if let Some(name) = target.session.clone() {
+            Effect::SwitchSession { name, tab_position: target.session_tab_position() }
+        } else if let Some(pane_id) = target.pane_id {
+            Effect::ShowPane { pane_id }
+        } else {
+            Effect::SwitchTab { position: target.tab_position }
         };
         Outcome::with_effects(false, vec![effect])
     }
@@ -585,6 +594,7 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
+            badge: self.sessions.badge(),
         };
         let ledger = self.radar.ledger_lines();
         let rail = if !self.permission.granted() {
@@ -619,6 +629,7 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
+            badge: self.sessions.badge(),
         };
         render::body_line_count(&tabrows, &self.radar.ledger_lines(), &opts)
     }

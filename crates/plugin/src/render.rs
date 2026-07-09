@@ -9,11 +9,13 @@
 //!    producing `Line`s through `prefixed_line`'s narrow-width guard.
 //! 3. **Layout planning** — delegated to `layout.rs` (pure, no ANSI, no
 //!    targets): overflow folding, card spacing, per-row line budgets.
-//! 4. **Assembly & paint** — body assembly, `paint_card_line`/`LineBg` tinting.
+//! 4. **Assembly & paint** — body assembly (header, cross-session badge,
+//!    cards), `paint_card_line`/`LineBg` tinting.
 //! 5. **Bottom region** — ledger lines, footer (rule + tally + hint), filler.
 
 use crate::config::Density;
 use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
+use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
 use crate::theme::{DerivedColors, Rgb};
@@ -129,6 +131,13 @@ pub struct RenderOpts {
     /// truly delivers the chord may claim it; everything else omits the hint
     /// line rather than promising a chord that does nothing.
     pub jump_hint: bool,
+    /// The cross-session badge, current-first (`Sessions::badge()`'s
+    /// contract) — rendered by [`render_session_badge`] as zero lines
+    /// whenever `len() <= 1` (only this session, or the `SessionUpdate` event
+    /// hasn't landed yet), so every caller that never populates this (every
+    /// pre-existing test, and any host that hasn't wired Task 5/6's session
+    /// plumbing) renders byte-identical to before this field existed.
+    pub badge: Vec<BadgeEntry>,
 }
 
 /// Presentation for the roll-up's `Outcome` tag. The enum itself lives in
@@ -200,10 +209,66 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A click target. `session: None` (the vast majority — tabs and panes in
+/// THIS session) behaves exactly as before this field existed: `pane_id`
+/// present ⇒ `ShowPane`, else `SwitchTab { position: tab_position }` (see
+/// `mouse_click`). `session: Some(name)` marks a cross-session badge line
+/// (peer, never the current session — see `render_session_badge`) and routes
+/// to `Effect::SwitchSession` instead; its `tab_position` is then read
+/// through `session_tab_position`, not directly, because a session target
+/// needs to carry "no attention tab" (`Option::None`) losslessly through a
+/// field that stays a plain `usize` for every other target — see that
+/// method's doc. `session: Option<String>` (owned: a peer's name, read off
+/// its live `SessionLite`, isn't a value this module can borrow from) is why
+/// the struct can no longer derive `Copy`; every call site that used to rely
+/// on implicit-copy semantics now clones explicitly at its last use.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailTarget {
     pub tab_position: usize,
     pub pane_id: Option<u32>,
+    pub session: Option<String>,
+}
+
+impl RailTarget {
+    /// Sentinel `tab_position` for a session target (`session: Some(_)`)
+    /// whose peer has nothing needing attention. Never a legitimate tab
+    /// index in practice (`RadarTab` positions come from real tab counts,
+    /// nowhere near `usize::MAX`), so it can share the plain `usize` field
+    /// every other target already uses instead of growing a 4th field just
+    /// for this one case.
+    const NO_ATTENTION: usize = usize::MAX;
+
+    /// Build a peer-session click target. `tab_position` is baked in NOW, at
+    /// line-build time, from the badge entry's `attention_tab_position` — by
+    /// the time a click lands the badge may have moved on, so the target
+    /// must carry everything `mouse_click` needs rather than re-deriving it.
+    /// Encodes `None` (no attention tab) as [`Self::NO_ATTENTION`] rather
+    /// than `unwrap_or(0)`: the latter would collide with a peer whose
+    /// attention IS at tab 0, and `mouse_click` would then force-focus that
+    /// tab for a peer that has nothing to focus — a silent behavior bug the
+    /// plain-`usize` field shape could otherwise hide. See
+    /// [`Self::session_tab_position`] for the inverse.
+    fn for_session(name: String, attention_tab_position: Option<usize>) -> Self {
+        RailTarget {
+            tab_position: attention_tab_position.unwrap_or(Self::NO_ATTENTION),
+            pane_id: None,
+            session: Some(name),
+        }
+    }
+
+    /// The inverse of [`Self::for_session`]'s sentinel encoding —
+    /// `mouse_click` calls this once it has confirmed `session.is_some()`,
+    /// to get the `Option<usize>` `Effect::SwitchSession` actually needs.
+    /// `None` ⇒ switch session, keep its own last-focused tab (`lib.rs`'s
+    /// plain `switch_session`); `Some(pos)` ⇒ switch AND focus
+    /// (`switch_session_with_focus`) — mirrors `Sessions::tick`'s
+    /// idle-commit `CommitTarget.attention_tab_position` exactly, so
+    /// Alt+[/] cycling and a badge click land identically for the same
+    /// peer state. Meaningless (and never called) on a target whose
+    /// `session` is `None` — those read `tab_position` directly.
+    pub(crate) fn session_tab_position(&self) -> Option<usize> {
+        (self.tab_position != Self::NO_ATTENTION).then_some(self.tab_position)
+    }
 }
 
 /// Surface class a line sits on (Cards density only); resolved to a concrete
@@ -324,7 +389,7 @@ impl RenderedRail {
         if line < 0 {
             return None;
         }
-        self.targets.get(line as usize).copied().flatten()
+        self.targets.get(line as usize).cloned().flatten()
     }
 
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
@@ -493,7 +558,7 @@ fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, n
 /// budget clamped so the emitted line never exceeds `width`. This is the
 /// densest width-math in the file, self-contained here so `render_row` reads
 /// as pane-roster logic.
-fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: RailTarget) -> Line {
+fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> Line {
     let width = opts.width;
     let now_tick = opts.now_tick;
     let st = row.display.status;
@@ -583,7 +648,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: RailTarget) -> L
     };
     Line::new(
         format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
-        Some(tab_target),
+        Some(tab_target.clone()),
         LineBg::Card,
     )
 }
@@ -600,7 +665,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     let st = row.display.status;
     let tab_target = target_for_row(row);
 
-    lines.push(tab_header_line(row, opts, tab_target));
+    lines.push(tab_header_line(row, opts, &tab_target));
 
     // Theme-derived detail text colors: dim_strong for activity text on non-pending rows,
     // idle_text for the muted tree chars and identity mark glyph (neutral/vendor color).
@@ -634,9 +699,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         }
         let identity =
             with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
-        let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()) };
+        let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
-        let mut out = vec![Line::new(text, Some(pane_target), child_bg)];
+        // `pane_target` is cloned here because a Pending/Error pane also emits
+        // the subordinate `↳ question` line below, targeting the SAME pane —
+        // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
+        let mut out = vec![Line::new(text, Some(pane_target.clone()), child_bg)];
         if let Some(q) = detail {
             let text = emit_pane_detail_line(
                 q, row.active, st, pane_status, branch, &idle_color, width,
@@ -1014,6 +1082,7 @@ fn target_for_row(row: &TabRow) -> RailTarget {
     RailTarget {
         tab_position: row.number.saturating_sub(1) as usize,
         pane_id: None,
+        session: None,
     }
 }
 
@@ -1135,6 +1204,77 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
     )
 }
 
+/// The cross-session badge: one line per session `Sessions::badge()` tracks
+/// (current-first, per its ordering contract — this function trusts that
+/// order and does not re-sort), inserted between the header and the first
+/// card. Renders ZERO lines when `entries.len() <= 1` — only the current
+/// session, or the `SessionUpdate` event hasn't landed yet — so the feature
+/// is invisible until there's genuinely something cross-session to show, and
+/// every existing single-session snapshot/test stays byte-identical (the
+/// badge is additive, never a subtraction from the render surface).
+///
+/// The current session's own line carries NO click target at all — you
+/// can't "switch to" the session you're already in, and unlike a peer line
+/// there is no `attention_tab_position` to jump to either — so its `Line`
+/// gets `None`, exactly like a header line. Every peer line targets that
+/// peer via [`RailTarget::for_session`], which bakes in `tab_position` NOW
+/// (at line-build time, from the entry's `attention_tab_position`) rather
+/// than leaving `mouse_click` to re-derive it later against a badge that may
+/// have moved on by the time the click lands.
+///
+/// Text is `name` plus, only when nonzero, a running count and an attention
+/// count — each paired with the SAME glyph the per-tab rows already use for
+/// that status (`Status::Running`/`Status::Pending`, run through
+/// `opts.glyphs`) rather than inventing a parallel icon vocabulary the nerd/
+/// plain config wouldn't know about. `selected` (the pending Alt+[/] cycle
+/// target) renders bold+accent; everything else — including the current
+/// line — renders in the muted `idle_text`, so the badge reads as a status
+/// strip, not a second row of cards.
+fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> {
+    if entries.len() <= 1 {
+        return vec![];
+    }
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    let accent = Role::Accent.ansi();
+    let running_glyph = Status::Running.glyph_for(opts.glyphs);
+    let attention_glyph = Status::Pending.glyph_for(opts.glyphs);
+    entries
+        .iter()
+        .map(|entry| {
+            let mut label = entry.name.clone();
+            if entry.running > 0 {
+                label.push_str(&format!(" {}{}", entry.running, running_glyph));
+            }
+            if entry.attention > 0 {
+                label.push_str(&format!(" {}{}", entry.attention, attention_glyph));
+            }
+            // A dim `•` marks "you are here" on the current line, independent
+            // of `selected` — a plain space keeps every other line's label
+            // aligned under it.
+            let marker = if entry.is_current { "•" } else { " " };
+            const PREFIX_VIS: usize = 2; // marker + its separating space
+            let text = prefixed_line(
+                width,
+                PREFIX_VIS,
+                || format!("{marker} {label}"),
+                |avail| {
+                    let clamped = truncate(&label, avail);
+                    let label_seg = if entry.selected {
+                        Seg::bold(accent, clamped)
+                    } else {
+                        Seg::new(&idle, clamped)
+                    };
+                    format!("{} {}", Seg::new(&idle, marker), label_seg)
+                },
+            );
+            let target = (!entry.is_current)
+                .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
+            Line::new(text, target, LineBg::Rail)
+        })
+        .collect()
+}
+
 /// Produce the idle-strip line as a raw (unpainted) `Line` value.
 /// Returns 0 lines if `strip_folded == 0`; else 1 line tagged `LineBg::Rail`.
 fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
@@ -1168,13 +1308,22 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // just because `rows` is empty.
     let has_content = !rows.is_empty() || !ledger.is_empty();
 
+    // Built (and its line count reserved out of `body_budget`) BEFORE
+    // `plan_layout` runs, exactly like `header_lines` above it — otherwise
+    // overflow folding would plan against a taller budget than the rows
+    // actually get once the badge lines land above them, and the final
+    // `flat.truncate(opts.height)` in `render_rail` would silently eat into
+    // the footer/last row rather than the folding math accounting for it.
+    let badge_lines = render_session_badge(&opts.badge, opts);
+
     let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
         .map(|(r, b)| RowMeta { status: r.display.status, full_lines: b.len() })
         .collect();
     let body_budget = opts
         .height
-        .saturating_sub(header_lines(opts.header, opts.density, has_content));
+        .saturating_sub(header_lines(opts.header, opts.density, has_content))
+        .saturating_sub(badge_lines.len());
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
     // Drives the header-rule heartbeat — a plain `any()`, not a
@@ -1189,6 +1338,12 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
 
     // Header.
     for line in render_header(rows, opts, overflow, has_content, working) {
+        flat.push(if cards { line.painted(width, &rail) } else { line });
+    }
+
+    // Cross-session badge (zero lines with ≤1 session — see
+    // `render_session_badge`), between the header and the first card.
+    for line in badge_lines {
         flat.push(if cards { line.painted(width, &rail) } else { line });
     }
 
@@ -1209,13 +1364,16 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         };
 
         // pad_y internal top padding — belongs to this card's click span.
+        // Cloned each iteration (`RailTarget` isn't `Copy`; `session` is a
+        // `String`) — `pad_y` can be >1, so a plain move would only survive
+        // the first pass.
         for _ in 0..spacing.pad_y {
-            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target)));
+            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target.clone())));
         }
 
         // content (truncated to the planned budget == today's compression).
         for line in blocks[i].iter().take(budget) {
-            flat.push(finalize(line.bg, line.text.clone(), line.target));
+            flat.push(finalize(line.bg, line.text.clone(), line.target.clone()));
         }
 
         // gap external separation (dark panel base in Cards).
@@ -1369,7 +1527,7 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
     );
     Line::new(
         text,
-        line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None }),
+        line.tab_position.map(|p| RailTarget { tab_position: p, pane_id: None, session: None }),
         LineBg::Rail,
     )
 }
