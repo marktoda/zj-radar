@@ -115,6 +115,13 @@ keybinds {
         bind "Alt p" {
             MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "attention-prev"; }
         }
+        // Cycle the badge selection across sessions; commits ~1s after the last tap.
+        bind "Alt s" {
+            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-next"; }
+        }
+        bind "Alt Shift s" {
+            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-prev"; }
+        }
     }
 }
 ```
@@ -122,5 +129,6 @@ keybinds {
 `attention-next` / `attention-prev` walk the tabs whose agents are *waiting for
 you*, *errored*, or *done* — in tab order, wrapping around — and switch focus to
 each. Tabs that are merely *running* or *idle* are skipped. Repeated presses
-sweep every attention tab and cycle. Like every command pipe, an unknown verb is
+sweep every attention tab and cycle. `session-next` / `session-prev` cycle the
+badge selection across sessions. Like every command pipe, an unknown verb is
 ignored, and the action is inert until the sidebar has been granted permissions.
