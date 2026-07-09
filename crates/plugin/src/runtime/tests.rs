@@ -894,7 +894,7 @@ fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
 
 #[test]
 fn presence_withheld_until_own_session_name_is_known() {
-    // Same status edge as above, but WITHOUT `session_update` ever landing —
+    // Same status edge as above, but WITHOUT `session_name_changed` ever landing —
     // an unnamed presence file is useless to peers, so `project` must not
     // emit `PersistPresence` no matter what the own counts do.
     let mut rt = PluginRuntime {
@@ -1645,6 +1645,40 @@ fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
         persists, 1,
         "an idle session's slow heartbeat must refresh its presence file's \
          mtime unconditionally, exactly once, got {:?}", slow.effects
+    );
+}
+
+#[test]
+fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
+    // Sibling of `idle_alive_session_heartbeats_presence_unconditionally_
+    // on_slow_fires_only`, but for the case that test's own comment waves
+    // off as "correctly no-op": here the Slow fire's OWN tick is what
+    // produces the content edge, not an unrelated prior call. A live Slow
+    // fire that promotes a debounced command to Running crosses `project`'s
+    // edge gate (running 0 -> 1) on the exact same pass where `timer`'s
+    // unconditional Slow heartbeat has already seeded a `PersistPresence`
+    // — two independently-correct pushes landing in the same `fx`, which
+    // must still collapse to one effect.
+    let mut rt = runtime_with_granted_permission(); // own session name is "work"
+    drive_tabs_and_panes(&mut rt); // tab 0 / pane 7, the row `own_presence` reads
+
+    rt.command_changed(7, &["cargo".into(), "test".into()], true); // pending, not yet Running
+
+    // Ticks short of the debounce window: quiet, and don't disturb the fire
+    // count `timer`'s final Slow fire below needs to land as the live chain.
+    for _ in 1..DEBOUNCE_TICKS {
+        rt.timer_fast(PermissionProbe::default());
+    }
+
+    // The debounce-completing tick, reported as a Slow (60s) fire — the
+    // reviewer's exact probe: a live Slow fire whose own tick promotes
+    // pending -> Running, landing a genuine content edge.
+    let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    let persists = tick.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    assert_eq!(
+        persists, 1,
+        "a Slow heartbeat coinciding with a real content edge must still \
+         publish exactly once, got {:?}", tick.effects
     );
 }
 

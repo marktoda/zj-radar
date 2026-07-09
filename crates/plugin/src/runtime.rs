@@ -278,7 +278,7 @@ pub(crate) struct PluginRuntime {
     last_presence: Option<Presence>,
     /// The most recent `now_epoch_s` any entry point has captured. Reused
     /// (never re-read from the clock) by call paths that have no epoch of
-    /// their own to work with — `presence_json`, `session_update`,
+    /// their own to work with — `presence_json`, `session_name_changed`,
     /// `presences_changed` — so a single event's "now" never forks in two
     /// directions.
     last_now_epoch_s: u64,
@@ -881,6 +881,11 @@ impl PluginRuntime {
     /// badge actually changed, so calling it every `project` pass (once the
     /// name is known) is correct AND is what closes the gap where the own
     /// row never updated as running/attention moved.
+    ///
+    /// Also the single point that de-dupes `Effect::PersistPresence` when the
+    /// seeded `fx` (e.g. `timer`'s unconditional Slow heartbeat) and this
+    /// pass's own edge-gated push both land — see the `retain` near the
+    /// bottom.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
@@ -905,6 +910,26 @@ impl PluginRuntime {
         if c.settle {
             fx.extend(self.notify_effects());
         }
+        // `fx` can carry TWO `PersistPresence`s by the time we get here: the
+        // Slow-cadence heartbeat `timer` seeds unconditionally (its own
+        // liveness push, gate-blind by design) and the edge-gated push just
+        // above can both fire on the same pass — a Slow fire whose tick also
+        // promotes/mutates something that lands on a real content edge (e.g.
+        // a debounce promotion crossing paths with the 60s heartbeat).
+        // `project` is the single assembly point for every entry path, so
+        // it's the one place that can see both pushes at once and collapse
+        // them; keep the earliest (whichever reason got there first) rather
+        // than narrowing either push's own semantics.
+        let mut persist_presence_seen = false;
+        fx.retain(|effect| {
+            if matches!(effect, Effect::PersistPresence) {
+                let first = !persist_presence_seen;
+                persist_presence_seen = true;
+                first
+            } else {
+                true
+            }
+        });
         Outcome::with_effects(render, fx)
     }
 }
