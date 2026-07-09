@@ -1033,9 +1033,10 @@ fn rail_paints_every_column_of_its_pane() {
 /// the full root-cause dive (this test used to fail with a STOP-CONDITION
 /// panic pointing at exactly that). task-8b-brief.md's amendment drops
 /// `SessionUpdate` from the design entirely: liveness is now the presence
-/// files' own mtimes (`session_files::PRESENCE_LIVE_TTL`), and this session's
-/// own name comes from `ModeUpdate` instead — both push-style, neither
-/// needing any other plugin to be running.
+/// files' own mtimes, turned into a per-entry fresh/stale state
+/// (`sessions::STALE_AFTER_SECS`) rather than a read-time drop (task-14),
+/// and this session's own name comes from `ModeUpdate` instead — both
+/// push-style, neither needing any other plugin to be running.
 #[test]
 #[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
 fn session_next_switches_to_the_session_with_attention() {
@@ -1106,9 +1107,10 @@ fn session_next_switches_to_the_session_with_attention() {
         "A's badge never showed {needle:?}. Either B never learned its own session name from \
          `Event::ModeUpdate` (so `project` withheld `Effect::PersistPresence`), or B's presence \
          file (written under the shared /cache root) never reached A (A's `Effect::ReadPresences` \
-         is Fast-tick-gated — see the rail above for whether A even looks fast-armed), or the \
-         file crossed but `session_files::PRESENCE_LIVE_TTL`'s read-time mtime gate is somehow \
-         treating it as stale already. See the printed rail above.",
+         is Fast-tick-gated — see the rail above for whether A even looks fast-armed). Since \
+         task-14, a stale peer still renders (dimmed) rather than being dropped, so a bare \
+         name with the wrong (or missing) counts, not an absent line, is the sign of a genuine \
+         presence-plumbing failure here. See the printed rail above.",
     );
     eprintln!("[e2e] PASS: A's badge shows B needing attention (presence crossed /cache)");
 

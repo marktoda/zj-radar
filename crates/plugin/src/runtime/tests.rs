@@ -836,6 +836,14 @@ fn payload_json(pane_id: u32, status: &str) -> String {
     payload::to_wire(&payload_for(pane_id, Status::from_wire(status)))
 }
 
+/// A peer presence JSON literal paired with a fresh (age-0) mtime — the
+/// shape `presences_changed` now takes (`session_files::read_peer_presences`'s
+/// `(json, age_secs)` pairing). Most tests want a live-looking peer; use the
+/// tuple literal directly when a test needs to exercise staleness.
+fn fresh(json: &str) -> (String, u64) {
+    (json.to_string(), 0)
+}
+
 #[test]
 fn status_edge_persists_presence_once_and_not_on_identical_state() {
     let mut rt = runtime_with_granted_permission();
@@ -915,7 +923,7 @@ fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     // report IS its liveness (task-8b-brief.md: no more `SessionUpdate` peer
     // list to cross-check against).
     rt.presences_changed(vec![
-        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#.into(),
+        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#),
     ]);
 
     let out = rt.control_pipe("session-next");
@@ -944,14 +952,14 @@ fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
 fn session_cycle_is_inert_without_permission() {
     let mut rt = PluginRuntime::default();
     rt.session_name_changed(Some("work".into()));
-    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
     assert_eq!(rt.control_pipe("session-next"), Outcome::default());
 }
 
 #[test]
 fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
     let mut rt = runtime_with_granted_permission();
-    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
     let out = rt.control_pipe("session-next");
     assert!(
         out.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
@@ -973,7 +981,7 @@ fn clicking_a_session_line_emits_switch_session() {
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     rt.tabs_changed(vec![tab(0, "team", false)]);
     rt.presences_changed(vec![
-        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.into(),
+        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#),
     ]);
 
     let ansi = rt.render(100, 80);
@@ -1006,7 +1014,7 @@ fn own_badge_row_updates_live_as_running_and_attention_move() {
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     // A second session must exist for the badge to render at all
     // (`render_session_badge` renders zero lines for `entries.len() <= 1`).
-    rt.presences_changed(vec![r#"{"session_name":"alpha","running":0,"attention":0}"#.into()]);
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
     drive_tabs_and_panes(&mut rt); // tab 0, pane 7
 
     let before = rt.render(100, 80);
@@ -1465,14 +1473,15 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     // Sibling of `saturated_history_fully_disarms`, adding the one
     // ingredient that test leaves out: a learned own-session name. Once the
     // name is known this session owns a presence file, and that file's
-    // mtime is the ONLY liveness signal peers read
-    // (`session_files::PRESENCE_LIVE_TTL`) — refreshed solely by `timer`'s
+    // mtime is the signal peers read to tell fresh from stale
+    // (`sessions::STALE_AFTER_SECS`) — refreshed solely by `timer`'s
     // Slow-fire heartbeat. Were the chain to fully disarm on a saturated
     // idle rail, that heartbeat would never fire again, the mtime would
-    // freeze, and after 180s every peer would drop this still-alive
-    // session's badge — exactly the idle-but-visible case the feature
-    // exists for. So: saturation may step the cadence down to Slow, but
-    // never to None while the name is known.
+    // freeze, and after 90s every peer would dim this still-alive session's
+    // badge to stale (never drop it — task-14 — but still a needless false
+    // alarm) — exactly the idle-but-visible case the feature exists for.
+    // So: saturation may step the cadence down to Slow, but never to None
+    // while the name is known.
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
@@ -1691,13 +1700,13 @@ fn lone_slow_fire_processes_as_the_live_chain() {
 fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
     // An idle-but-alive session (nothing fast-worthy happening) has no
     // content edge to trigger `project`'s compare-and-cache `PersistPresence`
-    // — but its presence file's mtime is the ONLY signal peers use to tell
-    // it apart from a dead session (`session_files::PRESENCE_LIVE_TTL`, the
-    // amendment's whole point: liveness is no longer `SessionUpdate`-derived
-    // at all). The Slow (60s) heartbeat must therefore emit `PersistPresence`
-    // unconditionally, bypassing the content-compare gate; Fast (1s) fires
-    // must NOT — that would be needless per-second churn for a signal that
-    // only needs to beat a 180s TTL.
+    // — but its presence file's mtime is the signal peers use to tell fresh
+    // from stale (`sessions::STALE_AFTER_SECS`; liveness is no longer
+    // `SessionUpdate`-derived at all, and past task-14 it's never a hard
+    // drop either — just a dim). The Slow (60s) heartbeat must therefore
+    // emit `PersistPresence` unconditionally, bypassing the content-compare
+    // gate; Fast (1s) fires must NOT — that would be needless per-second
+    // churn for a signal that only needs to beat a 90s staleness window.
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
 
     // A Fast fire with nothing changed must stay quiet — the edge gate

@@ -35,27 +35,16 @@ const NOTIFY_CLAIM_TTL: Duration = Duration::from_secs(30);
 const NOTIFY_CLAIM_SWEEP_AGE: Duration = Duration::from_secs(300);
 const PERMISSION_GRANTED_MARKER: &str = "granted";
 const PERMISSION_DENIED_MARKER: &str = "denied";
-/// Horizon after which a presence file is deleted as debris at `open` time,
-/// regardless of liveness. Distinct from (and much longer than)
-/// `PRESENCE_LIVE_TTL`, which gates the READ path: a session can be dead
-/// long before its file turns 6h old, so the read-time gate is what peers
-/// actually rely on to stop showing it — this sweep only exists so a long
-/// string of dead sessions' files don't accumulate forever in the shared
-/// root. Generous: a detached-but-alive session whose timer idles must not
-/// be reaped.
+/// Horizon after which a presence file is deleted as debris at `open` time —
+/// the ONLY true forgetting a peer's roster entry is subject to (task-14,
+/// user decision: a remembered session must never silently vanish from the
+/// badge). Peers dead well before their file turns 6h old still keep
+/// showing up in every other session's badge, dimmed as stale
+/// (`sessions::STALE_AFTER_SECS`) rather than dropped — this sweep only
+/// exists so a long string of genuinely dead sessions' files don't
+/// accumulate forever in the shared root. Generous: a detached-but-alive
+/// session whose timer idles must not be reaped.
 const PRESENCE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
-/// A presence file whose mtime is older than this belongs to a session that
-/// stopped heartbeating (dead server, or a session that was killed) — the
-/// reader treats it as gone. This is the liveness signal itself, now that
-/// there is no `SessionUpdate` peer list to cross-check against (see
-/// task-8b-brief.md): `runtime.rs`'s timer heartbeats an idle-but-alive
-/// session's own file at least once per Slow (60s) tick, so 180s gives wide
-/// margin against scheduler jitter while still reaping a dead session's
-/// badge row promptly. Distinct from `PRESENCE_MAX_AGE` (6h), which merely
-/// deletes debris at `open` — this gates the READ path (`read_peer_presences`)
-/// itself and does not delete anything (the open-time sweep above still owns
-/// deletion; a stale-but-not-yet-swept file is simply skipped here).
-const PRESENCE_LIVE_TTL: Duration = Duration::from_secs(180);
 /// Deliberately distinct from the pid-scoped `session_prefix` (`zj-radar.<pid>`) so
 /// `is_owned_session_file` / `is_current_session_file` and the snapshot sweep
 /// never match a presence file — presence gets its own recognizer and sweep
@@ -66,6 +55,15 @@ const PRESENCE_PREFIX: &str = "zj-radar.presence.";
 pub(crate) struct SessionFileIds {
     pub plugin_id: u32,
     pub zellij_pid: u32,
+}
+
+/// One peer's presence file as read off disk — see
+/// [`SessionFiles::read_peer_presences`]'s doc for why `age_secs` is
+/// measured off the file's mtime rather than trusted from the JSON content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PeerPresenceFile {
+    pub json: String,
+    pub age_secs: u64,
 }
 
 #[derive(Debug)]
@@ -207,19 +205,26 @@ impl SessionFiles {
     }
 
     /// Raw JSON of every OTHER session's presence file (own pid excluded, tmp
-    /// files excluded, stale mtimes excluded). Parsing/validation is the
-    /// caller's job (`Presence::parse` skips corrupt peers) — liveness,
-    /// though, IS this method's job: a peer whose file's mtime has drifted
-    /// past `PRESENCE_LIVE_TTL` is treated as gone (its session stopped
-    /// heartbeating — dead server or a killed session), same as if the file
-    /// didn't exist. Read-only: a stale file is skipped, never deleted here
-    /// (the open-time sweep owns deletion). Read on timer ticks only —
-    /// bounded by live session count, never per-pane.
-    pub(crate) fn read_peer_presences(&self) -> Vec<String> {
+    /// files excluded), paired with how long ago its mtime was last touched.
+    /// Parsing/validation is the caller's job (`Presence::parse` skips
+    /// corrupt peers) — and so, now, is staleness: this method used to treat
+    /// an old mtime as "peer is gone" and skip it outright, but task-14's
+    /// user decision is that a remembered session must never silently
+    /// vanish from the badge, so every peer file found comes back
+    /// unconditionally. `age_secs` is measured off THIS session's own
+    /// filesystem clock reading the file's mtime — not the peer's
+    /// self-reported `updated_epoch_s` inside the JSON, which a corrupt or
+    /// merely-slow-to-update peer could get wrong — and lets
+    /// `sessions::Sessions::update_presences` mark an entry stale
+    /// (`sessions::STALE_AFTER_SECS`) without doing its own filesystem I/O.
+    /// Read-only regardless: nothing is ever deleted here (the open-time
+    /// sweep, `PRESENCE_MAX_AGE`, owns the only actual forgetting). Read on
+    /// timer ticks only — bounded by live session count, never per-pane.
+    pub(crate) fn read_peer_presences(&self) -> Vec<PeerPresenceFile> {
         self.read_peer_presences_at(SystemTime::now())
     }
 
-    fn read_peer_presences_at(&self, now: SystemTime) -> Vec<String> {
+    fn read_peer_presences_at(&self, now: SystemTime) -> Vec<PeerPresenceFile> {
         let Some(paths) = &self.paths else {
             return Vec::new();
         };
@@ -236,20 +241,18 @@ impl SessionFiles {
             if paths.is_own_presence_file(&name) {
                 continue;
             }
-            let stale = entry
+            let age_secs = entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|modified| now.duration_since(modified).ok())
-                .is_some_and(|age| age > PRESENCE_LIVE_TTL);
-            if stale {
-                continue; // dead peer: skip, don't delete (read path stays read-only)
-            }
+                .map(|age| age.as_secs())
+                .unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
             if let Ok(json) = std::fs::read_to_string(entry.path()) {
-                out.push(json);
+                out.push(PeerPresenceFile { json, age_secs });
             }
         }
-        out.sort();
+        out.sort_by(|a, b| a.json.cmp(&b.json));
         out
     }
 
@@ -960,8 +963,10 @@ mod tests {
         a.files.persist_presence(r#"{"session_name":"alpha"}"#);
         b.files.persist_presence(r#"{"session_name":"beta"}"#);
         // Each session sees the OTHER's presence, never its own.
-        assert_eq!(a.files.read_peer_presences(), vec![r#"{"session_name":"beta"}"#.to_string()]);
-        assert_eq!(b.files.read_peer_presences(), vec![r#"{"session_name":"alpha"}"#.to_string()]);
+        let a_json: Vec<String> = a.files.read_peer_presences().into_iter().map(|p| p.json).collect();
+        let b_json: Vec<String> = b.files.read_peer_presences().into_iter().map(|p| p.json).collect();
+        assert_eq!(a_json, vec![r#"{"session_name":"beta"}"#.to_string()]);
+        assert_eq!(b_json, vec![r#"{"session_name":"alpha"}"#.to_string()]);
     }
 
     #[test]
@@ -984,12 +989,14 @@ mod tests {
     }
 
     #[test]
-    fn read_peer_presences_skips_a_stale_mtime_peer_but_keeps_a_fresh_one() {
-        // Liveness itself, not just open-time debris removal: a peer whose
-        // file hasn't been heartbeated in over PRESENCE_LIVE_TTL must be
-        // invisible to the READ path even though `prune_stale_files` (a much
-        // longer horizon, and only run at `open`) would still leave it on
-        // disk untouched.
+    fn read_peer_presences_never_drops_an_old_mtime_peer_and_reports_its_age() {
+        // task-14, user decision: a remembered session must never silently
+        // vanish from the badge. This method used to skip a peer once its
+        // file's mtime drifted past a liveness TTL; now it must keep
+        // returning that peer unconditionally — dropping only ever happens
+        // at `open`'s much-longer `PRESENCE_MAX_AGE` sweep — and report an
+        // honest age so the caller (`sessions::Sessions`) can mark it stale
+        // instead.
         let dir = tempfile::tempdir().unwrap();
         let reader = SessionFiles::open_with_roots_at(
             SessionFileIds { plugin_id: 1, zellij_pid: 100 },
@@ -1003,34 +1010,31 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        let stale_peer = SessionFiles::open_with_roots_at(
+        let old_peer = SessionFiles::open_with_roots_at(
             SessionFileIds { plugin_id: 3, zellij_pid: 300 },
             [dir.path().to_path_buf()],
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
         fresh_peer.files.persist_presence(r#"{"session_name":"fresh"}"#);
-        stale_peer.files.persist_presence(r#"{"session_name":"stale"}"#);
+        old_peer.files.persist_presence(r#"{"session_name":"old"}"#);
 
-        // Both are visible while both are fresh.
-        assert_eq!(
-            reader.files.read_peer_presences(),
-            vec![r#"{"session_name":"fresh"}"#.to_string(), r#"{"session_name":"stale"}"#.to_string()]
-        );
+        // Backdate only the "old" peer's file — a dead server's file just
+        // sitting there with an old mtime, not something any sweep has
+        // touched (well short of `PRESENCE_MAX_AGE`, so `open` would not
+        // have reaped it either).
+        let old_path = dir.path().join("zj-radar.presence.300.json");
+        let old_age = Duration::from_secs(400); // well past sessions::STALE_AFTER_SECS (90s)
+        std::fs::File::open(&old_path).unwrap().set_modified(SystemTime::now() - old_age).unwrap();
 
-        // Backdate only the "stale" peer's file past the live TTL — a dead
-        // server's file just sitting there with an old mtime, not something
-        // any sweep has touched.
-        let stale_path = dir.path().join("zj-radar.presence.300.json");
-        let old = SystemTime::now() - PRESENCE_LIVE_TTL - Duration::from_secs(5);
-        std::fs::File::open(&stale_path).unwrap().set_modified(old).unwrap();
-
-        assert_eq!(
-            reader.files.read_peer_presences(),
-            vec![r#"{"session_name":"fresh"}"#.to_string()],
-            "a peer whose file's mtime is older than PRESENCE_LIVE_TTL must be skipped by the read path"
-        );
-        assert!(stale_path.exists(), "the read path must not delete a stale file — only skip it");
+        let mut peers = reader.files.read_peer_presences();
+        peers.sort_by(|a, b| a.json.cmp(&b.json));
+        assert_eq!(peers.len(), 2, "both peers must still be returned regardless of mtime age");
+        let fresh = peers.iter().find(|p| p.json.contains("fresh")).expect("fresh peer present");
+        let old = peers.iter().find(|p| p.json.contains("\"old\"")).expect("old-mtime peer still present, not dropped");
+        assert!(fresh.age_secs < 5, "freshly-written peer's age should read ~0s, got {}", fresh.age_secs);
+        assert!(old.age_secs >= old_age.as_secs(), "backdated peer's age must reflect its real mtime, got {}", old.age_secs);
+        assert!(old_path.exists(), "the read path must never delete anything — only the open-time sweep does");
     }
 
     #[test]

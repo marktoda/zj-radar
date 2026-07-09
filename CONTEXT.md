@@ -291,31 +291,46 @@ feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
 `zellij-tile`, that derives the cross-session badge on demand from
 `peers`/`own`, exactly like `RadarState` never caches a derived value.
 
-**Liveness is the mtime, not a roster.** An earlier iteration subscribed to
+**Liveness is the mtime, not a roster — and a remembered session never
+vanishes (task-14).** An earlier iteration subscribed to
 `Event::SessionUpdate` and cross-checked a peer list against presence files.
 E2E against real Zellij 0.44.3 showed `SessionUpdate` only delivers peers
 after some plugin has called the blocking `get_session_list()` host
 function — which nothing in this stack does, and which would violate the
 push-driven doctrine (`CONTRIBUTING.md`; `smart-tabs-postmortem.md`) if it
-did. `SessionUpdate` was dropped entirely (task-8b): liveness is now judged
-purely by a presence file's mtime (`PRESENCE_LIVE_TTL`, 180s) at read time —
-a stale file's row is skipped, never deleted by the reader; a separate 6h
-sweep at plugin `load()` deletes genuine debris. A session with nothing new
-to report still heartbeats — an unconditional `PersistPresence` on every
-Slow (60s) tick, bypassing the normal content-edge gate — so an idle-but-alive
-session's file never ages past the TTL and vanishes from peers' badges. The
-session's own name arrives the same push-style way its liveness does:
-`Event::ModeUpdate`'s `ModeInfo.session_name`, not a session-list lookup.
+did. `SessionUpdate` was dropped entirely (task-8b): liveness is judged from
+a presence file's mtime. Task-8b had the READ path (`read_peer_presences`)
+drop a peer once its mtime passed a TTL; task-14 changed that on user
+request — a session the badge has ever shown must never silently disappear
+from it. `read_peer_presences` now returns every peer file it finds,
+unconditionally, paired with that file's mtime age; only a much longer 6h
+open-time sweep at plugin `load()` ever actually deletes one (genuine
+debris). `Sessions` (`sessions.rs`) turns that age into a per-entry
+fresh/stale state (`STALE_AFTER_SECS`, 90s — 50% margin over the 60s
+heartbeat): stale entries dim on the badge and are unreachable via
+`session-next`/`session-prev` (switching onto a likely-dead session would
+have Zellij resurrect it as an empty zombie), but stay on screen. A session
+with nothing new to report still heartbeats — an unconditional
+`PersistPresence` on every Slow (60s) tick, bypassing the normal
+content-edge gate — so an idle-but-alive session's file rarely even crosses
+into stale. The session's own name arrives the same push-style way its
+liveness does: `Event::ModeUpdate`'s `ModeInfo.session_name`, not a
+session-list lookup.
 
 **Badge and cycling share one order.** `Sessions::badge()` (what the rail
 shows) and `Sessions::cycle()`/`tick()` (what `session-next`/`session-prev`
 step through and idle-commit) both derive from the same `ordered()`:
-current session first, then attention-bearing peers by name, then the rest
-by name — so "what's shown" and "what Alt+[/] steps through" can never
-disagree. The pending cycle selection is tracked by session *name*, never a
-list position, so peers joining or leaving mid-cycle can't silently retarget
-it (the same identity-over-position lesson `RailTarget` already applies to
-clicks). The badge renders zero lines with only one session known — the
-feature is invisible until there's genuinely something cross-session to
-show — and degrades the same way persistence does: no writable shared
-`/cache` root means no presence file and no badge, nothing else affected.
+current session first, then fresh attention-bearing peers by name, then the
+rest of the fresh peers by name, then every stale peer by name — a stale
+peer's attention count isn't actionable, so staleness outranks attention for
+ordering. `cycle()` filters stale entries out of its target set entirely.
+The pending cycle selection is tracked by session *name*, never a list
+position, so peers joining or leaving mid-cycle can't silently retarget it
+(the same identity-over-position lesson `RailTarget` already applies to
+clicks) — and a selection that goes stale between the tap and the
+idle-commit is dropped the same way a vanished one is. The badge renders
+zero lines with only one session known — the feature is invisible until
+there's genuinely something cross-session to show, and a lone fresh own
+entry plus only stale peers still counts as "something" — and degrades the
+same way persistence does: no writable shared `/cache` root means no
+presence file and no badge, nothing else affected.

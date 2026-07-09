@@ -225,7 +225,12 @@ impl State {
                     self.session_files.persist_presence(&self.runtime.presence_json())
                 }
                 Effect::ReadPresences => {
-                    let raw = self.session_files.read_peer_presences();
+                    let raw = self
+                        .session_files
+                        .read_peer_presences()
+                        .into_iter()
+                        .map(|p| (p.json, p.age_secs))
+                        .collect();
                     let outcome = self.runtime.presences_changed(raw);
                     render |= self.handle_outcome(outcome);
                 }
@@ -284,8 +289,10 @@ impl ZellijPlugin for State {
             // no other plugin required) and carries `ModeInfo.session_name`,
             // which is all this plugin ever needed from `SessionUpdate` in
             // the first place; liveness itself now comes from the presence
-            // files' own mtimes (`session_files::PRESENCE_LIVE_TTL`), not
-            // from a Zellij-reported peer list at all.
+            // files' own mtimes, turned into a per-entry stale/fresh state
+            // (`sessions::STALE_AFTER_SECS`) rather than a Zellij-reported
+            // peer list — and, per task-14, a peer past that age dims
+            // rather than vanishing.
             EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already

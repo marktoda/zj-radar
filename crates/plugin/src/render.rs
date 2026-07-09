@@ -1213,7 +1213,10 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// so the feature is invisible until there's genuinely something
 /// cross-session to show, and
 /// every existing single-session snapshot/test stays byte-identical (the
-/// badge is additive, never a subtraction from the render surface).
+/// badge is additive, never a subtraction from the render surface). A lone
+/// fresh own-entry plus only STALE peers still clears this threshold and
+/// renders (task-14: the roster's whole point is remembering) — the count
+/// is over `entries`, not over fresh entries.
 ///
 /// The current session's own line carries NO click target at all — you
 /// can't "switch to" the session you're already in, and unlike a peer line
@@ -1222,16 +1225,19 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// peer via [`RailTarget::for_session`], which bakes in `tab_position` NOW
 /// (at line-build time, from the entry's `attention_tab_position`) rather
 /// than leaving `mouse_click` to re-derive it later against a badge that may
-/// have moved on by the time the click lands.
+/// have moved on by the time the click lands. This applies uniformly to
+/// stale peers too — a click on one is a deliberate act (`entry.stale` only
+/// affects color, never the target).
 ///
 /// Text is `name` plus, only when nonzero, a running count and an attention
 /// count — each paired with the SAME glyph the per-tab rows already use for
 /// that status (`Status::Running`/`Status::Pending`, run through
 /// `opts.glyphs`) rather than inventing a parallel icon vocabulary the nerd/
 /// plain config wouldn't know about. `selected` (the pending Alt+[/] cycle
-/// target) renders bold+accent; everything else — including the current
-/// line — renders in the muted `idle_text`, so the badge reads as a status
-/// strip, not a second row of cards.
+/// target) renders bold+accent; a `stale` entry recedes past the ordinary
+/// muted `idle_text` (see the color derivation below); everything else —
+/// including the current line — renders in `idle_text`, so the badge reads
+/// as a status strip, not a second row of cards.
 ///
 /// A trailing blank separator line closes the block (live-use feedback: the
 /// badge read as glued to the first card below it without one) — appended
@@ -1250,6 +1256,14 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     }
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
+    // A stale entry (task-14: dimmed, never dropped from the badge) recedes
+    // one step further than the ordinary muted `idle_text` every other line
+    // uses — blended halfway toward the panel background, the same "recede
+    // toward bg" idiom `DerivedColors::from_bg_fg` already uses for its own
+    // surface ladder, rather than inventing a parallel dim vocabulary. It
+    // stays fully clickable (`target` below doesn't distinguish stale from
+    // fresh) — a click on it is a deliberate act.
+    let stale = tc_fg(crate::theme::blend(opts.theme.idle_text, opts.theme.rail_bg, 0.5));
     let accent = Role::Accent.ansi();
     let running_glyph = Status::Running.glyph_for(opts.glyphs);
     let attention_glyph = Status::Pending.glyph_for(opts.glyphs);
@@ -1276,6 +1290,8 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                     let clamped = truncate(&label, avail);
                     let label_seg = if entry.selected {
                         Seg::bold(accent, clamped)
+                    } else if entry.stale {
+                        Seg::new(&stale, clamped)
                     } else {
                         Seg::new(&idle, clamped)
                     };

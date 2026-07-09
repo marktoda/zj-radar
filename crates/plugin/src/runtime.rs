@@ -375,12 +375,13 @@ impl PluginRuntime {
             // `PersistPresence` is content-edge-gated (`last_presence`'s
             // compare-and-cache), which is right for Fast cadence — but a
             // session with nothing new to report can sit on an unchanged
-            // edge forever, and its presence file's mtime (the only
-            // liveness signal peers read — `session_files::PRESENCE_LIVE_TTL`)
-            // would go stale even though the session is still up. Bypass the
-            // edge gate here, unconditionally, so an idle session's file
-            // still gets touched at least once per Slow (60s) tick — well
-            // inside the 180s TTL even with a skipped/delayed fire.
+            // edge forever, and its presence file's mtime (the signal peers
+            // read to tell fresh from stale — `sessions::STALE_AFTER_SECS`)
+            // would age past that threshold even though the session is
+            // still up. Bypass the edge gate here, unconditionally, so an
+            // idle session's file still gets touched at least once per Slow
+            // (60s) tick — well inside the 90s stale threshold even with a
+            // skipped/delayed fire.
             effects.push(Effect::PersistPresence);
         }
         // BEFORE re-arming below, commit an idle cycle selection if one is
@@ -496,10 +497,11 @@ impl PluginRuntime {
         self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
     }
 
-    /// A fresh read of every peer session's presence file
-    /// (`Effect::ReadPresences`'s read-back). Renders only when the derived
-    /// badge actually changed.
-    pub(crate) fn presences_changed(&mut self, raw: Vec<String>) -> Outcome {
+    /// A fresh read of every peer session's presence file, each paired with
+    /// its file's mtime age in seconds (`Effect::ReadPresences`'s
+    /// read-back — `session_files::read_peer_presences`'s `age_secs`).
+    /// Renders only when the derived badge actually changed.
+    pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
         let render = self.sessions.update_presences(raw);
         let change = RadarChange { render, settle: false, persist_snapshot: false, renames: vec![], cwd_bootstrap: vec![] };
         self.project(vec![], change, self.last_now_epoch_s)
@@ -778,12 +780,14 @@ impl PluginRuntime {
         } else if self.radar.ledger_any_unsaturated(now_epoch_s)
             || self.radar.pending_wait_unsaturated(now_epoch_s)
             // A known name means this session has published a presence file
-            // whose mtime is the ONLY liveness signal peers read
-            // (`session_files::PRESENCE_LIVE_TTL`), and `timer`'s Slow-fire
+            // whose mtime is the signal peers read to tell fresh from stale
+            // (`sessions::STALE_AFTER_SECS`), and `timer`'s Slow-fire
             // heartbeat is the only writer keeping it fresh. Fully disarming
             // would freeze that mtime and get a still-alive idle session
-            // dropped from every peer's badge 180s later — so the chain must
-            // stay (at least) Slow-armed for as long as the name is known.
+            // dimmed to stale on every peer's badge 90s later (never
+            // dropped — task-14 — but still a needless false alarm) — so
+            // the chain must stay (at least) Slow-armed for as long as the
+            // name is known.
             || !self.own_session_name.is_empty()
         {
             // Slow ticks exist to advance minute-granular ages: ledger rows'
