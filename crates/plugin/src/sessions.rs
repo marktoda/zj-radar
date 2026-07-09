@@ -39,13 +39,18 @@ pub(crate) struct CommitTarget {
     pub attention_tab_position: Option<usize>,
 }
 
-/// A pending (not yet committed) cycle selection. `index` is into the same
-/// current/attention/rest ordering `badge()` derives; `last_tap_tick` is the
-/// tick of the most recent `cycle()` call, so `tick()` can tell a same-tick
-/// race (the tap and the idle timer landing in the same update) from genuine
-/// idle — only the latter may commit.
+/// A pending (not yet committed) cycle selection. `name` identifies the
+/// selected session directly rather than its position in the derived order —
+/// `update_live`/`update_presences` can reorder that list between the
+/// `cycle()` tap and the commit `tick()` (e.g. a new session sorting ahead of
+/// the selected one), and a positional index would then silently retarget
+/// whatever session ended up at the old index. Re-resolved by name against
+/// the fresh order on every `cycle()`/`tick()` call instead. `last_tap_tick`
+/// is the tick of the most recent `cycle()` call, so `tick()` can tell a
+/// same-tick race (the tap and the idle timer landing in the same update)
+/// from genuine idle — only the latter may commit.
 struct SelectionState {
-    index: usize,
+    name: String,
     last_tap_tick: u64,
 }
 
@@ -93,44 +98,57 @@ impl Sessions {
     /// Advance (or start) the cycle selection and stamp the tick it happened
     /// on. Re-derives the shared ordering fresh each call, so a selection
     /// started before a `update_live`/`update_presences` change always steps
-    /// relative to the current membership, never a stale snapshot.
+    /// relative to the current membership, never a stale snapshot. The
+    /// pending selection's *name* is re-resolved against that fresh order
+    /// (not trusted as a stale index) before advancing from it.
     pub(crate) fn cycle(&mut self, dir: Direction, now_tick: u64) -> bool {
         let before = self.badge();
         let order = self.ordered();
-        self.selection = match (&self.selection, order.len()) {
+        // A previously selected name that no longer appears in the fresh
+        // order (its session closed) is treated the same as "nothing
+        // selected" — restart below rather than advance from a position it
+        // no longer occupies.
+        let current_position =
+            self.selection.as_ref().and_then(|sel| order.iter().position(|s| s.name == sel.name));
+        self.selection = match (current_position, order.len()) {
             (_, 0) => None,
             (None, _) => {
-                // Nothing selected yet: start at the first non-current entry
-                // (index 0 is the current session, when live includes one).
+                // Nothing selected yet (or the selection vanished): start at
+                // the first non-current entry (index 0 is the current
+                // session, when live includes one).
                 order
                     .iter()
                     .position(|s| !s.is_current)
-                    .map(|index| SelectionState { index, last_tap_tick: now_tick })
+                    .map(|index| SelectionState { name: order[index].name.clone(), last_tap_tick: now_tick })
             }
-            (Some(sel), len) => {
-                let index = match dir {
-                    Direction::Next => (sel.index + 1) % len,
-                    Direction::Prev => (sel.index + len - 1) % len,
+            (Some(index), len) => {
+                let next = match dir {
+                    Direction::Next => (index + 1) % len,
+                    Direction::Prev => (index + len - 1) % len,
                 };
-                Some(SelectionState { index, last_tap_tick: now_tick })
+                Some(SelectionState { name: order[next].name.clone(), last_tap_tick: now_tick })
             }
         };
         self.badge() != before
     }
 
     /// Idle-commit: fires when a selection is pending and this tick is not
-    /// the same tick as the tap that created/advanced it. Landing on the
-    /// current session is the cancel gesture (`None`, no effect); either way
-    /// a commit clears the pending selection.
+    /// the same tick as the tap that created/advanced it. The selected
+    /// *name* is re-resolved against a freshly derived order rather than a
+    /// remembered index, so a reorder between the tap and this tick can
+    /// never retarget a different session; if the name is no longer live,
+    /// the selection is dropped and nothing commits. Landing on the current
+    /// session is the cancel gesture (`None`, no effect); either way a
+    /// commit clears the pending selection.
     pub(crate) fn tick(&mut self, now_tick: u64) -> Option<CommitTarget> {
         let sel = self.selection.as_ref()?;
         if now_tick <= sel.last_tap_tick {
             return None; // tap and timer racing in the same tick must not commit
         }
-        let index = sel.index;
-        self.selection = None; // committing (or cancelling) always clears
+        let name = sel.name.clone();
+        self.selection = None; // committing, cancelling, or dropping a vanished selection all clear
         let order = self.ordered();
-        let entry = order.get(index)?;
+        let entry = order.iter().find(|s| s.name == name)?; // vanished session: nothing to commit
         if entry.is_current {
             return None; // cancel gesture: landing back on the current session
         }
@@ -145,11 +163,10 @@ impl Sessions {
     /// every call — never cached — so it can never drift from its inputs.
     pub(crate) fn badge(&self) -> Vec<BadgeEntry> {
         let order = self.ordered();
-        let selected_index = self.selection.as_ref().map(|sel| sel.index);
+        let selected_name = self.selection.as_ref().map(|sel| sel.name.as_str());
         order
             .into_iter()
-            .enumerate()
-            .map(|(i, s)| {
+            .map(|s| {
                 let p = self.presence_for(&s.name);
                 BadgeEntry {
                     name: s.name.clone(),
@@ -157,7 +174,7 @@ impl Sessions {
                     attention: p.map_or(0, |p| p.attention),
                     attention_tab_position: p.and_then(|p| p.attention_tab_position),
                     is_current: s.is_current,
-                    selected: selected_index == Some(i),
+                    selected: selected_name == Some(s.name.as_str()),
                 }
             })
             .collect()
@@ -166,7 +183,8 @@ impl Sessions {
     /// Whether a cycle selection is pending — the runtime keeps the Fast
     /// timer cadence armed while true, so the idle-commit in `tick()` fires
     /// promptly rather than waiting for the next Slow tick. Only the wasm
-    /// runtime (Task 5) reads this; no host test exercises it yet.
+    /// runtime (Task 5) reads this in production; pinned by a host test
+    /// (`wants_fast_cadence_tracks_pending_selection_through_commit_and_cancel`).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn wants_fast_cadence(&self) -> bool {
         self.selection.is_some()
@@ -273,5 +291,108 @@ mod tests {
         ]);
         s.cycle(Direction::Next, 1);
         assert_eq!(s.tick(2).unwrap().attention_tab_position, Some(2));
+    }
+
+    // -- Pinning: wants_fast_cadence() --------------------------------------
+    // No wasm caller exercises this from a host test, so a refactor that
+    // breaks the "armed while a selection is pending" contract would
+    // otherwise go unnoticed until manual testing in Zellij.
+
+    #[test]
+    fn wants_fast_cadence_tracks_pending_selection_through_commit_and_cancel() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false)]));
+        assert!(!s.wants_fast_cadence(), "nothing selected initially");
+
+        s.cycle(Direction::Next, 1); // selects alpha
+        assert!(s.wants_fast_cadence(), "a cycle tap arms a pending selection");
+
+        s.tick(2); // idle commit to alpha
+        assert!(!s.wants_fast_cadence(), "a commit clears the pending selection");
+
+        s.cycle(Direction::Next, 3); // alpha
+        s.cycle(Direction::Next, 4); // beta
+        s.cycle(Direction::Next, 5); // wraps to work (current)
+        assert!(s.wants_fast_cadence(), "still pending until the idle tick fires");
+
+        s.tick(6); // cancel-commit (lands on current)
+        assert!(!s.wants_fast_cadence(), "a cancel-commit also clears the pending selection");
+    }
+
+    // -- Pinning: content-compare returns ------------------------------------
+    // Each mutator must report `true` only when the derived badge actually
+    // differs, not merely because it was called. A refactor that starts
+    // returning `true` unconditionally (or `false` unconditionally) would
+    // make the runtime over- or under-repaint without any other test
+    // noticing, since none of the tests above assert on the return value.
+
+    #[test]
+    fn update_live_reports_change_only_on_actual_content_change() {
+        let mut s = Sessions::default();
+        assert!(s.update_live(live(&[("work", true)])), "first population changes the badge");
+        assert!(!s.update_live(live(&[("work", true)])), "identical live list is not a change");
+    }
+
+    #[test]
+    fn update_presences_reports_change_only_on_actual_content_change() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false)]));
+        assert!(s.update_presences(vec![presence("alpha", 1, 0)]), "first presence report changes the badge");
+        assert!(!s.update_presences(vec![presence("alpha", 1, 0)]), "identical presence report is not a change");
+    }
+
+    #[test]
+    fn set_own_reports_change_only_on_actual_content_change() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true)]));
+        let p = Presence { session_name: "work".into(), running: 3, attention: 0,
+                           attention_tab_position: None, updated_epoch_s: 0 };
+        assert!(s.set_own(p.clone()), "first own-count report changes the badge");
+        // Same badge-relevant fields, different updated_epoch_s (not part of
+        // BadgeEntry) — must not register as a change.
+        let p2 = Presence { session_name: "work".into(), running: 3, attention: 0,
+                            attention_tab_position: None, updated_epoch_s: 99 };
+        assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
+    }
+
+    #[test]
+    fn cycle_reports_change_when_the_highlight_moves() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false)]));
+        assert!(s.cycle(Direction::Next, 1), "starting a selection flips a `selected` flag in the badge");
+        assert!(s.cycle(Direction::Next, 2), "advancing the selection moves the `selected` flag");
+    }
+
+    // -- Selection identity (not positional index) ---------------------------
+    // `SelectionState` must track the selected session by name, not by its
+    // position in the derived order — a reorder between the cycle() tap and
+    // the commit tick() must never silently retarget a different session.
+
+    #[test]
+    fn cycle_selection_survives_reordering_by_name_not_index() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false), ("beta", false)]));
+        s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
+        // Order: work (current), alpha, beta — both zero-attention, by name.
+        s.cycle(Direction::Next, 1); // selects alpha (first non-current)
+
+        // "aardvark" joins and sorts ahead of "alpha" in the rest bucket. A
+        // positional-index selection (old index 1) would now point at
+        // "aardvark" instead of "alpha".
+        s.update_live(live(&[("work", true), ("aardvark", false), ("alpha", false), ("beta", false)]));
+
+        let t = s.tick(2).expect("idle tick commits");
+        assert_eq!(t.name, "alpha", "selection must follow the named session, not the reordered index");
+    }
+
+    #[test]
+    fn selected_session_vanishing_before_tick_clears_selection_and_commits_nothing() {
+        let mut s = Sessions::default();
+        s.update_live(live(&[("work", true), ("alpha", false)]));
+        s.cycle(Direction::Next, 1); // selects alpha
+        s.update_live(live(&[("work", true)])); // alpha leaves before the idle tick
+
+        assert_eq!(s.tick(2), None, "a vanished selection must not commit");
+        assert!(!s.wants_fast_cadence(), "the cleared selection must not keep fast cadence armed");
     }
 }
