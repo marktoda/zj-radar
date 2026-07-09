@@ -388,7 +388,7 @@ impl PluginRuntime {
         // a commit clears `Sessions::wants_fast_cadence`, and the chain must
         // be free to decay to Slow on this same pass rather than one fire
         // late.
-        let session_commit = self.sessions.tick(self.tick);
+        let session_commit = self.sessions.tick();
         if let Some(CommitTarget { name, attention_tab_position }) = session_commit {
             effects.push(Effect::SwitchSession { name, tab_position: attention_tab_position });
         }
@@ -458,7 +458,7 @@ impl PluginRuntime {
             }
             Verb::SessionNext | Verb::SessionPrev => {
                 let dir = if verb == Verb::SessionNext { Direction::Next } else { Direction::Prev };
-                let render = self.sessions.cycle(dir, self.tick);
+                let render = self.sessions.cycle(dir);
                 // A fresh tap must arm Fast immediately (not wait for the next
                 // domain change to pass through `project`), so the idle-commit
                 // in `timer` fires promptly rather than stalling behind a Slow

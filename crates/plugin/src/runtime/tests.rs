@@ -921,7 +921,16 @@ fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     let out = rt.control_pipe("session-next");
     assert!(out.render, "selection highlight renders");
 
-    let tick = rt.timer_fast(PermissionProbe::default()); // next Fast tick, no tap since
+    // The Fast fire covering the tap itself must not commit (task-14: the
+    // taps-since-last-fire flag resets the deadline instead) — only the
+    // NEXT, fully quiet fire may.
+    let covering = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !covering.effects.iter().any(|e| matches!(e, Effect::SwitchSession { .. })),
+        "the fire covering the tap must not commit, got {:?}",
+        covering.effects
+    );
+    let tick = rt.timer_fast(PermissionProbe::default()); // the next, quiet Fast tick
     assert!(
         tick.effects.iter().any(|e| matches!(
             e, Effect::SwitchSession { name, tab_position: Some(1) } if name == "alpha"

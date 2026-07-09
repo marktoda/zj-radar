@@ -58,13 +58,21 @@ pub(crate) struct CommitTarget {
 /// `cycle()` tap and the commit `tick()` (e.g. a new session sorting ahead of
 /// the selected one), and a positional index would then silently retarget
 /// whatever session ended up at the old index. Re-resolved by name against
-/// the fresh order on every `cycle()`/`tick()` call instead. `last_tap_tick`
-/// is the tick of the most recent `cycle()` call, so `tick()` can tell a
-/// same-tick race (the tap and the idle timer landing in the same update)
-/// from genuine idle — only the latter may commit.
+/// the fresh order on every `cycle()`/`tick()` call instead.
+///
+/// `taps_since_last_fire` replaces an earlier tick-counter comparison
+/// (`now_tick > last_tap_tick`) that had two field-observed bugs: (a) a tap
+/// landing just before an already-scheduled fire compared as "idle" and
+/// committed instantly, and (b) taps arriving faster than the 1s tick grain
+/// all shared one tick number, so the deadline never extended past the
+/// FIRST tap in a burst. `cycle()` sets this flag on every tap; `tick()`
+/// clears it and skips (no commit) whenever it's set, so a fire only ever
+/// commits when its entire covered interval was tap-free — guaranteeing at
+/// least one full quiet interval after the LAST tap, at the cost of at most
+/// one extra (skipped) fire.
 struct SelectionState {
     name: String,
-    last_tap_tick: u64,
+    taps_since_last_fire: bool,
 }
 
 #[derive(Default)]
@@ -118,13 +126,14 @@ impl Sessions {
         self.badge() != before
     }
 
-    /// Advance (or start) the cycle selection and stamp the tick it happened
-    /// on. Re-derives the shared ordering fresh each call, so a selection
-    /// started before a `update_live`/`update_presences` change always steps
-    /// relative to the current membership, never a stale snapshot. The
-    /// pending selection's *name* is re-resolved against that fresh order
-    /// (not trusted as a stale index) before advancing from it.
-    pub(crate) fn cycle(&mut self, dir: Direction, now_tick: u64) -> bool {
+    /// Advance (or start) the cycle selection and arm its tap-since-fire
+    /// flag (see `SelectionState`'s doc). Re-derives the shared ordering
+    /// fresh each call, so a selection started before a
+    /// `update_live`/`update_presences` change always steps relative to the
+    /// current membership, never a stale snapshot. The pending selection's
+    /// *name* is re-resolved against that fresh order (not trusted as a
+    /// stale index) before advancing from it.
+    pub(crate) fn cycle(&mut self, dir: Direction) -> bool {
         let before = self.badge();
         let order = self.ordered();
         // A previously selected name that no longer appears in the fresh
@@ -143,7 +152,7 @@ impl Sessions {
                 // session, when own is known).
                 order.iter().position(|s| !s.is_current).map(|index| SelectionState {
                     name: order[index].presence.session_name.clone(),
-                    last_tap_tick: now_tick,
+                    taps_since_last_fire: true,
                 })
             }
             (Some(index), len) => {
@@ -151,24 +160,28 @@ impl Sessions {
                     Direction::Next => (index + 1) % len,
                     Direction::Prev => (index + len - 1) % len,
                 };
-                Some(SelectionState { name: order[next].presence.session_name.clone(), last_tap_tick: now_tick })
+                Some(SelectionState { name: order[next].presence.session_name.clone(), taps_since_last_fire: true })
             }
         };
         self.badge() != before
     }
 
-    /// Idle-commit: fires when a selection is pending and this tick is not
-    /// the same tick as the tap that created/advanced it. The selected
-    /// *name* is re-resolved against a freshly derived order rather than a
-    /// remembered index, so a reorder between the tap and this tick can
-    /// never retarget a different session; if the name is no longer live,
-    /// the selection is dropped and nothing commits. Landing on the current
-    /// session is the cancel gesture (`None`, no effect); either way a
-    /// commit clears the pending selection.
-    pub(crate) fn tick(&mut self, now_tick: u64) -> Option<CommitTarget> {
-        let sel = self.selection.as_ref()?;
-        if now_tick <= sel.last_tap_tick {
-            return None; // tap and timer racing in the same tick must not commit
+    /// Idle-commit: called on every timer fire while a selection is pending.
+    /// A fire whose covered interval saw a tap (`taps_since_last_fire` set —
+    /// by `cycle()`, possibly including THIS very fire's own tap) clears the
+    /// flag and skips: the deadline resets, and only the NEXT, fully quiet
+    /// fire may commit. The selected *name* is re-resolved against a
+    /// freshly derived order rather than a remembered index, so a reorder
+    /// between the tap and this tick can never retarget a different
+    /// session; if the name is no longer live, the selection is dropped and
+    /// nothing commits. Landing on the current session is the cancel
+    /// gesture (`None`, no effect); either way a commit clears the pending
+    /// selection.
+    pub(crate) fn tick(&mut self) -> Option<CommitTarget> {
+        let sel = self.selection.as_mut()?;
+        if sel.taps_since_last_fire {
+            sel.taps_since_last_fire = false;
+            return None;
         }
         let name = sel.name.clone();
         self.selection = None; // committing, cancelling, or dropping a vanished selection all clear
@@ -296,12 +309,13 @@ mod tests {
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 0, 1), presence("beta", 1, 0)]);
         // Order: work(current), alpha(attention), beta.
-        s.cycle(Direction::Next, 10);                 // select alpha
-        assert_eq!(s.tick(10), None, "same-tick tap must not commit");
-        s.cycle(Direction::Next, 11);                 // skip to beta
-        let t = s.tick(12).expect("idle tick commits");
+        s.cycle(Direction::Next);                     // select alpha
+        assert_eq!(s.tick(), None, "the fire covering the tap must not commit — it clears the flag");
+        s.cycle(Direction::Next);                     // skip to beta
+        assert_eq!(s.tick(), None, "the fire covering THIS tap must not commit either");
+        let t = s.tick().expect("a fully quiet fire commits");
         assert_eq!(t.name, "beta");
-        assert_eq!(s.tick(13), None, "committed selection is cleared");
+        assert_eq!(s.tick(), None, "committed selection is cleared");
     }
 
     #[test]
@@ -309,9 +323,10 @@ mod tests {
         let mut s = Sessions::default();
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 0, 0)]);
-        s.cycle(Direction::Next, 1);                  // alpha
-        s.cycle(Direction::Next, 2);                  // wraps to work (current)
-        assert_eq!(s.tick(3), None, "landing on the current session cancels");
+        s.cycle(Direction::Next);                     // alpha
+        s.cycle(Direction::Next);                     // wraps to work (current)
+        s.tick();                                     // the fire covering that tap: skip, clears the flag
+        assert_eq!(s.tick(), None, "a quiet fire landing on the current session cancels");
     }
 
     #[test]
@@ -321,8 +336,52 @@ mod tests {
         s.update_presences(vec![
             r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.to_string(),
         ]);
-        s.cycle(Direction::Next, 1);
-        assert_eq!(s.tick(2).unwrap().attention_tab_position, Some(2));
+        s.cycle(Direction::Next);
+        s.tick(); // the fire covering the tap: skip, clears the flag
+        assert_eq!(s.tick().unwrap().attention_tab_position, Some(2));
+    }
+
+    // -- Pinning: field bugs in the old tick-counter commit check ------------
+    // The old `now_tick > last_tap_tick` comparison committed on the very
+    // next fire after a tap (a tap landing just before an already-scheduled
+    // fire compared as "idle" and committed instantly) and never extended
+    // the deadline for taps faster than the 1s tick grain (they all shared
+    // one tick number, so the commit landed ~1s after the FIRST tap, not
+    // the last). The `taps_since_last_fire` flag fixes both.
+
+    #[test]
+    fn tap_then_immediate_fire_does_not_commit() {
+        let mut s = Sessions::default();
+        s.set_own(own("work"));
+        s.update_presences(vec![presence("alpha", 1, 0)]);
+        s.cycle(Direction::Next); // selects alpha
+        // A fire landing right after the tap must not commit instantly —
+        // it covers the tap's interval and must reset the deadline instead.
+        assert_eq!(s.tick(), None, "a fire landing right after the tap must not commit instantly");
+        assert!(s.wants_fast_cadence(), "the selection survives that fire, still pending");
+        let t = s.tick().expect("the next, fully quiet fire commits");
+        assert_eq!(t.name, "alpha");
+    }
+
+    #[test]
+    fn rapid_multi_tap_across_several_fires_commits_only_after_first_quiet_fire() {
+        let mut s = Sessions::default();
+        s.set_own(own("work"));
+        s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
+        // Order: work(current), alpha, beta. Several taps land, each one
+        // arriving before the next fire — faster than the old 1-tick grain
+        // could distinguish. Every fire covering a tap must skip, not just
+        // the first.
+        s.cycle(Direction::Next); // alpha
+        assert_eq!(s.tick(), None);
+        s.cycle(Direction::Next); // beta
+        assert_eq!(s.tick(), None);
+        s.cycle(Direction::Next); // wraps to work (current) — still just cycling
+        assert_eq!(s.tick(), None, "a fire covering a tap must skip even on the 3rd consecutive tap");
+        s.cycle(Direction::Prev); // back to beta — the LAST tap in this burst
+        assert_eq!(s.tick(), None, "the fire covering the last tap still must not commit");
+        let t = s.tick().expect("the first fully quiet fire after the burst commits");
+        assert_eq!(t.name, "beta", "must commit to whatever the LAST tap selected, not an earlier one");
     }
 
     // -- Pinning: wants_fast_cadence() --------------------------------------
@@ -337,18 +396,22 @@ mod tests {
         s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
         assert!(!s.wants_fast_cadence(), "nothing selected initially");
 
-        s.cycle(Direction::Next, 1); // selects alpha
+        s.cycle(Direction::Next); // selects alpha
         assert!(s.wants_fast_cadence(), "a cycle tap arms a pending selection");
 
-        s.tick(2); // idle commit to alpha
+        s.tick(); // the fire covering the tap: skip, still pending
+        assert!(s.wants_fast_cadence(), "a tap-covering fire must not clear the pending selection");
+        s.tick(); // idle commit to alpha
         assert!(!s.wants_fast_cadence(), "a commit clears the pending selection");
 
-        s.cycle(Direction::Next, 3); // alpha
-        s.cycle(Direction::Next, 4); // beta
-        s.cycle(Direction::Next, 5); // wraps to work (current)
+        s.cycle(Direction::Next); // alpha
+        s.cycle(Direction::Next); // beta
+        s.cycle(Direction::Next); // wraps to work (current)
         assert!(s.wants_fast_cadence(), "still pending until the idle tick fires");
 
-        s.tick(6); // cancel-commit (lands on current)
+        s.tick(); // the fire covering the last tap: skip, still pending
+        assert!(s.wants_fast_cadence());
+        s.tick(); // cancel-commit (lands on current)
         assert!(!s.wants_fast_cadence(), "a cancel-commit also clears the pending selection");
     }
 
@@ -384,8 +447,8 @@ mod tests {
         let mut s = Sessions::default();
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
-        assert!(s.cycle(Direction::Next, 1), "starting a selection flips a `selected` flag in the badge");
-        assert!(s.cycle(Direction::Next, 2), "advancing the selection moves the `selected` flag");
+        assert!(s.cycle(Direction::Next), "starting a selection flips a `selected` flag in the badge");
+        assert!(s.cycle(Direction::Next), "advancing the selection moves the `selected` flag");
     }
 
     // -- Selection identity (not positional index) ---------------------------
@@ -399,7 +462,7 @@ mod tests {
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0)]);
         // Order: work (current), alpha, beta — both zero-attention, by name.
-        s.cycle(Direction::Next, 1); // selects alpha (first non-current)
+        s.cycle(Direction::Next); // selects alpha (first non-current)
 
         // "aardvark" joins and sorts ahead of "alpha" in the rest bucket. A
         // positional-index selection (old index 1) would now point at
@@ -408,7 +471,8 @@ mod tests {
         // this is the same "membership changed under the selection" shape.
         s.update_presences(vec![presence("aardvark", 1, 0), presence("alpha", 1, 0), presence("beta", 1, 0)]);
 
-        let t = s.tick(2).expect("idle tick commits");
+        s.tick(); // the fire covering the tap: skip, clears the flag
+        let t = s.tick().expect("a quiet fire commits");
         assert_eq!(t.name, "alpha", "selection must follow the named session, not the reordered index");
     }
 
@@ -417,10 +481,11 @@ mod tests {
         let mut s = Sessions::default();
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 0, 0)]);
-        s.cycle(Direction::Next, 1); // selects alpha
+        s.cycle(Direction::Next); // selects alpha
         s.update_presences(vec![]); // alpha's presence vanished before the idle tick
 
-        assert_eq!(s.tick(2), None, "a vanished selection must not commit");
+        s.tick(); // the fire covering the tap: skip, clears the flag (selection still pending)
+        assert_eq!(s.tick(), None, "a vanished selection must not commit");
         assert!(!s.wants_fast_cadence(), "the cleared selection must not keep fast cadence armed");
     }
 
@@ -437,7 +502,7 @@ mod tests {
         s.update_presences(vec![presence("alpha", 1, 0), presence("beta", 1, 0), presence("gamma", 1, 0)]);
         // No attention: order is work (current), then alpha, beta, gamma by name.
 
-        s.cycle(Direction::Next, 1); // selects alpha (first non-current)
+        s.cycle(Direction::Next); // selects alpha (first non-current)
 
         // alpha vanishes, leaving a fresh order with *two* non-current entries
         // (beta, gamma) — order: work, beta, gamma.
@@ -451,7 +516,7 @@ mod tests {
         // land on the last entry (gamma) — the same bug that, under
         // Direction::Next, would coincidentally land on beta too and pass
         // silently.
-        s.cycle(Direction::Prev, 2);
+        s.cycle(Direction::Prev);
         let badge = s.badge();
         let selected: Vec<&str> = badge.iter().filter(|b| b.selected).map(|b| b.name.as_str()).collect();
         assert_eq!(
@@ -461,7 +526,8 @@ mod tests {
              non-current entry, not fall back to advancing from index 0"
         );
 
-        let t = s.tick(3).expect("idle tick commits");
+        s.tick(); // the fire covering the last tap: skip, clears the flag
+        let t = s.tick().expect("a quiet fire commits");
         assert_eq!(t.name, "beta", "after vanished selection, cycle must restart and select the first non-current entry");
     }
 
@@ -513,7 +579,7 @@ mod tests {
         s.set_own(own("work"));
         // No presences, no peers — work is the only session.
 
-        let changed = s.cycle(Direction::Next, 1);
+        let changed = s.cycle(Direction::Next);
         assert!(!changed, "cycle with nothing to select must return false (no badge change)");
         assert!(!s.wants_fast_cadence(), "cycle with nothing to select must not set up a pending selection");
     }
