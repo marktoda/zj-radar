@@ -292,6 +292,13 @@ impl PluginRuntime {
         permission: PermissionProbe,
     ) -> Outcome {
         self.config = config;
+        // Load's single clock capture, stored eagerly (and reused by
+        // `begin_permission_flow`'s arm below, keeping one "now" per event):
+        // `session_name_changed` — often the very next event in — has no
+        // epoch of its own and replays `last_now_epoch_s`, so without this
+        // seed the first presence write would go out stamped
+        // `updated_epoch_s: 0`.
+        self.last_now_epoch_s = crate::clock::now_epoch_s();
         if let Some(raw) = snapshot {
             if let Some(tick) = self.radar.load_snapshot(raw) {
                 self.tick = tick;
@@ -712,8 +719,10 @@ impl PluginRuntime {
         // waiting on a peer's marker, or our own request is in-flight. Pre-grant
         // Zellij withholds the state events that would otherwise trigger a paint
         // (they need ReadApplicationState), so this timer is the only thing that
-        // gets the needs_permission screen onto the rail.
-        self.arm_timer_if_needed(crate::clock::now_epoch_s(), &mut effects);
+        // gets the needs_permission screen onto the rail. `last_now_epoch_s`
+        // is the capture `load` (this fn's sole caller) took at entry — not a
+        // second clock read, so the whole load event sees a single "now".
+        self.arm_timer_if_needed(self.last_now_epoch_s, &mut effects);
         // Load always initializes the sidebar's selectability, every arm.
         effects.push(Effect::SetSelectable(self.permission.selectable()));
         Outcome::with_effects(false, effects)
@@ -738,16 +747,22 @@ impl PluginRuntime {
     }
 
     /// Spec §10 cadence function. Fast (1s) while anything tick-windowed is
-    /// live; Slow (60s) while ledger ages are still changing; None once every
-    /// age is saturated ("1h+") — the battery property's full-disarm state.
-    /// A *denied* rail disarms unconditionally: without `ReadApplicationState`
-    /// none of the events that clear domain work ever arrive, so a stale
-    /// `Running` loaded from a snapshot would otherwise pin Fast ticks and
-    /// repaints forever behind a static needs-permission face.
+    /// live; Slow (60s) while ledger ages are still changing — or, once
+    /// `session_name_changed` has landed, forever. None — the battery
+    /// property's full-disarm state — therefore survives in exactly two
+    /// shapes: *pre-name* (no `ModeUpdate` has delivered a session name yet,
+    /// so there is no presence file whose liveness needs a heartbeat) and
+    /// *denied*. A *denied* rail disarms unconditionally: without
+    /// `ReadApplicationState` none of the events that clear domain work ever
+    /// arrive, so a stale `Running` loaded from a snapshot would otherwise
+    /// pin Fast ticks and repaints forever behind a static needs-permission
+    /// face.
     /// `now_epoch_s` is the event's single clock capture (the stores already
     /// take epochs as arguments; this extends that discipline up through the
     /// runtime so one event never sees two different "now"s).
     fn desired_cadence(&self, now_epoch_s: u64) -> Option<Cadence> {
+        // The early return outranks the name check below by construction: a
+        // denied rail must fully disarm even though its name is known.
         if self.permission.denied() {
             return None;
         }
@@ -762,10 +777,19 @@ impl PluginRuntime {
             Some(Cadence::Fast)
         } else if self.radar.ledger_any_unsaturated(now_epoch_s)
             || self.radar.pending_wait_unsaturated(now_epoch_s)
+            // A known name means this session has published a presence file
+            // whose mtime is the ONLY liveness signal peers read
+            // (`session_files::PRESENCE_LIVE_TTL`), and `timer`'s Slow-fire
+            // heartbeat is the only writer keeping it fresh. Fully disarming
+            // would freeze that mtime and get a still-alive idle session
+            // dropped from every peer's badge 180s later — so the chain must
+            // stay (at least) Slow-armed for as long as the name is known.
+            || !self.own_session_name.is_empty()
         {
             // Slow ticks exist to advance minute-granular ages: ledger rows'
-            // relative ages and pending rows' `· Nm` wait tags. Both freeze at
-            // 1h+ (saturation), which is what lets the timer disarm fully.
+            // relative ages and pending rows' `· Nm` wait tags. Both freeze
+            // at 1h+ (saturation) — which, before the name is learned, is
+            // what lets the timer disarm fully.
             Some(Cadence::Slow)
         } else {
             None

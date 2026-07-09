@@ -1417,6 +1417,10 @@ fn idle_with_fresh_history_arms_slow_and_repaints() {
 
 #[test]
 fn saturated_history_fully_disarms() {
+    // The battery property's full-disarm pin — deliberately PRE-NAME (no
+    // `session_name_changed` ever lands, so `own_session_name` stays at its
+    // Default empty). Once a name is known the presence-liveness heartbeat
+    // keeps Slow armed instead — see the sibling test below.
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
@@ -1445,6 +1449,66 @@ fn saturated_history_fully_disarms() {
         outcome.effects
     );
     assert!(rt.timer_chain.armed().is_none());
+}
+
+#[test]
+fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
+    // Sibling of `saturated_history_fully_disarms`, adding the one
+    // ingredient that test leaves out: a learned own-session name. Once the
+    // name is known this session owns a presence file, and that file's
+    // mtime is the ONLY liveness signal peers read
+    // (`session_files::PRESENCE_LIVE_TTL`) — refreshed solely by `timer`'s
+    // Slow-fire heartbeat. Were the chain to fully disarm on a saturated
+    // idle rail, that heartbeat would never fire again, the mtime would
+    // freeze, and after 180s every peer would drop this still-alive
+    // session's badge — exactly the idle-but-visible case the feature
+    // exists for. So: saturation may step the cadence down to Slow, but
+    // never to None while the name is known.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+        at_epoch_s: 0,
+        outcome: crate::ledger::LedgerOutcome::Done,
+        tab_id: TabId::new(1),
+        tab_name: "work".into(),
+        label: "cargo test".into(),
+        pane_id: 5,
+    });
+    // Seed `last_now_epoch_s` with a real wall-clock capture (any entry
+    // point that owns an epoch does) BEFORE the name lands, so the arm
+    // decision inside `session_name_changed`'s project pass evaluates at
+    // true "now" — where the 0-stamped ledger entry above reads as
+    // saturated — and not at the Default epoch 0, where that entry would
+    // still look fresh and arm Slow for the wrong reason.
+    let nameless = rt.tabs_changed(vec![]);
+    assert!(
+        !nameless.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+        "setup: nameless + saturated must stay fully disarmed, got {:?}",
+        nameless.effects
+    );
+
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(
+        named.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+        "learning the name must arm the Slow heartbeat, got {:?}",
+        named.effects
+    );
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
+
+    // The Slow fire must refresh the presence mtime AND re-arm itself —
+    // the self-sustaining loop that keeps an idle session inside the TTL.
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(
+        slow.effects.contains(&Effect::PersistPresence),
+        "the heartbeat refreshes the presence file, got {:?}", slow.effects
+    );
+    assert!(
+        slow.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+        "the heartbeat chain re-arms itself, got {:?}", slow.effects
+    );
 }
 
 #[test]
@@ -1663,6 +1727,16 @@ fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once(
     drive_tabs_and_panes(&mut rt); // tab 0 / pane 7, the row `own_presence` reads
 
     rt.command_changed(7, &["cargo".into(), "test".into()], true); // pending, not yet Running
+
+    // The named-idle heartbeat pre-armed Slow inside the helper's
+    // `session_name_changed`, so `command_changed`'s Fast arm above was a
+    // Slow→Fast top-up: TWO fires are now in flight, and the probe below
+    // needs its Slow fire to land as the LIVE chain. Retire the stale
+    // slow-armed fire first (the "rare order" of
+    // `stale_slow_fire_landing_first_is_swallowed`): swallowed whole, so it
+    // doesn't advance the debounce tick count either.
+    let stale = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert_eq!(stale, Outcome::none(), "setup: the pre-armed slow fire is stale and swallowed");
 
     // Ticks short of the debounce window: quiet, and don't disturb the fire
     // count `timer`'s final Slow fire below needs to land as the live chain.
