@@ -1784,3 +1784,380 @@ fn read_presences_is_bound_to_fast_fires_only() {
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
     assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }
+
+// ── Fast-decay heartbeat survival (task-13 investigation) ───────────────
+//
+// Field reports: sessions that had Fast-cadence activity and then decayed
+// to idle stopped heartbeating (their presence file's mtime froze), while
+// a session idle from birth (never armed Fast) kept heartbeating forever.
+// Suspected mechanism: the Fast→Slow decay stranding `TimerChain` — the
+// original stale Slow arm from before the top-up lands, gets swallowed as
+// stale (`TimerChain::on_fire`'s elapsed+pending check), and the chain
+// never re-arms. The tests below drive `PluginRuntime::timer` through a
+// real fire-order simulation (`FireSim`, not hand-picked `elapsed_s`
+// values) across the exact interleaving, a long sustained-busy variant, a
+// flapping-activity variant, and a property-fuzzed search over thousands
+// of random event/fire orderings (`timer_chain_fuzz` below) — all confirm
+// the *current* `arm`/`on_fire` bookkeeping self-corrects: whichever fire
+// is chronologically last to land is always the one treated as live, and
+// it always re-arms (see task-13-report.md for the full trace). Kept as
+// permanent regression coverage for this exact hypothesis, not as a
+// reproduction of a confirmed bug.
+
+/// A one-shot, non-cancellable `set_timeout` queue, exactly like Zellij's:
+/// every `Effect::SetTimeout` schedules a real future fire at `now + dur`,
+/// and fires are delivered in absolute-time order (never reordered) —
+/// mirroring lib.rs's `set_timeout(cadence.seconds())` and Zellij's own
+/// single-threaded event loop. Used to drive `PluginRuntime::timer` the way
+/// production actually does, instead of hand-picking `elapsed_s` values.
+struct FireSim {
+    now_ms: u64,
+    queue: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64)>>,
+}
+impl FireSim {
+    fn new() -> Self {
+        Self { now_ms: 0, queue: Default::default() }
+    }
+    fn schedule_from(&mut self, effects: &[Effect]) {
+        for e in effects {
+            if let Effect::SetTimeout(c) = e {
+                let dur_ms = (c.seconds() * 1000.0).round() as u64;
+                self.queue.push(std::cmp::Reverse((self.now_ms + dur_ms, dur_ms)));
+            }
+        }
+    }
+    /// Pop the earliest scheduled fire and report it as `timer()` wants:
+    /// `elapsed_s` = the duration it was armed with (matches lib.rs's
+    /// documented approximation).
+    fn pop(&mut self) -> Option<f64> {
+        let std::cmp::Reverse((at, dur_ms)) = self.queue.pop()?;
+        self.now_ms = at;
+        Some(dur_ms as f64 / 1000.0)
+    }
+}
+
+#[test]
+fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
+    // The exact suspected interleaving: Slow-armed idle, a Fast top-up,
+    // several Fast fires driving real work, activity ends, and the
+    // ORIGINAL stale Slow arm lands somewhere in the stream. Run it out
+    // past 15 minutes of virtual time and assert every live Slow fire
+    // still re-arms and still heartbeats.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    let mut sim = FireSim::new();
+
+    // name-known: arms Slow immediately (idle from birth so far).
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    // busy: a running command tops up Fast on top of the still-outstanding
+    // Slow arm — exactly the "TWO in flight" case 24968b1's tests pinned.
+    let busy = rt.status_pipe(&payload_json(7, "running"));
+    sim.schedule_from(&busy.effects);
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: busy tops up Fast");
+
+    // Drive real fires for a few seconds of Fast-cadence "work", then end
+    // the activity (status -> done, which settles and lets the row go
+    // idle), continuing to drain the FireSim exactly as Zellij would
+    // deliver it — including the original stale Slow fire, whenever in
+    // this stream it actually lands.
+    let mut ended_activity = false;
+    let mut stale_swallows = 0;
+    for i in 0.. {
+        let Some(elapsed) = sim.pop() else { break };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        if out == Outcome::none() {
+            stale_swallows += 1;
+        }
+        sim.schedule_from(&out.effects);
+
+        if i == 3 && !ended_activity {
+            ended_activity = true;
+            let done = rt.status_pipe(&payload_json(7, "done"));
+            sim.schedule_from(&done.effects);
+        }
+        // Stop once we've drained past the point business has settled AND
+        // the chain has decayed back to Slow-only (no Fast desire left).
+        if ended_activity && rt.timer_chain.armed() == Some(Cadence::Slow) && sim.queue.len() <= 1 {
+            break;
+        }
+        if i > 500 {
+            panic!("setup: never settled back to a single Slow chain");
+        }
+    }
+    assert!(
+        stale_swallows >= 1,
+        "setup: the original Slow arm must actually land and get swallowed as \
+         stale during this drain — otherwise this test never exercises the \
+         'two in flight' interleaving at all"
+    );
+
+    // Now simulate 15 minutes of virtual time purely via the FireSim queue
+    // — no more domain events, exactly an idle-but-alive session. Every
+    // live fire must be a Slow fire that (a) re-arms and (b) heartbeats.
+    let mut live_fires = 0;
+    while sim.now_ms < 15 * 60 * 1000 {
+        let Some(elapsed) = sim.pop() else {
+            panic!(
+                "TimerChain starved: nothing scheduled at virtual t={:.1}s \
+                 (armed={:?}) — the chain believes itself armed with no \
+                 timeout outstanding",
+                sim.now_ms as f64 / 1000.0,
+                rt.timer_chain.armed(),
+            );
+        };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+
+        if out == Outcome::none() {
+            continue; // correctly-swallowed stale fire
+        }
+        live_fires += 1;
+        assert!(
+            elapsed > STALE_FIRE_ELAPSED_S,
+            "expected only Slow fires once idle, got elapsed={elapsed} at t={:.1}s",
+            sim.now_ms as f64 / 1000.0
+        );
+        assert!(
+            out.effects.contains(&Effect::PersistPresence),
+            "live Slow fire at t={:.1}s must heartbeat, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+        assert!(
+            out.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+            "live Slow fire at t={:.1}s must re-arm, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+    }
+    assert!(
+        live_fires >= 10,
+        "expected at least 10 live Slow heartbeats over 15 virtual minutes, got {live_fires}"
+    );
+}
+
+/// Drain `sim`/`rt` until the chain is Slow-only-armed with nothing else
+/// outstanding, feeding every fire (live or stale) back through `timer`.
+/// Panics past a generous bound instead of looping forever on a genuine
+/// stall, so a hang shows up as a normal test failure.
+fn drain_to_settled_slow(rt: &mut PluginRuntime, sim: &mut FireSim) {
+    for _ in 0..2000 {
+        if rt.timer_chain.armed() == Some(Cadence::Slow) && sim.queue.len() <= 1 {
+            return;
+        }
+        let Some(elapsed) = sim.pop() else { panic!("starved before settling to Slow") };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+    }
+    panic!("never settled back to a single Slow chain");
+}
+
+/// Run `sim`/`rt` forward for `minutes` of pure idle virtual time (no more
+/// domain events), asserting every live fire is a heartbeating Slow fire.
+/// Returns the live-fire count.
+fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64) -> u64 {
+    let deadline_ms = sim.now_ms + minutes * 60_000;
+    let mut live_fires = 0;
+    while sim.now_ms < deadline_ms {
+        let Some(elapsed) = sim.pop() else {
+            panic!(
+                "TimerChain starved at virtual t={:.1}s (armed={:?})",
+                sim.now_ms as f64 / 1000.0,
+                rt.timer_chain.armed(),
+            );
+        };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+        if out == Outcome::none() {
+            continue;
+        }
+        live_fires += 1;
+        assert!(
+            out.effects.contains(&Effect::PersistPresence),
+            "live fire at t={:.1}s must heartbeat, got {:?}",
+            sim.now_ms as f64 / 1000.0,
+            out.effects
+        );
+    }
+    live_fires
+}
+
+#[test]
+fn slow_heartbeat_survives_a_long_sustained_busy_period() {
+    // Variant where the original stale Slow fire's 60s deadline actually
+    // elapses WHILE Fast activity is still ongoing (not right at the
+    // boundary), so it gets swallowed mid-burst rather than right at the
+    // busy/idle seam.
+    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    let busy = rt.status_pipe(&payload_json(7, "running"));
+    sim.schedule_from(&busy.effects);
+
+    // Sustain Fast for 200 virtual seconds (>> the 60s Slow deadline) of
+    // pure timer-driven work — no further domain events.
+    for _ in 0..200 {
+        let Some(elapsed) = sim.pop() else { panic!("starved mid-burst") };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+    }
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: still busy at t=200s");
+
+    let done = rt.status_pipe(&payload_json(7, "done"));
+    sim.schedule_from(&done.effects);
+    drain_to_settled_slow(&mut rt, &mut sim);
+
+    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(live_fires >= 10, "expected >=10 heartbeats, got {live_fires}");
+}
+
+#[test]
+fn slow_heartbeat_survives_flapping_activity_then_settling() {
+    // The "actively-used agent" shape: many short bursts with brief idle
+    // gaps in between (too short for even one Slow fire to land), each one
+    // a fresh Slow->Fast top-up stacking a fresh stale-Slow-to-be behind
+    // the last — then a final, permanent idle settle.
+    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    for cycle in 0..40 {
+        let busy = rt.status_pipe(&payload_json(7, "running"));
+        sim.schedule_from(&busy.effects);
+        for _ in 0..3 {
+            let Some(elapsed) = sim.pop() else { panic!("starved in flap cycle {cycle}") };
+            let out = rt.timer(PermissionProbe::default(), elapsed);
+            sim.schedule_from(&out.effects);
+        }
+        let done = rt.status_pipe(&payload_json(7, "done"));
+        sim.schedule_from(&done.effects);
+        // A couple settle ticks, then straight into the next burst — no
+        // time for the chain to fully decay to a lone Slow.
+        for _ in 0..2 {
+            let Some(elapsed) = sim.pop() else { panic!("starved settling flap cycle {cycle}") };
+            let out = rt.timer(PermissionProbe::default(), elapsed);
+            sim.schedule_from(&out.effects);
+        }
+    }
+
+    drain_to_settled_slow(&mut rt, &mut sim);
+    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(live_fires >= 10, "expected >=10 heartbeats after flapping settled, got {live_fires}");
+}
+
+mod timer_chain_fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Clone, Debug)]
+    enum Step {
+        /// Pop and deliver the earliest scheduled fire (real FIFO order).
+        Fire,
+        /// A domain edge that can flip `has_running_work` — the real trigger
+        /// for a Slow<->Fast cadence transition.
+        SetRunning(bool),
+        /// The cross-session cycle's own direct `arm_timer_if_needed` call
+        /// site (`control()`), which bypasses `project()` entirely.
+        SessionCycle,
+    }
+
+    fn arb_step() -> impl Strategy<Value = Step> {
+        prop_oneof![
+            4 => Just(Step::Fire),
+            1 => any::<bool>().prop_map(Step::SetRunning),
+            1 => Just(Step::SessionCycle),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn timer_chain_never_starves_a_named_granted_session(
+            steps in proptest::collection::vec(arb_step(), 0..300)
+        ) {
+            let mut rt = PluginRuntime {
+                permission: PermissionState::Resolved { granted: true },
+                config: config(),
+                ..Default::default()
+            };
+            let mut sim = FireSim::new();
+            let named = rt.session_name_changed(Some("work".into()));
+            sim.schedule_from(&named.effects);
+            drive_tabs_and_panes(&mut rt);
+
+            for step in steps {
+                match step {
+                    Step::Fire => {
+                        if let Some(elapsed) = sim.pop() {
+                            let out = rt.timer(PermissionProbe::default(), elapsed);
+                            sim.schedule_from(&out.effects);
+                        }
+                    }
+                    Step::SetRunning(running) => {
+                        let status = if running { "running" } else { "done" };
+                        let out = rt.status_pipe(&payload_json(7, status));
+                        sim.schedule_from(&out.effects);
+                    }
+                    Step::SessionCycle => {
+                        let out = rt.control(Verb::SessionNext);
+                        sim.schedule_from(&out.effects);
+                    }
+                }
+                // The invariant: a named, permission-granted session's
+                // `desired_cadence` is NEVER `None` (barring denial, which
+                // never happens on this path) — so the moment nothing is
+                // physically outstanding, the chain has permanently
+                // stranded itself; no future event will ever revive it,
+                // because nothing left to arm/on_fire from.
+                prop_assert!(
+                    !sim.queue.is_empty(),
+                    "TimerChain starved: no physical timer outstanding \
+                     (armed={:?}) after step, session still named+granted",
+                    rt.timer_chain.armed(),
+                );
+            }
+
+            // Stronger post-condition, independent of the starve check
+            // above: after the random churn stops, force any dangling
+            // `status_pipe`-origin busy edge closed (a *still-running*
+            // agent legitimately keeps Fast armed forever — that's correct,
+            // not a bug, so it must not be mistaken for one here) and let
+            // no more domain events land. A generous drain (well past
+            // DONE_TTL_TICKS=60 and any plausible stacked-stale-fire
+            // backlog) must still reach a genuine Slow heartbeat —
+            // catching a chain that's stuck "armed" on paper but only ever
+            // fires (or only ever gets swallowed as stale) without ever
+            // landing a live, presence-persisting Slow fire again.
+            let close = rt.status_pipe(&payload_json(7, "done"));
+            sim.schedule_from(&close.effects);
+            let mut settled = false;
+            for _ in 0..5000 {
+                let Some(elapsed) = sim.pop() else { break };
+                let out = rt.timer(PermissionProbe::default(), elapsed);
+                sim.schedule_from(&out.effects);
+                if elapsed > STALE_FIRE_ELAPSED_S && out.effects.contains(&Effect::PersistPresence) {
+                    settled = true;
+                    break;
+                }
+            }
+            prop_assert!(
+                settled,
+                "no live Slow heartbeat landed within 5000 drained fires after churn stopped \
+                 (armed={:?}, queue_len={})",
+                rt.timer_chain.armed(),
+                sim.queue.len(),
+            );
+        }
+    }
+}
