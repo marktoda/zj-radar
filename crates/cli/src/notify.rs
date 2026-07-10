@@ -306,8 +306,9 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
 /// seconds — shared with notify.sh's bash fallback, keep the two in sync)
-/// overrides for tests; 5s is orders of magnitude above a healthy send
-/// (milliseconds) yet caps a wedged one at hook rate. Clamped to an hour:
+/// overrides for tests; the shared default (`pipe::DEFAULT_PIPE_TIMEOUT_SECS`)
+/// is orders of magnitude above a healthy send (milliseconds) yet caps a
+/// wedged one at hook rate. Clamped to an hour:
 /// `Instant::now() + Duration::from_secs(u64::MAX)` overflows and panics,
 /// and this module promises the calling hook never sees a panic.
 fn pipe_send_timeout() -> std::time::Duration {
@@ -319,7 +320,7 @@ fn pipe_send_timeout() -> std::time::Duration {
 fn parse_pipe_timeout(raw: Option<String>) -> std::time::Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .map(|secs| std::time::Duration::from_secs(secs.min(3600)))
-        .unwrap_or(std::time::Duration::from_secs(5))
+        .unwrap_or(std::time::Duration::from_secs(crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS))
 }
 
 #[cfg(test)]
@@ -330,12 +331,14 @@ mod tests {
 
     #[test]
     fn pipe_timeout_defaults_and_falls_back_on_garbage() {
-        // Unset, non-numeric, negative, and suffixed forms all take the 5s
-        // default — fail closed, matching notify.sh's regex guard.
+        // Unset, non-numeric, negative, and suffixed forms all take the shared
+        // default — fail closed, matching notify.sh's regex guard. Pinned to
+        // the core constant so the CLI's watchdog and parent deadline can
+        // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
                 parse_pipe_timeout(raw.map(String::from)).as_secs(),
-                5,
+                crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
         }

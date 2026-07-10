@@ -29,9 +29,23 @@ pub const DEFAULT_PIPE_TIMEOUT_SECS: u64 = 5;
 // $1 = deadline seconds, $2 = pipe name, $3 = payload — positional parameters,
 // never interpolated into the script (same no-escaping rule as the plugin's
 // `notify_command`), so an arbitrary payload cannot break out of the command.
-// The watchdog's expiring `kill` could in principle target a recycled pid; the
-// disarm after a normal send narrows that window to the same accepted residual
-// notify.sh documents.
+//
+// Accepted residuals, shared with notify.sh's inline copy of this idiom (keep
+// the two in sync):
+//  - The watchdog's expiring `kill` could in principle target a recycled pid;
+//    the disarm after a normal send narrows that window to microseconds.
+//  - Disarming kills only the watchdog subshell: its orphaned `sleep` lingers
+//    ≤ $1 seconds after every healthy send and exits without acting (the kill
+//    line is unreachable once the subshell is gone) — accepted `ps` noise.
+//  - The kill is a single SIGTERM to the direct child: sufficient because
+//    `zellij pipe` is one process with the default TERM disposition (it execs,
+//    forks no helpers, traps nothing). A client that ignored TERM or hid the
+//    blocked process behind a child would outlive the watchdog.
+//  - If the watchdog's own fork fails (process-table exhaustion), the client
+//    runs unbounded: forks 1-2 succeeding while fork 3 fails is a double-
+//    failure corner. The total fix — spawning the subtree in its own process
+//    group and group-killing from the producer's backstop — isn't worth the
+//    platform surface yet.
 const SELF_LIMITING_SEND: &str = concat!(
     "zellij pipe --name \"$2\" -- \"$3\" >/dev/null 2>&1 & p=$!; ",
     "( sleep \"$1\"; kill \"$p\" ) >/dev/null 2>&1 & w=$!; ",
@@ -82,6 +96,44 @@ mod tests {
         assert!(SELF_LIMITING_SEND.contains("kill \"$p\""));
         assert!(SELF_LIMITING_SEND.contains("wait \"$p\""));
         assert!(SELF_LIMITING_SEND.contains("kill \"$w\""));
+    }
+
+    /// The healthy path must not ride the watchdog: a fast send exits the
+    /// wrapper immediately, well before the deadline. Guards the disarm
+    /// against regressions like `wait "$p"` becoming a bare `wait` (which
+    /// would block on the watchdog's sleep too) — that would stall every
+    /// producer hook ~5s per tool call with the whole suite still green,
+    /// since the hung-path tests only assert reaping, not latency.
+    #[test]
+    fn healthy_send_exits_immediately_not_at_the_watchdog_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let shim = dir.path().join("zellij");
+        std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let argv = self_limiting_pipe_argv("{}", DEFAULT_PIPE_TIMEOUT_SECS);
+        let mut path = dir.path().as_os_str().to_owned();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let start = std::time::Instant::now();
+        let status = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("PATH", path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "wrapper must exit 0 on a healthy send");
+        // Milliseconds when healthy; 2s is pure loaded-CI slack, still well
+        // clear of the 5s watchdog a coupled exit would wait on.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "wrapper rode the watchdog instead of exiting with the send ({}ms)",
+            start.elapsed().as_millis()
+        );
     }
 
     /// The property the argv exists for, exercised for real: spawn it against

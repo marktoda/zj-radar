@@ -154,15 +154,16 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     // (`core::pipe::self_limiting_pipe_argv`); killing the producer must not
     // disarm it.
     let shims = ShimDir::new();
-    shims.add_hanging_recorder_reporting_pid("zellij", 60);
+    shims.add_hanging_recorder("zellij", 60);
     shims.add_fake_git("/home/u/myrepo", "main");
 
+    let started = std::time::Instant::now();
     let mut notify = std::process::Command::new(env!("CARGO_BIN_EXE_zj-radar"))
         .args(["notify", "claude", "--status", "done"])
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
-        .env("ZJ_RADAR_PIPE_TIMEOUT", "2")
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "4")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -176,9 +177,21 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
             .unwrap();
     } // scope end closes stdin so the adapter's read returns
 
-    // Wait until the client is hung, then kill the producer BEFORE its 2s
-    // deadline — the moment a real hook runner would.
+    // Wait until the client is hung, then kill the producer BEFORE its 4s
+    // deadline — the moment a real hook runner would. The elapsed guard is
+    // what makes this test trustworthy: past the deadline a still-living
+    // notify reaps the client itself (the pre-fix behavior), and a green
+    // result would silently re-test the ordinary hung path above instead of
+    // the producer-death orphan this test exists to catch. Better a loud
+    // too-slow failure than a false pass.
     let pid = shims.wait_for_hung_pid("zellij", std::time::Duration::from_secs(10));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "test invalidated, not failed: machine too loaded to reach the kill \
+         before notify's own send deadline — the producer-death regression \
+         would be unobservable ({}ms elapsed)",
+        started.elapsed().as_millis()
+    );
     notify.kill().unwrap();
     notify.wait().unwrap();
 
@@ -203,4 +216,7 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    // Reaped — and the broadcast was still attempted: the payload reached
+    // zellij's argv before the hang, so killing the client lost nothing.
+    assert_eq!(shims.recorded("zellij").len(), 1);
 }

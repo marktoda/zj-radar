@@ -43,36 +43,19 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
-    /// Install a fake `name` binary that records argv like `add_recorder`, then
-    /// hangs for `secs` — models a `zellij pipe` blocked by a wedged plugin
-    /// (Zellij's CLI-pipe backpressure). `exec` so the shim process IS the
-    /// sleeper: a kill from the code under test must reap the hung process
-    /// itself, not an intermediate shell.
-    #[allow(dead_code)] // each tests/*.rs is its own crate; not all use this
+    /// Install a fake `name` binary that records argv like `add_recorder` and
+    /// reports its own pid to `<dir>/<name>.pid`, then hangs for `secs` —
+    /// models a `zellij pipe` blocked by a wedged plugin (Zellij's CLI-pipe
+    /// backpressure). `exec` so the shim process IS the sleeper: a kill from
+    /// the code under test must reap the hung process itself, not an
+    /// intermediate shell. The pid lands after the log line, so a test that
+    /// waits on the pid may also rely on the argv having been recorded.
     pub fn add_hanging_recorder(&self, name: &str, secs: u32) {
         let log = self.dir.path().join(format!("{name}.log"));
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
-            log = log
-        );
-        let bin = self.dir.path().join(name);
-        fs::write(&bin, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bin).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin, perms).unwrap();
-    }
-
-    /// Like `add_hanging_recorder`, but the shim also reports its own pid to
-    /// `<dir>/<name>.pid` before hanging (`exec` makes `$$` the sleeper
-    /// itself) — for tests that must observe whether the hung process was
-    /// reaped after the code under test is gone.
-    #[allow(dead_code)] // each tests/*.rs is its own crate; not all use this
-    pub fn add_hanging_recorder_reporting_pid(&self, name: &str, secs: u32) {
         let pid_file = self.dir.path().join(format!("{name}.pid"));
         let script = format!(
-            "#!/bin/sh\necho $$ > {pid_file:?}\nexec sleep {secs}\n",
-            pid_file = pid_file
+            "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\necho $$ > {pid_file:?}\nexec sleep {secs}\n",
+            log = log, pid_file = pid_file
         );
         let bin = self.dir.path().join(name);
         fs::write(&bin, script).unwrap();
@@ -82,10 +65,9 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
-    /// Poll for the pid reported by `add_hanging_recorder_reporting_pid`.
-    /// Panics past `timeout` — a shim that never started means the spawn
-    /// under test silently no-opped, which IS the failure to surface.
-    #[allow(dead_code)]
+    /// Poll for the pid reported by `add_hanging_recorder`. Panics past
+    /// `timeout` — a shim that never started means the spawn under test
+    /// silently no-opped, which IS the failure to surface.
     pub fn wait_for_hung_pid(&self, name: &str, timeout: std::time::Duration) -> u32 {
         let pid_file = self.dir.path().join(format!("{name}.pid"));
         let deadline = std::time::Instant::now() + timeout;
