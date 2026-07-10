@@ -511,6 +511,13 @@ ticking alone on an unchanged session never re-writes the file. Withheld
 entirely while `own_session_name` is empty (see below), since an unnamed
 presence file is useless to a peer.
 
+`running` and `attention` are live status-origin pane counts. `running` counts
+live panes whose pushed status is `Running`; `attention` counts live panes whose
+pushed status needs the user. Command-origin activity is deliberately excluded,
+and panes not present in the current topology do not count. This pane-level
+accounting is scoped to cross-session presence only: the local rail row rollups,
+header badge, and footer tally remain tab-level summaries.
+
 **Liveness heartbeat + staleness (task-14: never a hard drop).** Peers never
 call `SessionUpdate`/`get_session_list` to learn who's out there (see "Why
 not `SessionUpdate`" below) — liveness is read from the filesystem, not
@@ -572,10 +579,10 @@ fixed order shared with cycling: current session first, then any FRESH peer
 with `attention > 0` by name, then the rest of the fresh peers by name, then
 every STALE peer by name (a stale peer's attention count isn't actionable,
 so staleness outranks attention for ordering). Each line shows the session
-name plus a running count and an attention count when nonzero, using the
-same glyphs the per-tab rows use for those statuses. The current line is
-marked (dimmed, a small `•`) and carries no click target — you can't switch
-to the session you're already in. A pending cycle selection renders
+name plus the status-origin pane running count and attention count when
+nonzero, using the same glyphs the per-tab rows use for those statuses. The
+current line is marked (dimmed, a small `•`) and carries no click target — you
+can't switch to the session you're already in. A pending cycle selection renders
 bold+accent; a stale entry renders one step dimmer than the ordinary muted
 line color and a right-edge `✕` hotspot; clicking the glyph dismisses it,
 while clicking any other cell switches to that session, landing on its

@@ -3540,8 +3540,20 @@ fn hotspot_metadata_survives_cards_finalize_and_excludes_question_and_overflow_l
     let pane = rail.ansi.lines().position(|l| l.contains("ship it")).unwrap() as isize;
     let question = rail.ansi.lines().position(|l| l.contains("approve?")).unwrap() as isize;
     let more = rail.ansi.lines().position(|l| l.contains("more")).unwrap() as isize;
-    assert!(rail.hotspot_at_line(header).is_some(), "pending tab header gets ✓");
-    assert!(rail.hotspot_at_line(pane).is_some(), "pending pane identity gets ✓ after Cards finalize");
+    assert_eq!(
+        rail.hotspot_at_line(header),
+        Some((29, HotspotAction::Acknowledge {
+            target: RailTarget { tab_position: 0, pane_id: None, session: None },
+        })),
+        "pending tab header gets ✓ after Cards finalize"
+    );
+    assert_eq!(
+        rail.hotspot_at_line(pane),
+        Some((29, HotspotAction::Acknowledge {
+            target: RailTarget { tab_position: 0, pane_id: Some(10), session: None },
+        })),
+        "pending pane identity gets ✓ after Cards finalize"
+    );
     assert_eq!(rail.hotspot_at_line(question), None, "question continuation is never actionable");
     assert_eq!(rail.hotspot_at_line(more), None, "+N more is never actionable");
 }

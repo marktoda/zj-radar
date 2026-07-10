@@ -1494,15 +1494,18 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         let row = &rows[i];
         let row_target = target_for_row(row);
 
-        // Resolve a raw line's surface through the one `LineBg::escape` map and
-        // paint it (Cards only). The emitted line is final, so it carries
-        // `LineBg::None`; its footprint is exactly the lines pushed here.
-        let finalize = |bg: LineBg, text: String, target: Option<RailTarget>, hotspot: Option<(usize, HotspotAction)>| -> Line {
-            let text = match bg.escape(row, &opts.theme, &rail) {
-                Some(esc) if cards => paint_card_line(&text, width, &esc),
-                _ => text,
+        // Resolve a raw line's surface through the one `LineBg::escape` map by
+        // consuming the complete `Line`. Metadata such as targets and hotspots
+        // rides inside the value, so Cards finalization cannot forget it when
+        // `Line` grows another lockstep field.
+        let finalize = |line: Line| -> Line {
+            let bg = line.bg;
+            let mut line = match bg.escape(row, &opts.theme, &rail) {
+                Some(esc) if cards => line.painted(width, &esc),
+                _ => line,
             };
-            Line::new(text, target, LineBg::None).with_hotspot_opt(hotspot)
+            line.bg = LineBg::None;
+            line
         };
 
         // pad_y internal top padding — belongs to this card's click span.
@@ -1510,17 +1513,17 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // `String`) — `pad_y` can be >1, so a plain move would only survive
         // the first pass.
         for _ in 0..spacing.pad_y {
-            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target.clone()), None));
+            flat.push(finalize(Line::new("\n".to_string(), Some(row_target.clone()), LineBg::Card)));
         }
 
         // content (truncated to the planned budget == today's compression).
         for line in blocks[i].iter().take(budget) {
-            flat.push(finalize(line.bg, line.text.clone(), line.target.clone(), line.hotspot.clone()));
+            flat.push(finalize(line.clone()));
         }
 
         // gap external separation (dark panel base in Cards).
         for _ in 0..spacing.gap {
-            flat.push(finalize(LineBg::Rail, "\n".to_string(), None, None));
+            flat.push(finalize(Line::new("\n".to_string(), None, LineBg::Rail)));
         }
     }
 

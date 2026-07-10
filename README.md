@@ -54,7 +54,7 @@ wrapping your agents. It's a status rail for the session you already run.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
   [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
 - Running more than one Zellij session? A **cross-session badge** shows every
-  other session's running/attention counts, with click-to-switch and a
+  other session's live status-origin pane counts, with click-to-switch and a
   `session-next`/`session-prev` cycle — see below.
 
 ## Quick start
@@ -125,8 +125,11 @@ per project) and each session's rail quietly publishes its own counts for
 the others to see — no setup needed. Once a second session is live, every
 rail grows a line per session: current session first, then any session that
 needs your attention, then the rest — name plus running/attention counts.
-With just one session running, the badge renders nothing; the feature stays
-invisible until there's genuinely something cross-session to show.
+Those badge counts are live pane counts from status producers only: command
+activity is excluded, while the local rail rows, header badge, and footer tally
+deliberately remain tab-level summaries. With just one session running, the
+badge renders nothing; the feature stays invisible until there's genuinely
+something cross-session to show.
 
 Click a peer's line to switch straight to that session (landing on its
 attention tab, if it has one). Or cycle the highlight with `session-next` /
