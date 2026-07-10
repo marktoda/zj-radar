@@ -63,6 +63,47 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
+    /// Like `add_hanging_recorder`, but the shim also reports its own pid to
+    /// `<dir>/<name>.pid` before hanging (`exec` makes `$$` the sleeper
+    /// itself) — for tests that must observe whether the hung process was
+    /// reaped after the code under test is gone.
+    #[allow(dead_code)] // each tests/*.rs is its own crate; not all use this
+    pub fn add_hanging_recorder_reporting_pid(&self, name: &str, secs: u32) {
+        let pid_file = self.dir.path().join(format!("{name}.pid"));
+        let script = format!(
+            "#!/bin/sh\necho $$ > {pid_file:?}\nexec sleep {secs}\n",
+            pid_file = pid_file
+        );
+        let bin = self.dir.path().join(name);
+        fs::write(&bin, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin, perms).unwrap();
+    }
+
+    /// Poll for the pid reported by `add_hanging_recorder_reporting_pid`.
+    /// Panics past `timeout` — a shim that never started means the spawn
+    /// under test silently no-opped, which IS the failure to surface.
+    #[allow(dead_code)]
+    pub fn wait_for_hung_pid(&self, name: &str, timeout: std::time::Duration) -> u32 {
+        let pid_file = self.dir.path().join(format!("{name}.pid"));
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hanging {name} shim never started (no pid in {pid_file:?})"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     /// Install a fake `git` that answers the `-C <cwd>` rev-parse/branch calls
     /// that `cli/notify.rs` makes.
     ///

@@ -142,3 +142,65 @@ fn hung_zellij_pipe_is_killed_at_the_send_deadline() {
     // The broadcast was still attempted (payload handed to zellij pre-hang).
     assert_eq!(shims.recorded("zellij").len(), 1);
 }
+
+#[test]
+fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
+    // The deadline in `broadcast`'s parent loop only helps while the producer
+    // LIVES to enforce it — and hook runners kill their hooks. A SIGKILLed
+    // notify must not orphan its blocked `zellij pipe` client: each orphan
+    // pins two Zellij-server FDs forever, and at hook rate that is the EMFILE
+    // session-crash class (observed in production as orphaned clients minutes
+    // old, ppid 1). The spawned subtree carries its own watchdog
+    // (`core::pipe::self_limiting_pipe_argv`); killing the producer must not
+    // disarm it.
+    let shims = ShimDir::new();
+    shims.add_hanging_recorder_reporting_pid("zellij", 60);
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    let mut notify = std::process::Command::new(env!("CARGO_BIN_EXE_zj-radar"))
+        .args(["notify", "claude", "--status", "done"])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = notify.stdin.take().unwrap();
+        stdin
+            .write_all(br#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}"#)
+            .unwrap();
+    } // scope end closes stdin so the adapter's read returns
+
+    // Wait until the client is hung, then kill the producer BEFORE its 2s
+    // deadline — the moment a real hook runner would.
+    let pid = shims.wait_for_hung_pid("zellij", std::time::Duration::from_secs(10));
+    notify.kill().unwrap();
+    notify.wait().unwrap();
+
+    // The orphaned subtree must still reap the hung client at its own
+    // deadline. Poll with slack for loaded CI rather than sleeping once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !alive {
+            break; // reaped — the leak is closed
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            panic!("blocked `zellij pipe` client leaked past its watchdog after the producer died");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}

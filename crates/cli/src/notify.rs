@@ -4,7 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
 use super::agents::{Agent, AgentUpdate, Intake};
-use crate::payload::{to_wire, StatusPayload, STATUS_PIPE_NAME};
+use crate::payload::{to_wire, StatusPayload};
 use crate::status::Status;
 use std::io::Read;
 use std::process::Command;
@@ -271,16 +271,26 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // the Zellij server EMFILEs and the whole session crashes. The message is
     // queued server-side the moment it's sent; killing the client past the
     // deadline retracts nothing and keeps sends sequential (latest-wins holds).
-    let Ok(mut child) = Command::new("zellij")
-        .args(["pipe", "--name", STATUS_PIPE_NAME, "--", &payload])
+    //
+    // The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
+    // sleep+kill watchdog), not just here: hook runners kill their hooks, and
+    // this process dying mid-send must not orphan a blocked client — that leak
+    // is exactly how a wedged session EMFILE-crashed in production despite the
+    // parent-side deadline below. The parent loop stays as the reaper on the
+    // normal path (and as a backstop), padded past the watchdog so the subtree
+    // ordinarily wins.
+    let timeout = pipe_send_timeout();
+    let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
+    let Ok(mut child) = Command::new(&argv[0])
+        .args(&argv[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
     else {
-        return; // zellij missing/unspawnable — same silent no-op as before
+        return; // sh missing/unspawnable — same silent no-op as before
     };
-    let deadline = std::time::Instant::now() + pipe_send_timeout();
+    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(1);
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return, // sent (or zellij errored) — done either way

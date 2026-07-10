@@ -14,7 +14,7 @@
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use zj_radar_core::{command, kind, payload, status};
+pub(crate) use zj_radar_core::{command, kind, payload, pipe, status};
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
