@@ -10,8 +10,10 @@
         assert!(is_shell_prompt(&argv(&["zsh"]), true));
         assert!(is_shell_prompt(&argv(&["/bin/bash"]), true));
         assert!(is_shell_prompt(&argv(&["fish"]), true));
-        // No foreground command at all = at the prompt.
-        assert!(is_shell_prompt(&argv(&["anything"]), false));
+        // A missing foreground signal is weak evidence: wrapper/child
+        // transitions can report it during a live agent turn, so it never
+        // starts the pushed Running grace clock.
+        assert!(!is_shell_prompt(&argv(&["anything"]), false));
         // An agent in the foreground still owns the pane — NOT the prompt.
         assert!(!is_shell_prompt(&argv(&["claude"]), true));
         assert!(!is_shell_prompt(&argv(&["codex"]), true));
@@ -1083,4 +1085,3 @@
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         assert_eq!(s.get(1).unwrap().status, Status::Running, "documented failure mode");
     }
-

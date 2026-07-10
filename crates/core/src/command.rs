@@ -449,13 +449,15 @@ fn effective_program(command: &[String]) -> (&[String], &str) {
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
-/// than running something we (or an agent) own. True when there is no foreground
-/// command, or the foreground is a shell/prompt program (`IGNORE_NAMES`). An
-/// agent (`AGENT_NAMES`) in the foreground is deliberately NOT "at the prompt" —
-/// the agent still owns the pane and drives it via the push pipe.
+/// than running something we (or an agent) own. This is deliberately strong
+/// evidence only: a foreground shell/prompt program (`IGNORE_NAMES`). A false
+/// `is_foreground` or unclassifiable argv can occur during a live agent's
+/// wrapper/child transition, so it must never start the pushed Running grace
+/// clock. The accepted trade-off is a killed agent can ghost until its next real
+/// prompt/pipe/exit/prune signal; bounded ghosts beat killing live work.
 pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
     if !is_foreground {
-        return true;
+        return false;
     }
     let (_, name) = effective_program(command);
     IGNORE_NAMES.contains(&name)

@@ -55,6 +55,23 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
 }
 
 #[test]
+fn weak_background_command_changed_never_starts_a_running_expiry_clock() {
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+
+    // Real Zellij can report `is_foreground: false` while a long agent owns a
+    // wrapper/child process. That is not proof of a shell prompt. Letting this
+    // weak edge start the clock used to clear live work 15 ticks later.
+    radar.command_changed(7, &["node".into()], false, 5);
+    for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
+        radar.timer(t, 0);
+    }
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
+}
+
+#[test]
 fn pending_wait_drives_the_slow_cadence_until_saturation() {
     // The `· Nm` wait tag advances at minute granularity, so an unsaturated
     // pending row must keep the Slow heartbeat armed — and release it once
