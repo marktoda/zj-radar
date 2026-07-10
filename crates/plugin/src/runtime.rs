@@ -440,9 +440,27 @@ impl PluginRuntime {
         self.project(effects, change, now)
     }
 
-    pub(crate) fn mouse_click(&self, line: isize) -> Outcome {
+    pub(crate) fn mouse_click(&mut self, line: isize, col: usize) -> Outcome {
         if !self.permission.granted() {
             return Outcome::none();
+        }
+        if let Some(action) = self.last_rendered.hotspot_at(line, col) {
+            return match action {
+                render::HotspotAction::DismissPresence { name } => {
+                    // A stale badge may have received a heartbeat between paint
+                    // and click. Re-check the live badge before locally hiding
+                    // it; a glyph never races away a healthy peer.
+                    if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
+                        Outcome::none()
+                    } else {
+                        let render = self.sessions.dismiss(&name);
+                        Outcome::with_effects(render, vec![Effect::DismissPresence { name }])
+                    }
+                }
+                render::HotspotAction::Acknowledge { target } => {
+                    Outcome::with_effects(false, self.acknowledge_pending_targets(&target))
+                }
+            };
         }
         let Some(target) = self.last_rendered.target_at_line(line) else {
             return Outcome::none();
@@ -484,7 +502,7 @@ impl PluginRuntime {
     ///   completed-turn-ending-in-a-courtesy-question trap: `Pending` has no
     ///   exit besides another broadcast, so a click that means "I saw it,
     ///   stop asking" has to BE one.
-    pub(crate) fn mouse_right_click(&mut self, line: isize) -> Outcome {
+    pub(crate) fn mouse_right_click(&mut self, line: isize, _col: usize) -> Outcome {
         if !self.permission.granted() {
             return Outcome::none();
         }
@@ -642,12 +660,23 @@ impl PluginRuntime {
     /// `Sessions`/`BadgeEntry` expect for a same-repo jump-on-arrival.
     fn own_presence(&self) -> Presence {
         let rows = self.radar.rows(self.tick);
-        let running = rows.iter().filter(|r| r.display.status == Status::Running).count();
+        // Presence is deliberately pane-level while the rail itself remains
+        // tab-rolled-up. `rows()` is already constrained by the current pane
+        // topology, so a pre-topology payload or stale store id cannot inflate
+        // cross-session counts; command observations are excluded at this
+        // seam, not inferred later from a tab's dominant status.
+        let running = rows.iter()
+            .flat_map(|r| &r.display.panes)
+            .filter(|p| p.is_status_origin() && p.status() == Some(Status::Running))
+            .count();
         let mut attention = 0usize;
         let mut attention_tab_position = None;
         for r in &rows {
-            if r.display.status.needs_you() {
-                attention += 1;
+            let tab_attention = r.display.panes.iter()
+                .filter(|p| p.is_status_origin() && p.status().is_some_and(Status::needs_you))
+                .count();
+            if tab_attention > 0 {
+                attention += tab_attention;
                 if attention_tab_position.is_none() {
                     attention_tab_position = Some(r.number as usize - 1);
                 }

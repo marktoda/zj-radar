@@ -154,6 +154,12 @@ tab 1 "pinky"
 > mark, activity. One layout to learn — a tab with one pane and a tab with
 > three scan identically.
 
+> **Action glyphs.** A stale cross-session badge ends in dim `✕`; an
+> unacknowledged status-origin pending tab header and its pane identity line
+> end in `✓`. The glyph is the final visible cell and the only left-click
+> action area; ordinary row cells navigate. Question continuations, `+N more`,
+> card padding, ledger, and headers never carry a hotspot.
+
 ## D. Single agent — needs you
 
 ```rail-input
@@ -164,8 +170,8 @@ tab 3 "api"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 3 api
- └ ◆ ✳ approve edit?
+ ◆ 3 api                       ✓
+ └ ◆ ✳ approve edit?           ✓
 ```
 
 ## E. Single agent — done
@@ -242,8 +248,8 @@ tab 4 "review"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 4 review
- ├ ◆ ✳ approve diff?
+ ◆ 4 review                    ✓
+ ├ ◆ ✳ approve diff?           ✓
  └ ⠋ ❉ writing tests
 ```
 
@@ -317,8 +323,8 @@ tab 6 "logs"
 ```rail-expect
  RADAR                     6▲ 1!
 ◆═══════════════════════════════
- ◆ 1 review
- └ ◆ ✳ approve diff?
+ ◆ 1 review                    ✓
+ └ ◆ ✳ approve diff?           ✓
  ⠋ 2 af
  └ ⠋ ❉ exploring render
  ● 3 dotfiles
@@ -695,8 +701,8 @@ tab 1 "review"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 1 review
- ├ ◆ ✳ migrate schema
+ ◆ 1 review                    ✓
+ ├ ◆ ✳ migrate schema          ✓
  │   ↳ approve git push?
  └ ⠋ ❉ write insta tests
 ```
@@ -716,8 +722,8 @@ tab 1 "work"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 1 work
- ├ ◆ ✳ approve?
+ ◆ 1 work                      ✓
+ ├ ◆ ✳ approve?                ✓
  └ ● ✳ fix flaky e2e
 ```
 
@@ -736,8 +742,8 @@ tab 1 "review"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 1 review
- └ ◆ ✳ migrate schema
+ ◆ 1 review                    ✓
+ └ ◆ ✳ migrate schema          ✓
      ↳ approve git push?
 ```
 
@@ -781,8 +787,8 @@ tab 1 "review"
 ```rail-expect
  RADAR                     ·1 1!
 ════════════════════════════════
- ◆ 1 review
- ├ ◆ ✳ migrate schema · 12m
+ ◆ 1 review                    ✓
+ ├ ◆ ✳ migrate schema · 12m    ✓
  │   ↳ approve git push?
  └ ⠋ ❉ write insta tests
 ```

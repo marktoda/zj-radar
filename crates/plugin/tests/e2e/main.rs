@@ -93,6 +93,46 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
+/// A real left click on the exact, one-based screen coordinate of the pending
+/// glyph acknowledges through Zellij's mouse routing and the plugin's pipe
+/// echo. This is the layer that the unreachable right-click implementation
+/// could never exercise (zellij-org/zellij#5350).
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn clicking_pending_glyph_acknowledges_the_pane() {
+    let wasm = plugin_wasm_path();
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_ack_glyph_{}", std::process::id());
+    let session = ZellijSession::start(&session_name, &sidebar_layout(&wasm), &wasm, temp_home);
+    let pane_id = session.discover_terminal_pane_id();
+    let payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"pending","repo":"web","branch":"main","msg":"approve glyph"}}"#
+    );
+    session.pipe_status(&payload);
+
+    let ready = session.wait_until(std::time::Duration::from_secs(5), |s| {
+        sidebar_region(&s.screen(), 32).contains('✓')
+    });
+    let screen = session.screen();
+    let sidebar = sidebar_region(&screen, 32);
+    assert!(ready, "pending glyph must be visible before clicking; rail:\n{sidebar}");
+    let row = sidebar_row_index(&screen, 32, "approve glyph")
+        .expect("the pending pane line must be visible");
+    let glyph_col = sidebar.lines().nth(row)
+        .and_then(|line| line.chars().position(|c| c == '✓'))
+        .expect("the pane line's exact checkmark column") as u16 + 1;
+
+    // `click_at` is one-based screen space, whereas the runtime receives the
+    // zero-based display-cell offset. The +1 is explicit at this boundary.
+    let acknowledged = session.wait_until(std::time::Duration::from_secs(8), |s| {
+        s.click_at(glyph_col, row as u16 + 1);
+        !sidebar_region(&s.screen(), 32).contains('✓')
+    });
+    let after = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] pending glyph click col={}, row={} rail after:\n{}", glyph_col, row + 1, after);
+    assert!(acknowledged, "exact glyph click must broadcast ack and remove its hotspot; rail:\n{after}");
+}
+
 /// Multi-agent scenario: pipe a running agent and a pending ("needs-you") agent
 /// to two different pane IDs. Assert that the pending/needs-you content ("api"
 /// or "approve") appears in the rendered sidebar.

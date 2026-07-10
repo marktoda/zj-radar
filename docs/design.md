@@ -277,6 +277,13 @@ unaffected.
   settle has run it does **not** keep the loop alive, so an idle-but-lit rail stops
   waking every second. The loop re-arms on the next pipe/PaneUpdate. (See
   `PluginRuntime::timer_should_continue`.)
+  - **Running exit grace:** a pushed `Running` row starts its 15-tick stale
+    grace only on a `CommandChanged` that positively identifies a foreground
+    shell prompt. `is_foreground: false` and unclassifiable/wrapper argv are
+    weak signals and never start it: a live agent's child-process transition
+    must not be killed by a timer. The trade-off is deliberate — a killed
+    agent can ghost until a later real prompt, payload, exit, or prune signal;
+    bounded ghosts are safer than clearing live work.
 - **Layout — the integration seam.** The sidebar is a pinned, borderless left column *inside* a
   vertical split, *outside* `children`, so `swap_tiled_layout` cycling never disturbs it (same
   mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
@@ -570,9 +577,19 @@ same glyphs the per-tab rows use for those statuses. The current line is
 marked (dimmed, a small `•`) and carries no click target — you can't switch
 to the session you're already in. A pending cycle selection renders
 bold+accent; a stale entry renders one step dimmer than the ordinary muted
-line color, but stays fully clickable — a click on it is a deliberate act.
-Clicking any other line switches to that session, landing on its
+line color and a right-edge `✕` hotspot; clicking the glyph dismisses it,
+while clicking any other cell switches to that session, landing on its
 `attention_tab_position` if it has one.
+
+**Hotspots and clicks.** The renderer attaches per-line glyph metadata to the
+same `Line` records that derive ANSI and navigation targets, so Cards painting
+and finalization cannot desynchronize it. A stale peer badge gets `✕`; a tab
+header and a pane identity line with an unacknowledged status-origin Pending
+get `✓`. The glyph owns its final display cell (with one reserved separator),
+and only those cells trigger its action; continuation, overflow, padding,
+ledger, and header lines never do. Right-click preserves the same whole-row
+actions for future parity, but is not a usable trigger until
+[zellij#5350](https://github.com/zellij-org/zellij/issues/5350) is fixed.
 
 **Cycling.** `session-next`/`session-prev`, delivered on the `zj_radar.cmd.v1`
 pipe (documented for operators in `docs/configuration.md`), advance a

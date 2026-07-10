@@ -145,20 +145,21 @@ something to step through once a second zj-radar session is live; with just
 one session running, `session-next`/`session-prev` are no-ops.
 
 Dimmed (stale) badge entries are skipped by cycling, but you can dismiss one
-by right-clicking it directly in the rail — a mouse gesture, not a `cmd.v1`
-verb; a dismissed session that turns out to be alive reappears on its next
-heartbeat.
+by clicking its right-edge `✕` directly in the rail — a mouse gesture, not a
+`cmd.v1` verb; a dismissed session that turns out to be alive reappears on its
+next heartbeat.
 
-Right-click is the rail's general acknowledge/dismiss gesture, not only a
-badge thing — the rule is **left-click navigates, right-click
-acknowledges** everywhere on the rail. Beyond a stale badge entry (above),
-right-clicking a pane or tab row still flagged `◆ needs you` acknowledges
-it: the row downgrades to `done`, and — because a click lands in exactly one
+Right-edge glyphs are the rail's working acknowledge/dismiss gesture: `✕` is
+shown only on a stale badge entry and `✓` on an unacknowledged status-origin
+pending tab/pane. Left-clicking elsewhere still navigates. The `✓` downgrades
+the pending pane(s) to `done`, and — because a click lands in exactly one
 plugin instance — it converges by re-broadcasting a `done` update over
 `zj_radar.status.v1`, the same pipe a real agent hook uses, rather than
 mutating this instance's state directly. Every tab's instance (including the
 one you clicked in) picks up the change through the normal status-pipe
-intake. A row with nothing pending is a no-op.
+intake. A row with nothing pending is a no-op. Right-click keeps the same
+whole-row actions for parity, but is currently blocked upstream
+([zellij#5350](https://github.com/zellij-org/zellij/issues/5350)).
 
 Like every command pipe, an unknown verb is ignored, and the action is inert
 until the sidebar has been granted permissions.

@@ -420,12 +420,15 @@ impl ZellijPlugin for State {
                 let outcome = self.runtime.timer(probe, elapsed_s);
                 self.handle_outcome(outcome)
             }
-            Event::Mouse(Mouse::LeftClick(line, _col)) => {
-                let outcome = self.runtime.mouse_click(line);
+            Event::Mouse(Mouse::LeftClick(line, col)) => {
+                // Zellij reports zero-based terminal display-cell offsets; the
+                // e2e SGR helper deliberately converts its one-based screen
+                // coordinates before this reaches the runtime.
+                let outcome = self.runtime.mouse_click(line, col as usize);
                 self.handle_outcome(outcome)
             }
-            Event::Mouse(Mouse::RightClick(line, _col)) => {
-                let outcome = self.runtime.mouse_right_click(line);
+            Event::Mouse(Mouse::RightClick(line, col)) => {
+                let outcome = self.runtime.mouse_right_click(line, col as usize);
                 self.handle_outcome(outcome)
             }
             Event::PermissionRequestResult(status) => {
@@ -1241,7 +1244,7 @@ mod tests {
         state.runtime.permission = crate::permission::PermissionState::Resolved { granted: true };
         let _ = state.runtime.render(100, 80);
         // line 2 is the first tab content row (lines 0-1 are the header)
-        let outcome = state.runtime.mouse_click(2);
+        let outcome = state.runtime.mouse_click(2, 0);
         assert_eq!(outcome.effects, vec![Effect::SwitchTab { position: 0 }]);
     }
 
@@ -1250,7 +1253,7 @@ mod tests {
         let mut state = make_state_with_tabs(&[(0, "first", false), (1, "second", false)]);
         state.runtime.permission = crate::permission::PermissionState::default();
         let _ = state.runtime.render(100, 80);
-        assert!(state.runtime.mouse_click(2).effects.is_empty());
+        assert!(state.runtime.mouse_click(2, 0).effects.is_empty());
     }
 
     // ── Click round-trip proptest ──

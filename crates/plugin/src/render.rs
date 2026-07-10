@@ -230,6 +230,29 @@ pub struct RailTarget {
     pub session: Option<String>,
 }
 
+/// The one action a glyph hotspot performs. Kept on [`Line`] rather than
+/// reconstructed from its target: a navigation target is deliberately broader
+/// than the small set of physical cells that are actionable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HotspotAction {
+    DismissPresence { name: String },
+    Acknowledge { target: RailTarget },
+}
+
+impl HotspotAction {
+    fn glyph(&self) -> &'static str {
+        match self {
+            Self::DismissPresence { .. } => "✕",
+            Self::Acknowledge { .. } => "✓",
+        }
+    }
+
+    fn width(&self) -> usize {
+        // Frozen vocabulary: both glyphs are exactly one display cell.
+        UnicodeWidthStr::width(self.glyph())
+    }
+}
+
 impl RailTarget {
     /// Sentinel `tab_position` for a session target (`session: Some(_)`)
     /// whose peer has nothing needing attention. Never a legitimate tab
@@ -306,6 +329,7 @@ impl LineBg {
 struct Line {
     text: String,
     target: Option<RailTarget>,
+    hotspot: Option<(usize, HotspotAction)>,
     bg: LineBg,
 }
 
@@ -329,7 +353,15 @@ impl Line {
             text = text.replace('\n', " ");
         }
         text.push('\n');
-        Line { text, target, bg }
+        Line { text, target, hotspot: None, bg }
+    }
+
+    /// Attach an already-laid-out glyph action to this physical line. Keeping
+    /// the metadata inside Line makes every later transformation preserve the
+    /// lockstep pairing by construction.
+    fn with_hotspot(mut self, start_col: usize, action: HotspotAction) -> Self {
+        self.hotspot = Some((start_col, action));
+        self
     }
 
     /// Repaint the text onto a surface band (Cards), re-normalizing through
@@ -337,6 +369,12 @@ impl Line {
     /// constructor's newline invariant becomes discipline-held again.
     fn painted(self, width: usize, bg: &str) -> Line {
         Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg)
+            .with_hotspot_opt(self.hotspot)
+    }
+
+    fn with_hotspot_opt(mut self, hotspot: Option<(usize, HotspotAction)>) -> Self {
+        self.hotspot = hotspot;
+        self
     }
 }
 
@@ -344,6 +382,7 @@ impl Line {
 pub struct RenderedRail {
     pub ansi: String,
     targets: Vec<Option<RailTarget>>,
+    hotspots: Vec<Option<(usize, HotspotAction)>>,
 }
 
 impl RenderedRail {
@@ -359,14 +398,16 @@ impl RenderedRail {
     fn from_lines(lines: Vec<Line>) -> RenderedRail {
         let mut ansi = String::new();
         let mut targets = Vec::with_capacity(lines.len());
+        let mut hotspots = Vec::with_capacity(lines.len());
         for line in lines {
             ansi.push_str(&line.text);
             targets.push(line.target);
+            hotspots.push(line.hotspot);
         }
         if ansi.ends_with('\n') {
             ansi.pop();
         }
-        RenderedRail { ansi, targets }
+        RenderedRail { ansi, targets, hotspots }
     }
 
     /// Build a targetless panel face from raw ANSI, clamped to `height` lines
@@ -376,14 +417,16 @@ impl RenderedRail {
     fn from_ansi_without_targets(ansi: &str, height: usize) -> Self {
         let mut clamped = String::new();
         let mut targets = Vec::new();
+        let mut hotspots = Vec::new();
         for line in ansi.split_inclusive('\n').take(height) {
             clamped.push_str(line);
             targets.push(None);
+            hotspots.push(None);
         }
         if clamped.ends_with('\n') {
             clamped.pop();
         }
-        RenderedRail { ansi: clamped, targets }
+        RenderedRail { ansi: clamped, targets, hotspots }
     }
 
     pub fn target_at_line(&self, line: isize) -> Option<RailTarget> {
@@ -391,6 +434,18 @@ impl RenderedRail {
             return None;
         }
         self.targets.get(line as usize).cloned().flatten()
+    }
+
+    pub(crate) fn hotspot_at_line(&self, line: isize) -> Option<(usize, HotspotAction)> {
+        if line < 0 {
+            return None;
+        }
+        self.hotspots.get(line as usize).cloned().flatten()
+    }
+
+    pub(crate) fn hotspot_at(&self, line: isize, col: usize) -> Option<HotspotAction> {
+        let (start_col, action) = self.hotspot_at_line(line)?;
+        (col >= start_col && col < start_col + action.width()).then_some(action)
     }
 
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
@@ -560,7 +615,18 @@ fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, n
 /// densest width-math in the file, self-contained here so `render_row` reads
 /// as pane-roster logic.
 fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> Line {
-    let width = opts.width;
+    let mut hotspot = row.display.panes.iter()
+        .any(PaneDisplay::has_unacknowledged_status_pending)
+        .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
+    // The glyph owns the final cell and needs one preceding separator. Reserve
+    // both before any label truncation; otherwise a long tab name can push the
+    // action off-screen while its click metadata remains behind.
+    let width = if hotspot.is_some() && opts.width >= 6 {
+        opts.width - 2
+    } else {
+        hotspot = None;
+        opts.width
+    };
     let now_tick = opts.now_tick;
     let st = row.display.status;
 
@@ -625,7 +691,9 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // be emitted past the column edge — breaking the "no line exceeds width"
     // invariant and the card-padding math (name_budget would still saturate to 0).
     const BELL_W: usize = 2; // ⚑ + trailing space
-    let show_bell = row.has_bell && prefix_len + BELL_W <= width;
+    // A pending accent already communicates the same urgency. More importantly
+    // the action glyph owns this right-edge slot, so it takes precedence.
+    let show_bell = hotspot.is_none() && row.has_bell && prefix_len + BELL_W <= width;
     let bell_len = if show_bell { BELL_W } else { 0 };
     let bell = if show_bell {
         format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
@@ -647,11 +715,29 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         bold: label_bold,
         text: label_text.into(),
     };
-    Line::new(
+    let line = Line::new(
         format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
         Some(tab_target.clone()),
         LineBg::Card,
-    )
+    );
+    match hotspot {
+        Some(action) => append_hotspot_glyph(line, opts.width, action, &hue(Role::Attention)),
+        None => line,
+    }
+}
+
+/// Put a one-cell action glyph in the last visible column. Callers have
+/// already reserved the glyph plus its mandatory separating space from their
+/// content budget. Padding belongs before the glyph, never after it, so only
+/// the glyph cells score as a left-click hotspot.
+fn append_hotspot_glyph(line: Line, width: usize, action: HotspotAction, color: &str) -> Line {
+    let bare = line.text.strip_suffix('\n').unwrap_or(&line.text);
+    let used = visible_width(bare);
+    let glyph_width = action.width();
+    debug_assert!(used + glyph_width < width, "hotspot suffix was not reserved");
+    let spaces = width.saturating_sub(used + glyph_width);
+    let text = format!("{}{}{}\n", bare, " ".repeat(spaces), Seg::new(color, action.glyph()));
+    Line::new(text, line.target, line.bg).with_hotspot(width - glyph_width, action)
 }
 
 /// Emit one row's body into `out`, respecting `max_lines`.
@@ -701,11 +787,28 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let identity =
             with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
-        let text = emit_pane_line(pane, &identity, detail.is_some(), opts, row.active, st, &dim_strong, &idle_color, branch);
+        let mut hotspot = pane.has_unacknowledged_status_pending()
+            .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
+        // The tree identity has a six-cell irreducible prefix. At narrower
+        // widths there is no honest content+space+glyph composition, so drop
+        // the glyph and its metadata together rather than making a blank edge
+        // accidentally actionable.
+        let content_width = if hotspot.is_some() && opts.width >= 8 {
+            opts.width - 2
+        } else {
+            hotspot = None;
+            opts.width
+        };
+        let text = emit_pane_line(pane, &identity, detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
         // the subordinate `↳ question` line below, targeting the SAME pane —
         // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
-        let mut out = vec![Line::new(text, Some(pane_target.clone()), child_bg)];
+        let line = Line::new(text, Some(pane_target.clone()), child_bg);
+        let line = match hotspot {
+            Some(action) => append_hotspot_glyph(line, opts.width, action, Role::Attention.ansi()),
+            None => line,
+        };
+        let mut out = vec![line];
         if let Some(q) = detail {
             let text = emit_pane_detail_line(
                 q, row.active, st, pane_status, branch, &idle_color, width,
@@ -870,13 +973,13 @@ fn emit_pane_line(
     identity: &str,
     has_detail: bool,
     opts: &RenderOpts,
+    width: usize,
     tab_active: bool,
     tab_status: Status,
     dim_strong: &str,
     conn_color: &str,
     branch: Branch,
 ) -> String {
-    let width = opts.width;
     let mark = pane.kind().mark(opts.glyphs);
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
@@ -1270,6 +1373,9 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let mut lines: Vec<Line> = entries
         .iter()
         .map(|entry| {
+            let hotspot = (entry.stale && !entry.is_current && width >= 4)
+                .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
+            let content_width = if hotspot.is_some() { width - 2 } else { width };
             let mut label = entry.name.clone();
             if entry.running > 0 {
                 label.push_str(&format!(" {}{}", entry.running, running_glyph));
@@ -1283,7 +1389,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
             let marker = if entry.is_current { "•" } else { " " };
             const PREFIX_VIS: usize = 2; // marker + its separating space
             let text = prefixed_line(
-                width,
+                content_width,
                 PREFIX_VIS,
                 || format!("{marker} {label}"),
                 |avail| {
@@ -1300,7 +1406,11 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
             );
             let target = (!entry.is_current)
                 .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
-            Line::new(text, target, LineBg::Rail)
+            let line = Line::new(text, target, LineBg::Rail);
+            match hotspot {
+                Some(action) => append_hotspot_glyph(line, width, action, &stale),
+                None => line,
+            }
         })
         .collect();
     lines.push(Line::new("\n".to_string(), None, LineBg::Rail));
@@ -1387,12 +1497,12 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // Resolve a raw line's surface through the one `LineBg::escape` map and
         // paint it (Cards only). The emitted line is final, so it carries
         // `LineBg::None`; its footprint is exactly the lines pushed here.
-        let finalize = |bg: LineBg, text: String, target: Option<RailTarget>| -> Line {
+        let finalize = |bg: LineBg, text: String, target: Option<RailTarget>, hotspot: Option<(usize, HotspotAction)>| -> Line {
             let text = match bg.escape(row, &opts.theme, &rail) {
                 Some(esc) if cards => paint_card_line(&text, width, &esc),
                 _ => text,
             };
-            Line::new(text, target, LineBg::None)
+            Line::new(text, target, LineBg::None).with_hotspot_opt(hotspot)
         };
 
         // pad_y internal top padding — belongs to this card's click span.
@@ -1400,17 +1510,17 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // `String`) — `pad_y` can be >1, so a plain move would only survive
         // the first pass.
         for _ in 0..spacing.pad_y {
-            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target.clone())));
+            flat.push(finalize(LineBg::Card, "\n".to_string(), Some(row_target.clone()), None));
         }
 
         // content (truncated to the planned budget == today's compression).
         for line in blocks[i].iter().take(budget) {
-            flat.push(finalize(line.bg, line.text.clone(), line.target.clone()));
+            flat.push(finalize(line.bg, line.text.clone(), line.target.clone(), line.hotspot.clone()));
         }
 
         // gap external separation (dark panel base in Cards).
         for _ in 0..spacing.gap {
-            flat.push(finalize(LineBg::Rail, "\n".to_string(), None));
+            flat.push(finalize(LineBg::Rail, "\n".to_string(), None, None));
         }
     }
 
