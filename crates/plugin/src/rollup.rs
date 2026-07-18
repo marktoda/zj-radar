@@ -53,12 +53,18 @@ pub struct PrimaryDetail {
     pub since_tick: u64,
     pub status: Status,
     pub kind: Kind,
+    pub origin: ObservationOrigin,
     /// End-result tag for a finished command pane (None for agents/active).
     pub outcome: Option<Outcome>,
     /// Wall-clock stamp of the waiting-on-you edge (Pending only) — the
     /// renderer turns it into the `· 12m` wait tag against its own
     /// `now_epoch_s`, so no epoch threads through the roll-up itself.
     pub pending_epoch_s: Option<u64>,
+    /// Whether a status-origin Pending was acknowledged by the user. This is
+    /// render input, not renderer policy: the roll-up seam carries the fact
+    /// across from the resolved observation so hotspots never reach back into
+    /// runtime state and bypass source precedence.
+    pub acknowledged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +72,7 @@ pub enum PaneDisplay {
     Tracked {
         pane_id: u32,
         kind: Kind,
+        origin: ObservationOrigin,
         status: Status,
         msg: String,
         task: String,
@@ -73,6 +80,8 @@ pub enum PaneDisplay {
         outcome: Option<Outcome>,
         /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
         pending_epoch_s: Option<u64>,
+        /// See `PrimaryDetail::acknowledged`.
+        acknowledged: bool,
     },
     Untracked {
         pane_id: u32,
@@ -156,6 +165,19 @@ impl PaneDisplay {
             Self::Untracked { .. } => None,
         }
     }
+
+    pub(crate) fn has_unacknowledged_status_pending(&self) -> bool {
+        matches!(self, Self::Tracked {
+            status: Status::Pending,
+            acknowledged: false,
+            origin: ObservationOrigin::StatusPipe,
+            ..
+        })
+    }
+
+    pub(crate) fn is_status_origin(&self) -> bool {
+        matches!(self, Self::Tracked { origin: ObservationOrigin::StatusPipe, .. })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,12 +234,14 @@ pub fn roll_up<'a>(
             pane_displays.push(PaneDisplay::Tracked {
                 pane_id: pane.id,
                 kind: s.kind,
+                origin: s.origin,
                 status: s.status,
                 msg: s.msg.clone(),
                 task: s.task.clone(),
                 since_tick: s.last_change_tick,
                 outcome: pane_outcome(s),
                 pending_epoch_s: s.pending_epoch_s,
+                acknowledged: s.acknowledged,
             });
         } else {
             pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
@@ -239,8 +263,10 @@ pub fn roll_up<'a>(
                     since_tick: s.last_change_tick,
                     status: s.status,
                     kind: s.kind,
+                    origin: s.origin,
                     outcome: pane_outcome(s),
                     pending_epoch_s: s.pending_epoch_s,
+                    acknowledged: s.acknowledged,
                 });
             }
         }

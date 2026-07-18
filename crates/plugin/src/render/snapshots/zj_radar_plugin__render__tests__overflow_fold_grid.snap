@@ -1,12 +1,12 @@
 ---
 source: crates/plugin/src/render/tests.rs
-assertion_line: 3967
+assertion_line: 2700
 expression: "grid(&raw, 30)"
 ---
  RADAR                  15▲ 1!
 ══════════════════════════════
- ◆ 15 pinky
- └ ◆ ✳ approve?
+ ◆ 15 pinky                  ✓
+ └ ◆ ✳ approve?              ✓
 +14 idle ▾
 ──────────────────────────────
 0 working · 1 need you
