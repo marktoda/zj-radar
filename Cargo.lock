@@ -3342,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "zj-radar"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "assert_cmd",
  "assertables",
@@ -3358,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "zj-radar-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "proptest",
  "serde",
@@ -3368,7 +3368,7 @@ dependencies = [
 
 [[package]]
 name = "zj-radar-plugin"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "insta",
  "portable-pty",
