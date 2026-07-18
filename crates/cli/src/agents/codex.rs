@@ -15,6 +15,11 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
 }
 
 fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
+    // `/side` (`/btw`) runs in an ephemeral fork in the same terminal pane.
+    // Its hooks have no transcript and must not replace the main turn's status.
+    if v.get("transcript_path").is_some_and(Value::is_null) {
+        return None;
+    }
     let event = v.get("hook_event_name")?.as_str()?;
     let cwd = string_field(v, "cwd");
     let (status, msg) = match event {
@@ -220,6 +225,38 @@ mod tests {
         );
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "implemented");
+    }
+
+    #[test]
+    fn ephemeral_side_conversation_does_not_replace_main_turn() {
+        let mut latest = update(
+            r#"{
+              "hook_event_name": "UserPromptSubmit",
+              "session_id": "main",
+              "transcript_path": "/tmp/main-rollout.jsonl",
+              "prompt": "implement the feature"
+            }"#,
+        );
+        for raw in [
+            r#"{
+              "hook_event_name": "UserPromptSubmit",
+              "session_id": "side",
+              "transcript_path": null,
+              "prompt": "quick question"
+            }"#,
+            r#"{
+              "hook_event_name": "Stop",
+              "session_id": "side",
+              "transcript_path": null,
+              "last_assistant_message": "answer"
+            }"#,
+        ] {
+            if let Some(update) = derive(&Intake { raw, status_arg: None }) {
+                latest = update;
+            }
+        }
+
+        assert_eq!(latest.status, Status::Running);
     }
 
     #[test]
