@@ -615,18 +615,11 @@ fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, n
 /// densest width-math in the file, self-contained here so `render_row` reads
 /// as pane-roster logic.
 fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> Line {
-    let mut hotspot = row.display.panes.iter()
+    let hotspot = row.display.panes.iter()
         .any(PaneDisplay::has_unacknowledged_status_pending)
         .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
-    // The glyph owns the final cell and needs one preceding separator. Reserve
-    // both before any label truncation; otherwise a long tab name can push the
-    // action off-screen while its click metadata remains behind.
-    let width = if hotspot.is_some() && opts.width >= 6 {
-        opts.width - 2
-    } else {
-        hotspot = None;
-        opts.width
-    };
+    let hotspot = HotspotSlot::new(opts.width, 6, hotspot);
+    let width = hotspot.content_width();
     let now_tick = opts.now_tick;
     let st = row.display.status;
 
@@ -691,9 +684,9 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // be emitted past the column edge — breaking the "no line exceeds width"
     // invariant and the card-padding math (name_budget would still saturate to 0).
     const BELL_W: usize = 2; // ⚑ + trailing space
-    // A pending accent already communicates the same urgency. More importantly
-    // the action glyph owns this right-edge slot, so it takes precedence.
-    let show_bell = hotspot.is_none() && row.has_bell && prefix_len + BELL_W <= width;
+    // Bell and action are independent signals. The action slot has already
+    // reduced `width`, so both fit whenever the bell fits this content budget.
+    let show_bell = row.has_bell && prefix_len + BELL_W <= width;
     let bell_len = if show_bell { BELL_W } else { 0 };
     let bell = if show_bell {
         format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
@@ -720,24 +713,40 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         Some(tab_target.clone()),
         LineBg::Card,
     );
-    match hotspot {
-        Some(action) => append_hotspot_glyph(line, opts.width, action, &hue(Role::Attention)),
-        None => line,
-    }
+    hotspot.finish(line, &hue(Role::Attention))
 }
 
-/// Put a one-cell action glyph in the last visible column. Callers have
-/// already reserved the glyph plus its mandatory separating space from their
-/// content budget. Padding belongs before the glyph, never after it, so only
-/// the glyph cells score as a left-click hotspot.
-fn append_hotspot_glyph(line: Line, width: usize, action: HotspotAction, color: &str) -> Line {
-    let bare = line.text.strip_suffix('\n').unwrap_or(&line.text);
-    let used = visible_width(bare);
-    let glyph_width = action.width();
-    debug_assert!(used + glyph_width < width, "hotspot suffix was not reserved");
-    let spaces = width.saturating_sub(used + glyph_width);
-    let text = format!("{}{}{}\n", bare, " ".repeat(spaces), Seg::new(color, action.glyph()));
-    Line::new(text, line.target, line.bg).with_hotspot(width - glyph_width, action)
+/// Owns the complete hotspot suffix contract: admission at a site's minimum
+/// width, reservation of separator+glyph, and release-build enforcement when
+/// attaching metadata. A call site cannot reserve without attaching (or attach
+/// without reserving) because both halves travel in this value.
+struct HotspotSlot {
+    width: usize,
+    content_width: usize,
+    action: Option<HotspotAction>,
+}
+
+impl HotspotSlot {
+    fn new(width: usize, minimum: usize, action: Option<HotspotAction>) -> Self {
+        let action = action.filter(|_| width >= minimum);
+        let content_width = if action.is_some() { width - 2 } else { width };
+        Self { width, content_width, action }
+    }
+
+    fn content_width(&self) -> usize {
+        self.content_width
+    }
+
+    fn finish(self, line: Line, color: &str) -> Line {
+        let Some(action) = self.action else { return line };
+        let bare = line.text.strip_suffix('\n').unwrap_or(&line.text);
+        let used = visible_width(bare);
+        let glyph_width = action.width();
+        assert!(used <= self.content_width, "hotspot content exceeded its reserved width");
+        let spaces = self.width - used - glyph_width;
+        let text = format!("{}{}{}\n", bare, " ".repeat(spaces), Seg::new(color, action.glyph()));
+        Line::new(text, line.target, line.bg).with_hotspot(self.width - glyph_width, action)
+    }
 }
 
 /// Emit one row's body into `out`, respecting `max_lines`.
@@ -787,27 +796,16 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let identity =
             with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
-        let mut hotspot = pane.has_unacknowledged_status_pending()
+        let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
-        // The tree identity has a six-cell irreducible prefix. At narrower
-        // widths there is no honest content+space+glyph composition, so drop
-        // the glyph and its metadata together rather than making a blank edge
-        // accidentally actionable.
-        let content_width = if hotspot.is_some() && opts.width >= 8 {
-            opts.width - 2
-        } else {
-            hotspot = None;
-            opts.width
-        };
+        let hotspot = HotspotSlot::new(opts.width, 8, hotspot);
+        let content_width = hotspot.content_width();
         let text = emit_pane_line(pane, &identity, detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
         // the subordinate `↳ question` line below, targeting the SAME pane —
         // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
         let line = Line::new(text, Some(pane_target.clone()), child_bg);
-        let line = match hotspot {
-            Some(action) => append_hotspot_glyph(line, opts.width, action, Role::Attention.ansi()),
-            None => line,
-        };
+        let line = hotspot.finish(line, Role::Attention.ansi());
         let mut out = vec![line];
         if let Some(q) = detail {
             let text = emit_pane_detail_line(
@@ -1373,9 +1371,10 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let mut lines: Vec<Line> = entries
         .iter()
         .map(|entry| {
-            let hotspot = (entry.stale && !entry.is_current && width >= 4)
+            let hotspot = (entry.stale && !entry.is_current)
                 .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
-            let content_width = if hotspot.is_some() { width - 2 } else { width };
+            let hotspot = HotspotSlot::new(width, 4, hotspot);
+            let content_width = hotspot.content_width();
             let mut label = entry.name.clone();
             if entry.running > 0 {
                 label.push_str(&format!(" {}{}", entry.running, running_glyph));
@@ -1407,10 +1406,8 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
             let target = (!entry.is_current)
                 .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
             let line = Line::new(text, target, LineBg::Rail);
-            match hotspot {
-                Some(action) => append_hotspot_glyph(line, width, action, &stale),
-                None => line,
-            }
+            let hotspot_color = if entry.selected { accent } else { &stale };
+            hotspot.finish(line, hotspot_color)
         })
         .collect();
     lines.push(Line::new("\n".to_string(), None, LineBg::Rail));

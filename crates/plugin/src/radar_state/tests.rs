@@ -30,7 +30,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
-    let change = radar.command_changed(7, &["zsh".into()], true, 5);
+    let change = radar.command_changed(7, &["zsh".into()], false, 5);
 
     // The stale `done` is cleared to idle, repo kept for tab naming. This rides
     // the shared CommandChanged signal, so every tab's instance clears alike.
@@ -99,7 +99,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar
         .status_mut()
         .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5);
+    radar.command_changed(7, &["bash".into()], false, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
         changed |= radar.timer(t, 0);
@@ -117,7 +117,7 @@ fn agent_foreground_cancels_a_prompt_return_suspect() {
     radar
         .status_mut()
         .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5);
+    radar.command_changed(7, &["bash".into()], false, 5);
     radar.command_changed(7, &["claude".into()], true, 6);
     for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
         radar.timer(t, 0);

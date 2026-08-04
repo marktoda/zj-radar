@@ -119,7 +119,10 @@ fn clicking_pending_glyph_acknowledges_the_pane() {
     let row = sidebar_row_index(&screen, 32, "approve glyph")
         .expect("the pending pane line must be visible");
     let glyph_col = sidebar.lines().nth(row)
-        .and_then(|line| line.chars().position(|c| c == '✓'))
+        .and_then(|line| {
+            let prefix = line.split_once('✓')?.0;
+            Some(unicode_width::UnicodeWidthStr::width(prefix))
+        })
         .expect("the pane line's exact checkmark column") as u16 + 1;
 
     // `click_at` is one-based screen space, whereas the runtime receives the

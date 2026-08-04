@@ -6,8 +6,10 @@
 
     #[test]
     fn is_shell_prompt_detects_return_to_prompt_not_agents_or_commands() {
-        // A shell/prompt program in the foreground = back at the prompt.
+        // Zellij reports the childless root shell with is_foreground=false;
+        // both forms are shell identity and therefore prompt evidence.
         assert!(is_shell_prompt(&argv(&["zsh"]), true));
+        assert!(is_shell_prompt(&argv(&["zsh"]), false));
         assert!(is_shell_prompt(&argv(&["/bin/bash"]), true));
         assert!(is_shell_prompt(&argv(&["fish"]), true));
         // A missing foreground signal is weak evidence: wrapper/child
@@ -31,6 +33,7 @@
         // degradations documented on IGNORE_NAMES).
         for shell in ["nu", "nushell", "pwsh", "tcsh", "csh", "ksh", "mksh", "ash", "elvish", "xonsh"] {
             assert!(is_shell_prompt(&argv(&[shell]), true), "{shell} is a prompt");
+            assert!(is_shell_prompt(&argv(&[shell]), false), "childless {shell} root is a prompt");
         }
         // A login shell's argv0 carries a leading dash.
         assert!(is_shell_prompt(&argv(&["-zsh"]), true));

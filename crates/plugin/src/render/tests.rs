@@ -57,8 +57,8 @@ fn display(
                 since_tick: d.since_tick,
                 outcome: d.outcome,
                 pending_epoch_s: d.pending_epoch_s,
-                origin: d.origin,
-                acknowledged: d.acknowledged,
+                origin: crate::observation::ObservationOrigin::StatusPipe,
+                acknowledged: false,
             }]
         })
         .unwrap_or_default();
@@ -104,10 +104,8 @@ fn pd(
         since_tick: 0,
         status,
         kind: Kind::Claude,
-        origin: crate::observation::ObservationOrigin::StatusPipe,
         outcome: None,
         pending_epoch_s: None,
-        acknowledged: false,
     }
 }
 
@@ -3566,6 +3564,17 @@ fn narrow_pending_rows_drop_the_glyph_and_its_hotspot_together() {
     for line in 0..rail.line_count() {
         assert_eq!(rail.hotspot_at_line(line as isize), None, "narrow line {line} must not retain metadata");
     }
+}
+
+#[test]
+fn pending_hotspot_does_not_hide_an_independent_bell() {
+    let mut row = tab(1, "team", display(Status::Pending, 0, 1, Some(pd("r", "b", "approve", Status::Pending))));
+    row.has_bell = true;
+    let rail = render_rail(&[row], &[], &ro(30, 0));
+    let header = rail.ansi.lines().find(|line| line.contains("team")).unwrap();
+    assert!(header.contains('⚑'), "bell from another pane remains visible: {header:?}");
+    assert!(header.contains('✓'), "pending action remains visible: {header:?}");
+    assert_eq!(visible_width(header), 30, "combined bell+hotspot must stay within the rail");
 }
 
 #[test]

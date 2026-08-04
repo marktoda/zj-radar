@@ -53,18 +53,12 @@ pub struct PrimaryDetail {
     pub since_tick: u64,
     pub status: Status,
     pub kind: Kind,
-    pub origin: ObservationOrigin,
     /// End-result tag for a finished command pane (None for agents/active).
     pub outcome: Option<Outcome>,
     /// Wall-clock stamp of the waiting-on-you edge (Pending only) — the
     /// renderer turns it into the `· 12m` wait tag against its own
     /// `now_epoch_s`, so no epoch threads through the roll-up itself.
     pub pending_epoch_s: Option<u64>,
-    /// Whether a status-origin Pending was acknowledged by the user. This is
-    /// render input, not renderer policy: the roll-up seam carries the fact
-    /// across from the resolved observation so hotspots never reach back into
-    /// runtime state and bypass source precedence.
-    pub acknowledged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,10 +257,8 @@ pub fn roll_up<'a>(
                     since_tick: s.last_change_tick,
                     status: s.status,
                     kind: s.kind,
-                    origin: s.origin,
                     outcome: pane_outcome(s),
                     pending_epoch_s: s.pending_epoch_s,
-                    acknowledged: s.acknowledged,
                 });
             }
         }

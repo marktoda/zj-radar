@@ -445,17 +445,12 @@ impl PluginRuntime {
             return Outcome::none();
         }
         if let Some(action) = self.last_rendered.hotspot_at(line, col) {
+            // A hotspot whose action raced away deliberately consumes the
+            // click instead of falling through to row navigation: the user
+            // aimed at an action, not at the row behind it.
             return match action {
                 render::HotspotAction::DismissPresence { name } => {
-                    // A stale badge may have received a heartbeat between paint
-                    // and click. Re-check the live badge before locally hiding
-                    // it; a glyph never races away a healthy peer.
-                    if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
-                        Outcome::none()
-                    } else {
-                        let render = self.sessions.dismiss(&name);
-                        Outcome::with_effects(render, vec![Effect::DismissPresence { name }])
-                    }
+                    self.dismiss_stale_session(name)
                 }
                 render::HotspotAction::Acknowledge { target } => {
                     Outcome::with_effects(false, self.acknowledge_pending_targets(&target))
@@ -512,18 +507,20 @@ impl PluginRuntime {
         // `.clone()`, not a move: a session-line miss falls through to the
         // pane/tab branch below, which still needs the rest of `target`.
         if let Some(name) = target.session.clone() {
-            // Staleness is judged against the CURRENT badge, not anything
-            // baked into the click target at render time — the entry may
-            // have gone fresh (its session came back) between the paint and
-            // the click, and a dismiss must never race a live session's
-            // heartbeat.
-            if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
-                return Outcome::none();
-            }
-            let render = self.sessions.dismiss(&name);
-            return Outcome::with_effects(render, vec![Effect::DismissPresence { name }]);
+            return self.dismiss_stale_session(name);
         }
         Outcome::with_effects(false, self.acknowledge_pending_targets(&target))
+    }
+
+    /// Dismiss a peer only while the current badge still says it is stale.
+    /// Both the glyph and legacy right-click paths route here so a heartbeat
+    /// racing either gesture can never hide a healthy session.
+    fn dismiss_stale_session(&mut self, name: String) -> Outcome {
+        if !self.sessions.badge().iter().any(|b| b.name == name && b.stale) {
+            return Outcome::none();
+        }
+        let render = self.sessions.dismiss(&name);
+        Outcome::with_effects(render, vec![Effect::DismissPresence { name }])
     }
 
     /// The pane-or-tab half of `mouse_right_click`: every pane a click on

@@ -449,17 +449,12 @@ fn effective_program(command: &[String]) -> (&[String], &str) {
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
-/// than running something we (or an agent) own. This is deliberately strong
-/// evidence only: a foreground shell/prompt program (`IGNORE_NAMES`). The pinned
-/// weak-signal regression is a hypothesized field sequence, not live telemetry;
-/// the policy is still required because it removes the whole false-expiry class
-/// where weak evidence starts the pushed Running grace clock. The accepted
-/// trade-off is a killed agent can ghost until its next real
-/// prompt/pipe/exit/prune signal; bounded ghosts beat killing live work.
-pub fn is_shell_prompt(command: &[String], is_foreground: bool) -> bool {
-    if !is_foreground {
-        return false;
-    }
+/// than running something we (or an agent) own. Zellij reports the pane's root
+/// shell with `is_foreground=false` when it has no child, so a recognized shell
+/// name is the prompt signal regardless of that flag. A non-shell argv with
+/// `is_foreground=false` is only a wrapper/child transition and must not arm the
+/// pushed-Running grace clock.
+pub fn is_shell_prompt(command: &[String], _is_foreground: bool) -> bool {
     let (_, name) = effective_program(command);
     IGNORE_NAMES.contains(&name)
 }

@@ -279,12 +279,13 @@ unaffected.
   waking every second. The loop re-arms on the next pipe/PaneUpdate. (See
   `PluginRuntime::timer_should_continue`.)
   - **Running exit grace:** a pushed `Running` row starts its 15-tick stale
-    grace only on a `CommandChanged` that positively identifies a foreground
-    shell prompt. `is_foreground: false` and unclassifiable/wrapper argv are
-    weak signals and never start it: a live agent's child-process transition
-    must not be killed by a timer. The trade-off is deliberate — a killed
-    agent can ghost until a later real prompt, payload, exit, or prune signal;
-    bounded ghosts are safer than clearing live work.
+    grace only on a `CommandChanged` whose effective argv identifies a shell
+    prompt. Zellij reports the childless pane-root shell with
+    `is_foreground: false`, so that shell-name form is the real prompt-return
+    edge and must clear terminal statuses/arm Running expiry. A non-shell
+    wrapper argv with `is_foreground: false` remains weak evidence and never
+    starts the clock: a live agent's child-process transition must not be
+    mistaken for exit.
 - **Layout — the integration seam.** The sidebar is a pinned, borderless left column *inside* a
   vertical split, *outside* `children`, so `swap_tiled_layout` cycling never disturbs it (same
   mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
