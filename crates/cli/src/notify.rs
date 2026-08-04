@@ -4,7 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
 use super::agents::{Agent, AgentUpdate, Intake};
-use crate::payload::{to_wire, StatusPayload, STATUS_PIPE_NAME};
+use crate::payload::{to_wire, StatusPayload};
 use crate::status::Status;
 use std::io::Read;
 use std::process::Command;
@@ -271,16 +271,26 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // the Zellij server EMFILEs and the whole session crashes. The message is
     // queued server-side the moment it's sent; killing the client past the
     // deadline retracts nothing and keeps sends sequential (latest-wins holds).
-    let Ok(mut child) = Command::new("zellij")
-        .args(["pipe", "--name", STATUS_PIPE_NAME, "--", &payload])
+    //
+    // The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
+    // sleep+kill watchdog), not just here: hook runners kill their hooks, and
+    // this process dying mid-send must not orphan a blocked client — that leak
+    // is exactly how a wedged session EMFILE-crashed in production despite the
+    // parent-side deadline below. The parent loop stays as the reaper on the
+    // normal path (and as a backstop), padded past the watchdog so the subtree
+    // ordinarily wins.
+    let timeout = pipe_send_timeout();
+    let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
+    let Ok(mut child) = Command::new(&argv[0])
+        .args(&argv[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
     else {
-        return; // zellij missing/unspawnable — same silent no-op as before
+        return; // sh missing/unspawnable — same silent no-op as before
     };
-    let deadline = std::time::Instant::now() + pipe_send_timeout();
+    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(1);
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return, // sent (or zellij errored) — done either way
@@ -296,8 +306,9 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
 /// seconds — shared with notify.sh's bash fallback, keep the two in sync)
-/// overrides for tests; 5s is orders of magnitude above a healthy send
-/// (milliseconds) yet caps a wedged one at hook rate. Clamped to an hour:
+/// overrides for tests; the shared default (`pipe::DEFAULT_PIPE_TIMEOUT_SECS`)
+/// is orders of magnitude above a healthy send (milliseconds) yet caps a
+/// wedged one at hook rate. Clamped to an hour:
 /// `Instant::now() + Duration::from_secs(u64::MAX)` overflows and panics,
 /// and this module promises the calling hook never sees a panic.
 fn pipe_send_timeout() -> std::time::Duration {
@@ -309,7 +320,7 @@ fn pipe_send_timeout() -> std::time::Duration {
 fn parse_pipe_timeout(raw: Option<String>) -> std::time::Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .map(|secs| std::time::Duration::from_secs(secs.min(3600)))
-        .unwrap_or(std::time::Duration::from_secs(5))
+        .unwrap_or(std::time::Duration::from_secs(crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS))
 }
 
 #[cfg(test)]
@@ -320,12 +331,14 @@ mod tests {
 
     #[test]
     fn pipe_timeout_defaults_and_falls_back_on_garbage() {
-        // Unset, non-numeric, negative, and suffixed forms all take the 5s
-        // default — fail closed, matching notify.sh's regex guard.
+        // Unset, non-numeric, negative, and suffixed forms all take the shared
+        // default — fail closed, matching notify.sh's regex guard. Pinned to
+        // the core constant so the CLI's watchdog and parent deadline can
+        // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
                 parse_pipe_timeout(raw.map(String::from)).as_secs(),
-                5,
+                crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
         }

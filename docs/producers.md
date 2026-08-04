@@ -166,3 +166,12 @@ server hits EMFILE and the whole session crashes. Wrap the call in a timeout
 (the bundled producers use 5 s, `ZJ_RADAR_PIPE_TIMEOUT` to override); killing
 the client past the deadline loses nothing — the message is already queued
 server-side.
+
+The timeout must survive **your own death**, too. Hook runners kill their
+hooks, and a producer killed mid-send never runs its kill-on-deadline — the
+blocked `zellij pipe` client re-parents to init and leaks forever (this
+exact orphan class EMFILE-crashed a real session). Put the watchdog *inside*
+the subtree you spawn, not only in your process: run the pipe under a shell
+alongside a detached `sleep <deadline>; kill` pair, the way the bundled
+producers do (`self_limiting_pipe_argv` in `zj-radar-core`'s `pipe` module,
+mirrored by notify.sh's sleep+kill watchdog).

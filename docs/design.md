@@ -155,6 +155,7 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
 | Codex `PermissionRequest`                     | `pending` |
 | Codex `Stop`                                  | `done`    |
+| Codex ephemeral-fork hooks (`transcript_path: null`) | ignored (the main turn keeps owning the pane) |
 | Codex legacy `agent-turn-complete`            | `done`    |
 | Adapter parse/hook failure (optional)         | `error`   |
 | Agent pane returns to its shell prompt (observed exit) | `idle` (clears a stale pushed status; see §6.2) |

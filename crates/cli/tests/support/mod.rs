@@ -43,17 +43,19 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
-    /// Install a fake `name` binary that records argv like `add_recorder`, then
-    /// hangs for `secs` — models a `zellij pipe` blocked by a wedged plugin
-    /// (Zellij's CLI-pipe backpressure). `exec` so the shim process IS the
-    /// sleeper: a kill from the code under test must reap the hung process
-    /// itself, not an intermediate shell.
-    #[allow(dead_code)] // each tests/*.rs is its own crate; not all use this
+    /// Install a fake `name` binary that records argv like `add_recorder` and
+    /// reports its own pid to `<dir>/<name>.pid`, then hangs for `secs` —
+    /// models a `zellij pipe` blocked by a wedged plugin (Zellij's CLI-pipe
+    /// backpressure). `exec` so the shim process IS the sleeper: a kill from
+    /// the code under test must reap the hung process itself, not an
+    /// intermediate shell. The pid lands after the log line, so a test that
+    /// waits on the pid may also rely on the argv having been recorded.
     pub fn add_hanging_recorder(&self, name: &str, secs: u32) {
         let log = self.dir.path().join(format!("{name}.log"));
+        let pid_file = self.dir.path().join(format!("{name}.pid"));
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\nexec sleep {secs}\n",
-            log = log
+            "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\necho $$ > {pid_file:?}\nexec sleep {secs}\n",
+            log = log, pid_file = pid_file
         );
         let bin = self.dir.path().join(name);
         fs::write(&bin, script).unwrap();
@@ -61,6 +63,27 @@ impl ShimDir {
         let mut perms = fs::metadata(&bin).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&bin, perms).unwrap();
+    }
+
+    /// Poll for the pid reported by `add_hanging_recorder`. Panics past
+    /// `timeout` — a shim that never started means the spawn under test
+    /// silently no-opped, which IS the failure to surface.
+    pub fn wait_for_hung_pid(&self, name: &str, timeout: std::time::Duration) -> u32 {
+        let pid_file = self.dir.path().join(format!("{name}.pid"));
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hanging {name} shim never started (no pid in {pid_file:?})"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
     }
 
     /// Install a fake `git` that answers the `-C <cwd>` rev-parse/branch calls

@@ -27,6 +27,10 @@
 // Re-export the shared core so the plugin glue and modules keep addressing these
 // as `crate::status`, `crate::payload`, … with no per-reference churn.
 pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
+// `pipe` is consumed only by the wasm glue (`Effect::BroadcastStatus`), which
+// is cfg'd off host builds — an unconditional import would warn there.
+#[cfg(target_arch = "wasm32")]
+pub(crate) use zj_radar_core::pipe;
 
 mod clock;
 mod config;
@@ -269,19 +273,20 @@ impl State {
                     // doc), so this instance's own convergence rides the
                     // echo like everyone else's.
                     //
-                    // ACCEPTED RISK: The spawned `zellij pipe` blocks until
-                    // every rail instance consumes the message; unlike the
-                    // CLI producer's broadcast (`crates/cli/src/notify.rs`),
-                    // the plugin's `run_command` returns no handle, so no
-                    // deadline/kill is possible — a wedged receiver (e.g.
-                    // stuck at a permission prompt) would orphan the process.
-                    // Accepted: the trigger is a human-paced right-click,
-                    // orders of magnitude rarer than producer hooks, and
-                    // fan-out is bounded by one tab's pending panes.
-                    run_command(
-                        &["zellij", "pipe", "--name", PIPE_NAME, "--", &payload],
-                        std::collections::BTreeMap::new(),
+                    // The spawned `zellij pipe` blocks until every rail
+                    // instance consumes the message, and the plugin's
+                    // `run_command` returns no handle — so the deadline rides
+                    // INSIDE the spawned subtree instead: the shared argv's
+                    // sleep+kill watchdog (`core::pipe`) reaps a client hung
+                    // on a wedged receiver (e.g. stuck at a permission
+                    // prompt), closing the orphaned-process leak this arm
+                    // previously documented as an accepted risk.
+                    let argv = crate::pipe::self_limiting_pipe_argv(
+                        &payload,
+                        crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                     );
+                    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+                    run_command(&args, std::collections::BTreeMap::new());
                 }
             }
         }
