@@ -126,6 +126,57 @@ fn agent_foreground_cancels_a_prompt_return_suspect() {
 }
 
 #[test]
+fn exited_pane_root_clears_its_pushed_status() {
+    // `zellij run -- claude`: the agent IS the pane root. When it dies (kill
+    // or normal exit) no hook fires and no shell prompt ever returns — the
+    // pane shows Zellij's EXITED banner and the manifest reports
+    // `exited: true`. That flag is definitive producer-death evidence, so the
+    // pushed status clears to idle immediately, no grace clock needed. Without
+    // this, a killed run-pane agent's Running row spins forever (the name-only
+    // `is_shell_prompt` can never fire for a non-shell root).
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+    radar
+        .status_mut()
+        .apply(payload_in_repo(8, Status::Pending, "pinky"), 1, 0);
+
+    let update = PaneUpdate {
+        tab_panes: HashMap::from([(0, vec![pane(7), pane(8)])]),
+        live: HashSet::from([7, 8]),
+        theme: None,
+        exits: vec![(7, Some(130)), (8, Some(0))],
+    };
+    let change = radar.panes_changed(update, 2, 100, config::NamingMode::Off);
+
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle, "dead root ⇒ Running clears");
+    assert_eq!(radar.status(8).unwrap().status, Status::Idle, "dead root ⇒ Pending clears");
+    assert!(change.persist_snapshot, "the clear is a recede edge — new tabs rehydrate idle");
+}
+
+#[test]
+fn childless_agent_root_cancels_a_prompt_return_suspect() {
+    // Agent-rooted pane between children: Zellij reports the childless root
+    // as ("claude", is_foreground=false) — the same producer-alive evidence
+    // as a foreground flicker resolving back to the agent. The grace clock
+    // must cancel, or a tool call outliving the grace window gets the live
+    // turn force-idled mid-run. (A DEAD root never needs the flag: the pane
+    // manifest's `exited` clears it directly.)
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+    radar.command_changed(7, &["bash".into()], false, 5);
+    radar.command_changed(7, &["claude".into()], false, 6);
+    for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
+        radar.timer(t, 0);
+    }
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
+}
+
+#[test]
 fn rows_sort_tabs_by_position_and_aggregate_panes() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![
