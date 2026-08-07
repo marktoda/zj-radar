@@ -356,11 +356,11 @@ impl Line {
         Line { text, target, hotspot: None, bg }
     }
 
-    /// Attach an already-laid-out glyph action to this physical line. Keeping
-    /// the metadata inside Line makes every later transformation preserve the
-    /// lockstep pairing by construction.
-    fn with_hotspot(mut self, start_col: usize, action: HotspotAction) -> Self {
-        self.hotspot = Some((start_col, action));
+    /// Attach an already-laid-out glyph action to this physical line — the one
+    /// setter for the field. Keeping the metadata inside Line makes every
+    /// later transformation preserve the lockstep pairing by construction.
+    fn with_hotspot(mut self, hotspot: Option<(usize, HotspotAction)>) -> Self {
+        self.hotspot = hotspot;
         self
     }
 
@@ -369,12 +369,7 @@ impl Line {
     /// constructor's newline invariant becomes discipline-held again.
     fn painted(self, width: usize, bg: &str) -> Line {
         Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg)
-            .with_hotspot_opt(self.hotspot)
-    }
-
-    fn with_hotspot_opt(mut self, hotspot: Option<(usize, HotspotAction)>) -> Self {
-        self.hotspot = hotspot;
-        self
+            .with_hotspot(self.hotspot)
     }
 }
 
@@ -444,8 +439,13 @@ impl RenderedRail {
     }
 
     pub(crate) fn hotspot_at(&self, line: isize, col: usize) -> Option<HotspotAction> {
-        let (start_col, action) = self.hotspot_at_line(line)?;
-        (col >= start_col && col < start_col + action.width()).then_some(action)
+        if line < 0 {
+            return None;
+        }
+        // Borrow for the hit test; clone only the hit (a miss on the
+        // String-bearing action shouldn't cost an allocation per click).
+        let (start_col, action) = self.hotspots.get(line as usize)?.as_ref()?;
+        (col >= *start_col && col < *start_col + action.width()).then(|| action.clone())
     }
 
     #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
@@ -742,10 +742,18 @@ impl HotspotSlot {
         let bare = line.text.strip_suffix('\n').unwrap_or(&line.text);
         let used = visible_width(bare);
         let glyph_width = action.width();
-        assert!(used <= self.content_width, "hotspot content exceeded its reserved width");
+        // An emitter overrunning its content_width() is a bug in that
+        // emitter's width math — catch it loudly in tests, but degrade to a
+        // glyphless line in the release wasm (same debug_assert-plus-safe-
+        // fallback idiom as `Line::new`): a missing hotspot glyph beats a
+        // crashed rail.
+        debug_assert!(used <= self.content_width, "hotspot content exceeded its reserved width");
+        if used + glyph_width > self.width {
+            return line;
+        }
         let spaces = self.width - used - glyph_width;
         let text = format!("{}{}{}\n", bare, " ".repeat(spaces), Seg::new(color, action.glyph()));
-        Line::new(text, line.target, line.bg).with_hotspot(self.width - glyph_width, action)
+        Line::new(text, line.target, line.bg).with_hotspot(Some((self.width - glyph_width, action)))
     }
 }
 

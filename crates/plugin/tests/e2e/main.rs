@@ -1010,14 +1010,14 @@ fn rail_paints_every_column_of_its_pane() {
     // painted further right than expected).
     eprintln!(
         "[e2e] columns 28..40 header:  {:?}",
-        &header_dump[28..40]
+        header_dump[28..40]
             .iter()
             .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
             .collect::<Vec<_>>()
     );
     eprintln!(
         "[e2e] columns 28..40 card:    {:?}",
-        &card_dump[28..40]
+        card_dump[28..40]
             .iter()
             .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
             .collect::<Vec<_>>()

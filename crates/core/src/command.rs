@@ -449,24 +449,25 @@ fn effective_program(command: &[String]) -> (&[String], &str) {
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
-/// than running something we (or an agent) own. Zellij reports the pane's root
-/// shell with `is_foreground=false` when it has no child, so a recognized shell
-/// name is the prompt signal regardless of that flag. A non-shell argv with
-/// `is_foreground=false` is only a wrapper/child transition and must not arm the
-/// pushed-Running grace clock.
-pub fn is_shell_prompt(command: &[String], _is_foreground: bool) -> bool {
+/// than running something we (or an agent) own. Zellij's `is_foreground` flag
+/// is deliberately not a parameter: it only encodes "the root has a child" (a
+/// childless root shell reports `false`), so shell identity alone is the
+/// prompt signal, and a non-shell argv — whatever the flag says — is only a
+/// wrapper/child transition that must not arm the pushed-Running grace clock.
+pub fn is_shell_prompt(command: &[String]) -> bool {
     let (_, name) = effective_program(command);
     IGNORE_NAMES.contains(&name)
 }
 
-/// Whether an instrumented agent (`AGENT_NAMES`) itself is the pane's live
-/// foreground command — direct evidence the pushed status's producer is still
-/// running. Used to cancel the stale-Running grace clock after a mid-turn
-/// foreground flicker resolves back to the agent.
-pub fn is_agent_foreground(command: &[String], is_foreground: bool) -> bool {
-    if !is_foreground {
-        return false;
-    }
+/// Whether an instrumented agent (`AGENT_NAMES`) is the pane's live command —
+/// direct evidence the pushed status's producer is still running. Used to
+/// cancel the stale-Running grace clock after a mid-turn foreground flicker
+/// resolves back to the agent. Like `is_shell_prompt`, the foreground flag is
+/// deliberately not consulted: a childless agent ROOT (`zellij run -- claude`,
+/// between tool children) reports `is_foreground=false`, and that report is
+/// the agent alive, not absent. A DEAD root never leaks through here — the
+/// pane manifest's `exited` flag clears its status directly.
+pub fn is_agent_command(command: &[String]) -> bool {
     let (_, name) = effective_program(command);
     AGENT_NAMES.contains(&name)
 }
