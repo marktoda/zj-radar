@@ -6,20 +6,23 @@
 
     #[test]
     fn is_shell_prompt_detects_return_to_prompt_not_agents_or_commands() {
-        // A shell/prompt program in the foreground = back at the prompt.
-        assert!(is_shell_prompt(&argv(&["zsh"]), true));
-        assert!(is_shell_prompt(&argv(&["/bin/bash"]), true));
-        assert!(is_shell_prompt(&argv(&["fish"]), true));
-        // No foreground command at all = at the prompt.
-        assert!(is_shell_prompt(&argv(&["anything"]), false));
-        // An agent in the foreground still owns the pane — NOT the prompt.
-        assert!(!is_shell_prompt(&argv(&["claude"]), true));
-        assert!(!is_shell_prompt(&argv(&["codex"]), true));
-        // A real foreground command is not the prompt.
-        assert!(!is_shell_prompt(&argv(&["cargo", "test"]), true));
+        // Shell identity alone is the prompt signal (Zellij's foreground flag
+        // only encodes "root has a child", so it carries no evidence here).
+        assert!(is_shell_prompt(&argv(&["zsh"])));
+        assert!(is_shell_prompt(&argv(&["/bin/bash"])));
+        assert!(is_shell_prompt(&argv(&["fish"])));
+        // A non-shell argv is never the prompt, whatever the flag said:
+        // wrapper/child transitions report during a live agent turn, so they
+        // must never start the pushed Running grace clock.
+        assert!(!is_shell_prompt(&argv(&["anything"])));
+        // An agent still owns the pane — NOT the prompt.
+        assert!(!is_shell_prompt(&argv(&["claude"])));
+        assert!(!is_shell_prompt(&argv(&["codex"])));
+        // A real command is not the prompt.
+        assert!(!is_shell_prompt(&argv(&["cargo", "test"])));
         // Env/wrapper prefixes are peeled before classifying.
-        assert!(is_shell_prompt(&argv(&["env", "FOO=1", "zsh"]), true));
-        assert!(!is_shell_prompt(&argv(&["sudo", "make"]), true));
+        assert!(is_shell_prompt(&argv(&["env", "FOO=1", "zsh"])));
+        assert!(!is_shell_prompt(&argv(&["sudo", "make"])));
     }
 
     #[test]
@@ -28,29 +31,32 @@
         // perpetual Running command AND broke the agent exit-clear (the two
         // degradations documented on IGNORE_NAMES).
         for shell in ["nu", "nushell", "pwsh", "tcsh", "csh", "ksh", "mksh", "ash", "elvish", "xonsh"] {
-            assert!(is_shell_prompt(&argv(&[shell]), true), "{shell} is a prompt");
+            assert!(is_shell_prompt(&argv(&[shell])), "{shell} is a prompt");
         }
         // A login shell's argv0 carries a leading dash.
-        assert!(is_shell_prompt(&argv(&["-zsh"]), true));
-        assert!(is_shell_prompt(&argv(&["-bash"]), true));
+        assert!(is_shell_prompt(&argv(&["-zsh"])));
+        assert!(is_shell_prompt(&argv(&["-bash"])));
         // The dash-strip must not misread ordinary dashed commands as shells:
         // there is no binary named e.g. `-nu` in practice, but a real command
         // with a dashed basename stays a command.
-        assert!(!is_shell_prompt(&argv(&["my-tool"]), true));
+        assert!(!is_shell_prompt(&argv(&["my-tool"])));
     }
 
     #[test]
-    fn is_agent_foreground_detects_only_a_live_foreground_agent() {
-        // The agent's own exe in the foreground vouches for the pushed status.
-        assert!(is_agent_foreground(&argv(&["claude"]), true));
-        assert!(is_agent_foreground(&argv(&["codex"]), true));
+    fn is_agent_command_detects_a_live_agent() {
+        // The agent's own exe as the pane's command vouches for the pushed
+        // status — whether a foreground child under a shell root or the
+        // childless pane root itself (`zellij run -- claude` between tool
+        // children); Zellij's foreground flag distinguishes only those two
+        // shapes, so it carries no evidence and is not a parameter.
+        assert!(is_agent_command(&argv(&["claude"])));
+        assert!(is_agent_command(&argv(&["codex"])));
         // Env/wrapper prefixes are peeled, mirroring is_shell_prompt.
-        assert!(is_agent_foreground(&argv(&["env", "FOO=1", "claude"]), true));
-        // Background, shells, ordinary commands, and nothing don't vouch.
-        assert!(!is_agent_foreground(&argv(&["claude"]), false));
-        assert!(!is_agent_foreground(&argv(&["zsh"]), true));
-        assert!(!is_agent_foreground(&argv(&["vim"]), true));
-        assert!(!is_agent_foreground(&argv(&[]), true));
+        assert!(is_agent_command(&argv(&["env", "FOO=1", "claude"])));
+        // Shells, ordinary commands, and nothing don't vouch.
+        assert!(!is_agent_command(&argv(&["zsh"])));
+        assert!(!is_agent_command(&argv(&["vim"])));
+        assert!(!is_agent_command(&argv(&[])));
     }
 
     /// Test shorthand for the display half of `classify`.
@@ -1083,4 +1089,3 @@
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         assert_eq!(s.get(1).unwrap().status, Status::Running, "documented failure mode");
     }
-

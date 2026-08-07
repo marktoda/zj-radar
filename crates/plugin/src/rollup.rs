@@ -66,6 +66,7 @@ pub enum PaneDisplay {
     Tracked {
         pane_id: u32,
         kind: Kind,
+        origin: ObservationOrigin,
         status: Status,
         msg: String,
         task: String,
@@ -73,6 +74,8 @@ pub enum PaneDisplay {
         outcome: Option<Outcome>,
         /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
         pending_epoch_s: Option<u64>,
+        /// See `PrimaryDetail::acknowledged`.
+        acknowledged: bool,
     },
     Untracked {
         pane_id: u32,
@@ -156,6 +159,19 @@ impl PaneDisplay {
             Self::Untracked { .. } => None,
         }
     }
+
+    pub(crate) fn has_unacknowledged_status_pending(&self) -> bool {
+        matches!(self, Self::Tracked {
+            status: Status::Pending,
+            acknowledged: false,
+            origin: ObservationOrigin::StatusPipe,
+            ..
+        })
+    }
+
+    pub(crate) fn is_status_origin(&self) -> bool {
+        matches!(self, Self::Tracked { origin: ObservationOrigin::StatusPipe, .. })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,12 +228,14 @@ pub fn roll_up<'a>(
             pane_displays.push(PaneDisplay::Tracked {
                 pane_id: pane.id,
                 kind: s.kind,
+                origin: s.origin,
                 status: s.status,
                 msg: s.msg.clone(),
                 task: s.task.clone(),
                 since_tick: s.last_change_tick,
                 outcome: pane_outcome(s),
                 pending_epoch_s: s.pending_epoch_s,
+                acknowledged: s.acknowledged,
             });
         } else {
             pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));

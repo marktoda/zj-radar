@@ -182,6 +182,22 @@ impl StatusStore {
         self.suspect_running.remove(&pane_id);
     }
 
+    /// Clear a pane's pushed status because its root process exited (the pane
+    /// manifest's `exited` flag). Unlike a prompt return this is *definitive*
+    /// producer death — an agent-rooted pane (`zellij run -- claude`) never
+    /// shows a shell prompt for `clear_on_prompt_return` to see, and no hook
+    /// fires on a kill — so even a `Running` clears immediately, no grace
+    /// clock. Exits ride the level-triggered pane manifest; the Idle check
+    /// makes the repeat calls no-ops. Returns the displaced observation (the
+    /// ledger's recede edge), like the prompt-return clear.
+    pub fn clear_on_exit(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
+        self.suspect_running.remove(&pane_id);
+        if self.store.get(pane_id)?.status == Status::Idle {
+            return None;
+        }
+        self.force_idle(pane_id, tick)
+    }
+
     /// Expire grace clocks: any pane still `Running` whose prompt-return
     /// suspicion has outlived the grace window gets cleared to idle — its
     /// producer died mid-turn and will never send the clearing broadcast.

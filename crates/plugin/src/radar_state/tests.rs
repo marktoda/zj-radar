@@ -30,7 +30,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     assert_eq!(radar.status(7).unwrap().status, Status::Done);
 
     // The pane returns to a shell prompt → the producer is gone.
-    let change = radar.command_changed(7, &["zsh".into()], true, 5);
+    let change = radar.command_changed(7, &["zsh".into()], false, 5);
 
     // The stale `done` is cleared to idle, repo kept for tab naming. This rides
     // the shared CommandChanged signal, so every tab's instance clears alike.
@@ -52,6 +52,23 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
     let change = radar.command_changed(7, &["bash".into()], true, 5);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
     assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
+}
+
+#[test]
+fn weak_background_command_changed_never_starts_a_running_expiry_clock() {
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+
+    // Real Zellij can report `is_foreground: false` while a long agent owns a
+    // wrapper/child process. That is not proof of a shell prompt. Letting this
+    // weak edge start the clock used to clear live work 15 ticks later.
+    radar.command_changed(7, &["node".into()], false, 5);
+    for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
+        radar.timer(t, 0);
+    }
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
 }
 
 #[test]
@@ -82,7 +99,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar
         .status_mut()
         .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5);
+    radar.command_changed(7, &["bash".into()], false, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
         changed |= radar.timer(t, 0);
@@ -100,8 +117,59 @@ fn agent_foreground_cancels_a_prompt_return_suspect() {
     radar
         .status_mut()
         .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
-    radar.command_changed(7, &["bash".into()], true, 5);
+    radar.command_changed(7, &["bash".into()], false, 5);
     radar.command_changed(7, &["claude".into()], true, 6);
+    for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
+        radar.timer(t, 0);
+    }
+    assert_eq!(radar.status(7).unwrap().status, Status::Running);
+}
+
+#[test]
+fn exited_pane_root_clears_its_pushed_status() {
+    // `zellij run -- claude`: the agent IS the pane root. When it dies (kill
+    // or normal exit) no hook fires and no shell prompt ever returns — the
+    // pane shows Zellij's EXITED banner and the manifest reports
+    // `exited: true`. That flag is definitive producer-death evidence, so the
+    // pushed status clears to idle immediately, no grace clock needed. Without
+    // this, a killed run-pane agent's Running row spins forever (the name-only
+    // `is_shell_prompt` can never fire for a non-shell root).
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+    radar
+        .status_mut()
+        .apply(payload_in_repo(8, Status::Pending, "pinky"), 1, 0);
+
+    let update = PaneUpdate {
+        tab_panes: HashMap::from([(0, vec![pane(7), pane(8)])]),
+        live: HashSet::from([7, 8]),
+        theme: None,
+        exits: vec![(7, Some(130)), (8, Some(0))],
+    };
+    let change = radar.panes_changed(update, 2, 100, config::NamingMode::Off);
+
+    assert_eq!(radar.status(7).unwrap().status, Status::Idle, "dead root ⇒ Running clears");
+    assert_eq!(radar.status(8).unwrap().status, Status::Idle, "dead root ⇒ Pending clears");
+    assert!(change.persist_snapshot, "the clear is a recede edge — new tabs rehydrate idle");
+}
+
+#[test]
+fn childless_agent_root_cancels_a_prompt_return_suspect() {
+    // Agent-rooted pane between children: Zellij reports the childless root
+    // as ("claude", is_foreground=false) — the same producer-alive evidence
+    // as a foreground flicker resolving back to the agent. The grace clock
+    // must cancel, or a tool call outliving the grace window gets the live
+    // turn force-idled mid-run. (A DEAD root never needs the flag: the pane
+    // manifest's `exited` clears it directly.)
+    let mut radar = RadarState::default();
+    radar
+        .status_mut()
+        .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+    radar.command_changed(7, &["bash".into()], false, 5);
+    radar.command_changed(7, &["claude".into()], false, 6);
     for t in 7..(7 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS * 2) {
         radar.timer(t, 0);
     }

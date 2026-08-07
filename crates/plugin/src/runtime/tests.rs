@@ -662,9 +662,9 @@ fn render_records_targets_and_mouse_click_returns_host_effect() {
     let ansi = runtime.render(100, 80);
     assert!(ansi.contains("team"));
 
-    let tab_click = runtime.mouse_click(2);
-    let pane20_click = runtime.mouse_click(3);
-    let pane21_click = runtime.mouse_click(4);
+    let tab_click = runtime.mouse_click(2, 0);
+    let pane20_click = runtime.mouse_click(3, 0);
+    let pane21_click = runtime.mouse_click(4, 0);
 
     assert_eq!(tab_click.effects, vec![Effect::SwitchTab { position: 0 }]);
     assert_eq!(pane20_click.effects, vec![Effect::ShowPane { pane_id: 20 }]);
@@ -694,8 +694,8 @@ fn single_pane_detail_line_click_shows_the_pane() {
     let ansi = runtime.render(100, 80);
     assert!(ansi.contains("team"));
 
-    let header_click = runtime.mouse_click(2);
-    let detail_click = runtime.mouse_click(3);
+    let header_click = runtime.mouse_click(2, 0);
+    let detail_click = runtime.mouse_click(3, 0);
 
     assert_eq!(header_click.effects, vec![Effect::SwitchTab { position: 0 }]);
     assert_eq!(detail_click.effects, vec![Effect::ShowPane { pane_id: 30 }]);
@@ -707,7 +707,7 @@ fn mouse_click_is_ignored_until_permission_granted() {
     runtime.tabs_changed(vec![tab(0, "team", false)]);
     runtime.render(100, 80);
 
-    assert_eq!(runtime.mouse_click(2), Outcome::default());
+    assert_eq!(runtime.mouse_click(2, 0), Outcome::default());
 }
 
 #[test]
@@ -876,6 +876,43 @@ fn status_edge_persists_presence_once_and_not_on_identical_state() {
 }
 
 #[test]
+fn own_presence_counts_live_status_panes_not_tab_rollups_or_unseated_payloads() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "pair", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
+    rt.status_pipe(&payload_json(10, "running"));
+    rt.status_pipe(&payload_json(11, "running"));
+    // Status intake legitimately accepts a payload before topology arrives;
+    // presence must not count that stale/unseated id.
+    rt.status_pipe(&payload_json(99, "pending"));
+
+    let own = rt.own_presence();
+    assert_eq!(own.running, 2, "two agent panes in one tab count as two");
+    assert_eq!(own.attention, 0);
+    assert_eq!(own.attention_tab_position, None);
+}
+
+#[test]
+fn own_presence_excludes_command_attention_and_uses_the_first_status_tab() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "command", false), tab(3, "agent", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    rt.radar.set_tab_panes_for_position(3, vec![pane(20)]);
+
+    // A command-origin Error is urgent in the rail but intentionally absent
+    // from the cross-session agent presence tally.
+    let cmd = vec!["cargo".to_string(), "test".to_string()];
+    rt.radar.command_mut().on_command_changed(10, &cmd, true, None, rt.tick);
+    let _ = rt.radar.command_mut().on_exit(10, Some(1), Tick(rt.tick), EpochSecs(0));
+    rt.status_pipe(&payload_json(20, "pending"));
+
+    let own = rt.own_presence();
+    assert_eq!(own.running, 0);
+    assert_eq!(own.attention, 1, "only the status-origin Pending counts");
+    assert_eq!(own.attention_tab_position, Some(3));
+}
+
+#[test]
 fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
     // Finding 1 pin: `presence_json` embeds `updated_epoch_s`, which on Fast
     // cadence moves every tick. If `project`'s change check compared the raw
@@ -1006,7 +1043,7 @@ fn clicking_a_session_line_emits_switch_session() {
     let ansi = rt.render(100, 80);
     assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
 
-    let own_click = rt.mouse_click(2);
+    let own_click = rt.mouse_click(2, 0);
     assert_eq!(
         own_click,
         Outcome::default(),
@@ -1014,7 +1051,7 @@ fn clicking_a_session_line_emits_switch_session() {
         own_click
     );
 
-    let peer_click = rt.mouse_click(3);
+    let peer_click = rt.mouse_click(3, 0);
     assert_eq!(
         peer_click.effects,
         vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
@@ -1026,7 +1063,7 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    let out = rt.mouse_right_click(3);
+    let out = rt.mouse_right_click(3, 0);
 
     assert_eq!(
         out,
@@ -1042,11 +1079,25 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
 }
 
 #[test]
+fn left_click_on_stale_badge_glyph_dismisses_but_the_row_body_still_switches() {
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
+        .expect("stale peer badge must carry a dismiss glyph");
+
+    let body = rt.mouse_click(3, start_col - 1);
+    assert_eq!(body.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: None }]);
+    let dismiss = rt.mouse_click(3, start_col);
+    assert_eq!(dismiss.effects, vec![Effect::DismissPresence { name: "alpha".into() }]);
+    assert!(dismiss.render, "dismiss removes the stale peer locally at once");
+}
+
+#[test]
 fn right_click_on_fresh_session_line_is_inert() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, fresh(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    let out = rt.mouse_right_click(3);
+    let out = rt.mouse_right_click(3, 0);
 
     assert_eq!(out, Outcome::default());
     assert!(
@@ -1060,7 +1111,7 @@ fn right_click_on_own_session_line_is_inert() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    assert_eq!(rt.mouse_right_click(2), Outcome::default());
+    assert_eq!(rt.mouse_right_click(2, 0), Outcome::default());
 }
 
 #[test]
@@ -1068,7 +1119,7 @@ fn right_click_on_tab_line_is_inert() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    assert_eq!(rt.mouse_right_click(5), Outcome::default());
+    assert_eq!(rt.mouse_right_click(5, 0), Outcome::default());
 }
 
 #[test]
@@ -1076,7 +1127,7 @@ fn right_click_on_empty_line_is_inert() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    assert_eq!(rt.mouse_right_click(99), Outcome::default());
+    assert_eq!(rt.mouse_right_click(99, 0), Outcome::default());
 }
 
 #[test]
@@ -1085,7 +1136,7 @@ fn right_click_without_permission_is_inert_even_on_stale_session_line() {
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
     rt.permission = PermissionState::default();
 
-    assert_eq!(rt.mouse_right_click(3), Outcome::default());
+    assert_eq!(rt.mouse_right_click(3, 0), Outcome::default());
     assert!(
         rt.sessions.badge().iter().any(|b| b.name == "alpha"),
         "ungranted right-click must not mutate the badge"
@@ -1127,7 +1178,7 @@ fn runtime_with_pending_panes() -> PluginRuntime {
 fn right_click_on_pending_pane_broadcasts_and_leaves_local_state_untouched_until_the_echo_lands() {
     let mut rt = runtime_with_pending_panes();
 
-    let out = rt.mouse_right_click(3); // tab0 pane 10, Pending
+    let out = rt.mouse_right_click(3, 0); // tab0 pane 10, Pending
     assert!(!out.render, "the click itself must not mutate local state — see Effect::BroadcastStatus's doc");
     assert_eq!(out.effects.len(), 1, "exactly one pending pane on this line, got {:?}", out.effects);
     let Effect::BroadcastStatus { payload } = &out.effects[0] else {
@@ -1148,10 +1199,31 @@ fn right_click_on_pending_pane_broadcasts_and_leaves_local_state_untouched_until
 }
 
 #[test]
+fn left_click_requires_the_pending_glyph_cells_but_right_click_keeps_row_wide_parity() {
+    let mut rt = runtime_with_pending_panes();
+    let (start_col, _) = rt.last_rendered
+        .hotspot_at_line(2)
+        .expect("pending tab header must carry its acknowledge hotspot");
+
+    // The cell before the glyph keeps ordinary navigation semantics; only the
+    // glyph itself acknowledges. `start_col` is display-cell zero based.
+    assert_eq!(
+        rt.mouse_click(2, start_col.saturating_sub(1)),
+        Outcome::with_effects(false, vec![Effect::SwitchTab { position: 0 }]),
+    );
+    let left = rt.mouse_click(2, start_col);
+    assert_eq!(left.effects.len(), 2, "tab hotspot acknowledges both pending panes");
+
+    // Right-click remains deliberately row-wide until zellij#5350 is fixed.
+    let right = rt.mouse_right_click(2, 0);
+    assert_eq!(right.effects.len(), 2, "right-click parity stays row-wide");
+}
+
+#[test]
 fn right_click_on_tab_row_broadcasts_every_pending_pane_in_that_tab_only() {
     let mut rt = runtime_with_pending_panes();
 
-    let out = rt.mouse_right_click(2); // tab0 header line, pane_id: None
+    let out = rt.mouse_right_click(2, 0); // tab0 header line, pane_id: None
     assert!(!out.render);
     let acked: Vec<u32> = out
         .effects
@@ -1172,7 +1244,7 @@ fn right_click_on_tab_row_broadcasts_every_pending_pane_in_that_tab_only() {
 #[test]
 fn right_click_on_a_running_pane_row_is_a_strict_no_op() {
     let mut rt = runtime_with_pending_panes();
-    assert_eq!(rt.mouse_right_click(4), Outcome::default(), "pane 11 is Running, not Pending");
+    assert_eq!(rt.mouse_right_click(4, 0), Outcome::default(), "pane 11 is Running, not Pending");
 }
 
 #[test]
@@ -1184,13 +1256,13 @@ fn right_click_on_a_tab_row_with_no_tracked_panes_is_a_strict_no_op() {
     };
     rt.tabs_changed(vec![tab(0, "a", false)]);
     let _ = rt.render(100, 80);
-    assert_eq!(rt.mouse_right_click(2), Outcome::default(), "no panes at all in this tab");
+    assert_eq!(rt.mouse_right_click(2, 0), Outcome::default(), "no panes at all in this tab");
 }
 
 #[test]
 fn acknowledge_payload_round_trips_and_carries_the_original_source_and_kind() {
     let mut rt = runtime_with_pending_panes();
-    let out = rt.mouse_right_click(3); // pane 10, Pending, source "claude" via payload_for
+    let out = rt.mouse_right_click(3, 0); // pane 10, Pending, source "claude" via payload_for
     let Effect::BroadcastStatus { payload } = &out.effects[0] else {
         panic!("expected BroadcastStatus, got {:?}", out.effects);
     };
@@ -1208,7 +1280,7 @@ fn acknowledge_payload_round_trips_and_carries_the_original_source_and_kind() {
 #[test]
 fn double_delivery_of_the_acknowledge_broadcast_is_idempotent() {
     let mut rt = runtime_with_pending_panes();
-    let out = rt.mouse_right_click(3);
+    let out = rt.mouse_right_click(3, 0);
     let Effect::BroadcastStatus { payload } = &out.effects[0] else {
         panic!("expected BroadcastStatus, got {:?}", out.effects);
     };
@@ -1242,7 +1314,7 @@ fn acknowledge_echo_never_fires_a_done_notification() {
     // (firing THEIR notifications — the flagging the user is responding to).
     let _ = rt.timer_fast(PermissionProbe::default());
 
-    let out = rt.mouse_right_click(3); // pane 10, Pending, background
+    let out = rt.mouse_right_click(3, 0); // pane 10, Pending, background
     let Effect::BroadcastStatus { payload } = &out.effects[0] else {
         panic!("expected BroadcastStatus, got {:?}", out.effects);
     };
@@ -2456,4 +2528,3 @@ mod timer_chain_fuzz {
         }
     }
 }
-

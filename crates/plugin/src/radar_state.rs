@@ -368,6 +368,14 @@ impl RadarState {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
                 displaced_any = true;
             }
+            // A dead pane root is definitive producer death for the pushed
+            // status too — the agent-rooted pane (`zellij run -- claude`)
+            // never returns to a shell prompt, so this flag is its only
+            // exit-clear signal (`StatusStore::clear_on_exit`).
+            if let Some(receded) = self.status.clear_on_exit(pane_id, tick) {
+                self.ledger_receded(vec![(pane_id, receded)], &old_index, &status_tracked);
+                displaced_any = true;
+            }
         }
         self.live_panes = Some(update.live.clone());
         self.tab_panes = update.tab_panes;
@@ -497,7 +505,7 @@ impl RadarState {
         // instead, so a mid-turn foreground flicker to a shell can't be
         // mistaken for the agent exiting, while an agent killed mid-turn still
         // expires to idle on the timer (`expire_stale_running`).
-        let cleared = if crate::command::is_shell_prompt(command, is_foreground) {
+        let cleared = if crate::command::is_shell_prompt(command) {
             match self.status.clear_on_prompt_return(pane_id, tick) {
                 Some(receded) => {
                     // Status-origin recede: the shadow filter never suppresses
@@ -508,11 +516,11 @@ impl RadarState {
                 None => false,
             }
         } else {
-            // The agent's exe back in the foreground resolves a mid-turn
+            // The agent's exe back as the pane's command resolves a mid-turn
             // flicker: cancel any stale-Running grace clock the shell blip
-            // started. Other foregrounds don't vouch — a command run in the
+            // started. Other commands don't vouch — a command run in the
             // shell an agent died in must not keep its ghost alive.
-            if crate::command::is_agent_foreground(command, is_foreground) {
+            if crate::command::is_agent_command(command) {
                 self.status.cancel_running_suspect(pane_id);
             }
             false

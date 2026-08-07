@@ -3,8 +3,8 @@
 A native [Zellij](https://zellij.dev) **sidebar** that shows live AI-agent
 status for every tab — *working*, *waiting for you*, *done*, or *error* — with
 repo·branch, elapsed time, and the last message. Click a row to jump to that
-tab; right-click to acknowledge — a pane still flagged "needs you" after
-you've already seen it, or a dead peer session (details below).
+tab; use its right-edge glyph to acknowledge a pane still flagged "needs you"
+or dismiss a dead peer session (details below).
 
 <p align="center">
   <a href="https://github.com/marktoda/zj-radar/actions/workflows/ci.yml">
@@ -54,7 +54,7 @@ wrapping your agents. It's a status rail for the session you already run.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
   [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
 - Running more than one Zellij session? A **cross-session badge** shows every
-  other session's running/attention counts, with click-to-switch and a
+  other session's live status-origin pane counts, with click-to-switch and a
   `session-next`/`session-prev` cycle — see below.
 
 ## Quick start
@@ -125,8 +125,11 @@ per project) and each session's rail quietly publishes its own counts for
 the others to see — no setup needed. Once a second session is live, every
 rail grows a line per session: current session first, then any session that
 needs your attention, then the rest — name plus running/attention counts.
-With just one session running, the badge renders nothing; the feature stays
-invisible until there's genuinely something cross-session to show.
+Those badge counts are live pane counts from status producers only: command
+activity is excluded, while the local rail rows, header badge, and footer tally
+deliberately remain tab-level summaries. With just one session running, the
+badge renders nothing; the feature stays invisible until there's genuinely
+something cross-session to show.
 
 Click a peer's line to switch straight to that session (landing on its
 attention tab, if it has one). Or cycle the highlight with `session-next` /
@@ -138,7 +141,7 @@ session.
 
 A session that stops heartbeating dims rather than disappearing, so a
 crashed machine or killed server never silently drops off your radar.
-Right-click a dimmed entry to dismiss it immediately — the manual
+Click the dimmed entry's right-edge `✕` to dismiss it immediately — the manual
 complement to the automatic sweep, for a session you already know is dead.
 Dismissing is never destructive: if the session turns out to be alive, its
 next heartbeat simply brings it back, fresh.
@@ -149,10 +152,9 @@ never appears and nothing else about the sidebar is affected.
 
 ### Mouse gestures
 
-The rail follows one rule everywhere: **left-click navigates, right-click
-acknowledges.** Left-click always just switches — to a tab, a pane, or (as
-above) a peer session, landing on its attention tab. Right-click means "I've
-seen this, stop flagging it" and does one of two things depending on the row:
+The rail uses right-edge action glyphs: **left-click navigates everywhere
+except a glyph cell.** `✓` means "I've seen this, stop flagging it"; `✕`
+dismisses a stale peer. The glyph action does one of two things:
 
 - **A dimmed peer session** (above) — dismiss it from the badge; alive-but-quiet
   sessions simply reappear on their next heartbeat.
@@ -165,8 +167,8 @@ seen this, stop flagging it" and does one of two things depending on the row:
   me to also...?") — a genuinely blocking question still clears the usual way,
   by you typing a reply.
 
-Right-clicking anything else — a fresh peer, your own session's line, a row
-with nothing pending — is a no-op.
+Right-click retains these same row-wide actions for future parity, but Zellij
+currently does not deliver right-clicks to plugins ([zellij#5350](https://github.com/zellij-org/zellij/issues/5350)); glyphs are the working trigger.
 
 ## How is this different?
 

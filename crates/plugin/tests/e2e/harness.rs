@@ -282,7 +282,7 @@ impl ZellijSession {
         panic!(
             "zellij session '{}' never showed plugin header; PTY tail:\n{}",
             self.name,
-            &self
+            self
                 .pty_text()
                 .chars()
                 .rev()

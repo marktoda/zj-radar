@@ -57,6 +57,8 @@ fn display(
                 since_tick: d.since_tick,
                 outcome: d.outcome,
                 pending_epoch_s: d.pending_epoch_s,
+                origin: crate::observation::ObservationOrigin::StatusPipe,
+                acknowledged: false,
             }]
         })
         .unwrap_or_default();
@@ -946,6 +948,8 @@ fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
         since_tick: 0,
         outcome: None,
         pending_epoch_s: None,
+        origin: crate::observation::ObservationOrigin::StatusPipe,
+        acknowledged: false,
     }
 }
 
@@ -960,6 +964,8 @@ fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) 
         since_tick: 0,
         outcome: Some(outcome),
         pending_epoch_s: None,
+        origin: crate::observation::ObservationOrigin::StatusPipe,
+        acknowledged: false,
     }
 }
 
@@ -974,6 +980,8 @@ fn pe_task(id: u32, kind: Kind, status: Status, msg: &str, task: &str) -> PaneDi
         since_tick: 0,
         outcome: None,
         pending_epoch_s: None,
+        origin: crate::observation::ObservationOrigin::StatusPipe,
+        acknowledged: false,
     }
 }
 
@@ -3190,6 +3198,8 @@ prop_compose! {
                 since_tick: 0,
                 outcome: None,
                 pending_epoch_s: None,
+                origin: crate::observation::ObservationOrigin::StatusPipe,
+                acknowledged: false,
             }
         }
     }
@@ -3502,6 +3512,69 @@ fn from_lines_derives_ansi_and_targets_in_lockstep() {
     assert_eq!(rr.target_at_line(3), None);
     // Structural lockstep: every '\n'-terminated segment has a target slot.
     assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
+}
+
+#[test]
+fn hotspot_metadata_survives_cards_finalize_and_excludes_question_and_overflow_lines() {
+    let pending = PaneDisplay::Tracked {
+        pane_id: 10,
+        kind: Kind::Claude,
+        status: Status::Pending,
+        msg: "approve?".into(),
+        task: "ship it".into(),
+        since_tick: 0,
+        outcome: None,
+        pending_epoch_s: None,
+        origin: crate::observation::ObservationOrigin::StatusPipe,
+        acknowledged: false,
+    };
+    let mut panes = vec![pending];
+    panes.extend((11..=17).map(|id| pe(id, Kind::Claude, Status::Running, "working")));
+    let row = tab(1, "team", display_multi(panes));
+    let opts = RenderOpts { density: Density::Cards, ..ro(30, 0) };
+    let rail = render_rail(&[row], &[], &opts);
+
+    let header = rail.ansi.lines().position(|l| l.contains("team")).unwrap() as isize;
+    let pane = rail.ansi.lines().position(|l| l.contains("ship it")).unwrap() as isize;
+    let question = rail.ansi.lines().position(|l| l.contains("approve?")).unwrap() as isize;
+    let more = rail.ansi.lines().position(|l| l.contains("more")).unwrap() as isize;
+    assert_eq!(
+        rail.hotspot_at_line(header),
+        Some((29, HotspotAction::Acknowledge {
+            target: RailTarget { tab_position: 0, pane_id: None, session: None },
+        })),
+        "pending tab header gets ✓ after Cards finalize"
+    );
+    assert_eq!(
+        rail.hotspot_at_line(pane),
+        Some((29, HotspotAction::Acknowledge {
+            target: RailTarget { tab_position: 0, pane_id: Some(10), session: None },
+        })),
+        "pending pane identity gets ✓ after Cards finalize"
+    );
+    assert_eq!(rail.hotspot_at_line(question), None, "question continuation is never actionable");
+    assert_eq!(rail.hotspot_at_line(more), None, "+N more is never actionable");
+}
+
+#[test]
+fn narrow_pending_rows_drop_the_glyph_and_its_hotspot_together() {
+    let row = tab(1, "a", display(Status::Pending, 0, 1, Some(pd("r", "b", "ask", Status::Pending))));
+    let rail = render_rail(&[row], &[], &ro(5, 0));
+    assert!(!rail.ansi.contains('✓'));
+    for line in 0..rail.line_count() {
+        assert_eq!(rail.hotspot_at_line(line as isize), None, "narrow line {line} must not retain metadata");
+    }
+}
+
+#[test]
+fn pending_hotspot_does_not_hide_an_independent_bell() {
+    let mut row = tab(1, "team", display(Status::Pending, 0, 1, Some(pd("r", "b", "approve", Status::Pending))));
+    row.has_bell = true;
+    let rail = render_rail(&[row], &[], &ro(30, 0));
+    let header = rail.ansi.lines().find(|line| line.contains("team")).unwrap();
+    assert!(header.contains('⚑'), "bell from another pane remains visible: {header:?}");
+    assert!(header.contains('✓'), "pending action remains visible: {header:?}");
+    assert_eq!(visible_width(header), 30, "combined bell+hotspot must stay within the rail");
 }
 
 #[test]
