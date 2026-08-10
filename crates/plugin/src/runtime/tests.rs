@@ -220,7 +220,6 @@ fn peer_waits_then_requests_after_granted_marker() {
             Effect::RequestPermission,
             Effect::SetSelectable(true),
             Effect::HeartbeatPermissionLock,
-            Effect::ReadPresences,
             Effect::SetTimeout(Cadence::Fast),
         ]
     );
@@ -597,7 +596,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
         let quiet = runtime.timer_fast(PermissionProbe::default());
         assert_eq!(
             quiet.effects,
-            vec![Effect::ReadPresences, Effect::SetTimeout(Cadence::Fast)],
+            vec![Effect::SetTimeout(Cadence::Fast)],
             "still pending short of the debounce window"
         );
     }
@@ -608,7 +607,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     // snapshot too (late-spawned instances must see the Running command).
     assert_eq!(
         timer.effects,
-        vec![Effect::ReadPresences, Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
+        vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
     );
     let state = runtime
         .radar
@@ -1405,6 +1404,118 @@ fn two_tab_runtime_with_running_commands() -> PluginRuntime {
 }
 
 #[test]
+fn deferred_snapshot_write_flushes_on_the_next_tick() {
+    // A Running-label-only broadcast marks the snapshot dirty instead of
+    // persisting inline; the next timer tick must carry exactly one
+    // `PersistSnapshot`, then go quiet again.
+    let mut rt = runtime_with_config(config());
+    rt.tabs_changed(vec![tab(0, "work", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    let running = |msg: &str| {
+        crate::payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_for(7, Status::Running) })
+    };
+
+    let first = rt.status_pipe(&running("editing lib.rs"));
+    assert!(
+        first.effects.contains(&Effect::PersistSnapshot),
+        "the FIRST application is a status edge (None → Running): persists inline, got {:?}",
+        first.effects
+    );
+
+    let label = rt.status_pipe(&running("running tests"));
+    assert!(
+        !label.effects.contains(&Effect::PersistSnapshot),
+        "label-only update must not persist inline, got {:?}",
+        label.effects
+    );
+
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        tick.effects.contains(&Effect::PersistSnapshot),
+        "the next tick flushes the deferred write, got {:?}",
+        tick.effects
+    );
+    let tick2 = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !tick2.effects.contains(&Effect::PersistSnapshot),
+        "the dirty flag is consumed by the flush, got {:?}",
+        tick2.effects
+    );
+}
+
+#[test]
+fn render_gate_vetoes_repaints_whose_drawn_content_is_unchanged() {
+    // Zellij re-reports the pane manifest on plenty of non-changes and
+    // delivers it to every tab's instance. Once a render has stamped what is
+    // actually on screen, an event that re-derives identical content must not
+    // request another repaint — while a tick-driven frame (`force_render`)
+    // and a genuine content change still do.
+    let mut rt = runtime_with_config(config());
+    rt.permission = crate::permission::PermissionState::Resolved { granted: true };
+    rt.tabs_changed(vec![tab(0, "work", true)]);
+
+    let mut live = HashSet::new();
+    live.insert(7);
+    let mut tab_panes = HashMap::new();
+    tab_panes.insert(0, vec![TerminalPane { focused_in_tab: true, ..pane(7) }]);
+    let manifest = || PaneUpdate {
+        tab_panes: tab_panes.clone(),
+        live: live.clone(),
+        theme: None,
+        exits: vec![],
+    };
+
+    let first = rt.panes_changed(manifest());
+    assert!(first.render, "first manifest is un-stamped content: renders");
+    let _ = rt.render(30, 40); // Zellij's render call — stamps last_render_key
+
+    let repeat = rt.panes_changed(manifest());
+    assert!(!repeat.render, "identical manifest re-report draws nothing new");
+
+    // Tick-driven frames bypass the gate (spinner/ages animate off now_tick).
+    rt.radar.status_mut().apply(payload_for(7, Status::Running), rt.tick, 0);
+    let _ = rt.render(30, 40);
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert!(tick.render, "animation tick renders even with identical rows");
+
+    // A genuine content change still passes the gate.
+    let _ = rt.render(30, 40);
+    let edge = rt.status_pipe(&crate::payload::to_wire(&StatusPayload {
+        msg: "approve?".into(),
+        ..payload_for(7, Status::Pending)
+    }));
+    assert!(edge.render, "a real status edge repaints");
+}
+
+#[test]
+fn noop_broadcast_skips_presence_and_notify_work() {
+    // An identical re-broadcast advances nothing: no presence re-derive (its
+    // effect would show as PersistPresence on a content edge), no snapshot,
+    // no render. The pane's own counts can't have moved — the radar
+    // generation didn't.
+    let mut rt = runtime_with_config(config());
+    rt.tabs_changed(vec![tab(0, "work", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    let _ = rt.session_name_changed(Some("main".into()));
+    let wire = crate::payload::to_wire(&payload_for(7, Status::Running));
+
+    let first = rt.status_pipe(&wire);
+    assert!(
+        first.effects.contains(&Effect::PersistPresence),
+        "first Running is a presence content edge, got {:?}",
+        first.effects
+    );
+
+    let repeat = rt.status_pipe(&wire);
+    assert!(!repeat.render);
+    assert!(
+        repeat.effects.iter().all(|e| matches!(e, Effect::SetTimeout(_))),
+        "an identical re-broadcast may at most re-arm the timer, got {:?}",
+        repeat.effects
+    );
+}
+
+#[test]
 fn project_emits_effects_in_canonical_order() {
     // Sole home of the order contract: renames → snapshot → cwd →
     // SetTimeout → notify. Seed a background Done so `settle` actually
@@ -1422,6 +1533,7 @@ fn project_emits_effects_in_canonical_order() {
         renames: vec![TabRename { position: 0, name: "renamed".into() }],
         cwd_bootstrap: vec![7],
         settle: true,
+        ..RadarChange::default()
     };
     let outcome = rt.project(vec![], change, 0);
 
@@ -2125,29 +2237,41 @@ fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once(
 
 #[test]
 fn read_presences_is_bound_to_fast_fires_only() {
-    // Finding 2 pin: the brief bounds `Effect::ReadPresences` to "one
-    // directory scan per second, only while Fast is armed" — it must not
-    // ride along on the Slow (60s) heartbeat, which exists purely to repaint
-    // ledger ages. `timer` tells Fast from Slow the same way `TimerChain::
-    // on_fire` tells live from stale: by `elapsed_s` against
-    // `STALE_FIRE_ELAPSED_S`.
+    // Finding 2 pin, tightened by the decimation pass: `Effect::ReadPresences`
+    // rides Fast fires only — never the Slow (60s) heartbeat, which exists
+    // purely to repaint ledger ages — and within Fast only every
+    // `PRESENCE_READ_TICK_INTERVAL`th tick (peers heartbeat at 60s and dim at
+    // 90s; a per-second directory scan per instance bought nothing). `timer`
+    // tells Fast from Slow the same way `TimerChain::on_fire` tells live from
+    // stale: by `elapsed_s` against `STALE_FIRE_ELAPSED_S`.
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
         ..Default::default()
     };
 
-    let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
-    assert!(fast.effects.contains(&Effect::ReadPresences), "a Fast fire must scan peers, got {:?}", fast.effects);
+    let scans: Vec<bool> = (0..(2 * PRESENCE_READ_TICK_INTERVAL))
+        .map(|_| {
+            rt.timer(PermissionProbe::default(), Cadence::Fast.seconds())
+                .effects
+                .contains(&Effect::ReadPresences)
+        })
+        .collect();
+    assert_eq!(
+        scans.iter().filter(|&&s| s).count(),
+        2,
+        "Fast fires must scan peers once per interval, got {scans:?}"
+    );
 
     // A lone Slow fire (nothing else in flight, so it's the live chain, not
     // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
-    // must not.
+    // must not — even on a tick the interval would otherwise select.
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
         ..Default::default()
     };
+    rt.tick = PRESENCE_READ_TICK_INTERVAL - 1; // Slow fire lands ON the interval tick
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
     assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }

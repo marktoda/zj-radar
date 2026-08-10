@@ -31,11 +31,18 @@ pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
 pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
-pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] = [
+// `PostToolUse` is deliberately absent: Pre and Post derive the SAME activity
+// string from the same tool payload (`agents/codex.rs`, `agents/claude.rs`),
+// so registering both broadcast an identical message twice per tool call —
+// and every broadcast fans out to every rail instance in the session
+// (measured at ~0.5s of Zellij-server CPU per message on an 8-tab session
+// under the wasm interpreter). The next PreToolUse/Stop supersedes anything
+// Post would have said. Uninstall still strips a legacy Post handler:
+// `strip_codex_hooks` matches by marker across ALL events, not this list.
+pub(crate) const CODEX_HOOK_EVENTS: [&str; 6] = [
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
-    "PostToolUse",
     "SubagentStart",
     "SubagentStop",
     "Stop",

@@ -1110,27 +1110,114 @@ fn applied_tab_name_repicks_when_the_naming_pane_closes() {
 }
 
 #[test]
+fn identical_status_rebroadcast_is_a_strict_noop() {
+    // The tool-hook firehose's hottest payload: PreToolUse and PostToolUse
+    // derive the SAME activity string, so every tool call re-broadcasts an
+    // identical observation. `apply` already no-ops the store; the change
+    // must no-op too — measured at ~0.4s of host CPU per message across an
+    // 8-tab session when it didn't (every instance re-rendered + re-persisted
+    // the shared snapshot for nothing).
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let wire = payload::to_wire(&payload_in_repo(1, Status::Running, "repo"));
+
+    let first = radar.status_pipe(&wire, 1, 100, config::NamingMode::Off).unwrap();
+    assert!(first.persist_snapshot_deferred || first.persist_snapshot, "first application persists");
+
+    let gen_before = radar.generation();
+    let repeat = radar.status_pipe(&wire, 2, 200, config::NamingMode::Off).unwrap();
+    assert_eq!(repeat, RadarChange::default(), "identical re-broadcast: no render, no persist, no renames");
+    assert_eq!(radar.generation(), gen_before, "…and no rows-memo invalidation");
+}
+
+#[test]
+fn running_label_update_defers_render_and_persist_to_the_tick() {
+    // Running→Running with a new activity label: the Fast tick (armed while
+    // anything is Running) repaints and flushes within a second, so the
+    // per-message render + snapshot read-merge-write bought only burst
+    // amplification. Status EDGES (here Running→Pending) stay immediate.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let running = |msg: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Running, "repo") })
+    };
+
+    radar.status_pipe(&running("editing lib.rs"), 1, 100, config::NamingMode::Off);
+    let label = radar.status_pipe(&running("running tests"), 2, 200, config::NamingMode::Off).unwrap();
+    assert!(!label.render, "label-only Running update defers the repaint to the tick");
+    assert!(!label.persist_snapshot, "…and does not persist inline");
+    assert!(label.persist_snapshot_deferred, "…but marks the snapshot dirty for the tick flush");
+    assert_eq!(
+        radar.status(1).unwrap().msg,
+        "running tests",
+        "the store still applied the new label"
+    );
+
+    let pending = payload::to_wire(&StatusPayload {
+        msg: "approve?".into(),
+        ..payload_in_repo(1, Status::Pending, "repo")
+    });
+    let edge = radar.status_pipe(&pending, 3, 300, config::NamingMode::Off).unwrap();
+    assert!(edge.render, "a status edge renders immediately");
+    assert!(edge.persist_snapshot, "…and persists immediately");
+    assert!(!edge.persist_snapshot_deferred);
+}
+
+#[test]
+fn pending_question_rewrite_renders_immediately() {
+    // Same-status msg changes defer ONLY while Running: a new Pending question
+    // is a needs-you fact the user is waiting on, and Pending does not pin the
+    // Fast cadence the way Running does — deferring it could sit on a Slow
+    // (60s) chain.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let ask = |msg: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Pending, "repo") })
+    };
+
+    radar.status_pipe(&ask("run migration?"), 1, 100, config::NamingMode::Off);
+    let requestion = radar.status_pipe(&ask("also drop the old table?"), 2, 200, config::NamingMode::Off).unwrap();
+    assert!(requestion.render, "a new question must repaint now");
+    assert!(requestion.persist_snapshot);
+}
+
+#[test]
 fn mutating_events_request_a_render() {
-    // tabs_changed / command_changed / cwd_changed each carry render=true so
-    // the runtime repaints; without it the sidebar would silently go stale
-    // after a tab reshuffle, a new tracked command, or a cwd report.
+    // Renders are requested exactly where something rows-visible changed —
+    // Zellij delivers each of these events to EVERY tab's instance, so a
+    // blanket render=true multiplied session-wide repaints by the event rate.
     let mut radar = RadarState::default();
     assert!(
         radar.tabs_changed(vec![tab(1, 0, "a", true)]).render,
-        "tabs_changed must request a render"
+        "a genuine tab change must request a render"
+    );
+    assert_eq!(
+        radar.tabs_changed(vec![tab(1, 0, "a", true)]),
+        RadarChange::default(),
+        "an identical TabUpdate is a strict no-op (Zellij re-reports on focus churn)"
     );
     assert!(
-        radar
+        !radar
             .command_changed(1, &["cargo".into(), "build".into()], true, 0)
             .render,
-        "command_changed must request a render"
+        "a fresh foreground command only seeds the debounce map — the row \
+         appears when the TIMER promotes it, and that tick renders"
     );
     assert!(
-        radar
+        !radar
             .cwd_changed(1, "/tmp".into(), config::NamingMode::Off)
             .render,
-        "cwd_changed must request a render"
+        "a cwd feeds naming only; the repaint (if any) rides the RenameTab \
+         effect's own TabUpdate echo"
     );
+    // The prompt-return clear is command_changed's one rows-visible edge.
+    radar.status_mut().apply(payload_in_repo(1, Status::Done, "repo"), 1, 0);
+    let change = radar.command_changed(1, &["zsh".into()], true, 2);
+    assert!(change.render, "clearing a stale pushed status must repaint");
+    assert!(change.persist_snapshot, "…and persist the clear");
 }
 
 // ── Focus no longer changes rail status ─────────────────────────────────────

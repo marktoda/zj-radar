@@ -166,6 +166,13 @@ impl PaneUpdate {
 pub(crate) struct RadarChange {
     pub render: bool,
     pub persist_snapshot: bool,
+    /// Persist the snapshot *lazily*: mark the runtime's dirty flag and let the
+    /// next timer tick carry the write, instead of paying a read-merge-write
+    /// per event. Set by `status_pipe` for a Running→Running label-only update
+    /// — the hottest broadcast there is (every tool hook), where an up-to-1s-
+    /// stale activity label in a just-opened tab's seed is invisible in
+    /// practice. Completion edges still persist immediately (`persist_snapshot`).
+    pub persist_snapshot_deferred: bool,
     pub renames: Vec<TabRename>,
     /// Terminal panes whose working directory should be read once (via a
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
@@ -176,6 +183,12 @@ pub(crate) struct RadarChange {
     /// entry. `false` defers notification to the timer. (It no longer gates any
     /// rail-state change; focus stopped driving state in the drop-focus refactor.)
     pub settle: bool,
+    /// Bypass the runtime's rows-diff render gate: this render request changes
+    /// the *drawing* without necessarily changing the rows. Two setters — the
+    /// timer (spinner frames and ages come from `now_tick`/`now_epoch_s` at
+    /// render time, not from the rows) and a config-pipe override (density/
+    /// glyph changes redraw identical rows differently).
+    pub force_render: bool,
 }
 
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
@@ -227,10 +240,42 @@ pub(crate) struct RadarState {
     /// first manifest). Level-triggered: recomputed from the current manifest
     /// every `panes_changed`, so a pane that reappears simply drops out.
     absent_once: HashMap<u32, Option<(TabId, String)>>,
+    /// Monotonic mutation counter over everything `rows()` reads — bumped by
+    /// [`touch`](Self::touch) at every entry point that changed row-visible
+    /// state. Two consumers: the [`rows`](Self::rows) memo below, and the
+    /// runtime's own-presence gate (counts can only move when this does).
+    /// Wall-clock animation (spinner frames, ages) deliberately does NOT bump
+    /// it — those read `now_tick` at render time.
+    generation: u64,
+    /// Memo for [`rows`](Self::rows): the last `(generation, now_tick)` it was
+    /// computed at, with its result. Events that consult rows more than once
+    /// per intake (the runtime's presence derivation + the render itself, both
+    /// under a wasm *interpreter* on the host side) pay the rollup once.
+    /// `RefCell` keeps `rows(&self)` callable from render paths; the plugin is
+    /// single-threaded by construction (one wasm instance per tab).
+    rows_memo: std::cell::RefCell<Option<(u64, u64, Vec<TabRow>)>>,
 }
 
 impl RadarState {
+    /// Record that row-visible state changed — invalidates the `rows` memo and
+    /// advances [`generation`](Self::generation). Every `&mut self` entry point
+    /// that mutates something `rows()` reads must call this (the memo makes a
+    /// missed call a *stale rail* bug, not just a slow one — keep the call
+    /// sites audited against `rows`'s inputs: `tabs`, `tab_panes`,
+    /// `flash_until`, and both stores).
+    fn touch(&mut self) {
+        self.generation += 1;
+    }
+
+    /// The current mutation generation — see the field doc. The runtime uses
+    /// it to skip recomputing derived-from-rows values (own presence) on
+    /// events that provably changed nothing.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn load_snapshot(&mut self, raw: &str) -> Option<u64> {
+        self.touch();
         let (observations, tick, ledger) = snapshot::load(raw)?;
         self.status = StatusStore::default();
         self.command = CommandStore::default();
@@ -287,7 +332,22 @@ impl RadarState {
 
     /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
     /// sorts at intake, so this render-path call is a plain iteration.
+    /// Memoized on `(generation, now_tick)`: one intake event consults rows
+    /// several times (presence derivation, the render-gate diff, the render
+    /// itself), and under Zellij's interpreted-wasm runtime the repeat rollups
+    /// were a measurable share of per-event cost.
     pub(crate) fn rows(&self, now_tick: u64) -> Vec<TabRow> {
+        if let Some((g, t, rows)) = self.rows_memo.borrow().as_ref() {
+            if *g == self.generation && *t == now_tick {
+                return rows.clone();
+            }
+        }
+        let rows = self.rows_uncached(now_tick);
+        *self.rows_memo.borrow_mut() = Some((self.generation, now_tick, rows.clone()));
+        rows
+    }
+
+    fn rows_uncached(&self, now_tick: u64) -> Vec<TabRow> {
         self.tabs
             .iter()
             .map(|t| TabRow {
@@ -316,11 +376,19 @@ impl RadarState {
         for t in &mut tabs {
             t.name = payload::sanitize(&t.name, payload::MAX_TAB_NAME_CHARS);
         }
+        // Sort before the no-op compare below — `self.tabs` is stored sorted
+        // (the per-render `rows()` path iterates in stored order instead of
+        // paying a clone+sort on every repaint and tick), so the compare must
+        // be order-normalized too.
+        tabs.sort_by_key(|t| t.position);
+        // Zellij fires `TabUpdate` far more often than tabs actually change
+        // (focus moves, pane-group churn). An identical set is a strict no-op:
+        // nothing rows-visible moved, so don't invalidate the memo or repaint.
+        if tabs == self.tabs {
+            return RadarChange::default();
+        }
         self.tabs = tabs;
-        // Sort once at intake — this is the only writer of `self.tabs`, so the
-        // per-render `rows()` path iterates in stored order instead of paying a
-        // clone+sort on every repaint and tick.
-        self.tabs.sort_by_key(|t| t.position);
+        self.touch();
         // Drop naming state for tabs that closed (the update carries the full
         // current set), so `applied` doesn't accrete gone tabs.
         let live: HashSet<TabId> = self.tabs.iter().map(|t| t.id).collect();
@@ -339,6 +407,11 @@ impl RadarState {
         now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> RadarChange {
+        // Topology and store mutations below are too interleaved to prove a
+        // no-op cheaply — a manifest always invalidates the rows memo. (The
+        // runtime's rows-diff render gate still suppresses the *repaint* when
+        // the re-derived rows come out identical.)
+        self.touch();
         // Captured BEFORE `self.tab_panes` is overwritten below: every ledger
         // edge in this method (the exit-displace and both stores' prunes)
         // reports a pane that is either still on its pre-close topology or is
@@ -439,6 +512,7 @@ impl RadarState {
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
             settle: true,
+            ..RadarChange::default()
         }
     }
 
@@ -463,7 +537,11 @@ impl RadarState {
         // runs out here. Running is not a completion — nothing to ledger — but
         // the clear must render and persist like any other store change.
         let stale_cleared = !self.status.expire_stale_running(tick).is_empty();
-        report.changed || stale_cleared
+        let changed = report.changed || stale_cleared;
+        if changed {
+            self.touch();
+        }
+        changed
     }
 
     pub(crate) fn cwd_changed(
@@ -473,8 +551,11 @@ impl RadarState {
         naming: config::NamingMode,
     ) -> RadarChange {
         self.pane_cwd.insert(pane_id, path);
+        // A cwd feeds *naming* only — nothing `rows()` reads. The rail repaint
+        // (if any) arrives via the `RenameTab` effect's own `TabUpdate` echo,
+        // so requesting one here just re-drew an identical rail.
         RadarChange {
-            render: true,
+            render: false,
             renames: self.rename_tabs(naming),
             settle: false,
             ..RadarChange::default()
@@ -525,8 +606,16 @@ impl RadarState {
             }
             false
         };
+        if cleared {
+            self.touch();
+        }
         RadarChange {
-            render: true,
+            // `CommandChanged` is the chattiest event in the system, and this
+            // handler only ever changes something rows-visible on the
+            // prompt-return clear (a fresh foreground command mutates the
+            // *pending* debounce maps; the row appears when the TIMER promotes
+            // it, and that tick renders). Repaint only on the clear.
+            render: cleared,
             settle: false,
             // Persist only when we actually cleared, so a newly-opened tab
             // rehydrates the idle from the snapshot rather than the stale status.
@@ -544,12 +633,15 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         let pane_id = p.pane_id;
-        // Captured BEFORE `apply` overwrites the store: the ping flash fires
-        // only on a LIVE not-Pending → Pending edge, never on a re-broadcast of
-        // an already-Pending status (spec's "flip", not "is"). Snapshot load
-        // never touches this map at all, so a restored Pending never flashes.
-        let was_pending = self.status.get(pane_id).map(|o| o.status) == Some(Status::Pending);
-        let flips_to_pending = p.status == Status::Pending && !was_pending;
+        // Captured BEFORE `apply` overwrites the store — two uses: the ping
+        // flash fires only on a LIVE not-Pending → Pending edge, never on a
+        // re-broadcast of an already-Pending status (spec's "flip", not "is";
+        // snapshot load never touches the flash map, so a restored Pending
+        // never flashes) — and the no-op/label-only classification below
+        // compares the whole observation across the apply.
+        let prev = self.status.get(pane_id).cloned();
+        let flips_to_pending =
+            p.status == Status::Pending && prev.as_ref().map(|o| o.status) != Some(Status::Pending);
         // A Done/Error that recedes on overwrite (a new broadcast for the same
         // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
         if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
@@ -557,21 +649,49 @@ impl RadarState {
             // matching call site).
             self.ledger_recede_now(vec![(pane_id, displaced)]);
         }
+        // Producers re-assert liberally (the Claude plugin broadcasts on every
+        // tool hook, and Pre/PostToolUse derive the SAME activity string), so
+        // an identical re-broadcast is the single hottest payload this method
+        // sees. `apply` already treats it as a store no-op (no epoch re-stamp,
+        // no ledger edge); reporting a full-work change for it made every rail
+        // instance re-render and re-persist for nothing — measured at ~0.5s of
+        // host CPU per message across an 8-tab session under Zellij's wasm
+        // interpreter. Nothing changed ⇒ nothing to render, persist, or rename.
+        if prev.as_ref() == self.status.get(pane_id) {
+            return Some(RadarChange::default());
+        }
+        let now_status = self.status.get(pane_id).map(|o| o.status);
+        self.touch();
         if flips_to_pending {
             if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
                 self.flash_until.insert(*tab_id, tick + 2);
             }
         }
+        // A Running→Running update (new activity label / task / repo, same
+        // status) is the tool-hook firehose's steady state. The Fast (1 Hz)
+        // tick is already armed while anything is Running and repaints
+        // unconditionally, so the label reaches the rail within a second
+        // regardless — an immediate render here only multiplied burst repaints
+        // by the message rate. Same for the snapshot: defer the write to the
+        // next tick (`persist_snapshot_deferred`) instead of read-merge-writing
+        // the shared file once per instance per message. Every status EDGE
+        // (anything that changes the status itself, or any non-Running update
+        // — Pending question text, a Done/Error message rewrite) still renders
+        // and persists immediately: those are the rows a user is waiting on.
+        let label_only = prev.as_ref().map(|o| o.status) == now_status
+            && now_status == Some(Status::Running);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
         // (`command_changed` → `clear_on_prompt_return`), or a prune.
         Some(RadarChange {
-            render: true,
-            persist_snapshot: true,
+            render: !label_only,
+            persist_snapshot: !label_only,
+            persist_snapshot_deferred: label_only,
             renames: self.rename_tabs(naming),
             cwd_bootstrap: Vec::new(),
             settle: false,
+            force_render: false,
         })
     }
 
@@ -812,6 +932,10 @@ impl RadarState {
 
     #[cfg(test)]
     pub(crate) fn status_mut(&mut self) -> &mut StatusStore {
+        // Handing out `&mut` bypasses the intake seams that call `touch`, so
+        // conservatively invalidate the rows memo up front — a test that
+        // mutates through this must never read a stale memo.
+        self.touch();
         &mut self.status
     }
 
@@ -830,6 +954,7 @@ impl RadarState {
 
     #[cfg(test)]
     pub(crate) fn command_mut(&mut self) -> &mut CommandStore {
+        self.touch(); // see `status_mut`
         &mut self.command
     }
 
@@ -854,6 +979,7 @@ impl RadarState {
     #[cfg(test)]
     pub(crate) fn set_tab_panes_for_position(&mut self, position: usize, panes: Vec<TerminalPane>) {
         self.tab_panes.insert(position, panes);
+        self.touch();
     }
 
     #[cfg(test)]

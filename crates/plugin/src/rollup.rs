@@ -295,7 +295,7 @@ fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
 /// One rail row as the renderer consumes it: the tab's identity bits plus its
 /// rolled-up [`TabDisplay`]. Built by `RadarState::rows`; `render_rail` never
 /// reaches past it into state.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabRow {
     pub number: u32,
     pub name: String,

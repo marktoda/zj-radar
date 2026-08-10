@@ -29,7 +29,7 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 
 | Hook | Sidebar status |
 |------|----------------|
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStop` | `running` |
+| `UserPromptSubmit`, `PreToolUse`, `SubagentStop` | `running` |
 | `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
 | `Stop` | `done` (clears when the pane returns to its shell prompt, or on the next broadcast) |
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |

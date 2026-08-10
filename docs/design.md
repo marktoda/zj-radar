@@ -147,7 +147,7 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 
 | Source event                                  | Status    |
 |-----------------------------------------------|-----------|
-| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running` |
+| Claude `UserPromptSubmit` / `PreToolUse` | `running` (`PostToolUse` is understood but no longer registered — it duplicated `PreToolUse`'s payload byte-for-byte, doubling broadcast volume) |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
 | Claude `Stop`                                 | `done`    |
 | Claude `SessionStart` (`source:"clear"` only) | `idle` (resets a stale row on `/clear`) |
@@ -353,7 +353,7 @@ replacement is push-only and tiered:
 
 - **Claude Code** — a Claude plugin (`plugins/zj-radar-claude/`) whose `scripts/notify.sh`
   broadcasts the rich `zj_radar.status.v1` payload (computing repo/branch/msg/pane). Claude
-  supports the full state set (`running` via UserPromptSubmit/Pre/PostToolUse, `pending` via
+  supports the full state set (`running` via UserPromptSubmit/PreToolUse, `pending` via
   Notification, `done` via Stop). The bundled hooks auto-register — no `settings.json` editing.
 - **Codex CLI** — `zj-radar setup codex` installs marker-owned command hooks in
   `~/.codex/hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
