@@ -37,7 +37,7 @@ fn command_changed_to_shell_clears_a_pushed_done() {
     assert_eq!(radar.status(7).unwrap().status, Status::Idle);
     assert_eq!(radar.status(7).unwrap().repo, "pinky");
     assert!(
-        change.persist_snapshot,
+        change.snapshot == SnapshotWrite::Now,
         "the clear is snapshotted so a newly-opened tab rehydrates idle, not done"
     );
 }
@@ -51,7 +51,7 @@ fn command_changed_to_shell_does_not_clear_a_running_status() {
     // A mid-turn foreground flicker to a shell must NOT be read as an exit.
     let change = radar.command_changed(7, &["bash".into()], true, 5);
     assert_eq!(radar.status(7).unwrap().status, Status::Running);
-    assert!(!change.persist_snapshot, "no clear → no extra snapshot write");
+    assert!(change.snapshot != SnapshotWrite::Now, "no clear → no extra snapshot write");
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn exited_pane_root_clears_its_pushed_status() {
 
     assert_eq!(radar.status(7).unwrap().status, Status::Idle, "dead root ⇒ Running clears");
     assert_eq!(radar.status(8).unwrap().status, Status::Idle, "dead root ⇒ Pending clears");
-    assert!(change.persist_snapshot, "the clear is a recede edge — new tabs rehydrate idle");
+    assert!(change.snapshot == SnapshotWrite::Now, "the clear is a recede edge — new tabs rehydrate idle");
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
         0,
         config::NamingMode::Off,
     );
-    assert!(!change.persist_snapshot, "topology-only update must not persist");
+    assert!(change.snapshot != SnapshotWrite::Now, "topology-only update must not persist");
 
     // A Done sits on pane 7; the same topology re-reports with only a title
     // change — still nothing displaced or pruned.
@@ -452,16 +452,16 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
         0,
         config::NamingMode::Off,
     );
-    assert!(!change.persist_snapshot, "title-only churn must not persist");
+    assert!(change.snapshot != SnapshotWrite::Now, "title-only churn must not persist");
 
     // The pane closes with the Done still on it. The first absence is the
     // grace manifest (a break-pane flash looks identical) — no prune, no
     // persist. The second absence confirms the close → the prune is a recede
     // edge (it also ledgers), so THAT update persists.
     let change = radar.panes_changed(pane_update(HashMap::new()), 4, 200, config::NamingMode::Off);
-    assert!(!change.persist_snapshot, "first absence is the grace manifest — nothing pruned yet");
+    assert!(change.snapshot != SnapshotWrite::Now, "first absence is the grace manifest — nothing pruned yet");
     let change = radar.panes_changed(pane_update(HashMap::new()), 5, 300, config::NamingMode::Off);
-    assert!(change.persist_snapshot, "a prune that dropped a completion persists");
+    assert!(change.snapshot == SnapshotWrite::Now, "a prune that dropped a completion persists");
 }
 
 #[test]
@@ -488,7 +488,7 @@ fn panes_changed_persists_when_a_prune_drops_a_non_completion() {
     radar.panes_changed(pane_update(HashMap::new()), 3, 200, config::NamingMode::Off);
     let change = radar.panes_changed(pane_update(HashMap::new()), 4, 300, config::NamingMode::Off);
     assert!(
-        change.persist_snapshot,
+        change.snapshot == SnapshotWrite::Now,
         "a confirmed prune that dropped a Pending must persist the snapshot"
     );
     assert!(radar.status(7).is_none(), "the Pending is gone from the store");
@@ -516,7 +516,7 @@ fn break_pane_manifest_flash_does_not_prune_a_live_pending() {
 
     // The flash: pane 7 is in no tab for exactly one manifest.
     let change = radar.panes_changed(pane_update(HashMap::new()), 3, 200, config::NamingMode::Off);
-    assert!(!change.persist_snapshot, "the flash is not a recede edge");
+    assert!(change.snapshot != SnapshotWrite::Now, "the flash is not a recede edge");
     assert_eq!(
         radar.status(7).map(|o| o.status),
         Some(Status::Pending),
@@ -540,7 +540,7 @@ fn break_pane_manifest_flash_does_not_prune_a_live_pending() {
         "reappearing reset the grace — a fresh absence starts over"
     );
     let change = radar.panes_changed(pane_update(HashMap::new()), 6, 500, config::NamingMode::Off);
-    assert!(change.persist_snapshot, "the second consecutive absence is the real prune");
+    assert!(change.snapshot == SnapshotWrite::Now, "the second consecutive absence is the real prune");
     assert!(radar.status(7).is_none());
 }
 
@@ -566,7 +566,7 @@ fn panes_changed_persists_when_an_exit_displaces_a_completion() {
         exits: vec![(1, Some(0))],
     };
     let change = radar.panes_changed(update, 5, 200, config::NamingMode::Off);
-    assert!(change.persist_snapshot, "an exit that displaced a completion persists");
+    assert!(change.snapshot == SnapshotWrite::Now, "an exit that displaced a completion persists");
 }
 
 #[test]
@@ -704,7 +704,7 @@ fn same_pane_status_observation_wins_over_command() {
         .status_mut()
         .apply(payload_in_repo(5, Status::Running, "from-status"), 3, 0);
 
-    let row = radar.rows(3).remove(0);
+    let row = radar.rows(3)[0].clone();
     let detail = row.display.detail.as_ref().expect("active pane sets detail");
     assert_eq!(
         detail.repo, "from-status",
@@ -754,7 +754,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
 
     radar.command_mut().on_exit(1, Some(2), Tick(3), EpochSecs(0));
 
-    let row = radar.rows(3).remove(0);
+    let row = radar.rows(3)[0].clone();
     assert_eq!(row.display.status, Status::Error);
     let detail = row.display.detail.as_ref().unwrap();
     assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
@@ -1110,27 +1110,114 @@ fn applied_tab_name_repicks_when_the_naming_pane_closes() {
 }
 
 #[test]
+fn identical_status_rebroadcast_is_a_strict_noop() {
+    // The tool-hook firehose's hottest payload: PreToolUse and PostToolUse
+    // derive the SAME activity string, so every tool call re-broadcasts an
+    // identical observation. `apply` already no-ops the store; the change
+    // must no-op too — measured at ~0.4s of host CPU per message across an
+    // 8-tab session when it didn't (every instance re-rendered + re-persisted
+    // the shared snapshot for nothing).
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let wire = payload::to_wire(&payload_in_repo(1, Status::Running, "repo"));
+
+    let first = radar.status_pipe(&wire, 1, 100, config::NamingMode::Off).unwrap();
+    assert!(first.snapshot != SnapshotWrite::None, "first application persists");
+
+    let gen_before = radar.generation();
+    let repeat = radar.status_pipe(&wire, 2, 200, config::NamingMode::Off).unwrap();
+    assert_eq!(repeat, RadarChange::default(), "identical re-broadcast: no render, no persist, no renames");
+    assert_eq!(radar.generation(), gen_before, "…and no rows-memo invalidation");
+}
+
+#[test]
+fn running_label_update_defers_render_and_persist_to_the_tick() {
+    // Running→Running with a new activity label: the Fast tick (armed while
+    // anything is Running) repaints and flushes within a second, so the
+    // per-message render + snapshot read-merge-write bought only burst
+    // amplification. Status EDGES (here Running→Pending) stay immediate.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let running = |msg: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Running, "repo") })
+    };
+
+    radar.status_pipe(&running("editing lib.rs"), 1, 100, config::NamingMode::Off);
+    let label = radar.status_pipe(&running("running tests"), 2, 200, config::NamingMode::Off).unwrap();
+    assert!(!label.render, "label-only Running update defers the repaint to the tick");
+    assert!(label.snapshot != SnapshotWrite::Now, "…and does not persist inline");
+    assert!(label.snapshot == SnapshotWrite::Deferred, "…but marks the snapshot dirty for the tick flush");
+    assert_eq!(
+        radar.status(1).unwrap().msg,
+        "running tests",
+        "the store still applied the new label"
+    );
+
+    let pending = payload::to_wire(&StatusPayload {
+        msg: "approve?".into(),
+        ..payload_in_repo(1, Status::Pending, "repo")
+    });
+    let edge = radar.status_pipe(&pending, 3, 300, config::NamingMode::Off).unwrap();
+    assert!(edge.render, "a status edge renders immediately");
+    assert!(edge.snapshot == SnapshotWrite::Now, "…and persists immediately");
+    assert!(edge.snapshot != SnapshotWrite::Deferred);
+}
+
+#[test]
+fn pending_question_rewrite_renders_immediately() {
+    // Same-status msg changes defer ONLY while Running: a new Pending question
+    // is a needs-you fact the user is waiting on, and Pending does not pin the
+    // Fast cadence the way Running does — deferring it could sit on a Slow
+    // (60s) chain.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let ask = |msg: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Pending, "repo") })
+    };
+
+    radar.status_pipe(&ask("run migration?"), 1, 100, config::NamingMode::Off);
+    let requestion = radar.status_pipe(&ask("also drop the old table?"), 2, 200, config::NamingMode::Off).unwrap();
+    assert!(requestion.render, "a new question must repaint now");
+    assert!(requestion.snapshot == SnapshotWrite::Now);
+}
+
+#[test]
 fn mutating_events_request_a_render() {
-    // tabs_changed / command_changed / cwd_changed each carry render=true so
-    // the runtime repaints; without it the sidebar would silently go stale
-    // after a tab reshuffle, a new tracked command, or a cwd report.
+    // Renders are requested exactly where something rows-visible changed —
+    // Zellij delivers each of these events to EVERY tab's instance, so a
+    // blanket render=true multiplied session-wide repaints by the event rate.
     let mut radar = RadarState::default();
     assert!(
         radar.tabs_changed(vec![tab(1, 0, "a", true)]).render,
-        "tabs_changed must request a render"
+        "a genuine tab change must request a render"
+    );
+    assert_eq!(
+        radar.tabs_changed(vec![tab(1, 0, "a", true)]),
+        RadarChange::default(),
+        "an identical TabUpdate is a strict no-op (Zellij re-reports on focus churn)"
     );
     assert!(
-        radar
+        !radar
             .command_changed(1, &["cargo".into(), "build".into()], true, 0)
             .render,
-        "command_changed must request a render"
+        "a fresh foreground command only seeds the debounce map — the row \
+         appears when the TIMER promotes it, and that tick renders"
     );
     assert!(
-        radar
+        !radar
             .cwd_changed(1, "/tmp".into(), config::NamingMode::Off)
             .render,
-        "cwd_changed must request a render"
+        "a cwd feeds naming only; the repaint (if any) rides the RenameTab \
+         effect's own TabUpdate echo"
     );
+    // The prompt-return clear is command_changed's one rows-visible edge.
+    radar.status_mut().apply(payload_in_repo(1, Status::Done, "repo"), 1, 0);
+    let change = radar.command_changed(1, &["zsh".into()], true, 2);
+    assert!(change.render, "clearing a stale pushed status must repaint");
+    assert!(change.snapshot == SnapshotWrite::Now, "…and persist the clear");
 }
 
 // ── Focus no longer changes rail status ─────────────────────────────────────
@@ -1427,7 +1514,7 @@ proptest! {
                     "rows must be strictly ordered by tab position"
                 );
             }
-            for r in &rows {
+            for r in rows.iter() {
                 // 1:1 pane mapping and count sanity flow through the pipeline.
                 prop_assert!(r.display.progress.done <= r.display.progress.total);
                 prop_assert!(r.display.progress.total <= r.display.panes.len());
@@ -1872,9 +1959,9 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     });
     radar.status_pipe(&wire, 5, 0, config::NamingMode::Off);
 
-    assert!(radar.rows(5).remove(0).flash, "flips to Pending at tick 5 — flashes immediately");
-    assert!(radar.rows(6).remove(0).flash, "still inside the two-tick window");
-    assert!(!radar.rows(7).remove(0).flash, "the window (tick+2) has elapsed");
+    assert!(radar.rows(5)[0].flash, "flips to Pending at tick 5 — flashes immediately");
+    assert!(radar.rows(6)[0].flash, "still inside the two-tick window");
+    assert!(!radar.rows(7)[0].flash, "the window (tick+2) has elapsed");
 
     // A re-broadcast of an already-Pending status (still inside the window) is
     // NOT a flip — it must not extend or re-arm the flash.
@@ -1884,7 +1971,7 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     });
     radar.status_pipe(&wire_again, 6, 0, config::NamingMode::Off);
     assert!(
-        !radar.rows(7).remove(0).flash,
+        !radar.rows(7)[0].flash,
         "re-broadcasting an already-Pending status must not re-flash"
     );
 }
@@ -1911,7 +1998,7 @@ fn snapshot_load_never_flashes() {
 
     assert_eq!(restored.status(7).unwrap().status, Status::Pending);
     assert!(
-        !restored.rows(tick).remove(0).flash,
+        !restored.rows(tick)[0].flash,
         "a snapshot-loaded Pending must never flash"
     );
 }

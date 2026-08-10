@@ -604,7 +604,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         opts.height = crate::render::body_line_count(&rows, &ledger_lines, &opts);
     }
 
-    (rows, ledger_lines, opts)
+    ((*rows).clone(), ledger_lines, opts)
 }
 
 // ── vt100 grid helper ────────────────────────────────────────────────────────

@@ -44,10 +44,10 @@ use crate::control::Verb;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
-use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
+use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite};
 use crate::render::{self, RenderedRail};
-use crate::rollup::TabRow;
-use crate::sessions::{CommitTarget, Sessions};
+use crate::rollup::{LedgerLine, TabRow};
+use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
 use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -80,6 +80,12 @@ impl Cadence {
 /// for fast. Used only to decide which of two in-flight fires is the stale
 /// one — see [`PluginRuntime::timer`].
 const STALE_FIRE_ELAPSED_S: f64 = 5.0;
+
+/// Fast (1 Hz) ticks between peer-presence directory scans — see the gate in
+/// [`PluginRuntime::timer`]. Peers heartbeat every 60s and dim as stale at
+/// 90s, so 5s scan latency is invisible on the badge; only an active Alt+[/]
+/// cycle (`Sessions::wants_fast_cadence`) reads every tick.
+const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
@@ -125,8 +131,8 @@ pub(crate) enum Effect {
     /// through `presences_changed` — mirrors `ResolveCwd`'s
     /// request/read-back pattern, except the read is gated on cadence
     /// (Fast fires only — see `timer`) rather than on a fresh set of pane
-    /// ids: one directory scan per second, only while Fast is armed, never
-    /// on the Slow heartbeat.
+    /// ids: one directory scan per `PRESENCE_READ_TICK_INTERVAL` Fast ticks
+    /// (every tick mid-cycle), never on the Slow heartbeat.
     ReadPresences,
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
@@ -309,7 +315,35 @@ pub(crate) struct PluginRuntime {
     /// `presences_changed` — so a single event's "now" never forks in two
     /// directions.
     last_now_epoch_s: u64,
+    /// A deferred snapshot write landed and hasn't been flushed yet — the
+    /// next timer tick carries it (`SnapshotWrite::Deferred`'s doc has the
+    /// why). Set in `project`, consumed by `timer`'s flush — and cleared by
+    /// any interleaving immediate persist, which supersedes it.
+    snapshot_dirty: bool,
+    /// The tick of the last peer-presence directory scan (`None` = never) —
+    /// the decimation gate in [`timer`](Self::timer) measures from here, so
+    /// the first Fast fire always scans.
+    last_presence_scan: Option<u64>,
+    /// The `radar.generation()` the own-`Presence` in `last_presence` was
+    /// derived at. Presence counts are a pure function of radar state, so an
+    /// event that didn't advance the generation can skip the whole derive —
+    /// under interpreted wasm that derive (a full `rows()` pass) was the bulk
+    /// of `project`'s per-event cost. `None` forces a recompute (start-up, or
+    /// a session-name change, which alters the presence *content* without
+    /// touching radar state).
+    presence_gen: Option<u64>,
+    /// Everything content-derived the last actual `render()` drew: rows,
+    /// ledger lines, badge, theme. Stamped by `render`, consulted by
+    /// `project`'s render gate — a change whose re-derived key equals what is
+    /// already on screen requests no repaint (`RadarChange::force_render`
+    /// bypasses, for tick-driven frames). Zellij delivers every broadcast and
+    /// topology event to EVERY tab's instance, so vetoing identical repaints
+    /// here is the single biggest lever on session-wide plugin CPU.
+    last_render_key: Option<RenderKey>,
 }
+
+/// See [`PluginRuntime::last_render_key`].
+type RenderKey = (std::rc::Rc<Vec<TabRow>>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -337,7 +371,7 @@ impl PluginRuntime {
         self.begin_permission_flow(permission)
     }
 
-    pub(crate) fn build_rows(&self) -> Vec<TabRow> {
+    pub(crate) fn build_rows(&self) -> std::rc::Rc<Vec<TabRow>> {
         self.radar.rows(self.tick)
     }
 
@@ -386,16 +420,28 @@ impl PluginRuntime {
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
         // Cross-session peers: re-read the directory bound to Fast fires only
-        // — "one directory scan per second, only while Fast is armed", never
-        // on the Slow heartbeat (which exists solely to repaint ledger ages
-        // and has no business paying for a peer scan). `elapsed_s` is also
+        // — never on the Slow heartbeat (which exists solely to repaint ledger
+        // ages and has no business paying for a peer scan). `elapsed_s` is also
         // how `TimerChain::on_fire` above tells a stale fire from a live one:
         // Fast fires report ~1s, Slow ~60s, and `STALE_FIRE_ELAPSED_S` sits
         // safely between the two, so reusing it here (rather than inventing
         // parallel state) is the same discrimination, applied to cadence
-        // instead of staleness.
+        // instead of staleness. Within Fast, the scan is further decimated to
+        // one per `PRESENCE_READ_TICK_INTERVAL` ticks: peers heartbeat at 60s
+        // and dim at 90s, so a once-per-second directory read per instance
+        // (N tabs × N sessions of wasi stat+read) bought nothing — except
+        // mid-cycle (`wants_fast_cadence`), where the Alt+[/] selection UI
+        // wants the freshest roster every tick. Measured from the LAST scan
+        // (`last_presence_scan`), not the absolute tick, so the very first
+        // Fast fire always seeds the badge — a fresh instance must not sit
+        // blank for up to a full interval on an arbitrary tick phase.
         if elapsed_s <= STALE_FIRE_ELAPSED_S {
-            effects.push(Effect::ReadPresences);
+            let scan_due = self.last_presence_scan
+                .is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
+            if self.sessions.wants_fast_cadence() || scan_due {
+                self.last_presence_scan = Some(self.tick);
+                effects.push(Effect::ReadPresences);
+            }
         } else if !self.own_session_name.is_empty() {
             // Idle-but-alive heartbeat, the Slow-cadence complement of the
             // Fast-only `ReadPresences` gate above. `project`'s own
@@ -430,12 +476,21 @@ impl PluginRuntime {
             // A Slow tick exists precisely to repaint ledger ages — even
             // when nothing else changed, `format_age` output may have moved.
             || self.desired_cadence(now) == Some(Cadence::Slow);
+        // The tick is also the flush point for writes deferred by
+        // Running-label-only broadcasts (`SnapshotWrite::Deferred`) — one
+        // read-merge-write per second ceiling instead of one per message per
+        // instance. Taken unconditionally (not `||`-short-circuited behind
+        // `store_changed`) so an immediate persist on the same tick can never
+        // leave the flag armed for a redundant write next tick.
+        let flush = std::mem::take(&mut self.snapshot_dirty);
         let change = RadarChange {
             render,
             settle: true,
-            persist_snapshot: store_changed,
-            renames: vec![],
-            cwd_bootstrap: vec![],
+            snapshot: SnapshotWrite::now_if(store_changed || flush),
+            // Tick-driven frames (spinner, ages) redraw identical rows —
+            // exempt from the rows-diff render gate by definition.
+            force_render: true,
+            ..RadarChange::default()
         };
         self.project(effects, change, now)
     }
@@ -636,6 +691,13 @@ impl PluginRuntime {
     /// hand-rolling an equality check here.
     pub(crate) fn session_name_changed(&mut self, name: Option<String>) -> Outcome {
         let Some(name) = name else { return Outcome::none() };
+        if name != self.own_session_name {
+            // The name is presence *content* that no radar mutation tracks —
+            // drop the cached compare so `project` re-derives and re-publishes
+            // even though `radar.generation()` hasn't moved.
+            self.last_presence = None;
+            self.presence_gen = None;
+        }
         self.own_session_name = name;
         self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
     }
@@ -646,7 +708,7 @@ impl PluginRuntime {
     /// Renders only when the derived badge actually changed.
     pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
         let render = self.sessions.update_presences(raw);
-        let change = RadarChange { render, settle: false, persist_snapshot: false, renames: vec![], cwd_bootstrap: vec![] };
+        let change = RadarChange { render, ..RadarChange::default() };
         self.project(vec![], change, self.last_now_epoch_s)
     }
 
@@ -668,7 +730,7 @@ impl PluginRuntime {
             .count();
         let mut attention = 0usize;
         let mut attention_tab_position = None;
-        for r in &rows {
+        for r in rows.iter() {
             let tab_attention = r.display.panes.iter()
                 .filter(|p| p.is_status_origin() && p.status().is_some_and(Status::needs_you))
                 .count();
@@ -763,16 +825,37 @@ impl PluginRuntime {
         let change = RadarChange {
             render: true,
             renames,
-            settle: false,
-            persist_snapshot: false,
-            cwd_bootstrap: vec![],
+            // A config override (density, glyphs, header…) redraws identical
+            // rows differently — bypass the rows-diff render gate.
+            force_render: true,
+            ..RadarChange::default()
         };
         self.project(vec![], change, crate::clock::now_epoch_s())
+    }
+
+    /// The content-derived inputs a `render()` at this instant would draw
+    /// from — everything except geometry and the wall-clock animation frame.
+    /// `rows()` is memoized on the radar generation, so consulting this per
+    /// event costs a compare, not a rollup.
+    fn current_render_key(&self) -> RenderKey {
+        (
+            self.radar.rows(self.tick),
+            self.radar.ledger_lines(),
+            self.sessions.badge(),
+            self.theme.clone(),
+        )
     }
 
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
         self.last_render_height = rows;
         let tabrows = self.build_rows();
+        let ledger = self.radar.ledger_lines();
+        let badge = self.sessions.badge();
+        // Stamp the render gate's baseline from the very values this pass
+        // draws — the key IS what's on screen, by construction (`project`
+        // compares `current_render_key` against it).
+        self.last_render_key =
+            Some((tabrows.clone(), ledger.clone(), badge.clone(), self.theme.clone()));
         let opts = render::RenderOpts {
             width: cols.max(1),
             height: rows,
@@ -783,9 +866,8 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
-            badge: self.sessions.badge(),
+            badge,
         };
-        let ledger = self.radar.ledger_lines();
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
@@ -1071,11 +1153,31 @@ impl PluginRuntime {
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
-        if c.persist_snapshot {
-            fx.push(Effect::PersistSnapshot);
+        match c.snapshot {
+            SnapshotWrite::Now => {
+                fx.push(Effect::PersistSnapshot);
+                // An inline write covers anything a pending deferral would
+                // have flushed — clear it so the next tick doesn't repeat
+                // the exact read-merge-write this state exists to avoid.
+                self.snapshot_dirty = false;
+            }
+            SnapshotWrite::Deferred => {
+                // A Running-label-only broadcast: the write rides the next
+                // timer tick (see `timer`'s flush) instead of paying a
+                // read-merge-write per message per instance.
+                self.snapshot_dirty = true;
+            }
+            SnapshotWrite::None => {}
         }
         let mut render = c.render;
-        if !self.own_session_name.is_empty() {
+        // Own presence is a pure function of radar state (plus the session
+        // name, handled in `session_name_changed`), so re-derive it only when
+        // the radar generation moved — the derive is a full `rows()` pass,
+        // which every broadcast in an 8-tab session used to pay twice.
+        if !self.own_session_name.is_empty()
+            && self.presence_gen != Some(self.radar.generation())
+        {
+            self.presence_gen = Some(self.radar.generation());
             let fresh = self.own_presence();
             render |= self.sessions.set_own(fresh.clone());
             let mut compare = fresh;
@@ -1083,6 +1185,21 @@ impl PluginRuntime {
             if self.last_presence.as_ref() != Some(&compare) {
                 self.last_presence = Some(compare);
                 fx.push(Effect::PersistPresence);
+            }
+        }
+        // Rows-diff render gate: Zellij delivers every broadcast and topology
+        // event to every tab's instance, and most deliveries change nothing
+        // this instance would DRAW differently. When the content-derived
+        // render inputs match what the last `render()` actually drew
+        // (`last_render_key`), drop the repaint request. `force_render`
+        // bypasses — tick-driven frames and config overrides change the
+        // drawing without changing the key's content. Gate only ever
+        // downgrades a requested render; it never invents one.
+        if render && !c.force_render {
+            if let Some(last) = &self.last_render_key {
+                if *last == self.current_render_key() {
+                    render = false;
+                }
             }
         }
         if !c.cwd_bootstrap.is_empty() {

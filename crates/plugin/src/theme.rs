@@ -51,7 +51,7 @@ pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
 ///
 /// These are the only truecolor values the renderer uses; the status hues are
 /// ANSI-16 and rendered by the terminal in its own theme.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DerivedColors {
     /// The dark panel base — the whole sidebar column sits on this.
     pub rail_bg: Rgb,

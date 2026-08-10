@@ -99,6 +99,43 @@ changing. Fully disarmed (`None`) once every ledger age has hit `1h+` — the
 saturation cutoff (`## Ledger`) is exactly what lets the timer stop for good
 instead of ticking forever to redraw an age that will never change again.
 
+## Render gate
+
+Why an event repaints — or deliberately doesn't. Zellij delivers every pipe
+broadcast and topology event to **every tab's plugin instance**, and runs each
+instance under a wasm *interpreter* (wasmi) — so one chatty producer
+multiplies across N tabs at interpreter prices. Three layers keep repaints
+proportional to actual change:
+
+- **Intake no-ops.** An intake that provably changed nothing rows-visible
+  reports a default `RadarChange` (no render, no persist, no renames): an
+  identical status re-broadcast (`status_pipe`'s prev/now compare — producers
+  re-assert on every tool hook), an identical `TabUpdate`, a `CommandChanged`
+  that only touched the debounce maps (the row appears when the *timer*
+  promotes it), a `CwdChanged` (naming rides the `RenameTab` effect's own
+  `TabUpdate` echo).
+- **Label-only deferral.** A Running→Running update (new activity label, same
+  status) neither renders nor persists inline: the Fast (1 Hz) tick is armed
+  whenever anything is Running and repaints unconditionally, so the label
+  lands ≤1s later, and the snapshot write rides the tick's flush
+  (`SnapshotWrite::Deferred` → the runtime's `snapshot_dirty`; an inline
+  `SnapshotWrite::Now` on the same pass clears the flag — it supersedes).
+  Only while Running — a rewritten Pending question renders now, because
+  Pending doesn't pin Fast cadence.
+- **Rows-diff gate.** `project` drops a requested render whose content-derived
+  key (rows, ledger lines, badge, theme) equals what the last `render()`
+  actually drew (`last_render_key`, stamped in `render`). `force_render`
+  bypasses it — timer frames and config overrides change the *drawing*
+  without changing the key. The gate only ever downgrades; it never invents a
+  render.
+
+The machinery under all three is `RadarState::generation` (bumped by every
+mutator of anything `rows()` reads) + the `rows()` memo keyed on
+`(generation, tick)` — one rollup per event, shared by the presence derive
+(`project` gates it on the generation too), the gate compare, and the render.
+A missed `touch()` is a **stale rail** bug, not just a slow one: audit new
+mutators against `rows()`'s inputs.
+
 ## Ledger
 
 The completion history: a fixed-cap ring (`LEDGER_CAP` = 32, newest at front)
@@ -286,7 +323,9 @@ Zellij "what sessions exist." Each session's plugin writes its own tiny
 `zj-radar.presence.<zellij_pid>.json` (`{session_name, running, attention,
 attention_tab_position, updated_epoch_s}`) into the same plugin-URL-scoped
 `/cache` root snapshots already use (`session_files.rs`); peers read that
-directory back on Fast-cadence timer fires only (see `Cadence`, above) and
+directory back on Fast-cadence timer fires only (see `Cadence`, above) — and
+within Fast, only every `PRESENCE_READ_TICK_INTERVAL`th (5th) tick, except
+mid-cycle where the Alt+[/] selection wants the freshest roster — and
 feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
 `zellij-tile`, that derives the cross-session badge on demand from
 `peers`/`own`, exactly like `RadarState` never caches a derived value.

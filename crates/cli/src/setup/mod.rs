@@ -31,6 +31,15 @@ pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
 pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
+// `PostToolUse` looks like a pure duplicate of `PreToolUse` (both derive the
+// same activity string from the same tool payload), but it is load-bearing:
+// after a `PermissionRequest` mid-turn flips the pane to Pending, the tool's
+// Post broadcast is the Pending→Running recovery edge — without it an
+// answered prompt stays flagged "needs you" until the next tool or Stop. The
+// duplicate case is instead de-duplicated on the RECEIVING side: the plugin's
+// `status_pipe` treats an identical re-broadcast as a strict no-op (see
+// `CONTEXT.md` → Render gate), so keeping Post costs only the pipe delivery,
+// not a render+persist per rail instance.
 pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] = [
     "UserPromptSubmit",
     "PreToolUse",
