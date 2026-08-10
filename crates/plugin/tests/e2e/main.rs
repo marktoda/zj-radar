@@ -244,9 +244,11 @@ fn notify_sh_end_to_end_updates_sidebar() {
     let pane_id = session.discover_terminal_pane_id();
     eprintln!("[e2e] terminal pane_id={}", pane_id);
 
-    // Fire the real notify.sh with a PostToolUse Edit hook payload.
+    // Fire the real notify.sh with a PreToolUse Edit hook payload — the tool
+    // hook the plugin's hooks.json actually registers (PostToolUse was dropped
+    // as a byte-identical duplicate).
     // notify.sh will derive msg="editing auth.rs" and pipe it to the plugin.
-    let hook_json = r#"{"hook_event_name":"PostToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
+    let hook_json = r#"{"hook_event_name":"PreToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
     eprintln!(
         "[e2e] firing notify.sh running with hook JSON: {}",
         hook_json

@@ -524,8 +524,9 @@ header badge, and footer tally remain tab-level summaries.
 call `SessionUpdate`/`get_session_list` to learn who's out there (see "Why
 not `SessionUpdate`" below) — liveness is read from the filesystem, not
 asked for. Peer sessions re-read the shared directory only on Fast (1 Hz)
-timer fires (`Effect::ReadPresences`; never on the Slow heartbeat — one
-directory scan per second, only while Fast is armed). `read_peer_presences`
+timer fires (`Effect::ReadPresences`; never on the Slow heartbeat — and
+within Fast only every 5th tick, except mid-cycle, since peers heartbeat at
+60s and dim at 90s). `read_peer_presences`
 returns every peer file it finds, unconditionally, each paired with its
 file's mtime age; `Sessions::update_presences` turns that age into a
 per-entry fresh/stale state (`STALE_AFTER_SECS`, 90s) rather than dropping

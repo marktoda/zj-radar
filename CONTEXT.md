@@ -322,7 +322,9 @@ Zellij "what sessions exist." Each session's plugin writes its own tiny
 `zj-radar.presence.<zellij_pid>.json` (`{session_name, running, attention,
 attention_tab_position, updated_epoch_s}`) into the same plugin-URL-scoped
 `/cache` root snapshots already use (`session_files.rs`); peers read that
-directory back on Fast-cadence timer fires only (see `Cadence`, above) and
+directory back on Fast-cadence timer fires only (see `Cadence`, above) — and
+within Fast, only every `PRESENCE_READ_TICK_INTERVAL`th (5th) tick, except
+mid-cycle where the Alt+[/] selection wants the freshest roster — and
 feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
 `zellij-tile`, that derives the cross-session badge on demand from
 `peers`/`own`, exactly like `RadarState` never caches a derived value.

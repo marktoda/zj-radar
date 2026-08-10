@@ -46,8 +46,8 @@ use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, Per
 use crate::presence::Presence;
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
 use crate::render::{self, RenderedRail};
-use crate::rollup::TabRow;
-use crate::sessions::{CommitTarget, Sessions};
+use crate::rollup::{LedgerLine, TabRow};
+use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
 use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -131,8 +131,8 @@ pub(crate) enum Effect {
     /// through `presences_changed` — mirrors `ResolveCwd`'s
     /// request/read-back pattern, except the read is gated on cadence
     /// (Fast fires only — see `timer`) rather than on a fresh set of pane
-    /// ids: one directory scan per second, only while Fast is armed, never
-    /// on the Slow heartbeat.
+    /// ids: one directory scan per `PRESENCE_READ_TICK_INTERVAL` Fast ticks
+    /// (every tick mid-cycle), never on the Slow heartbeat.
     ReadPresences,
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
@@ -338,7 +338,7 @@ pub(crate) struct PluginRuntime {
 }
 
 /// See [`PluginRuntime::last_render_key`].
-type RenderKey = (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, Vec<crate::sessions::BadgeEntry>, theme::DerivedColors);
+type RenderKey = (Vec<TabRow>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -473,8 +473,6 @@ impl PluginRuntime {
             // one read-merge-write per second ceiling instead of one per
             // message per instance.
             persist_snapshot: store_changed || std::mem::take(&mut self.snapshot_dirty),
-            renames: vec![],
-            cwd_bootstrap: vec![],
             // Tick-driven frames (spinner, ages) redraw identical rows —
             // exempt from the rows-diff render gate by definition.
             force_render: true,
@@ -836,8 +834,14 @@ impl PluginRuntime {
 
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
         self.last_render_height = rows;
-        self.last_render_key = Some(self.current_render_key());
         let tabrows = self.build_rows();
+        let ledger = self.radar.ledger_lines();
+        let badge = self.sessions.badge();
+        // Stamp the render gate's baseline from the very values this pass
+        // draws — the key IS what's on screen, by construction (`project`
+        // compares `current_render_key` against it).
+        self.last_render_key =
+            Some((tabrows.clone(), ledger.clone(), badge.clone(), self.theme.clone()));
         let opts = render::RenderOpts {
             width: cols.max(1),
             height: rows,
@@ -848,9 +852,8 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
-            badge: self.sessions.badge(),
+            badge,
         };
-        let ledger = self.radar.ledger_lines();
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {

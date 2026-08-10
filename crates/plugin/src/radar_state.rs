@@ -689,9 +689,8 @@ impl RadarState {
             persist_snapshot: !label_only,
             persist_snapshot_deferred: label_only,
             renames: self.rename_tabs(naming),
-            cwd_bootstrap: Vec::new(),
             settle: false,
-            force_render: false,
+            ..RadarChange::default()
         })
     }
 
