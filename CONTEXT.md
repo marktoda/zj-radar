@@ -99,6 +99,42 @@ changing. Fully disarmed (`None`) once every ledger age has hit `1h+` — the
 saturation cutoff (`## Ledger`) is exactly what lets the timer stop for good
 instead of ticking forever to redraw an age that will never change again.
 
+## Render gate
+
+Why an event repaints — or deliberately doesn't. Zellij delivers every pipe
+broadcast and topology event to **every tab's plugin instance**, and runs each
+instance under a wasm *interpreter* (wasmi) — so one chatty producer
+multiplies across N tabs at interpreter prices. Three layers keep repaints
+proportional to actual change:
+
+- **Intake no-ops.** An intake that provably changed nothing rows-visible
+  reports a default `RadarChange` (no render, no persist, no renames): an
+  identical status re-broadcast (`status_pipe`'s prev/now compare — producers
+  re-assert on every tool hook), an identical `TabUpdate`, a `CommandChanged`
+  that only touched the debounce maps (the row appears when the *timer*
+  promotes it), a `CwdChanged` (naming rides the `RenameTab` effect's own
+  `TabUpdate` echo).
+- **Label-only deferral.** A Running→Running update (new activity label, same
+  status) neither renders nor persists inline: the Fast (1 Hz) tick is armed
+  whenever anything is Running and repaints unconditionally, so the label
+  lands ≤1s later, and the snapshot write rides the tick's flush
+  (`RadarChange::persist_snapshot_deferred` → the runtime's `snapshot_dirty`).
+  Only while Running — a rewritten Pending question renders now, because
+  Pending doesn't pin Fast cadence.
+- **Rows-diff gate.** `project` drops a requested render whose content-derived
+  key (rows, ledger lines, badge, theme) equals what the last `render()`
+  actually drew (`last_render_key`, stamped in `render`). `force_render`
+  bypasses it — timer frames and config overrides change the *drawing*
+  without changing the key. The gate only ever downgrades; it never invents a
+  render.
+
+The machinery under all three is `RadarState::generation` (bumped by every
+mutator of anything `rows()` reads) + the `rows()` memo keyed on
+`(generation, tick)` — one rollup per event, shared by the presence derive
+(`project` gates it on the generation too), the gate compare, and the render.
+A missed `touch()` is a **stale rail** bug, not just a slow one: audit new
+mutators against `rows()`'s inputs.
+
 ## Ledger
 
 The completion history: a fixed-cap ring (`LEDGER_CAP` = 32, newest at front)
