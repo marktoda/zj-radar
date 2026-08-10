@@ -21,10 +21,8 @@ set -euo pipefail
 status="${1:-running}"
 
 # Read the hook payload up front so the running-path notify below can be
-# backgrounded. `running` rides UserPromptSubmit and PreToolUse — the hottest
-# events Claude has (PostToolUse is still *understood* below for installs that
-# registered it, but hooks.json no longer does: it duplicated PreToolUse's
-# payload byte-for-byte) — and a synchronous notify blocks the harness
+# backgrounded. `running` rides UserPromptSubmit and Pre/PostToolUse — the
+# hottest events Claude has — and a synchronous notify blocks the harness
 # (UserPromptSubmit blocks the user's prompt) until it exits. On a quiet
 # machine that's milliseconds; on a saturated one (test suites, subagent
 # fleets) process spawns crawl and the hook eats the 30s timeout. A running
@@ -254,7 +252,7 @@ fi
 # Synchronous, matching the Rust CLI: hooks fire in order, so an in-order
 # producer is what makes the plugin's latest-wins contract hold. An earlier
 # version backgrounded this with `( … ) &`, which let a Stop→done pipe be
-# overtaken by the preceding tool-hook→running — the stale spinner stuck
+# overtaken by the preceding PostToolUse→running — the stale spinner stuck
 # until the next event. `zellij pipe` is a fast local write; `|| true` keeps
 # a dead/absent server from erroring into Claude.
 #

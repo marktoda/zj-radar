@@ -44,7 +44,7 @@ use crate::control::Verb;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
-use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab};
+use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
@@ -315,10 +315,15 @@ pub(crate) struct PluginRuntime {
     /// `presences_changed` — so a single event's "now" never forks in two
     /// directions.
     last_now_epoch_s: u64,
-    /// A `persist_snapshot_deferred` change landed and the write hasn't been
-    /// flushed yet — the next timer tick carries it (`RadarChange`'s field doc
-    /// has the why). Set in `project`, consumed in `timer`.
+    /// A deferred snapshot write landed and hasn't been flushed yet — the
+    /// next timer tick carries it (`SnapshotWrite::Deferred`'s doc has the
+    /// why). Set in `project`, consumed by `timer`'s flush — and cleared by
+    /// any interleaving immediate persist, which supersedes it.
     snapshot_dirty: bool,
+    /// The tick of the last peer-presence directory scan (`None` = never) —
+    /// the decimation gate in [`timer`](Self::timer) measures from here, so
+    /// the first Fast fire always scans.
+    last_presence_scan: Option<u64>,
     /// The `radar.generation()` the own-`Presence` in `last_presence` was
     /// derived at. Presence counts are a pure function of radar state, so an
     /// event that didn't advance the generation can skip the whole derive —
@@ -338,7 +343,7 @@ pub(crate) struct PluginRuntime {
 }
 
 /// See [`PluginRuntime::last_render_key`].
-type RenderKey = (Vec<TabRow>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
+type RenderKey = (std::rc::Rc<Vec<TabRow>>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -366,7 +371,7 @@ impl PluginRuntime {
         self.begin_permission_flow(permission)
     }
 
-    pub(crate) fn build_rows(&self) -> Vec<TabRow> {
+    pub(crate) fn build_rows(&self) -> std::rc::Rc<Vec<TabRow>> {
         self.radar.rows(self.tick)
     }
 
@@ -422,13 +427,19 @@ impl PluginRuntime {
         // safely between the two, so reusing it here (rather than inventing
         // parallel state) is the same discrimination, applied to cadence
         // instead of staleness. Within Fast, the scan is further decimated to
-        // every `PRESENCE_READ_TICK_INTERVAL`th tick: peers heartbeat at 60s
+        // one per `PRESENCE_READ_TICK_INTERVAL` ticks: peers heartbeat at 60s
         // and dim at 90s, so a once-per-second directory read per instance
         // (N tabs × N sessions of wasi stat+read) bought nothing — except
         // mid-cycle (`wants_fast_cadence`), where the Alt+[/] selection UI
-        // wants the freshest roster every tick.
+        // wants the freshest roster every tick. Measured from the LAST scan
+        // (`last_presence_scan`), not the absolute tick, so the very first
+        // Fast fire always seeds the badge — a fresh instance must not sit
+        // blank for up to a full interval on an arbitrary tick phase.
         if elapsed_s <= STALE_FIRE_ELAPSED_S {
-            if self.sessions.wants_fast_cadence() || self.tick.is_multiple_of(PRESENCE_READ_TICK_INTERVAL) {
+            let scan_due = self.last_presence_scan
+                .is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
+            if self.sessions.wants_fast_cadence() || scan_due {
+                self.last_presence_scan = Some(self.tick);
                 effects.push(Effect::ReadPresences);
             }
         } else if !self.own_session_name.is_empty() {
@@ -465,14 +476,17 @@ impl PluginRuntime {
             // A Slow tick exists precisely to repaint ledger ages — even
             // when nothing else changed, `format_age` output may have moved.
             || self.desired_cadence(now) == Some(Cadence::Slow);
+        // The tick is also the flush point for writes deferred by
+        // Running-label-only broadcasts (`SnapshotWrite::Deferred`) — one
+        // read-merge-write per second ceiling instead of one per message per
+        // instance. Taken unconditionally (not `||`-short-circuited behind
+        // `store_changed`) so an immediate persist on the same tick can never
+        // leave the flag armed for a redundant write next tick.
+        let flush = std::mem::take(&mut self.snapshot_dirty);
         let change = RadarChange {
             render,
             settle: true,
-            // The tick is also the flush point for writes deferred by
-            // Running-label-only broadcasts (`persist_snapshot_deferred`) —
-            // one read-merge-write per second ceiling instead of one per
-            // message per instance.
-            persist_snapshot: store_changed || std::mem::take(&mut self.snapshot_dirty),
+            snapshot: SnapshotWrite::now_if(store_changed || flush),
             // Tick-driven frames (spinner, ages) redraw identical rows —
             // exempt from the rows-diff render gate by definition.
             force_render: true,
@@ -716,7 +730,7 @@ impl PluginRuntime {
             .count();
         let mut attention = 0usize;
         let mut attention_tab_position = None;
-        for r in &rows {
+        for r in rows.iter() {
             let tab_attention = r.display.panes.iter()
                 .filter(|p| p.is_status_origin() && p.status().is_some_and(Status::needs_you))
                 .count();
@@ -1139,13 +1153,21 @@ impl PluginRuntime {
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
-        if c.persist_snapshot {
-            fx.push(Effect::PersistSnapshot);
-        } else if c.persist_snapshot_deferred {
-            // A Running-label-only broadcast: the write rides the next timer
-            // tick (see `timer`'s flush) instead of paying a read-merge-write
-            // per message per instance.
-            self.snapshot_dirty = true;
+        match c.snapshot {
+            SnapshotWrite::Now => {
+                fx.push(Effect::PersistSnapshot);
+                // An inline write covers anything a pending deferral would
+                // have flushed — clear it so the next tick doesn't repeat
+                // the exact read-merge-write this state exists to avoid.
+                self.snapshot_dirty = false;
+            }
+            SnapshotWrite::Deferred => {
+                // A Running-label-only broadcast: the write rides the next
+                // timer tick (see `timer`'s flush) instead of paying a
+                // read-merge-write per message per instance.
+                self.snapshot_dirty = true;
+            }
+            SnapshotWrite::None => {}
         }
         let mut render = c.render;
         // Own presence is a pure function of radar state (plus the session

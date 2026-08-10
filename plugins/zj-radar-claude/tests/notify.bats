@@ -72,6 +72,20 @@ teardown() { teardown_fakes; }
   [[ "$cmd" == *"notify.sh idle"* ]]
 }
 
+@test "hooks.json keeps PostToolUse registered — the Pending→Running recovery edge" {
+  # PostToolUse LOOKS like a pure duplicate of PreToolUse (both derive the
+  # same activity string), and a perf pass once tried removing it. It is
+  # load-bearing: after Notification(permission_prompt) flips a pane to
+  # Pending mid-turn, the tool's Post broadcast is what clears it back to
+  # Running the moment the approved tool finishes — without it an answered
+  # prompt stays flagged "needs you" until the next tool or Stop. The
+  # duplicate case is de-duplicated on the plugin side instead (an identical
+  # re-broadcast is a strict no-op — CONTEXT.md → Render gate).
+  local hooks="$BATS_TEST_DIRNAME/../hooks/hooks.json"
+  local cmd; cmd="$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$hooks")"
+  [[ "$cmd" == *"notify.sh running"* ]]
+}
+
 @test "hooks.json wires SessionEnd to notify.sh idle" {
   # A closed session must recede its row rather than freeze the last status
   # on the rail (the stale-Running ghost). Unmatchered: every end counts.

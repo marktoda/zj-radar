@@ -162,17 +162,37 @@ impl PaneUpdate {
     }
 }
 
+/// Whether (and when) a change writes the shared snapshot file. One value,
+/// not two flags, so "immediate AND deferred" is unrepresentable — the
+/// precedence lives in the type, not in a branch ordering downstream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SnapshotWrite {
+    /// Nothing snapshot-worthy changed.
+    #[default]
+    None,
+    /// Write inline with this event's effects — completion edges and clears,
+    /// where a tab opened the next instant must seed the new state.
+    Now,
+    /// Write *lazily*: mark the runtime's dirty flag and let the next timer
+    /// tick carry it, instead of paying a read-merge-write per event. Set by
+    /// `status_pipe` for a Running→Running label-only update — the hottest
+    /// broadcast there is (every tool hook), where an up-to-1s-stale activity
+    /// label in a just-opened tab's seed is invisible in practice.
+    Deferred,
+}
+
+impl SnapshotWrite {
+    /// `Now` on a real change, `None` otherwise — the shape every
+    /// changed-flag call site wants.
+    pub(crate) fn now_if(changed: bool) -> Self {
+        if changed { Self::Now } else { Self::None }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RadarChange {
     pub render: bool,
-    pub persist_snapshot: bool,
-    /// Persist the snapshot *lazily*: mark the runtime's dirty flag and let the
-    /// next timer tick carry the write, instead of paying a read-merge-write
-    /// per event. Set by `status_pipe` for a Running→Running label-only update
-    /// — the hottest broadcast there is (every tool hook), where an up-to-1s-
-    /// stale activity label in a just-opened tab's seed is invisible in
-    /// practice. Completion edges still persist immediately (`persist_snapshot`).
-    pub persist_snapshot_deferred: bool,
+    pub snapshot: SnapshotWrite,
     pub renames: Vec<TabRename>,
     /// Terminal panes whose working directory should be read once (via a
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
@@ -249,11 +269,21 @@ pub(crate) struct RadarState {
     generation: u64,
     /// Memo for [`rows`](Self::rows): the last `(generation, now_tick)` it was
     /// computed at, with its result. Events that consult rows more than once
-    /// per intake (the runtime's presence derivation + the render itself, both
-    /// under a wasm *interpreter* on the host side) pay the rollup once.
-    /// `RefCell` keeps `rows(&self)` callable from render paths; the plugin is
-    /// single-threaded by construction (one wasm instance per tab).
-    rows_memo: std::cell::RefCell<Option<(u64, u64, Vec<TabRow>)>>,
+    /// per intake (the runtime's presence derivation, the render-gate compare,
+    /// and the render itself, all under a wasm *interpreter* on the host side)
+    /// pay the rollup once — and the `Rc` makes each hit a refcount bump, not
+    /// a deep clone of every row. `RefCell` keeps `rows(&self)` callable from
+    /// render paths; the plugin is single-threaded by construction (one wasm
+    /// instance per tab).
+    rows_memo: std::cell::RefCell<Option<RowsMemo>>,
+}
+
+/// The [`RadarState::rows_memo`] entry: the `(generation, now_tick)` the rows
+/// were computed at, with the shared result.
+struct RowsMemo {
+    generation: u64,
+    tick: u64,
+    rows: std::rc::Rc<Vec<TabRow>>,
 }
 
 impl RadarState {
@@ -332,18 +362,20 @@ impl RadarState {
 
     /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
     /// sorts at intake, so this render-path call is a plain iteration.
-    /// Memoized on `(generation, now_tick)`: one intake event consults rows
-    /// several times (presence derivation, the render-gate diff, the render
-    /// itself), and under Zellij's interpreted-wasm runtime the repeat rollups
-    /// were a measurable share of per-event cost.
-    pub(crate) fn rows(&self, now_tick: u64) -> Vec<TabRow> {
-        if let Some((g, t, rows)) = self.rows_memo.borrow().as_ref() {
-            if *g == self.generation && *t == now_tick {
-                return rows.clone();
+    /// Memoized on `(generation, now_tick)` and shared via `Rc`: one intake
+    /// event consults rows several times (presence derivation, the render-gate
+    /// diff, the render itself), and under Zellij's interpreted-wasm runtime
+    /// both the repeat rollups AND per-hit deep clones were a measurable share
+    /// of per-event cost.
+    pub(crate) fn rows(&self, now_tick: u64) -> std::rc::Rc<Vec<TabRow>> {
+        if let Some(memo) = self.rows_memo.borrow().as_ref() {
+            if memo.generation == self.generation && memo.tick == now_tick {
+                return memo.rows.clone();
             }
         }
-        let rows = self.rows_uncached(now_tick);
-        *self.rows_memo.borrow_mut() = Some((self.generation, now_tick, rows.clone()));
+        let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
+        *self.rows_memo.borrow_mut() =
+            Some(RowsMemo { generation: self.generation, tick: now_tick, rows: rows.clone() });
         rows
     }
 
@@ -508,7 +540,7 @@ impl RadarState {
 
         RadarChange {
             render: true,
-            persist_snapshot: displaced_any || pruned_any,
+            snapshot: SnapshotWrite::now_if(displaced_any || pruned_any),
             renames: self.rename_tabs(naming),
             cwd_bootstrap: self.cwd_bootstrap_targets(naming),
             settle: true,
@@ -619,7 +651,7 @@ impl RadarState {
             settle: false,
             // Persist only when we actually cleared, so a newly-opened tab
             // rehydrates the idle from the snapshot rather than the stale status.
-            persist_snapshot: cleared,
+            snapshot: SnapshotWrite::now_if(cleared),
             ..RadarChange::default()
         }
     }
@@ -673,7 +705,7 @@ impl RadarState {
         // unconditionally, so the label reaches the rail within a second
         // regardless — an immediate render here only multiplied burst repaints
         // by the message rate. Same for the snapshot: defer the write to the
-        // next tick (`persist_snapshot_deferred`) instead of read-merge-writing
+        // next tick (`SnapshotWrite::Deferred`) instead of read-merge-writing
         // the shared file once per instance per message. Every status EDGE
         // (anything that changes the status itself, or any non-Running update
         // — Pending question text, a Done/Error message rewrite) still renders
@@ -686,8 +718,7 @@ impl RadarState {
         // (`command_changed` → `clear_on_prompt_return`), or a prune.
         Some(RadarChange {
             render: !label_only,
-            persist_snapshot: !label_only,
-            persist_snapshot_deferred: label_only,
+            snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
             renames: self.rename_tabs(naming),
             settle: false,
             ..RadarChange::default()

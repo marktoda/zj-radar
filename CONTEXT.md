@@ -118,7 +118,8 @@ proportional to actual change:
   status) neither renders nor persists inline: the Fast (1 Hz) tick is armed
   whenever anything is Running and repaints unconditionally, so the label
   lands ≤1s later, and the snapshot write rides the tick's flush
-  (`RadarChange::persist_snapshot_deferred` → the runtime's `snapshot_dirty`).
+  (`SnapshotWrite::Deferred` → the runtime's `snapshot_dirty`; an inline
+  `SnapshotWrite::Now` on the same pass clears the flag — it supersedes).
   Only while Running — a rewritten Pending question renders now, because
   Pending doesn't pin Fast cadence.
 - **Rows-diff gate.** `project` drops a requested render whose content-derived

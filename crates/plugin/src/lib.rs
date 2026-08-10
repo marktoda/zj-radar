@@ -94,7 +94,9 @@ pub struct State {
 #[cfg(test)]
 impl State {
     fn build_rows(&self) -> Vec<TabRow> {
-        self.runtime.build_rows()
+        // Test-only convenience: clone out of the runtime's shared Rc so
+        // assertions keep plain-Vec ergonomics.
+        (*self.runtime.build_rows()).clone()
     }
 
 

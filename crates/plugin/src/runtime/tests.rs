@@ -220,6 +220,9 @@ fn peer_waits_then_requests_after_granted_marker() {
             Effect::RequestPermission,
             Effect::SetSelectable(true),
             Effect::HeartbeatPermissionLock,
+            // The FIRST Fast fire always seeds the peer scan (the decimation
+            // interval measures from the last scan, and there is none yet).
+            Effect::ReadPresences,
             Effect::SetTimeout(Cadence::Fast),
         ]
     );
@@ -592,19 +595,25 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     let command_outcome = runtime.command_changed(7, &command, true);
     assert_eq!(command_outcome.effects, vec![Effect::SetTimeout(Cadence::Fast)]);
 
+    let mut first_quiet_tick = true;
     for _ in 1..DEBOUNCE_TICKS {
         let quiet = runtime.timer_fast(PermissionProbe::default());
-        assert_eq!(
-            quiet.effects,
-            vec![Effect::SetTimeout(Cadence::Fast)],
-            "still pending short of the debounce window"
-        );
+        // The first Fast fire seeds the peer scan; later ones inside the
+        // decimation interval don't.
+        let expected = if first_quiet_tick {
+            vec![Effect::ReadPresences, Effect::SetTimeout(Cadence::Fast)]
+        } else {
+            vec![Effect::SetTimeout(Cadence::Fast)]
+        };
+        first_quiet_tick = false;
+        assert_eq!(quiet.effects, expected, "still pending short of the debounce window");
     }
 
     let timer = runtime.timer_fast(PermissionProbe::default());
     assert!(timer.render);
     // The promotion mutates the command store, so this tick persists the
     // snapshot too (late-spawned instances must see the Running command).
+    // No peer scan: tick 2 is inside the decimation interval of tick 1's seed.
     assert_eq!(
         timer.effects,
         vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
@@ -1441,6 +1450,22 @@ fn deferred_snapshot_write_flushes_on_the_next_tick() {
         "the dirty flag is consumed by the flush, got {:?}",
         tick2.effects
     );
+
+    // An interleaving IMMEDIATE persist supersedes a pending deferral: a
+    // label-only update marks dirty, a status edge in the same second writes
+    // inline — the next tick must not repeat the write.
+    let _ = rt.status_pipe(&running("reading config"));
+    let edge = rt.status_pipe(&crate::payload::to_wire(&StatusPayload {
+        msg: "approve?".into(),
+        ..payload_for(7, Status::Pending)
+    }));
+    assert!(edge.effects.contains(&Effect::PersistSnapshot), "edge persists inline");
+    let tick3 = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !tick3.effects.contains(&Effect::PersistSnapshot),
+        "the inline write cleared the deferral — no redundant flush, got {:?}",
+        tick3.effects
+    );
 }
 
 #[test]
@@ -1529,7 +1554,7 @@ fn project_emits_effects_in_canonical_order() {
 
     let change = RadarChange {
         render: true,
-        persist_snapshot: true,
+        snapshot: SnapshotWrite::Now,
         renames: vec![TabRename { position: 0, name: "renamed".into() }],
         cwd_bootstrap: vec![7],
         settle: true,
@@ -2265,13 +2290,13 @@ fn read_presences_is_bound_to_fast_fires_only() {
 
     // A lone Slow fire (nothing else in flight, so it's the live chain, not
     // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
-    // must not — even on a tick the interval would otherwise select.
+    // must not — even though a scan is overdue (no scan has EVER run, the
+    // strongest form of "due" the last-scan gate knows).
     let mut rt = PluginRuntime {
         permission: PermissionState::Resolved { granted: true },
         config: config(),
         ..Default::default()
     };
-    rt.tick = PRESENCE_READ_TICK_INTERVAL - 1; // Slow fire lands ON the interval tick
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
     assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }
