@@ -90,12 +90,11 @@ today `Kind::Server` spins (and ticks) forever. Note the long-runner *easing*
 does not save cadence — an eased spinner still repaints every 4th tick — so
 Service relief comes only from the steady mark plus the predicate change.
 
-Two behavior deltas #13 ships that reviewers should expect:
-- Closing nvim in a shell pane no longer fires a "done — nvim" notification
-  (no observation ever exists); a held `zellij run -- nvim` exit still
-  notifies, because pane death is a genuine event.
-- A tab holding [agent, nvim] drops from the multi-pane tree to single-pane
-  rendering (`is_multi_pane` counts tracked panes) — intended.
+One behavior delta reviewers should expect: closing nvim in a shell pane no
+longer fires a "done — nvim" notification (no observation ever exists); a
+held `zellij run -- nvim` exit still notifies, because pane death is a
+genuine event. (A tab holding [agent, nvim] stays a multi-pane tree — the
+Interactive label earns a pane line via `earns_pane_line`.)
 
 Notification rule per class: `Job` notifies on Done/Error (the core product);
 `Service` notifies on exit (state *changed*, not state *continuing*);
@@ -114,7 +113,7 @@ never knows how the classification was made.
    wrappers via the single `effective_program` peel — which also means
    *children* classify: `git commit` spawning `$EDITOR` fires its own
    `CommandChanged` and is classified as the editor.
-3. **Interactive names** (new, ships with issue #13): a conservative built-in
+3. **Interactive names** (the issue-#13 fix): a conservative built-in
    set of unambiguous TUIs (`vi`/`vim`/`nvim`/`emacs`/`nano`/`hx`/`less`/
    `more`/`man`/`htop`/`btop`/`top`/`lazygit`/`tig`/`gitui`/`k9s`/`fzf`/
    `ranger`/`yazi`/`nnn`/`mc`) housed beside `TOOL_RULES` — it is
