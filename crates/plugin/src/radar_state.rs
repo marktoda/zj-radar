@@ -744,6 +744,24 @@ impl RadarState {
         self.status.any_running() || self.command.has_pending_or_active()
     }
 
+    /// Apply the user's `interactive_commands` extras to the command store
+    /// (level-triggered — see `CommandStore::set_interactive_extras`). Called
+    /// after snapshot load and on every `config.v1` override, so both a
+    /// rehydrated stale Running row and a mid-session config change take
+    /// effect immediately. Returns whether observable state changed.
+    pub(crate) fn set_interactive_commands(
+        &mut self,
+        extras: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        let changed = self
+            .command
+            .set_interactive_extras(extras.iter().map(String::as_str));
+        if changed {
+            self.touch();
+        }
+        changed
+    }
+
     /// True while a command-origin `Done` is still inside its `DONE_TTL_TICKS`
     /// window, awaiting the recede to Idle. Delegates to
     /// `CommandStore::has_done_awaiting_recede` — see `has_running_work`'s doc
@@ -1111,9 +1129,11 @@ impl RadarState {
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
     /// command" precedence across observation sources lives in `resolve`, with
     /// the stores; `rollup::roll_up` only sees "is there an observation for this
-    /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam.
+    /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam. The
+    /// second lookup feeds the muted Interactive label from the command store's
+    /// quiet pendings; `roll_up` owns the precedence between the two.
     fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
-        rollup::roll_up(panes, |id| self.resolve(id))
+        rollup::roll_up(panes, |id| self.resolve(id), |id| self.command.quiet_identity(id))
     }
 
     /// Roll a tab up by position, treating an absent pane list as no panes.

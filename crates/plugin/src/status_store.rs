@@ -262,16 +262,18 @@ impl StatusStore {
         self.store.get(pane_id)
     }
 
-    /// True if any observation is currently `Running` — the one *animated* state
-    /// (its glyph spins each tick). Matches `CommandStore::has_pending_or_active`'s
-    /// narrowness on purpose: a finished `Done`/`Error` or a waiting `Pending` is
-    /// terminal for tick purposes — it doesn't animate, and its notification/recede
-    /// is a one-shot the settle carries — so it must NOT pin the timer awake. (An
-    /// earlier version counted every non-idle status here to "refresh elapsed
-    /// time," but elapsed time isn't rendered, so a backgrounded `Done` just spun
-    /// the timer forever — see the timer-arming discussion in `runtime`.)
+    /// True if any observation is currently `Running` *and animating* — the
+    /// spinning glyph (and, for jobs, the advancing `· 4m` run tag) is what
+    /// needs ticks. Matches `CommandStore::has_pending_or_active`'s narrowness
+    /// on purpose: a finished `Done`/`Error` or a waiting `Pending` is terminal
+    /// for tick purposes — its notification/recede is a one-shot the settle
+    /// carries — so it must NOT pin the timer awake. Running *services* are
+    /// likewise excluded (same rule as the command store): a producer pushing
+    /// `source: server` renders the steady mark, so nothing animates
+    /// (`docs/activity-model.md` §3).
     pub fn any_running(&self) -> bool {
-        self.store.any(|s| s.status == crate::status::Status::Running)
+        self.store
+            .any(|s| s.status == crate::status::Status::Running && !s.kind.is_service())
     }
 
     pub(crate) fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {

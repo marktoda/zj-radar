@@ -1,8 +1,8 @@
 # The activity model: states, classes, and presentation
 
-**Status:** design — partially shipped; the target model for issue #13 and its
-follow-ups. `docs/design.md` documents the pipeline (how state moves);
-this documents the *semantics* (what state means and how it should look).
+**Status:** living design — shipped (see §7); kept current as the
+implementation evolves. `docs/design.md` documents the pipeline (how state
+moves); this documents the *semantics* (what state means and how it looks).
 
 ## 1. The core principle
 
@@ -42,10 +42,10 @@ never see it. `Service` needs exactly three one-line checks (two `spin_glyph`
 call sites, one cadence predicate). `Job` is the default everywhere. The
 codebase's existing pattern for this is **predicates, not parallel enums**
 (`Kind::is_agent()`, `Status::{is_active, needs_attention, is_completion}`),
-so the code realizes the model as: the interactive set as intake policy now,
-and a `Kind::is_service()` predicate added *with its first consumer* in the
-Service follow-up. A speculative enum with zero exhaustive matchers would be
-a maintenance liability, not a seam.
+so the code realizes the model as: the interactive set as intake policy
+(`Companion`), and the `Kind::is_service()` predicate (`Service`) consulted
+by the two glyph sites and the cadence predicates. A speculative enum with
+zero exhaustive matchers would be a maintenance liability, not a seam.
 
 - **`Job`** — bounded work with an end. Kinds: `Test`, `Build`, `Deploy`,
   `Command`, `Other`.
@@ -66,16 +66,21 @@ a maintenance liability, not a seam.
 unchanged — it is the *wire and lifecycle* vocabulary and it is correct.
 Presentation is `f(Status, class)`:
 
-Each cell is tagged: **(shipped)** today, **(#13)** ships with the issue-13
-fix, **(follow-up)** independent later work.
+All cells below are **implemented** (the executable examples live in
+`docs/rail-reference.md` — scenarios AD/AE); only the upstream detection
+signal (§4 layer 4) remains future work.
 
 | | `Job` | `Service` | `Companion` |
 |---|---|---|---|
-| **Running** | `⠋` spinner + activity string (shipped); elapsed `· 4m` text tag (follow-up — the eased-spinner machinery and preserved start tick exist, `EASE_AFTER_TICKS`, but no elapsed text is rendered today) | steady non-animated mark (e.g. `▸`) + name, **no spinner, no fast cadence** (follow-up; requires a `docs/rail-reference.md` edit — it is the executable spec) | *never enters Running* — suppressed at intake (§4) (#13); muted identity label (follow-up, see §5 for the real path) |
-| **Done** | `✓` + ledger hand-off, TTL recede to Idle, notify (shipped) | exit of a service — `✓`/`✗` per code, notify: a dead dev server is news (shipped) | labeled completion (`nvim ✓`) via preserved identity for held/run panes (#13); recede as Job |
-| **Error** | `✗`, persists until re-run, notify (shipped) | same (shipped) | same (#13) |
-| **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag (shipped) | n/a | n/a |
-| **Idle** | muted row if `ever_active` (shipped) | muted row (shipped) | renders nothing (#13); muted identity label (follow-up) |
+| **Running** | `⠋` spinner + activity string; `· 4m` run tag once ≥ 1 minute (whole minutes, frozen at `1h+`; the true start survives re-promotions) | steady non-animated `▸` mark + name, **no spinner, no fast cadence** | *never enters Running* — suppressed at intake (§4); renders the muted identity label (`○ $ nvim README.md`) |
+| **Done** | `✓` + ledger hand-off, TTL recede to Idle, notify | exit of a service — `✓`/`✗` per code, notify: a dead dev server is news | labeled completion (`nvim ✓`) via preserved identity for held/run panes; recede as Job |
+| **Error** | `✗`, persists until re-run, notify | same | same |
+| **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag | n/a | n/a |
+| **Idle** | muted row if `ever_active` | muted row | muted identity label while the program is foreground (it also replaces a stale finished-command echo); nothing once it exits |
+
+Ties in the tab-level roll-up: on equal severity a bounded job outranks a
+service as the tab's primary detail — a spinning build summarizes the tab
+better than a server that is merely up.
 
 Cadence rule, restated per class: only `Job × Running` (plus unsettled
 notifications, flashes, and Done-awaiting-recede) keeps the 1 Hz timer armed.
@@ -202,20 +207,21 @@ basename by construction of every display path — pinned by a guard test
 Why identity-preserving suppression rather than the simpler ignore-branch
 (measured cost: ~15 lines — one field, one intake arm, two predicate
 filters): the preserved identity is exactly the state the target
-presentations need — the labeled exit uses it from #13 onward (without it, a
-held `zellij run -- nvim` exit inserts a *blank* Done row and a blank-bodied
+presentations need — the labeled exit uses it (without it, a held
+`zellij run -- nvim` exit inserts a *blank* Done row and a blank-bodied
 notification), and a future alt-screen classifier produces the identical
 mark. The ignore-branch discards identity and is forward-incompatible.
 
-**The muted-label follow-up is a real feature, not a free render.** Quiet
-pendings live in `CommandStore.pending`; `rows()` reads only observations,
-and the multi-pane roster filters to tracked panes — untracked panes emit no
-lines. The honest path: a quiet-identity accessor on `CommandStore` feeding a
-new `PaneDisplay` variant through `roll_up`, plus including those panes in
-the roster. The tempting shortcut — promote quiet commands to an *Idle*
-observation carrying identity — is wrong twice: `ever_active: true` would
-count an open editor in `done/total` progress forever, and `ever_active:
-false` renders as Untracked anyway (the identity never shows).
+**The muted label is a roll-up feature, not a free render.** Quiet pendings
+live in `CommandStore.pending`; `rows()` reads only observations, and the
+pane roster otherwise shows tracked panes. The implemented path:
+`CommandStore::quiet_identity` feeds `roll_up`'s `quiet` lookup, which
+builds `PaneDisplay::Interactive` — shown only where no live observation
+outranks it, included in the roster via `earns_pane_line`. The tempting
+shortcut — promote quiet commands to an *Idle* observation carrying identity
+— is wrong twice: `ever_active: true` would count an open editor in
+`done/total` progress forever, and `ever_active: false` renders as Untracked
+anyway (the identity never shows).
 
 ## 6. Extension guide
 
@@ -231,17 +237,18 @@ false` renders as Untracked anyway (the identity never shows).
 - **New pushed agent** → unchanged: `Agent` variant + `AGENT_NAMES` entry;
   the guard test walks you through it.
 
-## 7. Shipping order
+## 7. Status
 
-1. **Now (issue #13):** quiet-pending mechanism + built-in interactive set +
-   `interactive_commands` config key; Companion panes render idle. Guard
-   tests ship with it: display-first-token == exe basename for all rules
-   (the sweep's matching invariant), and `DEFAULT_INTERACTIVE` disjoint from
-   `IGNORE_NAMES`/`AGENT_NAMES` (§4). No `rail-reference.md` edit needed —
-   quiet panes render nothing. Plus a `docs/configuration.md` row:
-   `interactive_commands` — comma/space-separated exe names, default empty —
-   "extra commands treated as interactive: never shown as a running row;
-   extends the built-in editor/pager/TUI set."
-2. **Next, independent:** muted identity label for Companion panes; steady
-   `Service` mark + cadence exclusion; elapsed-time tag on long `Job` runs.
-3. **Upstream:** propose `is_alternate_screen`/`is_raw_mode` on `PaneInfo`.
+**Shipped in one cut** (issue #13 plus the semantics it exposed): the
+quiet-pending mechanism, the built-in interactive set + `interactive_commands`
+config key (level-triggered sweep), the Companion muted identity label
+(`PaneDisplay::Interactive`), the Service steady `▸` mark + cadence
+exclusion (both stores), the long-Job `· Nm` run tag, and the job-over-service
+roll-up tie-break. Guard tests pin the seams: display-first-token == exe
+basename (the sweep's matching invariant), `DEFAULT_INTERACTIVE` disjoint
+from `IGNORE_NAMES`/`AGENT_NAMES` (§4), and the executable rail spec
+scenarios AD/AE (`docs/rail-reference.md`).
+
+**Remaining:** propose `is_alternate_screen`/`is_raw_mode` on Zellij's
+`PaneInfo` (§4 layer 4) — the general detector that would cover REPLs and
+TUIs behind ssh/docker, with the name lists decaying into a fallback.

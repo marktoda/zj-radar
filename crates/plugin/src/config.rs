@@ -4,7 +4,7 @@
 //! live `config.v1` override — a typo must not clobber set state back to
 //! default), and unknown keys are ignored (forward-compatible).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The live-override pipe. Payload is a JSON object of config keys (see
 /// [`overrides_from_json`]); breaking the payload shape means a new name.
@@ -147,6 +147,13 @@ pub struct Config {
     /// permission request — wait for the floating onboarding pane to win the
     /// grant, so Zellij binds its prompt to the float, not the rail.
     pub defer_permission: bool,
+    /// The user's EXTRA interactive command names (editors/pagers/TUIs whose
+    /// panes never show a Running row — `docs/activity-model.md` §4). Extras
+    /// only, default empty: the effective set is composed as
+    /// `command::DEFAULT_INTERACTIVE ∪ extras` in `CommandStore` — holding the
+    /// seeded defaults here instead would let one configured entry silently
+    /// *replace* them (`config_fields!` assigns wholesale).
+    pub interactive_commands: BTreeSet<String>,
     pub notify: bool,
     pub notify_done: bool,
     pub notify_error: bool,
@@ -165,6 +172,7 @@ impl Default for Config {
             grant_hint: GrantHint::default(),
             jump_hint: JumpHint::default(),
             defer_permission: false,
+            interactive_commands: BTreeSet::new(),
             notify: true,
             notify_done: true,
             notify_error: true,
@@ -180,6 +188,20 @@ fn parse_bool(v: &str) -> Option<bool> {
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+/// Parse a comma/space-separated list of exe names into a set. Always `Some`
+/// (an empty value is a valid "no extras", so a live override can clear the
+/// list); entries are trimmed with any login-shell `-` prefix stripped, and
+/// empties dropped.
+fn parse_name_set(v: &str) -> Option<BTreeSet<String>> {
+    Some(
+        v.split([',', ' ', '\t'])
+            .map(|s| s.trim().trim_start_matches('-'))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 impl NamingMode {
@@ -239,6 +261,7 @@ config_fields! {
     jump_hint:  "jump_hint"  => JumpHint::from_config,
     header:              "header"              => parse_bool,
     defer_permission:    "defer_permission"    => parse_bool,
+    interactive_commands: "interactive_commands" => parse_name_set,
     notify:              "notify"              => parse_bool,
     notify_done:         "notify_done"         => parse_bool,
     notify_error:        "notify_error"        => parse_bool,
@@ -633,5 +656,32 @@ mod tests {
         // opt parser leaves the default on unparseable input
         let c = Config::from_map(&map(&[("notify_done", "maybe")]));
         assert!(c.notify_done);
+    }
+
+    #[test]
+    fn interactive_commands_default_is_empty_extras() {
+        // Extras ONLY — the built-in set lives in core and is composed in
+        // `CommandStore::set_interactive_extras`. Seeding defaults here would
+        // let one configured entry wholesale-replace them (the macro assigns,
+        // never merges).
+        assert!(Config::default().interactive_commands.is_empty());
+        assert!(Config::from_map(&map(&[])).interactive_commands.is_empty());
+    }
+
+    #[test]
+    fn interactive_commands_parses_commas_spaces_and_dashes() {
+        let c = Config::from_map(&map(&[("interactive_commands", "gdb, ssh  -tig,")]));
+        let got: Vec<&str> = c.interactive_commands.iter().map(String::as_str).collect();
+        assert_eq!(got, ["gdb", "ssh", "tig"], "split on commas/spaces, dash-stripped, empties dropped");
+    }
+
+    #[test]
+    fn interactive_commands_live_override_can_clear() {
+        // An empty value is a valid "no extras" — the one list-shaped key
+        // wants clearability, unlike enum keys where garbage keeps state.
+        let mut c = Config::from_map(&map(&[("interactive_commands", "gdb")]));
+        assert!(!c.interactive_commands.is_empty());
+        c.apply_overrides(&map(&[("interactive_commands", "")]));
+        assert!(c.interactive_commands.is_empty());
     }
 }

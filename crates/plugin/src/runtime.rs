@@ -365,6 +365,11 @@ impl PluginRuntime {
                 self.tick = tick;
             }
         }
+        // Level-triggered interactive-set application, AFTER the snapshot load
+        // so a rehydrated stale Running-nvim row is demoted here — the TUI
+        // fires no further CommandChanged until it exits, so this is the only
+        // edge that can catch it (`docs/activity-model.md` §5).
+        self.radar.set_interactive_commands(&self.config.interactive_commands);
         // Seed the notification baseline from the restored snapshot so that
         // pre-existing completions never fire a spurious Notify effect.
         self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
@@ -821,6 +826,11 @@ impl PluginRuntime {
             return Outcome::none();
         };
         self.config.apply_overrides(&kv);
+        // Re-apply the interactive set level-triggered: an `interactive_commands`
+        // override must demote an already-promoted Running TUI row NOW — it will
+        // never fire another CommandChanged until it exits. A sweep that changed
+        // state persists, so instances spawned later rehydrate the demotion.
+        let swept = self.radar.set_interactive_commands(&self.config.interactive_commands);
         let renames = self.radar.recompute_renames(self.config.naming);
         let change = RadarChange {
             render: true,
@@ -828,6 +838,7 @@ impl PluginRuntime {
             // A config override (density, glyphs, header…) redraws identical
             // rows differently — bypass the rows-diff render gate.
             force_render: true,
+            snapshot: SnapshotWrite::now_if(swept),
             ..RadarChange::default()
         };
         self.project(vec![], change, crate::clock::now_epoch_s())

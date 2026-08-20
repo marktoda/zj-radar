@@ -257,8 +257,12 @@ a `Kind`-keyed `Status`:
   `Kind::from_source`, pinned by the `source_round_trips_through_kind` guard test.
 - **Observed** — uninstrumented commands (e.g. `cargo test`) that Radar watches
   from outside. The plugin classifies the observed argv via
-  `crates/core/src/command.rs::command_kind` and infers status from the process
+  `crates/core/src/command.rs::classify` and infers status from the process
   lifecycle. No wire, no CLI. `cargo test` lives here, **not** in `agents/`.
+  *Interactive* commands (editors/pagers/TUIs — `DEFAULT_INTERACTIVE` +
+  the `interactive_commands` config) are observed but never earn a Running
+  row: they record a quiet pending whose identity labels exits and the muted
+  pane label (`docs/activity-model.md`).
 
 The two modalities also interact at *exit*: a pushed producer (an agent) fires no
 hook when it quits, so its last status (`done`/`pending`/`error`) would otherwise
@@ -283,14 +287,19 @@ The per-pane → per-tab roll-up: severity order `error > pending > running > do
 idle`, with `done/total` counts and a highest-severity detail line. Tab status is
 never derived from tab names — a single tab can hold several agent panes.
 
-The **roll-up seam** is `rollup::roll_up(panes, resolve) -> TabDisplay` (in
-`crates/plugin/src/rollup.rs`): a deep, pure module that owns its output
+The **roll-up seam** is `rollup::roll_up(panes, resolve, quiet) -> TabDisplay`
+(in `crates/plugin/src/rollup.rs`): a deep, pure module that owns its output
 vocabulary (`TabDisplay`, `PaneDisplay`,
 `PrimaryDetail`, `ProgressCounts`, `Outcome`) — the renderer *consumes* these, so
 presentation depends on the roll-up, not the reverse. `resolve(pane_id) ->
-Option<&TrackedObservation>` is the only thing crossing in: the "status pipe wins
+Option<&TrackedObservation>` is the main thing crossing in: the "status pipe wins
 over command" precedence across observation sources stays in `RadarState`
 (`RadarState::resolve`), so `roll_up` never learns there is more than one store.
+`quiet(pane_id)` feeds the interactive muted label (`PaneDisplay::Interactive`
+from the command store's quiet pendings); `roll_up` owns its precedence — shown
+only where no live observation outranks it, contributing nothing to counts or
+severity. On equal severity, a bounded job outranks a service for the primary
+detail (`docs/activity-model.md` §3).
 `Outcome`'s display methods
 (`full`/`minimal`/`role` — glyphs and width-driven forms) live in `render`; the
 enum here is pure semantics.

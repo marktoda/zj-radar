@@ -34,6 +34,7 @@ ignored and invalid values fall back to the default (parsing never fails):
 | `notify_error` | `true` · `false` | `true` | Notify when a pane transitions into `error`. |
 | `notify_pending` | `true` · `false` | `true` | Notify when a pane transitions into `pending` (needs input). |
 | `notify_when_focused` | `true` · `false` | `false` | When `false`, suppress notifications for the focused pane (background panes only). |
+| `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra commands treated as *interactive* (an editor/pager/TUI that waits on you): the pane never shows a spinning running row — just a muted identity label. Extends the built-in set (`vi(m)`/`nvim`/`emacs`/`nano`/`hx`/`less`/`man`/`htop`/`btop`/`lazygit`/`tig`/`k9s`/`fzf`/`ranger`/`yazi`/`mc`/…). Applies live: adding a name demotes an already-running row immediately. See [`activity-model.md`](activity-model.md). |
 
 Notifications fire only on transitions **into** an attention status and, by
 default, only for **background** panes — the focused pane is suppressed unless
