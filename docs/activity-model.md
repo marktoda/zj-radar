@@ -38,14 +38,16 @@ The classes are the *semantic model*, deliberately NOT an `AttentionClass`
 enum: tracing the actual consumers shows no call site would ever match all
 three variants. `Companion` is consumed entirely at intake (the promotion
 policy, §5) — it never becomes an observation, so roll-up, notify, and render
-never see it. `Service` needs exactly three one-line checks (two `spin_glyph`
-call sites, one cadence predicate). `Job` is the default everywhere. The
-codebase's existing pattern for this is **predicates, not parallel enums**
+never see it. `Service` needs exactly two consumers: the glyph split
+(`render::running_glyph`, the single owner) and the cadence term
+(`TrackedObservation::animating`, the single owner — both stores' predicates
+call it). `Job` is the default everywhere. The codebase's existing pattern
+for this is **predicates, not parallel enums**
 (`Kind::is_agent()`, `Status::{is_active, needs_attention, is_completion}`),
 so the code realizes the model as: the interactive set as intake policy
-(`Companion`), and the `Kind::is_service()` predicate (`Service`) consulted
-by the two glyph sites and the cadence predicates. A speculative enum with
-zero exhaustive matchers would be a maintenance liability, not a seam.
+(`Companion`), and the `Kind::is_service()` predicate (`Service`) behind
+those two owners. A speculative enum with zero exhaustive matchers would be
+a maintenance liability, not a seam.
 
 - **`Job`** — bounded work with an end. Kinds: `Test`, `Build`, `Deploy`,
   `Command`, `Other`.
@@ -82,13 +84,20 @@ Ties in the tab-level roll-up: on equal severity a bounded job outranks a
 service as the tab's primary detail — a spinning build summarizes the tab
 better than a server that is merely up.
 
-Cadence rule, restated per class: only `Job × Running` (plus unsettled
-notifications, flashes, and Done-awaiting-recede) keeps the 1 Hz timer armed.
-`Service` and `Companion` must never pin fast cadence — a dev server or an
-open editor left overnight costs zero ticks. This closes an existing hole:
-today `Kind::Server` spins (and ticks) forever. Note the long-runner *easing*
+Cadence rule, restated per class: only *animating* work
+(`TrackedObservation::animating` = `Job × Running`) plus **scheduled
+one-shots** keep the 1 Hz timer armed — the one-shots being promotable
+pendings awaiting debounce, tentative-Dones awaiting confirm
+(`pending_done`), stale-Running grace clocks (`suspect_running`), unsettled
+notifications, flashes, and Done-awaiting-recede. The one-shots must count
+explicitly *because* the service exclusion exists: pre-exclusion, "some row
+is Running" was an implicit tick source for all of them, and a Ctrl-C'd dev
+server still needs its Done confirm (and a killed `server`-source producer
+its ghost-expiry) within seconds, not on the ≤60s Slow heartbeat. `Service`
+and `Companion` rows themselves never pin fast cadence — a dev server or an
+open editor left overnight costs zero ticks. Note the long-runner *easing*
 does not save cadence — an eased spinner still repaints every 4th tick — so
-Service relief comes only from the steady mark plus the predicate change.
+Service relief comes only from the steady mark plus the `animating` term.
 
 One behavior delta reviewers should expect: closing nvim in a shell pane no
 longer fires a "done — nvim" notification (no observation ever exists); a
@@ -113,11 +122,12 @@ never knows how the classification was made.
    wrappers via the single `effective_program` peel — which also means
    *children* classify: `git commit` spawning `$EDITOR` fires its own
    `CommandChanged` and is classified as the editor.
-3. **Interactive names** (the issue-#13 fix): a conservative built-in
-   set of unambiguous TUIs (`vi`/`vim`/`nvim`/`emacs`/`nano`/`hx`/`less`/
-   `more`/`man`/`htop`/`btop`/`top`/`lazygit`/`tig`/`gitui`/`k9s`/`fzf`/
-   `ranger`/`yazi`/`nnn`/`mc`) housed beside `TOOL_RULES` — it is
-   classification data, not an ignore list — extended by the
+3. **Interactive names** (the issue-#13 fix): a conservative built-in set of
+   unambiguous TUIs — editors, pagers, `man`, monitors, git TUIs, file
+   managers, `fzf`; the authoritative list is `DEFAULT_INTERACTIVE` in
+   `crates/core/src/command.rs` (this doc deliberately doesn't copy it — the
+   list grows and a doc copy has no guard) — housed beside `TOOL_RULES`. It
+   is classification data, not an ignore list, extended by the
    `interactive_commands` config key (comma/space-separated exe names,
    live-applied via `config.v1`). The config field holds the user's *extras
    only* (default: empty); the effective set is `DEFAULT_INTERACTIVE ∪
@@ -181,11 +191,15 @@ One state-machine change carries the whole model. In `CommandStore`, a
 - Prompt contract, agent grace clocks, prune grace (`tracked_pane_ids`
   already includes pendings): all untouched.
 
-**Level-triggered application.** One function, `apply_interactive_set`
-(store the composed set + sweep already-promoted state: demote matching
-Running command-origin rows to Idle without ledgering, flip matching
-promotable pendings quiet), called from two places — the end of
-`PluginRuntime::load` and after `apply_overrides` on the `config.v1` pipe.
+**Level-triggered application.** One function,
+`CommandStore::set_interactive_extras` (reached via
+`RadarState::set_interactive_commands`): store the composed set + sweep
+already-promoted state — demote matching Running command-origin rows to Idle
+without ledgering, reconstructing their quiet pending from the observation so
+the swept state is identical to the intake state (muted label, labeled exit,
+symmetric un-quiet), and re-judge every pending against the new set. Called
+from two places — the end of `PluginRuntime::load` and after
+`apply_overrides` on the `config.v1` pipe.
 `load` assigns config *before* `load_snapshot`, so the single post-load call
 covers both a mid-session config change and a stale Running-nvim row
 rehydrated from another instance's snapshot; no ordering special cases.

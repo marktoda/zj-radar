@@ -861,21 +861,24 @@ impl CommandStore {
         let _ = self.store.insert(pane_id, observation);
     }
 
-    /// True if any pane is Running or has a pending fg command. Used (alongside
-    /// `StatusStore::any_running`) to keep the timer armed while work animates: a
-    /// finished command is terminal and needs no further ticking, so only
-    /// `Running` (plus a not-yet-promoted pending command) counts as live here.
+    /// True while this store has tick-driven work: an animated Running row
+    /// ([`TrackedObservation::animating`] — services hold the steady mark and
+    /// are excluded), a promotable pending awaiting its debounce promotion, or
+    /// a tentative-Done awaiting its debounce confirm. Used (alongside
+    /// `StatusStore::needs_ticks`) to keep the timer armed; a finished command
+    /// is terminal and needs no further ticking.
     ///
-    /// Two exclusions keep the timer honest about *animation*
-    /// (`docs/activity-model.md` — only bounded Job work spins): a quiet
-    /// pending never promotes, so an open editor must not pin the 1 Hz timer;
-    /// and a Running `Server` renders a steady mark, not a spinner, so a dev
-    /// server left overnight costs zero ticks.
+    /// `pending_done` counts explicitly: it is a scheduled one-shot exactly
+    /// like a promotable pending, and it is the only tick source for a
+    /// *service* row's Running→Done confirm — the Running row that used to
+    /// keep the timer armed for it is precisely what the service exclusion
+    /// turned off (a Ctrl-C'd dev server must still flip Done in ~2s, not on
+    /// the Slow heartbeat). A quiet pending never promotes, so an open editor
+    /// still costs zero ticks.
     pub fn has_pending_or_active(&self) -> bool {
         self.pending.values().any(|p| p.promotable)
-            || self
-                .store
-                .any(|s| s.status == Status::Running && !s.kind.is_service())
+            || !self.pending_done.is_empty()
+            || self.store.any(TrackedObservation::animating)
     }
 
     /// Any command Done is by definition inside its TTL window (TTL flips it to
@@ -913,8 +916,13 @@ impl CommandStore {
             }
         }
         // Demote already-promoted Running rows for now-interactive commands to
-        // Idle. Not a completion, so nothing is ledgered; the identity stays
-        // recorded in the (now quiet) pending when one exists.
+        // Idle. Not a completion, so nothing is ledgered. Promotion consumed
+        // the pending, so RECONSTRUCT the quiet pending from the observation —
+        // that makes the swept state identical to the intake state: the muted
+        // Interactive label shows, a held pane's exit stays labeled, and
+        // removing the config entry later re-promotes symmetrically. (The
+        // observation's `repo` is already a basename; `on_exit`'s
+        // `basename(cwd)` is idempotent over it.)
         let to_demote: Vec<u32> = self
             .store
             .observations()
@@ -928,6 +936,14 @@ impl CommandStore {
             if let Some(s) = self.store.get_mut(pane_id) {
                 s.status = Status::Idle;
                 changed = true;
+                let quiet = Pending {
+                    command: s.msg.clone(),
+                    cwd: s.repo.clone(),
+                    kind: s.kind,
+                    since_tick: s.last_change_tick,
+                    promotable: false,
+                };
+                self.pending.entry(pane_id).or_insert(quiet);
             }
         }
         changed

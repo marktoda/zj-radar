@@ -57,14 +57,12 @@ const MAX_PANE_LINES: usize = 6;
 /// aligned across all child lines (see `child_prefix`'s doc).
 const TREE_PREFIX_COLS: usize = 3;
 
-/// Spinner frame for a Running glyph: full speed normally; after
-/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
-/// long-runner signals "still going, nothing new" instead of anxiety.
 /// The steady mark for a Running *service* (`Kind::is_service`) — a dev
 /// server is up, not progressing, so nothing animates (`docs/activity-model.md`
 /// §3: a spinner promises bounded work). The steadiness is also what lets the
 /// timer disarm around an all-service rail: identical rows across ticks fall
-/// to the render gate, and `has_pending_or_active` excludes service rows.
+/// to the render gate, and the cadence predicates count only
+/// `TrackedObservation::animating` rows.
 const SERVICE_GLYPH: char = '▸';
 
 /// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
@@ -78,6 +76,9 @@ fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
     }
 }
 
+/// Spinner frame for a Running glyph: full speed normally; after
+/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
+/// long-runner signals "still going, nothing new" instead of anxiety.
 fn spin_glyph(now_tick: u64, since_tick: u64) -> char {
     if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
         crate::status::working_spin(((now_tick / 4) % 2) as usize)
@@ -612,38 +613,27 @@ fn wait_tag(status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> O
     if status != Status::Pending {
         return None;
     }
-    let age = now_epoch_s.saturating_sub(pending_epoch_s?);
-    if age < 60 {
-        None
-    } else if age < crate::ledger::SATURATE_S {
-        Some(format!("{}m", age / 60))
-    } else {
-        Some("1h+".to_string())
-    }
-}
-
-/// Append the wait tag to an identity line: `migrate schema · 12m`. Identity
-/// passes through untouched when no tag applies, keeping calm rows
-/// bit-identical to the tagless rail.
-fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> String {
-    match wait_tag(status, pending_epoch_s, now_epoch_s) {
-        Some(tag) => format!("{identity} · {tag}"),
-        None => identity.to_string(),
-    }
+    minute_tag(now_epoch_s.saturating_sub(pending_epoch_s?))
 }
 
 /// The `· 4m` elapsed tag for a long-running bounded *job* — whole minutes
 /// since the run's true start (`since_tick` survives re-promotions of the same
-/// command, `command.rs`), frozen at `1h+` like the wait tag. Jobs only
+/// command, `command.rs`), same band as the wait tag. Jobs only
 /// (`docs/activity-model.md` §3): agents label their own turns and services
-/// never complete, so neither wears a stopwatch. `None` under a minute. Ticks
-/// read as seconds because a Running job is exactly what holds the 1 Hz
-/// cadence armed (`has_pending_or_active`).
+/// never complete, so neither wears a stopwatch. Ticks read as seconds because
+/// an animated Running row is exactly what holds the 1 Hz cadence armed.
 fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -> Option<String> {
     if status != Status::Running || kind.is_agent() || kind.is_service() {
         return None;
     }
-    let age = now_tick.saturating_sub(since_tick?);
+    minute_tag(now_tick.saturating_sub(since_tick?))
+}
+
+/// THE minute band both time tags share: `None` under a minute (a fresh
+/// wait/run needs no clock), whole minutes below the saturate window, frozen
+/// at `1h+` past it — the freeze is load-bearing for cadence disarm (the same
+/// window the ledger uses), so it must not exist twice.
+fn minute_tag(age: u64) -> Option<String> {
     if age < 60 {
         None
     } else if age < crate::ledger::SATURATE_S {
@@ -653,10 +643,12 @@ fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -
     }
 }
 
-/// Sibling of [`with_wait_tag`] for the Running-job elapsed tag; at most one of
-/// the two ever applies (they key on disjoint statuses).
-fn with_run_tag(identity: String, status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -> String {
-    match run_tag(status, kind, since_tick, now_tick) {
+/// Append a time tag to an identity line: `migrate schema · 12m`. Identity
+/// passes through untouched when no tag applies, keeping calm rows
+/// bit-identical to the tagless rail. At most one tag ever applies per line —
+/// `wait_tag`/`run_tag` key on disjoint statuses.
+fn with_time_tag(identity: String, tag: Option<String>) -> String {
+    match tag {
         Some(tag) => format!("{identity} · {tag}"),
         None => identity,
     }
@@ -851,16 +843,21 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         if skip_silent {
             let says_something = !identity.trim().is_empty()
                 || pane.outcome().is_some_and(|o| o.renders_tag());
-            // An Interactive pane's muted label IS its content — it renders
-            // as Idle but is never "silent" (an open editor names the pane).
-            if (pane_status == Status::Idle && !pane.is_interactive()) || !says_something {
+            // `status()` (not `render_status()`) is the gate on purpose: an
+            // *observation* resting at Idle is silent, while an Interactive
+            // pane has no observation-status at all — its muted label IS its
+            // content (an open editor names the pane).
+            if pane.status() == Some(Status::Idle) || !says_something {
                 return Vec::new();
             }
         }
-        let identity =
-            with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
-        let identity = with_run_tag(
-            identity, pane_status, pane.kind(), pane.since_tick(), opts.now_tick,
+        let identity = with_time_tag(
+            identity.to_string(),
+            wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s),
+        );
+        let identity = with_time_tag(
+            identity,
+            run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick),
         );
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()

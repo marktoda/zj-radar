@@ -73,6 +73,62 @@ fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
 }
 
 #[test]
+fn load_sweeps_a_rehydrated_running_interactive_row() {
+    // The primary user journey of `interactive_commands`/the built-in set:
+    // hit the perpetual-nvim bug, upgrade/reload — the snapshot rehydrates
+    // the Running row and nvim fires no further CommandChanged until it
+    // exits, so the post-`load_snapshot` sweep is the ONLY edge that can
+    // demote it. Pins the load ordering (config → snapshot → sweep): a
+    // reorder breaks this silently.
+    let mut seeded = RadarState::default();
+    seeded.command_mut().insert_snapshot_observation(
+        9,
+        crate::observation::TrackedObservation::command(
+            Status::Running, "proj".into(), "nvim README.md".into(), crate::kind::Kind::Command, 7,
+        ),
+    );
+    let snapshot = seeded.snapshot_json(None, 7);
+
+    let mut runtime = PluginRuntime::default();
+    runtime.load(
+        config(),
+        Some(&snapshot),
+        PermissionProbe { marker: None, lock_acquired: true },
+    );
+
+    let obs = runtime.radar.command_store().get(9).unwrap();
+    assert_eq!(obs.status, Status::Idle, "rehydrated spinner demoted at load");
+    assert_eq!(
+        runtime.radar.command_store().quiet_identity(9),
+        Some(("nvim README.md", crate::kind::Kind::Command)),
+        "identity survives as the quiet pending (muted label / labeled exit)"
+    );
+}
+
+#[test]
+fn config_pipe_interactive_override_demotes_live_rows_and_persists() {
+    // Mid-session `config.v1` override: adding a name must demote an
+    // already-promoted Running row NOW (it will never fire another
+    // CommandChanged) and persist the sweep so instances spawned later
+    // rehydrate the demotion instead of the stale spinner.
+    let mut runtime = runtime_with_config(config());
+    runtime.permission = PermissionState::Resolved { granted: true };
+    runtime.command_changed(4, &["gdb".to_string()], true);
+    runtime.tick += crate::command::DEBOUNCE_TICKS;
+    runtime.radar.timer(runtime.tick, 0);
+    assert_eq!(runtime.radar.command_store().get(4).unwrap().status, Status::Running);
+
+    let outcome = runtime.config_pipe(r#"{"interactive_commands":"gdb"}"#);
+
+    assert_eq!(runtime.radar.command_store().get(4).unwrap().status, Status::Idle);
+    assert!(
+        outcome.effects.iter().any(|e| matches!(e, Effect::PersistSnapshot)),
+        "the sweep is a persisted edge: {:?}",
+        outcome.effects
+    );
+}
+
+#[test]
 fn load_denied_marker_records_denial_without_requesting_permission() {
     let mut runtime = PluginRuntime::default();
     let outcome = runtime.load(
@@ -475,7 +531,7 @@ fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
     let outcome = runtime.status_pipe(&raw);
 
     assert!(outcome.render);
-    assert!(runtime.radar.status_store().any_running());
+    assert!(runtime.radar.status_store().needs_ticks());
     // Canonical `project` order is renames → snapshot → cwd → SetTimeout →
     // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
     // not position — the order contract has its own dedicated test.

@@ -1227,6 +1227,26 @@
         assert!(changed);
         assert_eq!(s.get(1).unwrap().status, Status::Idle, "demoted, not ledgered");
         assert!(!s.has_pending_or_active());
+        // Promotion consumed the pending, so the sweep RECONSTRUCTS the quiet
+        // pending from the observation — the swept state must be identical to
+        // the intake state: muted label available, exits labeled.
+        assert_eq!(
+            s.quiet_identity(1),
+            Some(("gdb", Kind::Command)),
+            "demote reconstructs the quiet pending"
+        );
+        // …and un-quieting is symmetric even for a swept row: the
+        // reconstructed pending flips promotable and re-promotes.
+        let changed = s.set_interactive_extras([]);
+        assert!(changed);
+        s.on_timer(Tick(DEBOUNCE_TICKS * 3), EpochSecs(300));
+        assert_eq!(
+            s.get(1).unwrap().status,
+            Status::Running,
+            "swept row re-promotes after the extra is removed"
+        );
+        let changed = s.set_interactive_extras(["gdb"]);
+        assert!(changed, "re-quieting demotes again");
 
         // Symmetric: clearing the extras un-quiets a pending, which then
         // promotes on the next tick.
@@ -1250,4 +1270,28 @@
         let obs = s.get(1).unwrap();
         assert_eq!((obs.status, obs.kind), (Status::Running, Kind::Server));
         assert!(!s.has_pending_or_active(), "a steady service costs zero ticks");
+    }
+
+    #[test]
+    fn service_done_confirm_still_arms_the_timer() {
+        // The regression the service exclusion nearly shipped: `pending_done`
+        // used to inherit its tick source from the Running row it debounces.
+        // For a service that row no longer arms, so `pending_done` must count
+        // in the predicate itself — a Ctrl-C'd dev server flips Done in ~2s,
+        // not on the ≤60s Slow heartbeat.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert!(!s.has_pending_or_active(), "steady while the server runs");
+
+        // Ctrl-C: back to the shell arms the tentative-done…
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, DEBOUNCE_TICKS + 1);
+        assert!(
+            s.has_pending_or_active(),
+            "the armed Done confirm is a scheduled one-shot — it needs ticks"
+        );
+        // …which the debounce window then confirms, and the timer may disarm.
+        s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
+        assert_eq!(s.get(1).unwrap().status, Status::Done, "a dead dev server is news");
+        assert!(!s.has_pending_or_active());
     }

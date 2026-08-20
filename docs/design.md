@@ -84,9 +84,11 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
   The *semantics* of what each status/kind pairing should look like — attention
   classes (Job/Service/Companion), interactive-command suppression, cadence
   rules — live in [`activity-model.md`](activity-model.md).
-- Per-tab rows are **two lines**: line 1 = state dot + **display tab number** + name (+
-  `done/total` count when a tab holds multiple agents); line 2 = `repo/branch · elapsed` and a
-  truncated last message.
+- Per-tab rows are a **header line plus one line per tracked pane**: line 1 =
+  state glyph + **display tab number** + name; each pane line = tree connector +
+  status glyph + kind mark + identity/activity (see `rail-reference.md` — the
+  executable spec — for the exact grid; elapsed appears only as the per-pane
+  pending wait tag and long-job run tag, rule 2 there).
 - **Display tab number = `TabInfo.position + 1`** (see §6 — position is 0-indexed).
 - Plain (non-agent) tabs render name only — agent decoration is purely additive. The name is
   `TabInfo.name` (from the layout or zj-radar' own push-based naming, §6.1) — **not** from
@@ -183,8 +185,10 @@ tab), so tab state cannot come from names. The store keys by `PaneId`; `PaneUpda
 - **Count:** `total` = panes in this tab that have *ever* reported a non-idle agent state and
   still exist; `done` = those whose current status is `done`. Render as `done/total` when
   `total > 1`.
-- **Second-line detail (which pane's repo/branch/msg to show):** the highest-severity pane;
-  tie-break by most-recent `last_change_tick`.
+- **Primary detail (which pane's repo/branch/msg summarizes the tab):** the
+  highest-severity pane; on equal severity a bounded *job* outranks a *service*
+  (a spinning build beats a merely-up dev server — `activity-model.md` §3);
+  remaining ties by most-recent `last_change_tick`.
 - **Pruning:** on each `PaneUpdate`, drop state for `PaneId`s no longer present, so closed
   agents leave no ghost status.
 

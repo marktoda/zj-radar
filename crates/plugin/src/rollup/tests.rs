@@ -376,6 +376,28 @@ fn quiet_identity_never_outranks_a_live_observation() {
 }
 
 #[test]
+fn primary_detail_tie_break_prefers_a_job_over_a_service() {
+    // On equal severity a bounded job outranks a service — a spinning build
+    // summarizes the tab better than a dev server that is merely up
+    // (docs/activity-model.md §3). The service has the LATER tick, so this
+    // pins the middle key of (status, job, tick): drop it and the recency
+    // tie-break hands the header to the server's steady mark.
+    let mut map = HashMap::new();
+    let build = TrackedObservation { kind: Kind::Build, ..obs(ObservationOrigin::Command, Status::Running, 1) };
+    let server = TrackedObservation { kind: Kind::Server, ..obs(ObservationOrigin::Command, Status::Running, 9) };
+    map.insert(1, build);
+    map.insert(2, server);
+    let panes = [pane(1, "build"), pane(2, "dev")];
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert_eq!(display.detail.unwrap().kind, Kind::Build);
+    // Severity still wins over the job preference: a Pending service beats a
+    // Running job outright.
+    map.get_mut(&2).unwrap().status = Status::Pending;
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert_eq!(display.detail.unwrap().kind, Kind::Server);
+}
+
+#[test]
 fn interactive_earns_a_pane_line_but_is_not_tracked() {
     let d = PaneDisplay::Interactive { pane_id: 7, kind: Kind::Command, msg: "nvim".into() };
     assert!(d.earns_pane_line());

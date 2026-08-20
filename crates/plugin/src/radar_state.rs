@@ -701,7 +701,7 @@ impl RadarState {
         }
         // A Running→Running update (new activity label / task / repo, same
         // status) is the tool-hook firehose's steady state. The Fast (1 Hz)
-        // tick is already armed while anything is Running and repaints
+        // tick is already armed while the row *animates* and repaints
         // unconditionally, so the label reaches the rail within a second
         // regardless — an immediate render here only multiplied burst repaints
         // by the message rate. Same for the snapshot: defer the write to the
@@ -710,8 +710,13 @@ impl RadarState {
         // (anything that changes the status itself, or any non-Running update
         // — Pending question text, a Done/Error message rewrite) still renders
         // and persists immediately: those are the rows a user is waiting on.
+        // The `animating` term is the deferral's soundness condition: a
+        // Running *service* row holds the steady mark and does NOT arm the
+        // Fast tick, so deferring its label to "the next tick" would mean the
+        // Slow heartbeat (≤60s) — render and persist those immediately.
         let label_only = prev.as_ref().map(|o| o.status) == now_status
-            && now_status == Some(Status::Running);
+            && now_status == Some(Status::Running)
+            && self.status.get(pane_id).is_some_and(TrackedObservation::animating);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
@@ -741,7 +746,7 @@ impl RadarState {
     /// meant to (animation vs. a scheduled one-shot are different reasons to
     /// tick, and conflating them would blur what each predicate promises).
     pub(crate) fn has_running_work(&self) -> bool {
-        self.status.any_running() || self.command.has_pending_or_active()
+        self.status.needs_ticks() || self.command.has_pending_or_active()
     }
 
     /// Apply the user's `interactive_commands` extras to the command store

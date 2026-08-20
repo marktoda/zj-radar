@@ -100,6 +100,17 @@ impl TrackedObservation {
         }
     }
 
+    /// Running work that draws an *animated* glyph — the one observation state
+    /// that needs per-second ticks. Running services are excluded: they render
+    /// the steady `▸` mark, so nothing about them animates
+    /// (`docs/activity-model.md` §3). THE shared term of both stores' cadence
+    /// predicates (`StatusStore::needs_ticks`,
+    /// `CommandStore::has_pending_or_active`), so the service exclusion can
+    /// never half-apply.
+    pub fn animating(&self) -> bool {
+        self.status == Status::Running && !self.kind.is_service()
+    }
+
     /// Re-scrub the free-text fields with the same sanitizer and caps live
     /// intake applies at parse. Live observations are sanitized already; this
     /// is for observations loaded off disk, where a pre-sanitize build (or a
@@ -173,9 +184,9 @@ impl ObservationStore {
         self.map.iter().map(|(&pane_id, observation)| (pane_id, observation))
     }
 
-    /// Does any observation satisfy `pred`? The two stores resting-state predicates
-    /// differ (`StatusStore` counts any non-idle, `CommandStore` only `Running`),
-    /// so each passes its own closure rather than sharing one definition.
+    /// Does any observation satisfy `pred`? Both stores' cadence predicates
+    /// pass [`TrackedObservation::animating`]; other callers (Done-awaiting-
+    /// recede, tests) pass their own closures.
     pub fn any(&self, pred: impl Fn(&TrackedObservation) -> bool) -> bool {
         self.map.values().any(pred)
     }

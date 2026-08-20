@@ -17,7 +17,7 @@
    carries a `· Nm` wait tag (the cost of ignoring it — see T5), and a
    long-running bounded *job* (command-classified work: build/test/deploy/
    command — never an agent, never a server) carries a `· Nm` run tag (the
-   cost still being paid — see AD). Under a minute, and for every other
+   cost still being paid — see AE). Under a minute, and for every other
    status, lines stay bit-identical to the tagless rail.
    ⟦D-timer ✓ pending + long-job⟧
 3. **One line per real pane — no collapsing.** Every *tracked* pane (an agent or
@@ -30,9 +30,9 @@
    an editor/pager/TUI in the foreground (`nvim`, `less`, `htop`, … +
    `interactive_commands` config) never earns a Running row — its pane renders
    a *muted identity label* (idle glyph + kind mark + command), pure
-   navigation aid, zero urgency. See scenario AC. A running **server**
+   navigation aid, zero urgency. See scenario AD. A running **server**
    (`Kind::Server`) is activity that never *completes*: it keeps its row but
-   holds the steady `▸` mark instead of the spinner. See AD.
+   holds the steady `▸` mark instead of the spinner. See AE.
 5. **Safety cap 6.** At most 6 pane lines per tab; beyond that, a final
    `+N more` line. (High on purpose — the common case never folds.) ⟦D6 ✓ = 6⟧
 6. **Position order.** Tabs and panes render in position order — no

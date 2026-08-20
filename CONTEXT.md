@@ -115,13 +115,16 @@ proportional to actual change:
   promotes it), a `CwdChanged` (naming rides the `RenameTab` effect's own
   `TabUpdate` echo).
 - **Label-only deferral.** A Running→Running update (new activity label, same
-  status) neither renders nor persists inline: the Fast (1 Hz) tick is armed
-  whenever anything is Running and repaints unconditionally, so the label
+  status) on an *animating* row neither renders nor persists inline: the Fast
+  (1 Hz) tick is armed while the row animates (`TrackedObservation::animating`
+  — Running and not a service) and repaints unconditionally, so the label
   lands ≤1s later, and the snapshot write rides the tick's flush
   (`SnapshotWrite::Deferred` → the runtime's `snapshot_dirty`; an inline
   `SnapshotWrite::Now` on the same pass clears the flag — it supersedes).
-  Only while Running — a rewritten Pending question renders now, because
-  Pending doesn't pin Fast cadence.
+  Only while animating — a rewritten Pending question renders now (Pending
+  doesn't pin Fast cadence), and so does a Running *service's* label (the
+  steady `▸` row doesn't either — deferral there would mean the ≤60s Slow
+  heartbeat).
 - **Rows-diff gate.** `project` drops a requested render whose content-derived
   key (rows, ledger lines, badge, theme) equals what the last `render()`
   actually drew (`last_render_key`, stamped in `render`). `force_render`
