@@ -81,6 +81,9 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
   the exact grid.
 - **Status vocabulary:** the pipe sends raw values `running`/`pending`/`done`/`error`/`idle`;
   the renderer maps `running`→working, `pending`→waiting-for-you, `idle`/absent→plain.
+  The *semantics* of what each status/kind pairing should look like — attention
+  classes (Job/Service/Companion), interactive-command suppression, cadence
+  rules — live in [`activity-model.md`](activity-model.md).
 - Per-tab rows are **two lines**: line 1 = state dot + **display tab number** + name (+
   `done/total` count when a tab holds multiple agents); line 2 = `repo/branch · elapsed` and a
   truncated last message.
