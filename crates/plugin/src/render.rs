@@ -450,6 +450,9 @@ impl RenderedRail {
         self.targets.get(line as usize).cloned().flatten()
     }
 
+    /// Test vocabulary — production hotspot resolution goes through
+    /// `hotspot_at` (column-aware); this line-only form exists for asserts.
+    #[cfg(test)]
     pub(crate) fn hotspot_at_line(&self, line: isize) -> Option<(usize, HotspotAction)> {
         if line < 0 {
             return None;

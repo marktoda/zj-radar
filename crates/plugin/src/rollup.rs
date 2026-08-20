@@ -105,6 +105,9 @@ impl PaneDisplay {
         Self::Untracked { pane_id, title }
     }
 
+    /// Tracked only (an observation-backed row) — test vocabulary; production
+    /// code branches on `earns_pane_line`/`is_interactive` instead.
+    #[cfg(test)]
     pub(crate) fn is_tracked(&self) -> bool {
         matches!(self, Self::Tracked { .. })
     }
