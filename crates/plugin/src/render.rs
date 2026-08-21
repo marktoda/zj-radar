@@ -1524,22 +1524,19 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // working" tally computed later in `render_bottom`; the two live in
     // separate pipeline stages (body vs. bottom region) and sharing one
     // number across that seam would cost more plumbing than the one `filter`
-    // it saves. The tab detail's kind gates it to *animating* work: a rail
-    // whose only Running rows are services (steady `▸`, no Fast cadence)
-    // must not draw a sweep that would only teleport once per Slow fire —
-    // motion promises bounded work (`docs/activity-model.md` §1). The
-    // job-over-service tie-break makes the detail-kind check exact: whenever
-    // any Running job exists in a tab, the detail IS a job. The footer tally
-    // deliberately stays Status-only — "1 working" for an up dev server is
-    // honest English, and a count is not an animation.
-    let working = rows.iter().any(|r| {
-        r.display.status == Status::Running
-            // A Running tab always carries a detail in production (`roll_up`
-            // sets one whenever an active pane exists), so the None arm is
-            // unreachable — defaulting it to "animate" keeps the sweep the
-            // fail-visible side of that invariant.
-            && r.display.detail.as_ref().is_none_or(|d| !d.kind.is_service())
-    });
+    // it saves. Two gates: the tab's HEADLINE is Running (a needs-you tab
+    // with a working sibling keeps a calm rule — attention outranks motion),
+    // and `TabDisplay::animating` — the canonical cadence term
+    // (`TrackedObservation::animating`), so the sweep only marches for work
+    // the timer actually animates: a rail whose only Running rows are
+    // services (steady `▸`, no Fast cadence) must not draw a sweep that
+    // would only teleport once per Slow fire — motion promises bounded work
+    // (`docs/activity-model.md` §1). The footer tally deliberately stays
+    // Status-only — "1 working" for an up dev server is honest English, and
+    // a count is not an animation.
+    let working = rows
+        .iter()
+        .any(|r| r.display.status == Status::Running && r.display.animating);
 
     let mut flat: Vec<Line> = Vec::new();
 

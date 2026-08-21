@@ -177,11 +177,15 @@ silently re-creates the trap.
 One state-machine change carries the whole model. In `CommandStore`, a
 `Pending` entry gains `promotable: bool`:
 
-- **Intake** of an interactive-classified foreground command: arm the
+- **Intake** of an interactive-classified command: arm the
   tentative-Done for any prior Running row (opening nvim after `cargo build`
   finished still flips the build to Done), clear the exit dedup (a re-run's
   exit must apply fresh), and insert a **non-promotable pending** carrying
-  the classified identity.
+  the classified identity. The `is_foreground` flag is NOT consulted for an
+  interactive argv: a childless interactive ROOT (`zellij run -- nvim`)
+  reports `false`, and that report is the editor alive, not a prompt return —
+  shell panes can't reach the override because their childless root IS the
+  shell, which the ignore set catches.
 - **Promotion** (`on_timer`) filters on `promotable` — the Running row never
   materializes.
 - **`on_exit` is unchanged** — the surviving pending's identity labels the
@@ -214,10 +218,13 @@ editor closes. The simpler "drop all command-origin Running rows and let
 re-promotion recover" is unsound: re-reports are incidental, not guaranteed
 (the `DEBOUNCE_TICKS` comment in `command.rs` — a dropped edge means nothing
 ever calls `on_command_changed` again), so a legit build row could vanish
-permanently. The sweep matches on the display's first whitespace token,
-which equals the exe
-basename by construction of every display path — pinned by a guard test
-(§7), since three functions hold that invariant.
+permanently. A row whose tentative-Done is already armed is exempt — its
+command has left the foreground, so sweeping it would ghost a quiet label no
+future edge clears; the armed confirm flips it Done instead. Pendings
+re-judge on the intake-stamped peeled program name (structural); only the
+observation sweep matches on the display's first whitespace token, which
+equals the exe basename by construction of every display path — pinned by a
+guard test (§7).
 
 Why identity-preserving suppression rather than the simpler ignore-branch
 (measured cost: ~15 lines — one field, one intake arm, two predicate
