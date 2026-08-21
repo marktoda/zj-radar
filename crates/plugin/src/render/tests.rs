@@ -3690,22 +3690,30 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
-    assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
-    assert_eq!(LineBg::Rail.escape(&active_row, &theme, &rail), Some(rail.clone()));
+    assert_eq!(LineBg::None.escape(Some(&active_row), &theme, &rail), None);
+    assert_eq!(LineBg::Rail.escape(Some(&active_row), &theme, &rail), Some(rail.clone()));
     assert_eq!(
-        LineBg::Card.escape(&active_row, &theme, &rail),
+        LineBg::Card.escape(Some(&active_row), &theme, &rail),
         Some(card_tint(&active_row, &theme)),
     );
     assert_eq!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
+        LineBg::ActiveChild.escape(Some(&active_row), &theme, &rail),
+        Some(tc_bg(theme.surface_agent)),
+    );
+    // The row-less callers (`paint_if_cards`: header, badge, idle strip,
+    // bottom region) resolve the row-independent classes identically.
+    assert_eq!(LineBg::None.escape(None, &theme, &rail), None);
+    assert_eq!(LineBg::Rail.escape(None, &theme, &rail), Some(rail.clone()));
+    assert_eq!(
+        LineBg::ActiveChild.escape(None, &theme, &rail),
         Some(tc_bg(theme.surface_agent)),
     );
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
     // card tint (surface_active). One resolver makes that structural.
     assert_ne!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
-        LineBg::Card.escape(&active_row, &theme, &rail),
+        LineBg::ActiveChild.escape(Some(&active_row), &theme, &rail),
+        LineBg::Card.escape(Some(&active_row), &theme, &rail),
     );
 }
 

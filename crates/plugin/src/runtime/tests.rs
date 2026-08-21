@@ -1157,6 +1157,55 @@ fn left_click_on_stale_badge_glyph_dismisses_but_the_row_body_still_switches() {
 }
 
 #[test]
+fn raced_away_dismiss_glyph_consumes_the_click_instead_of_switching_sessions() {
+    // Pins the rule stated at `mouse_click`'s hotspot branch: a hotspot whose
+    // action raced away deliberately CONSUMES the click — the user aimed at
+    // an action, not at the row behind it. Race it for real: render the
+    // dismiss glyph for a stale peer, then let the peer's heartbeat land
+    // WITHOUT a re-render in between. The on-screen (cached) rail still
+    // shows the glyph, but `dismiss_stale_session` now refuses — and the
+    // click must die there, never fall through to the row's SwitchSession.
+    let json = r#"{"session_name":"alpha","running":0,"attention":1}"#;
+    let mut rt = runtime_with_granted_permission();
+    render_with_badge(&mut rt, stale(json));
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
+        .expect("stale peer badge must carry a dismiss glyph");
+
+    rt.presences_changed(vec![fresh(json)]); // alpha heartbeats back to life
+
+    let out = rt.mouse_click(3, start_col);
+    assert_eq!(
+        out,
+        Outcome::default(),
+        "a raced-away dismiss must consume the click, not switch sessions"
+    );
+    assert!(
+        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
+        "the healthy peer must survive the stale-rendered click"
+    );
+}
+
+#[test]
+fn raced_away_acknowledge_glyph_consumes_the_click_instead_of_showing_the_pane() {
+    // The acknowledge twin of the raced-away dismiss above: pane 10's
+    // Pending completes on its own (another instance's ack echo, or the
+    // agent's next broadcast) with no re-render in between, so the cached
+    // rail still shows the acknowledge glyph with nothing Pending behind it.
+    let mut rt = runtime_with_pending_panes();
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
+        .expect("pending pane 10 must carry its acknowledge hotspot");
+
+    rt.status_pipe(&payload_json(10, "done"));
+
+    let out = rt.mouse_click(3, start_col);
+    assert_eq!(
+        out,
+        Outcome::default(),
+        "a raced-away acknowledge must consume the click, not ShowPane"
+    );
+}
+
+#[test]
 fn right_click_on_fresh_session_line_is_inert() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, fresh(r#"{"session_name":"alpha","running":0,"attention":1}"#));
@@ -1973,10 +2022,11 @@ fn idle_with_fresh_history_arms_slow_and_repaints() {
     );
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
 
-    // The slow tick itself must render — it exists precisely to repaint
-    // the ledger's ages.
-    let tick = rt.timer_fast(PermissionProbe::default());
-    assert!(tick.render, "a slow tick renders to repaint ledger ages");
+    // The slow fire itself must render — it exists precisely to repaint
+    // the ledger's ages. A genuine Slow fire (elapsed ~60s), because the
+    // repaint clause keys on the fire that landed, not on `desired_cadence`.
+    let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(tick.render, "a slow fire renders to repaint ledger ages");
 }
 
 #[test]
@@ -2066,6 +2116,11 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
 
     // The Slow fire must refresh the presence mtime AND re-arm itself —
     // the self-sustaining loop that keeps an idle session inside the TTL.
+    // Pin the clock 60s ahead first: the fire lands a Slow interval after
+    // the name-edge write above, and the heartbeat is level-triggered on
+    // that write's age (`PRESENCE_HEARTBEAT_S`), which test wall-time alone
+    // would never reach.
+    crate::clock::set_now_for_test(crate::clock::now_epoch_s() + Cadence::Slow.seconds() as u64);
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
     assert!(
         slow.effects.contains(&Effect::PersistPresence),
@@ -2245,50 +2300,64 @@ fn lone_slow_fire_processes_as_the_live_chain() {
 }
 
 #[test]
-fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
-    // An idle-but-alive session (nothing fast-worthy happening) has no
-    // content edge to trigger `project`'s compare-and-cache `PersistPresence`
-    // — but its presence file's mtime is the signal peers use to tell fresh
-    // from stale (`sessions::STALE_AFTER_SECS`; liveness is no longer
-    // `SessionUpdate`-derived at all, and staleness is never a hard
-    // drop either — just a dim). The Slow (60s) heartbeat must therefore
-    // emit `PersistPresence` unconditionally, bypassing the content-compare
-    // gate; Fast (1s) fires must NOT — that would be needless per-second
-    // churn for a signal that only needs to beat a 90s staleness window.
+fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
+    // A session with unchanged presence content has no content edge to
+    // trigger `project`'s compare-and-cache `PersistPresence` — but its
+    // presence file's mtime is the signal peers use to tell fresh from stale
+    // (`sessions::STALE_AFTER_SECS`; staleness is never a hard drop either —
+    // just a dim). The heartbeat is level-triggered on the age of the last
+    // write (`PRESENCE_HEARTBEAT_S`), NOT keyed to the Slow fire: a session
+    // pinned at Fast by `needs_fast_ticks` (a long-Running agent, a long
+    // build) never sees a Slow fire, and a Slow-keyed write starved exactly
+    // those — the busiest sessions dimmed stale on every peer's badge.
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
+    let now = crate::clock::now_epoch_s();
 
-    // A Fast fire with nothing changed must stay quiet — the edge gate
-    // already published once, inside `runtime_with_granted_permission`'s
-    // `session_name_changed` call.
+    // Freshly written: ANY live fire — Fast or Slow — stays quiet. Republish
+    // churn on every 1s tick is exactly what the level trigger avoids.
+    rt.last_presence_write_epoch_s = now;
     let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
     assert!(
         !fast.effects.contains(&Effect::PersistPresence),
-        "a fast fire with unchanged content must not republish, got {:?}", fast.effects
+        "a fast fire inside the heartbeat window must not republish, got {:?}", fast.effects
+    );
+    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
+    assert!(
+        !slow.effects.contains(&Effect::PersistPresence),
+        "a slow fire inside the heartbeat window must not churn the file, got {:?}", slow.effects
     );
 
-    // A Slow fire, even with identical content, must heartbeat anyway —
-    // exactly once, not doubled up with `project`'s own (correctly
-    // no-op, since content is unchanged) edge-gated push.
-    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
-    let persists = slow.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    // The write ages past the threshold: the next live fire republishes —
+    // exactly once — whatever cadence it rides. A FAST fire here, because
+    // that is the starving case the level trigger exists for.
+    rt.last_presence_write_epoch_s = now.saturating_sub(PRESENCE_HEARTBEAT_S);
+    let due = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    let persists = due.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
     assert_eq!(
         persists, 1,
-        "an idle session's slow heartbeat must refresh its presence file's \
-         mtime unconditionally, exactly once, got {:?}", slow.effects
+        "an overdue fast fire must refresh the presence file's mtime, exactly \
+         once, got {:?}", due.effects
+    );
+
+    // The emit restamped the write clock (`project`'s single stamp point):
+    // the very next fire is quiet again.
+    let restamped = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds());
+    assert!(
+        !restamped.effects.contains(&Effect::PersistPresence),
+        "the heartbeat write must reset the level trigger, got {:?}", restamped.effects
     );
 }
 
 #[test]
-fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
-    // Sibling of `idle_alive_session_heartbeats_presence_unconditionally_
-    // on_slow_fires_only`, but for the case that test's own comment waves
-    // off as "correctly no-op": here the Slow fire's OWN tick is what
-    // produces the content edge, not an unrelated prior call. A live Slow
-    // fire that promotes a debounced command to Running crosses `project`'s
-    // edge gate (running 0 -> 1) on the exact same pass where `timer`'s
-    // unconditional Slow heartbeat has already seeded a `PersistPresence`
-    // — two independently-correct pushes landing in the same `fx`, which
-    // must still collapse to one effect.
+fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
+    // Sibling of `presence_heartbeat_is_level_triggered_on_write_age_not_
+    // on_cadence`, but for the busiest same-pass shape: a live Slow fire
+    // whose overdue level-triggered heartbeat has already seeded a
+    // `PersistPresence` while its OWN tick also mutates the stores (a
+    // debounced command promoting to Running) and re-runs `project`'s
+    // presence derive on the same `fx`. However many pushes that pass
+    // produces, they must collapse to exactly one effect (`project`'s
+    // `retain`).
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
     drive_tabs_and_panes(&mut rt); // tab 0 / pane 7, the row `own_presence` reads
 
@@ -2310,9 +2379,15 @@ fn slow_heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once(
         rt.timer_fast(PermissionProbe::default());
     }
 
+    // Force the heartbeat overdue, so the final fire below seeds its own
+    // liveness push — the interim fast fires above (level-triggered too)
+    // restamped the write clock and would otherwise leave it quiet.
+    rt.last_presence_write_epoch_s = 0;
+
     // The debounce-completing tick, reported as a Slow (60s) fire — the
-    // reviewer's exact probe: a live Slow fire whose own tick promotes
-    // pending -> Running, landing a genuine content edge.
+    // reviewer's exact probe: a live fire whose overdue heartbeat seeds a
+    // push AND whose own tick promotes pending -> Running, landing a genuine
+    // content edge on the same pass.
     let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds());
     let persists = tick.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
     assert_eq!(
@@ -2378,9 +2453,9 @@ fn read_presences_is_bound_to_fast_fires_only() {
 // of random event/fire orderings (`timer_chain_fuzz` below) — all confirm
 // the *current* `arm`/`on_fire` bookkeeping self-corrects: whichever fire
 // is chronologically last to land is always the one treated as live, and
-// it always re-arms (see task-13-report.md for the full trace). Kept as
-// permanent regression coverage for this exact hypothesis, not as a
-// reproduction of a confirmed bug.
+// it always re-arms, so the chain was ruled out as the starvation
+// mechanism. Kept as permanent regression coverage for this exact
+// hypothesis, not as a reproduction of a confirmed bug.
 
 /// A one-shot, non-cancellable `set_timeout` queue, exactly like Zellij's:
 /// every `Effect::SetTimeout` schedules a real future fire at `now + dur`,
@@ -2388,13 +2463,24 @@ fn read_presences_is_bound_to_fast_fires_only() {
 /// mirroring lib.rs's `set_timeout(cadence.seconds())` and Zellij's own
 /// single-threaded event loop. Used to drive `PluginRuntime::timer` the way
 /// production actually does, instead of hand-picking `elapsed_s` values.
+///
+/// Also owns the wall clock: each delivered fire pins `clock::now_epoch_s`
+/// (via `clock::set_now_for_test`) to the fire's virtual time, so the
+/// wall-clock-keyed gates inside `timer` — the presence heartbeat's
+/// `PRESENCE_HEARTBEAT_S` level trigger above all — see time advance in
+/// lockstep with the fires instead of standing still at test speed.
 struct FireSim {
     now_ms: u64,
+    /// Real epoch at construction — virtual time counts up from here, so the
+    /// runtime's clock stays monotone across the FireSim's takeover.
+    base_epoch_s: u64,
     queue: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64)>>,
 }
 impl FireSim {
     fn new() -> Self {
-        Self { now_ms: 0, queue: Default::default() }
+        let base_epoch_s = crate::clock::now_epoch_s();
+        crate::clock::set_now_for_test(base_epoch_s);
+        Self { now_ms: 0, base_epoch_s, queue: Default::default() }
     }
     fn schedule_from(&mut self, effects: &[Effect]) {
         for e in effects {
@@ -2406,10 +2492,11 @@ impl FireSim {
     }
     /// Pop the earliest scheduled fire and report it as `timer()` wants:
     /// `elapsed_s` = the duration it was armed with (matches lib.rs's
-    /// documented approximation).
+    /// documented approximation). Advances the pinned wall clock to match.
     fn pop(&mut self) -> Option<f64> {
         let std::cmp::Reverse((at, dur_ms)) = self.queue.pop()?;
         self.now_ms = at;
+        crate::clock::set_now_for_test(self.base_epoch_s + self.now_ms / 1000);
         Some(dur_ms as f64 / 1000.0)
     }
 }
@@ -2477,8 +2564,12 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
 
     // Now simulate 15 minutes of virtual time purely via the FireSim queue
     // — no more domain events, exactly an idle-but-alive session. Every
-    // live fire must be a Slow fire that (a) re-arms and (b) heartbeats.
+    // live fire must be a Slow fire that re-arms, and the level-triggered
+    // heartbeat must keep the presence file's write gaps under the 90s
+    // staleness window throughout.
     let mut live_fires = 0;
+    let mut heartbeats = 0;
+    let mut last_write_ms = sim.now_ms;
     while sim.now_ms < 15 * 60 * 1000 {
         let Some(elapsed) = sim.pop() else {
             panic!(
@@ -2501,11 +2592,14 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
             "expected only Slow fires once idle, got elapsed={elapsed} at t={:.1}s",
             sim.now_ms as f64 / 1000.0
         );
+        if out.effects.contains(&Effect::PersistPresence) {
+            heartbeats += 1;
+            last_write_ms = sim.now_ms;
+        }
         assert!(
-            out.effects.contains(&Effect::PersistPresence),
-            "live Slow fire at t={:.1}s must heartbeat, got {:?}",
-            sim.now_ms as f64 / 1000.0,
-            out.effects
+            sim.now_ms - last_write_ms < crate::sessions::STALE_AFTER_SECS * 1000,
+            "presence write gap crossed the staleness window at t={:.1}s",
+            sim.now_ms as f64 / 1000.0
         );
         assert!(
             out.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
@@ -2516,7 +2610,11 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
     }
     assert!(
         live_fires >= 10,
-        "expected at least 10 live Slow heartbeats over 15 virtual minutes, got {live_fires}"
+        "expected at least 10 live Slow fires over 15 virtual minutes, got {live_fires}"
+    );
+    assert!(
+        heartbeats >= 10,
+        "expected at least 10 heartbeats over 15 virtual minutes, got {heartbeats}"
     );
 }
 
@@ -2537,11 +2635,14 @@ fn drain_to_settled_slow(rt: &mut PluginRuntime, sim: &mut FireSim) {
 }
 
 /// Run `sim`/`rt` forward for `minutes` of pure idle virtual time (no more
-/// domain events), asserting every live fire is a heartbeating Slow fire.
-/// Returns the live-fire count.
+/// domain events), asserting the level-triggered heartbeat keeps the presence
+/// file's write gaps under the 90s staleness window the whole way (a live
+/// fire inside the `PRESENCE_HEARTBEAT_S` window is legitimately quiet).
+/// Returns the heartbeat count.
 fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64) -> u64 {
     let deadline_ms = sim.now_ms + minutes * 60_000;
-    let mut live_fires = 0;
+    let mut heartbeats = 0;
+    let mut last_write_ms = sim.now_ms;
     while sim.now_ms < deadline_ms {
         let Some(elapsed) = sim.pop() else {
             panic!(
@@ -2555,15 +2656,17 @@ fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64
         if out == Outcome::none() {
             continue;
         }
-        live_fires += 1;
+        if out.effects.contains(&Effect::PersistPresence) {
+            heartbeats += 1;
+            last_write_ms = sim.now_ms;
+        }
         assert!(
-            out.effects.contains(&Effect::PersistPresence),
-            "live fire at t={:.1}s must heartbeat, got {:?}",
-            sim.now_ms as f64 / 1000.0,
-            out.effects
+            sim.now_ms - last_write_ms < crate::sessions::STALE_AFTER_SECS * 1000,
+            "presence write gap crossed the staleness window at t={:.1}s",
+            sim.now_ms as f64 / 1000.0
         );
     }
-    live_fires
+    heartbeats
 }
 
 #[test]
@@ -2594,8 +2697,62 @@ fn slow_heartbeat_survives_a_long_sustained_busy_period() {
     sim.schedule_from(&done.effects);
     drain_to_settled_slow(&mut rt, &mut sim);
 
-    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
-    assert!(live_fires >= 10, "expected >=10 heartbeats, got {live_fires}");
+    let heartbeats = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(heartbeats >= 10, "expected >=10 heartbeats, got {heartbeats}");
+}
+
+#[test]
+fn sustained_fast_cadence_with_unchanged_content_still_heartbeats_presence() {
+    // The Fast-starvation case itself: a long-Running agent pins the chain
+    // at Fast via `needs_fast_ticks` while its presence content never moves
+    // (running stays 1), so neither `project`'s content-edge gate nor a Slow
+    // fire (there are none) ever rewrites the presence file. Without the
+    // level-triggered heartbeat, after `sessions::STALE_AFTER_SECS` (90s)
+    // every peer dims this — the busiest — session as stale. Hold Fast for
+    // 200 virtual seconds and assert a `PersistPresence` keeps landing well
+    // inside every 90s window.
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+
+    // The Running edge publishes once (content edge) and pins Fast; from
+    // here the presence content never changes again.
+    let busy = rt.status_pipe(&payload_json(7, "running"));
+    sim.schedule_from(&busy.effects);
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: running pins Fast");
+
+    let mut heartbeats = 0;
+    let mut last_write_ms = sim.now_ms;
+    while sim.now_ms < 200_000 {
+        let Some(elapsed) = sim.pop() else { panic!("starved mid-burst") };
+        let out = rt.timer(PermissionProbe::default(), elapsed);
+        sim.schedule_from(&out.effects);
+        if out.effects.contains(&Effect::PersistPresence) {
+            heartbeats += 1;
+            last_write_ms = sim.now_ms;
+        }
+        assert!(
+            sim.now_ms - last_write_ms < crate::sessions::STALE_AFTER_SECS * 1000,
+            "presence write gap crossed the staleness window at t={:.1}s while Fast-pinned",
+            sim.now_ms as f64 / 1000.0
+        );
+    }
+    assert_eq!(
+        rt.timer_chain.armed(),
+        Some(Cadence::Fast),
+        "setup: the whole run must have stayed Fast-pinned — otherwise this \
+         never exercised the starving case"
+    );
+    assert!(
+        heartbeats >= 2,
+        "expected repeated Fast-cadence heartbeats across 200 virtual seconds, got {heartbeats}"
+    );
 }
 
 #[test]
@@ -2630,8 +2787,8 @@ fn slow_heartbeat_survives_flapping_activity_then_settling() {
     }
 
     drain_to_settled_slow(&mut rt, &mut sim);
-    let live_fires = assert_heartbeats_for(&mut rt, &mut sim, 15);
-    assert!(live_fires >= 10, "expected >=10 heartbeats after flapping settled, got {live_fires}");
+    let heartbeats = assert_heartbeats_for(&mut rt, &mut sim, 15);
+    assert!(heartbeats >= 10, "expected >=10 heartbeats after flapping settled, got {heartbeats}");
 }
 
 mod timer_chain_fuzz {

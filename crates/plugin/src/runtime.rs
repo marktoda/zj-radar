@@ -37,6 +37,8 @@
 //!   permission-flow coordination + cross-session cycle commit).
 //! - [`mouse_click`](PluginRuntime::mouse_click) — resolved against the cached
 //!   [`RenderedRail`] for click-to-switch.
+//! - [`mouse_right_click`](PluginRuntime::mouse_right_click) — the
+//!   acknowledge/dismiss verb, resolved against the same cached rail.
 //! - [`permission_result`](PluginRuntime::permission_result) — Zellij's grant /
 //!   deny verdict.
 
@@ -87,6 +89,19 @@ const STALE_FIRE_ELAPSED_S: f64 = 5.0;
 /// cycle (`Sessions::wants_fast_cadence`) reads every tick.
 const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 
+/// Wall-clock seconds between own-presence liveness writes — the level
+/// trigger in [`PluginRuntime::timer`]: any live fire re-emits
+/// [`Effect::PersistPresence`] once the last write
+/// (`last_presence_write_epoch_s`) is at least this old. Must sit comfortably
+/// under `sessions::STALE_AFTER_SECS` (90s): peers dim a presence file whose
+/// mtime ages past that, so 60s leaves a ~30s cushion for a skipped or
+/// scheduler-delayed fire. One Slow (60s) fire per window satisfies it
+/// exactly; a Fast-pinned session (a long-Running agent, a long
+/// command-origin build — no content edges, no Slow fires) satisfies it from
+/// its 1 Hz ticks, which is the whole point: keying the write on the Slow
+/// fire alone starved exactly the busiest sessions stale.
+const PRESENCE_HEARTBEAT_S: u64 = 60;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
@@ -125,7 +140,9 @@ pub(crate) enum Effect {
     Notify { key: String, title: String, body: String },
     /// Publish this session's own [`Presence`] for peer rails to read.
     /// Content-compared at the edge in `project` — lib.rs does
-    /// `files.persist_presence(&runtime.presence_json())`.
+    /// `files.persist_presence(&runtime.presence_json())` — and re-emitted by
+    /// `timer`'s level-triggered liveness heartbeat ([`PRESENCE_HEARTBEAT_S`])
+    /// so the file's mtime keeps moving between content edges.
     PersistPresence,
     /// Re-read every peer session's presence file and feed the result back
     /// through `presences_changed` — mirrors `ResolveCwd`'s
@@ -320,6 +337,13 @@ pub(crate) struct PluginRuntime {
     /// why). Set in `project`, consumed by `timer`'s flush — and cleared by
     /// any interleaving immediate persist, which supersedes it.
     snapshot_dirty: bool,
+    /// Epoch of the last `Effect::PersistPresence` actually emitted, on ANY
+    /// path — `project`'s content edge or `timer`'s liveness heartbeat.
+    /// Stamped in `project` (the single assembly point every such effect
+    /// passes through); the heartbeat's level trigger
+    /// ([`PRESENCE_HEARTBEAT_S`]) measures from here. `0` = never written,
+    /// which correctly reads as "long overdue" the moment a name is known.
+    last_presence_write_epoch_s: u64,
     /// The tick of the last peer-presence directory scan (`None` = never) —
     /// the decimation gate in [`timer`](Self::timer) measures from here, so
     /// the first Fast fire always scans.
@@ -406,6 +430,12 @@ impl PluginRuntime {
         if let Fire::Stale = self.timer_chain.on_fire(elapsed_s) {
             return Outcome::none();
         }
+        // Which arm produced this live fire. `elapsed_s` is the same signal
+        // `TimerChain::on_fire` just consumed for staleness: Fast fires
+        // report ~1s, Slow ~60s, and `STALE_FIRE_ELAPSED_S` sits safely
+        // between the two — reused here (rather than inventing parallel
+        // state) as the cadence discrimination for the gates below.
+        let is_slow_fire = elapsed_s > STALE_FIRE_ELAPSED_S;
         // One clock capture per event: every consumer below (store timer,
         // cadence decision, re-arm via project) sees the same "now".
         let now = crate::clock::now_epoch_s();
@@ -415,7 +445,7 @@ impl PluginRuntime {
         // Our own request is in-flight (including one this very tick just
         // fired): keep the shared lock fresh so no waiting peer reclaims it
         // out from under a live prompt.
-        if self.permission.selectable() {
+        if self.permission.is_requesting() {
             effects.push(Effect::HeartbeatPermissionLock);
         }
         self.tick += 1;
@@ -425,41 +455,41 @@ impl PluginRuntime {
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
         // Cross-session peers: re-read the directory bound to Fast fires only
-        // — never on the Slow heartbeat (which exists solely to repaint ledger
-        // ages and has no business paying for a peer scan). `elapsed_s` is also
-        // how `TimerChain::on_fire` above tells a stale fire from a live one:
-        // Fast fires report ~1s, Slow ~60s, and `STALE_FIRE_ELAPSED_S` sits
-        // safely between the two, so reusing it here (rather than inventing
-        // parallel state) is the same discrimination, applied to cadence
-        // instead of staleness. Within Fast, the scan is further decimated to
-        // one per `PRESENCE_READ_TICK_INTERVAL` ticks: peers heartbeat at 60s
-        // and dim at 90s, so a once-per-second directory read per instance
-        // (N tabs × N sessions of wasi stat+read) bought nothing — except
-        // mid-cycle (`wants_fast_cadence`), where the Alt+[/] selection UI
-        // wants the freshest roster every tick. Measured from the LAST scan
-        // (`last_presence_scan`), not the absolute tick, so the very first
-        // Fast fire always seeds the badge — a fresh instance must not sit
-        // blank for up to a full interval on an arbitrary tick phase.
-        if elapsed_s <= STALE_FIRE_ELAPSED_S {
+        // — never on a Slow fire (which exists solely to repaint ledger ages
+        // and has no business paying for a peer scan). Within Fast, the scan
+        // is further decimated to one per `PRESENCE_READ_TICK_INTERVAL`
+        // ticks: peers heartbeat at 60s and dim at 90s, so a once-per-second
+        // directory read per instance (N tabs × N sessions of wasi stat+read)
+        // bought nothing — except mid-cycle (`wants_fast_cadence`), where the
+        // Alt+[/] selection UI wants the freshest roster every tick. Measured
+        // from the LAST scan (`last_presence_scan`), not the absolute tick,
+        // so the very first Fast fire always seeds the badge — a fresh
+        // instance must not sit blank for up to a full interval on an
+        // arbitrary tick phase.
+        if !is_slow_fire {
             let scan_due = self.last_presence_scan
                 .is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
             if self.sessions.wants_fast_cadence() || scan_due {
                 self.last_presence_scan = Some(self.tick);
                 effects.push(Effect::ReadPresences);
             }
-        } else if !self.own_session_name.is_empty() {
-            // Idle-but-alive heartbeat, the Slow-cadence complement of the
-            // Fast-only `ReadPresences` gate above. `project`'s own
-            // `PersistPresence` is content-edge-gated (`last_presence`'s
-            // compare-and-cache), which is right for Fast cadence — but a
-            // session with nothing new to report can sit on an unchanged
-            // edge forever, and its presence file's mtime (the signal peers
-            // read to tell fresh from stale — `sessions::STALE_AFTER_SECS`)
-            // would age past that threshold even though the session is
-            // still up. Bypass the edge gate here, unconditionally, so an
-            // idle session's file still gets touched at least once per Slow
-            // (60s) tick — well inside the 90s stale threshold even with a
-            // skipped/delayed fire.
+        }
+        // Own-presence liveness heartbeat, level-triggered on EVERY live
+        // fire. `project`'s own `PersistPresence` is content-edge-gated
+        // (`last_presence`'s compare-and-cache), which is right for chatty
+        // state — but a session whose presence *content* stops moving would
+        // let its file's mtime (the signal peers read to tell fresh from
+        // stale — `sessions::STALE_AFTER_SECS`) age past that threshold even
+        // though the session is still up. Such a session is NOT necessarily
+        // idle-on-Slow: a long-Running agent (or a long command-origin
+        // build) holds Fast via `needs_fast_ticks` with its counts frozen,
+        // so a write keyed to the Slow fire alone would starve. Instead,
+        // re-publish on whatever live fire lands once the last write is
+        // `PRESENCE_HEARTBEAT_S` old — level-triggered on wall-clock age,
+        // cadence-blind by design.
+        if !self.own_session_name.is_empty()
+            && now.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S
+        {
             effects.push(Effect::PersistPresence);
         }
         // BEFORE re-arming below, commit an idle cycle selection if one is
@@ -473,14 +503,17 @@ impl PluginRuntime {
         }
         // Capture before re-arming: an in-flight permission request must repaint
         // the needs_permission screen each tick until the user answers.
-        let awaiting_permission = self.sidebar_should_be_selectable();
+        let awaiting_permission = self.permission.is_requesting();
         let render = permission_changed
             || awaiting_permission
             || store_changed
             || self.timer_should_continue()
-            // A Slow tick exists precisely to repaint ledger ages — even
+            // A Slow fire exists precisely to repaint ledger ages — even
             // when nothing else changed, `format_age` output may have moved.
-            || self.desired_cadence(now) == Some(Cadence::Slow);
+            // Keyed on the fire that actually landed, not `desired_cadence`:
+            // the desire can have moved on (in either direction) between the
+            // arm and the fire.
+            || is_slow_fire;
         // The tick is also the flush point for writes deferred by
         // Running-label-only broadcasts (`SnapshotWrite::Deferred`) — one
         // read-merge-write per second ceiling instead of one per message per
@@ -745,7 +778,7 @@ impl PluginRuntime {
             if tab_attention > 0 {
                 attention += tab_attention;
                 if attention_tab_position.is_none() {
-                    attention_tab_position = Some(r.number as usize - 1);
+                    attention_tab_position = Some(r.number.saturating_sub(1) as usize);
                 }
             }
         }
@@ -786,7 +819,7 @@ impl PluginRuntime {
             } else {
                 PermissionMarker::Denied
             }),
-            Effect::SetSelectable(self.sidebar_should_be_selectable()),
+            Effect::SetSelectable(self.permission.selectable()),
         ];
         // The onboarding pane exists only to host the grant prompt. Once granted
         // — and the grant is cached by plugin URL, so the rail inherits it — it
@@ -860,19 +893,14 @@ impl PluginRuntime {
         )
     }
 
-    pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
-        self.last_render_height = rows;
-        let tabrows = self.build_rows();
-        let ledger = self.radar.ledger_lines();
-        let badge = self.sessions.badge();
-        // Stamp the render gate's baseline from the very values this pass
-        // draws — the key IS what's on screen, by construction (`project`
-        // compares `current_render_key` against it).
-        self.last_render_key =
-            Some((tabrows.clone(), ledger.clone(), badge.clone(), self.theme.clone()));
-        let opts = render::RenderOpts {
-            width: cols.max(1),
-            height: rows,
+    /// The `RenderOpts` a paint at `width`×`height` would use right now — the
+    /// single derivation shared by [`render`](Self::render) and the test-only
+    /// [`natural_height`](Self::natural_height), so the two can never disagree
+    /// on which config/theme/clock inputs a frame is built from.
+    fn render_opts(&self, width: usize, height: usize) -> render::RenderOpts {
+        render::RenderOpts {
+            width: width.max(1),
+            height,
             now_tick: self.tick,
             glyphs: self.config.glyphs,
             header: self.config.header,
@@ -880,8 +908,20 @@ impl PluginRuntime {
             theme: self.theme.clone(),
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
-            badge,
-        };
+            badge: self.sessions.badge(),
+        }
+    }
+
+    pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
+        self.last_render_height = rows;
+        let tabrows = self.build_rows();
+        let ledger = self.radar.ledger_lines();
+        let opts = self.render_opts(cols, rows);
+        // Stamp the render gate's baseline from the very values this pass
+        // draws — the key IS what's on screen, by construction (`project`
+        // compares `current_render_key` against it).
+        self.last_render_key =
+            Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
@@ -904,23 +944,8 @@ impl PluginRuntime {
     #[cfg(test)]
     pub(crate) fn natural_height(&self, cols: usize) -> usize {
         let tabrows = self.build_rows();
-        let opts = render::RenderOpts {
-            width: cols.max(1),
-            height: usize::MAX / 2,
-            now_tick: self.tick,
-            glyphs: self.config.glyphs,
-            header: self.config.header,
-            density: self.config.density,
-            theme: self.theme.clone(),
-            now_epoch_s: crate::clock::now_epoch_s(),
-            jump_hint: self.config.jump_hint.shows(),
-            badge: self.sessions.badge(),
-        };
+        let opts = self.render_opts(cols, usize::MAX / 2);
         render::body_line_count(&tabrows, &self.radar.ledger_lines(), &opts)
-    }
-
-    pub(crate) fn sidebar_should_be_selectable(&self) -> bool {
-        self.permission.selectable()
     }
 
     /// Test-only: force the in-flight `Requesting` state without driving the
@@ -1019,7 +1044,7 @@ impl PluginRuntime {
             return None;
         }
         if self.permission.is_waiting()
-            || self.permission.selectable()
+            || self.permission.is_requesting()
             || self.timer_should_continue()
             // A pending cross-session cycle selection needs the idle-commit
             // in `timer` to fire promptly, not wait out a Slow (or fully
@@ -1031,8 +1056,9 @@ impl PluginRuntime {
             || self.radar.pending_wait_unsaturated(now_epoch_s)
             // A known name means this session has published a presence file
             // whose mtime is the signal peers read to tell fresh from stale
-            // (`sessions::STALE_AFTER_SECS`), and `timer`'s Slow-fire
-            // heartbeat is the only writer keeping it fresh. Fully disarming
+            // (`sessions::STALE_AFTER_SECS`), and `timer`'s level-triggered
+            // heartbeat (`PRESENCE_HEARTBEAT_S`) is the only writer keeping
+            // it fresh between content edges. Fully disarming
             // would freeze that mtime and get a still-alive idle session
             // dimmed to stale on every peer's badge 90s later (never
             // dropped — the never-vanish roster — but still a needless
@@ -1100,9 +1126,10 @@ impl PluginRuntime {
     /// Diff observable pane statuses against `notify_prev` and emit `Effect::Notify`
     /// for each attention-status transition.
     ///
-    /// Intentionally runs regardless of `permission_granted`. Without the
+    /// Intentionally runs even before permission reaches
+    /// `PermissionState::Resolved { granted: true }`. Without the
     /// `RunCommands` grant, `run_command` is a silent host no-op, so notifications
-    /// are harmlessly dropped. More importantly, gating this on `permission_granted`
+    /// are harmlessly dropped. More importantly, gating this on the grant
     /// would skip advancing `notify_prev` during the ungranted window, which risks a
     /// burst of stale notifications the moment the grant arrives. The ungranted window
     /// is startup-only and brief, so the no-op cost is negligible.
@@ -1160,9 +1187,10 @@ impl PluginRuntime {
     /// row never updated as running/attention moved.
     ///
     /// Also the single point that de-dupes `Effect::PersistPresence` when the
-    /// seeded `fx` (e.g. `timer`'s unconditional Slow heartbeat) and this
-    /// pass's own edge-gated push both land — see the `retain` near the
-    /// bottom.
+    /// seeded `fx` (e.g. `timer`'s level-triggered liveness heartbeat) and
+    /// this pass's own edge-gated push both land — see the `retain` near the
+    /// bottom — and, symmetrically, the single point that stamps
+    /// `last_presence_write_epoch_s` for whichever push survived.
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
@@ -1223,11 +1251,11 @@ impl PluginRuntime {
             fx.extend(self.notify_effects());
         }
         // `fx` can carry TWO `PersistPresence`s by the time we get here: the
-        // Slow-cadence heartbeat `timer` seeds unconditionally (its own
-        // liveness push, gate-blind by design) and the edge-gated push just
-        // above can both fire on the same pass — a Slow fire whose tick also
+        // liveness heartbeat `timer` seeds (level-triggered on write age,
+        // content-blind by design) and the edge-gated push just above can
+        // both fire on the same pass — a fire whose tick also
         // promotes/mutates something that lands on a real content edge (e.g.
-        // a debounce promotion crossing paths with the 60s heartbeat).
+        // a debounce promotion crossing paths with an overdue heartbeat).
         // `project` is the single assembly point for every entry path, so
         // it's the one place that can see both pushes at once and collapse
         // them; keep the earliest (whichever reason got there first) rather
@@ -1242,6 +1270,11 @@ impl PluginRuntime {
                 true
             }
         });
+        if persist_presence_seen {
+            // Any surviving write (edge or heartbeat) resets the liveness
+            // clock — `timer`'s level trigger measures from here.
+            self.last_presence_write_epoch_s = now_epoch_s;
+        }
         Outcome::with_effects(render, fx)
     }
 }

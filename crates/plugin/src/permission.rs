@@ -155,10 +155,19 @@ impl PermissionState {
         matches!(self, PermissionState::Resolved { granted: false })
     }
 
-    /// True only while a request is in-flight: the pane must be selectable so
-    /// the user can reach Zellij's y/n prompt.
-    pub(crate) fn selectable(&self) -> bool {
+    /// True only while OUR permission request is in-flight (`Requesting`) —
+    /// the primary predicate for that question: the runtime's tick heartbeats
+    /// the shared lock, repaints the needs-permission face, and holds Fast
+    /// cadence while this is true.
+    pub(crate) fn is_requesting(&self) -> bool {
         matches!(self, PermissionState::Requesting)
+    }
+
+    /// The same in-flight state asked as the *pane* question: the pane must be
+    /// selectable so the user can reach Zellij's y/n prompt. Kept as its own
+    /// name for the sites that build a `SetSelectable` effect.
+    pub(crate) fn selectable(&self) -> bool {
+        self.is_requesting()
     }
 
     /// True only while waiting on a peer's marker (drives the timer heartbeat).

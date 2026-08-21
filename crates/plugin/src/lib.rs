@@ -107,7 +107,7 @@ impl State {
     /// while a y/n answer is pending; peer sidebar instances stay passive while
     /// they wait for the first grant to populate Zellij's permission cache.
     fn sidebar_should_be_selectable(&self) -> bool {
-        self.runtime.sidebar_should_be_selectable()
+        self.runtime.permission.selectable()
     }
 
     fn record_permission_request_started(&mut self) {
@@ -122,15 +122,16 @@ impl State {
     /// Click tests historically asserted the width-80 layout; keep that explicit.
     /// When no height has been set yet (last_render_height == 0), use this
     /// session's natural content height (see `PluginRuntime::natural_height`)
-    /// so folding/overflow never discards rows unexpectedly — and, since Task
-    /// 13, so the bottom region's pinned footer doesn't pad the render out to
+    /// so folding/overflow never discards rows unexpectedly — and so the
+    /// bottom region's pinned footer doesn't pad the render out to
     /// an unboundedly large height (`usize::MAX / 2` used to be a safe "big
     /// enough" sentinel; now it would land in the footer's unbounded-filler
     /// branch and blow the allocator).
     ///
     /// # Contract — LIVE, permission-granted rail only
     ///
-    /// This helper unconditionally sets `permission_granted = true` so that
+    /// This helper unconditionally sets the permission state to
+    /// `PermissionState::Resolved { granted: true }` so that
     /// `runtime.render` produces a real tab rail rather than the onboarding
     /// screen. It is intentionally a LIVE-RAIL fixture and MUST NOT be used
     /// to test the no-permission / onboarding case. Onboarding tests must

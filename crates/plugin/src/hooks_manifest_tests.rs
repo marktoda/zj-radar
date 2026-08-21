@@ -52,6 +52,73 @@ fn send_cap(command: &str) -> u64 {
     }
 }
 
+const NOTIFY_SH: &str = include_str!("../../../plugins/zj-radar-claude/scripts/notify.sh");
+
+/// notify.sh's bash fallback carries hand-typed copies of the pipe-deadline
+/// constants (it can't import core::pipe); until now the tie was only a
+/// comment. Build the expected lines from the constants themselves so a bump
+/// in either place fails here, naming the other.
+#[test]
+fn bash_producer_deadline_literals_match_the_pipe_constants() {
+    let default_line = format!("default_deadline={DEFAULT_PIPE_TIMEOUT_SECS}");
+    let running_line =
+        format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
+    assert!(
+        NOTIFY_SH.contains(&default_line),
+        "notify.sh must set `{default_line}` (core::pipe::DEFAULT_PIPE_TIMEOUT_SECS) — \
+         bump the script and the constant together"
+    );
+    assert!(
+        NOTIFY_SH.contains(&running_line),
+        "notify.sh must key the running heartbeat via `{running_line}` \
+         (core::pipe::RUNNING_PIPE_TIMEOUT_SECS) — bump the script and the constant together"
+    );
+}
+
+/// notify.sh's stdin cap must equal the Rust CLI's `MAX_STDIN_BYTES`
+/// (crates/cli/src/notify.rs). The plugin crate doesn't depend on the CLI, so
+/// the value is hardcoded here: 8 MiB = 8 * 1024 * 1024 = 8388608.
+#[test]
+fn bash_producer_stdin_cap_matches_the_cli_max_stdin_bytes() {
+    const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024; // = crates/cli MAX_STDIN_BYTES (8 << 20)
+    let cap_line = format!("head -c {MAX_STDIN_BYTES}");
+    assert!(
+        NOTIFY_SH.contains(&cap_line),
+        "notify.sh must bound stdin with `{cap_line}` — keep it equal to \
+         MAX_STDIN_BYTES in crates/cli/src/notify.rs"
+    );
+}
+
+/// The version triple weld: the workspace version, the crates.io `=X.Y.Z`
+/// core pin, and the bundled Claude plugin manifest's version must all move
+/// together on a release bump (RELEASING.md). `CARGO_PKG_VERSION` here IS the
+/// workspace version (this crate inherits `version.workspace = true`), so a
+/// bump that misses any copy fails this test naming the stragglers.
+#[test]
+fn workspace_core_pin_and_claude_plugin_versions_agree() {
+    let version = env!("CARGO_PKG_VERSION");
+
+    let root_manifest = include_str!("../../../Cargo.toml");
+    let workspace_line = format!("version = \"{version}\"");
+    assert!(
+        root_manifest.contains(&workspace_line),
+        "root Cargo.toml [workspace.package] must declare `{workspace_line}`"
+    );
+    let core_pin = format!("version = \"={version}\"");
+    assert!(
+        root_manifest.contains(&core_pin),
+        "root Cargo.toml's zj-radar-core dependency must pin `{core_pin}` \
+         (the exact-version crates.io pin — see RELEASING.md)"
+    );
+
+    let plugin_json = include_str!("../../../plugins/zj-radar-claude/.claude-plugin/plugin.json");
+    let manifest_version = format!("\"version\": \"{version}\"");
+    assert!(
+        plugin_json.contains(&manifest_version),
+        "plugins/zj-radar-claude/.claude-plugin/plugin.json must carry `{manifest_version}`"
+    );
+}
+
 #[test]
 fn every_hook_timeout_clears_its_send_cap_plus_backstop() {
     let es = entries();
