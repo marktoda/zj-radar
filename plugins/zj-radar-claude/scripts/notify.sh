@@ -44,14 +44,17 @@ input="$(head -c 8388608 2>/dev/null || true)"
 # than an open-ended hook; a healthy local server answers in milliseconds.
 #
 # The cap only holds if the hook runner lets it finish: Claude Code kills the
-# hook at hooks.json's `timeout`, and the graceful exit here takes cap + 1 s
-# (the CLI's parent reaper) — so hooks.json must keep `timeout` >= cap + 2.
-# The hot-path `running` hooks (UserPromptSubmit, Pre/PostToolUse,
-# SubagentStop) run at ZJ_RADAR_PIPE_TIMEOUT=1 under the 5 s hook timeout: a
-# `running` that misses a 1 s deadline is a harmless dropped heartbeat, and a
-# wedged rail then stalls each hook ~2 s instead of ~5 (a tool call fires two:
-# Pre + Post). The once-per-turn edges keep the full 5 s cap under a 7 s hook
-# timeout. Pinned structurally by the headroom case in tests/notify.bats.
+# hook at hooks.json's `timeout`. The graceful exit lands at ~cap (the
+# in-subtree watchdog kills the pipe client at the deadline; the CLI's parent
+# reaper at cap + 1 s is only the backstop when that watchdog fails), so
+# hooks.json keeps `timeout` >= cap + 2: backstop plus spawn/derivation slack.
+# The cap itself is keyed on the status at the send, in both producers:
+# `running` heartbeats — the per-tool-call hot path — default to 2 s (an
+# expired one is a dropped heartbeat the next event replaces, so a wedged rail
+# stalls each hook ~2 s instead of ~5), while the once-per-turn edges keep the
+# full 5 s, because dropping one loses real state. ZJ_RADAR_PIPE_TIMEOUT
+# overrides both. Welded to hooks.json by crates/plugin's
+# hooks_manifest_tests; the CLI half lives in pipe_send_timeout.
 if command -v zj-radar >/dev/null 2>&1; then
     printf '%s' "$input" \
         | zj-radar notify claude --status "$status" >/dev/null 2>&1 \
@@ -271,13 +274,20 @@ fi
 # message (it is already queued server-side), so ordering still holds — sends
 # stay sequential and an expired send was going nowhere anyway. GNU `timeout`
 # isn't on stock macOS, hence the hand-rolled sleep+kill pair.
-pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-5}"
+# Status-keyed default (parity with the CLI's pipe_send_timeout — keep the
+# literals in sync with core::pipe's RUNNING/DEFAULT_PIPE_TIMEOUT_SECS):
+# `running` heartbeats are droppable, edges are not. Keyed on the FINAL
+# status, after the done→pending question remap above, so a remapped edge
+# keeps the edge deadline.
+default_deadline=5
+[[ "$status" == "running" ]] && default_deadline=2
+pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-$default_deadline}"
 # Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
 # so a value `sleep` rejects would kill it before the `kill` line runs and the
 # send would silently be unbounded again — the exact hazard this exists to
 # prevent. Whole seconds only (suffix forms like `10s` parse in GNU sleep but
 # not in the Rust producer's u64 parse; the two must stay in sync).
-[[ "$pipe_deadline" =~ ^[0-9]+$ ]] || pipe_deadline=5
+[[ "$pipe_deadline" =~ ^[0-9]+$ ]] || pipe_deadline="$default_deadline"
 zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 &
 pipe_pid=$!
 ( sleep "$pipe_deadline"; kill "$pipe_pid" ) >/dev/null 2>&1 &

@@ -312,11 +312,7 @@ EOF
 
   # Both sends must land before order can be judged: a backgrounded `running`
   # arrives well after the script that started it returned.
-  local i
-  for i in $(seq 1 100); do
-    [ "$(wc -l <"$cli_log" 2>/dev/null || echo 0)" -ge 2 ] && break
-    sleep 0.1
-  done
+  wait_for_lines "$cli_log" 2
 
   # Non-vacuity: the native branch exits before the bash fallback's zellij send,
   # so a silent fall-through would leave a payload here.
@@ -346,17 +342,20 @@ printf '%s\n' "\$payload" >> "$order_log"
 exit 0
 EOF
   chmod +x "$FAKEBIN/zellij"
+  # Unlike the native twin's fake CLI, this fake runs UNDER notify.sh's real
+  # sleep+kill watchdog — and the running send's default deadline (2 s) equals
+  # the fake's delay, so without a generous override the watchdog would race
+  # the fake's log write and fail this guard for a reason unrelated to
+  # ordering. The override doesn't weaken the assertion; order is judged from
+  # the log, not the deadline.
+  export ZJ_RADAR_PIPE_TIMEOUT=30
 
   printf '%s' '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}' \
     | "$SCRIPT" running
   printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp","last_assistant_message":"finished"}' \
     | "$SCRIPT" done
 
-  local i
-  for i in $(seq 1 100); do
-    [ "$(wc -l <"$order_log" 2>/dev/null || echo 0)" -ge 2 ] && break
-    sleep 0.1
-  done
+  wait_for_lines "$order_log" 2
 
   local expected actual
   expected="$(printf '"status":"running"\n"status":"done"')"
@@ -365,28 +364,4 @@ EOF
     printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
     return 1
   }
-}
-
-@test "hooks.json leaves kill headroom above every pipe deadline (timeout >= cap + 2)" {
-  # The hook runner kills a hook at hooks.json's `timeout`; notify.sh's
-  # graceful bounded no-op takes pipe-cap + 1 s (the CLI's parent reaper)
-  # to exit while the rail is wedged. Equal budgets mean the runner ALWAYS
-  # kills the hook first and the "capped wait, clean exit" contract is dead
-  # code — so every entry must keep timeout >= cap + 2 (1 s reaper + 1 s
-  # spawn slack). The cap is the ZJ_RADAR_PIPE_TIMEOUT=N command prefix when
-  # present, else the shared 5 s default (DEFAULT_PIPE_TIMEOUT_SECS).
-  local hooks_json="$BATS_TEST_DIRNAME/../hooks/hooks.json"
-  local n=0 timeout cmd cap
-  while IFS=$'\t' read -r timeout cmd; do
-    n=$((n + 1))
-    cap=5
-    [[ "$cmd" =~ ZJ_RADAR_PIPE_TIMEOUT=([0-9]+) ]] && cap="${BASH_REMATCH[1]}"
-    (( timeout >= cap + 2 )) || {
-      printf 'no headroom: "%s" has timeout %s vs cap %s (need >= cap + 2)\n' \
-        "$cmd" "$timeout" "$cap"
-      return 1
-    }
-  done < <(jq -r '.hooks[][].hooks[] | [.timeout, .command] | @tsv' "$hooks_json")
-  # Non-vacuity: all nine entries (eight events, Notification has two) parsed.
-  [ "$n" -ge 9 ]
 }

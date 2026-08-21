@@ -178,9 +178,12 @@ mirrored by notify.sh's sleep+kill watchdog).
 
 And leave the hook runner headroom to let that graceful path finish: if your
 runner enforces its own per-hook timeout, set it **above** your send deadline
-plus reaper slack (the bundled Claude hooks keep `timeout >= cap + 2` — equal
-budgets mean the runner always kills the hook first and your bounded no-op
-never runs). Hot-path events that fire per tool call deserve a *shorter* send
-cap than rare edges: an expired `running` is a dropped heartbeat, so the
-bundled hooks run it at `ZJ_RADAR_PIPE_TIMEOUT=1` while `done`/`pending` keep
-the full 5 s.
+plus backstop slack. The graceful exit lands at ~deadline (the in-subtree
+watchdog kills the pipe client), with a deadline + 1 s parent-reaper backstop
+behind it — so the bundled Claude hooks keep `timeout >= deadline + 2`; equal
+budgets would mean the runner races, and under load wins, against your
+bounded no-op. Hot-path events that fire per tool call deserve a *shorter*
+deadline than rare edges: an expired `running` is a dropped heartbeat the
+next event replaces, so the bundled producers key the default on status —
+`running` sends cap at 2 s, the `done`/`pending`/`idle` edges keep the full
+5 s (`ZJ_RADAR_PIPE_TIMEOUT` overrides both).

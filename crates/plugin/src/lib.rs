@@ -41,6 +41,8 @@ mod permission;
 mod presence;
 mod radar_state;
 #[cfg(test)]
+mod hooks_manifest_tests;
+#[cfg(test)]
 mod reference_tests;
 mod render;
 mod rollup;

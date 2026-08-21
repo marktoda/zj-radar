@@ -151,7 +151,7 @@ fn codex_hook_group() -> HookGroup {
             "type": "command",
             "command": CODEX_HOOK_COMMAND,
             "commandWindows": CODEX_HOOK_COMMAND_WINDOWS,
-            "timeout": 5
+            "timeout": super::CODEX_HOOK_TIMEOUT_SECS
         })]),
         meta: Map::new(),
     }
