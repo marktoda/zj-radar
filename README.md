@@ -19,7 +19,7 @@ or dismiss a dead peer session (details below).
   <img alt="Zellij plugin" src="https://img.shields.io/badge/zellij-plugin-8A2BE2">
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-supported-orange">
   <img alt="Codex" src="https://img.shields.io/badge/Codex-supported-black">
-  <img alt="Status" src="https://img.shields.io/badge/status-alpha-yellow">
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-blue">
 </p>
 
 <p align="center">
@@ -50,12 +50,16 @@ wrapping your agents. It's a status rail for the session you already run.
 - See which Claude Code / Codex tabs are **working, done, errored, or waiting for you**.
 - **Jump directly** to the tab that needs attention (bind `attention-next` — see [binding keys to commands](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md#binding-keys-to-commands)).
 - Keep your existing Zellij workflow — **no new terminal, no tmux wrapper, no agent orchestrator**.
-- **Push-driven** updates via `zellij pipe`; no pane polling, no blocking host queries.
+- **Push-driven** updates via `zellij pipe`; no pane polling, no per-output host queries.
 - Works with **Claude Code** today, **Codex** via the native CLI, and any
   [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
 - Running more than one Zellij session? A **cross-session badge** shows every
   other session's live status-origin pane counts, with click-to-switch and a
   `session-next`/`session-prev` cycle — see below.
+- Observed commands get **per-class presentation**: long jobs spin with a `· 4m`
+  run tag, dev servers hold a steady `▸`, and editors/pagers/TUIs never spin —
+  just a muted identity label. See
+  [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md).
 
 ## Quick start
 
@@ -70,9 +74,9 @@ wrapping your agents. It's a status rail for the session you already run.
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/marktoda/zj-radar/releases/latest/download/install.sh | sh
 
-# 2. Install the sidebar: the wasm, the `radar` alias in config.kdl, the rail
-#    in your default layout, and Zellij's permission grant — each behind its
-#    own y/N prompt. (--download fetches the wasm for this CLI's version)
+# 2. Install the sidebar: the wasm + `radar` alias in config.kdl, the rail
+#    in your default layout, and Zellij's permission grant — three y/N
+#    prompts, one per step. (--download fetches the wasm for this CLI's version)
 zj-radar setup zellij --download
 
 # 3. Start (or restart) Zellij — the sidebar comes up live. (Declined the
@@ -106,10 +110,11 @@ Custom producers are in **[`docs/producers.md`](https://github.com/marktoda/zj-r
 ## How it works
 
 zj-radar is **push-driven, not poll-driven**: status arrives via an explicit
-`zellij pipe` broadcast from per-agent hooks. The plugin never issues blocking
-host queries (`get_pane_running_command`, etc.). This is a deliberate, hard
-constraint — the predecessor plugin (`smart-tabs`) melted a many-agent session
-by polling every pane on every output event; see
+`zellij pipe` broadcast from per-agent hooks. The plugin never polls: the one
+blocking host call it makes (`get_pane_cwd`, to bootstrap a new pane's tab
+name) fires at most once per pane, at pane-creation rate. This is a deliberate,
+hard constraint — the predecessor plugin (`smart-tabs`) melted a many-agent
+session by polling every pane on every output event; see
 [`docs/smart-tabs-postmortem.md`](https://github.com/marktoda/zj-radar/blob/main/docs/smart-tabs-postmortem.md).
 
 The wire format is a single versioned JSON payload (`zj_radar.status.v1`), so a
@@ -197,6 +202,7 @@ plugins {
         notify_error true
         notify_pending true
         notify_when_focused false  // suppress when the pane is focused
+        interactive_commands ""    // extra editors/pagers/TUIs to keep quiet (extends the built-in set)
     }
 }
 ```
@@ -214,13 +220,15 @@ The full option table, keybindings for runtime config, and `attention-next` /
 
 ## Producers
 
-A producer broadcasts agent status to the sidebar. zj-radar ships two and
+A producer broadcasts agent status to the sidebar. zj-radar ships three and
 documents the wire format so you can write your own:
 
 - **Claude Code** — a Claude plugin that auto-registers status hooks (no
   `settings.json` editing).
 - **Codex / native CLI** — `zj-radar notify` + `zj-radar setup codex`.
-- **Custom** — broadcast a `zj_radar.status.v1` JSON payload from anything.
+- **Custom** — `zj-radar notify generic --status/--msg/--task/--source` from
+  any script (no JSON needed), or broadcast a `zj_radar.status.v1` JSON
+  payload from anything.
 
 See **[`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md)** for install steps, the payload
 schema, and a copy-paste smoke test.
@@ -232,6 +240,8 @@ schema, and a copy-paste smoke test.
 | [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md) | Full sidebar install: CLI + manual setup, layout templates, permissions, remote-URL caveat, Nix / home-manager. |
 | [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, and writing your own producer (payload schema + smoke test). |
 | [`docs/configuration.md`](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md) | Density/naming/header/glyphs, runtime config, and keybindings. |
+| [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md) | Attention/activity semantics: jobs vs services vs interactive programs, and how each renders. |
+| [`docs/rail-reference.md`](https://github.com/marktoda/zj-radar/blob/main/docs/rail-reference.md) | The executable render spec — `include_str!`'d by the plugin's reference tests. |
 | [`docs/troubleshooting.md`](https://github.com/marktoda/zj-radar/blob/main/docs/troubleshooting.md) | The two-template rule, first-run prompt coordination, and reload quirks. |
 | [`docs/design.md`](https://github.com/marktoda/zj-radar/blob/main/docs/design.md) | The canonical living design. |
 | [`docs/smart-tabs-postmortem.md`](https://github.com/marktoda/zj-radar/blob/main/docs/smart-tabs-postmortem.md) | Why the polling predecessor was scrapped (the push-driven origin story). |
@@ -242,6 +252,9 @@ schema, and a copy-paste smoke test.
   overflow folding, theme-derived card surfaces, runtime config.
 - ✅ **Cross-session badge** — see [Cross-session badge](#cross-session-badge)
   above; click-to-switch and `session-next`/`session-prev` cycling.
+- ✅ **Activity model** — observed commands classified as job / service /
+  interactive, each with its own presentation (spinner + run tag, steady `▸`,
+  muted label); see [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md).
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
 - ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
   conflict-aware `setup`; see [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#codex-and-the-native-cli).
@@ -289,7 +302,7 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 
 | Path | What it is |
 |------|------------|
-| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema + status/command classification (`command`, `kind`, `observation`, `payload`, `status`, `wire`). No `clap`, no `zellij-tile` — fully host-testable. |
+| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema + status/command classification + self-limiting pipe sends (`command`, `kind`, `observation`, `payload`, `pipe`, `status`, `wire`). No `clap`, no `zellij-tile` — fully host-testable. |
 | `crates/cli/` | Host-side `zj-radar` CLI (package `zj-radar`). `build.rs` embeds the wasm at compile time via `include_bytes!`. Built with `-p zj-radar`. |
 | `crates/plugin/` | The Zellij sidebar **wasm plugin** (`zj_radar_plugin`, Rust → `wasm32-wasip1`): the rail renderer, roll-up, radar-state, tab naming, runtime, and the thin `register_plugin!` wasm wiring. Built with `-p zj-radar-plugin`. |
 | `plugins/zj-radar-claude/` | A **Claude Code plugin** that broadcasts agent status via hooks — no `settings.json` editing. |
@@ -297,11 +310,11 @@ The hero GIF is reproducible — its VHS tape and recording script live in
 | `demo/` | The reproducible VHS tape + script behind the hero GIF. |
 
 The shared wire/classification core (`command`, `kind`, `observation`, `payload`,
-`status`, `wire`) lives in `crates/core`. The sidebar's own modules (`radar_state`,
-`rollup`, `render`, `tab_namer`, `config`, `theme`, `session_files`, `runtime`,
-`status_store`, `notify_rules`) live in `crates/plugin/src` — but they too carry no
-`zellij-tile` dependency and are fully host-testable. Only `crates/plugin/src/lib.rs`
-touches the Zellij host API, and that surface is gated behind
+`pipe`, `status`, `wire`) lives in `crates/core`. The sidebar's own modules
+(`radar_state`, `rollup`, `render`, `runtime`, `tab_namer`, and friends) live in
+`crates/plugin/src` — but they too carry no `zellij-tile` dependency and are
+fully host-testable. Only `crates/plugin/src/lib.rs` (plus `main.rs`'s one-line
+`register_plugin!`) touches the Zellij host API, and that surface is gated behind
 `#[cfg(target_arch = "wasm32")]` (the dependency itself is scoped to the wasm target
 in `crates/plugin/Cargo.toml`). See [`docs/TOOLCHAIN.md`](https://github.com/marktoda/zj-radar/blob/main/docs/TOOLCHAIN.md).
 

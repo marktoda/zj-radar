@@ -42,8 +42,8 @@ zj-radar setup zellij --download
   to pin a different release tag) — so the CLI and the sidebar it manages can't
   drift apart on the status contract and setup expectations they share
 - verifies it against the release's published `.sha256` checksum before installing
-  (a mismatch aborts; releases without a checksum fall back to TLS-only with a
-  warning) — needs `sha256sum` or `shasum` on `PATH`
+  (a mismatch aborts; a release without a checksum — or no `sha256sum`/`shasum`
+  on `PATH` — falls back to TLS-only with a warning)
 - copies it to `~/.config/zellij/plugins/zj_radar.wasm`
 - adds or updates a managed `radar` alias in `~/.config/zellij/config.kdl`
 - reads your default layout, then **prompts** `Inject the rail into <layout>? [y/N]`:
@@ -184,12 +184,15 @@ a given path. The sidebar requests four:
 
 - `ReadApplicationState` — read tab/pane state to draw the rail.
 - `ReadCliPipes` — receive the `zj_radar.status.v1` broadcasts from producers.
-- `ChangeApplicationState` — switch tabs on click and apply managed tab names.
+- `ChangeApplicationState` — switch tabs and focus panes on click, switch to a
+  peer session from the badge, apply managed tab names, and let the `--grant`
+  float close itself once granted.
 - `RunCommands` — deliver desktop notifications (`osascript` on macOS,
-  `notify-send` on Linux). This is the only thing the plugin runs commands
-  for; turn notifications off with `notify false` (see
-  [configuration](configuration.md)), and without this grant they are
-  silently skipped while everything else keeps working.
+  `notify-send` on Linux) and re-broadcast the `✓` acknowledge gesture over
+  `zellij pipe`. Those two are the only things the plugin runs commands for;
+  turn notifications off with `notify false` (see
+  [configuration](configuration.md)). Without this grant, both are silently
+  skipped while everything else keeps working.
 
 **By default you never meet a prompt for these:** `setup zellij` asks for your
 consent at install time and, if you agree, writes the grant into Zellij's
@@ -237,7 +240,7 @@ zellij:
 ```
 
 Each item is `ok`, `warn`, or `missing`. The check is read-only — it never
-modifies any file. Reported items (six always; a seventh only when applicable):
+modifies any file. Reported items (six always; two more only when applicable):
 
 - **zellij binary** — `zellij` is on `PATH`; warns when its version is below
   the supported floor of 0.44.3 (earlier 0.44 patches let the sidebar pop out
@@ -250,6 +253,9 @@ modifies any file. Reported items (six always; a seventh only when applicable):
 - **producer** — Codex hooks and/or Claude plugin wired up (names which).
 - **managed config** — emitted only when `config.kdl` is a symlink
   (home-manager); warns that direct edits may be overwritten.
+- **config env** — emitted only when `$ZELLIJ_CONFIG_FILE` points somewhere
+  other than the `config.kdl` setup resolved; warns that Zellij will read the
+  env-var path, not the file setup checks and edits.
 
 ## Loading straight from a release URL (caveat)
 
@@ -332,7 +338,10 @@ Everything zj-radar touches, what creates it, and what `setup zellij
 | `run`'s owned config dir (macOS `~/Library/Application Support/zj-radar/`, Linux `~/.local/share/zj-radar/`) | `zj-radar run` | not touched by `setup` — `rm -r` the directory; it holds nothing but re-materializable assets and session markers |
 | Per-session plugin state under Zellij's cache + `/tmp/zj-radar` fallback | the running plugin | self-pruning (24 h); safe to delete anytime |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
+| `zj-radar-claude` plugin + `zj-radar` marketplace entry, inside Claude Code's own plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; the marketplace entry stays — `claude plugin marketplace remove zj-radar` |
 
 So a complete removal is: `zj-radar setup zellij --uninstall && zj-radar setup
-codex --uninstall`, then delete the wasm, the `zj-radar` data dir, and the
-grant block — plus the binary itself, wherever you installed it.
+claude --uninstall && zj-radar setup codex --uninstall`, then delete the wasm,
+the `zj-radar` data dir, and the grant block — plus
+`claude plugin marketplace remove zj-radar` and the binary itself, wherever you
+installed it.
