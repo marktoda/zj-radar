@@ -10,9 +10,12 @@ removal — see `smart-tabs-postmortem.md` — and the focus-removal refactor)
 > issuing blocking host calls on the server's single main thread — full writeup in
 > `smart-tabs-postmortem.md`). This invalidates the earlier plan to *keep* smart-tabs for base
 > tab naming. **zj-radar now owns all tab display, including naming** (see §6.1). The hard
-> architectural constraint that follows: zj-radar must never issue blocking host queries
-> (`get_pane_running_command`, `get_pane_cwd`, …) — all signals come from pushed events
-> (`pipe`, `TabUpdate`, `PaneUpdate`, `CwdChanged`) or the hook payload.
+> architectural constraint that follows: no polling, and no per-event or per-tick blocking
+> host queries (`get_pane_running_command`, …) — signals come from pushed events
+> (`pipe`, `TabUpdate`, `PaneUpdate`, `CwdChanged`) or the hook payload. The single
+> exception is the once-per-pane `Effect::ResolveCwd` naming bootstrap: one blocking
+> `get_pane_cwd` per freshly-opened pane, at pane-creation rate — never re-polled
+> (`crates/plugin/src/runtime.rs`; `CONTEXT.md` → *Tab naming*).
 
 ## 1. Goal
 
@@ -99,17 +102,26 @@ This mirrors Cmux's real status path while fitting Zellij's plugin architecture.
 
 Thin Zellij-host glue around a deep, pure runtime module + pure stores/models/rendering.
 The per-agent adapter layer still lives *outside* the plugin (shell scripts / agent
-config). The plugin runtime has no `zellij-tile` dependency: `lib.rs` translates raw
+config). The plugin runtime has no `zellij-tile` dependency (`zellij-tile` is
+`cfg(target_arch = "wasm32")`-scoped): `lib.rs` translates raw
 Zellij events into repo-owned inputs and applies ordered host effects returned by the
 runtime.
+
+The repo is a **3-crate virtual workspace**: `crates/core` (wire payload, command
+classification, `Kind`, the bounded pipe argv — shared by producer and plugin),
+`crates/cli` (the host-side `zj-radar` binary: `notify`, `setup`, `run`), and
+`crates/plugin` (everything below — the wasm sidebar). Boxed filenames in the diagram
+live under `crates/plugin/src/`.
 
 ```
 ┌ Agent adapters (per-agent, outside the wasm) ─────────────┐
 │ Claude → plugin hook / native CLI  (running/pending/done) │
 │ Codex  → native CLI via hooks.json (running/pending/done) │
 └───────────────────────────┬───────────────────────────────┘
-   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg}
-   (BROADCAST by name — not --plugin: see §6)
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack}
+   (BROADCAST by name — not --plugin: see §6; sent via the bounded self-limiting
+   argv — see §5. The plugin itself is also a caller: the acknowledge gesture
+   broadcasts a synthetic ack:true payload back onto this same pipe, §5)
                             │
                             ▼
 ┌ zj-radar plugin (Rust → wasm32-wasip1) ────────────────────────────────┐
@@ -121,25 +133,37 @@ runtime.
 │    owns lifecycle state, permissions, timers, snapshot decisions,      │
 │    naming, focus transitions, command activity, config pipes, and      │
 │    mouse intent                                                        │
-│    input: TabLite/PaneUpdate/PermissionProbe/status/config/timer/mouse │
+│    input: RadarTab/PaneUpdate/PermissionProbe/status/config/timer/     │
+│    mouse/cmd-verb                                                      │
 │    output: Outcome { render, effects: Vec<Effect> }                    │
 │                                                                        │
 │  session_files.rs: SessionFiles                                        │
 │    owns per-session filesystem coordination across sidebar instances:  │
-│    snapshot durability, permission marker/lock, root fallback, pruning │
+│    snapshot durability, permission marker/lock, root fallback,         │
+│    pruning, presence files, notification claims                        │
 │                                                                        │
 │  radar_state.rs/rollup.rs/tab_namer.rs: state + tab model              │
-│    StatusStore + CommandStore + roll_up(tab) + TabNamer                │
-│    (observed argv classified by crates/core's command.rs)              │
+│    StatusStore (status_store.rs) + CommandStore + roll_up(tab) +       │
+│    TabNamer (observed argv classified by crates/core's command.rs)     │
+│                                                                        │
+│  ledger.rs / sessions.rs / presence.rs: completion history ring;       │
+│    cross-session peer state + the per-session presence record (§13)    │
+│                                                                        │
+│  control.rs / config.rs / theme.rs: cmd-verb + config pipes, colors    │
+│  permission.rs / clock.rs / notify_rules.rs: grant state machine,      │
+│    timer-chain bookkeeping, desktop-notification edge rules            │
 │                                                                        │
 │  render.rs: pure rail renderer                                         │
-│    render_rail(rows, ledger, opts) -> RenderedRail (target_at_line)    │
-│    owns layout, overflow, ANSI, and click-target materialization       │
+│    render_rail(rows, ledger, opts) -> RenderedRail                     │
+│    (target_at_line / hotspot_at; onboarding + needs_permission faces)  │
+│    owns layout, overflow, ANSI, click-target + hotspot materialization │
 └────────────────────────────────────────────────────────────────────────┘
-        │ Effects: switch_tab_to(position + 1), show_pane_with_id, rename_tab,
-        │ request_permission, set_timeout, set_selectable, persist session state
-        ▼  (desktop notifications too: the plugin hands osascript/notify-send
-           invocations to the host via run_command — see §12)
+        │ Effects (runtime.rs): SwitchTab, ShowPane, RenameTab, RequestPermission,
+        │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
+        │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd (the
+        │ once-per-pane cwd bootstrap), Notify, PersistPresence, ReadPresences,
+        │ SwitchSession, BroadcastStatus (the ack echo), CloseSelf
+        ▼  (Notify hands osascript/notify-send to the host via run_command — §12)
 ```
 
 **Design principle:** keep host-coupled code thin; push lifecycle decisions into
@@ -154,7 +178,8 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 |-----------------------------------------------|-----------|
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running` (`PostToolUse` usually duplicates `PreToolUse`'s payload — the plugin no-ops identical re-broadcasts — but it is the Pending→Running recovery edge after a mid-turn permission answer, so it stays registered) |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
-| Claude `Stop`                                 | `done`    |
+| Claude `SubagentStop`                         | `running` (a finished subagent means the main turn is still going) |
+| Claude `Stop`                                 | `done` — **except** a Stop whose last assistant message ends in a question maps to `pending` (a turn that ends by asking is blocked on input, not finished; the trailing question becomes the message) |
 | Claude `SessionStart` (`source:"clear"` only) | `idle` (resets a stale row on `/clear`) |
 | Claude `SessionEnd`                           | `idle` (a closed session recedes instead of freezing its last status) |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
@@ -162,8 +187,9 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 | Codex `Stop`                                  | `done`    |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored (the main turn keeps owning the pane) |
 | Codex legacy `agent-turn-complete`            | `done`    |
-| Adapter parse/hook failure (optional)         | `error`   |
-| Agent pane returns to its shell prompt (observed exit) | `idle` (clears a stale pushed status; see §6.2) |
+| Observed command exiting nonzero              | `error` — the only `error` source. Claude's map deliberately has no `error`: its hook vocabulary carries no reliable turn-level failure signal (`PostToolUse`'s per-tool `is_error` is normal, recoverable agent behavior), so mapping hooks to `Error` would paint healthy turns red |
+| Agent pane returns to its shell prompt (observed exit) | `idle` — terminal statuses clear at once; a `Running` instead arms the 15-tick stale grace (see §6, *Running exit grace*) |
+| Agent pane's root process exits (pane manifest `exited`) | `idle` — definitive producer death: clears even a `Running` immediately, no grace (see §6, *Running exit grace*) |
 
 > **Update (focus no longer drives state):** an earlier design cleared a pushed
 > completion when you *focused* the pane (`on_focus`). Focus is per-client and is
@@ -171,8 +197,9 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 > tab you were viewing and left every other tab stale. A finished status now clears
 > only via shared signals — a new broadcast, the observed return-to-shell exit-clear
 > (`command::is_shell_prompt` → `StatusStore::clear_on_prompt_return`), or a prune —
-> which every tab's instance receives, so all tabs converge. The `on_focus` wire
-> field is still accepted for back-compat but is inert.
+> which every tab's instance receives, so all tabs converge. The former `on_focus` wire
+> field is tolerated and ignored — the parser has no such field, so serde drops it
+> unread like any unknown key (same story as the legacy `seq`).
 
 ### 4.2 Per-pane → per-tab aggregation
 
@@ -189,8 +216,13 @@ tab), so tab state cannot come from names. The store keys by `PaneId`; `PaneUpda
   highest-severity pane; on equal severity a bounded *job* outranks a *service*
   (a spinning build beats a merely-up dev server — `activity-model.md` §3);
   remaining ties by most-recent `last_change_tick`.
-- **Pruning:** on each `PaneUpdate`, drop state for `PaneId`s no longer present, so closed
-  agents leave no ghost status.
+- **Pruning (with a one-manifest grace):** on each `PaneUpdate`, drop state for `PaneId`s
+  no longer present, so closed agents leave no ghost status — but a pane's *first* absence
+  is held, not pruned (`absent_once`): Zellij's break-pane family reports session state
+  while a moved pane is extracted and in no tab, so a single absence can't distinguish a
+  close from a mid-move flash. A pane still absent on the confirming next manifest prunes
+  then, ledgered under the tab identity captured at first absence; a reappearing pane
+  simply drops out of the grace set.
 
 ## 5. The pipe contract (producer ↔ plugin seam)
 
@@ -202,7 +234,11 @@ tab-bar; cheap for a handful of tabs).
 Zellij runs *one instance per tab*, and a broadcast only reaches instances alive when it is
 sent — it is never replayed. So a tab opened after agents were already running would spawn a
 blank instance and render every tab idle. Fix: each instance mirrors its `RadarState` stores into a
-snapshot on every store mutation, and seeds itself from it in `load()`. `SessionFiles` chooses
+snapshot on every state *edge*, and seeds itself from it in `load()`. Writes are
+edge-gated, not per-mutation: intakes report `SnapshotWrite::{Now, Deferred}` — a
+label-only Running→Running update on an animating row defers its write to ride the next
+Fast tick's flush instead of hitting disk per tool hook (an inline `Now` on the same pass
+supersedes the deferral). `SessionFiles` chooses
 the persistence root: `/cache` first, because Zellij 0.44 mounts it as the plugin-URL-scoped
 folder shared across all instances, then `/tmp/zj-radar`, then disabled persistence if neither
 root is writable. `/data` is not used because it is scoped by `<plugin_id>-<client_id>` and is
@@ -216,14 +252,39 @@ unaffected.
 
 ```json
 { "v": 1,
-  "source": "claude",                 // claude | codex | test — adapters differ; helps debugging
+  "source": "claude",                 // Kind vocabulary: claude | codex | gemini | command |
+                                      //   test | build | deploy | server | other (unknown → other);
+                                      //   the instrumented-agent set is exactly {claude, codex}
   "pane": { "type": "terminal", "id": 12 },   // typed to match Zellij's PaneId enum
   "status": "running",                // running | pending | done | error | idle
   "repo": "pinky",
   "branch": "fix/x",
   "msg": "running tests…",           // truncated last assistant message
-  "task": "fix the flaky auth test" } // optional, sent only on UserPromptSubmit
+  "task": "fix the flaky auth test",  // optional, sent only on UserPromptSubmit
+  "ack": false }                      // optional (absent = false): "user already saw this" —
+                                      //   state converges, notifier stays silent
 ```
+
+**The plugin is a producer too (the pipe is not strictly one-way).** The rail's
+acknowledge gesture (`✓` hotspot) does not mutate local state — it broadcasts a
+*synthetic* `status.v1` payload (the pane's Pending re-sent as `done` with
+`ack: true`) back onto this same pipe (`Effect::BroadcastStatus`). Every tab's
+instance — including the sender — converges through the normal `status_pipe`
+intake when the pipe echoes it back, and `ack: true` keeps the notifier silent
+in every instance the echo reaches.
+
+**Bounded sends (every caller, plugin included).** `zellij pipe` is a
+backpressure channel: the client blocks until every loaded plugin instance
+consumes the message, and an instance wedged at Zellij's permission prompt
+holds it forever — at hook rate, unbounded sends once cascaded into an EMFILE
+crash of the whole session. All senders use the self-limiting `sh` subtree
+from `crates/core/src/pipe.rs` (`self_limiting_pipe_argv`): a detached
+sleep+kill watchdog inside the spawned subtree reaps its own hung client even
+when the caller is killed mid-send. Deadlines are status-keyed —
+`DEFAULT_PIPE_TIMEOUT_SECS` (5s) for once-per-turn edges,
+`RUNNING_PIPE_TIMEOUT_SECS` (2s) for `running` heartbeats — and the bundled
+hooks' `timeout` values must clear the cap plus 2s slack (welded by
+`hooks_manifest_tests.rs`).
 
 **Plugin-side handling (defensive — the renderer/store, not the adapter, enforces these):**
 - Match `pane` to `PaneId::Terminal(id)`. Adapters derive `id` by stripping any `terminal_`
@@ -239,9 +300,10 @@ unaffected.
 - Sanitize `repo`/`branch`/`msg`: strip ANSI/control chars, convert newlines to spaces, cap
   `msg` to a fixed length before rendering.
 - Ignore payloads over a fixed size cap (e.g. 64 KB).
-- `on_focus` is accepted for back-compat but **inert** (see §4.1 update): `done` no longer
-  auto-clears on focus. A finished status persists until a new broadcast, the observed
-  return-to-shell exit-clear, or a prune — all shared signals, so all tabs converge.
+- The former `on_focus` hint is tolerated and ignored — dropped unread like any unknown
+  key (see §4.1 update): `done` no longer auto-clears on focus. A finished status persists
+  until a new broadcast, the observed return-to-shell exit-clear, or a prune — all shared
+  signals, so all tabs converge.
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -260,39 +322,56 @@ unaffected.
     Zellij's explicit permission UI. If session files are unavailable, coordination degrades to
     the old behavior rather than blocking startup.
 - **Subscriptions:** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`, `Timer`,
-  `Mouse`, `PermissionRequestResult`.
+  `Mouse`, `PermissionRequestResult`, `ModeUpdate` (carries `ModeInfo.session_name` — the
+  push-style session-name source §13 depends on).
 - **Tab index footgun:** `TabInfo.position` is **0-indexed**; `switch_tab_to(idx)` is
   **1-indexed** (0 treated as 1). Define `display_tab_number = position + 1` and use it for
   *both* rendering and click → `switch_tab_to(position + 1)`.
-- **Click targeting:** `render_rail()` emits both ANSI and a same-height target map. Header,
-  folded-idle strip, and external gap rows map to nothing; tab header/collapse/single-pane rows
-  map to a tab; expanded multi-pane child rows map to that pane. The runtime stores the latest
-  `RenderedRail` and returns `SwitchTab` or `ShowPane` effects on mouse clicks instead of
-  replaying layout math in the host glue.
+- **Click targeting:** `render_rail()` emits ANSI plus a same-height target map (and a
+  same-height hotspot map — `CONTEXT.md` → *Lockstep*). Header, folded-idle strip, and
+  external gap rows map to nothing; a tab's header line maps to that tab (`SwitchTab`);
+  pane lines map to their pane (`ShowPane`) — a multi-pane tab's tree lines *and* a
+  single-pane tab's pane line and line-2 detail line, which carry that tab's one tracked
+  pane's `pane_id`. There are no collapse rows: the only fold constructs are the `+N more`
+  overflow line at the bottom of an over-tall multi-pane tree and the `+N idle ▾` strip.
+  The runtime stores the latest `RenderedRail` and returns `SwitchTab` / `ShowPane` /
+  `SwitchSession` effects on mouse clicks instead of replaying layout math in the host
+  glue.
 - **Why broadcast, not `--plugin`:** broadcasting by name means adapters never create UI
   panes, never need to know the plugin's URL/config identity, and naturally reach every
   already-running sidebar instance. (A `--plugin` destination can also load the plugin if not
   running and the routing across multiple same-plugin instances is fiddly — avoid it here.)
-- **Timer is one-shot** in Zellij: re-arm each tick.
-  ```rust
-  // load():   set_timeout(1.0);
-  // update(Event::Timer(_)):  tick_elapsed(); set_timeout(1.0); return true;
-  ```
-  Optimization: only keep re-arming while there is something to tick *for* — either
-  animating work (a `Running` agent/command whose glyph spins) or an un-carried
-  completion edge (a `status_pipe` payload defers its recede + notification to the
-  timer). A backgrounded `done`/`error`/`pending` row is terminal: once its one-shot
-  settle has run it does **not** keep the loop alive, so an idle-but-lit rail stops
-  waking every second. The loop re-arms on the next pipe/PaneUpdate. (See
-  `PluginRuntime::timer_should_continue`.)
-  - **Running exit grace:** a pushed `Running` row starts its 15-tick stale
-    grace only on a `CommandChanged` whose effective argv identifies a shell
+- **Timer is one-shot** in Zellij: re-arm each tick. The shipped model is a two-speed
+  cadence plus full disarm (`Cadence::{Fast, Slow}` → `set_timeout(1.0)` /
+  `set_timeout(60.0)`, or no re-arm at all — `PluginRuntime::desired_cadence`): Fast while
+  anything tick-windowed is live (animation, an un-carried completion edge, the permission
+  flow, a pending session-cycle selection), Slow while only minute-granular ages are still
+  changing or a presence heartbeat is owed, disarmed only pre-session-name or when
+  permission is denied. A backgrounded `done`/`error`/`pending` row is terminal: once its
+  one-shot settle has run it does **not** keep the Fast loop alive, so an idle-but-lit
+  rail stops waking every second; the loop re-arms on the next pipe/PaneUpdate. The full
+  trigger lists live in `CONTEXT.md` → *Cadence*. A companion **rows-diff render gate**
+  (`last_render_key`) drops any requested repaint whose content-derived key (rows, ledger
+  lines, badge, theme) equals what the last `render()` actually drew — `CONTEXT.md` →
+  *Render gate*.
+  - **Running exit grace (the producer-death model).** The model:
+    (agent argv present, pane-manifest `exited` = false) = alive;
+    `exited` = dead. A pushed `Running` row starts its 15-tick stale
+    grace (`RUNNING_SUSPECT_GRACE_TICKS`) only on a `CommandChanged` whose
+    effective argv identifies a shell
     prompt. Zellij reports the childless pane-root shell with
     `is_foreground: false`, so that shell-name form is the real prompt-return
     edge and must clear terminal statuses/arm Running expiry. A non-shell
     wrapper argv with `is_foreground: false` remains weak evidence and never
     starts the clock: a live agent's child-process transition must not be
-    mistaken for exit.
+    mistaken for exit. The agent's argv *reappearing* as the pane's foreground
+    cancels an armed clock (`StatusStore::cancel_running_suspect`) — the
+    flicker resolved as a flicker; a clock that outlives the window is cleared
+    by `expire_stale_running` (the producer died mid-turn and will never send
+    the clearing broadcast). The pane manifest's `exited` flag bypasses all of
+    this: it is *definitive* death — an agent-rooted pane
+    (`zellij run -- claude`) never shows a shell prompt at all — so
+    `StatusStore::clear_on_exit` clears even a `Running` immediately, no grace.
 - **Layout — the integration seam.** The sidebar is a pinned, borderless left column *inside* a
   vertical split, *outside* `children`, so `swap_tiled_layout` cycling never disturbs it (same
   mechanism as the existing bars; 0.44.3 has the pop-out fix). The layout layer is the *only*
@@ -335,7 +414,11 @@ unaffected.
 smart-tabs used to auto-name every tab `git-root + program` by polling
 `get_pane_running_command()` / `get_pane_cwd()` on every dirty tick — the exact pattern that
 melted the session (`smart-tabs-postmortem.md`). zj-radar must **not** reproduce that. The
-replacement is push-only and tiered:
+replacement is push-driven and tiered — the one deliberate exception is the
+**once-per-pane cwd bootstrap** (`Effect::ResolveCwd`): a freshly-opened pane has not yet
+emitted `CwdChanged`, so the runtime requests a single blocking `get_pane_cwd` for it,
+gated to at most once per pane id — pane-creation rate, never a re-poll (the result feeds
+the normal `cwd_changed` path):
 
 - **v1 (default — no naming work in the plugin):** tab names come from the layout's `tab name=…`
   and any manual `MOD+r` renames; zj-radar reads them via `TabInfo.name` and renders them
@@ -350,7 +433,8 @@ replacement is push-only and tiered:
     recreate the poll storm.
   - *Plain tabs* — subscribe to **`CwdChanged`** (pushed) to learn a pane's cwd → git-root
     basename; read program from **`PaneInfo.title`** in the `PaneUpdate` manifest we already
-    consume. Both are push signals; no `get_pane_*` call is ever made.
+    consume. Both are push signals; the only `get_pane_*` call anywhere is the once-per-pane
+    `ResolveCwd` bootstrap above.
 
   Guardrails: only `rename_tab` when the derived name actually differs (avoid redundant
   main-thread work), and treat naming as best-effort cosmetics — a missing cwd/title just leaves
@@ -411,7 +495,8 @@ the host target):
     command debounce, tab renames, and click-to-tab/click-to-pane effects are asserted as ordered
     `Outcome` values.
 13. **Renderer target map:** `RenderedRail` line count matches emitted ANSI lines, and headers,
-    gaps, tab rows, expanded pane rows, and collapsed rows resolve to the intended target.
+    gaps, tab rows, pane rows, and the `+N more` / `+N idle ▾` fold lines resolve to the
+    intended target (or a deliberate `None`).
 14. **Snapshot renders:** no agents, mixed states, narrow-width truncation, many tabs,
     multi-agent tab.
 
@@ -454,8 +539,9 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
    deliberately; collapse toggle (future) mitigates.
 4. **`zellij-tile` API churn** — pin to 0.44.x; read `PaneInfo`/`TabInfo` field ordering and the
    `PaneId` enum against the 0.44.3 tag.
-5. **Per-tab plugin instances** (N timers + N state copies) — the only-tick-while-active
-   optimization bounds the timers, and the state copies are reconciled through `SessionFiles`
+5. **Per-tab plugin instances** (N timers + N state copies) — the Fast/Slow/disarm cadence
+   (§6; `CONTEXT.md` → *Cadence*) and the rows-diff render gate bound the timers and
+   repaints, and the state copies are reconciled through `SessionFiles`
    (see §5 "Newcomer rehydration"). The trap here, learned the hard way: a broadcast is *not*
    replayed to instances spawned later, so a new tab's instance starts blank — hence the snapshot
    seed. Note `/data` is per-instance (`…/<plugin_id>-<client_id>/`) despite the docs calling it
@@ -463,9 +549,11 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
    `/tmp/zj-radar` as a degraded fallback.
 6. **Repeating the smart-tabs meltdown** (`smart-tabs-postmortem.md`) — bounded *by design*:
    zj-radar is push-driven (hook `pipe` + `TabUpdate`/`PaneUpdate`/`CwdChanged`) and issues no
-   blocking `get_pane_*` queries, so high-output panes cost it nothing and there is no poll loop
-   to storm the server's main thread. The standing rule (no blocking host calls on any path)
-   keeps it that way; any future naming/program feature must stay event-sourced (§6.1).
+   per-event or per-tick blocking `get_pane_*` queries, so high-output panes cost it nothing
+   and there is no poll loop to storm the server's main thread. The standing rule — no
+   polling, no blocking host calls on any per-event/per-tick path; the single exception is
+   the once-per-pane `ResolveCwd` cwd bootstrap (§6.1) — keeps it that way; any future
+   naming/program feature must stay event-sourced (§6.1).
 
 ## 12. Out of scope (follow-ups)
 
@@ -474,18 +562,21 @@ v1 = through Phase 3. Phase 1 alone is already a usable sidebar.
   additional lines in the existing rail, not a separate panel; the floating
   dashboard non-goal stands unchanged.
 - **Aider** (and other) adapters; richer **Codex** lifecycle (running/pending) via a wrapper.
-- Collapse-to-strip toggle; per-pane breakdown within a multi-agent tab.
+- Collapse-to-strip toggle. (Per-pane breakdown within a multi-agent tab **shipped**: a
+  multi-pane tab renders one line per tracked pane as a tree under the tab header — see §3
+  and `rail-reference.md`.)
 - Moving notification logic into the plugin. **Update:** the plugin now owns OS desktop
   notifications (macOS `osascript`, Linux `notify-send`). Rationale: single plugin install provides a standard,
   user-configurable notification surface (via `notify*` KDL keys) that survives across agent
   adapters — reversing the prior assumption that notifications belong in shell adapters alone.
   This trade-off is stable: adapters delegate OS delivery to the plugin while owning their own
   pipe payload schema and lifecycle logic.
-- **Keybinds, the passive way** — the supported keyboard path is a Zellij
-  `MessagePlugin` binding that delivers a verb to the `zj_radar.cmd.v1` pipe
-  (e.g. `attention-next`), handled in `pipe()` exactly like `config.v1`. This
-  keeps the plugin a passive renderer (no `Key` subscription, no focus grab),
-  unlike a `LaunchOrFocusPlugin` panel.
+- **Keybinds, the passive way** — **shipped.** A Zellij `MessagePlugin` binding
+  delivers a verb to the `zj_radar.cmd.v1` pipe — `attention-next` /
+  `attention-prev` / `session-next` / `session-prev` (`control.rs`; operator
+  docs in `docs/configuration.md`; session cycling in §13) — handled in
+  `pipe()` exactly like `config.v1`. This keeps the plugin a passive renderer
+  (no `Key` subscription, no focus grab), unlike a `LaunchOrFocusPlugin` panel.
 - **Launchable floating mode** (`LaunchOrFocusPlugin` keybind, zero layout change) — *deliberate
   non-goal.* It's a different product: an on-demand *peek* (current tab only), not the always-on
   ambient column radar exists to be, and it overlaps `room`/session-manager. It would also force
