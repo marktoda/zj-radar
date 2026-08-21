@@ -52,7 +52,11 @@ pub(crate) fn check_codex(legacy_notify: bool) -> bool {
     };
     let items = codex_check_items(&analyze_codex(&env), legacy_notify);
     println!("codex:");
-    print_check_items(&items)
+    let missing = print_check_items(&items);
+    if let Some(note) = codex_hook_trust_note(legacy_notify) {
+        println!("  {note}");
+    }
+    missing
 }
 
 /// `CheckItem`s for `zj-radar setup zellij --check`. Pure over fully-derived
@@ -64,13 +68,7 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
     // an all-ok report on a zellij-less machine would be a --check lie.
     let floor = min_supported_zellij_display();
     items.push(match &f.zellij_version {
-        None => CheckItem::missing(
-            "zellij binary",
-            format!(
-                "not found on PATH — install Zellij {floor}+ first \
-                 (https://zellij.dev/documentation/installation)"
-            ),
-        ),
+        None => CheckItem::missing("zellij binary", zellij_missing_message()),
         Some(v) if !zellij_version_is_supported(v) => CheckItem::warn(
             "zellij binary",
             format!(
@@ -103,16 +101,24 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
         )
     });
 
-    // 3. layout (rail)
+    // 3. layout (rail) — name the layout actually inspected (`--layout NAME`,
+    // else the config's `default_layout`, else `default`): "default layout"
+    // was a lie under `--check --layout mine`.
     items.push(match f.has_rail {
         None => CheckItem::warn(
             "layout",
-            "no layout file found — the rail won't appear; run `zj-radar setup zellij --inject` to create one",
+            format!(
+                "no `{}` layout file found — the rail won't appear; run `zj-radar setup zellij --inject` to create one",
+                f.layout_name
+            ),
         ),
-        Some(true) => CheckItem::ok("layout", "default layout has the radar rail"),
+        Some(true) => CheckItem::ok("layout", format!("`{}` layout has the radar rail", f.layout_name)),
         Some(false) => CheckItem::missing(
             "layout",
-            "default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet",
+            format!(
+                "`{}` layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet",
+                f.layout_name
+            ),
         ),
     });
 
@@ -285,14 +291,15 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
             ));
         }
     }
-
-    if !legacy_notify {
-        items.push(CheckItem::warn(
-            "hook trust",
-            "run `/hooks` in Codex after install or hook changes",
-        ));
-    }
     items
+}
+
+/// The one-time reminder hook mode carries: Codex only runs hooks the user has
+/// trusted via `/hooks`. A NOTE after the items, not a `CheckItem::warn` — the
+/// doctor can't observe trust state, and an unconditional warn item made every
+/// healthy install read perma-Warn.
+pub(crate) fn codex_hook_trust_note(legacy_notify: bool) -> Option<&'static str> {
+    (!legacy_notify).then_some("note: run `/hooks` in Codex after install or hook changes")
 }
 
 #[cfg(test)]
@@ -322,9 +329,14 @@ mod tests {
             "hooks.json",
             "all zj-radar Codex hooks installed"
         )));
-        assert!(items.iter().any(|item| item.name == "hook trust"
-            && item.level == CheckLevel::Warn
-            && item.detail.contains("/hooks")));
+        // The trust reminder is a NOTE after the items, never a warn item — an
+        // unconditional warn made every healthy install read perma-Warn.
+        assert!(
+            !items.iter().any(|item| item.name == "hook trust"),
+            "hook trust must not be a CheckItem"
+        );
+        assert!(codex_hook_trust_note(false).is_some_and(|n| n.contains("/hooks")));
+        assert_eq!(codex_hook_trust_note(true), None, "legacy notify mode has no hooks to trust");
     }
 
     #[test]
@@ -447,6 +459,7 @@ mod tests {
             claude_producer:         false,
             config_managed:          false,
             zellij_version:          Some("zellij 0.44.3".to_string()),
+            layout_name:             "default".to_string(),
         }
     }
 
@@ -617,5 +630,102 @@ mod tests {
         let items = all_good_check_items();
         let names: Vec<&str> = items.iter().map(|i| i.name).collect();
         assert_eq!(names, &["zellij binary", "alias", "wasm", "layout", "grant", "producer"]);
+    }
+
+    #[test]
+    fn zellij_check_layout_item_names_the_inspected_layout() {
+        // `--layout mine` used to report on "default layout" regardless — the
+        // item must name the layout the doctor actually read, in every arm.
+        for has_rail in [Some(true), Some(false), None] {
+            let f = ZellijFacts {
+                has_rail,
+                layout_name: "mine".to_string(),
+                ..all_good_facts()
+            };
+            let items = zellij_check_items(&f);
+            let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
+            assert!(
+                layout_item.detail.contains("`mine`"),
+                "has_rail={has_rail:?}: detail must name the layout: {}",
+                layout_item.detail
+            );
+        }
+    }
+
+    #[test]
+    fn claude_check_items_cover_binary_and_plugin() {
+        // Mirrors the codex item tests: both facts good → both ok.
+        let items = claude_check_items(true, true);
+        assert!(items.contains(&CheckItem::ok("claude binary", "found on PATH")));
+        assert!(items.contains(&CheckItem::ok("plugin", "zj-radar-claude plugin installed")));
+
+        // Binary absent → missing.
+        let items = claude_check_items(false, true);
+        assert!(items.contains(&CheckItem::missing("claude binary", "not found on PATH")));
+
+        // Plugin absent → missing, with the remedy pinned so the hint the
+        // doctor prints stays a real invocation.
+        let items = claude_check_items(true, false);
+        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
+        assert_eq!(plugin.level, CheckLevel::Missing);
+        assert!(
+            plugin.detail.contains("run `zj-radar setup claude`"),
+            "remedy wording must name the setup command: {}",
+            plugin.detail
+        );
+    }
+
+    /// Every backtick-quoted `zj-radar …` invocation the doctor prints as a
+    /// remedy must parse as a real CLI invocation — a hint that clap rejects
+    /// sends the user into a usage error instead of a fix.
+    #[test]
+    fn remedy_hints_parse_as_real_invocations() {
+        use clap::Parser;
+        let all_missing = || ZellijFacts {
+            unmanaged_alias_present: false,
+            wasm_present: false,
+            has_rail: Some(false),
+            granted: Some(false),
+            codex_producer: false,
+            claude_producer: false,
+            zellij_version: None,
+            ..all_good_facts()
+        };
+        let warn_variants = ZellijFacts { has_rail: None, granted: None, ..all_missing() };
+
+        let mut details: Vec<String> = Vec::new();
+        for items in [
+            zellij_check_items(&all_missing()),
+            zellij_check_items(&warn_variants),
+            claude_check_items(false, false),
+            codex_check_items(
+                &analyze_codex(&CodexEnv {
+                    codex_on_path:    false,
+                    zj_radar_on_path: false,
+                    config_text:      None,
+                    hooks_text:       None,
+                }),
+                false,
+            ),
+        ] {
+            details.extend(items.into_iter().map(|i| i.detail));
+        }
+
+        let invocations: Vec<&str> = details
+            .iter()
+            .flat_map(|d| d.split('`').skip(1).step_by(2)) // backticked spans
+            .filter(|s| s.starts_with("zj-radar "))
+            .collect();
+        assert!(
+            invocations.contains(&"zj-radar setup zellij -y"),
+            "the grant remedy must be among the extracted hints: {invocations:?}"
+        );
+        for invocation in invocations {
+            let argv: Vec<&str> = invocation.split_whitespace().collect();
+            assert!(
+                crate::Cli::try_parse_from(&argv).is_ok(),
+                "remedy hint `{invocation}` must parse as a real CLI invocation"
+            );
+        }
     }
 }

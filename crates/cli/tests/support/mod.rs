@@ -4,6 +4,11 @@ use std::ffi::OsString;
 use std::fs;
 use tempfile::TempDir;
 
+/// The command `setup codex` writes into hooks.json — the marker the CLI keys
+/// idempotency/uninstall on. One copy for every test binary, so a marker
+/// change can't leave a stale hardcoded copy green.
+pub const HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
+
 pub struct ShimDir {
     pub dir: TempDir,
 }

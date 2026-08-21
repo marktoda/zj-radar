@@ -29,6 +29,9 @@ pub(crate) const CODEX_NOTIFY_MARKER: [&str; 3] = ["zj-radar", "notify", "codex"
 // Codex producer (shared single source of truth).
 pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
+// No space before the `&&`: cmd.exe folds everything up to the separator into
+// the env var's VALUE, so `v1 &&` would set the marker to "v1 " and break the
+// marker round-trip that idempotency/uninstall detection depends on.
 pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
 // Kill ceiling for the generated hook entries — derived from the send cap,
@@ -279,7 +282,14 @@ pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Opti
 }
 
 pub(crate) fn confirm(prompt: &str) -> bool {
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
+    // No tty = no one to answer: take the safe "no" instead of blocking on a
+    // read that never returns (the same non-tty rule `inject_mode` and `run`'s
+    // foreign-session consent apply), and say how to consent non-interactively.
+    if !std::io::stdin().is_terminal() {
+        println!("{prompt} — skipped (no tty — re-run with -y)");
+        return false;
+    }
     print!("{prompt} [y/N] ");
     let _ = std::io::stdout().flush();
     let mut line = String::new();
@@ -317,6 +327,12 @@ pub(crate) fn confirm_and_write(
     true
 }
 
+/// Suffix of the pre-write backup `setup` leaves beside every file it edits.
+/// The success epilogues interpolate it (via [`path_with_suffix`]) so the
+/// advertised restore point can never drift from the file
+/// [`backup_then_write`] actually creates.
+pub(crate) const BACKUP_SUFFIX: &str = ".zj-radar.bak";
+
 /// Back up the existing file, then write atomically (temp file + rename via the
 /// shared `fsutil::atomic_write`). The `.bak` is specific to `setup` editing the
 /// user's own files; `run` writes its owned dir without one. A failed backup
@@ -324,7 +340,7 @@ pub(crate) fn confirm_and_write(
 /// point, so the user's file must never be replaced without it existing.
 pub(crate) fn backup_then_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if path.exists() {
-        std::fs::copy(path, path_with_suffix(path, ".zj-radar.bak")).map_err(|e| {
+        std::fs::copy(path, path_with_suffix(path, BACKUP_SUFFIX)).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
                 format!("backup copy failed ({e}); {} left untouched", path.display()),
@@ -371,7 +387,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.kdl");
         std::fs::write(&target, "original").unwrap();
-        std::fs::create_dir(path_with_suffix(&target, ".zj-radar.bak")).unwrap();
+        std::fs::create_dir(path_with_suffix(&target, BACKUP_SUFFIX)).unwrap();
 
         let err = backup_then_write(&target, "replacement").unwrap_err();
         assert!(err.to_string().contains("backup copy failed"), "err: {err}");

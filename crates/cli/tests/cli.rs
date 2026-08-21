@@ -1,12 +1,13 @@
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use tempfile::TempDir;
+//! End-to-end smoke tests for the two halves of the CLI: `setup codex` writes
+//! hooks.json without touching a foreign notify slot, and `notify codex`
+//! broadcasts a real `zellij pipe` payload (captured via the shared shim).
 
-fn cli_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_zj-radar"))
-}
+mod support;
+
+use assert_cmd::Command;
+use std::fs;
+use support::{ShimDir, HOOK_MARKER};
+use tempfile::TempDir;
 
 #[test]
 fn setup_codex_installs_hooks_without_touching_foreign_notify() {
@@ -14,17 +15,12 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
     let config = codex_home.path().join("config.toml");
     fs::write(&config, "notify = [\"/other/notifier\", \"turn-ended\"]\n").unwrap();
 
-    let output = Command::new(cli_bin())
+    Command::cargo_bin("zj-radar")
+        .unwrap()
         .args(["setup", "codex", "--yes"])
         .env("CODEX_HOME", codex_home.path())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+        .assert()
+        .success();
 
     let config_after = fs::read_to_string(config).unwrap();
     assert_eq!(
@@ -32,7 +28,7 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
         "notify = [\"/other/notifier\", \"turn-ended\"]\n"
     );
     let hooks = fs::read_to_string(codex_home.path().join("hooks.json")).unwrap();
-    assert!(hooks.contains("ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"));
+    assert!(hooks.contains(HOOK_MARKER));
     assert!(hooks.contains("\"PermissionRequest\""));
     assert!(hooks.contains("\"Stop\""));
 }
@@ -40,76 +36,42 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
 #[cfg(unix)]
 #[test]
 fn notify_codex_hook_broadcasts_pending_payload() {
-    use std::os::unix::fs::PermissionsExt;
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
 
-    let bin_dir = TempDir::new().unwrap();
-    let capture = bin_dir.path().join("zellij-args.txt");
-    let fake_zellij = bin_dir.path().join("zellij");
-    fs::write(
-        &fake_zellij,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ZJ_RADAR_CAPTURE\"\n",
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&fake_zellij).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&fake_zellij, perms).unwrap();
+    let hook = r#"{"hook_event_name":"PermissionRequest","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git push","description":"Approve network access?"}}"#;
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let mut child = Command::new(cli_bin())
+    Command::cargo_bin("zj-radar")
+        .unwrap()
         .args(["notify", "codex"])
+        .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_42")
-        .env("ZJ_RADAR_CAPTURE", &capture)
-        .env("PATH", format!("{}:{old_path}", bin_dir.path().display()))
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(
-            br#"{
-              "hook_event_name": "PermissionRequest",
-              "cwd": ".",
-              "tool_name": "Bash",
-              "tool_input": {
-                "command": "git push",
-                "description": "Approve network access?"
-              }
-            }"#,
-        )
-        .unwrap();
-    let status = child.wait().unwrap();
-    assert!(status.success());
+        .write_stdin(hook)
+        .assert()
+        .success();
 
-    // The send runs in a deliberately DETACHED `sh` subtree (the self-limiting
-    // watchdog around `zellij pipe` — core::pipe), so `zj-radar notify` can
-    // exit before the fake zellij has written the capture file. Poll with a
-    // deadline instead of reading immediately; the deadline is generous
-    // because CI runs this under parallel-build load.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let captured = loop {
-        let captured = fs::read_to_string(&capture).unwrap_or_default();
-        let complete = captured
-            .lines()
-            .last()
-            .is_some_and(|l| serde_json::from_str::<serde_json::Value>(l).is_ok());
-        if complete {
-            break captured;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "fake zellij never wrote a complete capture; got:\n{captured}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    assert!(captured.contains("pipe\n"));
-    assert!(captured.contains("--name\nzj_radar.status.v1\n"));
-    let payload = captured.lines().last().unwrap();
-    let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
-    assert_eq!(payload["source"], "codex");
-    assert_eq!(payload["status"], "pending");
-    assert_eq!(payload["pane"]["id"], 42);
-    assert_eq!(payload["msg"], "Approve network access?");
+    let calls = shims.recorded("zellij");
+    assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast");
+    let c = &calls[0];
+    assert!(
+        c.args.contains(&"pipe".to_string()),
+        "expected the pipe subcommand in: {:?}",
+        c.args
+    );
+    // Payload rides argv after `--`; join the recorded args to inspect it
+    // (spaces inside the JSON survive the shim's whitespace split + rejoin).
+    let argv = c.args.join(" ");
+    assert!(
+        argv.contains("--name zj_radar.status.v1"),
+        "broadcast must target the status pipe: {argv}"
+    );
+    assert!(argv.contains("\"source\":\"codex\""), "payload: {argv}");
+    assert!(argv.contains("\"status\":\"pending\""), "payload: {argv}");
+    assert!(
+        argv.contains("\"id\":42"),
+        "payload missing derived pane id 42 (ZELLIJ_PANE_ID=terminal_42): {argv}"
+    );
+    assert!(argv.contains("Approve network access?"), "payload: {argv}");
 }

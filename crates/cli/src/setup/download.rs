@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 /// different versions otherwise can). Pure so the version→asset mapping is
 /// unit-tested; the fetch itself is thin IO below.
 fn wasm_release_url(version: &str) -> String {
-    format!("https://github.com/{}/releases/download/v{version}/zj_radar.wasm", repo_slug())
+    format!(
+        "https://github.com/{}/releases/download/v{version}/{}",
+        repo_slug(),
+        crate::WASM_FILE_NAME
+    )
 }
 
 /// The `.sha256` sidecar published next to the wasm asset (same release, same
@@ -22,8 +26,9 @@ fn wasm_checksum_url(version: &str) -> String {
 /// repository baked in at build time (`CARGO_PKG_REPOSITORY`), so a fork only has
 /// to set `repository` in Cargo.toml — no source edit and no drift between the
 /// download URL and the error message. `ZJ_RADAR_REPO` overrides at runtime,
-/// mirroring the curl|sh installer's same-named knob.
-fn repo_slug() -> String {
+/// mirroring the curl|sh installer's same-named knob. Also the marketplace repo
+/// `setup claude` adds (`claude_marketplace`), for the same fork-follows reason.
+pub(crate) fn repo_slug() -> String {
     match std::env::var("ZJ_RADAR_REPO") {
         Ok(slug) if !slug.is_empty() => slug,
         _ => env!("CARGO_PKG_REPOSITORY")

@@ -66,14 +66,7 @@ pub(crate) fn run_grant(config_dir: &Path) {
             );
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            crate::exit::fail_report(
-                "zj-radar",
-                format!(
-                    "zellij not found on PATH — install Zellij {}+ first \
-                     (https://zellij.dev/documentation/installation)",
-                    min_supported_zellij_display(),
-                ),
-            );
+            crate::exit::fail_report("zj-radar", zellij_missing_message());
         }
         Err(e) => {
             crate::exit::fail_report(
@@ -149,7 +142,7 @@ pub(crate) fn zellij_config_path(config_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn zellij_wasm_dest(config_dir: &Path) -> PathBuf {
-    config_dir.join("plugins").join("zj_radar.wasm")
+    config_dir.join("plugins").join(crate::WASM_FILE_NAME)
 }
 
 fn zellij_plugin_location(path: &Path) -> String {
@@ -165,9 +158,10 @@ fn zellij_plugin_location(path: &Path) -> String {
 }
 
 /// Returns `true` when `path` is a symlink — the hallmark of a Nix / home-manager
-/// managed file that we must not overwrite. Uses `symlink_metadata` so the query
-/// does not follow the link (a broken symlink still returns `true`).
-pub(crate) fn config_is_managed(path: &Path) -> bool {
+/// managed file that we must not overwrite. Applied to config.kdl AND layout
+/// files alike (hence the name). Uses `symlink_metadata` so the query does not
+/// follow the link (a broken symlink still returns `true`).
+pub(crate) fn path_is_managed(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false)
@@ -462,7 +456,7 @@ fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool
         Ok(Preseed::AlreadyGranted) => return true,
         Ok(Preseed::Merged(text)) => text,
         Err(e) => {
-            eprintln!("zellij: not pre-authorizing permissions — {e}");
+            eprintln!("zellij: warning — not pre-authorizing permissions ({e})");
             return false;
         }
     };
@@ -494,12 +488,12 @@ fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool
     }
     if let Some(parent) = perms_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("zellij: not pre-authorizing permissions — create cache dir failed ({e})");
+            eprintln!("zellij: warning — not pre-authorizing permissions (create cache dir failed: {e})");
             return false;
         }
     }
     if let Err(e) = super::backup_then_write(&perms_path, &merged) {
-        eprintln!("zellij: not pre-authorizing permissions — write failed ({e})");
+        eprintln!("zellij: warning — not pre-authorizing permissions (write failed: {e})");
         return false;
     }
     println!(
@@ -568,7 +562,7 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
     // inject below writes via atomic rename, which would silently replace a
     // symlink with a regular file — the next `home-manager switch` reverts it
     // and the rail "mysteriously vanishes". Snippet instead, never a write.
-    if config_is_managed(layout_path) {
+    if path_is_managed(layout_path) {
         eprintln!(
             "zellij: layout at {} is a symlink (managed by Nix / home-manager) — \
              zj-radar will not overwrite a managed layout; add the rail via your \
@@ -692,9 +686,9 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
             match backup_then_write(layout_path, &new_text) {
                 Ok(()) => {
                     println!(
-                        "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
+                        "zellij: rail injected into {} (backup: {})",
                         layout_path.display(),
-                        layout_path.display()
+                        path_with_suffix(layout_path, BACKUP_SUFFIX).display()
                     );
                     print_swap_advisory_if_needed(facts);
                 }
@@ -745,7 +739,7 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
     // Symlink = Nix / home-manager territory, same as the inject guard above:
     // both the strip-rewrite and the whole-file delete below would replace or
     // remove a file the user's Nix config owns.
-    if config_is_managed(layout_path) {
+    if path_is_managed(layout_path) {
         eprintln!(
             "zellij: layout at {} is a symlink (managed by Nix / home-manager) — \
              zj-radar will not modify a managed layout; remove the rail via your \
@@ -806,9 +800,9 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
             }
             match backup_then_write(layout_path, &new_text) {
                 Ok(()) => println!(
-                    "zellij: rail removed from {} (backup: {}.zj-radar.bak)",
+                    "zellij: rail removed from {} (backup: {})",
                     layout_path.display(),
-                    layout_path.display()
+                    path_with_suffix(layout_path, BACKUP_SUFFIX).display()
                 ),
                 Err(e) => crate::exit::fail_report("zellij", format!("write failed — {e}")),
             }
@@ -962,9 +956,9 @@ mod tests {
         std::fs::write(&real, "").unwrap();
         let link = dir.path().join("config.kdl");
         symlink(&real, &link).unwrap();
-        assert!(config_is_managed(&link), "symlink should be managed");
-        assert!(!config_is_managed(&real), "regular file should not be managed");
+        assert!(path_is_managed(&link), "symlink should be managed");
+        assert!(!path_is_managed(&real), "regular file should not be managed");
         // non-existent path is also not managed
-        assert!(!config_is_managed(&dir.path().join("missing.kdl")));
+        assert!(!path_is_managed(&dir.path().join("missing.kdl")));
     }
 }

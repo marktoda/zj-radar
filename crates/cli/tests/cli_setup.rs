@@ -14,11 +14,9 @@
 mod support;
 
 use assert_cmd::Command;
-use support::ShimDir;
+use support::{ShimDir, HOOK_MARKER};
 use std::fs;
 use tempfile::TempDir;
-
-const HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
 
 /// Returns a fresh tempdir with an empty hooks.json pre-created so that
 /// `codex_installed()` returns true (it accepts an existing hooks.json).
@@ -1049,36 +1047,52 @@ fn setup_zellij_dry_run_would_preseed_but_writes_nothing() {
 }
 
 #[test]
-fn setup_zellij_preseed_declined_falls_back_to_hint() {
+fn setup_zellij_preseed_skipped_without_tty_falls_back_to_hint() {
+    // `confirm()` takes the safe "no" when stdin is not a tty (as in tests),
+    // so a promptable step can no longer be consented to non-interactively.
+    // Prime the config with a consented install, drop the grant, then re-run
+    // WITHOUT --yes: the Unchanged arm still offers the pre-seed, the no-tty
+    // confirm skips it out loud, and the first-launch hint returns.
     let (config_dir, wasm_dir) = isolated_zellij_install_env();
     let wasm_path = wasm_dir.path().join("zj_radar.wasm");
     let home = TempDir::new().unwrap();
-    // Interactive run: accept the wasm/config prompt ("y"), then EOF declines
-    // the layout and pre-authorization prompts.
-    let output = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap()])
-        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
-        .env("HOME", home.path())
-        .env("XDG_CACHE_HOME", home.path().join(".cache"))
-        .write_stdin("y\n")
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+    let run = |yes: bool| {
+        let mut args = vec!["setup", "zellij", "--wasm", wasm_path.to_str().unwrap()];
+        if yes {
+            args.push("--yes");
+        }
+        Command::cargo_bin("zj-radar")
+            .unwrap()
+            .args(&args)
+            .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+    run(true); // consented install: config written, grant pre-seeded
+    fs::remove_file(permissions_path(home.path())).unwrap(); // grant lost again
+
+    let output = run(false); // no --yes, piped stdin: nothing can be consented
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         !permissions_path(home.path()).exists(),
-        "a declined pre-authorization must write nothing"
+        "a skipped pre-authorization must write nothing"
+    );
+    assert!(
+        stdout.contains("no tty — re-run with -y"),
+        "the non-tty skip must say why and name the -y escape; stdout:\n{stdout}"
     );
     assert!(
         stdout.contains("press y to"),
-        "declining the pre-seed must fall back to the first-launch hint; stdout:\n{stdout}"
+        "skipping the pre-seed must fall back to the first-launch hint; stdout:\n{stdout}"
     );
 }
 
 // ── Test: a symlinked layout is managed — never rewritten, never deleted ──────
-// `config_is_managed` (the Nix / home-manager symlink test) used to gate only
+// `path_is_managed` (the Nix / home-manager symlink test) used to gate only
 // config.kdl; the layout was written via atomic rename, which silently replaces
 // a symlink with a regular file — the next `home-manager switch` reverts it and
 // the rail "mysteriously vanishes". Both inject and uninstall must refuse.
@@ -1237,6 +1251,30 @@ fn setup_zellij_dry_run_download_skips_the_fetch_and_writes_nothing() {
         !config_dir.path().join("config.kdl").exists()
             && !config_dir.path().join("plugins").exists(),
         "--dry-run --download must write nothing"
+    );
+}
+
+// ── Test: the doctor's advertised remedies are real invocations ───────────────
+// The grant/layout items tell users to run `zj-radar setup zellij -y`; the
+// short -y alias must exist (and stay copy-pasteable) or the remedy dead-ends
+// in a clap usage error. The unit-level guard (check.rs) try_parses every
+// backticked hint; this exercises the flagship one against the real binary.
+
+#[test]
+fn doctor_remedy_setup_zellij_dash_y_runs() {
+    let config_dir = TempDir::new().unwrap();
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "-y", "--dry-run"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !stderr.contains("error:") && !stderr.contains("Usage:"),
+        "`setup zellij -y` must parse, not hit a clap usage error; stderr:\n{stderr}"
     );
 }
 

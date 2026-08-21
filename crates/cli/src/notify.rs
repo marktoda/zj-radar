@@ -228,25 +228,18 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
     let (repo, branch) = git_repo_branch(&cwd);
-    // Bound the message client-side so a pathologically long final assistant
-    // message can't push the whole payload past the plugin's MAX_PAYLOAD_BYTES
-    // cap — which would drop the *entire* status update (e.g. losing a `done`
-    // edge and leaving the tab stuck "working"). The cap is generous relative to
-    // the plugin's 60-char display cap so its sanitizer still has content after
-    // control-char stripping.
-    let msg: String = update.msg.chars().take(512).collect();
-    // Same bound for the task label, for the same reason — the adapters cap
-    // their own derivations, but `notify generic --task` arrives verbatim, and
-    // an uncapped label can blow the wire cap (or Linux's per-arg E2BIG limit)
-    // all on its own. Defense-in-depth here covers every path.
-    let task: String = update.task.unwrap_or_default().chars().take(512).collect();
+    // No client-side length caps here: `to_wire` bounds every free-text field
+    // at MAX_WIRE_FIELD_CHARS — the single seam every producer path (adapter
+    // msg, `notify generic --task`, repo/branch) already flows through — so a
+    // pathologically long input can't push the payload past the plugin's
+    // MAX_PAYLOAD_BYTES cap or Linux's per-arg E2BIG limit.
     let payload = to_wire(&StatusPayload {
         pane_id,
         status: update.status,
         repo,
         branch,
-        msg,
-        task,
+        msg: update.msg,
+        task: update.task.unwrap_or_default(),
         source: source.to_string(),
         ack: false,
     });

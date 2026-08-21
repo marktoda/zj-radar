@@ -180,7 +180,7 @@ Quick smoke test (a "fake agent" — broadcast straight from your shell):
 
 ```sh
 zellij pipe --name zj_radar.status.v1 -- \
-  '{"v":1,"source":"test","pane":{"type":"terminal","id":12},"status":"running","repo":"demo","branch":"main","msg":"hello"}'
+  '{"v":1,"source":"test","pane":{"type":"terminal","id":'"${ZELLIJ_PANE_ID#terminal_}"'},"status":"running","repo":"demo","branch":"main","msg":"hello"}'
 ```
 
 **Bound your sends.** `zellij pipe` is not fire-and-forget: Zellij holds the
