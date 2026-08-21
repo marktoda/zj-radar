@@ -269,3 +269,61 @@ EOF
   [ "$status" -eq 0 ]
   (( SECONDS - start < 30 ))  # 5s fallback + slack, nowhere near the 60s hang
 }
+
+@test "native CLI dispatch keeps running→done in order (stuck-spinner guard)" {
+  # helper.bash strips every real zj-radar off PATH so the rest of this file
+  # exercises the bash fallback; this case pins the OTHER branch — the native
+  # dispatch, which is the only path an installed machine ever takes.
+  #
+  # The producer's contract is in-order (CONTEXT.md → Status contract: the
+  # plugin is latest-wins and no payload carries a sequence, so a producer that
+  # reorders its own sends has no downstream correction). A backgrounded
+  # `running` can be overtaken by the `done` that follows it, and the rail then
+  # spins forever: Claude stays the pane's foreground process while it sits at
+  # its prompt, so no return-to-shell edge ever arrives to clear it.
+  local cli_log="$FAKEBIN/cli.log"
+  # Fake CLI: drain stdin, parse --status, and record it AFTER the delay, so
+  # the log reflects ARRIVAL order rather than call order. A `running` send is
+  # the slow one — exactly the skew a loaded machine produces.
+  cat >"$FAKEBIN/zj-radar" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null 2>&1 || true
+status=""
+while [[ \$# -gt 0 ]]; do
+  [[ "\$1" == "--status" ]] && { status="\$2"; shift; }
+  shift
+done
+[[ "\$status" == "running" ]] && sleep 1
+printf '%s\n' "\$status" >> "$cli_log"
+EOF
+  chmod +x "$FAKEBIN/zj-radar"
+  # Non-vacuity: the dispatch must resolve OUR fake. If it didn't, the script
+  # would fall through to the bash path and the ordering claim would be untested.
+  [ "$(command -v zj-radar)" = "$FAKEBIN/zj-radar" ]
+
+  rm -f "$RECORD" "$cli_log"
+  printf '%s' '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}' \
+    | "$SCRIPT" running
+  printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp","last_assistant_message":"finished"}' \
+    | "$SCRIPT" done
+
+  # Both sends must land before order can be judged: a backgrounded `running`
+  # arrives well after the script that started it returned.
+  local i
+  for i in $(seq 1 100); do
+    [ "$(wc -l <"$cli_log" 2>/dev/null || echo 0)" -ge 2 ] && break
+    sleep 0.1
+  done
+
+  # Non-vacuity: the native branch exits before the bash fallback's zellij send,
+  # so a silent fall-through would leave a payload here.
+  [ ! -s "$RECORD" ]
+
+  local expected actual
+  expected="$(printf 'running\ndone')"
+  actual="$(cat "$cli_log" 2>/dev/null || true)"
+  [ "$actual" = "$expected" ] || {
+    printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
+    return 1
+  }
+}

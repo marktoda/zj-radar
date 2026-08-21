@@ -20,14 +20,8 @@ set -euo pipefail
 
 status="${1:-running}"
 
-# Read the hook payload up front so the running-path notify below can be
-# backgrounded. `running` rides UserPromptSubmit and Pre/PostToolUse — the
-# hottest events Claude has — and a synchronous notify blocks the harness
-# (UserPromptSubmit blocks the user's prompt) until it exits. On a quiet
-# machine that's milliseconds; on a saturated one (test suites, subagent
-# fleets) process spawns crawl and the hook eats the 30s timeout. A running
-# ping is fire-and-forget by nature: losing one under load is harmless,
-# blocking a prompt is not.
+# Read the hook payload up front, once: the cap below has to apply on both
+# dispatch paths, and the bash fallback re-parses the same buffer repeatedly.
 # Cap the read at 8 MiB (parity with the Rust CLI's MAX_STDIN_BYTES): a
 # degenerate multi-GB stream must bound memory, not buffer whole. Truncated
 # input just fails the jq parses below and no-ops — the safe degradation.
@@ -37,18 +31,21 @@ input="$(head -c 8388608 2>/dev/null || true)"
 # the same Zellij gate, pending backstop, and payload schema. Falls back to the
 # bash implementation below when the binary isn't installed.
 #
-# Dispatch split, reconciling the in-order contract with the hot-path note
-# above: `running` is backgrounded (self-healing — the next event overwrites
-# it, and the plugin's stale-Running grace clock catches a straggler), but the
-# EDGES (done/pending/idle) go synchronously — an edge overtaken by a stale
-# `running` is exactly the stuck-spinner bug the tail comment on the bash path
-# documents, and edges fire once per turn, off the harness's critical path.
+# Synchronous for EVERY status — the same in-order rule the bash path's tail
+# comment spells out. An earlier split backgrounded `running` (the hot path:
+# UserPromptSubmit and Pre/PostToolUse) and kept the edges synchronous, which
+# let a delayed `running` land AFTER the `done` that followed it; the plugin is
+# latest-wins, so the stale `running` took the pane and the spinner stuck.
+# Nothing reliably corrects that: `done` is the last hook of a turn, so there
+# may be no next event to overwrite it, and the stale-Running grace clock is
+# armed by a return-to-shell edge that never fires while Claude itself is the
+# pane's foreground process. The CLI bounds its own send (`pipe_send_timeout`
+# in crates/cli/src/notify.rs), so a wedged rail costs a capped wait rather
+# than an open-ended hook; a healthy local server answers in milliseconds.
 if command -v zj-radar >/dev/null 2>&1; then
-    if [[ "$status" == "running" ]]; then
-        ( printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 & )
-    else
-        printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 || true
-    fi
+    printf '%s' "$input" \
+        | zj-radar notify claude --status "$status" >/dev/null 2>&1 \
+        || true
     exit 0
 fi
 
