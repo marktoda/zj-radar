@@ -77,7 +77,7 @@ fn severity_precedence_picks_highest_active() {
     assert_eq!(display.status, Status::Error, "error outranks done");
     let detail = display.detail.expect("an active pane sets the detail");
     assert_eq!(detail.status, Status::Error);
-    assert_eq!(detail.outcome, Some(Outcome::Failed(None)));
+    assert_eq!(detail.outcome, Some(ExitOutcome::Failed(None)));
 }
 
 #[test]
@@ -138,14 +138,14 @@ fn pending_is_only_counted_for_tracked_panes() {
 
 #[test]
 fn pane_outcome_maps_finished_commands_only() {
-    assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(Outcome::Ok));
+    assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(ExitOutcome::Ok));
     assert_eq!(
         pane_outcome(&command_obs(Status::Error, Some(2))),
-        Some(Outcome::Failed(Some(2)))
+        Some(ExitOutcome::Failed(Some(2)))
     );
     assert_eq!(
         pane_outcome(&command_obs(Status::Error, None)),
-        Some(Outcome::Failed(None))
+        Some(ExitOutcome::Failed(None))
     );
     // Active commands get no tag.
     assert_eq!(pane_outcome(&command_obs(Status::Running, None)), None);

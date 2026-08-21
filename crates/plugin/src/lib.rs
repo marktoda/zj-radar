@@ -332,7 +332,7 @@ impl ZellijPlugin for State {
             // Replaces `SessionUpdate`: stock zj-radar never calls the
             // blocking `get_session_list()` host fn that's the ONLY thing
             // that repopulates `SessionUpdate`'s peer list in zellij 0.44.3
-            // (task-8-report.md's root-cause dive) — only Zellij's own
+            // (`docs/design.md`, "Why not SessionUpdate") — only Zellij's own
             // session-manager plugin does, so a user without it open would
             // see an empty cross-session badge forever. `ModeUpdate` fires
             // automatically right after this plugin loads (Zellij's
@@ -343,8 +343,8 @@ impl ZellijPlugin for State {
             // the first place; liveness itself now comes from the presence
             // files' own mtimes, turned into a per-entry stale/fresh state
             // (`sessions::STALE_AFTER_SECS`) rather than a Zellij-reported
-            // peer list — and, per task-14, a peer past that age dims
-            // rather than vanishing.
+            // peer list — and, per the never-vanish roster, a peer past
+            // that age dims rather than vanishing.
             EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
@@ -1052,13 +1052,13 @@ mod tests {
 
     #[test]
     fn click_mapping_accounts_for_gaps_comfortable() {
-        // Comfortable density, large height → spacing.gap = 1, pad_y = 0.
+        // Comfortable density, large height → spacing.gap = 1.
         // 2 idle tabs, header=2 lines.
         // Layout: header(2) | tab0 content(1) | tab0 gap(1) | tab1 content(1) | tab1 gap(1)
         // Lines:   0,1      | 2               | 3           | 4               | 5
         //
         // The gap is EXTERNAL separation, so the gap line (3) maps to None — only
-        // the owned pad_y + content rows belong to a tab. Tab 1 starts at line 4.
+        // the owned content rows belong to a tab. Tab 1 starts at line 4.
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.runtime.last_render_height = 100; // large → no overflow
         state.runtime.config = config::Config {
@@ -1112,7 +1112,7 @@ mod tests {
     fn click_mapping_cards_one_line_header() {
         // Cards density: the carded hero is a single " RADAR …" title line (no
         // rule), so the header occupies ONE line, not two. Cards now carries
-        // gap = 1 (trailing rail_bg row after each card) and pad_y = 0.
+        // gap = 1 (trailing rail_bg row after each card).
         // The gap rows map to None (they are external separation, not owned by
         // a tab). The click mapping must stay in lockstep with render():
         //   line 0  → header (1 line, no rule) → None
@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn click_mapping_cards_pad_y_and_post_content_row() {
+    fn click_mapping_cards_multi_line_card_and_post_content_row() {
         // Exercises the gap semantics explicitly with a multi-line card so the
         // boundary between one card's last content row and the gap row is clear.
         //   header(1) | tab0 content×2 | tab0 gap(1) | tab1 content(1) | tab1 gap(1)

@@ -2,7 +2,7 @@ use super::*;
 use crate::command::{DEBOUNCE_TICKS, DONE_TTL_TICKS, EpochSecs, Tick};
 use crate::kind::Kind;
 use crate::payload::StatusPayload;
-use crate::rollup::Outcome;
+use crate::rollup::ExitOutcome;
 use crate::test_fixtures::{self, pane, payload_in_repo};
 
 /// Unlike the shared `test_fixtures::tab` (id derived from position), this
@@ -758,7 +758,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
     assert_eq!(row.display.status, Status::Error);
     let detail = row.display.detail.as_ref().unwrap();
     assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
-    assert_eq!(detail.outcome, Some(Outcome::Failed(Some(2))));
+    assert_eq!(detail.outcome, Some(ExitOutcome::Failed(Some(2))));
 }
 
 #[test]

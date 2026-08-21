@@ -323,7 +323,7 @@
     }
 
     #[test]
-    fn command_source_round_trips_through_kind() {
+    fn classify_source_round_trips_through_kind() {
         // Twin of the agent-side `source_round_trips_through_kind` (see
         // CONTEXT.md "Information source"). The command path stores
         // `classify(..).1.as_source()` and the roll-up reads it back via
@@ -346,7 +346,7 @@
     }
 
     #[test]
-    fn resolved_command_source_round_trips_through_kind() {
+    fn resolved_source_round_trips_through_kind() {
         // End-to-end twin: drive a command through the store and confirm the
         // *persisted* observation `source` (not just the classifier output)
         // round-trips to the kind the classifier picked. Guards the wiring in
