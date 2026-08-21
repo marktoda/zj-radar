@@ -116,8 +116,8 @@ pub struct StatusPayload {
     /// `Other`). Optional; sanitized and capped at [`MAX_SOURCE_CHARS`].
     pub source: String,
     /// The user has already seen this status: converge state as usual, but the
-    /// notifier must stay silent for it. Set by the rail's right-click
-    /// acknowledge (whose whole point is "stop flagging this" — its synthetic
+    /// notifier must stay silent for it. Set by the rail's `✓` acknowledge
+    /// hotspot (whose whole point is "stop flagging this" — its synthetic
     /// `done` echo must not itself pop a notification); producers reporting
     /// real events leave it absent. Optional; absent on the wire when `false`.
     pub ack: bool,

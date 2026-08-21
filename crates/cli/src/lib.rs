@@ -117,8 +117,10 @@ enum Command {
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
+        /// Skip the confirmation prompt. The doctor's remedy hints print the
+        /// short form (`setup zellij -y`), so the alias must exist for them
+        /// to be copy-pasteable.
+        #[arg(long, short = 'y')]
         yes: bool,
         /// Check setup status without writing files. Conflicts with
         /// `--uninstall`: silently running the doctor instead of uninstalling
