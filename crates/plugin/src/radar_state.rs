@@ -734,19 +734,19 @@ impl RadarState {
     /// reporting `Running`, or an observed foreground command still live. This is
     /// the animated set (the spinner), so it wants a per-tick repaint. Deliberately
     /// narrow: a finished `Done`/`Error` or a waiting `Pending` is not "animating"
-    /// work, mirroring `CommandStore::has_pending_or_active`.
+    /// work, mirroring `CommandStore::needs_ticks`.
     ///
     /// This does NOT mean a finished `Done` never needs another tick — a command
     /// `Done` sits on a `DONE_TTL_TICKS` clock before it recedes to Idle (spec
     /// §3.1's cadence design), and that recede has to land on schedule even
     /// though the row itself is static. That's a *separate* arming reason,
-    /// deliberately kept out of this predicate: `command_awaiting_recede` carries
+    /// deliberately kept out of this predicate: `has_done_awaiting_recede` carries
     /// the TTL window, so `PluginRuntime::timer_should_continue` ORs the two
-    /// rather than broadening `has_running_work` to cover a case it was never
+    /// rather than broadening `needs_fast_ticks` to cover a case it was never
     /// meant to (animation vs. a scheduled one-shot are different reasons to
     /// tick, and conflating them would blur what each predicate promises).
-    pub(crate) fn has_running_work(&self) -> bool {
-        self.status.needs_ticks() || self.command.has_pending_or_active()
+    pub(crate) fn needs_fast_ticks(&self) -> bool {
+        self.status.needs_ticks() || self.command.needs_ticks()
     }
 
     /// Apply the user's `interactive_commands` extras to the command store
@@ -769,9 +769,9 @@ impl RadarState {
 
     /// True while a command-origin `Done` is still inside its `DONE_TTL_TICKS`
     /// window, awaiting the recede to Idle. Delegates to
-    /// `CommandStore::has_done_awaiting_recede` — see `has_running_work`'s doc
+    /// `CommandStore::has_done_awaiting_recede` — see `needs_fast_ticks`'s doc
     /// for why this is a distinct arming reason rather than folded into it.
-    pub(crate) fn command_awaiting_recede(&self) -> bool {
+    pub(crate) fn has_done_awaiting_recede(&self) -> bool {
         self.command.has_done_awaiting_recede()
     }
 

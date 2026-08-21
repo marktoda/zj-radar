@@ -2523,6 +2523,24 @@ fn heartbeat_marches_one_column_per_tick_while_working() {
 }
 
 #[test]
+fn heartbeat_stays_off_for_a_service_only_rail() {
+    // A Running *service* holds the steady ▸ and never arms the Fast cadence
+    // — a sweep here would only teleport once per Slow fire, and motion
+    // promises bounded work (docs/activity-model.md §1). The tab detail's
+    // kind is the exact gate: the job-over-service tie-break guarantees the
+    // detail is a job whenever any Running job exists.
+    let server = PrimaryDetail { kind: Kind::Server, ..pd("r", "b", "npm run dev", Status::Running) };
+    let rows = vec![tab(1, "dev", display(Status::Running, 0, 1, Some(server)))];
+    let s = render(&rows, &ro(20, 3));
+    let rule = strip_sgr(s.lines().nth(1).unwrap());
+    assert!(
+        !rule.contains('◆'),
+        "no heartbeat for a service-only Running rail: {:?}",
+        rule
+    );
+}
+
+#[test]
 fn heartbeat_absent_when_idle_and_in_cards() {
     // No Running row at all: the rule stays plain regardless of tick.
     let idle_rows = vec![idle_row(1)];

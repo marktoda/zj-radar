@@ -38,16 +38,18 @@ The classes are the *semantic model*, deliberately NOT an `AttentionClass`
 enum: tracing the actual consumers shows no call site would ever match all
 three variants. `Companion` is consumed entirely at intake (the promotion
 policy, §5) — it never becomes an observation, so roll-up, notify, and render
-never see it. `Service` needs exactly two consumers: the glyph split
-(`render::running_glyph`, the single owner) and the cadence term
-(`TrackedObservation::animating`, the single owner — both stores' predicates
-call it). `Job` is the default everywhere. The codebase's existing pattern
-for this is **predicates, not parallel enums**
+never see it. `Service` has two *owners* — the glyph split
+(`render::running_glyph`) and the cadence term
+(`TrackedObservation::animating`, which both stores' predicates call) — plus
+two Kind-reading presentation refinements: the run-tag exclusion
+(`render::run_tag` — services never wear a stopwatch, §3) and the
+job-over-service roll-up tie-break. `Job` is the default everywhere. The
+codebase's existing pattern for this is **predicates, not parallel enums**
 (`Kind::is_agent()`, `Status::{is_active, needs_attention, is_completion}`),
 so the code realizes the model as: the interactive set as intake policy
 (`Companion`), and the `Kind::is_service()` predicate (`Service`) behind
-those two owners. A speculative enum with zero exhaustive matchers would be
-a maintenance liability, not a seam.
+those four readers. A speculative enum with zero exhaustive matchers would
+be a maintenance liability, not a seam.
 
 - **`Job`** — bounded work with an end. Kinds: `Test`, `Build`, `Deploy`,
   `Command`, `Other`.
@@ -186,7 +188,7 @@ One state-machine change carries the whole model. In `CommandStore`, a
   completion, so `zellij run -- nvim` closing reads `nvim ✓`, never a blank
   row. (The identity-less untracked-pane fallback stays load-bearing for
   fast run-pane commands; do not guard it.)
-- **`has_pending_or_active` counts only promotable pendings** — an open
+- **`needs_ticks` counts only promotable pendings** — an open
   editor must not pin the 1 Hz timer (the v0.3.1 cadence guarantee).
 - Prompt contract, agent grace clocks, prune grace (`tracked_pane_ids`
   already includes pendings): all untouched.

@@ -89,7 +89,7 @@ handler by construction.
 
 **Cadence** is a related but distinct axis — how often the one-shot timer
 re-fires, not whether it notifies. Two speeds (`PluginRuntime::desired_cadence`):
-Fast (1 Hz) while there's tick-windowed work — `has_running_work` (a spinning
+Fast (1 Hz) while there's tick-windowed work — `needs_fast_ticks` (a spinning
 glyph), an un-carried completion edge (a status-pipe recede/notify deferred to
 the timer because its own focus can't be trusted), a command `Done` awaiting
 its `DONE_TTL_TICKS` recede, or an active ping flash. Slow (1/60 Hz — once a

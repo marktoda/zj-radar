@@ -105,7 +105,7 @@ impl TrackedObservation {
     /// the steady `▸` mark, so nothing about them animates
     /// (`docs/activity-model.md` §3). THE shared term of both stores' cadence
     /// predicates (`StatusStore::needs_ticks`,
-    /// `CommandStore::has_pending_or_active`), so the service exclusion can
+    /// `CommandStore::needs_ticks`), so the service exclusion can
     /// never half-apply.
     pub fn animating(&self) -> bool {
         self.status == Status::Running && !self.kind.is_service()

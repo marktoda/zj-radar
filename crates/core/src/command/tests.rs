@@ -557,7 +557,7 @@
         // keeps its id and stays live, so its `exited` dedup entry survives. When
         // the pane is RE-RUN and exits with the SAME code, the second exit must
         // still resolve to Done — otherwise the row is stuck Running forever and
-        // `has_pending_or_active` keeps the timer armed (poll/CPU drain).
+        // `needs_ticks` keeps the timer armed (poll/CPU drain).
         let mut store = CommandStore::default();
 
         // First run: promote to Running, then exit 0 → Done.
@@ -583,7 +583,7 @@
             "a re-run's exit must apply even when its code matches the prior run"
         );
         assert!(
-            !store.has_pending_or_active(),
+            !store.needs_ticks(),
             "a finished re-run must not keep the timer armed"
         );
     }
@@ -638,35 +638,35 @@
         );
     }
 
-    // ── Test 8: has_pending_or_active
+    // ── Test 8: needs_ticks
 
     #[test]
-    fn has_pending_or_active_reflects_state() {
+    fn needs_ticks_reflects_state() {
         let mut store = CommandStore::default();
-        assert!(!store.has_pending_or_active(), "empty store → false");
+        assert!(!store.needs_ticks(), "empty store → false");
 
         // Add a pending entry (a promotable job — an interactive command like
         // vim records only a QUIET pending, which must never arm the timer).
         store.on_command_changed(1, &["sleep".to_string(), "30".to_string()], true, None, 1);
-        assert!(store.has_pending_or_active(), "true while pending");
+        assert!(store.needs_ticks(), "true while pending");
 
         // Promote to Running
         let promote_tick = 1 + DEBOUNCE_TICKS;
         store.on_timer(Tick(promote_tick), EpochSecs(0));
-        assert!(store.has_pending_or_active(), "true while Running");
+        assert!(store.needs_ticks(), "true while Running");
 
         // Return to shell → tentative; still active (Running) until debounce.
         let leave_tick = promote_tick + 1;
         store.on_command_changed(1, &[], false, None, leave_tick);
         assert!(
-            store.has_pending_or_active(),
+            store.needs_ticks(),
             "still active until the debounce window flips it to Done"
         );
 
         // Timer past debounce → Done (no pending, no Running).
         store.on_timer(Tick(leave_tick + DEBOUNCE_TICKS), EpochSecs(0));
         assert!(
-            !store.has_pending_or_active(),
+            !store.needs_ticks(),
             "false once Done (no pending, no Running)"
         );
     }
@@ -1108,6 +1108,20 @@
                 "{name} must not double as a push-agent name"
             );
         }
+        // WRAPPERS is a different animal (a transparency list, not a
+        // classification role) but must stay disjoint from ALL THREE
+        // membership lists: `effective_program` peels a wrapper away before
+        // any membership check runs, so a name in both would be silently
+        // invisible to its other list (a wrapped-away "interactive" name
+        // would un-quiet; a wrapped-away shell would break the prompt).
+        for name in WRAPPERS {
+            assert!(
+                !IGNORE_NAMES.contains(name)
+                    && !AGENT_NAMES.contains(name)
+                    && !DEFAULT_INTERACTIVE.contains(name),
+                "{name} is peeled by effective_program — membership lists would never see it"
+            );
+        }
     }
 
     #[test]
@@ -1149,7 +1163,7 @@
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["nvim", "README.md"]), true, None, 0);
         assert!(
-            !s.has_pending_or_active(),
+            !s.needs_ticks(),
             "a quiet pending must not pin the 1 Hz cadence"
         );
         let r = s.on_timer(Tick(DEBOUNCE_TICKS * 10), EpochSecs(100));
@@ -1226,7 +1240,7 @@
         let changed = s.set_interactive_extras(["gdb"]);
         assert!(changed);
         assert_eq!(s.get(1).unwrap().status, Status::Idle, "demoted, not ledgered");
-        assert!(!s.has_pending_or_active());
+        assert!(!s.needs_ticks());
         // Promotion consumed the pending, so the sweep RECONSTRUCTS the quiet
         // pending from the observation — the swept state must be identical to
         // the intake state: muted label available, exits labeled.
@@ -1265,11 +1279,11 @@
         // pending phase still arms (the promotion tick needs to fire).
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
-        assert!(s.has_pending_or_active(), "pending promotion still needs a tick");
+        assert!(s.needs_ticks(), "pending promotion still needs a tick");
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         let obs = s.get(1).unwrap();
         assert_eq!((obs.status, obs.kind), (Status::Running, Kind::Server));
-        assert!(!s.has_pending_or_active(), "a steady service costs zero ticks");
+        assert!(!s.needs_ticks(), "a steady service costs zero ticks");
     }
 
     #[test]
@@ -1282,16 +1296,16 @@
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
-        assert!(!s.has_pending_or_active(), "steady while the server runs");
+        assert!(!s.needs_ticks(), "steady while the server runs");
 
         // Ctrl-C: back to the shell arms the tentative-done…
         s.on_command_changed(1, &argv(&["zsh"]), true, None, DEBOUNCE_TICKS + 1);
         assert!(
-            s.has_pending_or_active(),
+            s.needs_ticks(),
             "the armed Done confirm is a scheduled one-shot — it needs ticks"
         );
         // …which the debounce window then confirms, and the timer may disarm.
         s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
         assert_eq!(s.get(1).unwrap().status, Status::Done, "a dead dev server is news");
-        assert!(!s.has_pending_or_active());
+        assert!(!s.needs_ticks());
     }

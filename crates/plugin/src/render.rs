@@ -15,6 +15,9 @@
 
 use crate::config::Density;
 use crate::kind::Kind;
+// One minute band for every age display (its `1h+` freeze is load-bearing
+// for cadence disarm) — owned by the ledger, shared by the wait/run tags.
+use crate::ledger::minute_tag;
 use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
 use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
@@ -629,24 +632,9 @@ fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -
     minute_tag(now_tick.saturating_sub(since_tick?))
 }
 
-/// THE minute band both time tags share: `None` under a minute (a fresh
-/// wait/run needs no clock), whole minutes below the saturate window, frozen
-/// at `1h+` past it — the freeze is load-bearing for cadence disarm (the same
-/// window the ledger uses), so it must not exist twice.
-fn minute_tag(age: u64) -> Option<String> {
-    if age < 60 {
-        None
-    } else if age < crate::ledger::SATURATE_S {
-        Some(format!("{}m", age / 60))
-    } else {
-        Some("1h+".to_string())
-    }
-}
-
 /// Append a time tag to an identity line: `migrate schema · 12m`. Identity
 /// passes through untouched when no tag applies, keeping calm rows
-/// bit-identical to the tagless rail. At most one tag ever applies per line —
-/// `wait_tag`/`run_tag` key on disjoint statuses.
+/// bit-identical to the tagless rail.
 fn with_time_tag(identity: String, tag: Option<String>) -> String {
     match tag {
         Some(tag) => format!("{identity} · {tag}"),
@@ -851,13 +839,12 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
                 return Vec::new();
             }
         }
+        // The two tags key on disjoint statuses (Pending vs Running), so the
+        // `or_else` chain IS the "at most one tag per line" rule.
         let identity = with_time_tag(
             identity.to_string(),
-            wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s),
-        );
-        let identity = with_time_tag(
-            identity,
-            run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick),
+            wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s)
+                .or_else(|| run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick)),
         );
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
@@ -1534,8 +1521,22 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // working" tally computed later in `render_bottom`; the two live in
     // separate pipeline stages (body vs. bottom region) and sharing one
     // number across that seam would cost more plumbing than the one `filter`
-    // it saves.
-    let working = rows.iter().any(|r| r.display.status == Status::Running);
+    // it saves. The tab detail's kind gates it to *animating* work: a rail
+    // whose only Running rows are services (steady `▸`, no Fast cadence)
+    // must not draw a sweep that would only teleport once per Slow fire —
+    // motion promises bounded work (`docs/activity-model.md` §1). The
+    // job-over-service tie-break makes the detail-kind check exact: whenever
+    // any Running job exists in a tab, the detail IS a job. The footer tally
+    // deliberately stays Status-only — "1 working" for an up dev server is
+    // honest English, and a count is not an animation.
+    let working = rows.iter().any(|r| {
+        r.display.status == Status::Running
+            // A Running tab always carries a detail in production (`roll_up`
+            // sets one whenever an active pane exists), so the None arm is
+            // unreachable — defaulting it to "animate" keeps the sweep the
+            // fail-visible side of that invariant.
+            && r.display.detail.as_ref().is_none_or(|d| !d.kind.is_service())
+    });
 
     let mut flat: Vec<Line> = Vec::new();
 

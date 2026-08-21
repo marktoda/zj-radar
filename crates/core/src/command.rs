@@ -875,7 +875,7 @@ impl CommandStore {
     /// turned off (a Ctrl-C'd dev server must still flip Done in ~2s, not on
     /// the Slow heartbeat). A quiet pending never promotes, so an open editor
     /// still costs zero ticks.
-    pub fn has_pending_or_active(&self) -> bool {
+    pub fn needs_ticks(&self) -> bool {
         self.pending.values().any(|p| p.promotable)
             || !self.pending_done.is_empty()
             || self.store.any(TrackedObservation::animating)

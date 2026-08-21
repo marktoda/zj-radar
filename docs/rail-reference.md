@@ -83,8 +83,11 @@ marker itself is never dropped for the badge's sake.
 
 **Header heartbeat sweep (Task 20).** In Compact/Comfortable density only (the
 densities with the `═` rule — Cards drops the rule entirely, so it never
-carries the heartbeat), whenever any row's `display.status == Status::Running`
-the rule line swaps one `═` character for a `◆` (`Role::Accent`, bold) at
+carries the heartbeat), whenever any row is Running *animating* work (its
+detail is a job, not a service — a rail whose only Running rows are steady-`▸`
+services draws no sweep, since without the Fast cadence the diamond would only
+teleport once per Slow fire, and motion promises bounded work) the rule line
+swaps one `═` character for a `◆` (`Role::Accent`, bold) at
 column `now_tick % width`, wrapping around as the tick advances — a pure,
 stateless function of `now_tick` that marches one column per render tick
 while any tab is actively working, and disappears the instant no row is

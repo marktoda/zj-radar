@@ -1061,7 +1061,7 @@ impl PluginRuntime {
     /// waking every second. Four triggers:
     ///
     /// - **animating work** — a `Running` agent/command whose glyph spins each
-    ///   tick (`RadarState::has_running_work`);
+    ///   tick (`RadarState::needs_fast_ticks`);
     /// - **an un-carried completion edge** — a `status_pipe` payload defers its
     ///   recede + notification to the timer (it can't trust its own focus, see
     ///   `RadarState::status_pipe`), so we must keep ticking until the settle has
@@ -1069,10 +1069,10 @@ impl PluginRuntime {
     ///   advances the baseline, so a *backgrounded* `Done`/`Error`/`Pending` stops
     ///   pinning the timer awake once notified — a later focus change or broadcast
     ///   re-arms it. (The pre-settle baseline read costs at most one extra tick.)
-    /// - **a command `Done` awaiting its TTL recede** (`RadarState::command_awaiting_recede`)
+    /// - **a command `Done` awaiting its TTL recede** (`RadarState::has_done_awaiting_recede`)
     ///   — the row itself is static (it doesn't animate and its notify already
     ///   fired), but the ledger handoff at `DONE_TTL_TICKS` still needs a tick to
-    ///   land on schedule, so it keeps this armed even though `has_running_work`
+    ///   land on schedule, so it keeps this armed even though `needs_fast_ticks`
     ///   stays narrow (see that method's doc for the arming split).
     /// - **an active ping flash** (`RadarState::has_active_flash`) — the
     ///   flip-to-pending glance-catcher is a two-tick visual, not a card fact,
@@ -1080,9 +1080,9 @@ impl PluginRuntime {
     ///
     /// [`has_unsettled_notifications`]: Self::has_unsettled_notifications
     fn timer_should_continue(&self) -> bool {
-        self.radar.has_running_work()
+        self.radar.needs_fast_ticks()
             || self.has_unsettled_notifications()
-            || self.radar.command_awaiting_recede()
+            || self.radar.has_done_awaiting_recede()
             || self.radar.has_active_flash(self.tick)
     }
 

@@ -174,7 +174,7 @@ fn denied_rail_with_running_snapshot_never_arms_the_timer() {
     );
 
     assert!(runtime.permission.denied());
-    assert!(runtime.radar.has_running_work());
+    assert!(runtime.radar.needs_fast_ticks());
     assert!(
         !outcome.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
         "denied rail must not tick for work it can never observe finishing"
@@ -2636,7 +2636,7 @@ mod timer_chain_fuzz {
     enum Step {
         /// Pop and deliver the earliest scheduled fire (real FIFO order).
         Fire,
-        /// A domain edge that can flip `has_running_work` — the real trigger
+        /// A domain edge that can flip `needs_fast_ticks` — the real trigger
         /// for a Slow<->Fast cadence transition.
         SetRunning(bool),
         /// The cross-session cycle's own direct `arm_timer_if_needed` call
