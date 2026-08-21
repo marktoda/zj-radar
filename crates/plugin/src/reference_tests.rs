@@ -499,18 +499,22 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     //        3. panes_changed with exits vec containing the exit code — calls on_exit,
     //           which sets status Done/Error and exit_code on the resolved entry.
 
-    // Collect command-exit panes so we can feed them as a batch to panes_changed.
+    // Command-observer intake, one loop for both DSL shapes: `interactive
+    // "<argv>"` records a quiet pending (identity for the muted label, never
+    // promoted — the later timer step can't touch it) and `exit <N>|?` panes
+    // register the pending the exits batch below completes. Argv comes from
+    // splitting the msg so the CommandStore compacts it back into the display
+    // message (e.g. "cargo build" stays "cargo build").
     let mut command_exits: Vec<(u32, Option<i32>)> = Vec::new();
-
-    // Interactive panes (`interactive "<argv>"`): the command-observer path
-    // with an interactive fg command. A quiet pending is recorded (identity
-    // for the muted label) and never promoted — no timer step needed.
     for spec in &tabs {
         for pane in &spec.panes {
-            if pane.interactive {
+            if pane.interactive || pane.exit_code.is_some() {
                 let argv: Vec<String> =
                     pane.msg.split_whitespace().map(|s| s.to_string()).collect();
                 radar.command_changed(pane.pane_id, &argv, true, 0);
+                if let Some(code) = pane.exit_code {
+                    command_exits.push((pane.pane_id, code));
+                }
             }
         }
     }
@@ -567,24 +571,6 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                 // (or, at 0, deliberately do not earn) the `· Nm` wait tag.
                 let apply_epoch = LEDGER_NOW_EPOCH_S.saturating_sub(pane.waiting_m * 60);
                 radar.status_pipe(&wire, 0, apply_epoch, NamingMode::Off);
-            }
-        }
-    }
-
-    // Command-origin path for panes with an `exit <N>|?` trailer.
-    // Step 1: command_changed (tick=0) — registers each pane as a pending command.
-    // Step 2: timer(tick=DEBOUNCE_TICKS) — promotes all pending commands to Running.
-    // Step 3: panes_changed with exits — on_exit sets Done/Error + exit_code.
-    for spec in &tabs {
-        for pane in &spec.panes {
-            if let Some(code) = pane.exit_code {
-                // Build argv from the msg string so the CommandStore compacts it
-                // into the display message (e.g. "cargo build" stays "cargo build").
-                let argv: Vec<String> = pane.msg.split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
-                radar.command_changed(pane.pane_id, &argv, true, 0);
-                command_exits.push((pane.pane_id, code));
             }
         }
     }

@@ -211,6 +211,13 @@ pub struct TabDisplay {
     pub progress: ProgressCounts,
     pub detail: Option<PrimaryDetail>,
     pub panes: Vec<PaneDisplay>,
+    /// Any pane in this tab holds tick-driven motion —
+    /// [`TrackedObservation::animating`], the same canonical term both stores'
+    /// cadence predicates use, so the service exclusion can never half-apply
+    /// between cadence and paint. Render reads this for the header sweep
+    /// instead of re-deriving it from `detail` (which would lean on the
+    /// job-over-service tie-break for correctness).
+    pub animating: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -245,6 +252,7 @@ pub fn roll_up<'a, 'q>(
     let mut done = 0usize;
     let mut total = 0usize;
     let mut pending = 0usize;
+    let mut animating = false;
     let mut pane_displays = Vec::with_capacity(panes.len());
 
     let interactive = |pane_id: u32| {
@@ -296,6 +304,7 @@ pub fn roll_up<'a, 'q>(
                 .unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
             pane_displays.push(display);
         }
+        animating = animating || s.animating();
         // Most-urgent active pane wins; on equal severity a bounded *job*
         // outranks a *service* (a spinning build summarizes the tab better
         // than a dev server that is merely up — `docs/activity-model.md` §3);
@@ -332,6 +341,7 @@ pub fn roll_up<'a, 'q>(
         },
         detail: best,
         panes: pane_displays,
+        animating,
     }
 }
 

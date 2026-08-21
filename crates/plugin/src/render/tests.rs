@@ -80,6 +80,11 @@ fn display(
             }]
         })
         .unwrap_or_default();
+    // Mirror `roll_up`: a Running tab animates unless the work is a service
+    // (steady mark, no fast cadence). A detail-less Running fixture animates —
+    // in production a Running status implies an animating observation existed.
+    let animating =
+        status == Status::Running && detail.as_ref().is_none_or(|d| !d.kind.is_service());
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -89,6 +94,7 @@ fn display(
         },
         detail,
         panes,
+        animating,
     }
 }
 
@@ -306,6 +312,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 pe(10, Kind::Claude, Status::Pending, "approve"),
                 pe(11, Kind::Claude, Status::Running, "tests"),
             ],
+            animating: true,
         }),
         tab(2, "plain", display(Status::Idle, 0, 0, None)),
     ];
@@ -811,6 +818,7 @@ fn multi_pending_detail_never_exceeds_width() {
         },
         detail: Some(detail),
         panes: vec![],
+        animating: false,
     })];
     for width in [14usize, 16, 17, 20, 24] {
         let s = render(&rows, &ro(width, 0));
@@ -1174,6 +1182,13 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             ..pd("r", "b", msg.clone(), *pane_status) }),
         _ => None,
     });
+    // Mirror `roll_up`: any Running non-service pane animates the tab.
+    let animating = panes.iter().any(|p| match p {
+        PaneDisplay::Tracked { kind, status, .. } => {
+            *status == Status::Running && !kind.is_service()
+        }
+        _ => false,
+    });
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -1183,6 +1198,7 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         },
         detail,
         panes,
+        animating,
     }
 }
 
@@ -1281,6 +1297,7 @@ fn multi_pane_untracked_only_summary_names_panes() {
             PaneDisplay::untracked(1, "shell"),
             PaneDisplay::untracked(2, "logs"),
         ],
+        animating: false,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -1307,6 +1324,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
             pe(1, Kind::Codex, Status::Running, "tests"),
             PaneDisplay::untracked(2, "shell"),
         ],
+        animating: true,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -3760,6 +3778,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
             pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
         ],
+        animating: true,
     });
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper

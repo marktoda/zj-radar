@@ -1208,6 +1208,32 @@
     }
 
     #[test]
+    fn childless_interactive_root_still_records_quiet_pending() {
+        // `zellij run -- nvim`: the editor IS the pane root, and a childless
+        // root reports `is_foreground=false` (the flag only encodes "the root
+        // has a child" — see `is_shell_prompt`). That report is the editor
+        // alive, not a return to the prompt: the quiet pending must form
+        // anyway, or the held pane's exit inserts the blank Done row the
+        // activity model promises never happens (`docs/activity-model.md` §5).
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["nvim"]), false, Some("/w/proj"), 0);
+        assert_eq!(
+            s.quiet_identity(1),
+            Some(("nvim", Kind::Command)),
+            "muted label available while the run-pane editor is open"
+        );
+        assert!(!s.needs_ticks(), "an open editor never pins the timer");
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert!(s.get(1).is_none(), "quiet pending never promotes to Running");
+
+        s.on_exit(1, Some(0), Tick(50), EpochSecs(1000));
+        let obs = s.get(1).unwrap();
+        assert_eq!(obs.status, Status::Done);
+        assert_eq!(obs.msg, "nvim", "exit labeled — never a blank row");
+        assert_eq!(obs.repo, "proj");
+    }
+
+    #[test]
     fn interactive_commands_are_not_prompts_and_not_agents() {
         // The prompt contract is untouched: opening an editor must not read
         // as "returned to shell" (which exit-clears pushed agent statuses) and
@@ -1225,6 +1251,29 @@
         s.on_command_changed(1, &argv(&["zsh"]), true, None, 5);
         assert_eq!(s.quiet_identity(1), None, "back at the prompt — label gone");
         assert!(s.get(1).is_none(), "no row was ever created");
+    }
+
+    #[test]
+    fn sweep_skips_a_row_already_leaving_the_foreground() {
+        // gdb promoted to Running, then returned to the shell — its
+        // tentative-done is armed. A config.v1 naming gdb interactive that
+        // lands inside the debounce window must NOT sweep the row: the pane is
+        // back at the prompt, so demoting to Idle and reconstructing a quiet
+        // pending would ghost a muted `gdb` label that nothing ever clears
+        // (the shell-return CommandChanged already fired — edge-triggered,
+        // never replayed). Let the armed confirm flip Running→Done normally.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["gdb"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, DEBOUNCE_TICKS + 1);
+
+        s.set_interactive_extras(["gdb"]);
+        assert_eq!(s.quiet_identity(1), None, "no ghost label for a prompt pane");
+        assert_eq!(s.get(1).unwrap().status, Status::Running, "left for the confirm");
+
+        s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
+        assert_eq!(s.get(1).unwrap().status, Status::Done, "real completion lands");
     }
 
     #[test]

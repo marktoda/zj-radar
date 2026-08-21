@@ -115,6 +115,12 @@ struct Pending {
     kind: Kind,
     since_tick: u64,
     promotable: bool,
+    /// The peeled exe basename (`effective_program`), stamped at intake — the
+    /// interactive re-judge matches on THIS, not the display string, so its
+    /// correctness is structural rather than held by the display-shape guard
+    /// test. (The sweep over already-promoted *observations* still derives it
+    /// from the display — see `set_interactive_extras`.)
+    program: String,
 }
 
 /// Tracks per-pane command activity for terminal panes that have no agent
@@ -533,36 +539,33 @@ impl CommandStore {
         // mean back-to-the-prompt; agents are owned by the push pipe (see
         // AGENT_NAMES). Either way we never open a command lifecycle for them.
         let in_ignore_set = IGNORE_NAMES.contains(&name) || AGENT_NAMES.contains(&name);
+        let interactive = self.interactive.contains(name);
 
-        if !is_foreground || in_ignore_set {
+        // An interactive argv takes the intake arm below whatever the
+        // foreground flag says: the flag only encodes "the root has a child"
+        // (see `is_shell_prompt`), so a childless interactive ROOT
+        // (`zellij run -- nvim`) reports `is_foreground=false` — and that
+        // report is the editor alive, not a return to the prompt. Dropping it
+        // here would skip the quiet pending, and the held pane's exit would
+        // insert the blank Done row the activity model promises never happens.
+        // Shell panes can't reach this override: their childless root IS the
+        // shell, which the ignore set already catches.
+        if (!is_foreground && !interactive) || in_ignore_set {
             // The foreground command (if any) has ended: clear pending and, if a
             // command was Running, mark it *tentatively* done. `on_timer`
             // confirms the Done after the debounce window — so a momentary
             // foreground drop (a child subprocess, a TUI handoff) doesn't flip
             // the row to Done and straight back.
             self.pending.remove(&pane_id);
-            if self
-                .store
-                .get(pane_id)
-                .is_some_and(|s| s.status == Status::Running)
-            {
-                self.pending_done.entry(pane_id).or_insert(tick);
-            }
+            self.arm_tentative_done(pane_id, tick);
             // Otherwise leave resolved unchanged (idle stays idle).
         } else {
-            let interactive = self.interactive.contains(name);
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
                 // branch above — opening nvim after `cargo build` finished must
                 // still flip the build row to Done.
-                if self
-                    .store
-                    .get(pane_id)
-                    .is_some_and(|s| s.status == Status::Running)
-                {
-                    self.pending_done.entry(pane_id).or_insert(tick);
-                }
+                self.arm_tentative_done(pane_id, tick);
             } else {
                 // A real foreground command is running: it is no longer
                 // leaving, so cancel any tentative-done.
@@ -596,8 +599,24 @@ impl CommandStore {
                     kind,
                     since_tick: tick,
                     promotable: !interactive,
+                    program: name.to_string(),
                 },
             );
+        }
+    }
+
+    /// Start the tentative-done debounce for a pane whose Running command has
+    /// left the foreground: `on_timer` confirms the Done after the debounce
+    /// window, so a momentary drop (a child subprocess, a TUI handoff) doesn't
+    /// flip the row to Done and straight back. `or_insert` keeps the FIRST
+    /// observation tick — re-reports must not restart the window.
+    fn arm_tentative_done(&mut self, pane_id: u32, tick: u64) {
+        if self
+            .store
+            .get(pane_id)
+            .is_some_and(|s| s.status == Status::Running)
+        {
+            self.pending_done.entry(pane_id).or_insert(tick);
         }
     }
 
@@ -907,9 +926,11 @@ impl CommandStore {
             .collect();
         let mut changed = false;
         // Re-judge every pending against the new set — symmetric, so removing
-        // an extra un-quiets its pending and the next tick promotes it.
+        // an extra un-quiets its pending and the next tick promotes it. The
+        // match key is the intake-stamped `program`, the same peeled name the
+        // intake classification used.
         for p in self.pending.values_mut() {
-            let quiet = first_token(&p.command).is_some_and(|t| self.interactive.contains(t));
+            let quiet = self.interactive.contains(&p.program);
             if p.promotable == quiet {
                 p.promotable = !quiet;
                 changed = true;
@@ -923,11 +944,18 @@ impl CommandStore {
         // removing the config entry later re-promotes symmetrically. (The
         // observation's `repo` is already a basename; `on_exit`'s
         // `basename(cwd)` is idempotent over it.)
+        //
+        // A row with an armed tentative-done is exempt: its command already
+        // left the foreground (the pane is back at the prompt), so demoting it
+        // would ghost a quiet pending that no future CommandChanged clears —
+        // the shell-return edge already fired. The armed confirm flips it
+        // Running→Done on schedule, which is the true outcome.
         let to_demote: Vec<u32> = self
             .store
             .observations()
-            .filter(|(_, s)| {
+            .filter(|(id, s)| {
                 s.status == Status::Running
+                    && !self.pending_done.contains_key(id)
                     && first_token(&s.msg).is_some_and(|t| self.interactive.contains(t))
             })
             .map(|(id, _)| id)
@@ -942,6 +970,10 @@ impl CommandStore {
                     kind: s.kind,
                     since_tick: s.last_change_tick,
                     promotable: false,
+                    // Observations don't carry the peeled name; re-derive it
+                    // from the display (the same key that matched `to_demote`,
+                    // held by the display-shape guard test).
+                    program: first_token(&s.msg).unwrap_or_default().to_string(),
                 };
                 self.pending.entry(pane_id).or_insert(quiet);
             }
