@@ -150,7 +150,8 @@
         # `just`, `bats`, and `shellcheck` are required by the CI recipes
         # (`just test-bash` / `just test-e2e`, and the `shellcheck` step) — keep
         # them here so `nix develop -c just …` resolves on PATH. `jq` is used by
-        # the bash hook tests.
+        # the bash hook tests. `cargo-deny` reproduces the nightly advisory job
+        # (`cargo deny check`).
         packages = [
           toolchain
           pkgs.jq
@@ -158,6 +159,7 @@
           pkgs.just
           pkgs.bats
           pkgs.shellcheck
+          pkgs.cargo-deny
         ];
         shellHook = ''
           echo "zj-radar dev shell: $(rustc --version)"

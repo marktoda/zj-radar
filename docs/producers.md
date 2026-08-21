@@ -29,7 +29,9 @@ the second installs the `zj-radar-claude` plugin *from* it — that's what the
 `zj-radar-claude@zj-radar` (`plugin@marketplace`) syntax means.
 
 Requires `jq` and `git` on `PATH` (used to parse the hook payload and derive
-repo/branch). See [`plugins/zj-radar-claude/README.md`](../plugins/zj-radar-claude/README.md)
+repo/branch) — though `jq` is needed only by the bash fallback: when the native
+`zj-radar` binary is on `PATH` the hook prefers it and exits before the `jq`
+gate. See [`plugins/zj-radar-claude/README.md`](../plugins/zj-radar-claude/README.md)
 for details. It's a no-op outside Zellij, so it's safe to leave enabled
 everywhere.
 
@@ -51,22 +53,37 @@ cargo install zj-radar
 - **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude
   plugin's hook script automatically prefers it when it's on `PATH` (jq-free);
   otherwise the plugin falls back to its bundled `bash`+`jq` script.
-- **`zj-radar setup [codex]`** — idempotently wires Codex's
-  `~/.codex/hooks.json` to call `zj-radar notify codex`. This preserves any
-  existing Codex `notify` program (e.g. a Computer Use notifier), because hooks
-  are additive. Use `--dry-run` to preview, `--uninstall` to remove only
-  zj-radar's hooks, and `--check` to diagnose the current setup. After installing
-  or changing hooks, run `/hooks` inside Codex once to review and trust the
-  command hook. (Claude needs no `setup` — use the plugin above.)
+- **`zj-radar setup [claude|codex]`** — idempotently wires the named agent
+  (bare `setup` wires every detected agent). Codex gets hook entries in
+  `hooks.json` under `$CODEX_HOME` (or `~/.codex` when it's unset) calling
+  `zj-radar notify codex`. This preserves any existing Codex `notify` program
+  (e.g. a Computer Use notifier), because hooks are additive. Claude is wired
+  through Claude Code's own `claude plugin` CLI (marketplace add + install —
+  the same install as [above](#claude-code)) rather than by editing files.
+  Both take the same flags: `--dry-run` to preview, `--uninstall` to remove
+  only zj-radar's wiring, and `--check` to diagnose the current setup. After
+  installing or changing hooks, run `/hooks` inside Codex once to review and
+  trust the command hook.
 - **`zj-radar setup codex --legacy-notify`** — opt-in fallback for older Codex
   setups that only support the single `notify` program. It refuses to replace a
   foreign notifier unless `--force` is also passed.
 - **`zj-radar setup zellij --wasm <path>`** — copies the sidebar wasm to
-  `~/.config/zellij/plugins/zj_radar.wasm`, manages the `radar` alias in
-  `config.kdl`, and prints the layout snippet. It leaves layouts user-owned.
+  `~/.config/zellij/plugins/zj_radar.wasm` (or fetches the release matching the
+  CLI's version with `--download` instead of `--wasm`), manages the `radar`
+  alias in `config.kdl`, and offers layout injection: on a TTY it asks before
+  adding the rail to your layout, `--inject` consents non-interactively,
+  `--layout <name>` targets a specific layout, and otherwise it prints the
+  snippet to paste yourself. `--uninstall` strips both the alias and the
+  injected rail.
 
 Codex hooks report turn start, tool use, permission requests, subagents, and
-turn stop. zj-radar maps those to `running`, `pending`, and `done`.
+turn stop. zj-radar maps those to `running`, `pending`, and `done`. `setup`
+writes one entry per event across seven hook events (`UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `SubagentStart`,
+`SubagentStop`, `Stop`), each with `timeout` 10 — the default send cap plus
+5 s of headroom, so Codex's hook runner never races the bounded send (see
+[below](#writing-your-own-producer)) — a `commandWindows` variant, and the
+`ZJ_RADAR_CODEX_HOOK=v1` marker that idempotency and `--uninstall` key on.
 
 ## Any script: `zj-radar notify generic`
 
@@ -86,8 +103,9 @@ zj-radar notify generic --status done --msg "deploy finished" --source deploy
   `idle` always broadcasts blank.
 - `--task`: the sticky task label (empty keeps the stored one).
 - `--source`: picks the kind mark — `test` ⚗ · `build` ⚙ · `deploy` ⇡ ·
-  `server` ❯ · `command` $ — anything else (including the default `generic`)
-  renders the neutral `⦿`.
+  `server` ❯ · `command` $, and the agent tokens `claude` ✳ · `codex` ❉ ·
+  `gemini` ✦ — anything else (including the default `generic`) renders the
+  neutral `⦿`.
 - Repo/branch come from `git` in the calling directory; the pane id from
   `$ZELLIJ_PANE_ID`. Outside Zellij it's a silent no-op (safe under `set -e`).
   `--dry-run` prints the payload instead of broadcasting.
@@ -96,7 +114,9 @@ The same lifecycle rules as agents apply: latest broadcast wins, a finished
 status clears when the pane returns to its shell prompt, and a `running` row
 whose pane sits at the prompt with no follow-up broadcast is cleared by the
 stale-Running watchdog after ~15s — so send `done`/`error` when your script
-finishes rather than leaning on the watchdog.
+finishes rather than leaning on the watchdog. A pane whose root process exits
+clears *any* status immediately, no grace clock — relevant for `zellij run`
+script panes, where the pane outlives the process but the row does not.
 
 ## Writing your own producer
 
@@ -130,12 +150,15 @@ name, never `--plugin`) a `zj_radar.status.v1` message:
 - `source`: tokens are lowercase-exact — matching is case-sensitive, so
   `"claude"` classifies as the Claude agent while `"Claude"` falls back to the
   neutral kind.
-- `task` (optional, sent only on `UserPromptSubmit`): sticky task label —
-  empty/absent leaves the stored label unchanged, non-empty replaces it; the
-  plugin clears it on idle and on return-to-shell.
+- `task` (optional): sticky task label, valid with any status — empty/absent
+  leaves the stored label unchanged, non-empty replaces it; the plugin clears
+  it on idle and on return-to-shell. (The bundled adapters happen to send it
+  only on `UserPromptSubmit`; `notify generic --task` sends it whenever you
+  like.)
 - `ack` (optional, default `false`): "the user has already seen this status" —
   the plugin converges state as usual but never fires a desktop notification
-  for it. Set by the rail's own right-click acknowledge broadcast; producers
+  for it. Set by the rail's own acknowledge gesture (the right-edge `✓`
+  hotspot); producers
   reporting real events should leave it absent (an acknowledged `done` would
   otherwise skip the completion notification the user wanted).
 - Unknown fields are ignored, so it's safe to send extras. (A former `on_focus`
@@ -148,7 +171,10 @@ chars and Unicode bidi-control characters, folds newlines to spaces, and
 silently ignores unknown fields, so extra keys never break a producer. The plugin
 also enforces field limits, so you don't have to pre-truncate: `repo`/`branch` are cut to 40 chars,
 `msg`/`task` to 60, `source` to 16 — and a payload over **64 KB** is dropped
-whole. `pane.type` must be `"terminal"`; any other pane type is rejected.
+whole. `pane.type` must be `"terminal"`; any other pane type is rejected. The
+store is bounded too: past **256** distinct pane ids the oldest observation (by
+last status change) is evicted, so a producer looping over fresh pane ids can't
+grow the state without limit.
 
 Quick smoke test (a "fake agent" — broadcast straight from your shell):
 
@@ -163,7 +189,8 @@ client process until *every* loaded plugin instance consumes the message
 blocks the client **forever** — and a producer that fires per tool-call then
 leaks one blocked process plus two Zellij-server FDs per event, until the
 server hits EMFILE and the whole session crashes. Wrap the call in a timeout
-(the bundled producers use 5 s, `ZJ_RADAR_PIPE_TIMEOUT` to override); killing
+(the bundled producers default to 5 s for status edges, 2 s for `running`
+heartbeats — see below; `ZJ_RADAR_PIPE_TIMEOUT` overrides both); killing
 the client past the deadline loses nothing — the message is already queued
 server-side.
 
@@ -186,4 +213,9 @@ bounded no-op. Hot-path events that fire per tool call deserve a *shorter*
 deadline than rare edges: an expired `running` is a dropped heartbeat the
 next event replaces, so the bundled producers key the default on status —
 `running` sends cap at 2 s, the `done`/`pending`/`idle` edges keep the full
-5 s (`ZJ_RADAR_PIPE_TIMEOUT` overrides both).
+5 s. A Rust producer should reuse the same numbers: `zj-radar-core` re-exports
+them as `RUNNING_PIPE_TIMEOUT_SECS` / `DEFAULT_PIPE_TIMEOUT_SECS` next to
+`self_limiting_pipe_argv`. `ZJ_RADAR_PIPE_TIMEOUT` overrides both defaults, and
+its parse is strict: whole seconds only, clamped to 3600 — anything else
+(`10s`, a negative, an empty string) fails closed to the default rather than
+running unbounded.

@@ -588,7 +588,7 @@ impl CommandStore {
 
             let cwd_str = cwd.unwrap_or("").to_string();
             // Interactive commands record a QUIET pending: the identity is kept
-            // — it labels a held pane's exit (`nvim ✓`, never a blank Done row)
+            // — it labels a held pane's exit (`● $ nvim`, never a blank Done row)
             // and feeds the muted pane label — but `on_timer` never promotes it
             // to a Running row, and it never arms the fast cadence.
             self.pending.insert(
