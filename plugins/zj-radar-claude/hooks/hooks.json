@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
+            "command": "ZJ_RADAR_PIPE_TIMEOUT=1 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
             "timeout": 5
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
+            "command": "ZJ_RADAR_PIPE_TIMEOUT=1 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
+            "command": "ZJ_RADAR_PIPE_TIMEOUT=1 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
             "timeout": 5
           }
         ]
@@ -42,7 +42,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending",
-            "timeout": 5
+            "timeout": 7
           }
         ]
       },
@@ -52,7 +52,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending",
-            "timeout": 5
+            "timeout": 7
           }
         ]
       }
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
+            "command": "ZJ_RADAR_PIPE_TIMEOUT=1 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running",
             "timeout": 5
           }
         ]
@@ -74,7 +74,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh done",
-            "timeout": 5
+            "timeout": 7
           }
         ]
       }
@@ -86,7 +86,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle",
-            "timeout": 5
+            "timeout": 7
           }
         ]
       }
@@ -97,7 +97,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle",
-            "timeout": 5
+            "timeout": 7
           }
         ]
       }

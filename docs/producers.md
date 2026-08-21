@@ -175,3 +175,12 @@ the subtree you spawn, not only in your process: run the pipe under a shell
 alongside a detached `sleep <deadline>; kill` pair, the way the bundled
 producers do (`self_limiting_pipe_argv` in `zj-radar-core`'s `pipe` module,
 mirrored by notify.sh's sleep+kill watchdog).
+
+And leave the hook runner headroom to let that graceful path finish: if your
+runner enforces its own per-hook timeout, set it **above** your send deadline
+plus reaper slack (the bundled Claude hooks keep `timeout >= cap + 2` — equal
+budgets mean the runner always kills the hook first and your bounded no-op
+never runs). Hot-path events that fire per tool call deserve a *shorter* send
+cap than rare edges: an expired `running` is a dropped heartbeat, so the
+bundled hooks run it at `ZJ_RADAR_PIPE_TIMEOUT=1` while `done`/`pending` keep
+the full 5 s.

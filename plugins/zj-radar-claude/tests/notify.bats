@@ -284,7 +284,10 @@ EOF
   local cli_log="$FAKEBIN/cli.log"
   # Fake CLI: drain stdin, parse --status, and record it AFTER the delay, so
   # the log reflects ARRIVAL order rather than call order. A `running` send is
-  # the slow one — exactly the skew a loaded machine produces.
+  # the slow one — exactly the skew a loaded machine produces. 2 s of skew, not
+  # 1: the guard only turns red if the second invocation completes inside the
+  # delay, and a loaded CI runner can eat a full second in fork/exec alone —
+  # a too-small margin lets the regression pass vacuously green.
   cat >"$FAKEBIN/zj-radar" <<EOF
 #!/usr/bin/env bash
 cat >/dev/null 2>&1 || true
@@ -293,7 +296,7 @@ while [[ \$# -gt 0 ]]; do
   [[ "\$1" == "--status" ]] && { status="\$2"; shift; }
   shift
 done
-[[ "\$status" == "running" ]] && sleep 1
+[[ "\$status" == "running" ]] && sleep 2
 printf '%s\n' "\$status" >> "$cli_log"
 EOF
   chmod +x "$FAKEBIN/zj-radar"
@@ -326,4 +329,64 @@ EOF
     printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
     return 1
   }
+}
+
+@test "bash fallback keeps running→done in order (stuck-spinner guard, fallback path)" {
+  # The native-CLI case above pins one dispatch branch; this pins the OTHER —
+  # the bash fallback, where this exact bug shipped once before (the send
+  # comment at the script's tail records it). Same shape: the fake zellij logs
+  # payloads AFTER a delay on `running`, so the log is ARRIVAL order and a
+  # re-backgrounded send would let `done` overtake.
+  local order_log="$FAKEBIN/order.log"
+  cat >"$FAKEBIN/zellij" <<EOF
+#!/usr/bin/env bash
+payload="\${!#}"
+[[ "\$payload" == *'"status":"running"'* ]] && sleep 2
+printf '%s\n' "\$payload" >> "$order_log"
+exit 0
+EOF
+  chmod +x "$FAKEBIN/zellij"
+
+  printf '%s' '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}' \
+    | "$SCRIPT" running
+  printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp","last_assistant_message":"finished"}' \
+    | "$SCRIPT" done
+
+  local i
+  for i in $(seq 1 100); do
+    [ "$(wc -l <"$order_log" 2>/dev/null || echo 0)" -ge 2 ] && break
+    sleep 0.1
+  done
+
+  local expected actual
+  expected="$(printf '"status":"running"\n"status":"done"')"
+  actual="$(grep -o '"status":"[a-z]*"' "$order_log" 2>/dev/null || true)"
+  [ "$actual" = "$expected" ] || {
+    printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
+    return 1
+  }
+}
+
+@test "hooks.json leaves kill headroom above every pipe deadline (timeout >= cap + 2)" {
+  # The hook runner kills a hook at hooks.json's `timeout`; notify.sh's
+  # graceful bounded no-op takes pipe-cap + 1 s (the CLI's parent reaper)
+  # to exit while the rail is wedged. Equal budgets mean the runner ALWAYS
+  # kills the hook first and the "capped wait, clean exit" contract is dead
+  # code — so every entry must keep timeout >= cap + 2 (1 s reaper + 1 s
+  # spawn slack). The cap is the ZJ_RADAR_PIPE_TIMEOUT=N command prefix when
+  # present, else the shared 5 s default (DEFAULT_PIPE_TIMEOUT_SECS).
+  local hooks_json="$BATS_TEST_DIRNAME/../hooks/hooks.json"
+  local n=0 timeout cmd cap
+  while IFS=$'\t' read -r timeout cmd; do
+    n=$((n + 1))
+    cap=5
+    [[ "$cmd" =~ ZJ_RADAR_PIPE_TIMEOUT=([0-9]+) ]] && cap="${BASH_REMATCH[1]}"
+    (( timeout >= cap + 2 )) || {
+      printf 'no headroom: "%s" has timeout %s vs cap %s (need >= cap + 2)\n' \
+        "$cmd" "$timeout" "$cap"
+      return 1
+    }
+  done < <(jq -r '.hooks[][].hooks[] | [.timeout, .command] | @tsv' "$hooks_json")
+  # Non-vacuity: all nine entries (eight events, Notification has two) parsed.
+  [ "$n" -ge 9 ]
 }

@@ -42,6 +42,16 @@ input="$(head -c 8388608 2>/dev/null || true)"
 # pane's foreground process. The CLI bounds its own send (`pipe_send_timeout`
 # in crates/cli/src/notify.rs), so a wedged rail costs a capped wait rather
 # than an open-ended hook; a healthy local server answers in milliseconds.
+#
+# The cap only holds if the hook runner lets it finish: Claude Code kills the
+# hook at hooks.json's `timeout`, and the graceful exit here takes cap + 1 s
+# (the CLI's parent reaper) — so hooks.json must keep `timeout` >= cap + 2.
+# The hot-path `running` hooks (UserPromptSubmit, Pre/PostToolUse,
+# SubagentStop) run at ZJ_RADAR_PIPE_TIMEOUT=1 under the 5 s hook timeout: a
+# `running` that misses a 1 s deadline is a harmless dropped heartbeat, and a
+# wedged rail then stalls each hook ~2 s instead of ~5 (a tool call fires two:
+# Pre + Post). The once-per-turn edges keep the full 5 s cap under a 7 s hook
+# timeout. Pinned structurally by the headroom case in tests/notify.bats.
 if command -v zj-radar >/dev/null 2>&1; then
     printf '%s' "$input" \
         | zj-radar notify claude --status "$status" >/dev/null 2>&1 \
