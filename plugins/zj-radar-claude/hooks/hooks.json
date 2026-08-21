@@ -42,7 +42,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },
@@ -52,7 +52,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
@@ -74,7 +74,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh done",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
@@ -86,7 +86,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
@@ -97,7 +97,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh idle",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }

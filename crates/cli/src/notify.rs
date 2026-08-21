@@ -272,7 +272,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // parent-side deadline below. The parent loop stays as the reaper on the
     // normal path (and as a backstop), padded past the watchdog so the subtree
     // ordinarily wins.
-    let timeout = pipe_send_timeout();
+    let timeout = pipe_send_timeout(update.status);
     let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
     let Ok(mut child) = Command::new(&argv[0])
         .args(&argv[1..])
@@ -299,21 +299,39 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
 /// seconds — shared with notify.sh's bash fallback, keep the two in sync)
-/// overrides for tests; the shared default (`pipe::DEFAULT_PIPE_TIMEOUT_SECS`)
-/// is orders of magnitude above a healthy send (milliseconds) yet caps a
-/// wedged one at hook rate. Clamped to an hour:
-/// `Instant::now() + Duration::from_secs(u64::MAX)` overflows and panics,
-/// and this module promises the calling hook never sees a panic.
-fn pipe_send_timeout() -> std::time::Duration {
-    parse_pipe_timeout(std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok())
+/// overrides both defaults; absent that, the default is keyed on the status
+/// being sent: `running` heartbeats ride the per-tool-call hot path and are
+/// droppable (the next tool event replaces one), so they get the short
+/// `RUNNING_PIPE_TIMEOUT_SECS`, while the once-per-turn edges keep the full
+/// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
+/// the default here (instead of per-entry env prefixes in hooks.json) gives
+/// every producer — claude, codex, generic — the policy from one seam.
+/// Clamped to an hour: `Instant::now() + Duration::from_secs(u64::MAX)`
+/// overflows and panics, and this module promises the calling hook never
+/// sees a panic.
+fn pipe_send_timeout(status: Status) -> std::time::Duration {
+    parse_pipe_timeout(
+        std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
+        default_pipe_timeout_secs(status),
+    )
+}
+
+/// The status-keyed half of `pipe_send_timeout`, split out (like
+/// `parse_pipe_timeout`) so it is testable without racing on process-global
+/// env.
+fn default_pipe_timeout_secs(status: Status) -> u64 {
+    match status {
+        Status::Running => crate::pipe::RUNNING_PIPE_TIMEOUT_SECS,
+        _ => crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+    }
 }
 
 /// The parse half of `pipe_send_timeout`, split out so the fallback and the
 /// overflow clamp are unit-testable without racing on process-global env.
-fn parse_pipe_timeout(raw: Option<String>) -> std::time::Duration {
+fn parse_pipe_timeout(raw: Option<String>, default_secs: u64) -> std::time::Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .map(|secs| std::time::Duration::from_secs(secs.min(3600)))
-        .unwrap_or(std::time::Duration::from_secs(crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS))
+        .unwrap_or(std::time::Duration::from_secs(default_secs))
 }
 
 #[cfg(test)]
@@ -324,25 +342,51 @@ mod tests {
 
     #[test]
     fn pipe_timeout_defaults_and_falls_back_on_garbage() {
-        // Unset, non-numeric, negative, and suffixed forms all take the shared
+        // Unset, non-numeric, negative, and suffixed forms all take the given
         // default — fail closed, matching notify.sh's regex guard. Pinned to
         // the core constant so the CLI's watchdog and parent deadline can
         // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
-                parse_pipe_timeout(raw.map(String::from)).as_secs(),
+                parse_pipe_timeout(raw.map(String::from), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS)
+                    .as_secs(),
                 crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
         }
-        assert_eq!(parse_pipe_timeout(Some("2".into())).as_secs(), 2);
+        assert_eq!(
+            parse_pipe_timeout(Some("2".into()), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS).as_secs(),
+            2
+        );
+    }
+
+    #[test]
+    fn pipe_timeout_default_is_keyed_on_status() {
+        // `running` heartbeats are droppable → short cap; edges keep the full
+        // default. The env override (tested above via parse_pipe_timeout)
+        // beats both. Pinned to the core constants so notify.sh's mirrored
+        // literals and the hooks.json headroom guard share one source.
+        assert_eq!(
+            default_pipe_timeout_secs(Status::Running),
+            crate::pipe::RUNNING_PIPE_TIMEOUT_SECS
+        );
+        for edge in [Status::Done, Status::Pending, Status::Idle] {
+            assert_eq!(
+                default_pipe_timeout_secs(edge),
+                crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+                "status={edge:?}"
+            );
+        }
     }
 
     #[test]
     fn pipe_timeout_clamps_so_instant_addition_cannot_panic() {
         // u64::MAX seconds would overflow `Instant + Duration` and panic —
         // this module promises the calling hook never sees a panic.
-        let d = parse_pipe_timeout(Some(u64::MAX.to_string()));
+        let d = parse_pipe_timeout(
+            Some(u64::MAX.to_string()),
+            crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+        );
         assert_eq!(d.as_secs(), 3600);
         let _ = std::time::Instant::now() + d; // must not panic
     }

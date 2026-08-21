@@ -58,11 +58,11 @@ zj-radar-claude/
 {
   "hooks": {
     "UserPromptSubmit": [{ "hooks": [{ "type": "command",
-      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running" }] }],
+      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh running", "timeout": 5 }] }],
     "Notification": [{ "hooks": [{ "type": "command",
-      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending" }] }],
+      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh pending", "timeout": 10 }] }],
     "Stop": [{ "hooks": [{ "type": "command",
-      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh done" }] }]
+      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify.sh done", "timeout": 10 }] }]
   }
 }
 ```

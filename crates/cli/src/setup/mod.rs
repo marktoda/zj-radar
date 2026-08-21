@@ -31,6 +31,15 @@ pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
 pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
+// Kill ceiling for the generated hook entries — derived from the send cap,
+// never hand-copied: the CLI's graceful bounded no-op lands at ~cap (its
+// in-subtree watchdog kills the pipe client at the deadline) with a cap + 1 s
+// parent-reaper backstop, so a ceiling equal to the cap means the hook runner
+// always kills the hook first and the clean-exit contract is dead code. cap +
+// 5 leaves the backstop plus generous spawn/derivation slack, matching the
+// Claude plugin's edge hooks (welded there by the headroom guard in
+// crates/plugin's hooks_manifest_tests).
+pub(crate) const CODEX_HOOK_TIMEOUT_SECS: u64 = crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS + 5;
 // `PostToolUse` looks like a pure duplicate of `PreToolUse` (both derive the
 // same activity string from the same tool payload), but it is load-bearing:
 // after a `PermissionRequest` mid-turn flips the pane to Pending, the tool's

@@ -47,6 +47,8 @@
           || (pkgs.lib.hasSuffix "/docs/configuration.md" path)
           # include_str!'d by the plugin's producer-script guard test (lib.rs).
           || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path)
+          # include_str!'d by the plugin's hook-headroom guard (hooks_manifest_tests.rs).
+          || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/hooks/hooks.json" path)
           # insta snapshots (crates/*/src/**/snapshots/*.snap): filterCargoSources
           # keeps only Rust/cargo files, and without the recorded snapshots every
           # insta test "re-records" and fails in the sandbox.

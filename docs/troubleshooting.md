@@ -161,8 +161,10 @@ at hook rate, until the server hits its FD limit.
 **Fix:** grant the prompt so no instance stays wedged (see
 [First-run prompt coordination](#first-run-prompt-coordination) above), and
 make sure your producers are current: bundled producers bound every send with
-a 5-second deadline (`ZJ_RADAR_PIPE_TIMEOUT`, integer seconds, to override),
-so a wedged sidebar can no longer accumulate blocked clients. Killing a
+a deadline — 5 seconds for turn edges (`done`/`pending`/`idle`), 2 seconds
+for per-tool-call `running` heartbeats (`ZJ_RADAR_PIPE_TIMEOUT`, integer
+seconds, overrides both) — so a wedged sidebar can no longer accumulate
+blocked clients. Killing a
 deadline-expired client loses nothing — the message is already queued
 server-side. Third-party producers should apply the same bound — see
 [Bound your sends](producers.md#writing-your-own-producer).

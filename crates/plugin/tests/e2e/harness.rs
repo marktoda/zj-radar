@@ -444,9 +444,13 @@ impl ZellijSession {
             .write_all(hook_json.as_bytes())
             .unwrap();
         child.wait().unwrap();
-        // notify.sh backgrounds `zellij pipe` with `&`. Give it time to reach
-        // the isolated server and for the plugin to re-render.
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        // notify.sh's send is synchronous, so on the happy path the pipe has
+        // been consumed by the time `wait` returns (if the send deadline
+        // expired instead, the event was dropped — the caller's assertion
+        // will say so). A short pad covers server→plugin delivery; the render
+        // wait itself belongs to the caller's `wait_until` poll, not a flat
+        // sleep here.
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     /// Dump the focused terminal pane as plain text (may contain ANSI).
