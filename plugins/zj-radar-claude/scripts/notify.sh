@@ -128,15 +128,21 @@ if [[ "$status" == "running" ]]; then
         case "$tool_name" in
             Edit|Write|MultiEdit)
                 fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
+                # Guard the STRIPPED value: a trailing-slash path ("src/") has a
+                # non-empty $fp but an empty basename — Rust's basename() filters
+                # that to None, so an "editing " with no name must not broadcast.
+                base="${fp##*/}"
+                [[ -n "$base" ]] && tool_activity="editing $base"
                 ;;
             NotebookEdit)
                 fp="$(jq -r '.tool_input.notebook_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
+                base="${fp##*/}"
+                [[ -n "$base" ]] && tool_activity="editing $base"
                 ;;
             Read)
                 fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="reading ${fp##*/}"
+                base="${fp##*/}"
+                [[ -n "$base" ]] && tool_activity="reading $base"
                 ;;
             Grep|Glob)
                 tool_activity="searching"
@@ -149,6 +155,16 @@ if [[ "$status" == "running" ]]; then
                 ;;
             TodoWrite)
                 tool_activity="planning"
+                ;;
+            apply_patch)
+                tool_activity="editing files"
+                ;;
+            mcp__*)
+                # MCP tools: "using <server's tool name>" — the segment after the
+                # LAST "__" (mirrors Rust's rsplit("__").next()); an empty segment
+                # (a trailing "__") derives nothing, like Rust's is_empty filter.
+                seg="${tool_name##*__}"
+                [[ -n "$seg" ]] && tool_activity="using $seg"
                 ;;
             Bash)
                 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
@@ -169,8 +185,11 @@ if [[ "$status" == "running" ]]; then
                     elif contains_word "$cmd_lower" "install"; then
                         tool_activity="installing"
                     else
-                        # first token, basename only
-                        read -r first_token _ <<<"$cmd"
+                        # First token of the WHOLE string, basename only. Not
+                        # `read -r tok _ <<<"$cmd"`: read consumes one LINE, so a
+                        # leading-newline command yielded an empty token where
+                        # Rust's split_whitespace().next() skips ahead to it.
+                        first_token="$(printf '%s' "$cmd" | tr '[:space:]' '\n' | grep -m1 . || true)"
                         first_base="${first_token##*/}"
                         [[ -n "$first_base" ]] && tool_activity="running $first_base"
                     fi

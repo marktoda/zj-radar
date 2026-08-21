@@ -68,9 +68,11 @@ teardown_fakes() { rm -rf "$FAKEBIN"; }
 # poll is kept as cheap insurance for the Rust producer path and slow runners:
 # it returns the instant the record is written. Callers that expect NO
 # broadcast assert on `[ ! -s "$RECORD" ]` directly and never call this.
+# 10s ceiling, same as wait_for_lines: under heavy parallel load (a nix build
+# saturating the cores) the old 3s ceiling expired and read as a payload flake.
 last_payload() {
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 100); do
     [ -s "$RECORD" ] && break
     sleep 0.1
   done

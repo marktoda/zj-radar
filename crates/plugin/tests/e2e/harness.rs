@@ -1,3 +1,5 @@
+#![allow(dead_code)] // shared across the e2e tests; each test uses a subset
+
 /// E2E test harness: drives a real Zellij in a PTY.
 ///
 /// # Key design decisions
@@ -41,20 +43,13 @@
 /// polls until the plugin's " RADAR" header appears in the PTY buffer before
 /// returning, ensuring the plugin is loaded and subscribed before the caller
 /// sends any pipe messages.
-#[cfg(feature = "e2e")]
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-#[cfg(feature = "e2e")]
 use std::io::{Read, Write};
-#[cfg(feature = "e2e")]
 use std::path::Path;
-#[cfg(feature = "e2e")]
 use std::process::Command;
-#[cfg(feature = "e2e")]
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "e2e")]
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "e2e")]
 pub struct ZellijSession {
     pub name: String,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -79,13 +74,11 @@ pub struct ZellijSession {
 /// exactly ONE of the two `ZellijSession`s must delete that directory on
 /// Drop. `Owned` is the original `tempfile::TempDir` (deletes on drop);
 /// `Shared` is just the path, borrowed from the owner and inert on drop.
-#[cfg(feature = "e2e")]
 enum HomeHandle {
     Owned(tempfile::TempDir),
     Shared(std::path::PathBuf),
 }
 
-#[cfg(feature = "e2e")]
 impl HomeHandle {
     fn path(&self) -> &Path {
         match self {
@@ -95,7 +88,6 @@ impl HomeHandle {
     }
 }
 
-#[cfg(feature = "e2e")]
 impl ZellijSession {
     /// Start a headless Zellij session with the given KDL layout.
     ///
@@ -147,7 +139,6 @@ impl ZellijSession {
     ///
     /// The returned session does NOT own the temp HOME directory — `self`
     /// does, and must outlive it (drop `self` last).
-    #[allow(dead_code)]
     pub fn start_sibling(&self, name: &str, layout_kdl: &str) -> ZellijSession {
         let (rows, cols) = *self.size.lock().unwrap();
         let shared_home = HomeHandle::Shared(self._temp_home.path().to_path_buf());
@@ -240,7 +231,6 @@ impl ZellijSession {
     }
 
     /// Return the temp HOME path used by this session's Zellij processes.
-    #[allow(dead_code)]
     pub fn temp_home(&self) -> &std::path::Path {
         self._temp_home.path()
     }
@@ -470,7 +460,6 @@ impl ZellijSession {
     /// Full PTY buffer parsed through vt100 for cell-level assertions.
     /// The parser processes every frame rendered since session start, so
     /// `screen()` reflects the final rendered state.
-    #[allow(dead_code)]
     pub fn screen(&self) -> vt100::Screen {
         let raw = self.buf.lock().unwrap().clone();
         let (rows, cols) = *self.size.lock().unwrap();
@@ -486,7 +475,6 @@ impl ZellijSession {
     /// dominant source of E2E flake is a fixed sleep that under-waits, so the
     /// only fixed waits that should remain are those asserting something *stays*
     /// (a non-event, which polling cannot shorten).
-    #[allow(dead_code)]
     pub fn wait_until(&self, timeout: Duration, mut cond: impl FnMut(&Self) -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -505,7 +493,6 @@ impl ZellijSession {
     /// is the right surface to assert on: it excludes the terminal panes'
     /// scrollback, so a match cannot be a false positive from echoed input or a
     /// piped payload string landing in the buffer.
-    #[allow(dead_code)]
     pub fn wait_for_sidebar(&self, width: u16, needle: &str, timeout: Duration) -> bool {
         self.wait_until(timeout, |s| {
             sidebar_region(&s.screen(), width).contains(needle)
@@ -518,7 +505,6 @@ impl ZellijSession {
     /// click to the pane under the cursor, so a click within the sidebar columns
     /// reaches the rail plugin. This is the only way to exercise the rail's
     /// click→SwitchTab path through a *real* mouse event end-to-end.
-    #[allow(dead_code)]
     pub fn click_at(&self, col: u16, row: u16) {
         if let Ok(mut w) = self.pty_writer.lock() {
             let _ = w.write_all(format!("\x1b[<0;{col};{row}M").as_bytes());
@@ -529,7 +515,6 @@ impl ZellijSession {
 
     /// Run an arbitrary `zellij action` against this session (e.g. `new-tab`,
     /// `go-to-tab`). Exposed for multi-tab tests; thin wrapper over `action`.
-    #[allow(dead_code)]
     pub fn run_action(&self, args: &[&str]) {
         let _ = self.action(args);
     }
@@ -538,7 +523,6 @@ impl ZellijSession {
     /// permission prompt — a client-side modal, NOT a pane's terminal, so it must
     /// go through the PTY (the same path `wait_until_ready` uses to auto-grant),
     /// not `action write-chars` (which targets the focused pane's shell).
-    #[allow(dead_code)]
     pub fn press(&self, keys: &str) {
         if let Ok(mut w) = self.pty_writer.lock() {
             let _ = w.write_all(keys.as_bytes());
@@ -551,7 +535,6 @@ impl ZellijSession {
 /// is not the 0.44.x series the harness layout KDL and permission-prompt handling
 /// target. A version skew otherwise surfaces as an opaque `wait_until_ready`
 /// timeout — "the plugin never rendered" — instead of "your zellij is too new".
-#[cfg(feature = "e2e")]
 fn assert_zellij_version() {
     match Command::new("zellij").arg("--version").output() {
         Ok(out) => {
@@ -572,7 +555,6 @@ fn assert_zellij_version() {
     }
 }
 
-#[cfg(feature = "e2e")]
 impl Drop for ZellijSession {
     fn drop(&mut self) {
         let _ = Command::new("zellij")
@@ -591,7 +573,6 @@ impl Drop for ZellijSession {
 
 /// Strip most ANSI/VT escape sequences, returning only printable text.
 /// Keeps spaces so that word searches work correctly.
-#[cfg(feature = "e2e")]
 fn strip_ansi(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
     let mut out = String::with_capacity(text.len());
@@ -663,7 +644,6 @@ fn strip_ansi(raw: &[u8]) -> String {
 /// decimal digits, and return the parsed integer. Scans all occurrences so a
 /// literal `marker` that isn't followed by digits (e.g. `ZPID=$...` in the
 /// echoed command text) is skipped and the actual numeric output is found.
-#[cfg(feature = "e2e")]
 fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
     // Strip the regex grouping syntax if the caller passed "ZPID=(\d+)"-style.
     let marker = marker.split('(').next().unwrap_or(marker);
@@ -684,7 +664,6 @@ fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
 
 /// Absolute path to the built wasm plugin.
 /// The caller must build it first (via `cargo build --release --target wasm32-wasip1`).
-#[cfg(feature = "e2e")]
 pub fn plugin_wasm_path() -> std::path::PathBuf {
     // In a virtual workspace every member shares the workspace-root target dir,
     // so `cargo build -p zj-radar-plugin` writes here, not under crates/plugin.
@@ -720,7 +699,6 @@ pub fn plugin_wasm_path() -> std::path::PathBuf {
 ///
 /// If the path is already present, the file is left unchanged.
 /// Returns the temp HOME dir so the caller can pass it to `ZellijSession::start`.
-#[cfg(feature = "e2e")]
 pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
     let temp_home = tempfile::TempDir::new().expect("failed to create temp HOME dir");
     let cache_dir = zellij_cache_dir_for(temp_home.path());
@@ -757,8 +735,6 @@ pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
 /// An isolated temp HOME with NO permission grant — the ungranted first-run
 /// state. Mirrors `pre_grant_permissions` minus the grant, so a session started
 /// with it reproduces "attached but never granted" (nothing in `permissions.kdl`).
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn isolated_temp_home() -> tempfile::TempDir {
     tempfile::TempDir::new().expect("failed to create temp HOME dir")
 }
@@ -769,8 +745,6 @@ pub fn isolated_temp_home() -> tempfile::TempDir {
 /// renders `needs_permission` without ever calling `request_permission`, so it
 /// never triggers the harness's auto-grant; the ungranted state stays put until a
 /// test dispatches the grant float itself.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
     let wasm_abs = plugin_wasm
         .canonicalize()
@@ -792,7 +766,6 @@ pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
 }
 
 /// Return the Zellij cache dir inside `home` (same logic Zellij uses for HOME).
-#[cfg(feature = "e2e")]
 fn zellij_cache_dir_for(home: &Path) -> std::path::PathBuf {
     if cfg!(target_os = "macos") {
         home.join("Library/Caches/org.Zellij-Contributors.Zellij")
@@ -805,7 +778,6 @@ fn zellij_cache_dir_for(home: &Path) -> std::path::PathBuf {
 ///
 /// Uses `/tmp` as CWD so the shell starts without `direnv`/`devenv` overhead.
 /// The `DIRENV_DISABLE=1` env var is also set on the Zellij process.
-#[cfg(feature = "e2e")]
 pub fn sidebar_layout(plugin_wasm: &Path) -> String {
     let wasm_abs = plugin_wasm
         .canonicalize()
@@ -835,7 +807,6 @@ pub fn sidebar_layout(plugin_wasm: &Path) -> String {
 /// one that appears to the right/bottom; `discover_terminal_pane_id` returns
 /// its id. The sibling terminal is typically `focused_id - 1` or `focused_id + 1`
 /// — but see `discover_next_pane_id` for the safer runtime approach.
-#[cfg(feature = "e2e")]
 pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
     let wasm_abs = plugin_wasm
         .canonicalize()
@@ -862,8 +833,6 @@ pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
 /// observe what a *background* tab's instance renders — the setup needed to probe
 /// cross-instance convergence (does a per-pane `CommandChanged`/exit reach the
 /// instance in another tab?).
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
     let wasm_abs = plugin_wasm
         .canonicalize()
@@ -894,8 +863,6 @@ pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
 
 /// Extract all visible text from a vt100 Screen (rows x cols grid),
 /// joining rows with newlines.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn screen_text(screen: &vt100::Screen) -> String {
     let rows = screen.size().0;
     let cols = screen.size().1;
@@ -912,8 +879,6 @@ pub fn screen_text(screen: &vt100::Screen) -> String {
 /// The 0-based index of the first sidebar row whose left-`width` text contains
 /// `needle`. Lets a test locate a rendered row (e.g. the agent's tab line)
 /// without hard-coding a row number that shifts as the layout evolves.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn sidebar_row_index(screen: &vt100::Screen, width: u16, needle: &str) -> Option<usize> {
     sidebar_region(screen, width)
         .lines()
@@ -930,8 +895,6 @@ pub fn sidebar_row_index(screen: &vt100::Screen, width: u16, needle: &str) -> Op
 /// its card surfaces as `\e[48;2;r;g;bm` truecolor, which vt100 reports as
 /// `Color::Rgb`; the dark-panel rail base and each card surface are distinct
 /// RGBs, so two differently-classed rows return different values here.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn sidebar_row_bg_rgb(screen: &vt100::Screen, row: u16, width: u16) -> Option<(u8, u8, u8)> {
     (0..width).find_map(|c| match screen.cell(row, c)?.bgcolor() {
         vt100::Color::Rgb(r, g, b) => Some((r, g, b)),
@@ -947,8 +910,6 @@ pub fn sidebar_row_bg_rgb(screen: &vt100::Screen, row: u16, width: u16) -> Optio
 ///
 /// Use this instead of `pty_text()` when asserting on sidebar content to avoid
 /// false positives from text echoed by terminal panes into the right-hand region.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn sidebar_region(screen: &vt100::Screen, width: u16) -> String {
     let rows = screen.size().0;
     (0..rows)
@@ -970,8 +931,6 @@ pub fn sidebar_region(screen: &vt100::Screen, width: u16) -> String {
 /// still live" — it would also match the row's own ledger echo. Tests
 /// asserting a card recede should check `card_region_only` instead; tests
 /// that want to see the ledger echo can inspect the full `sidebar_region`.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn card_region_only(sidebar: &str) -> &str {
     match sidebar.find("─ earlier") {
         Some(idx) => &sidebar[..idx],

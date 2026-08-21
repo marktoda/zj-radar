@@ -15,10 +15,8 @@
 //   - The plugin wasm already built:
 //     `cargo build --release --target wasm32-wasip1`
 
-#[cfg(feature = "e2e")]
 mod harness;
 
-#[cfg(feature = "e2e")]
 use harness::*;
 
 /// Smoke test: start Zellij with the plugin sidebar, pipe a status message,

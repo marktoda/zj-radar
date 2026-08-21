@@ -5,8 +5,10 @@ on:
     tags:
       - 'v*'
 
+# Default every job to read-only; only the `release` job (the one that runs
+# action-gh-release) elevates to contents: write below.
 permissions:
-  contents: write # required to create the GitHub Release
+  contents: read
 
 jobs:
   # ── Gates: nothing publishes from a red tree ─────────────────────────────────
@@ -129,6 +131,8 @@ jobs:
   release:
     needs: [build-wasm, build-cli, test, e2e]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create the GitHub Release
     steps:
       - uses: actions/checkout@v4
 

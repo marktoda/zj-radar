@@ -35,6 +35,9 @@ pane="${ZELLIJ_PANE_ID#terminal_}"
 # each emit simply overwrites the pane's previous state. A non-empty [task]
 # becomes the sticky identity line; while pending, the rail spends an extra
 # `↳` line on <msg> (the actionable question).
+# NOTE: printf-into-JSON works here because every emit below passes known
+# literals — a copied producer must escape its strings (see notify.sh's
+# `jq --arg` usage) or a quote/backslash in a message corrupts the payload.
 emit() {
     local status="$1" msg="$2" task="${3:-}"
     local payload
