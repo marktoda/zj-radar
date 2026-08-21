@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, HashSet};
 const RADAR_SNAPSHOT_V: u32 = 3;
 /// The pre-ledger record shape: identical wire format to v3 except the
 /// `ledger` field is never present, so it loads through the very same struct
-/// (`#[serde(default)]` fills it empty) — see `load_v2`.
+/// and loader (`#[serde(default)]` fills it empty) — hence the shared
+/// `load_v3` dispatch arm in [`load`].
 const PRE_LEDGER_SNAPSHOT_V: u32 = 2;
 const LEGACY_STATUS_SNAPSHOT_V: u32 = 1;
 
@@ -128,8 +129,7 @@ type LoadedSnapshot = (Vec<(u32, TrackedObservation)>, u64, Vec<LedgerEntry>);
 pub(crate) fn load(raw: &str) -> Option<LoadedSnapshot> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     match value.get("v").and_then(serde_json::Value::as_u64)? as u32 {
-        RADAR_SNAPSHOT_V => load_v3(value),
-        PRE_LEDGER_SNAPSHOT_V => load_v2(value),
+        RADAR_SNAPSHOT_V | PRE_LEDGER_SNAPSHOT_V => load_v3(value),
         LEGACY_STATUS_SNAPSHOT_V => load_legacy_status(value),
         _ => None,
     }
@@ -152,13 +152,6 @@ fn load_v3(value: serde_json::Value) -> Option<LoadedSnapshot> {
     Some((observations, snapshot.tick, ledger))
 }
 
-/// A v2 (pre-ledger) record shares v3's exact struct shape — `ledger` is
-/// simply absent on disk, so `#[serde(default)]` fills it empty rather than
-/// rejecting the snapshot.
-fn load_v2(value: serde_json::Value) -> Option<LoadedSnapshot> {
-    load_v3(value)
-}
-
 fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
     let snapshot: LegacyStatusSnapshot = serde_json::from_value(value).ok()?;
     let observations = snapshot
@@ -167,8 +160,6 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
         .map(|pane| {
             (
                 pane.pane_id,
-                // `.sanitized()`: v1 records predate the sanitizer entirely,
-                // so their free text is always suspect.
                 TrackedObservation {
                     origin: ObservationOrigin::StatusPipe,
                     status: Status::from_wire(&pane.status),
@@ -184,6 +175,8 @@ fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
                     pending_epoch_s: None,
                     acknowledged: false,
                 }
+                // v1 records predate the sanitizer entirely, so their free
+                // text is always suspect.
                 .sanitized(),
             )
         })

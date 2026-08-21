@@ -286,6 +286,22 @@ mod tests {
         assert!(none(r#"{"type":"task-started"}"#).is_none());
     }
 
+    /// Weld: every event `setup codex` wires a hook for must derive to a real
+    /// update — an event in `CODEX_HOOK_EVENTS` with no arm here fires a hook
+    /// per occurrence that no-ops forever (silent dead wiring), and an arm
+    /// with no hook entry never fires at all — route new arms through the
+    /// array (whose `[&str; 7]` type carries the count) so they pass here.
+    #[test]
+    fn every_wired_codex_hook_event_derives_an_update() {
+        for event in crate::setup::CODEX_HOOK_EVENTS {
+            let payload = serde_json::json!({ "hook_event_name": event, "cwd": "/x" });
+            assert!(
+                derive_hook_update(&payload).is_some(),
+                "`setup codex` wires a {event} hook, but derive_hook_update no-ops on it"
+            );
+        }
+    }
+
     #[test]
     fn status_arg_is_ignored_by_codex() {
         // Codex derives purely from the payload; an explicit status arg is a no-op.

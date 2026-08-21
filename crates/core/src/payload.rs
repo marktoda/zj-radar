@@ -33,9 +33,12 @@ pub const MAX_SOURCE_CHARS: usize = 16;
 pub const MAX_WIRE_FIELD_CHARS: usize = 512;
 // The headroom that makes the cap sufficient, checked at compile time: worst
 // case per char on the wire is 6 bytes (a `\u001b`-style JSON escape; raw
-// UTF-8 tops out at 4), so five capped free-text fields can never come close
-// to the payload cap.
-const _: () = assert!(5 * MAX_WIRE_FIELD_CHARS * 6 < MAX_PAYLOAD_BYTES / 2);
+// UTF-8 tops out at 4), so the capped free-text fields can never come close
+// to the payload cap. `WIRE_FREE_TEXT_FIELDS` is how many free-text fields
+// `Wire` carries (`source`/`repo`/`branch`/`msg`/`task`) — bump it in step 7
+// of the field-addition checklist so the proof stays honest.
+const WIRE_FREE_TEXT_FIELDS: usize = 5;
+const _: () = assert!(WIRE_FREE_TEXT_FIELDS * MAX_WIRE_FIELD_CHARS * 6 < MAX_PAYLOAD_BYTES / 2);
 
 /// The versioned pipe name that binds every producer to the plugin — the one
 /// string that must never drift between them. The pipe *name* carries the
@@ -86,7 +89,9 @@ pub const STATUS_VERSION: u32 = 1;
 /// 4. `to_wire`'s named-field emitter,
 /// 5. the proptest generator inputs (`parse_to_wire_round_trip`) so the
 ///    round-trip law actually covers it,
-/// 6. the pinned-bytes test (`to_wire_emits_the_exact_pinned_wire_bytes`).
+/// 6. the pinned-bytes test (`to_wire_emits_the_exact_pinned_wire_bytes`),
+/// 7. `WIRE_FREE_TEXT_FIELDS`, if the new field is free text — it keeps the
+///    compile-time headroom proof honest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusPayload {
     /// The Zellij terminal pane the status is about (the wire's
@@ -185,6 +190,8 @@ fn is_bidi_control(c: char) -> bool {
 /// - Any other ESC-introduced 2-byte sequence (`\x1b` + one byte)
 /// - C0 control chars (0x00–0x1F) — `\n`, `\t`, `\r` become a single space; all others dropped
 /// - DEL (0x7F) — dropped
+/// - Unicode C1 control chars (U+0080–U+009F) — dropped
+/// - Bidi format/override chars (`is_bidi_control`) — dropped (Trojan-Source-style spoofing)
 pub fn sanitize(s: &str, max_chars: usize) -> String {
     let mut cleaned = String::new();
     let bytes = s.as_bytes();

@@ -85,8 +85,7 @@ pub(crate) fn resolve_layout_path(
         .join(format!("{}.kdl", resolve_layout_name(explicit, config_text)))
 }
 
-pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {
-    let mut changed = false;
+pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) {
     let mut i = 0;
     while i < lines.len() {
         if lines[i].trim() != ZELLIJ_ALIAS_BEGIN {
@@ -106,9 +105,7 @@ pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) -> bool {
             continue;
         };
         lines.drain(i..=end);
-        changed = true;
     }
-    changed
 }
 
 pub(crate) fn is_unmanaged_radar_alias_line(line: &str) -> bool {
@@ -219,8 +216,7 @@ mod tests {
             "    tab-bar location=\"zellij:tab-bar\"".to_string(),
             "}".to_string(),
         ];
-        let changed = strip_managed_zellij_alias(&mut lines);
-        assert!(changed);
+        strip_managed_zellij_alias(&mut lines);
         assert!(!lines.iter().any(|l| l.contains("radar location")));
         assert!(lines.iter().any(|l| l.contains("tab-bar")));
     }
@@ -238,17 +234,15 @@ mod tests {
             "keybinds {}".to_string(),
         ];
         let before = lines.clone();
-        let changed = strip_managed_zellij_alias(&mut lines);
-        assert!(!changed, "an unmatched BEGIN is malformed → no change");
-        assert_eq!(lines, before, "no user content is deleted");
+        strip_managed_zellij_alias(&mut lines);
+        assert_eq!(lines, before, "an unmatched BEGIN is malformed → no user content is deleted");
     }
 
     #[test]
     fn strip_managed_zellij_alias_noop_when_absent() {
         let mut lines: Vec<String> =
             vec!["plugins {".to_string(), "    tab-bar location=\"zellij:tab-bar\"".to_string(), "}".to_string()];
-        let changed = strip_managed_zellij_alias(&mut lines);
-        assert!(!changed);
+        strip_managed_zellij_alias(&mut lines);
         assert_eq!(lines.len(), 3);
     }
 

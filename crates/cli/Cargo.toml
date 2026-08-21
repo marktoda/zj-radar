@@ -34,5 +34,4 @@ dirs = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
-assertables = { workspace = true }
 tempfile = { workspace = true }

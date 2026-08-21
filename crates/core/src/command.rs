@@ -49,8 +49,8 @@ pub struct Tick(pub u64);
 pub struct EpochSecs(pub u64);
 
 /// What a tick did to the command store: whether any observation changed (the
-/// snapshot-persist trigger, exactly the old bool), and the completions that
-/// left the card this tick (TTL recede or promotion-displaced) for the ledger.
+/// snapshot-persist trigger), and the completions that left the card this
+/// tick (TTL recede or promotion-displaced) for the ledger.
 pub struct TimerReport {
     pub changed: bool,
     pub receded: Vec<(u32, TrackedObservation)>,
@@ -191,8 +191,14 @@ fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'
     })
 }
 
+/// First non-option arg at/after `start`, usable as a display target. Strips
+/// the stdin-marker residual: `is_option_arg` deliberately exempts a bare `-`,
+/// so it is the one dashed token `first_non_option` can return — drop it here
+/// rather than display stdin-marker noise as a target.
 fn target_after(args: &[String], start: usize) -> Option<&str> {
-    first_non_option(args, start).map(|(_, arg)| arg)
+    first_non_option(args, start)
+        .map(|(_, arg)| arg)
+        .filter(|t| *t != "-")
 }
 
 fn raw_display(parts: &[&str]) -> String {
@@ -365,7 +371,7 @@ fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
         return exe.to_string();
     };
     if rule.target_verbs.contains(&verb) {
-        if let Some(target) = target_after(args, idx + 1).filter(|t| !t.starts_with('-')) {
+        if let Some(target) = target_after(args, idx + 1) {
             return raw_display(&[exe, verb, target]);
         }
     }
@@ -560,6 +566,16 @@ impl CommandStore {
             self.arm_tentative_done(pane_id, tick);
             // Otherwise leave resolved unchanged (idle stays idle).
         } else {
+            // Build the cleaned command string and its Kind in one pass.
+            let (cmd_string, kind) = classify(command);
+            if cmd_string.is_empty() {
+                // Unknown/empty argv — never surface a blank Running row. This
+                // check runs FIRST: an argv we can't classify is no evidence
+                // about the pane, so it must touch nothing — in particular it
+                // must not cancel an armed Running→Done confirm below (nothing
+                // would ever re-arm it, sticking the row Running forever).
+                return;
+            }
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -570,12 +586,6 @@ impl CommandStore {
                 // A real foreground command is running: it is no longer
                 // leaving, so cancel any tentative-done.
                 self.pending_done.remove(&pane_id);
-            }
-            // Build the cleaned command string and its Kind in one pass.
-            let (cmd_string, kind) = classify(command);
-            if cmd_string.is_empty() {
-                // Unknown/empty argv — never surface a blank Running row.
-                return;
             }
 
             // A genuine new run opens here: forget any prior run's exit so its
@@ -628,7 +638,10 @@ impl CommandStore {
     /// (or debounce-confirmed Done) reaches tabs opened later, keeping every
     /// instance's rail convergent (the same guarantee pushed statuses already
     /// have). Debounce-map bookkeeping alone does not count: it is not
-    /// snapshotted. `TimerReport::receded` carries every completion that left
+    /// snapshotted. Neither does an identical re-promotion (Zellij re-reported
+    /// the same still-running foreground): the stored observation is
+    /// unchanged, so no write is owed.
+    /// `TimerReport::receded` carries every completion that left
     /// the card this tick (a Done/Error displaced by re-promotion, or a Done
     /// that TTL-receded to Idle) for the ledger.
     pub fn on_timer(&mut self, tick: Tick, now_epoch_s: EpochSecs) -> TimerReport {
@@ -653,13 +666,19 @@ impl CommandStore {
                     if prev.status == Status::Running && prev.msg == obs.msg {
                         obs.last_change_tick = prev.last_change_tick;
                     }
+                    // With the start tick carried over, an identical
+                    // re-promotion stores a byte-identical observation —
+                    // nothing observable changed, so it must not trigger a
+                    // snapshot write per re-report.
+                    changed |= prev != &obs;
+                } else {
+                    changed = true;
                 }
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
                         receded.push((pane_id, prev));
                     }
                 }
-                changed = true;
             }
         }
 
@@ -738,48 +757,53 @@ impl CommandStore {
         if self.exited.get(&pane_id) == Some(&exit_status) {
             return None;
         }
-        // A bare exit replay must not resurrect a receded completion: Zellij
-        // re-reports exited panes on every manifest update (level-triggered),
-        // and a freshly-spawned instance has an empty dedup map. Once a
-        // command pane has receded to Idle, only a new observed lifecycle
-        // (CommandChanged → pending) or a prune lights it again — a `pending`
-        // entry means a fresh run is in flight, so its exit applies even when
-        // it beats the debounce promotion. Cost: a re-run that exits with no
-        // intervening CommandChanged stays swallowed (pre-existing, rare,
-        // documented race). `self.store` only ever holds command-origin
-        // observations, so no origin check is needed here.
-        if !self.pending.contains_key(&pane_id)
-            && self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle)
-        {
-            return None;
-        }
-
         let new_status = match exit_status {
             Some(0) => Status::Done,
             Some(_) => Status::Error,
             None => Status::Done,
         };
 
-        // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op edge,
-        // for the same replay against a *still-displayed* completion: a fresh
-        // instance (empty `exited` dedup) replaying a held pane's exit over a
-        // snapshot-loaded Done/Error with the same outcome learns nothing new.
-        // Prime the dedup and stop — pushing the completion into `receded`
-        // would ghost a ledger entry for a card that never changed, re-stamping
-        // `completed_epoch_s = now` would duplicate it past the nearest-neighbor
-        // merge window, and bumping `last_change_tick` would postpone the Done
-        // TTL forever under repeated replays. A `pending` entry means a fresh
-        // run is in flight, so its (possibly identical-code) exit is genuine
-        // news and falls through; so does a different exit code (a new outcome
-        // on a re-run pane), which keeps the displacement behavior below.
-        if !self.pending.contains_key(&pane_id)
-            && self
+        // Replay guards, sharing one predicate: a `pending` entry means a
+        // fresh run is in flight, so its (possibly identical-code) exit is
+        // genuine news and falls through — its exit applies even when it beats
+        // the debounce promotion. `self.store` only ever holds command-origin
+        // observations, so no origin check is needed here.
+        if !self.pending.contains_key(&pane_id) {
+            // A bare exit replay must not resurrect a receded completion:
+            // Zellij re-reports exited panes on every manifest update
+            // (level-triggered), and a freshly-spawned instance has an empty
+            // dedup map. Once a command pane has receded to Idle, only a new
+            // observed lifecycle (CommandChanged → pending) or a prune lights
+            // it again. Cost: a re-run that exits with no intervening
+            // CommandChanged stays swallowed (pre-existing, rare, documented
+            // race).
+            if self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle) {
+                return None;
+            }
+            // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op
+            // edge, for the same replay against a *still-displayed*
+            // completion: a fresh instance (empty `exited` dedup) replaying a
+            // held pane's exit over a snapshot-loaded Done/Error with the same
+            // outcome learns nothing new. Prime the dedup and stop — pushing
+            // the completion into `receded` would ghost a ledger entry for a
+            // card that never changed, re-stamping `completed_epoch_s = now`
+            // would duplicate it past the nearest-neighbor merge window, and
+            // bumping `last_change_tick` would postpone the Done TTL forever
+            // under repeated replays. A different exit code (a new outcome on
+            // a re-run pane) falls through, which keeps the displacement
+            // behavior below. Only this arm primes `self.exited`: an
+            // identical-outcome replay is exactly what the per-code dedup can
+            // absorb (priming reconstructs the entry a fresh instance lost),
+            // while the Idle arm above blocks replays of *any* code by status
+            // alone, so a per-code entry would add nothing there.
+            if self
                 .store
                 .get(pane_id)
                 .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
-        {
-            self.exited.insert(pane_id, exit_status);
-            return None;
+            {
+                self.exited.insert(pane_id, exit_status);
+                return None;
+            }
         }
 
         self.exited.insert(pane_id, exit_status);
@@ -930,9 +954,9 @@ impl CommandStore {
         // match key is the intake-stamped `program`, the same peeled name the
         // intake classification used.
         for p in self.pending.values_mut() {
-            let quiet = self.interactive.contains(&p.program);
-            if p.promotable == quiet {
-                p.promotable = !quiet;
+            let want = !self.interactive.contains(&p.program);
+            if p.promotable != want {
+                p.promotable = want;
                 changed = true;
             }
         }

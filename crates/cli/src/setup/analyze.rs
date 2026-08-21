@@ -45,7 +45,7 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
         codex_hooks_text:       codex_hooks_text(),
         installed_plugins_text: claude_installed_plugins_text(),
         wasm_present:           wasm_dest.is_file(),
-        config_managed:         config_is_managed(&config_path),
+        config_managed:         path_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
         zellij_version:         zellij_version_output(),
         config_text,
@@ -104,6 +104,17 @@ pub(crate) const MIN_SUPPORTED_ZELLIJ: (u32, u32, u32) = (0, 44, 3);
 pub(crate) fn min_supported_zellij_display() -> String {
     let (major, minor, patch) = MIN_SUPPORTED_ZELLIJ;
     format!("{major}.{minor}.{patch}")
+}
+
+/// The one "no zellij binary" diagnostic — shared by the doctor, the grant
+/// launcher, and `run`, so the floor and the install URL can't drift between
+/// them.
+pub(crate) fn zellij_missing_message() -> String {
+    format!(
+        "zellij not found on PATH — install Zellij {}+ first \
+         (https://zellij.dev/documentation/installation)",
+        min_supported_zellij_display()
+    )
 }
 
 /// Lenient version-floor gate: warn only on a definitely-too-old version.

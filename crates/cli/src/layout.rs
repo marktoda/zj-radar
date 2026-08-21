@@ -824,6 +824,37 @@ layout {
     }
 
     #[test]
+    fn uninstall_leaves_an_unmatched_begin_in_place() {
+        // A BEGIN with no matching END (hand-edited / truncated layout) must
+        // not delete anything — better a stale comment than a corrupted file
+        // (same fail-closed rule as detect.rs's unmatched alias BEGIN).
+        let truncated = format!(
+            "layout {{\n    {WRAP_BEGIN}\n    pane\n    children\n}}\n"
+        );
+        assert!(
+            uninstall(&truncated).is_none(),
+            "an unmatched BEGIN must reverse nothing, not drain to EOF"
+        );
+        // Same for the block kind.
+        let truncated = format!("layout {{\n    {BLOCK_BEGIN}\n    tab {{ pane }}\n}}\n");
+        assert!(uninstall(&truncated).is_none());
+    }
+
+    #[test]
+    fn uninstall_ignores_a_mid_line_marker() {
+        // A marker with content before it on the same line is not a region we
+        // authored (inject always emits markers on their own lines) — it must
+        // be skipped verbatim, even when a well-formed END follows.
+        let mid_line = format!(
+            "layout {{\n    pane {WRAP_BEGIN}\n    pane\n    {WRAP_END}\n    children\n}}\n"
+        );
+        assert!(
+            uninstall(&mid_line).is_none(),
+            "a mid-line BEGIN must not anchor a removal"
+        );
+    }
+
+    #[test]
     fn uninstall_returns_none_when_no_markers() {
         let clean = "layout {\n    default_tab_template {\n        children\n    }\n}\n";
         assert!(uninstall(clean).is_none(), "no markers → must return None");

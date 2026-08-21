@@ -24,7 +24,8 @@ check() { # check <ok-message> <cmd...>
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
-apt-get install -y -qq curl ca-certificates python3 >/dev/null 2>&1
+apt-get install -y -qq curl ca-certificates python3 >/dev/null 2>&1 \
+    || { echo "FAIL: apt-get install of funnel prerequisites (curl/ca-certificates/python3)"; exit 1; }
 
 case "$(uname -m)" in
     aarch64|arm64) zellij_triple="aarch64-unknown-linux-musl" ;;
@@ -32,7 +33,8 @@ case "$(uname -m)" in
     *) echo "FAIL: unsupported arch $(uname -m)"; exit 1 ;;
 esac
 curl -LsSf "https://github.com/zellij-org/zellij/releases/download/${ZELLIJ_VERSION}/zellij-${zellij_triple}.tar.gz" \
-    | tar xz -C /usr/local/bin
+    | tar xz -C /usr/local/bin \
+    || { echo "FAIL: download/extract of zellij ${ZELLIJ_VERSION}"; exit 1; }
 
 # ── README step 1: the installer ─────────────────────────────────────────────
 if [ -n "${ZJ_RADAR_VERSION:-}" ]; then
@@ -60,6 +62,7 @@ check "doctor: producer is the only missing item" \
     bash -c '! grep -E "missing (grant|wasm|alias|layout|zellij)" <<<"$1"' _ "$doctor"
 
 # ── README step 3: launch — rail must come up live, naming must follow cd ────
+mkdir -p "$HOME/.config/zellij"
 printf 'show_release_notes false\nshow_startup_tips false\n' >> "$HOME/.config/zellij/config.kdl"
 python3 "$(dirname "$0")/drive_zellij.py"
 

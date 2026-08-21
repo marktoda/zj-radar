@@ -618,31 +618,41 @@ and panes not present in the current topology do not count. This pane-level
 accounting is scoped to cross-session presence only: the local rail row rollups,
 header badge, and footer tally remain tab-level summaries.
 
-**Liveness heartbeat + staleness (task-14: never a hard drop).** Peers never
+**Liveness heartbeat + staleness (fresh → stale → dead).** Peers never
 call `SessionUpdate`/`get_session_list` to learn who's out there (see "Why
 not `SessionUpdate`" below) — liveness is read from the filesystem, not
 asked for. Peer sessions re-read the shared directory only on Fast (1 Hz)
 timer fires (`Effect::ReadPresences`; never on the Slow heartbeat — and
 within Fast only every 5th tick, except mid-cycle, since peers heartbeat at
-60s and dim at 90s). `read_peer_presences`
-returns every peer file it finds, unconditionally, each paired with its
-file's mtime age; `Sessions::update_presences` turns that age into a
-per-entry fresh/stale state (`STALE_AFTER_SECS`, 90s) rather than dropping
-the entry — a session the badge has ever shown must never silently vanish
-from it (user decision, task-14). A stale entry dims on the badge and is
-unreachable via `session-next`/`session-prev`, but stays visible; nothing is
-ever deleted by a reader, which only ever judges a peer's file, never
-mutates it. Staleness mostly bites a session with nothing to report:
-because `PersistPresence` is content-edge-gated, a session sitting fully
-idle (no Fast-cadence work, no count change) would otherwise let its file's
-mtime age past 90s and dim on every peer's badge while still alive. The fix
-is a **liveness heartbeat**: `timer` unconditionally re-emits
-`PersistPresence` on every Slow (60s) fire, bypassing the edge gate, purely
-to keep the mtime fresh — 60s heartbeat against a 90s stale threshold is
-50% margin against one missed beat. Separately, a `6h` sweep
-(`PRESENCE_MAX_AGE`) deletes genuinely abandoned presence files at plugin
-`load()` — the only true forgetting, unrelated to (and much looser than)
-the 90s stale threshold.
+60s and dim at 90s). The read side rests on a write-side guarantee: a live
+session refreshes its presence file's mtime at least every 60s — the
+**liveness heartbeat**, `timer`'s level trigger (`PRESENCE_HEARTBEAT_S`)
+that re-emits `PersistPresence` from any live fire (Slow or Fast) once the
+last write is 60s old, bypassing the usual content-edge gate. Without it, a
+session sitting fully idle (no count change) would let its mtime age and
+read as gone while still alive; with it, file age is a reliable liveness
+signal, which is what lets peers act on it. `read_peer_presences` returns
+every peer file it finds, unconditionally, each paired with its file's
+mtime age; `Sessions::update_presences` grades that age into a per-entry
+ladder: **fresh** (≤`STALE_AFTER_SECS`, 90s), **stale** (90–300s — dimmed
+on the badge and unreachable via `session-next`/`session-prev`, but still
+shown), **dead** (past `DEAD_AFTER_SECS`, 300s — five missed heartbeats:
+reaped from the badge, and the runtime emits `Effect::DismissPresence` to
+unlink the file, so every instance converges). The 90/300 gap is
+deliberate: dimming is cheap, self-correcting cosmetics and should stay
+twitchy; a reap also deletes a file, so it waits for overwhelming evidence.
+(This supersedes the task-14 "never-vanish roster", which predated the
+heartbeat's write guarantee — back then an old mtime could mean merely
+"idle", so nothing was ever dropped.) A false reap — e.g. right after a
+machine-sleep wake, when every file looks old for up to one heartbeat — is
+harmless: dismissal is non-destructive, the live session's next heartbeat
+republishes and the entry returns fresh. Right-click dismiss remains the
+manual path for a stale-but-not-yet-dead entry the user already knows is
+gone. Separately, a `6h` sweep (`PRESENCE_MAX_AGE`) deletes abandoned
+presence files at plugin `load()` — the backstop for debris the reap can't
+touch (e.g. a dead corpse carrying the current session's own name, which is
+never auto-dismissed because the on-disk dismiss matches by name and would
+take the live file with it).
 
 **Own session name.** Zellij's `Event::ModeUpdate` carries
 `ModeInfo.session_name`; the plugin already subscribes to `ModeUpdate` for
@@ -665,24 +675,26 @@ entirely: liveness is derived purely from the presence files' own mtimes,
 and the session's own name arrives push-style via `Event::ModeUpdate`
 instead of a session-list lookup. Net effect: presence is entirely
 peer-published and liveness is entirely mtime-based — whatever a
-Fast-cadence directory read hands back IS the peer set for that tick, every
-member forever (task-14 dropped the read-time filter too); staleness is a
-display/cycle-eligibility state derived from that same mtime, not a
-membership filter. No membership roster to keep in sync with a second
-signal, no `get_session_list` call anywhere in the plugin.
+Fast-cadence directory read hands back IS the peer set for that tick,
+graded fresh/stale/dead from that same mtime (`Sessions::update_presences`;
+see "Liveness heartbeat + staleness" above). No membership roster to keep
+in sync with a second signal, no `get_session_list` call anywhere in the
+plugin.
 
 **Badge.** `Sessions::badge()` (pure, re-derived on every call — never
 cached, so it can't drift from `peers`/`own`) renders **zero lines** while
 only the current session's presence is known (a lone fresh own-entry plus
-only stale peers still clears that threshold — task-14: the roster's whole
-point is remembering); from 2+ entries on, one line per session in a single
+only stale-but-not-yet-dead peers still clears that threshold — a stale
+entry stays visible until the dead reap); from 2+ entries on, one line per
+session in a single
 fixed order shared with cycling: current session first, then any FRESH peer
 with `attention > 0` by name, then the rest of the fresh peers by name, then
 every STALE peer by name (a stale peer's attention count isn't actionable,
 so staleness outranks attention for ordering). Each line shows the session
 name plus the status-origin pane running count and attention count when
 nonzero, using the same glyphs the per-tab rows use for those statuses. The
-current line is marked (dimmed, a small `•`) and carries no click target — you
+current line is marked (an accent-colored `•` — the label itself stays the
+muted line color) and carries no click target — you
 can't switch to the session you're already in. A pending cycle selection renders
 bold+accent; a stale entry renders one step dimmer than the ordinary muted
 line color and a right-edge `✕` hotspot; clicking the glyph dismisses it,
@@ -703,7 +715,7 @@ actions for future parity, but is not a usable trigger until
 pipe (documented for operators in `docs/configuration.md`), advance a
 highlighted selection through that same shared order, wrapping, with the
 current session included as a normal stop and every STALE peer excluded
-entirely (task-14: switching onto a likely-dead session would have Zellij
+entirely (switching onto a likely-dead session would have Zellij
 resurrect it as an empty zombie pane). A tap only moves the highlight
 (`Sessions::cycle`, which arms a per-selection "a tap landed" flag) — the
 actual switch is a later **idle-commit**: `Sessions::tick` runs on every

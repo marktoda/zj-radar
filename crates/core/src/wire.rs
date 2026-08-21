@@ -13,12 +13,15 @@
 //!   fails. Used by [`Status`],
 //!   whose `statuses!` table calls [`wire_serde!`] directly (it owns a richer
 //!   table that also carries role + glyph data, so it can't be a plain
-//!   [`wire_enum!`]).
+//!   [`wire_enum!`]), and by [`Kind`], whose accessor pair has a
+//!   domain-specific name — the 4-arg `wire_serde!` form
+//!   (`lenient, Kind, as_source, from_source`) exists for it.
 //! - **strict** — `from_wire(&str) -> Option<Self>`; unknown tokens deserialize
 //!   to an *error* so a corrupt snapshot entry can't masquerade as valid. Used
 //!   by [`ObservationOrigin`] via [`wire_enum!`].
 //!
 //! [`Status`]: crate::status::Status
+//! [`Kind`]: crate::kind::Kind
 //! [`ObservationOrigin`]: crate::observation::ObservationOrigin
 
 /// Generate just `serde::Serialize` for a wire type, from its token accessor

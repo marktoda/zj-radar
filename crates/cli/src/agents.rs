@@ -12,6 +12,7 @@
 mod claude;
 mod codex;
 
+use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
 use serde_json::Value;
 use zj_radar_core::command::contains_word;
@@ -118,8 +119,8 @@ const ACK_PROMPTS: &[&str] = &[
 ];
 
 /// Extract a sticky task label from a submitted prompt: the first non-empty
-/// line, trimmed, capped at 512 chars (the same producer-side bound as `msg`,
-/// protecting the 64 KiB wire cap). `None` — meaning "keep the previous
+/// line, trimmed, capped at [`MAX_WIRE_FIELD_CHARS`] (the same bound `to_wire`
+/// applies to every free-text field). `None` — meaning "keep the previous
 /// label" — for empty prompts, slash commands, harness-injected tag lines,
 /// and bare acknowledgements.
 pub fn task_from_prompt(prompt: &str) -> Option<String> {
@@ -140,7 +141,7 @@ pub fn task_from_prompt(prompt: &str) -> Option<String> {
     if ACK_PROMPTS.contains(&normalized) {
         return None;
     }
-    Some(line.chars().take(512).collect())
+    Some(line.chars().take(MAX_WIRE_FIELD_CHARS).collect())
 }
 
 /// The trailing question in a final assistant message, if the turn ends by
@@ -519,9 +520,9 @@ mod tests {
     }
 
     #[test]
-    fn task_from_prompt_caps_at_512_chars() {
-        let long = "x".repeat(600);
-        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), 512);
+    fn task_from_prompt_caps_at_wire_field_bound() {
+        let long = "x".repeat(MAX_WIRE_FIELD_CHARS + 88);
+        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), MAX_WIRE_FIELD_CHARS);
     }
 
     #[test]

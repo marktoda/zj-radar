@@ -55,13 +55,15 @@ so no wasm build is needed for typical work.
 - **Rail lockstep.** Emitted ANSI and the click-target map stay in exact 1:1 line
   correspondence (`CONTEXT.md` → *Lockstep*). Keep it structural, not
   discipline-held.
-- Some files are welded to tests — edit them through the test, not casually:
-  `docs/rail-reference.md` is an executable spec (`include_str!`'d by
-  `crates/plugin/src/reference_tests.rs`);
-  `plugins/zj-radar-claude/hooks/hooks.json` timeouts must clear the pipe-send
-  cap plus 2s (`crates/plugin/src/hooks_manifest_tests.rs`); and
-  `docs/configuration.md`'s pipe names and cmd verbs are pinned by tests in
-  `crates/plugin/src/config.rs` and `crates/plugin/src/control.rs`.
+- Some files are welded to tests — edit them through the test, not casually
+  (rail-reference spec, hooks.json timeouts, notify.sh's pipe name/deadlines,
+  configuration.md's pipe names and verbs, the example layout, plugin.json's
+  version). Cross-crate constants get text-pin tests too (grant probe and
+  Zellij version floor in `crates/plugin/src/lib.rs`, `Notify::agent` docs in
+  `crates/cli/src/agents.rs`). `flake.nix`'s source filter is the inventory of
+  non-Rust files the hermetic build needs — welds and other build inputs
+  alike — so a new `include_str!` outside crate sources needs a filter entry,
+  or the hermetic CI job can't see the file.
 
 ## Adding a producer or agent
 

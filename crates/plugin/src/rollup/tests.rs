@@ -376,6 +376,37 @@ fn quiet_identity_never_outranks_a_live_observation() {
 }
 
 #[test]
+fn animating_tracks_running_jobs_not_services_and_sits_outside_the_ever_active_gate() {
+    // A running *job* is the animated set (the spinner) — the header sweep
+    // arms; a running *service* holds the steady mark and must not
+    // (docs/activity-model.md §3, TrackedObservation::animating).
+    let panes = [pane(1, "p")];
+    let mut map = HashMap::new();
+    map.insert(1, obs(ObservationOrigin::Command, Status::Running, 1)); // Kind::Build — a job
+    assert!(roll_up(&panes, resolver(&map), |_| None).animating, "a running job animates");
+    map.insert(1, TrackedObservation { kind: Kind::Server, ..obs(ObservationOrigin::Command, Status::Running, 1) });
+    assert!(
+        !roll_up(&panes, resolver(&map), |_| None).animating,
+        "a running service holds the steady mark — no sweep"
+    );
+
+    // `animating` accrues OUTSIDE roll_up's ever_active gate — deliberate: a
+    // snapshot-loaded Running row with ever_active=false renders untracked
+    // (no spinner line, no counts) yet still arms the header sweep, because
+    // the sweep must mirror the stores' cadence predicates
+    // (TrackedObservation::animating has no ever_active gate) or cadence and
+    // paint could disagree about whether anything is in motion. Pinned so a
+    // refactor that moves the `animating` accrual inside the gate fails here.
+    let mut stale = obs(ObservationOrigin::StatusPipe, Status::Running, 1);
+    stale.ever_active = false;
+    map.insert(1, stale);
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert_eq!(display.progress.total, 0, "not counted");
+    assert!(!display.panes[0].is_tracked(), "renders untracked — no spinner row of its own");
+    assert!(display.animating, "yet the sweep arms — `animating` sits outside the ever_active gate");
+}
+
+#[test]
 fn primary_detail_tie_break_prefers_a_job_over_a_service() {
     // On equal severity a bounded job outranks a service — a spinning build
     // summarizes the tab better than a dev server that is merely up

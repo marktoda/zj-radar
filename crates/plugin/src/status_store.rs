@@ -66,7 +66,7 @@ impl StatusStore {
         // Sticky task label: a new prompt replaces it, taskless events (the
         // overwhelming majority — every tool hook) carry it forward, and idle
         // (`/clear`) resets it along with the msg.
-        let task = if p.status == crate::status::Status::Idle {
+        let task = if p.status == Status::Idle {
             String::new()
         } else if p.task.is_empty() {
             prev.map(|s| s.task.clone()).unwrap_or_default()
@@ -129,7 +129,7 @@ impl StatusStore {
     /// instance may seed one flood-stale row. Accepted: reaching this path at
     /// all means a producer is flooding past the cap.
     fn evict_over_cap(&mut self) {
-        while self.store.observations().count() > MAX_TRACKED_PANES {
+        while self.store.len() > MAX_TRACKED_PANES {
             let Some(oldest) = self
                 .store
                 .observations()
@@ -138,13 +138,7 @@ impl StatusStore {
             else {
                 return;
             };
-            let keep: HashSet<u32> = self
-                .store
-                .observations()
-                .map(|(id, _)| id)
-                .filter(|&id| id != oldest)
-                .collect();
-            let _ = self.store.prune(&keep);
+            self.store.remove(oldest);
             self.suspect_running.remove(&oldest);
         }
     }
@@ -226,7 +220,9 @@ impl StatusStore {
     }
 
     /// The shared idle overwrite behind both clear paths: repo/branch/kind kept
-    /// (the tab keeps its name), msg/task dropped, `ever_active` sticky.
+    /// (the tab keeps its name), msg/task dropped, `ever_active` forced true —
+    /// reaching here means the pane held a non-Idle status, so it stays a
+    /// muted row rather than reverting to untracked.
     fn force_idle(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
         let old = self.store.get(pane_id)?.clone();
         let _ = self.store.insert(
@@ -298,8 +294,6 @@ impl StatusStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::status::Status;
 
     fn payload(pane_id: u32, status: Status) -> StatusPayload {
         StatusPayload {

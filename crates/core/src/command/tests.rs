@@ -865,6 +865,31 @@
         );
     }
 
+    #[test]
+    fn unclassifiable_foreground_argv_touches_no_bookkeeping() {
+        // An argv `classify` renders to nothing (here: control chars that
+        // sanitize away) is no evidence about the pane. In particular it must
+        // not cancel an armed Running→Done confirm: nothing would ever re-arm
+        // it, and the row would stick Running forever.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &argv(&["make"]), true, Some("/repo"), 1);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+
+        // The command leaves the foreground → tentative-done armed…
+        store.on_command_changed(1, &[], false, None, promote_tick + 1);
+        // …then an unclassifiable fg argv arrives. It must leave the armed
+        // confirm alone.
+        store.on_command_changed(1, &argv(&["\u{1b}"]), true, Some("/repo"), promote_tick + 1);
+        store.on_timer(Tick(promote_tick + 1 + DEBOUNCE_TICKS), EpochSecs(0));
+        assert_eq!(
+            store.get(1).unwrap().status,
+            Status::Done,
+            "the armed Running→Done confirm must survive an unclassifiable fg argv"
+        );
+    }
+
     // ── Done TTL recede, epoch stamping, easing-safe promotion ──
 
     #[test]
@@ -919,8 +944,9 @@
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         let t0 = s.get(1).unwrap().last_change_tick;
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 50); // re-report
-        s.on_timer(Tick(50 + DEBOUNCE_TICKS), EpochSecs(150));                                // re-promote
+        let r = s.on_timer(Tick(50 + DEBOUNCE_TICKS), EpochSecs(150));                        // re-promote
         assert_eq!(s.get(1).unwrap().last_change_tick, t0, "same command keeps its start tick");
+        assert!(!r.changed, "identical re-promotion stores an identical observation — no snapshot write");
     }
 
     #[test]

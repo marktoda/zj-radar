@@ -36,7 +36,6 @@ insta = { version = "1", features = ["filters"] }
 proptest = "1"
 vt100 = "0.15"
 assert_cmd = "2"
-assertables = "9"
 tempfile = "3"
 portable-pty = "0.8"
 

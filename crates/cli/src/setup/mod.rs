@@ -29,6 +29,9 @@ pub(crate) const CODEX_NOTIFY_MARKER: [&str; 3] = ["zj-radar", "notify", "codex"
 // Codex producer (shared single source of truth).
 pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
 pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
+// No space before the `&&`: cmd.exe folds everything up to the separator into
+// the env var's VALUE, so `v1 &&` would set the marker to "v1 " and break the
+// marker round-trip that idempotency/uninstall detection depends on.
 pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
     "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
 // Kill ceiling for the generated hook entries — derived from the send cap,
@@ -60,6 +63,12 @@ pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] = [
 ];
 pub(crate) const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 pub(crate) const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
+// The one-time trust step Codex requires before it runs installed hooks. One
+// copy (the CODEX_HOOK_MARKER precedent) shared by setup's install epilogue
+// and the doctor's note item, so the advice can't drift between them. No
+// trailing punctuation — callers supply their own.
+pub(crate) const CODEX_HOOK_TRUST_ADVICE: &str =
+    "run `/hooks` in Codex to review and trust the zj-radar command hook";
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -278,12 +287,34 @@ pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Opti
     }
 }
 
-pub(crate) fn confirm(prompt: &str) -> bool {
+/// Ask for consent. `yes` (`-y`) grants without asking; tty-ness arrives as a
+/// parameter, resolved ONCE at the invocation boundary (the `inject_mode`
+/// pattern) — probing `stdin().is_terminal()` in here made the answer
+/// untestable and let one chain probe twice. No tty = no one to answer: take
+/// the safe "no" instead of blocking on a read that never returns (the same
+/// non-tty rule `inject_mode` and `run`'s foreign-session consent apply), and
+/// say how to consent non-interactively.
+pub(crate) fn confirm(prompt: &str, yes: bool, is_tty: bool) -> bool {
     use std::io::Write;
+    if yes {
+        return true;
+    }
+    if !is_tty {
+        println!("{prompt} — skipped (no tty — re-run with -y)");
+        return false;
+    }
     print!("{prompt} [y/N] ");
     let _ = std::io::stdout().flush();
+    confirm_answer(std::io::stdin().lock())
+}
+
+/// The read-and-parse half of [`confirm`], over any reader: `y`/`yes` (case
+/// folded) consent; anything else — including EOF — declines. Split out so
+/// answered-y, answered-n, and EOF-decline stay unit-tested (the tty gate
+/// above keeps the real stdin out of reach in tests).
+fn confirm_answer(mut reader: impl std::io::BufRead) -> bool {
     let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
+    let _ = reader.read_line(&mut line);
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
@@ -299,10 +330,11 @@ pub(crate) fn confirm_and_write(
     path: &Path,
     new: &str,
     yes: bool,
+    is_tty: bool,
     prompt: &str,
     pre_write: impl FnOnce() -> Result<(), String>,
 ) -> bool {
-    if !yes && !confirm(prompt) {
+    if !confirm(prompt, yes, is_tty) {
         println!("{label}: skipped (declined)");
         return false;
     }
@@ -317,6 +349,12 @@ pub(crate) fn confirm_and_write(
     true
 }
 
+/// Suffix of the pre-write backup `setup` leaves beside every file it edits.
+/// The success epilogues interpolate it (via [`path_with_suffix`]) so the
+/// advertised restore point can never drift from the file
+/// [`backup_then_write`] actually creates.
+pub(crate) const BACKUP_SUFFIX: &str = ".zj-radar.bak";
+
 /// Back up the existing file, then write atomically (temp file + rename via the
 /// shared `fsutil::atomic_write`). The `.bak` is specific to `setup` editing the
 /// user's own files; `run` writes its owned dir without one. A failed backup
@@ -324,7 +362,7 @@ pub(crate) fn confirm_and_write(
 /// point, so the user's file must never be replaced without it existing.
 pub(crate) fn backup_then_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if path.exists() {
-        std::fs::copy(path, path_with_suffix(path, ".zj-radar.bak")).map_err(|e| {
+        std::fs::copy(path, path_with_suffix(path, BACKUP_SUFFIX)).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
                 format!("backup copy failed ({e}); {} left untouched", path.display()),
@@ -364,6 +402,31 @@ mod tests {
     }
 
     #[test]
+    fn confirm_answer_accepts_only_y_or_yes() {
+        use std::io::Cursor;
+        // Answered y (any case, either spelling) → consent.
+        assert!(confirm_answer(Cursor::new("y\n")));
+        assert!(confirm_answer(Cursor::new("Y\n")));
+        assert!(confirm_answer(Cursor::new("yes\n")));
+        assert!(confirm_answer(Cursor::new("  YES  \n")));
+        // Answered n (or anything else) → decline.
+        assert!(!confirm_answer(Cursor::new("n\n")));
+        assert!(!confirm_answer(Cursor::new("no\n")));
+        assert!(!confirm_answer(Cursor::new("yep\n")));
+        // EOF with no answer declines — the default must be the safe "no".
+        assert!(!confirm_answer(Cursor::new("")));
+    }
+
+    #[test]
+    fn confirm_yes_flag_consents_without_reading() {
+        // `-y` wins before the tty gate: consent even with no tty to answer on.
+        assert!(confirm("Write?", true, false));
+        assert!(confirm("Write?", true, true));
+        // No `-y`, no tty: the safe "no" (never blocks on a read).
+        assert!(!confirm("Write?", false, false));
+    }
+
+    #[test]
     fn backup_then_write_aborts_when_backup_cannot_be_written() {
         // The success epilogues advertise the .bak as the restore point, so a
         // failed backup must abort the write, not overwrite-and-lie. Force the
@@ -371,7 +434,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.kdl");
         std::fs::write(&target, "original").unwrap();
-        std::fs::create_dir(path_with_suffix(&target, ".zj-radar.bak")).unwrap();
+        std::fs::create_dir(path_with_suffix(&target, BACKUP_SUFFIX)).unwrap();
 
         let err = backup_then_write(&target, "replacement").unwrap_err();
         assert!(err.to_string().contains("backup copy failed"), "err: {err}");

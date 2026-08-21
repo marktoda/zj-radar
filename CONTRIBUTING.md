@@ -36,8 +36,10 @@ core:
 - **MSRV is Rust 1.95** (`rust-version` in the root `Cargo.toml`). CI's `msrv`
   job builds with exactly that toolchain, so language/stdlib features newer
   than 1.95 will fail the PR. Dev otherwise tracks `stable`.
-- For the full suite: `just`, plus `bats`, `shellcheck`, and `jq` (bash hook
-  tests) and `zellij` ≥ 0.44.3 on `PATH` (live E2E — the version the plugin's
+- For the full suite: `just`, plus `bats`, `shellcheck`, `jq`, and GNU
+  coreutils for `timeout` (bash hook tests — on stock macOS
+  `brew install coreutils` or `nix develop`; without it two cases skip) and
+  `zellij` ≥ 0.44.3 on `PATH` (live E2E — the version the plugin's
   `zellij-tile` pin targets; the harness warns on other versions).
 - Optional: Nix. `nix develop` drops you into a shell with everything pinned;
   `nix flake check` runs the same checks the `hermetic` CI job uses.

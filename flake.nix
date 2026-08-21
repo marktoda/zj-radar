@@ -49,6 +49,11 @@
           || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path)
           # include_str!'d by the plugin's hook-headroom guard (hooks_manifest_tests.rs).
           || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/hooks/hooks.json" path)
+          # include_str!'d by the version-triple weld (hooks_manifest_tests.rs).
+          || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/.claude-plugin/plugin.json" path)
+          # Recorded proptest failure seeds: without them the hermetic checks
+          # would skip replaying known-bad cases instead of pinning the fixes.
+          || (pkgs.lib.hasInfix "/proptest-regressions/" path)
           # insta snapshots (crates/*/src/**/snapshots/*.snap): filterCargoSources
           # keeps only Rust/cargo files, and without the recorded snapshots every
           # insta test "re-records" and fails in the sandbox.
@@ -124,6 +129,10 @@
         # lock the outer cargo holds while running build scripts, with no
         # network to fail fast) — the job hangs until the CI timeout. Feed the
         # prebuilt wasm here exactly like cliArgs does.
+        #
+        # Deliberately NOT --all-features (unlike ci.yml's cargo test): the
+        # only extra feature is `e2e`, whose tests drive a live Zellij PTY —
+        # impossible inside the nix sandbox.
         clippy = craneLib.cargoClippy (commonArgs
           // {
             cargoArtifacts = cargoArtifactsHost;
@@ -135,6 +144,11 @@
             cargoArtifacts = cargoArtifactsHost;
             ZJ_RADAR_WASM_PATH = "${zj-radar}/bin/zj_radar.wasm";
           });
+        # NOT redundant with test/clippy above: `-p zj-radar` builds the CLI
+        # standalone (only its own + core's features), reproducing what a
+        # crates.io `cargo install zj-radar` sees — the workspace-wide checks
+        # unify features across the plugin member and can mask a missing
+        # feature declaration in the CLI's own manifest.
         cli-test = craneLib.cargoTest (cliArgs
           // {
             cargoArtifacts = cargoArtifactsCli;

@@ -17,7 +17,10 @@ use std::time::{Duration, SystemTime};
 const CACHE_ROOT: &str = "/cache";
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const TMP_ROOT: &str = "/tmp/zj-radar";
-const SNAPSHOT_PREFIX: &str = "zj-radar.";
+/// Namespace for every file this module owns in the shared root — snapshots,
+/// permission markers/locks, notify claims (all pid-scoped via
+/// `session_prefix`), and presence files (via [`PRESENCE_PREFIX`]).
+const SESSION_FILE_PREFIX: &str = "zj-radar.";
 const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long the first-run permission lock is trusted. The lock prevents every
 /// peer sidebar from prompting at once, but its owner can die with the prompt
@@ -212,26 +215,17 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return Vec::new();
         };
-        let Ok(entries) = std::fs::read_dir(&paths.root) else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with(PRESENCE_PREFIX) || !name.ends_with(".json") {
-                continue; // tmp files and snapshots don't match
-            }
-            if paths.is_own_presence_file(&name) {
-                continue;
-            }
+        // The own-file skip is the pre-read predicate: no point paying the
+        // open+read for a file whose content is discarded by name.
+        for_each_presence_file(&paths.root, |name| !paths.is_own_presence_file(name), |entry, json| {
             let age_secs = age_of(entry.metadata(), now)
                 .map(|age| age.as_secs())
                 .unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
-            if let Ok(json) = std::fs::read_to_string(entry.path()) {
-                out.push(PeerPresenceFile { json, age_secs });
-            }
-        }
+            out.push(PeerPresenceFile { json, age_secs });
+        });
+        // Sorted by content, so `sessions::update_presences`'s later-entry-
+        // wins dedup tie-break is deterministic across reads.
         out.sort_by(|a, b| a.json.cmp(&b.json));
         out
     }
@@ -256,21 +250,13 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return;
         };
-        let Ok(entries) = std::fs::read_dir(&paths.root) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with(PRESENCE_PREFIX) || !name.ends_with(".json") {
-                continue; // tmp files and snapshots don't match
+        // Pass-all name predicate: the delete is content-driven by design
+        // (see above), so every presence file must actually be read.
+        for_each_presence_file(&paths.root, |_| true, |entry, json| {
+            if matches(&json) {
+                let _ = std::fs::remove_file(entry.path());
             }
-            if let Ok(json) = std::fs::read_to_string(entry.path()) {
-                if matches(&json) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
+        });
     }
 
     /// Re-probe the permission state for a timer tick: re-read the marker and,
@@ -361,6 +347,40 @@ fn write_via_tmp(tmp: &Path, dest: &Path, bytes: &[u8]) {
     }
 }
 
+/// THE presence-file recognizer every read/delete path shares: prefix plus
+/// the `.json` extension, so tmp files and snapshots never match. (The
+/// open-time sweep, `prune_stale_files`, deliberately does NOT use it — see
+/// the prefix-only match there.)
+fn is_peer_presence_file(name: &str) -> bool {
+    name.starts_with(PRESENCE_PREFIX) && name.ends_with(".json")
+}
+
+/// Visit every presence file in `root` ([`is_peer_presence_file`]) whose file
+/// name passes `keep`, handing each entry with its raw JSON content. `keep`
+/// runs BEFORE the read, so a name-based exclusion (the peer read's own-file
+/// skip) costs nothing — filtering it in the callback instead would pay a
+/// wasted wasi open+read per scan. Unreadable files are skipped; content
+/// filtering stays the callback's job.
+fn for_each_presence_file(
+    root: &Path,
+    keep: impl Fn(&str) -> bool,
+    mut f: impl FnMut(&std::fs::DirEntry, String),
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !is_peer_presence_file(&name) || !keep(&name) {
+            continue;
+        }
+        if let Ok(json) = std::fs::read_to_string(entry.path()) {
+            f(&entry, json);
+        }
+    }
+}
+
 /// How long ago (relative to `now`) the file behind `meta` was last modified.
 /// `None` on any metadata/clock hiccup — including an mtime in the future —
 /// so each caller decides its own conservative fallback (treat as fresh,
@@ -412,7 +432,7 @@ fn reclaim_if_stale(lock: &Path, now: SystemTime, ttl: Duration) -> bool {
 
 impl SessionPaths {
     fn new(root: PathBuf, ids: SessionFileIds) -> Self {
-        let session_prefix = format!("{SNAPSHOT_PREFIX}{}", ids.zellij_pid);
+        let session_prefix = format!("{SESSION_FILE_PREFIX}{}", ids.zellij_pid);
         let snapshot = root.join(format!("{session_prefix}.json"));
         let snapshot_tmp = root.join(format!("{session_prefix}.json.{}.tmp", ids.plugin_id));
         let permission_marker = root.join(format!("{session_prefix}.permissions"));
@@ -496,6 +516,12 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
+        // Deliberately looser than `is_peer_presence_file`: prefix-only, no
+        // `.json` requirement, so presence *tmp debris* (an orphaned
+        // `...json.<plugin>.tmp` from a crashed rename) takes this branch and
+        // is swept on the shorter 6h horizon — it matches nothing below
+        // (`is_owned_session_file` requires a numeric pid) and would
+        // otherwise accumulate forever.
         if name.starts_with(PRESENCE_PREFIX) {
             if paths.is_own_presence_file(&name) {
                 continue;
@@ -517,7 +543,7 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
 }
 
 fn is_owned_session_file(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix(SNAPSHOT_PREFIX) else {
+    let Some(rest) = name.strip_prefix(SESSION_FILE_PREFIX) else {
         return false;
     };
     let Some((pid, suffix)) = rest.split_once('.') else {
