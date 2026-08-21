@@ -84,24 +84,49 @@ const IGNORE_NAMES: &[&str] = &[
 /// still surfaces a Running/Done lifecycle under their own `Kind`.
 pub const AGENT_NAMES: &[&str] = &["claude", "codex"];
 
-/// A pending foreground command awaiting debounce promotion.
+/// Interactive programs — editors, pagers, monitors, git TUIs, file managers —
+/// that sit open waiting on the *user* rather than doing bounded work
+/// (`docs/activity-model.md`: the Companion class). Classification data, not an
+/// ignore list: a command here still records its identity as a quiet pending
+/// (never promoted to a Running row, but labeling its exit and feeding the
+/// muted pane label), extended per-user by the `interactive_commands` config
+/// key. The third name-list role beside the other two, and the roles must
+/// never merge (pinned by `interactive_set_disjoint_from_prompt_and_agent_names`):
+/// `IGNORE_NAMES` = "back at the prompt" (exit-clears pushed status),
+/// `AGENT_NAMES` = "owned by the push pipe", this = "a real command that never
+/// earns a Running row". An editor placed in `IGNORE_NAMES` instead would make
+/// "opened nvim" read as "returned to shell" and wrongly exit-clear a finished
+/// agent's pushed status.
+pub const DEFAULT_INTERACTIVE: &[&str] = &[
+    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro",
+    "less", "more", "most", "man",
+    "htop", "btop", "top",
+    "lazygit", "tig", "gitui", "k9s",
+    "fzf", "ranger", "yazi", "nnn", "lf", "mc",
+];
+
+/// A pending foreground command awaiting debounce promotion — or, for an
+/// interactive command (`promotable: false`), a *quiet* pending: identity
+/// recorded for exit labeling and the muted pane label, but never promoted to
+/// a Running row and never arming the fast cadence.
 struct Pending {
     command: String,
     cwd: String,
     kind: Kind,
     since_tick: u64,
+    promotable: bool,
 }
 
 /// Tracks per-pane command activity for terminal panes that have no agent
 /// producer. The resolved display state is stored as `TrackedObservation` so it can be
 /// consumed uniformly by the downstream aggregator.
-#[derive(Default)]
 pub struct CommandStore {
     /// Resolved displayable state, ready for aggregation. The map and its focus
     /// lifecycle are shared with `StatusStore` via `ObservationStore`; only the
     /// command-specific debounce maps below are unique to this store.
     store: ObservationStore,
-    /// Pending fg commands awaiting debounce promotion.
+    /// Pending fg commands awaiting debounce promotion (or quiet — see
+    /// [`Pending::promotable`]).
     pending: HashMap<u32, Pending>,
     /// Panes whose Running command has *left* the foreground, awaiting debounce
     /// confirmation before flipping to Done. Value = tick first observed leaving.
@@ -112,6 +137,22 @@ pub struct CommandStore {
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
     /// identical exits.
     exited: HashMap<u32, Option<i32>>,
+    /// The effective interactive set: [`DEFAULT_INTERACTIVE`] ∪ the user's
+    /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
+    /// Matched on the peeled program name at intake.
+    interactive: HashSet<String>,
+}
+
+impl Default for CommandStore {
+    fn default() -> Self {
+        CommandStore {
+            store: ObservationStore::default(),
+            pending: HashMap::new(),
+            pending_done: HashMap::new(),
+            exited: HashMap::new(),
+            interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
+        }
+    }
 }
 
 /// Extract the basename from a path-like string (split on `/`, take last
@@ -509,9 +550,24 @@ impl CommandStore {
             }
             // Otherwise leave resolved unchanged (idle stays idle).
         } else {
-            // A real foreground command is running: it is no longer leaving, so
-            // cancel any tentative-done.
-            self.pending_done.remove(&pane_id);
+            let interactive = self.interactive.contains(name);
+            if interactive {
+                // An interactive command (editor/pager/TUI) is the pane's fg:
+                // any PRIOR Running command has ended, exactly as in the ignore
+                // branch above — opening nvim after `cargo build` finished must
+                // still flip the build row to Done.
+                if self
+                    .store
+                    .get(pane_id)
+                    .is_some_and(|s| s.status == Status::Running)
+                {
+                    self.pending_done.entry(pane_id).or_insert(tick);
+                }
+            } else {
+                // A real foreground command is running: it is no longer
+                // leaving, so cancel any tentative-done.
+                self.pending_done.remove(&pane_id);
+            }
             // Build the cleaned command string and its Kind in one pass.
             let (cmd_string, kind) = classify(command);
             if cmd_string.is_empty() {
@@ -528,6 +584,10 @@ impl CommandStore {
             self.exited.remove(&pane_id);
 
             let cwd_str = cwd.unwrap_or("").to_string();
+            // Interactive commands record a QUIET pending: the identity is kept
+            // — it labels a held pane's exit (`nvim ✓`, never a blank Done row)
+            // and feeds the muted pane label — but `on_timer` never promotes it
+            // to a Running row, and it never arms the fast cadence.
             self.pending.insert(
                 pane_id,
                 Pending {
@@ -535,6 +595,7 @@ impl CommandStore {
                     cwd: cwd_str,
                     kind,
                     since_tick: tick,
+                    promotable: !interactive,
                 },
             );
         }
@@ -558,7 +619,7 @@ impl CommandStore {
         let to_promote: Vec<u32> = self
             .pending
             .iter()
-            .filter(|(_, p)| tick.saturating_sub(p.since_tick) >= DEBOUNCE_TICKS)
+            .filter(|(_, p)| p.promotable && tick.saturating_sub(p.since_tick) >= DEBOUNCE_TICKS)
             .map(|(&id, _)| id)
             .collect();
 
@@ -800,12 +861,24 @@ impl CommandStore {
         let _ = self.store.insert(pane_id, observation);
     }
 
-    /// True if any pane is Running or has a pending fg command. Used (alongside
-    /// `StatusStore::any_running`) to keep the timer armed while work animates: a
-    /// finished command is terminal and needs no further ticking, so only
-    /// `Running` (plus a not-yet-promoted pending command) counts as live here.
-    pub fn has_pending_or_active(&self) -> bool {
-        !self.pending.is_empty() || self.store.any(|s| s.status == Status::Running)
+    /// True while this store has tick-driven work: an animated Running row
+    /// ([`TrackedObservation::animating`] — services hold the steady mark and
+    /// are excluded), a promotable pending awaiting its debounce promotion, or
+    /// a tentative-Done awaiting its debounce confirm. Used (alongside
+    /// `StatusStore::needs_ticks`) to keep the timer armed; a finished command
+    /// is terminal and needs no further ticking.
+    ///
+    /// `pending_done` counts explicitly: it is a scheduled one-shot exactly
+    /// like a promotable pending, and it is the only tick source for a
+    /// *service* row's Running→Done confirm — the Running row that used to
+    /// keep the timer armed for it is precisely what the service exclusion
+    /// turned off (a Ctrl-C'd dev server must still flip Done in ~2s, not on
+    /// the Slow heartbeat). A quiet pending never promotes, so an open editor
+    /// still costs zero ticks.
+    pub fn needs_ticks(&self) -> bool {
+        self.pending.values().any(|p| p.promotable)
+            || !self.pending_done.is_empty()
+            || self.store.any(TrackedObservation::animating)
     }
 
     /// Any command Done is by definition inside its TTL window (TTL flips it to
@@ -814,6 +887,83 @@ impl CommandStore {
     pub fn has_done_awaiting_recede(&self) -> bool {
         self.store.any(|s| s.status == Status::Done)
     }
+
+    /// Compose the effective interactive set (`DEFAULT_INTERACTIVE` ∪ `extras`)
+    /// and apply it **level-triggered**: sweep already-recorded state so the
+    /// config works on rows that will never see another `CommandChanged` — a
+    /// mid-session TUI fires no event until it exits, and a restart's snapshot
+    /// rehydrates its Running row, so without the sweep the spinner (and its
+    /// 1 Hz cadence pin) would persist until the editor closes. Matching keys
+    /// on the display's first whitespace token, which equals the peeled exe
+    /// basename by construction of every display path (pinned by
+    /// `display_first_token_is_the_exe_basename`). Returns whether anything
+    /// observable changed (the caller's render/persist trigger).
+    pub fn set_interactive_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
+        self.interactive = DEFAULT_INTERACTIVE
+            .iter()
+            .copied()
+            .chain(extras)
+            .map(str::to_string)
+            .collect();
+        let mut changed = false;
+        // Re-judge every pending against the new set — symmetric, so removing
+        // an extra un-quiets its pending and the next tick promotes it.
+        for p in self.pending.values_mut() {
+            let quiet = first_token(&p.command).is_some_and(|t| self.interactive.contains(t));
+            if p.promotable == quiet {
+                p.promotable = !quiet;
+                changed = true;
+            }
+        }
+        // Demote already-promoted Running rows for now-interactive commands to
+        // Idle. Not a completion, so nothing is ledgered. Promotion consumed
+        // the pending, so RECONSTRUCT the quiet pending from the observation —
+        // that makes the swept state identical to the intake state: the muted
+        // Interactive label shows, a held pane's exit stays labeled, and
+        // removing the config entry later re-promotes symmetrically. (The
+        // observation's `repo` is already a basename; `on_exit`'s
+        // `basename(cwd)` is idempotent over it.)
+        let to_demote: Vec<u32> = self
+            .store
+            .observations()
+            .filter(|(_, s)| {
+                s.status == Status::Running
+                    && first_token(&s.msg).is_some_and(|t| self.interactive.contains(t))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for pane_id in to_demote {
+            if let Some(s) = self.store.get_mut(pane_id) {
+                s.status = Status::Idle;
+                changed = true;
+                let quiet = Pending {
+                    command: s.msg.clone(),
+                    cwd: s.repo.clone(),
+                    kind: s.kind,
+                    since_tick: s.last_change_tick,
+                    promotable: false,
+                };
+                self.pending.entry(pane_id).or_insert(quiet);
+            }
+        }
+        changed
+    }
+
+    /// The quiet identity of a pane whose interactive command is in the
+    /// foreground: `(display, kind)` from its non-promotable pending. Feeds
+    /// the rail's muted pane label (`rollup::PaneDisplay::Interactive`).
+    pub fn quiet_identity(&self, pane_id: u32) -> Option<(&str, Kind)> {
+        self.pending
+            .get(&pane_id)
+            .filter(|p| !p.promotable)
+            .map(|p| (p.command.as_str(), p.kind))
+    }
+}
+
+/// First whitespace-separated token of a display string, login-dash stripped —
+/// the exe basename by construction (see `set_interactive_extras`).
+fn first_token(display: &str) -> Option<&str> {
+    display.split_whitespace().next().map(|t| t.trim_start_matches('-'))
 }
 
 #[cfg(test)]

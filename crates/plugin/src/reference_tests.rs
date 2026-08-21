@@ -135,6 +135,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
     let mut jump_hint = false;
+    let mut now_tick: u64 = 0;
     let mut ledger_lines: Vec<crate::rollup::LedgerLine> = Vec::new();
     // A fixed "now" for the `ledger` directive's age math, so a scenario's
     // round `age_secs` numbers produce deterministic, doc-readable
@@ -174,6 +175,10 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         /// via the `waiting <N>m` trailer; backdates the apply epoch so the
         /// `· Nm` wait tag renders. 0 = applied "now" (no tag).
         waiting_m: u64,
+        /// true = the `interactive "<argv>"` form: drives the command-observer
+        /// path with an interactive foreground command (a quiet pending — no
+        /// status, no Running row) → PaneDisplay::Interactive's muted label.
+        interactive: bool,
     }
 
     struct TabSpec {
@@ -224,6 +229,15 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         // — default hidden, mirroring `JumpHint`.
         if line.trim() == "jump_hint" {
             jump_hint = true;
+            continue;
+        }
+        // Render tick: `now_tick <N>` (default 0). Statuses apply at tick 0,
+        // so this IS the elapsed-ticks knob for the long-job `· Nm` run tag —
+        // pick a multiple of the spinner cycle (10) so working glyphs stay ⠋.
+        if let Some(rest) = line.strip_prefix("now_tick ") {
+            if let Ok(n) = rest.trim().parse::<u64>() {
+                now_tick = n;
+            }
             continue;
         }
 
@@ -309,6 +323,29 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                         untracked: true,
                         exit_code: None,
                         waiting_m: 0,
+                        interactive: false,
+                    });
+                }
+                continue;
+            }
+
+            // Interactive pane form: `interactive "<argv>"` — an editor/pager/
+            // TUI in the foreground (docs/activity-model.md, Companion class).
+            if let Some(rest) = trimmed.strip_prefix("interactive ") {
+                let (argv, _) = take_quoted(rest);
+                let pane_id = next_pane_id;
+                next_pane_id += 1;
+                if let Some(idx) = current_tab {
+                    tabs[idx].panes.push(PaneSpec {
+                        pane_id,
+                        kind: Kind::Command,
+                        status: Status::Idle,
+                        msg: argv.to_string(),
+                        task: String::new(),
+                        untracked: false,
+                        exit_code: None,
+                        waiting_m: 0,
+                        interactive: true,
                     });
                 }
                 continue;
@@ -395,6 +432,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     untracked: false,
                     exit_code,
                     waiting_m,
+                    interactive: false,
                 });
             }
             continue;
@@ -464,10 +502,23 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     // Collect command-exit panes so we can feed them as a batch to panes_changed.
     let mut command_exits: Vec<(u32, Option<i32>)> = Vec::new();
 
+    // Interactive panes (`interactive "<argv>"`): the command-observer path
+    // with an interactive fg command. A quiet pending is recorded (identity
+    // for the muted label) and never promoted — no timer step needed.
     for spec in &tabs {
         for pane in &spec.panes {
-            if pane.untracked || pane.exit_code.is_some() {
-                continue; // untracked + command-exit panes handled separately
+            if pane.interactive {
+                let argv: Vec<String> =
+                    pane.msg.split_whitespace().map(|s| s.to_string()).collect();
+                radar.command_changed(pane.pane_id, &argv, true, 0);
+            }
+        }
+    }
+
+    for spec in &tabs {
+        for pane in &spec.panes {
+            if pane.untracked || pane.exit_code.is_some() || pane.interactive {
+                continue; // untracked / command-exit / interactive panes handled separately
             }
 
             // kind -> wire source name (inverse of the `from_source` the DSL used)
@@ -579,7 +630,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     let mut opts = RenderOpts {
         width,
         height,
-        now_tick: 0,
+        now_tick,
         glyphs,
         header: true,
         density,

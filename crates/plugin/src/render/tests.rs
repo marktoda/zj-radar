@@ -19,6 +19,24 @@ fn wait_tag_is_pending_only_minute_floored_and_frozen_at_saturation() {
 }
 
 #[test]
+fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
+    // Jobs wear the stopwatch; the band matches wait_tag (shared minute_tag).
+    assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 59), None);
+    assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 240).as_deref(), Some("4m"));
+    assert_eq!(
+        run_tag(Status::Running, Kind::Command, Some(0), crate::ledger::SATURATE_S).as_deref(),
+        Some("1h+"),
+        "frozen at 1h+ — the display never changes again"
+    );
+    // Agents label their own turns; services never complete: neither is timed.
+    assert_eq!(run_tag(Status::Running, Kind::Claude, Some(0), 9_999), None);
+    assert_eq!(run_tag(Status::Running, Kind::Server, Some(0), 9_999), None);
+    // Non-Running statuses and unstamped panes (untracked): no tag.
+    assert_eq!(run_tag(Status::Done, Kind::Build, Some(0), 9_999), None);
+    assert_eq!(run_tag(Status::Running, Kind::Build, None, 9_999), None);
+}
+
+#[test]
 fn truncate_does_not_strand_a_zwj_before_the_ellipsis() {
     // A ZWJ family emoji cut mid-cluster must not leave a dangling U+200D that
     // fuses with the appended '…'. The result ends in a clean ellipsis.
@@ -2501,6 +2519,24 @@ fn heartbeat_marches_one_column_per_tick_while_working() {
         Some(0),
         "tick == width wraps back to col 0: {:?}",
         rule_wrap
+    );
+}
+
+#[test]
+fn heartbeat_stays_off_for_a_service_only_rail() {
+    // A Running *service* holds the steady ▸ and never arms the Fast cadence
+    // — a sweep here would only teleport once per Slow fire, and motion
+    // promises bounded work (docs/activity-model.md §1). The tab detail's
+    // kind is the exact gate: the job-over-service tie-break guarantees the
+    // detail is a job whenever any Running job exists.
+    let server = PrimaryDetail { kind: Kind::Server, ..pd("r", "b", "npm run dev", Status::Running) };
+    let rows = vec![tab(1, "dev", display(Status::Running, 0, 1, Some(server)))];
+    let s = render(&rows, &ro(20, 3));
+    let rule = strip_sgr(s.lines().nth(1).unwrap());
+    assert!(
+        !rule.contains('◆'),
+        "no heartbeat for a service-only Running rail: {:?}",
+        rule
     );
 }
 

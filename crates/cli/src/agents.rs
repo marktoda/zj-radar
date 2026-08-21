@@ -6,7 +6,7 @@
 //! This is the PUSHED modality of the information-source model (see CONTEXT.md):
 //! instrumented agents report rich status through the status contract. The
 //! OBSERVED modality — uninstrumented commands like `cargo test`, classified by
-//! `command.rs::command_source` inside the plugin — is a sibling, not part of
+//! `command.rs::classify` inside the plugin — is a sibling, not part of
 //! this seam. Both converge on the `Kind`/`source` vocabulary.
 
 mod claude;
@@ -152,6 +152,23 @@ pub fn task_from_prompt(prompt: &str) -> Option<String> {
 pub fn trailing_question(msg: &str) -> Option<&str> {
     let line = msg.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
     (line.ends_with('?') || line.ends_with('？')).then_some(line)
+}
+
+/// The msg baseline every producer shares (the Claude adapter and `notify
+/// generic`; codex builds per-event and never needs it; the bash fallback
+/// mirrors it in notify.sh): idle always broadcasts a BLANK msg — it means
+/// "no activity", so any stale message the payload rides in on (e.g. a
+/// SessionStart session_title) is dropped and the row recedes cleanly on
+/// `/clear` — and a running row with nothing better to say gets the
+/// `working` placeholder so it never renders blank.
+pub fn baseline_msg(status: Status, msg: &str) -> String {
+    if status == Status::Idle {
+        String::new()
+    } else if status == Status::Running && msg.trim().is_empty() {
+        "working".to_string()
+    } else {
+        msg.to_string()
+    }
 }
 
 fn basename(path: &str) -> Option<&str> {

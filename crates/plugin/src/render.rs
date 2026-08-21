@@ -14,6 +14,10 @@
 //! 5. **Bottom region** — ledger lines, footer (rule + tally + hint), filler.
 
 use crate::config::Density;
+use crate::kind::Kind;
+// One minute band for every age display (its `1h+` freeze is load-bearing
+// for cadence disarm) — owned by the ledger, shared by the wait/run tags.
+use crate::ledger::minute_tag;
 use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
 use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
@@ -55,6 +59,25 @@ const MAX_PANE_LINES: usize = 6;
 /// exactly what [`child_prefix`] emits. Holding this fixed keeps the glyph
 /// aligned across all child lines (see `child_prefix`'s doc).
 const TREE_PREFIX_COLS: usize = 3;
+
+/// The steady mark for a Running *service* (`Kind::is_service`) — a dev
+/// server is up, not progressing, so nothing animates (`docs/activity-model.md`
+/// §3: a spinner promises bounded work). The steadiness is also what lets the
+/// timer disarm around an all-service rail: identical rows across ticks fall
+/// to the render gate, and the cadence predicates count only
+/// `TrackedObservation::animating` rows.
+const SERVICE_GLYPH: char = '▸';
+
+/// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
+/// (easing to a slow blink — see [`spin_glyph`]). The single owner of the
+/// service/job glyph split, shared by the tab header and the pane lines.
+fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
+    if kind.is_service() {
+        SERVICE_GLYPH
+    } else {
+        spin_glyph(now_tick, since_tick)
+    }
+}
 
 /// Spinner frame for a Running glyph: full speed normally; after
 /// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
@@ -431,6 +454,9 @@ impl RenderedRail {
         self.targets.get(line as usize).cloned().flatten()
     }
 
+    /// Test vocabulary — production hotspot resolution goes through
+    /// `hotspot_at` (column-aware); this line-only form exists for asserts.
+    #[cfg(test)]
     pub(crate) fn hotspot_at_line(&self, line: isize) -> Option<(usize, HotspotAction)> {
         if line < 0 {
             return None;
@@ -483,7 +509,7 @@ fn spine_seg(active: bool, tab_status: Status) -> String {
 /// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
-    display.panes.iter().filter(|p| p.is_tracked()).count() > 1
+    display.panes.iter().filter(|p| p.earns_pane_line()).count() > 1
 }
 
 /// The rail's identity header. Single source of truth for the header's vertical
@@ -590,23 +616,29 @@ fn wait_tag(status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> O
     if status != Status::Pending {
         return None;
     }
-    let age = now_epoch_s.saturating_sub(pending_epoch_s?);
-    if age < 60 {
-        None
-    } else if age < crate::ledger::SATURATE_S {
-        Some(format!("{}m", age / 60))
-    } else {
-        Some("1h+".to_string())
-    }
+    minute_tag(now_epoch_s.saturating_sub(pending_epoch_s?))
 }
 
-/// Append the wait tag to an identity line: `migrate schema · 12m`. Identity
+/// The `· 4m` elapsed tag for a long-running bounded *job* — whole minutes
+/// since the run's true start (`since_tick` survives re-promotions of the same
+/// command, `command.rs`), same band as the wait tag. Jobs only
+/// (`docs/activity-model.md` §3): agents label their own turns and services
+/// never complete, so neither wears a stopwatch. Ticks read as seconds because
+/// an animated Running row is exactly what holds the 1 Hz cadence armed.
+fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -> Option<String> {
+    if status != Status::Running || kind.is_agent() || kind.is_service() {
+        return None;
+    }
+    minute_tag(now_tick.saturating_sub(since_tick?))
+}
+
+/// Append a time tag to an identity line: `migrate schema · 12m`. Identity
 /// passes through untouched when no tag applies, keeping calm rows
 /// bit-identical to the tagless rail.
-fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> String {
-    match wait_tag(status, pending_epoch_s, now_epoch_s) {
+fn with_time_tag(identity: String, tag: Option<String>) -> String {
+    match tag {
         Some(tag) => format!("{identity} · {tag}"),
-        None => identity.to_string(),
+        None => identity,
     }
 }
 
@@ -644,8 +676,10 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // col 1: status glyph (working spins; eases to a slow blink for
     // long-runners — see `spin_glyph`).
     let glyph_char = if st == Status::Running {
-        let since_tick = row.display.detail.as_ref().map(|d| d.since_tick).unwrap_or(now_tick);
-        spin_glyph(now_tick, since_tick)
+        let detail = row.display.detail.as_ref();
+        let since_tick = detail.map(|d| d.since_tick).unwrap_or(now_tick);
+        let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
+        running_glyph(kind, now_tick, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -797,12 +831,21 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         if skip_silent {
             let says_something = !identity.trim().is_empty()
                 || pane.outcome().is_some_and(|o| o.renders_tag());
-            if pane_status == Status::Idle || !says_something {
+            // `status()` (not `render_status()`) is the gate on purpose: an
+            // *observation* resting at Idle is silent, while an Interactive
+            // pane has no observation-status at all — its muted label IS its
+            // content (an open editor names the pane).
+            if pane.status() == Some(Status::Idle) || !says_something {
                 return Vec::new();
             }
         }
-        let identity =
-            with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
+        // The two tags key on disjoint statuses (Pending vs Running), so the
+        // `or_else` chain IS the "at most one tag per line" rule.
+        let identity = with_time_tag(
+            identity.to_string(),
+            wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s)
+                .or_else(|| run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick)),
+        );
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
@@ -833,7 +876,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // belong to the tab above."
     if is_multi_pane(&row.display) {
         let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
-            .filter(|p| p.is_tracked())
+            .filter(|p| p.earns_pane_line())
             .collect();
         let total_tracked = tracked_panes.len();
         let show = total_tracked.min(MAX_PANE_LINES);
@@ -882,7 +925,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // completion earns no line at all). Idle stays header-only. The gate
     // itself lives inside `pane_lines` (`skip_silent`), judged on the very
     // identity it emits.
-    if let Some(pane) = row.display.panes.iter().find(|p| p.is_tracked()) {
+    if let Some(pane) = row.display.panes.iter().find(|p| p.earns_pane_line()) {
         lines.extend(pane_lines(pane, Branch::Elbow, true));
     }
     lines
@@ -991,7 +1034,7 @@ fn emit_pane_line(
     let status = pane.render_status();
     let glyph = if status == Status::Running {
         let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
-        spin_glyph(opts.now_tick, since_tick)
+        running_glyph(pane.kind(), opts.now_tick, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };
@@ -1478,8 +1521,22 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // working" tally computed later in `render_bottom`; the two live in
     // separate pipeline stages (body vs. bottom region) and sharing one
     // number across that seam would cost more plumbing than the one `filter`
-    // it saves.
-    let working = rows.iter().any(|r| r.display.status == Status::Running);
+    // it saves. The tab detail's kind gates it to *animating* work: a rail
+    // whose only Running rows are services (steady `▸`, no Fast cadence)
+    // must not draw a sweep that would only teleport once per Slow fire —
+    // motion promises bounded work (`docs/activity-model.md` §1). The
+    // job-over-service tie-break makes the detail-kind check exact: whenever
+    // any Running job exists in a tab, the detail IS a job. The footer tally
+    // deliberately stays Status-only — "1 working" for an up dev server is
+    // honest English, and a count is not an animation.
+    let working = rows.iter().any(|r| {
+        r.display.status == Status::Running
+            // A Running tab always carries a detail in production (`roll_up`
+            // sets one whenever an active pane exists), so the None arm is
+            // unreachable — defaulting it to "animate" keeps the sweep the
+            // fail-visible side of that invariant.
+            && r.display.detail.as_ref().is_none_or(|d| !d.kind.is_service())
+    });
 
     let mut flat: Vec<Line> = Vec::new();
 

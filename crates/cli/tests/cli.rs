@@ -83,7 +83,27 @@ fn notify_codex_hook_broadcasts_pending_payload() {
     let status = child.wait().unwrap();
     assert!(status.success());
 
-    let captured = fs::read_to_string(capture).unwrap();
+    // The send runs in a deliberately DETACHED `sh` subtree (the self-limiting
+    // watchdog around `zellij pipe` — core::pipe), so `zj-radar notify` can
+    // exit before the fake zellij has written the capture file. Poll with a
+    // deadline instead of reading immediately; the deadline is generous
+    // because CI runs this under parallel-build load.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let captured = loop {
+        let captured = fs::read_to_string(&capture).unwrap_or_default();
+        let complete = captured
+            .lines()
+            .last()
+            .is_some_and(|l| serde_json::from_str::<serde_json::Value>(l).is_ok());
+        if complete {
+            break captured;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fake zellij never wrote a complete capture; got:\n{captured}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     assert!(captured.contains("pipe\n"));
     assert!(captured.contains("--name\nzj_radar.status.v1\n"));
     let payload = captured.lines().last().unwrap();

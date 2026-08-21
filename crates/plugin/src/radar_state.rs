@@ -701,7 +701,7 @@ impl RadarState {
         }
         // A Running→Running update (new activity label / task / repo, same
         // status) is the tool-hook firehose's steady state. The Fast (1 Hz)
-        // tick is already armed while anything is Running and repaints
+        // tick is already armed while the row *animates* and repaints
         // unconditionally, so the label reaches the rail within a second
         // regardless — an immediate render here only multiplied burst repaints
         // by the message rate. Same for the snapshot: defer the write to the
@@ -710,8 +710,13 @@ impl RadarState {
         // (anything that changes the status itself, or any non-Running update
         // — Pending question text, a Done/Error message rewrite) still renders
         // and persists immediately: those are the rows a user is waiting on.
+        // The `animating` term is the deferral's soundness condition: a
+        // Running *service* row holds the steady mark and does NOT arm the
+        // Fast tick, so deferring its label to "the next tick" would mean the
+        // Slow heartbeat (≤60s) — render and persist those immediately.
         let label_only = prev.as_ref().map(|o| o.status) == now_status
-            && now_status == Some(Status::Running);
+            && now_status == Some(Status::Running)
+            && self.status.get(pane_id).is_some_and(TrackedObservation::animating);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
@@ -729,26 +734,44 @@ impl RadarState {
     /// reporting `Running`, or an observed foreground command still live. This is
     /// the animated set (the spinner), so it wants a per-tick repaint. Deliberately
     /// narrow: a finished `Done`/`Error` or a waiting `Pending` is not "animating"
-    /// work, mirroring `CommandStore::has_pending_or_active`.
+    /// work, mirroring `CommandStore::needs_ticks`.
     ///
     /// This does NOT mean a finished `Done` never needs another tick — a command
     /// `Done` sits on a `DONE_TTL_TICKS` clock before it recedes to Idle (spec
     /// §3.1's cadence design), and that recede has to land on schedule even
     /// though the row itself is static. That's a *separate* arming reason,
-    /// deliberately kept out of this predicate: `command_awaiting_recede` carries
+    /// deliberately kept out of this predicate: `has_done_awaiting_recede` carries
     /// the TTL window, so `PluginRuntime::timer_should_continue` ORs the two
-    /// rather than broadening `has_running_work` to cover a case it was never
+    /// rather than broadening `needs_fast_ticks` to cover a case it was never
     /// meant to (animation vs. a scheduled one-shot are different reasons to
     /// tick, and conflating them would blur what each predicate promises).
-    pub(crate) fn has_running_work(&self) -> bool {
-        self.status.any_running() || self.command.has_pending_or_active()
+    pub(crate) fn needs_fast_ticks(&self) -> bool {
+        self.status.needs_ticks() || self.command.needs_ticks()
+    }
+
+    /// Apply the user's `interactive_commands` extras to the command store
+    /// (level-triggered — see `CommandStore::set_interactive_extras`). Called
+    /// after snapshot load and on every `config.v1` override, so both a
+    /// rehydrated stale Running row and a mid-session config change take
+    /// effect immediately. Returns whether observable state changed.
+    pub(crate) fn set_interactive_commands(
+        &mut self,
+        extras: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        let changed = self
+            .command
+            .set_interactive_extras(extras.iter().map(String::as_str));
+        if changed {
+            self.touch();
+        }
+        changed
     }
 
     /// True while a command-origin `Done` is still inside its `DONE_TTL_TICKS`
     /// window, awaiting the recede to Idle. Delegates to
-    /// `CommandStore::has_done_awaiting_recede` — see `has_running_work`'s doc
+    /// `CommandStore::has_done_awaiting_recede` — see `needs_fast_ticks`'s doc
     /// for why this is a distinct arming reason rather than folded into it.
-    pub(crate) fn command_awaiting_recede(&self) -> bool {
+    pub(crate) fn has_done_awaiting_recede(&self) -> bool {
         self.command.has_done_awaiting_recede()
     }
 
@@ -1111,9 +1134,11 @@ impl RadarState {
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
     /// command" precedence across observation sources lives in `resolve`, with
     /// the stores; `rollup::roll_up` only sees "is there an observation for this
-    /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam.
+    /// pane?" — keeping the aggregation rules behind the Tab Roll-Up seam. The
+    /// second lookup feeds the muted Interactive label from the command store's
+    /// quiet pendings; `roll_up` owns the precedence between the two.
     fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
-        rollup::roll_up(panes, |id| self.resolve(id))
+        rollup::roll_up(panes, |id| self.resolve(id), |id| self.command.quiet_identity(id))
     }
 
     /// Roll a tab up by position, treating an absent pane list as no panes.

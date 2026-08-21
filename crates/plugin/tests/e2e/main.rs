@@ -1123,7 +1123,7 @@ fn session_next_switches_to_the_session_with_attention() {
     // heartbeat and this test would need up to a minute of real wall time to
     // stay honest. Piping a `running` status into A's OWN terminal arms A's
     // Fast cadence indefinitely (an active `Running` row animates every
-    // tick — see `timer_should_continue`/`has_running_work`) without giving A
+    // tick — see `timer_should_continue`/`needs_fast_ticks`) without giving A
     // any attention of its own, so it doesn't interfere with the ordering
     // assertion below (B is still the only attention>0 peer).
     let pane_a = a.discover_terminal_pane_id();

@@ -185,18 +185,25 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
-///
-/// The final band starts at SATURATE_S so the rendered age stops changing
-/// exactly when `any_unsaturated` goes false and the Slow timer disarms —
-/// a frozen "1h+" is what makes full disarm safe.
+/// The ledger presents the sub-minute band (a fresh completion still reads as
+/// an age); the rail's time tags render nothing there — one band, two faces.
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
-    let age = now_epoch_s.saturating_sub(at_epoch_s);
+    minute_tag(now_epoch_s.saturating_sub(at_epoch_s)).unwrap_or_else(|| "<1m".to_string())
+}
+
+/// THE minute band every age display shares — the ledger's `format_age` and
+/// the rail's wait/run tags (`render::{wait_tag, run_tag}`): `None` under a
+/// minute, whole minutes below the saturate window, frozen at `1h+` past it.
+/// The freeze is load-bearing for cadence disarm — the rendered age stops
+/// changing exactly when `any_unsaturated` goes false and the Slow timer
+/// disarms — so the band must not exist twice.
+pub(crate) fn minute_tag(age: u64) -> Option<String> {
     if age < 60 {
-        "<1m".to_string()
+        None
     } else if age < SATURATE_S {
-        format!("{}m", age / 60)
+        Some(format!("{}m", age / 60))
     } else {
-        "1h+".to_string()
+        Some("1h+".to_string())
     }
 }
 

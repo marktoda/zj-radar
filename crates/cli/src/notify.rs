@@ -210,14 +210,7 @@ fn wire_vocabulary() -> String {
 /// broadcasts blank; an empty task means "keep the stored label" (wire rule).
 fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -> Option<AgentUpdate> {
     let status = Status::try_from_wire(status?)?;
-    let msg = msg.unwrap_or("");
-    let msg = if status == Status::Idle {
-        String::new()
-    } else if status == Status::Running && msg.trim().is_empty() {
-        "working".to_string()
-    } else {
-        msg.to_string()
-    };
+    let msg = crate::agents::baseline_msg(status, msg.unwrap_or(""));
     Some(AgentUpdate {
         status,
         msg,

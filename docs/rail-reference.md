@@ -10,19 +10,29 @@
 ## Design rules (this revision)
 
 1. **Width 32 columns.** The layout snippets all use `size=32` to match. ⟦D8⟧
-2. **Elapsed is pending-only.** No elapsed/timer on tab lines or calm pane
-   lines. The one exception (the ⟦D-timer⟧ "per-pane, not per-tab" answer,
-   scoped to where waiting is *costly*): a `pending` pane's identity line
-   carries a `· Nm` wait tag once it has waited ≥ 1 minute — whole minutes,
-   frozen at `1h+` (the ledger's saturate window, so the Slow heartbeat can
-   disarm). Under a minute, and for every other status, lines stay bit-identical
-   to the tagless rail. See scenario T5. ⟦D-timer ✓ pending-only⟧
+2. **Elapsed marks cost, nothing else.** No elapsed/timer on tab lines or calm
+   pane lines. Two per-pane exceptions (the ⟦D-timer⟧ "per-pane, not per-tab"
+   answer, scoped to where time is *costly*), both whole minutes ≥ 1m, frozen
+   at `1h+` (the ledger's saturate window): a `pending` pane's identity line
+   carries a `· Nm` wait tag (the cost of ignoring it — see T5), and a
+   long-running bounded *job* (command-classified work: build/test/deploy/
+   command — never an agent, never a server) carries a `· Nm` run tag (the
+   cost still being paid — see AE). Under a minute, and for every other
+   status, lines stay bit-identical to the tagless rail.
+   ⟦D-timer ✓ pending + long-job⟧
 3. **One line per real pane — no collapsing.** Every *tracked* pane (an agent or
    a real command) gets its own line regardless of status or tab focus. No
    tally, no `+N verb` — those were hard to parse.
 4. **Prompt programs are not panes.** `starship`/`zsh`/`bash`/… never surface as
    a pane line (the `$ (starship)` phantom is gone). A pane that has only ever
    run the shell prompt is untracked → no line. ⟦D4 ✓ locked⟧
+   **Interactive programs are context, not activity** (`docs/activity-model.md`):
+   an editor/pager/TUI in the foreground (`nvim`, `less`, `htop`, … +
+   `interactive_commands` config) never earns a Running row — its pane renders
+   a *muted identity label* (idle glyph + kind mark + command), pure
+   navigation aid, zero urgency. See scenario AD. A running **server**
+   (`Kind::Server`) is activity that never *completes*: it keeps its row but
+   holds the steady `▸` mark instead of the spinner. See AE.
 5. **Safety cap 6.** At most 6 pane lines per tab; beyond that, a final
    `+N more` line. (High on purpose — the common case never folds.) ⟦D6 ✓ = 6⟧
 6. **Position order.** Tabs and panes render in position order — no
@@ -38,7 +48,8 @@
 
 ## Vocabulary
 
-**Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏)* · `◆` needs-you ·
+**Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏; a running
+**server** holds a steady `▸` instead — services don't spin)* · `◆` needs-you ·
 `●` done · `✗` error.
 **Kind marks:** `✳` claude · `❉` codex · `✦` gemini · `$` command · `⚙` build ·
 `⚗` test · `⇡` deploy · `❯` server · `⦿` other.
@@ -72,8 +83,11 @@ marker itself is never dropped for the badge's sake.
 
 **Header heartbeat sweep (Task 20).** In Compact/Comfortable density only (the
 densities with the `═` rule — Cards drops the rule entirely, so it never
-carries the heartbeat), whenever any row's `display.status == Status::Running`
-the rule line swaps one `═` character for a `◆` (`Role::Accent`, bold) at
+carries the heartbeat), whenever any row is Running *animating* work (its
+detail is a job, not a service — a rail whose only Running rows are steady-`▸`
+services draws no sweep, since without the Fast cadence the diamond would only
+teleport once per Slow fire, and motion promises bounded work) the rule line
+swaps one `═` character for a `◆` (`Role::Accent`, bold) at
 column `now_tick % width`, wrapping around as the tick advances — a pure,
 stateless function of `now_tick` that marches one column per render tick
 while any tab is actively working, and disappears the instant no row is
@@ -882,6 +896,59 @@ alt-[n] jump
 > set `jump_hint "alt-n"` themselves. Without it the hint line simply doesn't
 > exist — the rail never advertises a chord that isn't bound. ⟦zero state +
 > jump_hint / spec §7,§9⟧
+
+---
+
+## AD. Interactive pane — muted identity label, never a Running row
+
+An editor in the foreground is *context*, not activity (rule 4;
+`docs/activity-model.md` Companion class). The pane renders a muted
+identity label — idle glyph, kind mark, the classified command — under the
+agent's tree, and contributes nothing to the tab glyph, counts, or
+notifications. The `interactive "<argv>"` input drives the real
+command-observer path: a quiet pending, no promotion.
+
+```rail-input
+width 32
+tab 1 "web"
+  claude running "editing api.ts" task "add rate limits"
+  interactive "nvim README.md"
+```
+```rail-expect
+ RADAR                        ·1
+◆═══════════════════════════════
+ ⠋ 1 web
+ ├ ⠋ ✳ add rate limits
+ └ ○ $ nvim README.md
+```
+
+> A tab holding only an interactive pane renders the same single muted line
+> under an idle header — never `⠋ running nvim` (the issue-#13 symptom).
+
+## AE. Service steady mark + the long-job `· Nm` run tag
+
+Two Running rows, two presentations (rule 2 + rule 4): the bounded *build*
+spins and — 4 minutes in (`now_tick 240`, statuses applied at tick 0) —
+carries the `· 4m` run tag; the *server* holds the steady `▸` and never
+wears a stopwatch (it isn't costing anyone a wait — it's just up). The tab
+glyph spins: on equal severity the bounded job outranks the service as the
+tab's primary detail. (The header divider's sweep dot rides `now_tick`,
+hence column 16 here: 240 mod 32.)
+
+```rail-input
+width 32
+now_tick 240
+tab 1 "dev"
+  build running "cargo build"
+  server running "npm run dev"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════◆═══════════════
+ ⠋ 1 dev
+ ├ ⠋ ⚙ cargo build · 4m
+ └ ▸ ❯ npm run dev
+```
 
 ---
 
