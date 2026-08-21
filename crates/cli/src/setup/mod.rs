@@ -63,6 +63,12 @@ pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] = [
 ];
 pub(crate) const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 pub(crate) const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
+// The one-time trust step Codex requires before it runs installed hooks. One
+// copy (the CODEX_HOOK_MARKER precedent) shared by setup's install epilogue
+// and the doctor's note item, so the advice can't drift between them. No
+// trailing punctuation — callers supply their own.
+pub(crate) const CODEX_HOOK_TRUST_ADVICE: &str =
+    "run `/hooks` in Codex to review and trust the zj-radar command hook";
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -281,19 +287,34 @@ pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Opti
     }
 }
 
-pub(crate) fn confirm(prompt: &str) -> bool {
-    use std::io::{IsTerminal, Write};
-    // No tty = no one to answer: take the safe "no" instead of blocking on a
-    // read that never returns (the same non-tty rule `inject_mode` and `run`'s
-    // foreign-session consent apply), and say how to consent non-interactively.
-    if !std::io::stdin().is_terminal() {
+/// Ask for consent. `yes` (`-y`) grants without asking; tty-ness arrives as a
+/// parameter, resolved ONCE at the invocation boundary (the `inject_mode`
+/// pattern) — probing `stdin().is_terminal()` in here made the answer
+/// untestable and let one chain probe twice. No tty = no one to answer: take
+/// the safe "no" instead of blocking on a read that never returns (the same
+/// non-tty rule `inject_mode` and `run`'s foreign-session consent apply), and
+/// say how to consent non-interactively.
+pub(crate) fn confirm(prompt: &str, yes: bool, is_tty: bool) -> bool {
+    use std::io::Write;
+    if yes {
+        return true;
+    }
+    if !is_tty {
         println!("{prompt} — skipped (no tty — re-run with -y)");
         return false;
     }
     print!("{prompt} [y/N] ");
     let _ = std::io::stdout().flush();
+    confirm_answer(std::io::stdin().lock())
+}
+
+/// The read-and-parse half of [`confirm`], over any reader: `y`/`yes` (case
+/// folded) consent; anything else — including EOF — declines. Split out so
+/// answered-y, answered-n, and EOF-decline stay unit-tested (the tty gate
+/// above keeps the real stdin out of reach in tests).
+fn confirm_answer(mut reader: impl std::io::BufRead) -> bool {
     let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
+    let _ = reader.read_line(&mut line);
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
@@ -309,10 +330,11 @@ pub(crate) fn confirm_and_write(
     path: &Path,
     new: &str,
     yes: bool,
+    is_tty: bool,
     prompt: &str,
     pre_write: impl FnOnce() -> Result<(), String>,
 ) -> bool {
-    if !yes && !confirm(prompt) {
+    if !confirm(prompt, yes, is_tty) {
         println!("{label}: skipped (declined)");
         return false;
     }
@@ -377,6 +399,31 @@ mod tests {
         assert!(matches!(mode_from_flags(false, true, true), Mode::Check));
         assert!(matches!(mode_from_flags(false, false, true), Mode::Uninstall));
         assert!(matches!(mode_from_flags(false, false, false), Mode::Install));
+    }
+
+    #[test]
+    fn confirm_answer_accepts_only_y_or_yes() {
+        use std::io::Cursor;
+        // Answered y (any case, either spelling) → consent.
+        assert!(confirm_answer(Cursor::new("y\n")));
+        assert!(confirm_answer(Cursor::new("Y\n")));
+        assert!(confirm_answer(Cursor::new("yes\n")));
+        assert!(confirm_answer(Cursor::new("  YES  \n")));
+        // Answered n (or anything else) → decline.
+        assert!(!confirm_answer(Cursor::new("n\n")));
+        assert!(!confirm_answer(Cursor::new("no\n")));
+        assert!(!confirm_answer(Cursor::new("yep\n")));
+        // EOF with no answer declines — the default must be the safe "no".
+        assert!(!confirm_answer(Cursor::new("")));
+    }
+
+    #[test]
+    fn confirm_yes_flag_consents_without_reading() {
+        // `-y` wins before the tty gate: consent even with no tty to answer on.
+        assert!(confirm("Write?", true, false));
+        assert!(confirm("Write?", true, true));
+        // No `-y`, no tty: the safe "no" (never blocks on a read).
+        assert!(!confirm("Write?", false, false));
     }
 
     #[test]

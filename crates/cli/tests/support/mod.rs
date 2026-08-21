@@ -118,6 +118,24 @@ impl ShimDir {
         fs::set_permissions(&bin, perms).unwrap();
     }
 
+    /// The single recorded `zellij pipe` broadcast, joined back into one
+    /// argv string for `contains` assertions (spaces inside the JSON survive
+    /// the shim's whitespace split + rejoin). Asserts the shared shape every
+    /// broadcast test starts from: exactly one call, the `pipe` subcommand,
+    /// and the payload on argv — not stdin.
+    pub fn sole_pipe_argv(&self) -> String {
+        let calls = self.recorded("zellij");
+        assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast: {calls:?}");
+        let c = &calls[0];
+        assert!(
+            c.args.contains(&"pipe".to_string()),
+            "expected the pipe subcommand in: {:?}",
+            c.args
+        );
+        assert_eq!(c.stdin, "", "payload should be sent as argv, not stdin");
+        c.args.join(" ")
+    }
+
     /// PATH value with this shim dir prepended.
     pub fn path_env(&self) -> OsString {
         let existing = std::env::var_os("PATH").unwrap_or_default();

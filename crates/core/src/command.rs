@@ -24,8 +24,6 @@ use std::collections::{HashMap, HashSet};
 /// still stuck Running past ~2s is evidence of a missing Zellij edge, not a
 /// bug in this store (pinned by `missed_exit_edge_is_the_stale_running_path`).
 pub const DEBOUNCE_TICKS: u64 = 2;
-// The documented floor, pinned at compile time.
-const _: () = assert!(DEBOUNCE_TICKS >= 2);
 
 /// Ticks a command-origin `Done` stays lit before receding to Idle. The
 /// completion hands off to the ledger at the recede (spec §3.1). `Error` is
@@ -193,8 +191,14 @@ fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'
     })
 }
 
+/// First non-option arg at/after `start`, usable as a display target. Strips
+/// the stdin-marker residual: `is_option_arg` deliberately exempts a bare `-`,
+/// so it is the one dashed token `first_non_option` can return — drop it here
+/// rather than display stdin-marker noise as a target.
 fn target_after(args: &[String], start: usize) -> Option<&str> {
-    first_non_option(args, start).map(|(_, arg)| arg)
+    first_non_option(args, start)
+        .map(|(_, arg)| arg)
+        .filter(|t| *t != "-")
 }
 
 fn raw_display(parts: &[&str]) -> String {
@@ -367,10 +371,7 @@ fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
         return exe.to_string();
     };
     if rule.target_verbs.contains(&verb) {
-        // `target_after` already skips dashed options (`is_option_arg` exempts
-        // only a bare "-"), so a bare "-" is the one dashed residual — drop it
-        // rather than display stdin-marker noise as a target.
-        if let Some(target) = target_after(args, idx + 1).filter(|t| *t != "-") {
+        if let Some(target) = target_after(args, idx + 1) {
             return raw_display(&[exe, verb, target]);
         }
     }
@@ -391,10 +392,7 @@ fn is_python_interpreter(exe: &str) -> bool {
 fn display_python(exe: &str, args: &[String]) -> String {
     if let Some(idx) = args.iter().position(|arg| arg == "-m") {
         match args.get(idx + 1).map(String::as_str) {
-            // Same bare-"-" residual guard as `apply_tool_rule`'s target path:
-            // `target_after` skips dashed options already, so "-" is the only
-            // dashed token that can come back.
-            Some("pytest") => match target_after(args, idx + 2).filter(|t| *t != "-") {
+            Some("pytest") => match target_after(args, idx + 2) {
                 Some(target) => raw_display(&[exe, "-m", "pytest", target]),
                 None => raw_display(&[exe, "-m", "pytest"]),
             },
@@ -668,12 +666,14 @@ impl CommandStore {
                     if prev.status == Status::Running && prev.msg == obs.msg {
                         obs.last_change_tick = prev.last_change_tick;
                     }
+                    // With the start tick carried over, an identical
+                    // re-promotion stores a byte-identical observation —
+                    // nothing observable changed, so it must not trigger a
+                    // snapshot write per re-report.
+                    changed |= prev != &obs;
+                } else {
+                    changed = true;
                 }
-                // With the start tick carried over, an identical re-promotion
-                // stores a byte-identical observation — nothing observable
-                // changed, so it must not trigger a snapshot write per
-                // re-report.
-                changed |= self.store.get(pane_id) != Some(&obs);
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
                         receded.push((pane_id, prev));

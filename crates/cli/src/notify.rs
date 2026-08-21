@@ -99,12 +99,13 @@ fn git_repo_branch(cwd: &str) -> (String, String) {
     (repo, branch)
 }
 
-/// Bytes of stdin we're willing to buffer. Generous — 8 MiB dwarfs any real hook
-/// payload (even a Write tool's full file `content`) — so it never truncates a
-/// legitimate input; it only bounds a degenerate multi-MB/GB stream. Note this is
-/// the *input* cap, distinct from the plugin's 64 KB *wire* cap on the broadcast
-/// payload the CLI produces.
-const MAX_STDIN_BYTES: u64 = 8 << 20;
+// Bytes of stdin we're willing to buffer: the shared producer cap
+// (`core::pipe::MAX_STDIN_BYTES`, also notify.sh's `head -c` bound). Generous —
+// 8 MiB dwarfs any real hook payload (even a Write tool's full file `content`)
+// — so it never truncates a legitimate input; it only bounds a degenerate
+// multi-MB/GB stream. Note this is the *input* cap, distinct from the plugin's
+// 64 KB *wire* cap on the broadcast payload the CLI produces.
+use crate::pipe::MAX_STDIN_BYTES;
 
 fn read_stdin() -> String {
     use std::io::IsTerminal;

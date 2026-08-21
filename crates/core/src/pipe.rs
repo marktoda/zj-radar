@@ -43,6 +43,14 @@ pub const RUNNING_PIPE_TIMEOUT_SECS: u64 = 2;
 // heartbeat deadline must stay below the once-per-turn edge deadline.
 const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
 
+/// Cap on hook stdin read by a producer before JSON parsing — the shared
+/// contract between the CLI producer's bounded read and the bash fallback's
+/// `head -c`. Hook payloads are small JSON (well under a megabyte); the cap
+/// only bounds a runaway or hostile writer. Lives beside the send deadlines
+/// because it is the same family: a producer limiting itself so a misbehaving
+/// peer cannot wedge or bloat the hook path.
+pub const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024;
+
 // $1 = deadline seconds, $2 = pipe name, $3 = payload — positional parameters,
 // never interpolated into the script (same no-escaping rule as the plugin's
 // `notify_command`), so an arbitrary payload cannot break out of the command.

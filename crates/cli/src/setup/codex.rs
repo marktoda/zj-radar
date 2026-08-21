@@ -44,6 +44,7 @@ fn codex_installed(codex_on_path: bool) -> bool {
 }
 
 pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
+    use std::io::IsTerminal;
     if codex_home_dir().is_none() {
         crate::exit::fail_report(
             "codex",
@@ -51,14 +52,17 @@ pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
         );
         return;
     }
+    // Tty-ness resolved once at the boundary (the `inject_mode` pattern);
+    // the confirm step below takes it as a parameter.
+    let is_tty = std::io::stdin().is_terminal();
     if opts.legacy_notify {
-        setup_codex_notify(uninstall, opts.dry_run, opts.yes, opts.force);
+        setup_codex_notify(uninstall, opts.dry_run, opts.yes, opts.force, is_tty);
     } else {
-        setup_codex_hooks(uninstall, opts.dry_run, opts.yes);
+        setup_codex_hooks(uninstall, opts.dry_run, opts.yes, is_tty);
     }
 }
 
-fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
+fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     // `setup_codex` already refused when no home resolves, so this is Some.
     let Some(path) = codex_hooks_path() else { return };
     let codex_on_path = which("codex");
@@ -95,7 +99,7 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
                 return;
             }
             let prompt = format!("Write {}?", path.display());
-            if !confirm_and_write("codex", &path, &new, yes, &prompt, || Ok(())) {
+            if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
                 return;
             }
             println!(
@@ -110,7 +114,7 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool) {
     }
 }
 
-fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
+fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is_tty: bool) {
     // `setup_codex` already refused when no home resolves, so this is Some.
     let Some(path) = codex_config_path() else { return };
     if !uninstall && !codex_installed(which("codex")) {
@@ -142,7 +146,7 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool) {
                 return;
             }
             let prompt = format!("Write {}?", path.display());
-            if !confirm_and_write("codex", &path, &new, yes, &prompt, || Ok(())) {
+            if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
                 return;
             }
             println!(
@@ -163,7 +167,7 @@ fn print_codex_hook_guidance(facts: &CodexFacts) {
             );
         }
     }
-    println!("codex: run `/hooks` in Codex to review and trust the zj-radar command hook.");
+    println!("codex: {CODEX_HOOK_TRUST_ADVICE}.");
 }
 
 #[cfg(test)]

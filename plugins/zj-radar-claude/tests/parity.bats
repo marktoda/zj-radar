@@ -52,8 +52,9 @@ parity_noop() { # $1 = hook JSON, $2 = status arg
 
 setup() {
   setup_fakes
-  # `skip` must run in test context, hence setup() rather than file scope.
-  [ -x "$CLI" ] || skip "build the CLI first (cargo build -p zj-radar)"
+  # FAIL, don't skip: a skipped parity suite is zero weld coverage between the
+  # two producers that still reads as a green run.
+  [ -x "$CLI" ] || { echo "build the CLI first: cargo build -p zj-radar" >&2; return 1; }
 }
 teardown() { teardown_fakes; }
 
@@ -106,24 +107,22 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "working" ]
 }
 
-@test "parity: Bash git pull derives 'syncing'" {
-  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git pull --rebase"}}' running
-  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
+@test "parity: git pull / git fetch both derive 'syncing'" {
+  local cmd json
+  for cmd in "git pull --rebase" "git fetch origin"; do
+    json="$(jq -nc --arg c "$cmd" '{hook_event_name:"PostToolUse",cwd:"/home/u/myrepo",tool_name:"Bash",tool_input:{command:$c}}')"
+    parity_case "$json" running
+    [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ] || { echo "[$cmd] did not derive syncing"; return 1; }
+  done
 }
 
-@test "parity: Bash git fetch derives 'syncing'" {
-  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git fetch origin"}}' running
-  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
-}
-
-@test "parity: Bash build verb derives 'building'" {
-  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"cargo build --release"}}' running
-  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
-}
-
-@test "parity: Bash compile verb derives 'building'" {
-  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"gcc -c compile main.c"}}' running
-  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
+@test "parity: build / compile verbs both derive 'building'" {
+  local cmd json
+  for cmd in "cargo build --release" "gcc -c compile main.c"; do
+    json="$(jq -nc --arg c "$cmd" '{hook_event_name:"PostToolUse",cwd:"/home/u/myrepo",tool_name:"Bash",tool_input:{command:$c}}')"
+    parity_case "$json" running
+    [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ] || { echo "[$cmd] did not derive building"; return 1; }
+  done
 }
 
 @test "parity: leading-newline Bash command still derives its first token" {

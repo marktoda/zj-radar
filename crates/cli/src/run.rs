@@ -729,12 +729,15 @@ pub fn run(opts: RunOptions) {
     // radar sessions created by versions that predate the marker.
     if plan.foreign_session {
         use std::io::IsTerminal;
+        // One boundary probe, reused by `confirm` below (its parameter, per
+        // the `inject_mode` pattern).
+        let is_tty = std::io::stdin().is_terminal();
         let escape = format!(
             "attach with your own config via `zellij attach {}`, or pick a different \
              name with `zj-radar run <name>`",
             facts.session
         );
-        if !std::io::stdin().is_terminal() {
+        if !is_tty {
             crate::exit::fail_report(
                 "zj-radar",
                 format!(
@@ -751,7 +754,7 @@ pub fn run(opts: RunOptions) {
              zj-radar's bundled config (keybinds, theme)?",
             facts.session
         );
-        if !crate::setup::confirm(&question) {
+        if !crate::setup::confirm(&question, false, is_tty) {
             eprintln!("zj-radar: not attaching — {escape}");
             return;
         }

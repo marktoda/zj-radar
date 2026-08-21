@@ -123,7 +123,7 @@ teardown() { teardown_fakes; }
   # argument at 128 KB (MAX_ARG_STRLEN), so interpolating it into `bash -c`
   # dies E2BIG before the hook even runs (only on Linux — macOS has no per-arg
   # cap, which is how the argv version passed locally while failing CI).
-  command -v timeout >/dev/null || skip "GNU timeout not on PATH (brew install coreutils, or use nix develop)"
+  require_timeout
   local payload; payload="$(mktemp)"
   {
     printf '{"hook_event_name":"PostToolUse","cwd":"'
@@ -140,7 +140,7 @@ teardown() { teardown_fakes; }
   # MAX_STDIN_BYTES: a stream larger than the cap must be bounded (never
   # buffered whole) and the truncated, no-longer-valid JSON must degrade
   # through the jq guards to a clean exit.
-  command -v timeout >/dev/null || skip "GNU timeout not on PATH (brew install coreutils, or use nix develop)"
+  require_timeout
   local payload; payload="$(mktemp)"
   head -c 9000000 /dev/zero | tr '\0' 'x' > "$payload"
   run timeout 10 "$SCRIPT" running < "$payload"

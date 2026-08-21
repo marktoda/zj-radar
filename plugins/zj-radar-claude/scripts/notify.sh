@@ -99,6 +99,19 @@ contains_word() {
     [[ "$1" =~ $re ]]
 }
 
+# File-tool activity: "<verb> <basename>" from the path at jq path $2 in the
+# hook payload. Prints nothing when the STRIPPED basename is empty — a
+# trailing-slash path ("src/") has a non-empty path but an empty basename, and
+# Rust's basename() filters that to None, so a dangling "<verb> " with no name
+# must not broadcast. Always exits 0 (callers assign under `set -e`).
+file_activity() { # $1 = verb, $2 = jq path to the file path
+    local fp base
+    fp="$(jq -r "$2 // empty" <<<"$input" 2>/dev/null || true)"
+    base="${fp##*/}"
+    [[ -n "$base" ]] && printf '%s %s' "$1" "$base"
+    return 0
+}
+
 # For running events (PreToolUse/PostToolUse), derive a live activity string
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
@@ -127,23 +140,11 @@ if [[ "$status" == "running" ]]; then
         tool_activity=""
         case "$tool_name" in
             Edit|Write|MultiEdit)
-                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                # Guard the STRIPPED value: a trailing-slash path ("src/") has a
-                # non-empty $fp but an empty basename — Rust's basename() filters
-                # that to None, so an "editing " with no name must not broadcast.
-                base="${fp##*/}"
-                [[ -n "$base" ]] && tool_activity="editing $base"
-                ;;
+                tool_activity="$(file_activity editing '.tool_input.file_path')" ;;
             NotebookEdit)
-                fp="$(jq -r '.tool_input.notebook_path // empty' <<<"$input" 2>/dev/null || true)"
-                base="${fp##*/}"
-                [[ -n "$base" ]] && tool_activity="editing $base"
-                ;;
+                tool_activity="$(file_activity editing '.tool_input.notebook_path')" ;;
             Read)
-                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                base="${fp##*/}"
-                [[ -n "$base" ]] && tool_activity="reading $base"
-                ;;
+                tool_activity="$(file_activity reading '.tool_input.file_path')" ;;
             Grep|Glob)
                 tool_activity="searching"
                 ;;
@@ -170,8 +171,12 @@ if [[ "$status" == "running" ]]; then
                 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
                 # POSIX lowercase (works on macOS' stock Bash 3.2; ${cmd,,} is Bash 4+).
                 cmd_lower="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
-                # Non-empty after stripping ALL whitespace (mirrors Rust .trim()).
-                if [[ -n "$(printf '%s' "$cmd" | tr -d '[:space:]')" ]]; then
+                # Leading whitespace (newlines included) stripped by parameter
+                # expansion — this is the per-tool-call hot path, so no forks.
+                # Non-empty after the strip mirrors Rust .trim(): an
+                # all-whitespace command derives nothing.
+                rest="${cmd#"${cmd%%[![:space:]]*}"}"
+                if [[ -n "$rest" ]]; then
                     if contains_word "$cmd_lower" "git push"; then
                         tool_activity="pushing"
                     elif contains_word "$cmd_lower" "git commit"; then
@@ -185,11 +190,13 @@ if [[ "$status" == "running" ]]; then
                     elif contains_word "$cmd_lower" "install"; then
                         tool_activity="installing"
                     else
-                        # First token of the WHOLE string, basename only. Not
-                        # `read -r tok _ <<<"$cmd"`: read consumes one LINE, so a
-                        # leading-newline command yielded an empty token where
-                        # Rust's split_whitespace().next() skips ahead to it.
-                        first_token="$(printf '%s' "$cmd" | tr '[:space:]' '\n' | grep -m1 . || true)"
+                        # First token of the WHOLE string, basename only —
+                        # $rest starts at the first non-space char, so cutting
+                        # at the next whitespace mirrors Rust's
+                        # split_whitespace().next(). Not `read -r tok _`:
+                        # read consumes one LINE, so a leading-newline command
+                        # yielded an empty token where Rust skips ahead to it.
+                        first_token="${rest%%[[:space:]]*}"
                         first_base="${first_token##*/}"
                         [[ -n "$first_base" ]] && tool_activity="running $first_base"
                     fi

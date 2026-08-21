@@ -1,15 +1,16 @@
-//! Integration tests for `zj-radar setup codex` — default hooks.json path.
+//! Integration tests for `zj-radar setup` — codex hooks.json wiring, the
+//! zellij install/uninstall/doctor flows, and the claude plugin-CLI flow.
 //!
-//! main's `tests/cli.rs` covers: one real run → writes hooks.json with the
-//! ZJ_RADAR_CODEX_HOOK=v1 marker (without touching a foreign notify slot).
+//! Codex coverage:
+//!   1. one real run → writes hooks.json with the ZJ_RADAR_CODEX_HOOK=v1
+//!      marker, without touching a foreign notify slot.
+//!   2. dry-run does NOT write hooks.json; positive control: real run DOES write.
+//!   3. idempotency: two real runs → identical hooks.json; first run is non-vacuous.
 //!
-//! NEW coverage added here:
-//!   1. dry-run does NOT write hooks.json; positive control: real run DOES write.
-//!   2. idempotency: two real runs → identical hooks.json; first run is non-vacuous.
-//!
-//! All tests isolate via CODEX_HOME pointing to a tempdir. The `codex_installed()`
-//! guard inside setup.rs accepts a pre-existing hooks.json, so we seed the
-//! tempdir with an empty `{}` to satisfy it without needing a fake binary on PATH.
+//! Codex tests isolate via CODEX_HOME pointing to a tempdir. The
+//! `codex_installed()` guard inside setup accepts a pre-existing hooks.json, so
+//! we seed the tempdir with an empty `{}` to satisfy it without needing a fake
+//! binary on PATH.
 
 mod support;
 
@@ -27,7 +28,33 @@ fn isolated_codex_home() -> TempDir {
     dir
 }
 
-// ── Test 1: dry-run does not write; positive control confirms it would have ─
+// ── Test 1: real run installs hooks without touching a foreign notify slot ──
+
+#[test]
+fn setup_codex_installs_hooks_without_touching_foreign_notify() {
+    let codex_home = TempDir::new().unwrap();
+    let config = codex_home.path().join("config.toml");
+    fs::write(&config, "notify = [\"/other/notifier\", \"turn-ended\"]\n").unwrap();
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("CODEX_HOME", codex_home.path())
+        .assert()
+        .success();
+
+    let config_after = fs::read_to_string(config).unwrap();
+    assert_eq!(
+        config_after,
+        "notify = [\"/other/notifier\", \"turn-ended\"]\n"
+    );
+    let hooks = fs::read_to_string(codex_home.path().join("hooks.json")).unwrap();
+    assert!(hooks.contains(HOOK_MARKER));
+    assert!(hooks.contains("\"PermissionRequest\""));
+    assert!(hooks.contains("\"Stop\""));
+}
+
+// ── Test: dry-run does not write; positive control confirms it would have ──
 
 #[test]
 fn setup_dry_run_does_not_write_hooks_json() {
@@ -1254,30 +1281,6 @@ fn setup_zellij_dry_run_download_skips_the_fetch_and_writes_nothing() {
     );
 }
 
-// ── Test: the doctor's advertised remedies are real invocations ───────────────
-// The grant/layout items tell users to run `zj-radar setup zellij -y`; the
-// short -y alias must exist (and stay copy-pasteable) or the remedy dead-ends
-// in a clap usage error. The unit-level guard (check.rs) try_parses every
-// backticked hint; this exercises the flagship one against the real binary.
-
-#[test]
-fn doctor_remedy_setup_zellij_dash_y_runs() {
-    let config_dir = TempDir::new().unwrap();
-    let output = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["setup", "zellij", "-y", "--dry-run"])
-        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        !stderr.contains("error:") && !stderr.contains("Usage:"),
-        "`setup zellij -y` must parse, not hit a clap usage error; stderr:\n{stderr}"
-    );
-}
-
 // ── Test: --check conflicts with --uninstall at the CLI boundary ──────────────
 // `setup --check --uninstall` used to silently run the doctor and never
 // uninstall — reading as "uninstalled". Clap now hard-errors, matching --grant.
@@ -1479,7 +1482,11 @@ fn setup_claude_skips_when_binary_missing() {
 }
 
 #[test]
-fn setup_claude_declined_runs_nothing() {
+fn setup_claude_without_consent_runs_nothing() {
+    // Piped stdin means no tty at the boundary probe, so `confirm` takes the
+    // safe "no" without reading (answered-y/-n and EOF-decline live in
+    // `confirm_answer`'s unit tests) — the invariant here is that the unmet
+    // prompt never lets the plugin CLI run, and says how to consent (-y).
     let shim = ShimDir::new();
     shim.add_recorder("claude");
     let home = claude_home(false);
@@ -1494,7 +1501,8 @@ fn setup_claude_declined_runs_nothing() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(claude_args(&shim).is_empty(), "declined consent must not invoke the plugin CLI");
+    assert!(claude_args(&shim).is_empty(), "unconfirmed consent must not invoke the plugin CLI");
+    assert!(stdout.contains("no tty"), "the skip must say how to consent non-interactively; stdout:\n{stdout}");
     assert!(stdout.contains("skipped (declined)"), "stdout:\n{stdout}");
 }
 

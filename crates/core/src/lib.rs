@@ -56,5 +56,7 @@ mod wire;
 // keep using the module paths.
 pub use kind::Kind;
 pub use payload::{parse, to_wire, StatusPayload, STATUS_PIPE_NAME};
-pub use pipe::{self_limiting_pipe_argv, DEFAULT_PIPE_TIMEOUT_SECS, RUNNING_PIPE_TIMEOUT_SECS};
+pub use pipe::{
+    self_limiting_pipe_argv, DEFAULT_PIPE_TIMEOUT_SECS, MAX_STDIN_BYTES, RUNNING_PIPE_TIMEOUT_SECS,
+};
 pub use status::Status;

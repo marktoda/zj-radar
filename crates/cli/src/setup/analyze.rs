@@ -18,10 +18,6 @@ pub(crate) struct ZellijEnv {
     pub wasm_path:             String,
     /// `zellij --version` stdout; `None` when the binary is absent/unrunnable.
     pub zellij_version:        Option<String>,
-    /// The layout NAME `layout_text` was read for (`--layout`, else the
-    /// config's `default_layout`, else `default`) — so reports can say which
-    /// layout they inspected.
-    pub layout_name:           String,
 }
 
 /// The paths [`read_zellij_env`] resolved along the way. Callers splice/copy
@@ -52,7 +48,6 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
         config_managed:         path_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
         zellij_version:         zellij_version_output(),
-        layout_name:            crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref()),
         config_text,
     };
     (env, ZellijPaths { config_path, wasm_dest, layout_path })
@@ -72,9 +67,6 @@ pub(crate) struct ZellijFacts {
     pub claude_producer:         bool,
     pub config_managed:          bool,
     pub zellij_version:          Option<String>,
-    /// See [`ZellijEnv::layout_name`] — carried through so the doctor's layout
-    /// item can say which layout it inspected.
-    pub layout_name:             String,
 }
 
 impl ZellijFacts {
@@ -186,7 +178,6 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         claude_producer,
         config_managed: env.config_managed,
         zellij_version: env.zellij_version.clone(),
-        layout_name: env.layout_name.clone(),
     }
 }
 
@@ -301,7 +292,6 @@ mod tests {
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         let f = analyze_zellij(&env);
         assert!(f.managed_alias_present, "managed marker must be detected");
@@ -334,7 +324,6 @@ mod tests {
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         assert!(
             !analyze_zellij(&env_for(other_plugin_in_store)).alias_is_store_path,
@@ -363,7 +352,6 @@ mod tests {
             config_managed: false,
             wasm_path: wasm_path.to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, Some(true), "layout text with radar plugin has rail");
@@ -383,7 +371,6 @@ mod tests {
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, None, "no layout file -> None, distinct from Some(false)");
@@ -403,7 +390,6 @@ mod tests {
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired(), "claude producer plugin present -> wired");
@@ -421,7 +407,6 @@ mod tests {
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
             zellij_version: Some("zellij 0.44.3".to_string()),
-            layout_name: "default".to_string(),
         };
         let f = analyze_zellij(&env);
         assert!(f.producer_wired(), "codex hooks text containing the marker -> wired");
