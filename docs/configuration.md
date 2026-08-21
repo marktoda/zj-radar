@@ -19,8 +19,16 @@ plugins {
 }
 ```
 
+If `setup zellij` wrote your alias, it sits between `// zj-radar: managed
+plugin alias begin`/`end` marker comments — and a later `setup zellij` strips
+and re-emits that whole region containing only `naming "managed"`, so keys you
+add inside the markers are lost. Put custom keys on a hand-owned alias outside
+the markers, or drive them over the `config.v1` pipe below.
+
 Layouts should continue to reference `plugin location="radar"`. Unknown keys are
-ignored and invalid values fall back to the default (parsing never fails):
+ignored and parsing never fails: an unrecognized value keeps the field as it
+was — the default on first load, the *current* value on a live `config.v1`
+override — so a typo never resets a setting:
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
@@ -28,20 +36,30 @@ ignored and invalid values fall back to the default (parsing never fails):
 | `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. The self-applied memory lives in plugin memory, so after a Zellij server restart previously auto-applied names read as manual — use `force`, or rename the tab back to its default (`Tab #N`) to re-enable managed naming. |
 | `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
-| `jump_hint` | `alt-n` · anything else | hidden | Footer advertises ` alt-[n] jump`. Opt in only when Alt+digit actually reaches Zellij on your machine: the binds must exist in your Zellij config (`zj-radar run` sessions bake Alt-1..9 → `GoToTab`, but don't set this — window managers commonly claim Alt+digit system-wide, and macOS terminals type `¡` unless option-as-alt is on). The rail never advertises a chord it can't verify. |
+| `jump_hint` | `alt-n` (or `alt`) · `hidden` (or `off`) | `hidden` | Footer advertises ` alt-[n] jump`. Opt in only when Alt+digit actually reaches Zellij on your machine: the binds must exist in your Zellij config (`zj-radar run` sessions bake Alt-1..9 → `GoToTab`, but don't set this — window managers commonly claim Alt+digit system-wide, and macOS terminals type `¡` unless option-as-alt is on). The rail never advertises a chord it can't verify. |
 | `notify` | `true` · `false` | `true` | Master switch for OS desktop notifications (macOS `osascript`, Linux `notify-send`). |
 | `notify_done` | `true` · `false` | `true` | Notify when a pane transitions into `done`. |
 | `notify_error` | `true` · `false` | `true` | Notify when a pane transitions into `error`. |
 | `notify_pending` | `true` · `false` | `true` | Notify when a pane transitions into `pending` (needs input). |
 | `notify_when_focused` | `true` · `false` | `false` | When `false`, suppress notifications for the focused pane (background panes only). |
-| `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra commands treated as *interactive* (an editor/pager/TUI that waits on you): the pane never shows a spinning running row — just a muted identity label. Extends the built-in set (`vi(m)`/`nvim`/`emacs`/`nano`/`hx`/`less`/`man`/`htop`/`btop`/`lazygit`/`tig`/`k9s`/`fzf`/`ranger`/`yazi`/`mc`/…). Applies live: adding a name demotes an already-running row immediately. See [`activity-model.md`](activity-model.md). |
+| `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra commands treated as *interactive* (an editor/pager/TUI that waits on you): the pane never shows a spinning running row — just a muted identity label. Extends the built-in set (`vi(m)`/`nvim`/`emacs`/`nano`/`hx`/`less`/`more`/`man`/`top`/`htop`/`btop`/`lazygit`/`tig`/`k9s`/`fzf`/`ranger`/`yazi`/`mc`/…). Applies live: adding a name demotes an already-running row immediately — except a row whose command has already left the foreground with a done-confirm armed, which still flips Running→Done on schedule. See [`activity-model.md`](activity-model.md). |
+
+Three further keys — `role`, `grant_hint`, and `defer_permission` — are also
+parsed, but they are set by `zj-radar run`'s own generated layouts; don't set
+them by hand.
 
 Notifications fire only on transitions **into** an attention status and, by
 default, only for **background** panes — the focused pane is suppressed unless
-`notify_when_focused` is `true`. Delivery is best-effort: the plugin runs
-`osascript` on macOS, else `notify-send` (libnotify) on Linux; if neither is on
-`PATH` it is a silent no-op. This is why the plugin requests Zellij's
-`RunCommands` permission — solely to hand the notification to the OS.
+`notify_when_focused` is `true`. A status arriving with the payload's `ack`
+flag never notifies (the user has already seen it — see
+[`producers.md`](producers.md)), and although the sidebar runs one instance per
+tab, each event is dispatched by exactly one instance, elected through a shared
+claim file — you get one notification, not one per tab. Delivery is
+best-effort: the plugin runs `osascript` on macOS, else `notify-send`
+(libnotify) on Linux; if neither is on `PATH` it is a silent no-op. This is why
+the plugin requests Zellij's `RunCommands` permission — to hand the
+notification to the OS, and to spawn the `zellij pipe` re-broadcast behind the
+`✓` acknowledge gesture described below.
 
 ## Runtime config
 
