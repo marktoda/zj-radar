@@ -39,6 +39,9 @@ pub const DEFAULT_PIPE_TIMEOUT_SECS: u64 = 5;
 /// Pending→Running recovery edge after an answered permission prompt, and
 /// UserPromptSubmit carries the sticky task label.
 pub const RUNNING_PIPE_TIMEOUT_SECS: u64 = 2;
+// "Deliberately shorter" is the invariant, pinned at compile time: the hot
+// heartbeat deadline must stay below the once-per-turn edge deadline.
+const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
 
 // $1 = deadline seconds, $2 = pipe name, $3 = payload — positional parameters,
 // never interpolated into the script (same no-escaping rule as the plugin's

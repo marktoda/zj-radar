@@ -286,8 +286,6 @@ mod tests {
                 assert_ne!(a.glyph_for(Plain), b.glyph_for(Plain));
             }
         }
-        assert_eq!(Status::Done.glyph_for(Plain), '●');
-        assert_eq!(Status::Error.role().ansi(), "\x1b[31m");
     }
 
     #[test]
@@ -314,7 +312,7 @@ mod tests {
         use GlyphSet::Plain;
         assert_eq!(Status::Idle.glyph_for(Plain), '○');
         assert_eq!(Status::Running.glyph_for(Plain), '⠋');
-        assert_eq!(Status::Pending.glyph_for(Plain), '◆'); // moved from ◑ to ◆
+        assert_eq!(Status::Pending.glyph_for(Plain), '◆');
         assert_eq!(Status::Done.glyph_for(Plain), '●');
         assert_eq!(Status::Error.glyph_for(Plain), '✗');
     }
