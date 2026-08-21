@@ -425,7 +425,7 @@ fn active_and_waiting_row_bar_is_attention_not_accent() {
 
 #[test]
 fn empty_msg_ok_completion_emits_no_bare_mark_line() {
-    // `Outcome::Ok` renders an empty tag (`Outcome::full` — the line-1 status
+    // `ExitOutcome::Ok` renders an empty tag (`ExitOutcome::full` — the line-1 status
     // glyph is the one done signal), so with an empty msg there is nothing for
     // line 2 to say: the row must stay a single line, not emit a bare
     // "  ‹mark› " prefix with no activity. A Failed outcome DOES render a tag,
@@ -435,7 +435,7 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
         tab(1, "n", display(status, 1, 1, Some(d)))
     };
 
-    let ok_lines = render_row(&row(Status::Done, Some(Outcome::Ok)), &ro(30, 0));
+    let ok_lines = render_row(&row(Status::Done, Some(ExitOutcome::Ok)), &ro(30, 0));
     assert_eq!(
         ok_lines.len(),
         1,
@@ -443,7 +443,7 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
         ok_lines.iter().map(|l| &l.text).collect::<Vec<_>>()
     );
 
-    let failed_lines = render_row(&row(Status::Error, Some(Outcome::Failed(Some(1)))), &ro(30, 0));
+    let failed_lines = render_row(&row(Status::Error, Some(ExitOutcome::Failed(Some(1)))), &ro(30, 0));
     assert_eq!(failed_lines.len(), 2, "a Failed outcome still earns its line 2");
     assert!(failed_lines[1].text.contains("exit 1"), "line 2 carries the tag: {:?}", failed_lines[1].text);
 }
@@ -972,7 +972,7 @@ fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
 }
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
-fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
+fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: ExitOutcome) -> PaneDisplay {
     PaneDisplay::Tracked {
         pane_id: id,
         kind,
@@ -1031,7 +1031,7 @@ fn child_prefix_is_tree_connector_with_optional_spine() {
 fn compose_activity_reserves_outcome_against_truncation() {
     let cmd_color = "\x1b[2m"; // stand-in; we assert on visible text + role
     // Wide: command and full tag both intact.
-    let wide = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, cmd_color);
+    let wide = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, cmd_color);
     assert!(wide.contains("cargo build"), "command shown: {:?}", wide);
     assert!(wide.contains("exit 1"), "full tag shown: {:?}", wide);
     assert!(wide.contains(Role::Error.ansi()), "tag is red: {:?}", wide);
@@ -1039,7 +1039,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     // Narrow: command is squeezed but the outcome survives in full.
     let narrow = compose_activity(
         "cargo build integration suite",
-        Some(Outcome::Failed(Some(1))),
+        Some(ExitOutcome::Failed(Some(1))),
         14,
         cmd_color,
     );
@@ -1051,7 +1051,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     );
 
     // Extreme: only the irreducible glyph fits; command is dropped entirely.
-    let tiny = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 2, cmd_color);
+    let tiny = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 2, cmd_color);
     assert!(tiny.contains('✗'), "minimal glyph survives: {:?}", tiny);
     assert!(!tiny.contains("cargo"), "command dropped at extreme width: {:?}", tiny);
 
@@ -1059,7 +1059,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     for avail in 1..=30 {
         let s = compose_activity(
             "cargo build integration",
-            Some(Outcome::Failed(Some(137))),
+            Some(ExitOutcome::Failed(Some(137))),
             avail,
             cmd_color,
         );
@@ -1075,7 +1075,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
 
 #[test]
 fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
-    let s = compose_activity("cargo build", Some(Outcome::Ok), 30, "\x1b[90m");
+    let s = compose_activity("cargo build", Some(ExitOutcome::Ok), 30, "\x1b[90m");
     let plain = strip_sgr(&s);
     assert_eq!(plain, "cargo build", "no ✓ and no trailing space: {plain:?}");
     assert!(!s.contains("\x1b[32m\x1b[0m"), "no empty green SGR pair: {s:?}");
@@ -1083,9 +1083,9 @@ fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
 
 #[test]
 fn error_tag_is_exit_n_without_duplicate_cross() {
-    let s = strip_sgr(&compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, "\x1b[90m"));
+    let s = strip_sgr(&compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, "\x1b[90m"));
     assert_eq!(s, "cargo build exit 1");
-    let unknown = strip_sgr(&compose_activity("make", Some(Outcome::Failed(None)), 30, "\x1b[90m"));
+    let unknown = strip_sgr(&compose_activity("make", Some(ExitOutcome::Failed(None)), 30, "\x1b[90m"));
     assert_eq!(unknown, "make ✗");
 }
 
@@ -1095,7 +1095,7 @@ fn finished_command_line2_shows_role_colored_tag() {
         let d = PrimaryDetail { kind: Kind::Build, outcome, ..pd("r", "", msg, status) };
         tab(1, "web", display(status, 1, 1, Some(d)))
     };
-    let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
+    let done = render(&[mk(Status::Done, Some(ExitOutcome::Ok), "cargo build")], &ro(30, 0));
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
     assert!(
         !dline.contains('✓') && strip_sgr(dline).trim() == "└ ● ⚙ cargo build",
@@ -1104,7 +1104,7 @@ fn finished_command_line2_shows_role_colored_tag() {
     );
 
     let err = render(
-        &[mk(Status::Error, Some(Outcome::Failed(Some(2))), "cargo build")],
+        &[mk(Status::Error, Some(ExitOutcome::Failed(Some(2))), "cargo build")],
         &ro(30, 0),
     );
     let eline = err.lines().find(|l| l.contains("cargo build")).unwrap();
@@ -1119,7 +1119,7 @@ fn finished_command_line2_shows_role_colored_tag() {
 fn multi_pane_finished_command_shows_outcome_tag() {
     let a = display_multi(vec![
         pe(1, Kind::Build, Status::Running, "cargo build"),
-        pe_outcome(2, Kind::Test, Status::Done, "cargo test", Outcome::Ok),
+        pe_outcome(2, Kind::Test, Status::Done, "cargo test", ExitOutcome::Ok),
     ]);
     let row = tab(1, "ci", a);
     let s = render(&[row], &ro(30, 0));
@@ -2019,52 +2019,31 @@ fn no_emitted_line_exceeds_width_cards() {
 
 #[test]
 fn card_spacing_per_density() {
-    // The ONE source of truth for spacing knobs, by density.
+    // The ONE source of truth for the spacing knob, by density.
     use crate::config::Density::*;
-    assert_eq!(
-        card_spacing(Compact),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 0
-        }
-    );
-    assert_eq!(
-        card_spacing(Comfortable),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1
-        }
-    );
-    assert_eq!(
-        card_spacing(Cards),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1
-        }
-    );
+    assert_eq!(card_spacing(Compact), CardSpacing { gap: 0 });
+    assert_eq!(card_spacing(Comfortable), CardSpacing { gap: 1 });
+    assert_eq!(card_spacing(Cards), CardSpacing { gap: 1 });
 }
 
 #[test]
-fn card_block_lines_is_pad_y_plus_content_plus_gap() {
-    // The single footprint source: pad_y + full_lines + gap.
+fn card_block_lines_is_content_plus_gap() {
+    // The single footprint source: full_lines + gap.
     let opts = ro(40, 0);
     let idle_row_val = tab(1, "t", display(Status::Idle, 0, 0, None));
     let full_lines = render_row(&idle_row_val, &opts).len();
     assert_eq!(full_lines, 1);
-    // Cards: 0 pad_y + 1 content + 1 gap = 2.
+    // Cards: 1 content + 1 gap = 2.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Cards)),
         2
     );
-    // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
+    // Comfortable: 1 content + 1 gap = 2.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Comfortable)),
         2
     );
-    // Compact: 0 + 1 + 0 = 1.
+    // Compact: 1 content + 0 gap = 1.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Compact)),
         1
@@ -3522,7 +3501,7 @@ fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
 fn single_running_pane_with_detail_is_two_content_lines() {
     // Single-pane Running tab with a non-empty detail msg → 2 content lines
     // (name row + detail row). Mirrors the row_lines assertion from
-    // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
+    // lib.rs::click_mapping_cards_multi_line_card_and_post_content_row.
     let opts = ro(40, 0);
     let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
     let row = tab(1, "t", a);
@@ -3972,7 +3951,7 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     );
 }
 
-// -- Pinning: stale badge entries (task-14) ---------------------------------
+// -- Pinning: stale badge entries (never-vanish roster) ----------------------
 // A remembered session must never silently vanish from the badge; it dims
 // to stale instead. The renderer's job is narrow: paint it in a receded
 // color and keep its click target — `Sessions::cycle` (sessions.rs's own
@@ -4041,7 +4020,7 @@ fn stale_entry_undims_once_superseded_by_a_fresh_entry() {
 fn lone_fresh_own_entry_with_only_stale_peers_still_renders() {
     // The single-session zero-line rule counts `entries.len()`, not fresh
     // entries — a stale peer still counts toward the 2+ threshold, since the
-    // roster's whole point is remembering (task-14).
+    // roster's whole point is remembering.
     let entries = vec![
         badge_entry("work", true, 0, 0, None, false),
         stale_badge_entry("alpha", false, 0, 0, None, false, true),

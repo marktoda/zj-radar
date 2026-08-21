@@ -6,43 +6,24 @@
 use crate::config::Density;
 use crate::status::Status;
 
-/// The ONE source of truth for inter- and intra-card spacing, by density.
+/// The ONE source of truth for inter-card spacing, by density.
 ///
-/// Three knobs, all measured in terminal cells:
-///   - `pad_x`: columns of internal LEFT padding inserted before a card's
-///     content (so content isn't flush to the band edge).
-///   - `pad_y`: rows of internal TOP padding — blank rows painted with THIS
-///     card's own surface bg (internal breathing room). Currently 0 for all
-///     densities; retained as a knob for future tuning.
+/// One knob, measured in terminal rows:
 ///   - `gap`: rows of EXTERNAL separation after a card — blank rows painted
 ///     `rail_bg` in Cards (panel shows through), plain blank in Comfortable.
 ///     Sheds first under overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CardSpacing {
-    pub(crate) pad_x: usize,
-    pub(crate) pad_y: usize,
     pub(crate) gap: usize,
 }
 
-/// Map a density to its spacing knobs. This is the single place to tune the
-/// sidebar's vertical/horizontal rhythm.
+/// Map a density to its spacing knob. This is the single place to tune the
+/// sidebar's vertical rhythm.
 pub(crate) fn card_spacing(d: Density) -> CardSpacing {
     match d {
-        Density::Compact => CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 0,
-        },
-        Density::Comfortable => CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1,
-        },
-        Density::Cards => CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1,
-        },
+        Density::Compact => CardSpacing { gap: 0 },
+        Density::Comfortable => CardSpacing { gap: 1 },
+        Density::Cards => CardSpacing { gap: 1 },
     }
 }
 
@@ -54,11 +35,11 @@ pub(crate) struct RowMeta {
 }
 
 /// Single source of truth for a card's full vertical footprint (top→bottom:
-/// `pad_y` internal-pad rows + the card's uncompressed content rows + `gap`
-/// external-separation rows). `render_rail()` budgets in terms of this so the
-/// emitted ANSI lines and line targets stay exact.
+/// the card's uncompressed content rows + `gap` external-separation rows).
+/// `render_rail()` budgets in terms of this so the emitted ANSI lines and
+/// line targets stay exact.
 pub(crate) fn card_block_lines(full_lines: usize, spacing: CardSpacing) -> usize {
-    spacing.pad_y + full_lines + spacing.gap
+    full_lines + spacing.gap
 }
 
 /// Returns whether a row's status is "calm" (can be compressed first).
@@ -195,13 +176,13 @@ pub(crate) fn plan_overflow(rows: &[RowMeta], body_budget: usize) -> (Vec<(usize
 ///   - the per-row planned content-line counts (same as `plan_overflow`),
 ///   - the number of idle rows folded into the strip (`strip_folded`), and
 ///   - the EFFECTIVE `CardSpacing` actually applied (luxury rows may be shed
-///     under overflow): `pad_x` is unchanged; `pad_y` and `gap` are each 1 or 0.
+///     under overflow): `gap` is 1 or 0.
 ///
 /// Luxury-shedding rule (mirrors "gaps are dropped first"): the per-card block
-/// is `pad_y + content + gap`. Under overflow we shed the cheapest separation
-/// first — drop `gap`, then drop `pad_y` — before letting `plan_overflow`
-/// compress the content itself. We pick the richest spacing whose total block
-/// footprint (plus the strip line) still fits the budget.
+/// is `content + gap`. Under overflow we shed the separation — drop `gap` —
+/// before letting `plan_overflow` compress the content itself. We pick the
+/// richest spacing whose total block footprint (plus the strip line) still
+/// fits the budget.
 pub(crate) fn plan_layout(
     rows: &[RowMeta],
     body_budget: usize,
@@ -209,7 +190,7 @@ pub(crate) fn plan_layout(
 ) -> (Vec<(usize, usize)>, usize, CardSpacing) {
     let base = card_spacing(density);
 
-    // Fast path: if every row's FULL block (pad_y + content + gap) fits, render
+    // Fast path: if every row's FULL block (content + gap) fits, render
     // everything at full fidelity with full spacing. `card_block_lines` is the
     // single footprint source shared with the budgeting below.
     let full_footprint: usize = rows
@@ -225,23 +206,14 @@ pub(crate) fn plan_layout(
         return (plan, 0, base);
     }
 
-    // Candidate spacings, richest → leanest: full, then drop gap, then drop pad_y.
-    // pad_x never sheds (it's a fixed horizontal inset, not a vertical row).
-    let candidates = [
-        base,
-        CardSpacing { gap: 0, ..base },
-        CardSpacing {
-            gap: 0,
-            pad_y: 0,
-            ..base
-        },
-    ];
+    // Candidate spacings, richest → leanest: full, then drop gap.
+    let candidates = [base, CardSpacing { gap: 0 }];
 
     // Budget the content once against the full body budget — the plan does not
-    // depend on the spacing. Then shed luxury (gap first, then pad_y) until the
-    // richest spacing whose luxury rows fit *on top of* that content: content is
-    // never re-compressed to make room for separation — gaps/pads are dropped
-    // first. If even the leanest spacing (no gap, no pad_y) overflows, apply it
+    // depend on the spacing. Then shed luxury (the gap) until the richest
+    // spacing whose luxury rows fit *on top of* that content: content is
+    // never re-compressed to make room for separation — gaps are dropped
+    // first. If even the leanest spacing (no gap) overflows, apply it
     // anyway over the (already maximally-compressed) content.
     let (plan, strip_folded) = plan_overflow(rows, body_budget);
     let content_total: usize = plan.iter().map(|(_, l)| l).sum();
@@ -249,11 +221,7 @@ pub(crate) fn plan_layout(
     let strip_line = if strip_folded > 0 { 1 } else { 0 };
     let spacing = candidates
         .into_iter()
-        .find(|s| content_total + kept * (s.pad_y + s.gap) + strip_line <= body_budget)
-        .unwrap_or(CardSpacing {
-            gap: 0,
-            pad_y: 0,
-            ..base
-        });
+        .find(|s| content_total + kept * s.gap + strip_line <= body_budget)
+        .unwrap_or(CardSpacing { gap: 0 });
     (plan, strip_folded, spacing)
 }

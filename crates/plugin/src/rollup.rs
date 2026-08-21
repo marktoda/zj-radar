@@ -5,7 +5,7 @@
 //! operation named "Tab Roll-Up" in `CONTEXT.md`: a deep, pure module that
 //! turns a tab's panes plus a per-pane observation lookup into the `TabDisplay`
 //! the rail renders. It owns the whole render-input vocabulary — `TabDisplay`,
-//! `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`, `Outcome`, plus the
+//! `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`, `ExitOutcome`, plus the
 //! rail-row types `TabRow`/`LedgerLine` and the topology record
 //! `TerminalPane` — so the arrows run one way: `radar_state` builds these,
 //! `render` consumes them, and neither imports the other.
@@ -37,7 +37,7 @@ pub(crate) struct TerminalPane {
 /// (`full`/`minimal`/`role`) live in `render`, since they encode glyphs and a
 /// width-driven form; the enum here is pure semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
+pub enum ExitOutcome {
     /// Exit 0 / returned to the shell with no failure evidence.
     Ok,
     /// Nonzero exit; `Some(code)` when known, `None` for a signal/no-code exit.
@@ -54,7 +54,7 @@ pub struct PrimaryDetail {
     pub status: Status,
     pub kind: Kind,
     /// End-result tag for a finished command pane (None for agents/active).
-    pub outcome: Option<Outcome>,
+    pub outcome: Option<ExitOutcome>,
     /// Wall-clock stamp of the waiting-on-you edge (Pending only) — the
     /// renderer turns it into the `· 12m` wait tag against its own
     /// `now_epoch_s`, so no epoch threads through the roll-up itself.
@@ -71,7 +71,7 @@ pub enum PaneDisplay {
         msg: String,
         task: String,
         since_tick: u64,
-        outcome: Option<Outcome>,
+        outcome: Option<ExitOutcome>,
         /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
         pending_epoch_s: Option<u64>,
         /// See `PrimaryDetail::acknowledged`.
@@ -106,7 +106,7 @@ impl PaneDisplay {
     }
 
     /// Tracked only (an observation-backed row) — test vocabulary; production
-    /// code branches on `earns_pane_line`/`is_interactive` instead.
+    /// code branches on `earns_pane_line`/`status()` instead.
     #[cfg(test)]
     pub(crate) fn is_tracked(&self) -> bool {
         matches!(self, Self::Tracked { .. })
@@ -119,6 +119,9 @@ impl PaneDisplay {
         matches!(self, Self::Tracked { .. } | Self::Interactive { .. })
     }
 
+    /// Interactive only — test vocabulary, like `is_tracked`; production
+    /// code reads `status()` (an Interactive pane has no observation-status).
+    #[cfg(test)]
     pub(crate) fn is_interactive(&self) -> bool {
         matches!(self, Self::Interactive { .. })
     }
@@ -173,7 +176,7 @@ impl PaneDisplay {
         }
     }
 
-    pub(crate) fn outcome(&self) -> Option<Outcome> {
+    pub(crate) fn outcome(&self) -> Option<ExitOutcome> {
         match self {
             Self::Tracked { outcome, .. } => *outcome,
             Self::Untracked { .. } | Self::Interactive { .. } => None,
@@ -337,13 +340,13 @@ pub fn roll_up<'a, 'q>(
 /// (no tag; the line-1 status glyph is the one done signal); Error →
 /// `Failed(exit_code)` (`exit N`, or `✗` when the code is unknown). Returns
 /// `None` for active/idle panes and all agents.
-fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
+fn pane_outcome(s: &TrackedObservation) -> Option<ExitOutcome> {
     if s.origin != ObservationOrigin::Command {
         return None;
     }
     match s.status {
-        Status::Done => Some(Outcome::Ok),
-        Status::Error => Some(Outcome::Failed(s.exit_code)),
+        Status::Done => Some(ExitOutcome::Ok),
+        Status::Error => Some(ExitOutcome::Failed(s.exit_code)),
         _ => None,
     }
 }

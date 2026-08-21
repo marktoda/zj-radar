@@ -25,9 +25,9 @@
 //! - [`session_name_changed`](PluginRuntime::session_name_changed) —
 //!   `Event::ModeUpdate`'s `session_name`, the push-style source that
 //!   replaced `SessionUpdate` for learning this session's own name
-//!   (task-8b-brief.md: `SessionUpdate`'s peer list never populates without
-//!   a plugin calling the blocking `get_session_list()`, which stock
-//!   zj-radar never does — see `task-8-report.md`). Liveness itself no
+//!   (`SessionUpdate`'s peer list never populates without a plugin calling
+//!   the blocking `get_session_list()`, which stock zj-radar never does —
+//!   see `docs/design.md`, "Why not SessionUpdate"). Liveness itself no
 //!   longer comes from a Zellij-reported peer list at all: it's implicit in
 //!   which presence files `session_files::read_peer_presences` returns
 //!   (its mtime gate IS the liveness signal).
@@ -652,16 +652,18 @@ impl PluginRuntime {
         if !self.permission.granted() {
             return Outcome::none();
         }
+        let dir = match verb {
+            Verb::AttentionNext | Verb::SessionNext => Direction::Next,
+            Verb::AttentionPrev | Verb::SessionPrev => Direction::Prev,
+        };
         match verb {
             Verb::AttentionNext | Verb::AttentionPrev => {
-                let dir = if verb == Verb::AttentionNext { Direction::Next } else { Direction::Prev };
                 match self.radar.next_attention_tab(dir) {
                     Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
                     None => Outcome::none(),
                 }
             }
             Verb::SessionNext | Verb::SessionPrev => {
-                let dir = if verb == Verb::SessionNext { Direction::Next } else { Direction::Prev };
                 let render = self.sessions.cycle(dir);
                 // A fresh tap must arm Fast immediately (not wait for the next
                 // domain change to pass through `project`), so the idle-commit
@@ -683,7 +685,8 @@ impl PluginRuntime {
     }
 
     /// Learn (or relearn) this session's own name — the push-style source
-    /// that replaced `SessionUpdate` (task-8b-brief.md): `Event::ModeUpdate`'s
+    /// that replaced `SessionUpdate` (see `docs/design.md`, "Why not
+    /// SessionUpdate"): `Event::ModeUpdate`'s
     /// `ModeInfo.session_name`. `None` is a true no-op: Zellij can in
     /// principle fire `ModeUpdate` before the session has a name, and there
     /// is nothing to do with that yet — re-projecting on every such event
@@ -757,7 +760,7 @@ impl PluginRuntime {
 
     /// JSON the host actually writes to disk on `Effect::PersistPresence` —
     /// see `own_presence` for the field derivation. Only the wasm glue
-    /// (Task 6) calls this in production; on a host build nothing here
+    /// (lib.rs) calls this in production; on a host build nothing here
     /// invokes it (that wiring is still `project`'s `own_presence`
     /// comparison), so it would otherwise read as dead code.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1032,9 +1035,9 @@ impl PluginRuntime {
             // heartbeat is the only writer keeping it fresh. Fully disarming
             // would freeze that mtime and get a still-alive idle session
             // dimmed to stale on every peer's badge 90s later (never
-            // dropped — task-14 — but still a needless false alarm) — so
-            // the chain must stay (at least) Slow-armed for as long as the
-            // name is known.
+            // dropped — the never-vanish roster — but still a needless
+            // false alarm) — so the chain must stay (at least) Slow-armed
+            // for as long as the name is known.
             || !self.own_session_name.is_empty()
         {
             // Slow ticks exist to advance minute-granular ages: ledger rows'
@@ -1124,9 +1127,8 @@ impl PluginRuntime {
     /// The sole projection from a domain [`RadarChange`] to host [`Effect`]s.
     /// `fx` is a caller-supplied seed so the `timer` handler's permission
     /// effects come first, without a post-hoc splice. Canonical order: renames
-    /// → snapshot → presence → cwd → `SetTimeout` → notify — identical to
-    /// today's `panes_changed` apart from the presence edge, so that handler
-    /// is otherwise byte-for-byte unchanged. `settle` is the per-handler stamp
+    /// → snapshot → presence → cwd → `SetTimeout` → notify (pinned by
+    /// `project_emits_effects_in_canonical_order`). `settle` is the per-handler stamp
     /// described in `## Settle` (`CONTEXT.md`): this is the sole caller of
     /// `notify_effects`, and the only *domain-change* path that arms the timer
     /// (the permission flow arms it separately in `begin_permission_flow`).
@@ -1149,8 +1151,8 @@ impl PluginRuntime {
     /// `session_name_changed` (also routed through here) learns it.
     ///
     /// Same gate also feeds `Sessions::set_own` — the single path for own
-    /// counts into the OWN badge row (task-8b-brief.md un-deads it: nothing
-    /// called it before this). Unlike `PersistPresence`, this is NOT
+    /// counts into the OWN badge row (nothing else calls it).
+    /// Unlike `PersistPresence`, this is NOT
     /// edge-gated by `last_presence`'s cache — `Sessions::set_own` already
     /// does its own badge-derived content-compare and reports whether the
     /// badge actually changed, so calling it every `project` pass (once the

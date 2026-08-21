@@ -36,10 +36,11 @@ const NOTIFY_CLAIM_SWEEP_AGE: Duration = Duration::from_secs(300);
 const PERMISSION_GRANTED_MARKER: &str = "granted";
 const PERMISSION_DENIED_MARKER: &str = "denied";
 /// Horizon after which a presence file is deleted as debris at `open` time —
-/// the ONLY true forgetting a peer's roster entry is subject to (task-14,
-/// user decision: a remembered session must never silently vanish from the
-/// badge). Peers dead well before their file turns 6h old still keep
-/// showing up in every other session's badge, dimmed as stale
+/// the ONLY true forgetting a peer's roster entry is subject to (never-vanish
+/// roster, user decision: a remembered session must never silently vanish
+/// from the badge — `docs/design.md`). Peers dead well before their file
+/// turns 6h old still keep showing up in every other session's badge, dimmed
+/// as stale
 /// (`sessions::STALE_AFTER_SECS`) rather than dropped — this sweep only
 /// exists so a long string of genuinely dead sessions' files don't
 /// accumulate forever in the shared root. Generous: a detached-but-alive
@@ -156,13 +157,7 @@ impl SessionFiles {
             PermissionMarker::Granted => PERMISSION_GRANTED_MARKER,
             PermissionMarker::Denied => PERMISSION_DENIED_MARKER,
         };
-        if std::fs::write(&paths.permission_marker_tmp, raw.as_bytes()).is_ok() {
-            if std::fs::rename(&paths.permission_marker_tmp, &paths.permission_marker).is_err() {
-                let _ = std::fs::remove_file(&paths.permission_marker_tmp);
-            }
-        } else {
-            let _ = std::fs::remove_file(&paths.permission_marker_tmp);
-        }
+        write_via_tmp(&paths.permission_marker_tmp, &paths.permission_marker, raw.as_bytes());
     }
 
     /// Refresh the permission lock's mtime (rewriting it, creating if needed).
@@ -180,13 +175,7 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return;
         };
-        if std::fs::write(&paths.snapshot_tmp, json.as_bytes()).is_ok() {
-            if std::fs::rename(&paths.snapshot_tmp, &paths.snapshot).is_err() {
-                let _ = std::fs::remove_file(&paths.snapshot_tmp);
-            }
-        } else {
-            let _ = std::fs::remove_file(&paths.snapshot_tmp);
-        }
+        write_via_tmp(&paths.snapshot_tmp, &paths.snapshot, json.as_bytes());
     }
 
     /// Publish this session's presence for peer sessions' badges. Same atomic
@@ -195,22 +184,17 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return;
         };
-        if std::fs::write(&paths.presence_tmp, json.as_bytes()).is_ok() {
-            if std::fs::rename(&paths.presence_tmp, &paths.presence).is_err() {
-                let _ = std::fs::remove_file(&paths.presence_tmp);
-            }
-        } else {
-            let _ = std::fs::remove_file(&paths.presence_tmp);
-        }
+        write_via_tmp(&paths.presence_tmp, &paths.presence, json.as_bytes());
     }
 
     /// Raw JSON of every OTHER session's presence file (own pid excluded, tmp
     /// files excluded), paired with how long ago its mtime was last touched.
     /// Parsing/validation is the caller's job (`Presence::parse` skips
     /// corrupt peers) — and so, now, is staleness: this method used to treat
-    /// an old mtime as "peer is gone" and skip it outright, but task-14's
-    /// user decision is that a remembered session must never silently
-    /// vanish from the badge, so every peer file found comes back
+    /// an old mtime as "peer is gone" and skip it outright, but the
+    /// never-vanish-roster user decision (`docs/design.md`) is that a
+    /// remembered session must never silently vanish from the badge, so
+    /// every peer file found comes back
     /// unconditionally. `age_secs` is measured off THIS session's own
     /// filesystem clock reading the file's mtime — not the peer's
     /// self-reported `updated_epoch_s` inside the JSON, which a corrupt or
@@ -241,11 +225,7 @@ impl SessionFiles {
             if paths.is_own_presence_file(&name) {
                 continue;
             }
-            let age_secs = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|modified| now.duration_since(modified).ok())
+            let age_secs = age_of(entry.metadata(), now)
                 .map(|age| age.as_secs())
                 .unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
             if let Ok(json) = std::fs::read_to_string(entry.path()) {
@@ -366,6 +346,31 @@ impl SessionFiles {
     }
 }
 
+/// The tmp-write→rename discipline every persisted file in this module uses:
+/// write the instance-scoped `tmp` file, then atomically rename it over
+/// `dest`. On any failure the tmp is removed and the existing `dest` is left
+/// untouched; errors are otherwise swallowed (persistence is best-effort —
+/// see the module doc's disabled-mode story).
+fn write_via_tmp(tmp: &Path, dest: &Path, bytes: &[u8]) {
+    if std::fs::write(tmp, bytes).is_ok() {
+        if std::fs::rename(tmp, dest).is_err() {
+            let _ = std::fs::remove_file(tmp);
+        }
+    } else {
+        let _ = std::fs::remove_file(tmp);
+    }
+}
+
+/// How long ago (relative to `now`) the file behind `meta` was last modified.
+/// `None` on any metadata/clock hiccup — including an mtime in the future —
+/// so each caller decides its own conservative fallback (treat as fresh,
+/// don't reclaim, don't prune).
+fn age_of(meta: std::io::Result<std::fs::Metadata>, now: SystemTime) -> Option<Duration> {
+    meta.and_then(|m| m.modified())
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+}
+
 /// Remove spent notify claims so a long-lived session doesn't accrete one file
 /// per notification event forever. Runs on each claim attempt — notifications
 /// are edge-rate (not output-rate), so the readdir is negligible.
@@ -380,12 +385,7 @@ fn prune_stale_claims(paths: &SessionPaths, now: SystemTime) {
         if !name.starts_with(&prefix) {
             continue;
         }
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > NOTIFY_CLAIM_SWEEP_AGE);
+        let stale = age_of(entry.metadata(), now).is_some_and(|age| age > NOTIFY_CLAIM_SWEEP_AGE);
         if stale {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -398,11 +398,7 @@ fn prune_stale_claims(paths: &SessionPaths, now: SystemTime) {
 /// the recreate race we defer to it (returns false) — consistent with
 /// preferring at least one reachable prompt/toast over a deadlock.
 fn reclaim_if_stale(lock: &Path, now: SystemTime, ttl: Duration) -> bool {
-    let stale = std::fs::metadata(lock)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|modified| now.duration_since(modified).ok())
-        .is_some_and(|age| age > ttl);
+    let stale = age_of(std::fs::metadata(lock), now).is_some_and(|age| age > ttl);
     if !stale {
         return false;
     }
@@ -504,12 +500,7 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
             if paths.is_own_presence_file(&name) {
                 continue;
             }
-            let stale = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|modified| now.duration_since(modified).ok())
-                .is_some_and(|age| age > PRESENCE_MAX_AGE);
+            let stale = age_of(entry.metadata(), now).is_some_and(|age| age > PRESENCE_MAX_AGE);
             if stale {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -518,12 +509,7 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
         if !is_owned_session_file(&name) || paths.is_current_session_file(&name) {
             continue;
         }
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > max_age);
+        let stale = age_of(entry.metadata(), now).is_some_and(|age| age > max_age);
         if stale {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -1027,9 +1013,9 @@ mod tests {
 
     #[test]
     fn read_peer_presences_never_drops_an_old_mtime_peer_and_reports_its_age() {
-        // task-14, user decision: a remembered session must never silently
-        // vanish from the badge. This method used to skip a peer once its
-        // file's mtime drifted past a liveness TTL; now it must keep
+        // Never-vanish roster, user decision: a remembered session must
+        // never silently vanish from the badge. This method used to skip a
+        // peer once its file's mtime drifted past a liveness TTL; now it must keep
         // returning that peer unconditionally — dropping only ever happens
         // at `open`'s much-longer `PRESENCE_MAX_AGE` sweep — and report an
         // honest age so the caller (`sessions::Sessions`) can mark it stale

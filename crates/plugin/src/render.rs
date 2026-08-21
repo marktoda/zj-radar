@@ -18,7 +18,7 @@ use crate::kind::Kind;
 // One minute band for every age display (its `1h+` freeze is load-bearing
 // for cadence disarm) — owned by the ledger, shared by the wait/run tags.
 use crate::ledger::minute_tag;
-use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
+use crate::rollup::{ExitOutcome, LedgerLine, PaneDisplay, TabDisplay, TabRow};
 use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
@@ -159,23 +159,23 @@ pub struct RenderOpts {
     /// whenever `len() <= 1` (only this session, or no peer presence has
     /// crossed the shared `/cache` root yet), so every caller that never
     /// populates this (every
-    /// pre-existing test, and any host that hasn't wired Task 5/6's session
+    /// pre-existing test, and any host that hasn't wired the session
     /// plumbing) renders byte-identical to before this field existed.
     pub badge: Vec<BadgeEntry>,
 }
 
-/// Presentation for the roll-up's `Outcome` tag. The enum itself lives in
+/// Presentation for the roll-up's `ExitOutcome` tag. The enum itself lives in
 /// `rollup` (pure semantics); these methods encode the glyphs and the
 /// width-driven roomy/tight forms, which are the renderer's concern.
-impl Outcome {
+impl ExitOutcome {
     /// The roomy form. `Ok` is EMPTY — the line-1 status glyph (green ●) is the
     /// one done signal; a tag would double-mark it. Errors carry the info the
     /// line-1 `✗` can't: the exit code.
     fn full(self) -> String {
         match self {
-            Outcome::Ok => String::new(),
-            Outcome::Failed(Some(code)) => format!("exit {}", code),
-            Outcome::Failed(None) => "✗".to_string(),
+            ExitOutcome::Ok => String::new(),
+            ExitOutcome::Failed(Some(code)) => format!("exit {}", code),
+            ExitOutcome::Failed(None) => "✗".to_string(),
         }
     }
 
@@ -184,22 +184,22 @@ impl Outcome {
     /// only failures do. Lets callers ask "is there a tag?" without building
     /// the `full()` string just to test it for emptiness.
     fn renders_tag(self) -> bool {
-        !matches!(self, Outcome::Ok)
+        !matches!(self, ExitOutcome::Ok)
     }
 
     /// The irreducible short form, shown when width is too tight for `full`.
     fn minimal(self) -> &'static str {
         match self {
-            Outcome::Ok => "",
-            Outcome::Failed(_) => "✗",
+            ExitOutcome::Ok => "",
+            ExitOutcome::Failed(_) => "✗",
         }
     }
 
     /// The hue the tag reads in: success (green) / error (red).
     fn role(self) -> Role {
         match self {
-            Outcome::Ok => Role::Success,
-            Outcome::Failed(_) => Role::Error,
+            ExitOutcome::Ok => Role::Success,
+            ExitOutcome::Failed(_) => Role::Error,
         }
     }
 }
@@ -650,7 +650,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let hotspot = row.display.panes.iter()
         .any(PaneDisplay::has_unacknowledged_status_pending)
         .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
-    let hotspot = HotspotSlot::new(opts.width, 6, hotspot);
+    let hotspot = HotspotSlot::new(opts.width, TAB_HEADER_HOTSPOT_MIN, hotspot);
     let width = hotspot.content_width();
     let now_tick = opts.now_tick;
     let st = row.display.status;
@@ -667,11 +667,6 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // col 0: spine column — ALWAYS reserved so every row's glyph/number/name
     // start at fixed columns; `▌` when active, plain space otherwise.
     let bar = spine_seg(row.active, st);
-
-    // Internal left padding: `pad_x` cells after the col-0 spine/space, before
-    // the glyph. At extreme-narrow widths clamp pad_x then num so the prefix
-    // never exceeds `width`.
-    let pad_x = card_spacing(opts.density).pad_x;
 
     // col 1: status glyph (working spins; eases to a slow blink for
     // long-runners — see `spin_glyph`).
@@ -698,20 +693,18 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // cue — the accent spine + brighter card — so the two stay independent.)
     let label_bold = st != Status::Idle;
 
-    // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
-    // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
+    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. At
+    // extreme-narrow widths clamp num so the prefix never exceeds `width`.
     let num_full = row.number.to_string();
     let bar_width = 1;
     let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
-    let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
-    let num_budget = width.saturating_sub(bare_min + pad_len);
+    let num_budget = width.saturating_sub(bare_min);
     let num = truncate(&num_full, num_budget);
     let num_w = UnicodeWidthStr::width(num.as_str());
     // Trailing sp after num only if it fits.
-    let has_trailing_sp = bare_min + pad_len + num_w < width;
-    let pad = " ".repeat(pad_len);
-    let prefix_len = bare_min + pad_len + num_w + if has_trailing_sp { 1 } else { 0 };
+    let has_trailing_sp = bare_min + num_w < width;
+    let prefix_len = bare_min + num_w + if has_trailing_sp { 1 } else { 0 };
     // Trailing bell marker (⚑ + space, 2 cols). The prefix
     // clamp only guarantees the prefix itself fits `width`; suppress the bell at
     // extreme-narrow widths where it wouldn't fit beside the prefix, or it would
@@ -743,12 +736,22 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         text: label_text.into(),
     };
     let line = Line::new(
-        format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
+        format!("{}{}{}{}\n", bar, label, " ".repeat(gap), bell),
         Some(tab_target.clone()),
         LineBg::Card,
     );
     hotspot.finish(line, &hue(Role::Attention))
 }
+
+// Hotspot admission minimums, one per hotspot-bearing line class: each is the
+// line's minimal meaningful visible prefix plus the 2-col separator+glyph
+// reservation `HotspotSlot::new` makes once admitted.
+/// Tab header line: bar(1) + glyph(1) + sp(1) + 1-digit num(1) = 4, + 2 slot.
+const TAB_HEADER_HOTSPOT_MIN: usize = 6;
+/// Pane identity line: tree prefix(3) + glyph(1) + sp(1) + mark(1) = 6, + 2 slot.
+const PANE_LINE_HOTSPOT_MIN: usize = 8;
+/// Session badge line: here-marker(1) + sp(1) = 2, + 2 slot.
+const BADGE_LINE_HOTSPOT_MIN: usize = 4;
 
 /// Owns the complete hotspot suffix contract: admission at a site's minimum
 /// width, reservation of separator+glyph, and release-build enforcement when
@@ -849,7 +852,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
-        let hotspot = HotspotSlot::new(opts.width, 8, hotspot);
+        let hotspot = HotspotSlot::new(opts.width, PANE_LINE_HOTSPOT_MIN, hotspot);
         let content_width = hotspot.content_width();
         let text = emit_pane_line(pane, &identity, detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
@@ -921,7 +924,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // Unlike the multi-pane roster (where every tracked pane earns a line),
     // the single pane's line is emitted only when it says something: a
     // non-empty identity OR an outcome tag that actually renders (`Ok`'s tag
-    // is empty by design — see `Outcome::renders_tag` — so an empty-msg Ok
+    // is empty by design — see `ExitOutcome::renders_tag` — so an empty-msg Ok
     // completion earns no line at all). Idle stays header-only. The gate
     // itself lives inside `pane_lines` (`skip_silent`), judged on the very
     // identity it emits.
@@ -940,7 +943,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 /// (`exit 1`) to the irreducible glyph (`✗`). The returned string fits within
 /// `avail` columns and carries its own color escapes (each segment
 /// RESET-terminated).
-fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
+fn compose_activity(cmd: &str, outcome: Option<ExitOutcome>, avail: usize, cmd_color: &str) -> String {
     let Some(oc) = outcome else {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
@@ -951,7 +954,7 @@ fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color
     }
     let role = oc.role().ansi();
     let cmd = cmd.trim();
-    // Outcome with no command (e.g. an exit with no recorded command string):
+    // ExitOutcome with no command (e.g. an exit with no recorded command string):
     // show the largest form that fits.
     if cmd.is_empty() {
         let full = oc.full();
@@ -1284,17 +1287,17 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     // independent of the later title-squeeze clamp.
     let avail = width.saturating_sub(title_w);
     let combined_w = |b: &str| UnicodeWidthStr::width(primary.as_str()) + 1 + UnicodeWidthStr::width(b);
-    // (text, color, bold) run(s) that make up the right slot, in emission order.
-    let right_segs: Vec<(String, &str, bool)> = match &badge {
+    // The `Seg` run(s) that make up the right slot, in emission order.
+    let right_segs: Vec<Seg> = match &badge {
         Some(b) if combined_w(b) <= avail => {
-            vec![(primary.clone(), primary_color, false), (format!(" {b}"), Role::Attention.ansi(), true)]
+            vec![Seg::new(primary_color, primary.clone()), Seg::bold(Role::Attention.ansi(), format!(" {b}"))]
         }
         // Combined doesn't fit: the overflow marker always wins, but a plain
         // census loses to the badge — drop it and keep the badge alone.
-        Some(b) if !overflow => vec![(b.clone(), Role::Attention.ansi(), true)],
-        _ => vec![(primary.clone(), primary_color, false)],
+        Some(b) if !overflow => vec![Seg::bold(Role::Attention.ansi(), b.clone())],
+        _ => vec![Seg::new(primary_color, primary.clone())],
     };
-    let plain_right: String = right_segs.iter().map(|(t, _, _)| t.as_str()).collect();
+    let plain_right: String = right_segs.iter().map(|s| s.text.as_ref()).collect();
     let right_full_w = UnicodeWidthStr::width(plain_right.as_str());
     let right_w = right_full_w.min(width);
     // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
@@ -1311,7 +1314,7 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     } else {
         right_segs
             .into_iter()
-            .map(|(t, c, b)| if b { Seg::bold(c, t).to_string() } else { Seg::new(c, t).to_string() })
+            .map(|s| s.to_string())
             .collect::<String>()
     };
     let mut title_line = String::new();
@@ -1367,7 +1370,7 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// every existing single-session snapshot/test stays byte-identical (the
 /// badge is additive, never a subtraction from the render surface). A lone
 /// fresh own-entry plus only STALE peers still clears this threshold and
-/// renders (task-14: the roster's whole point is remembering) — the count
+/// renders (never-vanish roster: its whole point is remembering) — the count
 /// is over `entries`, not over fresh entries.
 ///
 /// The current session's own line carries NO click target at all — you
@@ -1408,7 +1411,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     }
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
-    // A stale entry (task-14: dimmed, never dropped from the badge) recedes
+    // A stale entry (dimmed, never dropped from the badge) recedes
     // one step further than the ordinary muted `idle_text` every other line
     // uses — blended halfway toward the panel background, the same "recede
     // toward bg" idiom `DerivedColors::from_bg_fg` already uses for its own
@@ -1424,7 +1427,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
         .map(|entry| {
             let hotspot = (entry.stale && !entry.is_current)
                 .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
-            let hotspot = HotspotSlot::new(width, 4, hotspot);
+            let hotspot = HotspotSlot::new(width, BADGE_LINE_HOTSPOT_MIN, hotspot);
             let content_width = hotspot.content_width();
             let mut label = entry.name.clone();
             if entry.running > 0 {
@@ -1554,7 +1557,6 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // Body: one card block per kept row.
     for &(i, budget) in &plan {
         let row = &rows[i];
-        let row_target = target_for_row(row);
 
         // Resolve a raw line's surface through the one `LineBg::escape` map by
         // consuming the complete `Line`. Metadata such as targets and hotspots
@@ -1569,14 +1571,6 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
             line.bg = LineBg::None;
             line
         };
-
-        // pad_y internal top padding — belongs to this card's click span.
-        // Cloned each iteration (`RailTarget` isn't `Copy`; `session` is a
-        // `String`) — `pad_y` can be >1, so a plain move would only survive
-        // the first pass.
-        for _ in 0..spacing.pad_y {
-            flat.push(finalize(Line::new("\n".to_string(), Some(row_target.clone()), LineBg::Card)));
-        }
 
         // content (truncated to the planned budget == today's compression).
         for line in blocks[i].iter().take(budget) {

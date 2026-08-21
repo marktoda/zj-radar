@@ -1040,8 +1040,8 @@ fn presence_withheld_until_own_session_name_is_known() {
 fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
     // "alpha" needs no separate liveness registration anymore — its presence
-    // report IS its liveness (task-8b-brief.md: no more `SessionUpdate` peer
-    // list to cross-check against).
+    // report IS its liveness (no more `SessionUpdate` peer list to
+    // cross-check against — see `docs/design.md`, "Why not SessionUpdate").
     rt.presences_changed(vec![
         fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#),
     ]);
@@ -1049,7 +1049,7 @@ fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     let out = rt.control_pipe("session-next");
     assert!(out.render, "selection highlight renders");
 
-    // The Fast fire covering the tap itself must not commit (task-14: the
+    // The Fast fire covering the tap itself must not commit (the
     // taps-since-last-fire flag resets the deadline instead) — only the
     // NEXT, fully quiet fire may.
     let covering = rt.timer_fast(PermissionProbe::default());
@@ -1417,11 +1417,11 @@ fn a_real_pending_to_done_broadcast_still_notifies() {
 
 #[test]
 fn own_badge_row_updates_live_as_running_and_attention_move() {
-    // Task-6 flagged `Sessions::set_own` as dead code: nothing called it, so
-    // the own row of the cross-session badge never reflected the running/
+    // `Sessions::set_own` was once dead code: nothing called it, so the own
+    // row of the cross-session badge never reflected the running/
     // attention counts actually moving underneath it — it would render
-    // whatever it started at (0/0) forever. task-8b-brief.md revives it by
-    // having `project` call it every pass once the name is known; this pins
+    // whatever it started at (0/0) forever. The fix has
+    // `project` call it every pass once the name is known; this pins
     // that the own row's rendered counts actually track a later status edge,
     // not just its state at the moment the name became known.
     let mut rt = runtime_with_granted_permission(); // own session name "work"
@@ -1598,11 +1598,15 @@ fn noop_broadcast_skips_presence_and_notify_work() {
 
 #[test]
 fn project_emits_effects_in_canonical_order() {
-    // Sole home of the order contract: renames → snapshot → cwd →
+    // Sole home of the order contract: renames → snapshot → presence → cwd →
     // SetTimeout → notify. Seed a background Done so `settle` actually
-    // produces a Notify, exercising all five effect kinds in one change.
+    // produces a Notify, and a just-learned session name so the presence
+    // compare sees its first content edge (the helper leaves the name empty,
+    // which withholds `PersistPresence` entirely) — exercising all six
+    // effect kinds in one change.
     let mut rt = two_tab_runtime_with_running_commands();
     rt.radar.command_mut().on_exit(7, Some(0), Tick(rt.tick), EpochSecs(0));
+    rt.own_session_name = "main".into();
     // `TimerChain::arm` self-guards on the armed cadence; the setup helper's
     // timer tick already armed it, so force the disarmed state to let
     // `project`'s unconditional arm call actually produce a `SetTimeout`.
@@ -1621,9 +1625,10 @@ fn project_emits_effects_in_canonical_order() {
     let kind = |e: &Effect| match e {
         Effect::RenameTab { .. } => 0,
         Effect::PersistSnapshot => 1,
-        Effect::ResolveCwd { .. } => 2,
-        Effect::SetTimeout(_) => 3,
-        Effect::Notify { .. } => 4,
+        Effect::PersistPresence => 2,
+        Effect::ResolveCwd { .. } => 3,
+        Effect::SetTimeout(_) => 4,
+        Effect::Notify { .. } => 5,
         other => panic!("unexpected effect in canonical-order test: {other:?}"),
     };
     let kinds: Vec<i32> = outcome.effects.iter().map(kind).collect();
@@ -1631,12 +1636,12 @@ fn project_emits_effects_in_canonical_order() {
     sorted.sort_unstable();
     assert_eq!(
         kinds, sorted,
-        "effects must appear in canonical order (renames < snapshot < cwd < timer < notify); got {:?}",
+        "effects must appear in canonical order (renames < snapshot < presence < cwd < timer < notify); got {:?}",
         outcome.effects
     );
-    // All five kinds must actually be present, otherwise the ordering
+    // All six kinds must actually be present, otherwise the ordering
     // assertion above is vacuous.
-    for expected in 0..=4 {
+    for expected in 0..=5 {
         assert!(
             kinds.contains(&expected),
             "expected effect kind {expected} to be present; got {:?}",
@@ -2020,8 +2025,9 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     // Slow-fire heartbeat. Were the chain to fully disarm on a saturated
     // idle rail, that heartbeat would never fire again, the mtime would
     // freeze, and after 90s every peer would dim this still-alive session's
-    // badge to stale (never drop it — task-14 — but still a needless false
-    // alarm) — exactly the idle-but-visible case the feature exists for.
+    // badge to stale (never drop it — the never-vanish roster — but still a
+    // needless false alarm) — exactly the idle-but-visible case the feature
+    // exists for.
     // So: saturation may step the cadence down to Slow, but never to None
     // while the name is known.
     let mut rt = PluginRuntime {
@@ -2244,7 +2250,7 @@ fn idle_alive_session_heartbeats_presence_unconditionally_on_slow_fires_only() {
     // content edge to trigger `project`'s compare-and-cache `PersistPresence`
     // — but its presence file's mtime is the signal peers use to tell fresh
     // from stale (`sessions::STALE_AFTER_SECS`; liveness is no longer
-    // `SessionUpdate`-derived at all, and past task-14 it's never a hard
+    // `SessionUpdate`-derived at all, and staleness is never a hard
     // drop either — just a dim). The Slow (60s) heartbeat must therefore
     // emit `PersistPresence` unconditionally, bypassing the content-compare
     // gate; Fast (1s) fires must NOT — that would be needless per-second

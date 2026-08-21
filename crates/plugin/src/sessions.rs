@@ -5,7 +5,8 @@
 //! rows-derived-on-render doctrine (`CONTEXT.md`) rather than caching a
 //! badge that could drift from `peers`/`own`.
 //!
-//! task-14 (user decision): a remembered session must NEVER silently vanish
+//! Never-vanish roster (user decision — `docs/design.md`, "Liveness
+//! heartbeat + staleness"): a remembered session must NEVER silently vanish
 //! from the badge. `session_files::read_peer_presences` no longer filters
 //! anything by mtime — every peer file it finds comes back, forever (until
 //! the 6h open-time sweep, the only true forgetting). Liveness is instead a
@@ -82,7 +83,7 @@ pub(crate) struct CommitTarget {
 
 /// A pending (not yet committed) cycle selection. `name` identifies the
 /// selected session directly rather than its position in the derived order —
-/// `update_live`/`update_presences` can reorder that list between the
+/// `update_presences`/`set_own` can reorder that list between the
 /// `cycle()` tap and the commit `tick()` (e.g. a new session sorting ahead of
 /// the selected one), and a positional index would then silently retarget
 /// whatever session ended up at the old index. Re-resolved by name against
@@ -184,8 +185,8 @@ impl Sessions {
 
     /// Advance (or start) the cycle selection and arm its tap-since-fire
     /// flag (see `SelectionState`'s doc). Re-derives the shared ordering
-    /// fresh each call, so a selection started before a
-    /// `update_live`/`update_presences` change always steps relative to the
+    /// fresh each call, so a selection started before an
+    /// `update_presences`/`set_own` change always steps relative to the
     /// current membership, never a stale snapshot. The pending selection's
     /// *name* is re-resolved against that fresh order (not trusted as a
     /// stale index) before advancing from it.
@@ -194,7 +195,7 @@ impl Sessions {
     /// index/position below is computed against `selectable` (fresh entries
     /// only), never the full `order`. Alt+[/] must never land on a
     /// likely-dead session: `switch_session`ing onto one that's actually
-    /// gone would have Zellij resurrect it as an empty zombie (task-14).
+    /// gone would have Zellij resurrect it as an empty zombie.
     pub(crate) fn cycle(&mut self, dir: Direction) -> bool {
         let before = self.badge();
         let order = self.ordered();
@@ -287,7 +288,7 @@ impl Sessions {
     /// Whether a cycle selection is pending — the runtime keeps the Fast
     /// timer cadence armed while true, so the idle-commit in `tick()` fires
     /// promptly rather than waiting for the next Slow tick. Only the wasm
-    /// runtime (Task 5) reads this in production; pinned by a host test
+    /// runtime reads this in production; pinned by a host test
     /// (`wants_fast_cadence_tracks_pending_selection_through_commit_and_cancel`).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn wants_fast_cadence(&self) -> bool {
@@ -587,8 +588,8 @@ mod tests {
         // "aardvark" joins and sorts ahead of "alpha" in the rest bucket. A
         // positional-index selection (old index 1) would now point at
         // "aardvark" instead of "alpha". `update_presences` REPLACES the
-        // peer set wholesale (same as `update_live` used to for `live`), so
-        // this is the same "membership changed under the selection" shape.
+        // peer set wholesale, so this is the same "membership changed under
+        // the selection" shape.
         s.update_presences(vec![presence("aardvark", 1, 0), presence("alpha", 1, 0), presence("beta", 1, 0)]);
 
         s.tick(); // the fire covering the tap: skip, clears the flag
@@ -694,7 +695,7 @@ mod tests {
         assert_eq!(work_entries[0].attention, 0, "own's own-known counts must win over a peer claiming the same name");
     }
 
-    // -- Pinning: persistent roster (task-14) --------------------------------
+    // -- Pinning: persistent (never-vanish) roster ---------------------------
     // A remembered session must never silently vanish from the badge. Peers
     // past `STALE_AFTER_SECS` mark stale (dimmed by the renderer, unreachable
     // via `cycle()`) instead of disappearing; only the open-time

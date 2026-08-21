@@ -498,7 +498,7 @@ fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool
             return false;
         }
     }
-    if let Err(e) = super::write_atomic(&perms_path, &merged) {
+    if let Err(e) = super::backup_then_write(&perms_path, &merged) {
         eprintln!("zellij: not pre-authorizing permissions — write failed ({e})");
         return false;
     }
@@ -643,7 +643,7 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
 }
 
 /// Write the full known-good layout (byte-pinned to `run_assets/radar.kdl`)
-/// to a path that has no layout file yet. The file is new, so `write_atomic`'s
+/// to a path that has no layout file yet. The file is new, so `backup_then_write`'s
 /// backup step is naturally skipped and there is nothing to corrupt.
 fn create_full_layout(layout_path: &Path, dry_run: bool) {
     let layout = crate::layout::full_layout();
@@ -654,7 +654,7 @@ fn create_full_layout(layout_path: &Path, dry_run: bool) {
         );
         return;
     }
-    match write_atomic(layout_path, &layout) {
+    match backup_then_write(layout_path, &layout) {
         Ok(()) => println!("zellij: created {} with the rail layout", layout_path.display()),
         Err(e) => crate::exit::fail_report("zellij", format!("layout create failed — {e}")),
     }
@@ -689,7 +689,7 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                 return;
             }
             // Back up then atomically write (shared setup helper).
-            match write_atomic(layout_path, &new_text) {
+            match backup_then_write(layout_path, &new_text) {
                 Ok(()) => {
                     println!(
                         "zellij: rail injected into {} (backup: {}.zj-radar.bak)",
@@ -804,7 +804,7 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
                 );
                 return;
             }
-            match write_atomic(layout_path, &new_text) {
+            match backup_then_write(layout_path, &new_text) {
                 Ok(()) => println!(
                     "zellij: rail removed from {} (backup: {}.zj-radar.bak)",
                     layout_path.display(),

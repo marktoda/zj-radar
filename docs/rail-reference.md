@@ -41,7 +41,7 @@
    count/elapsed slot to keep lines clean. `done/total` may return later. ⟦D1⟧
 8. **Empty/initial is not a marketing screen.** No "AI agent activity" legend —
    just render the tab list; an unnamed/first tab shows a placeholder name.
-   Now true end-to-end (Task 14): the zero-tab onboarding face itself dropped
+   Now true end-to-end: the zero-tab onboarding face itself dropped
    the status-glyph legend down to a one-line ` scanning… no agents yet`. That
    face is a separate code path from this doc's harness (see §A's note below)
    — `render_rail` and `aggregate` are what this file pins.
@@ -73,7 +73,7 @@
 ▌└ ● ⚙ activity message            ← last pane row uses the └ elbow connector
 ```
 
-**Needs-you badge (Task 16).** The header's right slot appends `{n}!` — bold,
+**Needs-you badge.** The header's right slot appends `{n}!` — bold,
 loud (`Attention` role) — space-joined after the census whenever `n =
 rows.iter().filter(|r| r.display.status.needs_you()).count()` is nonzero (i.e.
 any tab is `Pending` or `Error`). At narrow widths, priority to keep is
@@ -81,7 +81,7 @@ overflow marker > badge > plain census: a tight budget drops the census
 first and shows the bare badge (`n!` with no leading `·N`); the overflow
 marker itself is never dropped for the badge's sake.
 
-**Header heartbeat sweep (Task 20).** In Compact/Comfortable density only (the
+**Header heartbeat sweep.** In Compact/Comfortable density only (the
 densities with the `═` rule — Cards drops the rule entirely, so it never
 carries the heartbeat), whenever any row is Running *animating* work (its
 detail is a job, not a service — a rail whose only Running rows are steady-`▸`

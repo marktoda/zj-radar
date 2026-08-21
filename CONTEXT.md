@@ -280,7 +280,7 @@ tab's instance clears in lockstep.
 Both modalities emit a `source` string that must be a subset of `Kind`
 (`Kind::from_source`). Both halves are guarded: the agent half by
 `source_round_trips_through_kind` (in `crates/cli/src/agents`), the command half by
-`command_source_round_trips_through_kind` (in `crates/core/src/command.rs`) — each pins that its
+`classify_source_round_trips_through_kind` (in `crates/core/src/command.rs`) — each pins that its
 classifier's `source` token round-trips back to the same `Kind`, never the
 `Other` sentinel.
 
