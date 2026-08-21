@@ -3,34 +3,44 @@
 The sidebar lives in your tab templates and exists once per tab, which bumps
 into a few sharp edges in Zellij itself. Here is what they look like and why.
 
-## Sidebar is completely blank
+## Sidebar shows "⚠ needs permission" (or looks blank)
 
-**Symptom:** the rail pane shows nothing at all — no header, no tab rows — and
-tab naming doesn't work either.
+**Symptom:** the rail shows ` RADAR` over an orange `⚠ needs permission` line
+and a short hint — or, in the one pane hosting Zellij's own prompt, looks
+blank — and tab naming doesn't work either.
 
-**Why (most likely):** the plugin is parked at Zellij's permission prompt.
-Zellij paints that prompt *into* the plugin's pane, and at rail width it is
+**Why (most likely):** the plugin is parked at Zellij's permission prompt. An
+ungranted rail keeps painting that dedicated face on every tick, but it
+receives no events or broadcasts, which is why everything else looks dead too.
+The truly blank case is narrower: Zellij paints its y/n prompt *into* one
+plugin pane, over whatever the rail drew, and at rail width the prompt is
 unreadable ([zellij #4749](https://github.com/zellij-org/zellij/issues/4749)) —
-the pane looks empty while Zellij waits for a `y`. An unanswered plugin is
-frozen (no render, no events), which is why everything else looks dead too.
-You end up here when the install-time pre-authorization was skipped: an older
-CLI, a declined consent prompt, or a `permissions.kdl` the installer refused
-to edit.
+that pane looks empty while Zellij waits for a `y`. You end up here when the
+install-time pre-authorization was skipped or went stale: an older CLI, a
+declined consent prompt, a `permissions.kdl` the installer refused to edit, a
+**partial grant** (Zellij ignores a cached entry that doesn't cover *every*
+permission the plugin requests — e.g. one written by an older zj-radar — so it
+re-prompts as if no grant existed), a plugin alias pointing at a `/nix/store/`
+path (the grant is keyed to that absolute path and dies with the next rebuild;
+`--check` warns), or no resolvable Zellij cache dir (nowhere to pre-seed
+`permissions.kdl`).
 
 **Fix:** `zj-radar setup zellij --check` — a non-`ok` `grant` item confirms
 this is the problem. Then any one of:
 
+- in a session launched by `zj-radar run`, press **Ctrl-y** — run's owned
+  config binds it to open the grant prompt in a legible floating pane (the
+  needs-permission face advertises this when the bind exists);
 - re-run `zj-radar setup zellij -y` (0.1.4+) to pre-authorize,
   then open a new tab or restart Zellij;
 - from inside the session, run `zj-radar setup zellij --grant` and press `y`
   in the floating pane it opens;
-- focus the blank rail and press `y` blind — the prompt is there, just
-  invisible.
+- focus the pane hosting the prompt and press `y` blind — the prompt is
+  there, just invisible.
 
-The other blank-rail cause is version skew (see
-[Version skew](#sidebar-renders-but-no-status-ever-appears) below): a wasm
-built for a different Zellij minor fails to load outright, and no grant will
-wake it.
+The other blank-rail cause is an older Zellij than this build targets (see
+[Zellij too old](#sidebar-renders-but-no-status-ever-appears) below): it fails
+to load the wasm outright, and no grant will wake it.
 
 ## Sidebar renders, but no status ever appears
 
@@ -51,8 +61,11 @@ Diagnose in order:
 
    ```sh
    zellij pipe --name zj_radar.status.v1 -- \
-     '{"v":1,"source":"test","pane":{"type":"terminal","id":0},"status":"running","repo":"demo","msg":"hello"}'
+     '{"v":1,"source":"test","pane":{"type":"terminal","id":'"${ZELLIJ_PANE_ID#terminal_}"'},"status":"running","repo":"demo","msg":"hello"}'
    ```
+
+   (The `id` substitution targets the pane you're typing in, so the row is
+   guaranteed to belong to a live pane.)
 
    If a row lights up, the sidebar is fine and the producer is the problem; if
    nothing happens, re-check the grant and that the sidebar pane is actually
@@ -68,6 +81,39 @@ Diagnose in order:
    of its column during layout cycling), and older minors predate the plugin
    API this build targets. `zj-radar setup zellij --check` flags a too-old
    version.
+
+## An editor, pager, or TUI shows a spinning "Running" row
+
+**Symptom:** opening an interactive program makes its pane spin as if bounded
+work were in progress — and it never finishes, because nothing is running:
+the program is waiting on *you*.
+
+**Why:** the command observer classifies interactive programs by name, and
+this one isn't in the built-in set (`DEFAULT_INTERACTIVE` in
+`crates/core/src/command.rs` — editors, pagers, `man`, monitors, git TUIs,
+file managers, `fzf`).
+
+**Fix:** add its exe name to the `interactive_commands` config key (see
+[Configuration](configuration.md)) — applied live: an already-spinning row
+demotes to the muted identity label immediately. One deliberate exemption: a
+row whose command has already left the foreground (its done-confirm is armed)
+is left alone to flip to Done on schedule rather than being swept.
+
+## A command row is stuck "Running" forever
+
+**Symptom:** a shell command's row keeps spinning long after the pane is back
+at its prompt.
+
+**Why:** a dropped Zellij `CommandChanged` exit edge, not a store bug — the
+sidebar promotes a foreground command after a short debounce, and if Zellij
+never delivers the matching back-to-prompt event, nothing ever clears the row
+(pinned by `missed_exit_edge_is_the_stale_running_path` in
+`crates/core/src/command.rs`).
+
+**Fix:** any later `CommandChanged` in that pane recovers it — running another
+command is enough — and closing the pane clears the row immediately. Agent
+rows have their own safety net: a ~15-tick stale-Running watchdog clears a
+pushed Running row whose pane sits at the prompt.
 
 ## Can't open a new tab (the two-template rule)
 
@@ -161,10 +207,13 @@ at hook rate, until the server hits its FD limit.
 **Fix:** grant the prompt so no instance stays wedged (see
 [First-run prompt coordination](#first-run-prompt-coordination) above), and
 make sure your producers are current: bundled producers bound every send with
-a deadline — 5 seconds for turn edges (`done`/`pending`/`idle`), 2 seconds
-for per-tool-call `running` heartbeats (`ZJ_RADAR_PIPE_TIMEOUT`, integer
-seconds, overrides both) — so a wedged sidebar can no longer accumulate
-blocked clients. Killing a
+a deadline — 5 seconds for turn edges (`done`/`pending`/`error`/`idle`),
+2 seconds for per-tool-call `running` heartbeats (`ZJ_RADAR_PIPE_TIMEOUT`,
+integer seconds, overrides both) — so a wedged sidebar can no longer accumulate
+blocked clients. If you raise `ZJ_RADAR_PIPE_TIMEOUT`, raise the hook-runner
+timeouts with it: the generated hook entries must keep `timeout` ≥ send
+cap + 2 (the Codex ceiling is derived as default cap + 5), or the runner
+kills the hook before the watchdog's graceful exit. Killing a
 deadline-expired client loses nothing — the message is already queued
 server-side. Third-party producers should apply the same bound — see
 [Bound your sends](producers.md#writing-your-own-producer).

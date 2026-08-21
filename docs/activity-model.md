@@ -9,7 +9,7 @@ moves); this documents the *semantics* (what state means and how it looks).
 > **A spinner means bounded work in progress.** Animation is a promise:
 > "this will complete, and you will want to know when."
 
-Everything else follows from one observation: the rail today conflates *"a
+Everything else follows from one observation: the rail used to conflate *"a
 foreground process exists"* with *"work is happening."* The user-meaningful
 axis is **attention direction** — who is waiting on whom:
 
@@ -31,14 +31,16 @@ keeps the model extensible:
 | Axis | Type | Values | Who owns it |
 |---|---|---|---|
 | **Origin** | `ObservationOrigin` (exists) | `StatusPipe` \| `Command` | intake: pushed payload vs `CommandChanged` |
-| **Kind** | `Kind` (exists) | Claude, Codex, Gemini, Test, Build, Deploy, Server, Command, Other | classification (`Agent::derive` / `command::classify`) |
+| **Kind** | `Kind` (exists) | Claude, Codex, Gemini, Test, Build, Deploy, Server, Command, Other | classification (`Kind::from_source` on the pushed source token / `command::classify`) |
 | **Class** | semantic vocabulary — **not** a stored or derived Rust type | `Job` \| `Service` \| `Companion` | this document |
 
 The classes are the *semantic model*, deliberately NOT an `AttentionClass`
 enum: tracing the actual consumers shows no call site would ever match all
 three variants. `Companion` is consumed entirely at intake (the promotion
-policy, §5) — it never becomes an observation, so roll-up, notify, and render
-never see it. `Service` has two *owners* — the glyph split
+policy, §5) — it never becomes an observation, so no store, notify path, or
+severity/progress count ever sees it; its only downstream form is the quiet
+identity that roll-up turns into `PaneDisplay::Interactive` (§5). `Service`
+has two *owners* — the glyph split
 (`render::running_glyph`) and the cadence term
 (`TrackedObservation::animating`, which both stores' predicates call) — plus
 two Kind-reading presentation refinements: the run-tag exclusion
@@ -76,8 +78,8 @@ signal (§4 layer 4) remains future work.
 
 | | `Job` | `Service` | `Companion` |
 |---|---|---|---|
-| **Running** | `⠋` spinner + activity string; `· 4m` run tag once ≥ 1 minute (whole minutes, frozen at `1h+`; the true start survives re-promotions) | steady non-animated `▸` mark + name, **no spinner, no fast cadence** | *never enters Running* — suppressed at intake (§4); renders the muted identity label (`○ $ nvim README.md`) |
-| **Done** | `✓` + ledger hand-off, TTL recede to Idle, notify | exit of a service — `✓`/`✗` per code, notify: a dead dev server is news | labeled completion (`nvim ✓`) via preserved identity for held/run panes; recede as Job |
+| **Running** | `⠋` spinner + activity string; `· 4m` run tag once ≥ 1 minute (whole minutes, frozen at `1h+`; the true start survives re-promotions) | steady non-animated `▸` mark + name, **no spinner, no fast cadence** | *never enters Running* — suppressed at intake (§5); renders the muted identity label (`○ $ nvim README.md`) |
+| **Done** | `●` + ledger hand-off, TTL recede to Idle, notify | exit of a service — `●`/`✗` per exit code, notify: a dead dev server is news | labeled completion (`● $ nvim`) via preserved identity for held/run panes; recede as Job |
 | **Error** | `✗`, persists until re-run, notify | same | same |
 | **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag | n/a | n/a |
 | **Idle** | muted row if `ever_active` | muted row | muted identity label while the program is foreground (it also replaces a stale finished-command echo); nothing once it exits |
@@ -87,7 +89,8 @@ service as the tab's primary detail — a spinning build summarizes the tab
 better than a server that is merely up.
 
 Cadence rule, restated per class: only *animating* work
-(`TrackedObservation::animating` = `Job × Running`) plus **scheduled
+(`TrackedObservation::animating` = Running minus `Service`, so agent rows
+animate too) plus **scheduled
 one-shots** keep the 1 Hz timer armed — the one-shots being promotable
 pendings awaiting debounce, tentative-Dones awaiting confirm
 (`pending_done`), stale-Running grace clocks (`suspect_running`), unsettled
@@ -189,7 +192,7 @@ One state-machine change carries the whole model. In `CommandStore`, a
 - **Promotion** (`on_timer`) filters on `promotable` — the Running row never
   materializes.
 - **`on_exit` is unchanged** — the surviving pending's identity labels the
-  completion, so `zellij run -- nvim` closing reads `nvim ✓`, never a blank
+  completion, so `zellij run -- nvim` closing reads `● $ nvim`, never a blank
   row. (The identity-less untracked-pane fallback stays load-bearing for
   fast run-pane commands; do not guard it.)
 - **`needs_ticks` counts only promotable pendings** — an open
