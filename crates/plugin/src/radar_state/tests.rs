@@ -1952,7 +1952,7 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
     // A live not-Pending → Pending edge at tick 5 arms a flash through tick 6
-    // (`flash_until = tick + 2`, and `rows` reads `now_tick < flash_until`).
+    // (`flash_until = tick + FLASH_TICKS`, and `rows` reads `now_tick < flash_until`).
     let wire = payload::to_wire(&StatusPayload {
         msg: "approve?".into(),
         ..payload_in_repo(7, Status::Pending, "repo")

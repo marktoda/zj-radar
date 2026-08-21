@@ -84,7 +84,11 @@ impl LedgerEntry {
     /// control chars that would otherwise reach the render grid.
     pub(crate) fn sanitized(mut self) -> LedgerEntry {
         self.tab_name = sanitized_or(&self.tab_name);
-        self.label = sanitize(&self.label, MAX_MSG_CHARS);
+        let label = sanitize(&self.label, MAX_MSG_CHARS);
+        // `from_observation` never builds a blank label; hold disk-loaded
+        // entries to the same policy — an all-control-chars label scrubs
+        // to nothing and falls back to a fixed token instead.
+        self.label = if label.trim().is_empty() { "done".to_string() } else { label };
         self
     }
 }
@@ -113,8 +117,9 @@ fn is_same_event(a: &LedgerEntry, b: &LedgerEntry) -> bool {
 
 #[derive(Default)]
 pub(crate) struct Ledger {
+    /// Newest at front.
     entries: VecDeque<LedgerEntry>,
-} // newest at front
+}
 
 impl Ledger {
     /// Append unless a matching entry (same pane/outcome/label within
@@ -194,6 +199,8 @@ pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
 /// THE minute band every age display shares — the ledger's `format_age` and
 /// the rail's wait/run tags (`render::{wait_tag, run_tag}`): `None` under a
 /// minute, whole minutes below the saturate window, frozen at `1h+` past it.
+/// `age` is in seconds — or Fast-cadence ticks, which advance at ~1 Hz (see
+/// `render::run_tag`).
 /// The freeze is load-bearing for cadence disarm — the rendered age stops
 /// changing exactly when `any_unsaturated` goes false and the Slow timer
 /// disarms — so the band must not exist twice.
@@ -241,6 +248,12 @@ mod tests {
         let e = LedgerEntry { tab_name: "ev\x1b[2Jil\ntab".into(), ..e }.sanitized();
         assert_eq!(e.tab_name, "evil tab");
         assert_eq!(e.label, "did things");
+
+        // A label that is NOTHING BUT control chars scrubs to empty — fall
+        // back to a fixed token, mirroring `from_observation`'s never-blank
+        // policy, so a ledger row never renders without an identity.
+        let e = entry(1, LedgerOutcome::Done, "\x1b[2J\x07", 5).sanitized();
+        assert_eq!(e.label, "done");
     }
 
     #[test]

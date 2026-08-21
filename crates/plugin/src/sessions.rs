@@ -24,6 +24,7 @@
 //! jump the queue on attention, since a likely-dead session's last-known
 //! attention count isn't actionable.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use crate::presence::Presence;
@@ -130,20 +131,21 @@ impl Sessions {
         // twice. Collapse by `session_name` here, keeping the presence with
         // the greatest `updated_epoch_s` — that's the newest write, i.e. the
         // live session; the corpse is whatever was on disk before the kill.
-        // On a tie, `>` (not `>=`) below makes the later entry in `raw` win
-        // deterministically, without needing separate tie-break code. The
-        // `stale` flag carried alongside is whichever entry's own mtime age
-        // won this dedup — a corpse losing to a fresh recreation of the same
-        // name also loses its (typically old) staleness along with it.
+        // On a tie, the strictly-fresher guard (`>`, not `>=`) below makes
+        // the later entry in `raw` win deterministically — which is only
+        // deterministic because `read_peer_presences` (session_files.rs)
+        // sorts its result by content before handing it over. The `stale`
+        // flag carried alongside is whichever entry's own mtime age won this
+        // dedup — a corpse losing to a fresh recreation of the same name
+        // also loses its (typically old) staleness along with it.
         let mut by_name: HashMap<String, Peer> = HashMap::new();
         for (json, age_secs) in raw {
             let Some(p) = Presence::parse(&json) else { continue };
-            match by_name.get(&p.session_name) {
-                Some(existing) if existing.presence.updated_epoch_s > p.updated_epoch_s => {} // existing is strictly fresher: keep it
-                _ => {
-                    let stale = age_secs > STALE_AFTER_SECS;
-                    by_name.insert(p.session_name.clone(), Peer { presence: p, stale });
-                }
+            let stale = age_secs > STALE_AFTER_SECS;
+            match by_name.entry(p.session_name.clone()) {
+                Entry::Occupied(existing) if existing.get().presence.updated_epoch_s > p.updated_epoch_s => {} // existing is strictly fresher: keep it
+                Entry::Occupied(mut slot) => { slot.insert(Peer { presence: p, stale }); }
+                Entry::Vacant(slot) => { slot.insert(Peer { presence: p, stale }); }
             }
         }
         self.peers = by_name.into_values().collect();
@@ -329,9 +331,12 @@ impl Sessions {
                 rest.push(entry);
             }
         }
-        attention.sort_by(|a, b| a.presence.session_name.cmp(&b.presence.session_name));
-        rest.sort_by(|a, b| a.presence.session_name.cmp(&b.presence.session_name));
-        stale.sort_by(|a, b| a.presence.session_name.cmp(&b.presence.session_name));
+        fn by_name(a: &OrderedEntry<'_>, b: &OrderedEntry<'_>) -> std::cmp::Ordering {
+            a.presence.session_name.cmp(&b.presence.session_name)
+        }
+        attention.sort_by(by_name);
+        rest.sort_by(by_name);
+        stale.sort_by(by_name);
         let current = self.own.as_ref().map(|p| OrderedEntry { presence: p, is_current: true, stale: false });
         current.into_iter().chain(attention).chain(rest).chain(stale).collect()
     }
@@ -762,7 +767,7 @@ mod tests {
     #[test]
     fn roster_survives_beyond_the_old_liveness_ttl() {
         // The old design would have had `session_files::read_peer_presences`
-        // itself drop a peer at 180s. Task-14: it now returns unconditionally,
+        // itself drop a peer at 180s. It now returns unconditionally,
         // and this module marks stale rather than dropping — an entry with
         // age 400s (well past the old TTL) must still be on the badge.
         let mut s = Sessions::default();

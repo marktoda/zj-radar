@@ -221,6 +221,13 @@ pub(crate) struct RadarChange {
 /// generous enough that opening tabs one at a time never hits it.
 const MAX_CWD_BOOTSTRAP_PER_UPDATE: usize = 8;
 
+/// How many ticks a tab's ping flash stays lit after a live not-Pending →
+/// Pending flip (`status_pipe` arms `flash_until` at `tick + FLASH_TICKS`;
+/// expiry is exclusive — `rows` reads `now_tick < expiry`). Two ticks ≈ two
+/// seconds at the Fast cadence: long enough to catch the eye, short enough
+/// that the ping never competes with the steady attention tint that follows.
+const FLASH_TICKS: u64 = 2;
+
 #[derive(Default)]
 pub(crate) struct RadarState {
     status: StatusStore,
@@ -259,6 +266,10 @@ pub(crate) struct RadarState {
     /// pane was never seen in any topology (a broadcast that beat the pane's
     /// first manifest). Level-triggered: recomputed from the current manifest
     /// every `panes_changed`, so a pane that reappears simply drops out.
+    /// The grace is store-only by design: it covers panes the stores track,
+    /// not `pane_cwd`/`cwd_bootstrap_attempted` — an untracked pane's cwd
+    /// entries drop on first absence, since a cwd is cheap to re-resolve if
+    /// the pane flashes back.
     absent_once: HashMap<u32, Option<(TabId, String)>>,
     /// Monotonic mutation counter over everything `rows()` reads — bumped by
     /// [`touch`](Self::touch) at every entry point that changed row-visible
@@ -305,8 +316,10 @@ impl RadarState {
     }
 
     pub(crate) fn load_snapshot(&mut self, raw: &str) -> Option<u64> {
-        self.touch();
         let (observations, tick, ledger) = snapshot::load(raw)?;
+        // Touch only after the fallible parse: a corrupt snapshot changes
+        // nothing rows-visible and must not bump the generation.
+        self.touch();
         self.status = StatusStore::default();
         self.command = CommandStore::default();
         // This match is the SINGLE origin→store guard: each entry's intrinsic
@@ -512,7 +525,7 @@ impl RadarState {
         // A confirmed-gone pane left the topology one manifest ago, so
         // `old_index` no longer carries it — the ledger files its recede under
         // the tab identity captured at first absence instead.
-        let mut prune_index = old_index.clone();
+        let mut prune_index = old_index;
         prune_index.extend(absent_before.into_iter().filter_map(|(id, entry)| Some((id, entry?))));
         self.absent_once = graced;
         // A pane closing with an unreceded Done/Error still on it is a recede
@@ -557,6 +570,10 @@ impl RadarState {
         // Lazy expiry: `rows`/`has_active_flash` stay `&self` (read paths), so
         // the map itself is only ever pruned here, on the one `&mut self` tick
         // that already runs regardless of flash state.
+        // No `touch()` needed: retain drops only entries with `u <= tick`, and
+        // `rows` reads `now_tick < u` — with `tick` monotonic, every dropped
+        // entry was already invisible at this tick and stays so at every later
+        // one, so the removal can never make a memoized rows() result stale.
         self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
         // All-command-origin recedes here; no pruning is in flight on this
@@ -696,7 +713,7 @@ impl RadarState {
         self.touch();
         if flips_to_pending {
             if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
-                self.flash_until.insert(*tab_id, tick + 2);
+                self.flash_until.insert(*tab_id, tick + FLASH_TICKS);
             }
         }
         // A Running→Running update (new activity label / task / repo, same
@@ -1104,9 +1121,9 @@ impl RadarState {
 
     /// Join this state's tabs, pane topology, status observations, and known
     /// cwds into the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is
-    /// sourced from the *status* store only (commands carry no repo), matching
-    /// the pre-extraction behavior; the raw `cwd`/`title` are processed inside
-    /// the namer. Iterates `self.tabs` in stored order, as the old renamer did.
+    /// sourced from the *status* store only (commands carry no repo); the raw
+    /// `cwd`/`title` are processed inside the namer. Iterates `self.tabs` in
+    /// stored order.
     fn name_facts(&self) -> Vec<TabFacts> {
         self.tabs
             .iter()

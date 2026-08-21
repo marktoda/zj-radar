@@ -37,7 +37,7 @@ pub(crate) struct TerminalPane {
 /// (`full`/`minimal`/`role`) live in `render`, since they encode glyphs and a
 /// width-driven form; the enum here is pure semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExitOutcome {
+pub(crate) enum ExitOutcome {
     /// Exit 0 / returned to the shell with no failure evidence.
     Ok,
     /// Nonzero exit; `Some(code)` when known, `None` for a signal/no-code exit.
@@ -45,7 +45,7 @@ pub enum ExitOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryDetail {
+pub(crate) struct PrimaryDetail {
     pub repo: String,
     pub branch: String,
     pub msg: String,
@@ -62,7 +62,7 @@ pub struct PrimaryDetail {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PaneDisplay {
+pub(crate) enum PaneDisplay {
     Tracked {
         pane_id: u32,
         kind: Kind,
@@ -74,7 +74,10 @@ pub enum PaneDisplay {
         outcome: Option<ExitOutcome>,
         /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
         pending_epoch_s: Option<u64>,
-        /// See `PrimaryDetail::acknowledged`.
+        /// The right-click acknowledge exemption: the payload rode in with
+        /// `ack: true` (the user has already seen this status), so the
+        /// notifier skips it. Cleared by the pane's next real broadcast —
+        /// see `StatusStore::apply`.
         acknowledged: bool,
     },
     Untracked {
@@ -206,7 +209,7 @@ impl PaneDisplay {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabDisplay {
+pub(crate) struct TabDisplay {
     pub status: Status,
     pub progress: ProgressCounts,
     pub detail: Option<PrimaryDetail>,
@@ -221,7 +224,7 @@ pub struct TabDisplay {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProgressCounts {
+pub(crate) struct ProgressCounts {
     pub done: usize,
     pub total: usize,
     pub pending: usize,
@@ -243,7 +246,7 @@ pub struct ProgressCounts {
 /// ("nvim" beats a stale finished-command echo), but never a non-idle one —
 /// counts and severity always come from observations alone, so an open editor
 /// can't read as work in `done/total`.
-pub fn roll_up<'a, 'q>(
+pub(crate) fn roll_up<'a, 'q>(
     panes: &[TerminalPane],
     resolve: impl Fn(u32) -> Option<&'a TrackedObservation>,
     quiet: impl Fn(u32) -> Option<(&'q str, Kind)>,
@@ -365,13 +368,14 @@ fn pane_outcome(s: &TrackedObservation) -> Option<ExitOutcome> {
 /// rolled-up [`TabDisplay`]. Built by `RadarState::rows`; `render_rail` never
 /// reaches past it into state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabRow {
+pub(crate) struct TabRow {
     pub number: u32,
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
-    /// True for the two ticks after this tab's pane flipped from not-Pending
-    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
+    /// True while this tab is inside its ping window after a pane flipped
+    /// from not-Pending to Pending (`RadarState::flash_until`; the window's
+    /// length is `radar_state::FLASH_TICKS`) — the one-shot "ping" that
     /// outranks the active tint in `card_tint` in the renderer.
     pub flash: bool,
     pub display: TabDisplay,
