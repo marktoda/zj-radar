@@ -12,7 +12,7 @@
 //! `cargo package`; this crate is `publish = false`, the same reason
 //! `reference_tests.rs` can pin docs/rail-reference.md.
 
-use zj_radar_core::pipe::{DEFAULT_PIPE_TIMEOUT_SECS, RUNNING_PIPE_TIMEOUT_SECS};
+use zj_radar_core::pipe::{DEFAULT_PIPE_TIMEOUT_SECS, MAX_STDIN_BYTES, RUNNING_PIPE_TIMEOUT_SECS};
 
 const HOOKS_JSON: &str = include_str!("../../../plugins/zj-radar-claude/hooks/hooks.json");
 
@@ -75,17 +75,16 @@ fn bash_producer_deadline_literals_match_the_pipe_constants() {
     );
 }
 
-/// notify.sh's stdin cap must equal the Rust CLI's `MAX_STDIN_BYTES`
-/// (crates/cli/src/notify.rs). The plugin crate doesn't depend on the CLI, so
-/// the value is hardcoded here: 8 MiB = 8 * 1024 * 1024 = 8388608.
+/// notify.sh's stdin cap must equal `core::pipe::MAX_STDIN_BYTES` — the same
+/// constant the Rust CLI reads (crates/cli/src/notify.rs), imported rather
+/// than hand-copied so a bump can't leave this weld asserting a stale value.
 #[test]
 fn bash_producer_stdin_cap_matches_the_cli_max_stdin_bytes() {
-    const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024; // = crates/cli MAX_STDIN_BYTES (8 << 20)
     let cap_line = format!("head -c {MAX_STDIN_BYTES}");
     assert!(
         NOTIFY_SH.contains(&cap_line),
-        "notify.sh must bound stdin with `{cap_line}` — keep it equal to \
-         MAX_STDIN_BYTES in crates/cli/src/notify.rs"
+        "notify.sh must bound stdin with `{cap_line}` \
+         (core::pipe::MAX_STDIN_BYTES) — bump the script and the constant together"
     );
 }
 

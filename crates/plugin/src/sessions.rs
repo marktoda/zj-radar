@@ -5,16 +5,23 @@
 //! rows-derived-on-render doctrine (`CONTEXT.md`) rather than caching a
 //! badge that could drift from `peers`/`own`.
 //!
-//! Never-vanish roster (user decision — `docs/design.md`, "Liveness
-//! heartbeat + staleness"): a remembered session must NEVER silently vanish
-//! from the badge. `session_files::read_peer_presences` no longer filters
-//! anything by mtime — every peer file it finds comes back, forever (until
-//! the 6h open-time sweep, the only true forgetting). Liveness is instead a
-//! per-entry *staleness* state this module derives from the mtime age it's
-//! handed: `fresh` while recently heartbeated, `stale` past
-//! [`STALE_AFTER_SECS`] — dimmed on the badge and unreachable via `cycle()`,
-//! but never dropped. This module's other leniency is limited to "don't
-//! choke on a malformed line" (`Presence::parse`), not "cross-check
+//! Roster contract (`docs/design.md`, "Liveness heartbeat + staleness"):
+//! fresh (≤[`STALE_AFTER_SECS`]) → stale/dimmed → dead/reaped past
+//! [`DEAD_AFTER_SECS`]. `session_files::read_peer_presences` filters nothing
+//! by mtime — every peer file it finds comes back, each paired with its
+//! mtime age — and this module grades that age per entry: `fresh` while
+//! recently heartbeated; `stale` past [`STALE_AFTER_SECS`] — dimmed on the
+//! badge and unreachable via `cycle()`, but still shown; *dead* past
+//! [`DEAD_AFTER_SECS`] — dropped from the badge and reported back
+//! ([`PresenceUpdate::dead`]) so the runtime unlinks the file
+//! (`Effect::DismissPresence`). The grading is trustworthy because the
+//! write side guarantees a live session refreshes its file's mtime at least
+//! every 60s (`runtime.rs`'s `PRESENCE_HEARTBEAT_S` level trigger — any
+//! pass through `project` rewrites once the last write is that old); this
+//! supersedes the earlier "never-vanish" doctrine, which predated that
+//! guarantee. Right-click dismiss remains the manual path for a
+//! stale-but-not-yet-dead entry. This module's other leniency is limited to
+//! "don't choke on a malformed line" (`Presence::parse`), not "cross-check
 //! membership".
 //!
 //! Ordering is a single source of truth shared by `badge()` (what's shown)
@@ -24,7 +31,6 @@
 //! jump the queue on attention, since a likely-dead session's last-known
 //! attention count isn't actionable.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use crate::presence::Presence;
@@ -36,8 +42,22 @@ use crate::radar_state::Direction;
 /// margin against a single missed beat before flagging it — generous
 /// enough that ordinary scheduler jitter never flickers an entry, but a
 /// session that's genuinely gone quiet reads as such promptly. A missed
-/// beat marks stale, never vanishes (see the module doc).
+/// beat marks stale; only [`DEAD_AFTER_SECS`] reaps (see the module doc).
 pub(crate) const STALE_AFTER_SECS: u64 = 90;
+
+/// How old a peer's presence file must be before the entry is judged dead:
+/// reaped from the badge and reported back ([`PresenceUpdate::dead`]) so
+/// the runtime unlinks the file. Five missed 60s heartbeats past the write
+/// guarantee (`runtime.rs`'s `PRESENCE_HEARTBEAT_S`). The gap over
+/// [`STALE_AFTER_SECS`] is deliberate: stale must stay twitchy — a dim at
+/// 90s is cheap, self-correcting cosmetics — while dead must be
+/// conservative, because a reap also unlinks the on-disk file. Machine-sleep
+/// caveat: right after a wake every file looks old for up to one heartbeat,
+/// so a false reap of a live peer is possible — and harmless, because
+/// dismissal is non-destructive by construction (see `dismiss`'s doc): the
+/// live session's next heartbeat republishes its file and the entry
+/// returns, fresh.
+pub(crate) const DEAD_AFTER_SECS: u64 = 300;
 
 /// A peer's [`Presence`] plus the staleness derived from its presence
 /// file's mtime age at the last read (see the module doc). `stale` is a
@@ -60,6 +80,19 @@ struct OrderedEntry<'a> {
     presence: &'a Presence,
     is_current: bool,
     stale: bool,
+}
+
+/// What one [`Sessions::update_presences`] pass found. `changed` is the
+/// same derived-badge content compare every mutator here returns (repaint
+/// only on real change); `dead` is the session names whose winning
+/// post-dedup entry aged past [`DEAD_AFTER_SECS`] — already reaped from
+/// `peers` this pass, reported so the runtime can unlink their files
+/// (`Effect::DismissPresence`). Sorted by name, so the downstream effect
+/// order is deterministic (the dedup map isn't).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PresenceUpdate {
+    pub changed: bool,
+    pub dead: Vec<String>,
 }
 
 /// One row of the cross-session badge, in display order.
@@ -116,40 +149,53 @@ impl Sessions {
     /// Replace the peer set with a fresh read of every OTHER session's
     /// presence file, each paired with its file's mtime age in seconds
     /// (`session_files::read_peer_presences`'s `age_secs` — no longer
-    /// filtered by liveness there; see the module doc). The only filtering
-    /// left here is `Presence::parse`'s leniency (skip a malformed line,
-    /// don't crash on it). Returns whether the derived badge actually
-    /// changed, so the runtime only repaints on real content change.
-    pub(crate) fn update_presences(&mut self, raw: Vec<(String, u64)>) -> bool {
+    /// filtered by liveness there; see the module doc). The only content
+    /// filtering here is `Presence::parse`'s leniency (skip a malformed
+    /// line, don't crash on it) plus the dead-reap: a winning entry aged
+    /// past [`DEAD_AFTER_SECS`] never lands in `peers`, and its name is
+    /// reported in the returned [`PresenceUpdate::dead`] instead.
+    pub(crate) fn update_presences(&mut self, raw: Vec<(String, u64)>) -> PresenceUpdate {
         let before = self.badge();
         // WHY: presence files are keyed by server pid on disk, not by
         // session name. A session killed and recreated under the same name
         // gets a fresh presence file at a new pid path, but the old one (a
         // "corpse") isn't unlinked — it just sits there parsing as a second
-        // peer under the same name until the (now much longer) open-time
-        // sweep reaps it. Left undeduped, `badge()` would render that name
+        // peer under the same name until the dead-reap (or a manual dismiss)
+        // gets it. Left undeduped, `badge()` would render that name
         // twice. Collapse by `session_name` here, keeping the presence with
         // the greatest `updated_epoch_s` — that's the newest write, i.e. the
         // live session; the corpse is whatever was on disk before the kill.
         // On a tie, the strictly-fresher guard (`>`, not `>=`) below makes
         // the later entry in `raw` win deterministically — which is only
         // deterministic because `read_peer_presences` (session_files.rs)
-        // sorts its result by content before handing it over. The `stale`
-        // flag carried alongside is whichever entry's own mtime age won this
-        // dedup — a corpse losing to a fresh recreation of the same name
-        // also loses its (typically old) staleness along with it.
-        let mut by_name: HashMap<String, Peer> = HashMap::new();
+        // sorts its result by content before handing it over. The mtime age
+        // carried alongside is whichever entry won this dedup — a corpse
+        // losing to a fresh recreation of the same name also loses its
+        // (typically old) age along with it.
+        let mut by_name: HashMap<String, (Presence, u64)> = HashMap::new();
         for (json, age_secs) in raw {
             let Some(p) = Presence::parse(&json) else { continue };
-            let stale = age_secs > STALE_AFTER_SECS;
-            match by_name.entry(p.session_name.clone()) {
-                Entry::Occupied(existing) if existing.get().presence.updated_epoch_s > p.updated_epoch_s => {} // existing is strictly fresher: keep it
-                Entry::Occupied(mut slot) => { slot.insert(Peer { presence: p, stale }); }
-                Entry::Vacant(slot) => { slot.insert(Peer { presence: p, stale }); }
+            if by_name.get(&p.session_name).is_some_and(|(kept, _)| kept.updated_epoch_s > p.updated_epoch_s) {
+                continue; // existing is strictly fresher: keep it
             }
+            by_name.insert(p.session_name.clone(), (p, age_secs));
         }
-        self.peers = by_name.into_values().collect();
-        self.badge() != before
+        // Grade each entry's age AFTER the dedup, never before: a dead
+        // corpse must not report its name dead when a fresher file for the
+        // same name won — only a name whose best evidence is dead is.
+        let mut dead: Vec<String> = Vec::new();
+        self.peers = by_name
+            .into_values()
+            .filter_map(|(presence, age_secs)| {
+                if age_secs > DEAD_AFTER_SECS {
+                    dead.push(presence.session_name);
+                    return None;
+                }
+                Some(Peer { presence, stale: age_secs > STALE_AFTER_SECS })
+            })
+            .collect();
+        dead.sort();
+        PresenceUpdate { changed: self.badge() != before, dead }
     }
 
     /// Record this session's own counts (never read from a peer file — the
@@ -165,8 +211,8 @@ impl Sessions {
 
     /// Manually forget a peer by name — the in-memory half of the right-click
     /// dismiss gesture (`PluginRuntime::mouse_right_click`), the user-driven
-    /// complement to the 6h open-time sweep for a session the user already
-    /// knows is dead. Removing the entry here gives instant visual feedback
+    /// complement to the [`DEAD_AFTER_SECS`] auto-reap for a
+    /// stale-but-not-yet-dead entry the user already knows is dead. Removing the entry here gives instant visual feedback
     /// (the badge row vanishes on this instance without waiting for the next
     /// file read); the on-disk half is `Effect::DismissPresence`. Only
     /// shrinks `peers` — ordering, dedup, and cycle semantics of the
@@ -513,8 +559,8 @@ mod tests {
     #[test]
     fn update_presences_reports_change_only_on_actual_content_change() {
         let mut s = Sessions::default();
-        assert!(s.update_presences(vec![presence("alpha", 1, 0)]), "first presence report changes the badge");
-        assert!(!s.update_presences(vec![presence("alpha", 1, 0)]), "identical presence report is not a change");
+        assert!(s.update_presences(vec![presence("alpha", 1, 0)]).changed, "first presence report changes the badge");
+        assert!(!s.update_presences(vec![presence("alpha", 1, 0)]).changed, "identical presence report is not a change");
     }
 
     #[test]
@@ -700,17 +746,17 @@ mod tests {
         assert_eq!(work_entries[0].attention, 0, "own's own-known counts must win over a peer claiming the same name");
     }
 
-    // -- Pinning: persistent (never-vanish) roster ---------------------------
-    // A remembered session must never silently vanish from the badge. Peers
-    // past `STALE_AFTER_SECS` mark stale (dimmed by the renderer, unreachable
-    // via `cycle()`) instead of disappearing; only the open-time
-    // `PRESENCE_MAX_AGE` sweep (6h) actually forgets one.
+    // -- Pinning: the fresh → stale → dead roster ladder ----------------------
+    // Peers past `STALE_AFTER_SECS` mark stale (dimmed by the renderer,
+    // unreachable via `cycle()`) but stay on the badge; only past
+    // `DEAD_AFTER_SECS` is one reaped — dropped from `peers` and its name
+    // reported back so the runtime unlinks the file.
 
     #[test]
     fn stale_peer_is_flagged_and_skipped_by_cycle() {
         let mut s = Sessions::default();
         s.set_own(own("work"));
-        s.update_presences(vec![presence_aged("alpha", 1, 0, 400)]); // well past STALE_AFTER_SECS
+        s.update_presences(vec![presence_aged("alpha", 1, 0, 200)]); // past STALE_AFTER_SECS, short of DEAD_AFTER_SECS
         let badge = s.badge();
         let alpha = badge.iter().find(|b| b.name == "alpha").expect("stale peer still on the badge");
         assert!(alpha.stale, "a peer whose mtime age exceeds STALE_AFTER_SECS must flag stale");
@@ -726,7 +772,7 @@ mod tests {
     fn cycle_skips_a_stale_peer_and_lands_on_a_fresh_one_instead() {
         let mut s = Sessions::default();
         s.set_own(own("work"));
-        s.update_presences(vec![presence_aged("alpha", 1, 0, 400), presence("beta", 1, 0)]);
+        s.update_presences(vec![presence_aged("alpha", 1, 0, 200), presence("beta", 1, 0)]);
         // Order: work (current), beta (fresh, before the stale bucket), alpha (stale, last).
         s.cycle(Direction::Next);
         let badge = s.badge();
@@ -750,31 +796,45 @@ mod tests {
     #[test]
     fn stale_entry_superseded_by_a_fresh_same_name_presence_undims() {
         // The recreation case: a session dies (its old file ages past
-        // STALE_AFTER_SECS) and gets recreated under the same name — a
+        // DEAD_AFTER_SECS) and gets recreated under the same name — a
         // fresh presence file, young mtime, higher `updated_epoch_s`. The
         // corpse and the recreation can even coexist in the SAME read
         // (different pids, same name); dedup must pick the fresh one AND
-        // its (fresh) staleness, not the corpse's.
+        // its (fresh) age, not the corpse's — so the name must land on the
+        // badge fresh AND stay off the dead report (grading runs post-dedup;
+        // reporting it dead would unlink the live session's file too, since
+        // the on-disk dismiss matches by name).
         let mut s = Sessions::default();
         s.set_own(own("work"));
         let corpse = r#"{"session_name":"alpha","running":1,"attention":0,"updated_epoch_s":10}"#;
         let recreated = r#"{"session_name":"alpha","running":0,"attention":0,"updated_epoch_s":20}"#;
-        s.update_presences(vec![(corpse.to_string(), 400), (recreated.to_string(), 0)]);
+        let update = s.update_presences(vec![(corpse.to_string(), DEAD_AFTER_SECS + 100), (recreated.to_string(), 0)]);
+        assert!(update.dead.is_empty(), "a dead corpse losing the dedup to a fresh same-name file must not report the name dead");
         let alpha = s.badge().into_iter().find(|b| b.name == "alpha").expect("alpha present");
         assert!(!alpha.stale, "the fresher recreation must win the dedup, undimming the entry");
     }
 
     #[test]
-    fn roster_survives_beyond_the_old_liveness_ttl() {
-        // The old design would have had `session_files::read_peer_presences`
-        // itself drop a peer at 180s. It now returns unconditionally,
-        // and this module marks stale rather than dropping — an entry with
-        // age 400s (well past the old TTL) must still be on the badge.
+    fn stale_peer_survives_until_dead_and_is_then_reaped_and_reported() {
+        // The fresh → stale → dead ladder end to end: between
+        // STALE_AFTER_SECS and DEAD_AFTER_SECS an entry dims but stays;
+        // past DEAD_AFTER_SECS it is reaped from the badge AND its name
+        // reported so the runtime can unlink the file. (Supersedes the old
+        // never-vanish pin — the 60s write-side heartbeat guarantee is what
+        // makes an old mtime safe to trust as death now.)
         let mut s = Sessions::default();
         s.set_own(own("work"));
-        s.update_presences(vec![presence_aged("alpha", 1, 0, 400)]);
+
+        let update = s.update_presences(vec![presence_aged("alpha", 1, 0, 200)]);
+        assert!(update.dead.is_empty(), "a merely-stale peer must not be reported dead");
         let badge = s.badge();
-        assert!(badge.iter().any(|b| b.name == "alpha"), "a peer must never be dropped for being old — only marked stale");
+        let alpha = badge.iter().find(|b| b.name == "alpha").expect("stale peer stays on the badge");
+        assert!(alpha.stale, "between the thresholds the entry dims, nothing more");
+
+        let update = s.update_presences(vec![presence_aged("alpha", 1, 0, 400)]); // past DEAD_AFTER_SECS
+        assert!(update.changed, "reaping a previously-shown entry is a badge change");
+        assert_eq!(update.dead, vec!["alpha".to_string()], "the reaped name must be reported for the on-disk unlink");
+        assert!(!s.badge().iter().any(|b| b.name == "alpha"), "a dead peer must be dropped from the badge");
     }
 
     #[test]

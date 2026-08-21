@@ -156,18 +156,12 @@ impl PermissionState {
     }
 
     /// True only while OUR permission request is in-flight (`Requesting`) —
-    /// the primary predicate for that question: the runtime's tick heartbeats
-    /// the shared lock, repaints the needs-permission face, and holds Fast
-    /// cadence while this is true.
+    /// THE predicate for that question: the runtime's tick heartbeats the
+    /// shared lock, repaints the needs-permission face, holds Fast cadence,
+    /// and keeps the pane selectable (the `SetSelectable` sites — the user
+    /// must be able to reach Zellij's y/n prompt) while this is true.
     pub(crate) fn is_requesting(&self) -> bool {
         matches!(self, PermissionState::Requesting)
-    }
-
-    /// The same in-flight state asked as the *pane* question: the pane must be
-    /// selectable so the user can reach Zellij's y/n prompt. Kept as its own
-    /// name for the sites that build a `SetSelectable` effect.
-    pub(crate) fn selectable(&self) -> bool {
-        self.is_requesting()
     }
 
     /// True only while waiting on a peer's marker (drives the timer heartbeat).
@@ -358,7 +352,7 @@ mod tests {
         st.on_result(true);
         assert_eq!(st, PermissionState::Resolved { granted: true });
         assert!(st.granted());
-        assert!(!st.selectable());
+        assert!(!st.is_requesting());
         assert!(!st.is_waiting());
 
         let mut st = PermissionState::Requesting;
@@ -369,12 +363,12 @@ mod tests {
 
     #[test]
     fn queries_partition_the_states() {
-        assert!(PermissionState::Requesting.selectable());
-        assert!(!PermissionState::WaitingForPeer { ticks: 0 }.selectable());
+        assert!(PermissionState::Requesting.is_requesting());
+        assert!(!PermissionState::WaitingForPeer { ticks: 0 }.is_requesting());
         assert!(PermissionState::WaitingForPeer { ticks: 0 }.is_waiting());
         assert!(!PermissionState::Requesting.is_waiting());
         assert!(!PermissionState::Unprompted.granted());
-        assert!(!PermissionState::Unprompted.selectable());
+        assert!(!PermissionState::Unprompted.is_requesting());
         assert!(!PermissionState::Unprompted.is_waiting());
     }
 }

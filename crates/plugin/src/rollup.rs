@@ -381,6 +381,17 @@ pub(crate) struct TabRow {
     pub display: TabDisplay,
 }
 
+impl TabRow {
+    /// The 0-based tab position Zellij's switch/jump APIs speak — `number`
+    /// is the rail's 1-based display ordinal. The one home for that
+    /// conversion (`target_for_row`'s click targets, `own_presence`'s
+    /// `attention_tab_position`), so the two consumers can never disagree
+    /// off-by-one.
+    pub(crate) fn tab_position(&self) -> usize {
+        self.number.saturating_sub(1) as usize
+    }
+}
+
 /// A ledger entry, resolved for rendering: the live tab position (or `None`
 /// once that tab is gone, making the row click-inert) looked up fresh on every
 /// call, rather than cached — the ledger itself only ever remembers the

@@ -216,10 +216,9 @@ impl SessionFiles {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for_each_presence_file(&paths.root, |entry, json| {
-            if paths.is_own_presence_file(&entry.file_name().to_string_lossy()) {
-                return;
-            }
+        // The own-file skip is the pre-read predicate: no point paying the
+        // open+read for a file whose content is discarded by name.
+        for_each_presence_file(&paths.root, |name| !paths.is_own_presence_file(name), |entry, json| {
             let age_secs = age_of(entry.metadata(), now)
                 .map(|age| age.as_secs())
                 .unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
@@ -251,7 +250,9 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return;
         };
-        for_each_presence_file(&paths.root, |entry, json| {
+        // Pass-all name predicate: the delete is content-driven by design
+        // (see above), so every presence file must actually be read.
+        for_each_presence_file(&paths.root, |_| true, |entry, json| {
             if matches(&json) {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -354,17 +355,24 @@ fn is_peer_presence_file(name: &str) -> bool {
     name.starts_with(PRESENCE_PREFIX) && name.ends_with(".json")
 }
 
-/// Visit every presence file in `root` ([`is_peer_presence_file`]), handing
-/// each entry with its raw JSON content. Unreadable files are skipped;
-/// filtering beyond the recognizer (own-file exclusion, content matching) is
-/// the caller's.
-fn for_each_presence_file(root: &Path, mut f: impl FnMut(&std::fs::DirEntry, String)) {
+/// Visit every presence file in `root` ([`is_peer_presence_file`]) whose file
+/// name passes `keep`, handing each entry with its raw JSON content. `keep`
+/// runs BEFORE the read, so a name-based exclusion (the peer read's own-file
+/// skip) costs nothing — filtering it in the callback instead would pay a
+/// wasted wasi open+read per scan. Unreadable files are skipped; content
+/// filtering stays the callback's job.
+fn for_each_presence_file(
+    root: &Path,
+    keep: impl Fn(&str) -> bool,
+    mut f: impl FnMut(&std::fs::DirEntry, String),
+) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if !is_peer_presence_file(&name.to_string_lossy()) {
+        let name = name.to_string_lossy();
+        if !is_peer_presence_file(&name) || !keep(&name) {
             continue;
         }
         if let Ok(json) = std::fs::read_to_string(entry.path()) {

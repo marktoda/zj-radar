@@ -3690,31 +3690,43 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
-    assert_eq!(LineBg::None.escape(Some(&active_row), &theme, &rail), None);
-    assert_eq!(LineBg::Rail.escape(Some(&active_row), &theme, &rail), Some(rail.clone()));
+    assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
+    assert_eq!(LineBg::Rail.escape(&active_row, &theme, &rail), Some(rail.clone()));
     assert_eq!(
-        LineBg::Card.escape(Some(&active_row), &theme, &rail),
+        LineBg::Card.escape(&active_row, &theme, &rail),
         Some(card_tint(&active_row, &theme)),
     );
     assert_eq!(
-        LineBg::ActiveChild.escape(Some(&active_row), &theme, &rail),
-        Some(tc_bg(theme.surface_agent)),
-    );
-    // The row-less callers (`paint_if_cards`: header, badge, idle strip,
-    // bottom region) resolve the row-independent classes identically.
-    assert_eq!(LineBg::None.escape(None, &theme, &rail), None);
-    assert_eq!(LineBg::Rail.escape(None, &theme, &rail), Some(rail.clone()));
-    assert_eq!(
-        LineBg::ActiveChild.escape(None, &theme, &rail),
+        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
         Some(tc_bg(theme.surface_agent)),
     );
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
     // card tint (surface_active). One resolver makes that structural.
     assert_ne!(
-        LineBg::ActiveChild.escape(Some(&active_row), &theme, &rail),
-        LineBg::Card.escape(Some(&active_row), &theme, &rail),
+        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
+        LineBg::Card.escape(&active_row, &theme, &rail),
     );
+}
+
+#[test]
+fn paint_if_cards_paints_rail_lines_under_cards_only() {
+    // The row-less surfaces (header, badge, idle strip, bottom region) are
+    // all `LineBg::Rail`; `paint_if_cards` is that one identity — paint the
+    // panel base under Cards, pass through untouched otherwise.
+    let theme = DerivedColors::default();
+    let rail = tc_bg(theme.rail_bg);
+    let line = || Line::new("hi\n".to_string(), None, LineBg::Rail);
+
+    let painted = paint_if_cards(line(), true, 8, &rail);
+    assert_eq!(painted.text, paint_card_line("hi\n", 8, &rail), "Cards paints the panel base");
+
+    let untouched = paint_if_cards(line(), false, 8, &rail);
+    assert_eq!(untouched.text, "hi\n", "outside Cards the line passes through");
+
+    // A never-painted line stays unpainted even under Cards.
+    let none = paint_if_cards(Line::new("hi\n".to_string(), None, LineBg::None), true, 8, &rail);
+    assert_eq!(none.text, "hi\n");
 }
 
 #[test]
@@ -3948,6 +3960,45 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
 }
 
 #[test]
+fn current_line_marker_renders_in_accent_and_peers_carry_no_marker() {
+    // The `•` you-are-here marker used to paint in the same muted idle_text
+    // as every label around it — invisible in practice (live-use feedback:
+    // "I thought there was highlighting of the current session but I don't
+    // see it"). It must render in accent, while the label colors stay per
+    // their own rules (the current line's label stays idle_text).
+    let opts = ro(24, 0);
+    let idle_color = tc_fg(opts.theme.idle_text);
+    let accent = Role::Accent.ansi();
+
+    let entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 0, None, false),
+    ];
+    let lines = render_session_badge(&entries, &opts);
+
+    assert!(
+        lines[0].text.contains(&format!("{accent}•")),
+        "the current line's marker must render in accent, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        !lines[0].text.contains(&format!("{idle_color}•")),
+        "the marker must no longer paint in the invisible muted idle color, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        lines[0].text.contains(&format!("{idle_color}work")),
+        "the current line's LABEL keeps the plain idle color — only the marker takes accent, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        !lines[1].text.contains('•'),
+        "a peer line carries the alignment space, never a marker, got {:?}",
+        lines[1].text
+    );
+}
+
+#[test]
 fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     // A peer with NOTHING needing attention (`attention_tab_position: None`)
     // must not resolve to "tab 0" — that would force-focus a real tab in a
@@ -3978,11 +4029,13 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     );
 }
 
-// -- Pinning: stale badge entries (never-vanish roster) ----------------------
-// A remembered session must never silently vanish from the badge; it dims
-// to stale instead. The renderer's job is narrow: paint it in a receded
-// color and keep its click target — `Sessions::cycle` (sessions.rs's own
-// tests) is what actually keeps Alt+[/] from landing on it.
+// -- Pinning: stale badge entries -------------------------------------------
+// A stale-but-not-yet-dead session dims on the badge rather than vanishing
+// (`Sessions`' fresh → stale → dead ladder; the reap itself lives in
+// sessions.rs — a dead entry never reaches this renderer). The renderer's
+// job is narrow: paint a stale entry in a receded color and keep its click
+// target — `Sessions::cycle` (sessions.rs's own tests) is what actually
+// keeps Alt+[/] from landing on it.
 
 #[test]
 fn stale_badge_entry_renders_dimmed_but_stays_clickable() {
@@ -4046,8 +4099,8 @@ fn stale_entry_undims_once_superseded_by_a_fresh_entry() {
 #[test]
 fn lone_fresh_own_entry_with_only_stale_peers_still_renders() {
     // The single-session zero-line rule counts `entries.len()`, not fresh
-    // entries — a stale peer still counts toward the 2+ threshold, since the
-    // roster's whole point is remembering.
+    // entries — a stale-but-not-yet-dead peer still counts toward the 2+
+    // threshold: it stays visible (dimmed) until the dead reap.
     let entries = vec![
         badge_entry("work", true, 0, 0, None, false),
         stale_badge_entry("alpha", false, 0, 0, None, false, true),

@@ -102,14 +102,6 @@ impl State {
     }
 
 
-    /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
-    /// the pane that called `request_permission`. Keep only that pane selectable
-    /// while a y/n answer is pending; peer sidebar instances stay passive while
-    /// they wait for the first grant to populate Zellij's permission cache.
-    fn sidebar_should_be_selectable(&self) -> bool {
-        self.runtime.permission.selectable()
-    }
-
     fn record_permission_request_started(&mut self) {
         self.runtime.record_permission_request_started();
     }
@@ -427,7 +419,7 @@ impl ZellijPlugin for State {
                 } else {
                     crate::permission::PermissionProbe::default()
                 };
-                let outcome = self.runtime.timer(probe, elapsed_s);
+                let outcome = self.runtime.timer(probe, elapsed_s, crate::clock::now_epoch_s());
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, col)) => {
@@ -806,28 +798,33 @@ mod tests {
 
     #[test]
     fn sidebar_stays_selectable_until_permissions_are_granted() {
+        // Zellij's permission prompt for a visible status/sidebar plugin is
+        // tied to the pane that called `request_permission` — the pane must
+        // stay selectable while the y/n answer is pending (`is_requesting`
+        // drives every `SetSelectable`), and peer sidebars that never asked
+        // stay passive.
         let mut s = State::default();
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "peer sidebars that did not request permission stay passive"
         );
 
         s.record_permission_request_started();
         assert!(
-            s.sidebar_should_be_selectable(),
+            s.runtime.permission.is_requesting(),
             "the sidebar that owns the first-run prompt must remain focusable"
         );
 
         s.record_permission_result(true);
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "after permissions are granted the sidebar returns to passive mode"
         );
 
         let mut s = State::default();
         s.record_permission_result(false);
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "after permissions are denied the prompt is gone, so the rail is passive"
         );
     }

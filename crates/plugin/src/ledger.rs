@@ -75,31 +75,34 @@ impl LedgerEntry {
         } else {
             obs.msg.clone()
         };
-        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name), label, pane_id })
+        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"), label, pane_id })
     }
 
     /// Re-scrub the free-text fields. Live entries are built from
     /// already-sanitized state; this is for entries loaded off disk, where a
     /// pre-sanitize build (or a hand-edited snapshot) may have persisted raw
     /// control chars that would otherwise reach the render grid.
+    /// `from_observation` never builds a blank field; disk-loaded entries are
+    /// held to the same never-blank policy — an all-control-chars value
+    /// scrubs to nothing and falls back to a fixed token instead ("turn
+    /// done" for the label: the same token a live agent turn with an empty
+    /// msg gets, rather than a third vocabulary).
     pub(crate) fn sanitized(mut self) -> LedgerEntry {
-        self.tab_name = sanitized_or(&self.tab_name);
-        let label = sanitize(&self.label, MAX_MSG_CHARS);
-        // `from_observation` never builds a blank label; hold disk-loaded
-        // entries to the same policy — an all-control-chars label scrubs
-        // to nothing and falls back to a fixed token instead.
-        self.label = if label.trim().is_empty() { "done".to_string() } else { label };
+        self.tab_name = sanitized_or(&self.tab_name, MAX_TAB_NAME_CHARS, "tab");
+        self.label = sanitized_or(&self.label, MAX_MSG_CHARS, "turn done");
         self
     }
 }
 
-/// Sanitize (strip controls/ANSI, cap like a tab name) + fall back to `"tab"`
-/// for an empty result, so a ledgered entry never shows a blank tab column.
-fn sanitized_or(name: &str) -> String {
-    let clean = sanitize(name, MAX_TAB_NAME_CHARS);
+/// THE never-blank scrub both free-text ledger columns share: sanitize
+/// (strip controls/ANSI, cap at `max_chars`), trim, and fall back to
+/// `fallback` for an empty result — a ledger row never renders a blank
+/// column.
+fn sanitized_or(text: &str, max_chars: usize, fallback: &str) -> String {
+    let clean = sanitize(text, max_chars);
     let trimmed = clean.trim();
     if trimmed.is_empty() {
-        "tab".to_string()
+        fallback.to_string()
     } else {
         trimmed.to_string()
     }
@@ -250,10 +253,11 @@ mod tests {
         assert_eq!(e.label, "did things");
 
         // A label that is NOTHING BUT control chars scrubs to empty — fall
-        // back to a fixed token, mirroring `from_observation`'s never-blank
-        // policy, so a ledger row never renders without an identity.
+        // back to the same "turn done" token a live agent turn with an empty
+        // msg gets (`from_observation`), so a ledger row never renders
+        // without an identity and the fallback vocabulary stays singular.
         let e = entry(1, LedgerOutcome::Done, "\x1b[2J\x07", 5).sanitized();
-        assert_eq!(e.label, "done");
+        assert_eq!(e.label, "turn done");
     }
 
     #[test]

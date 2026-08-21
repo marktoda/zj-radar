@@ -415,29 +415,33 @@ feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
 `zellij-tile`, that derives the cross-session badge on demand from
 `peers`/`own`, exactly like `RadarState` never caches a derived value.
 
-**Liveness is the mtime, not a roster — and a remembered session never
-vanishes (task-14).** An earlier iteration subscribed to
+**Liveness is the mtime, not a roster — graded fresh → stale → dead.** An
+earlier iteration subscribed to
 `Event::SessionUpdate` and cross-checked a peer list against presence files.
 E2E against real Zellij 0.44.3 showed `SessionUpdate` only delivers peers
 after some plugin has called the blocking `get_session_list()` host
 function — which nothing in this stack does, and which would violate the
 push-driven doctrine (`CONTRIBUTING.md`; `smart-tabs-postmortem.md`) if it
 did. `SessionUpdate` was dropped entirely (task-8b): liveness is judged from
-a presence file's mtime. Task-8b had the READ path (`read_peer_presences`)
-drop a peer once its mtime passed a TTL; task-14 changed that on user
-request — a session the badge has ever shown must never silently disappear
-from it. `read_peer_presences` now returns every peer file it finds,
-unconditionally, paired with that file's mtime age; only a much longer 6h
-open-time sweep at plugin `load()` ever actually deletes one (genuine
-debris). `Sessions` (`sessions.rs`) turns that age into a per-entry
-fresh/stale state (`STALE_AFTER_SECS`, 90s — 50% margin over the 60s
-heartbeat): stale entries dim on the badge and are unreachable via
-`session-next`/`session-prev` (switching onto a likely-dead session would
-have Zellij resurrect it as an empty zombie), but stay on screen. A session
-with nothing new to report still heartbeats — an unconditional
-`PersistPresence` on every Slow (60s) tick, bypassing the normal
-content-edge gate — so an idle-but-alive session's file rarely even crosses
-into stale. The session's own name arrives the same push-style way its
+a presence file's mtime. That judgment rests on a write-side guarantee: a
+live session rewrites its presence file at least every 60s (`timer`'s
+`PRESENCE_HEARTBEAT_S` level trigger, bypassing the normal content-edge
+gate), so file age reliably means what it says. `read_peer_presences`
+returns every peer file it finds, unconditionally, paired with that file's
+mtime age; `Sessions` (`sessions.rs`) grades that age per entry:
+fresh (≤`STALE_AFTER_SECS`, 90s — 50% margin over the 60s heartbeat),
+stale (90–300s — dims on the badge and is unreachable via
+`session-next`/`session-prev`, since switching onto a likely-dead session
+would have Zellij resurrect it as an empty zombie, but stays on screen),
+dead (past `DEAD_AFTER_SECS`, 300s — five missed heartbeats: reaped from
+the badge and its file unlinked via `Effect::DismissPresence`). Dimming
+stays twitchy because it's reversible cosmetics; the reap is conservative
+because it deletes a file — though even a false reap (a machine-sleep wake
+makes every file look old for up to one heartbeat) is harmless, since the
+live session's next heartbeat republishes and the entry returns fresh.
+Right-click dismiss remains the manual reap for a stale-not-yet-dead entry;
+a 6h open-time sweep at plugin `load()` remains the backstop for debris the
+reap can't touch. The session's own name arrives the same push-style way its
 liveness does: `Event::ModeUpdate`'s `ModeInfo.session_name`, not a
 session-list lookup.
 

@@ -332,47 +332,35 @@ enum LineBg {
 }
 
 impl LineBg {
-    /// The one home for the surface-class → bg-escape map: every painted line
-    /// resolves through here — the per-row card path via `render_body`'s
-    /// `finalize` closure, the row-less rail surfaces (header, badge, idle
-    /// strip, bottom region) via [`paint_if_cards`] — so the `ActiveChild` vs
-    /// `Card` split (the drift `cards_active_more_line_*` guards) lives in a
-    /// single place. `row` is the card's owning row: only `Card` consults it,
-    /// and only `render_row` emits that class, so the row-less callers pass
-    /// `None`. `rail` is the precomputed panel-base escape. `Option::None`
-    /// out means the line is never painted.
-    fn escape(self, row: Option<&TabRow>, theme: &DerivedColors, rail: &str) -> Option<String> {
+    /// The one home for the row-surface map — how a line class resolves
+    /// against its owning `row` (the `ActiveChild` vs `Card` split the
+    /// `cards_active_more_line_*` drift guards pin). `render_body`'s
+    /// per-row `finalize` closure is the caller; the row-less rail surfaces
+    /// never come through here — they are all `LineBg::Rail` by
+    /// construction and take the one-line identity in [`paint_if_cards`]
+    /// instead. `rail` is the precomputed panel-base escape. `None` out
+    /// means the line is never painted.
+    fn escape(self, row: &TabRow, theme: &DerivedColors, rail: &str) -> Option<String> {
         match self {
             LineBg::None => Option::None,
             LineBg::Rail => Some(rail.to_string()),
-            LineBg::Card => match row {
-                Some(row) => Some(card_tint(row, theme)),
-                // A Card line without its owning row is a caller bug — flag
-                // it in tests, degrade to the panel base in the release wasm
-                // (same debug_assert-plus-safe-fallback idiom as `Line::new`).
-                Option::None => {
-                    debug_assert!(false, "Card line painted without its owning row");
-                    Some(rail.to_string())
-                }
-            },
+            LineBg::Card => Some(card_tint(row, theme)),
             LineBg::ActiveChild => Some(tc_bg(theme.surface_agent)),
         }
     }
 }
 
 /// The one Cards-density paint step for the row-less rail surfaces (header,
-/// cross-session badge, idle strip, bottom region): resolve the line's
-/// surface through the same [`LineBg::escape`] map the per-row `finalize`
-/// closure uses — keeping "every painted line resolves through `escape`"
-/// structural rather than four hand-baked repaints — and pass the line
-/// through untouched outside Cards density.
-fn paint_if_cards(line: Line, cards: bool, width: usize, theme: &DerivedColors, rail: &str) -> Line {
-    if !cards {
-        return line;
-    }
-    match line.bg.escape(None, theme, rail) {
-        Some(esc) => line.painted(width, &esc),
-        None => line,
+/// cross-session badge, idle strip, bottom region). Those four sites emit
+/// `LineBg::Rail` lines exclusively, so this is the Rail identity applied
+/// directly — borrowing the precomputed `rail` escape rather than routing
+/// through [`LineBg::escape`], which would allocate a fresh `String` per
+/// Rail line per frame for a value the caller already holds. Outside Cards
+/// density the line passes through untouched.
+fn paint_if_cards(line: Line, cards: bool, width: usize, rail: &str) -> Line {
+    match line.bg {
+        LineBg::Rail if cards => line.painted(width, rail),
+        _ => line,
     }
 }
 
@@ -1282,7 +1270,7 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
 
 fn target_for_row(row: &TabRow) -> RailTarget {
     RailTarget {
-        tab_position: row.number.saturating_sub(1) as usize,
+        tab_position: row.tab_position(),
         pane_id: None,
         session: None,
     }
@@ -1423,8 +1411,9 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// every existing single-session snapshot/test stays byte-identical (the
 /// badge is additive, never a subtraction from the render surface). A lone
 /// fresh own-entry plus only STALE peers still clears this threshold and
-/// renders (never-vanish roster: its whole point is remembering) — the count
-/// is over `entries`, not over fresh entries.
+/// renders (a stale-but-not-yet-dead entry stays visible by design — only
+/// `sessions::DEAD_AFTER_SECS` reaps) — the count is over `entries`, not
+/// over fresh entries.
 ///
 /// The current session's own line carries NO click target at all — you
 /// can't "switch to" the session you're already in, and unlike a peer line
@@ -1443,9 +1432,13 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// `opts.glyphs`) rather than inventing a parallel icon vocabulary the nerd/
 /// plain config wouldn't know about. `selected` (the pending Alt+[/] cycle
 /// target) renders bold+accent; a `stale` entry recedes past the ordinary
-/// muted `idle_text` (see the color derivation below); everything else —
-/// including the current line — renders in `idle_text`, so the badge reads
-/// as a status strip, not a second row of cards.
+/// muted `idle_text` (see the color derivation below); every other label —
+/// including the current line's — renders in `idle_text`, so the badge
+/// reads as a status strip, not a second row of cards. The one accent in
+/// that strip is the current line's `•` you-are-here marker: rendered in
+/// `idle_text` it was invisible against the muted labels around it
+/// (live-use feedback), so the marker alone takes `Role::Accent` while the
+/// label color rules above stay untouched.
 ///
 /// A trailing blank separator line closes the block (live-use feedback: the
 /// badge read as glued to the first card below it without one) — appended
@@ -1489,9 +1482,9 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
             if entry.attention > 0 {
                 label.push_str(&format!(" {}{}", entry.attention, attention_glyph));
             }
-            // A dim `•` marks "you are here" on the current line, independent
-            // of `selected` — a plain space keeps every other line's label
-            // aligned under it.
+            // An accent `•` marks "you are here" on the current line,
+            // independent of `selected` — a plain space keeps every other
+            // line's label aligned under it.
             let marker = if entry.is_current { "•" } else { " " };
             const PREFIX_VIS: usize = 2; // marker + its separating space
             let text = prefixed_line(
@@ -1507,7 +1500,15 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                     } else {
                         Seg::new(&idle, clamped)
                     };
-                    format!("{} {}", Seg::new(&idle, marker), label_seg)
+                    // Only the current line ever holds a `•` here (`marker`
+                    // above); peers carry the alignment space, which paints
+                    // the same in any color.
+                    let marker_seg = if entry.is_current {
+                        Seg::new(accent, marker)
+                    } else {
+                        Seg::new(&idle, marker)
+                    };
+                    format!("{} {}", marker_seg, label_seg)
                 },
             );
             let target = (!entry.is_current)
@@ -1595,13 +1596,13 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
 
     // Header.
     for line in render_header(rows, opts, overflow, has_content, working) {
-        flat.push(paint_if_cards(line, cards, width, &opts.theme, &rail));
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Cross-session badge (zero lines with ≤1 session — see
     // `render_session_badge`), between the header and the first card.
     for line in badge_lines {
-        flat.push(paint_if_cards(line, cards, width, &opts.theme, &rail));
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Body: one card block per kept row.
@@ -1614,7 +1615,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // `Line` grows another lockstep field.
         let finalize = |line: Line| -> Line {
             let bg = line.bg;
-            let mut line = match bg.escape(Some(row), &opts.theme, &rail) {
+            let mut line = match bg.escape(row, &opts.theme, &rail) {
                 Some(esc) if cards => line.painted(width, &esc),
                 _ => line,
             };
@@ -1635,7 +1636,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
 
     // Idle strip.
     for line in render_strip(strip_folded, opts) {
-        flat.push(paint_if_cards(line, cards, width, &opts.theme, &rail));
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     flat
@@ -1873,7 +1874,7 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // `leftover` measures — no special-casing needed.
     let leftover = opts.height.saturating_sub(flat.len());
     for line in render_bottom(rows, ledger, leftover, opts) {
-        flat.push(paint_if_cards(line, cards, width, &opts.theme, &rail));
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Final height clamp. The body is budgeted against `height - header_lines`, so
