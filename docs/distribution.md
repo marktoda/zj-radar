@@ -31,8 +31,9 @@ There are **two install surfaces**, and they have *different* best answers:
    installer pattern against their native config/plugin surfaces.
 
 Plus a third, separate surface: **the Zellij plugin itself** (the wasm + its
-permission grant + the layout). That's now handled by `zj-radar setup zellij`
-plus an explicit layout snippet (see §4).
+permission grant + the layout). That's now handled by `zj-radar setup zellij`,
+including layout injection (see §4 — since superseded by the shipped
+`--inject`/`--layout` flow in [`install.md`](install.md)).
 
 ---
 
@@ -66,6 +67,8 @@ zj-radar-claude/
   }
 }
 ```
+(Illustrative — the shipped manifest wires eight events, not three; see
+`plugins/zj-radar-claude/hooks/hooks.json` for the real one.)
 
 Install (any of):
 - one-line marketplace: `/plugin marketplace add <gh-org/zj-radar>` then
@@ -104,6 +107,13 @@ Mirror Cmux/code-notify's proven shape:
   `--dry-run`, atomic writes, and a per-agent disable env var so a user can mute
   one agent without uninstalling.
 
+> **As shipped:** the declarative table with a `Format` enum and the per-agent
+> disable env var never materialized. The implementation is per-surface modules
+> (`crates/cli/src/setup/{claude,codex,zellij}.rs` over a shared `edit.rs`)
+> that keep the rules that mattered: strip-own-then-re-add with markers,
+> refuse-to-write on unparseable files, atomic writes, diff preview + `--yes`
+> and `--dry-run`.
+
 Shipped agent wiring:
 | Agent | File | Insert | Event → status |
 |---|---|---|---|
@@ -125,10 +135,11 @@ It maps all of them to one
 under Zellij** (gate on `$ZELLIJ`). This collapses our two shell scripts into one
 code path and keeps the "wire up with one command" promise.
 
-**Form factor:** a small native **`zj-radar` CLI binary** (Rust) with
-subcommands `notify`, `setup`, `setup --check`, and `setup --uninstall`. Native =
+**Form factor:** a small native **`zj-radar` CLI binary** (Rust). Native =
 no `jq`/`bash` runtime deps, cross-platform, easy to vendor. It ships alongside
-the wasm plugin.
+the wasm plugin. (As shipped, the subcommands are `notify | run | setup`, with
+the later-added `run` as the turnkey front door and `--check`/`--uninstall` as
+`setup` flags.)
 
 ## 4. The Zellij-plugin side of install (separate but needed)
 
@@ -146,6 +157,11 @@ snippet. It deliberately leaves layouts user-owned because real Zellij layouts
 vary too much to patch blindly. A future layout patcher can build on the same
 snippet, but it should be opt-in and previewable.
 
+> **Superseded:** that layout patcher shipped. `setup zellij` now prompts to
+> inject the rail (marker-managed, previewed, reversible via `--uninstall`),
+> with `--inject`/`--layout` for scripts; the release funnel exercises it and
+> the README documents it. See [`install.md`](install.md).
+
 The first-run **permission grant** remains a Zellij prompt. The plugin stays
 selectable only while the prompt is pending; because the sidebar is instantiated
 once per tab, per-tab prompt coordination elects one instance to request the
@@ -160,8 +176,10 @@ uncached grant and peers reuse Zellij's cached answer.
    hook-first Codex setup, `setup --check`, native CLI release artifacts, and
    `setup zellij --wasm` for the sidebar alias (§2–4).
 3. **Phase 3:** add more agents and, if still useful, a previewable layout
-   patcher. The current setup command should keep printing the snippet rather
-   than silently rewriting layouts.
+   patcher. *(Superseded: the patcher shipped as `setup zellij --inject` —
+   prompted, previewed, and reversible rather than silent; see
+   [`install.md`](install.md). The example below reflects the shipped
+   behavior.)*
 
 Net new-user story we're aiming for:
 ```
