@@ -107,22 +107,24 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "working" ]
 }
 
-@test "parity: git pull / git fetch both derive 'syncing'" {
-  local cmd json
-  for cmd in "git pull --rebase" "git fetch origin"; do
-    json="$(jq -nc --arg c "$cmd" '{hook_event_name:"PostToolUse",cwd:"/home/u/myrepo",tool_name:"Bash",tool_input:{command:$c}}')"
-    parity_case "$json" running
-    [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ] || { echo "[$cmd] did not derive syncing"; return 1; }
-  done
+@test "parity: git pull derives 'syncing'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git pull --rebase"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
 }
 
-@test "parity: build / compile verbs both derive 'building'" {
-  local cmd json
-  for cmd in "cargo build --release" "gcc -c compile main.c"; do
-    json="$(jq -nc --arg c "$cmd" '{hook_event_name:"PostToolUse",cwd:"/home/u/myrepo",tool_name:"Bash",tool_input:{command:$c}}')"
-    parity_case "$json" running
-    [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ] || { echo "[$cmd] did not derive building"; return 1; }
-  done
+@test "parity: git fetch derives 'syncing'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git fetch origin"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
+}
+
+@test "parity: build verb derives 'building'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"cargo build --release"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
+}
+
+@test "parity: compile verb derives 'building'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"gcc -c compile main.c"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
 }
 
 @test "parity: leading-newline Bash command still derives its first token" {
@@ -221,7 +223,7 @@ teardown() { teardown_fakes; }
 @test "parity: generic pending backstop drops the broadcast in both" {
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs attention"}' pending
   # Whitespace-padded generic phrase and whitespace-only msg must also drop —
-  # both producers compare a TRIMMED copy (msg.trim() / the sed trim).
+  # both producers compare a TRIMMED copy (msg.trim() / the trim() helper).
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"  Claude needs attention  "}' pending
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"   "}' pending
 }

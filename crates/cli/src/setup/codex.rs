@@ -44,7 +44,6 @@ fn codex_installed(codex_on_path: bool) -> bool {
 }
 
 pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
-    use std::io::IsTerminal;
     if codex_home_dir().is_none() {
         crate::exit::fail_report(
             "codex",
@@ -52,13 +51,10 @@ pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
         );
         return;
     }
-    // Tty-ness resolved once at the boundary (the `inject_mode` pattern);
-    // the confirm step below takes it as a parameter.
-    let is_tty = std::io::stdin().is_terminal();
     if opts.legacy_notify {
-        setup_codex_notify(uninstall, opts.dry_run, opts.yes, opts.force, is_tty);
+        setup_codex_notify(uninstall, opts.dry_run, opts.yes, opts.force, opts.is_tty);
     } else {
-        setup_codex_hooks(uninstall, opts.dry_run, opts.yes, is_tty);
+        setup_codex_hooks(uninstall, opts.dry_run, opts.yes, opts.is_tty);
     }
 }
 

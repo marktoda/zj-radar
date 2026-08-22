@@ -24,11 +24,25 @@ fn runtime_with_config(config: config::Config) -> PluginRuntime {
 }
 
 impl PluginRuntime {
+    /// Test shorthand: deliver a timer fire "now" (a real wall-clock
+    /// capture) with the given elapsed. The sites that still pass an
+    /// explicit epoch to `timer` directly are exactly the ones where the
+    /// epoch value is load-bearing (virtual time, or a deliberately shifted
+    /// clock) — they're meant to stand out.
+    fn timer_now(&mut self, permission: PermissionProbe, elapsed: f64) -> Outcome {
+        self.timer(permission, elapsed, crate::clock::now_epoch_s())
+    }
+
     /// Test shorthand: deliver a live Fast fire (elapsed ~1s) — how every
     /// test that isn't about the stale-fire dedup drives the tick entry
-    /// point. Dedup tests pass explicit elapsed values to `timer` instead.
+    /// point. Dedup tests pass explicit elapsed values via `timer_now`.
     fn timer_fast(&mut self, permission: PermissionProbe) -> Outcome {
-        self.timer(permission, Cadence::Fast.seconds(), crate::clock::now_epoch_s())
+        self.timer_now(permission, Cadence::Fast.seconds())
+    }
+
+    /// Test shorthand: deliver a live Slow fire (elapsed ~60s).
+    fn timer_slow(&mut self, permission: PermissionProbe) -> Outcome {
+        self.timer_now(permission, Cadence::Slow.seconds())
     }
 }
 
@@ -1219,19 +1233,25 @@ fn dead_peer_read_auto_dismisses_and_repaints() {
 }
 
 #[test]
-fn dead_corpse_carrying_own_name_is_never_auto_dismissed() {
+fn dead_corpse_carrying_own_name_is_auto_dismissed_like_any_other() {
     // A pid-keyed corpse of THIS session (killed and recreated under the
-    // same name) reads back as a dead peer carrying our own name. The
-    // on-disk dismiss deletes by name content with no own-file exclusion
-    // (`remove_presences_matching`), so auto-dismissing it would unlink our
-    // own LIVE presence file too — the reap must skip our own name and
-    // leave that corpse to the open-time sweep.
+    // same name) reads back as a dead peer carrying our own name. The reap
+    // treats it like any other dead name — no own-name exemption — because
+    // the on-disk delete (`remove_presences_matching`) spares our own LIVE
+    // presence file by *path* identity, never by name: the dismiss unlinks
+    // the corpse's pid-keyed file and nothing else (the file-level half is
+    // pinned by session_files.rs's
+    // `remove_presences_matching_spares_the_own_file_but_reaps_same_name_corpses`).
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     let out = rt.presences_changed(vec![dead(r#"{"session_name":"work","running":9,"attention":9}"#)]);
     assert!(
-        !out.effects.iter().any(|e| matches!(e, Effect::DismissPresence { .. })),
-        "a dead corpse of our own name must never be auto-dismissed, got {:?}",
+        out.effects.contains(&Effect::DismissPresence { name: "work".into() }),
+        "a dead corpse carrying our own name must be reaped like any other dead entry, got {:?}",
         out.effects
+    );
+    assert!(
+        !rt.sessions.badge().iter().any(|b| b.name == "work" && !b.is_current),
+        "the corpse must not linger as a peer entry in memory"
     );
 }
 
@@ -2075,7 +2095,7 @@ fn idle_with_fresh_history_arms_slow_and_repaints() {
     // The slow fire itself must render — it exists precisely to repaint
     // the ledger's ages. A genuine Slow fire (elapsed ~60s), because the
     // repaint clause keys on the fire that landed, not on `desired_cadence`.
-    let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), crate::clock::now_epoch_s());
+    let tick = rt.timer_slow(PermissionProbe::default());
     assert!(tick.render, "a slow fire renders to repaint ledger ages");
 }
 
@@ -2256,7 +2276,7 @@ fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
 
     // The live fast fire (elapsed ~1s) ticks and re-arms exactly once.
     let tick_before = rt.tick;
-    let live = rt.timer(PermissionProbe::default(), 1.0, crate::clock::now_epoch_s());
+    let live = rt.timer_now(PermissionProbe::default(), 1.0);
     assert_eq!(rt.tick, tick_before + 1, "the live fast fire ticks");
     let rearms = live
         .effects
@@ -2274,13 +2294,13 @@ fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
     // effects, the live arm untouched. Ticking it would re-arm a
     // second persistent chain.
     let tick_before = rt.tick;
-    let stale = rt.timer(PermissionProbe::default(), 60.0, crate::clock::now_epoch_s());
+    let stale = rt.timer_now(PermissionProbe::default(), 60.0);
     assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
     assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
 
     // Steady state: exactly one chain remains and keeps ticking.
-    let next = rt.timer(PermissionProbe::default(), 1.0, crate::clock::now_epoch_s());
+    let next = rt.timer_now(PermissionProbe::default(), 1.0);
     assert_eq!(rt.tick, tick_before + 1, "the surviving chain keeps ticking");
     assert!(
         next.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
@@ -2298,13 +2318,13 @@ fn stale_slow_fire_landing_first_is_swallowed() {
     let mut rt = slow_armed_then_fast_topup();
 
     let tick_before = rt.tick;
-    let stale = rt.timer(PermissionProbe::default(), 60.0, crate::clock::now_epoch_s());
+    let stale = rt.timer_now(PermissionProbe::default(), 60.0);
     assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
     assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
 
     // The surviving fast fire ticks normally and re-arms exactly once.
-    let live = rt.timer(PermissionProbe::default(), 1.0, crate::clock::now_epoch_s());
+    let live = rt.timer_now(PermissionProbe::default(), 1.0);
     assert_eq!(rt.tick, tick_before + 1, "the live fire ticks");
     let rearms = live
         .effects
@@ -2340,7 +2360,7 @@ fn lone_slow_fire_processes_as_the_live_chain() {
     rt.tabs_changed(vec![]); // arms Slow: the only fire in flight
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
 
-    let tick = rt.timer(PermissionProbe::default(), 60.0, crate::clock::now_epoch_s());
+    let tick = rt.timer_now(PermissionProbe::default(), 60.0);
     assert!(tick.render, "the lone slow fire processes and repaints ledger ages");
     assert!(
         tick.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
@@ -2419,7 +2439,7 @@ fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
     // slow-armed fire first (the "rare order" of
     // `stale_slow_fire_landing_first_is_swallowed`): swallowed whole, so it
     // doesn't advance the debounce tick count either.
-    let stale = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), crate::clock::now_epoch_s());
+    let stale = rt.timer_slow(PermissionProbe::default());
     assert_eq!(stale, Outcome::none(), "setup: the pre-armed slow fire is stale and swallowed");
 
     // Ticks short of the debounce window: quiet, and don't disturb the fire
@@ -2437,7 +2457,7 @@ fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
     // reviewer's exact probe: a live fire whose overdue heartbeat seeds a
     // push AND whose own tick promotes pending -> Running, landing a genuine
     // content edge on the same pass.
-    let tick = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), crate::clock::now_epoch_s());
+    let tick = rt.timer_slow(PermissionProbe::default());
     let persists = tick.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
     assert_eq!(
         persists, 1,
@@ -2463,7 +2483,7 @@ fn read_presences_is_bound_to_fast_fires_only() {
 
     let scans: Vec<bool> = (0..(2 * PRESENCE_READ_TICK_INTERVAL))
         .map(|_| {
-            rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), crate::clock::now_epoch_s())
+            rt.timer_fast(PermissionProbe::default())
                 .effects
                 .contains(&Effect::ReadPresences)
         })
@@ -2483,7 +2503,7 @@ fn read_presences_is_bound_to_fast_fires_only() {
         config: config(),
         ..Default::default()
     };
-    let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), crate::clock::now_epoch_s());
+    let slow = rt.timer_slow(PermissionProbe::default());
     assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }
 
