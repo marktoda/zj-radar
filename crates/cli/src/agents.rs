@@ -172,7 +172,7 @@ pub fn baseline_msg(status: Status, msg: &str) -> String {
     }
 }
 
-fn basename(path: &str) -> Option<&str> {
+pub(crate) fn basename(path: &str) -> Option<&str> {
     if path.is_empty() {
         return None;
     }

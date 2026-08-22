@@ -626,8 +626,8 @@ timer fires (`Effect::ReadPresences`; never on the Slow heartbeat — and
 within Fast only every 5th tick, except mid-cycle, since peers heartbeat at
 60s and dim at 90s). The read side rests on a write-side guarantee: a live
 session refreshes its presence file's mtime at least every 60s — the
-**liveness heartbeat**, `timer`'s level trigger (`PRESENCE_HEARTBEAT_S`)
-that re-emits `PersistPresence` from any live fire (Slow or Fast) once the
+**liveness heartbeat**, `project`'s level trigger (`PRESENCE_HEARTBEAT_S`)
+that re-emits `PersistPresence` on any pass through `project` once the
 last write is 60s old, bypassing the usual content-edge gate. Without it, a
 session sitting fully idle (no count change) would let its mtime age and
 read as gone while still alive; with it, file age is a reliable liveness
@@ -650,9 +650,11 @@ republishes and the entry returns fresh. Right-click dismiss remains the
 manual path for a stale-but-not-yet-dead entry the user already knows is
 gone. Separately, a `6h` sweep (`PRESENCE_MAX_AGE`) deletes abandoned
 presence files at plugin `load()` — the backstop for debris the reap can't
-touch (e.g. a dead corpse carrying the current session's own name, which is
-never auto-dismissed because the on-disk dismiss matches by name and would
-take the live file with it).
+touch: malformed/unparseable files, which never produce a name to dismiss
+by. (A dead corpse carrying the current session's own name is no longer in
+that bucket: the on-disk dismiss spares the live file by *path* identity —
+`remove_presences_matching`'s own-file exclusion — so the auto-reap handles
+own-name corpses like any other dead entry.)
 
 **Own session name.** Zellij's `Event::ModeUpdate` carries
 `ModeInfo.session_name`; the plugin already subscribes to `ModeUpdate` for

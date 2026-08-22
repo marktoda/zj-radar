@@ -71,18 +71,12 @@ pub(crate) fn resolve_layout_name(explicit: Option<&str>, config_text: Option<&s
 }
 
 /// The layout FILE `setup`/`--check` should operate on:
-/// `<config_dir>/layouts/<name>.kdl` for the resolved layout name (see
-/// [`resolve_layout_name`]). One resolution shared by the install path and the
-/// doctor, so both inspect the layout Zellij actually loads (and the one a
-/// `--layout` install just wrote).
-pub(crate) fn resolve_layout_path(
-    config_dir: &Path,
-    explicit: Option<&str>,
-    config_text: Option<&str>,
-) -> PathBuf {
-    config_dir
-        .join("layouts")
-        .join(format!("{}.kdl", resolve_layout_name(explicit, config_text)))
+/// `<config_dir>/layouts/<name>.kdl` for a name [`resolve_layout_name`]
+/// resolved. One resolution shared by the install path and the doctor
+/// (`read_zellij_env`), so both inspect the layout Zellij actually loads
+/// (and the one a `--layout` install just wrote).
+pub(crate) fn resolve_layout_path(config_dir: &Path, layout_name: &str) -> PathBuf {
+    config_dir.join("layouts").join(format!("{layout_name}.kdl"))
 }
 
 pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) {

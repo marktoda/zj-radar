@@ -48,7 +48,9 @@ const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
 /// `head -c`. Hook payloads are small JSON (well under a megabyte); the cap
 /// only bounds a runaway or hostile writer. Lives beside the send deadlines
 /// because it is the same family: a producer limiting itself so a misbehaving
-/// peer cannot wedge or bloat the hook path.
+/// peer cannot wedge or bloat the hook path. This is the *input* cap, distinct
+/// from the plugin's 64 KB *wire* cap on the broadcast payload the producer
+/// derives from that input.
 pub const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024;
 
 // $1 = deadline seconds, $2 = pipe name, $3 = payload — positional parameters,

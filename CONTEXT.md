@@ -424,8 +424,9 @@ function — which nothing in this stack does, and which would violate the
 push-driven doctrine (`CONTRIBUTING.md`; `smart-tabs-postmortem.md`) if it
 did. `SessionUpdate` was dropped entirely (task-8b): liveness is judged from
 a presence file's mtime. That judgment rests on a write-side guarantee: a
-live session rewrites its presence file at least every 60s (`timer`'s
-`PRESENCE_HEARTBEAT_S` level trigger, bypassing the normal content-edge
+live session rewrites its presence file at least every 60s (`project`'s
+`PRESENCE_HEARTBEAT_S` level trigger — any pass through `project` re-emits
+the write once the last one is that old, bypassing the normal content-edge
 gate), so file age reliably means what it says. `read_peer_presences`
 returns every peer file it finds, unconditionally, paired with that file's
 mtime age; `Sessions` (`sessions.rs`) grades that age per entry:
@@ -441,7 +442,9 @@ makes every file look old for up to one heartbeat) is harmless, since the
 live session's next heartbeat republishes and the entry returns fresh.
 Right-click dismiss remains the manual reap for a stale-not-yet-dead entry;
 a 6h open-time sweep at plugin `load()` remains the backstop for debris the
-reap can't touch. The session's own name arrives the same push-style way its
+reap can't touch (malformed/unparseable files, which never produce a name
+to dismiss by — an own-name corpse is NOT in that bucket, since the on-disk
+dismiss spares the live file by path identity and reaps the corpse). The session's own name arrives the same push-style way its
 liveness does: `Event::ModeUpdate`'s `ModeInfo.session_name`, not a
 session-list lookup.
 

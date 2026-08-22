@@ -3691,14 +3691,25 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
     assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
-    assert_eq!(LineBg::Rail.escape(&active_row, &theme, &rail), Some(rail.clone()));
     assert_eq!(
-        LineBg::Card.escape(&active_row, &theme, &rail),
-        Some(card_tint(&active_row, &theme)),
+        LineBg::Rail.escape(&active_row, &theme, &rail).as_deref(),
+        Some(rail.as_str()),
     );
+    // Rail resolves by borrowing the caller's precomputed escape — the
+    // per-separator-line allocation this map used to pay is gone.
+    assert!(matches!(
+        LineBg::Rail.escape(&active_row, &theme, &rail),
+        Some(std::borrow::Cow::Borrowed(_)),
+    ));
+    let card = card_tint(&active_row, &theme);
     assert_eq!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
-        Some(tc_bg(theme.surface_agent)),
+        LineBg::Card.escape(&active_row, &theme, &rail).as_deref(),
+        Some(card.as_str()),
+    );
+    let agent = tc_bg(theme.surface_agent);
+    assert_eq!(
+        LineBg::ActiveChild.escape(&active_row, &theme, &rail).as_deref(),
+        Some(agent.as_str()),
     );
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the

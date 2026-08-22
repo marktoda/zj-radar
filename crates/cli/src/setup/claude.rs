@@ -19,8 +19,11 @@ pub(crate) const CLAUDE_PLUGIN: &str = "zj-radar-claude";
 /// same fork-follows knob as `--download`). The one derivation behind the
 /// qualified plugin id (`zj-radar-claude@<name>`) and the uninstall
 /// epilogue's `marketplace remove <name>`, so the three can't drift on a fork.
+/// Uses the crate's empty-segment-guarded [`crate::agents::basename`], so a
+/// degenerate slug (trailing slash, empty) falls back to the slug whole
+/// rather than yielding an empty name (`zj-radar-claude@`).
 fn claude_marketplace_name(repo_slug: &str) -> &str {
-    repo_slug.rsplit('/').next().unwrap_or(repo_slug)
+    crate::agents::basename(repo_slug).unwrap_or(repo_slug)
 }
 
 /// Read Claude Code's installed-plugins manifest
@@ -33,12 +36,8 @@ pub(crate) fn claude_installed_plugins_text() -> Option<String> {
         .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok())
 }
 
-pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool) {
-    use std::io::IsTerminal;
+pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     let wired = crate::run::claude_producer_wired(claude_installed_plugins_text().as_deref());
-    // Tty-ness resolved once at the boundary (the `inject_mode` pattern);
-    // `confirm` below takes it as a parameter.
-    let is_tty = std::io::stdin().is_terminal();
     if uninstall {
         uninstall_claude(wired, dry_run, yes, is_tty);
     } else {
@@ -148,5 +147,8 @@ mod tests {
         assert_eq!(claude_marketplace_name("fork-owner/zj-radar-fork"), "zj-radar-fork");
         // Degenerate slug without a slash: use it whole rather than panic.
         assert_eq!(claude_marketplace_name("zj-radar"), "zj-radar");
+        // Trailing slash must not yield an empty name (`zj-radar-claude@` and
+        // a dangling `marketplace remove `): fall back to the slug whole.
+        assert_eq!(claude_marketplace_name("marktoda/zj-radar/"), "marktoda/zj-radar/");
     }
 }

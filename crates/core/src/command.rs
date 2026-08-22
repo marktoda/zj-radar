@@ -8,10 +8,10 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Debounce window: a pending fg command must survive this many ticks before
-/// being promoted to Running. Floored at 2 (~2s at the plugin's 1s tick) so an
+/// being promoted to Running. Kept at 2 (~2s at the plugin's 1s tick) so an
 /// instant `cd`/`ls`-style command that returns to the shell prompt within the
-/// window never earns a line (spec §3.2) — 1 tick left too narrow a margin
-/// against real-world scheduling jitter between the fg command and its
+/// window never earns a line (spec §3.2) — a 1-tick debounce left too narrow a
+/// margin against real-world scheduling jitter between the fg command and its
 /// immediate return.
 ///
 /// This does NOT fully close the "running cd" symptom: promotion fires purely
@@ -178,11 +178,15 @@ fn is_option_arg(s: &str) -> bool {
     s.starts_with('-') && s != "-"
 }
 
+/// First non-option arg at/after `start`. Also skips the stdin-marker
+/// residual: `is_option_arg` deliberately exempts a bare `-`, so it is the one
+/// dashed token this scan would otherwise surface — skip it and keep scanning
+/// rather than hand stdin-marker noise back as a verb or target.
 fn first_non_option(args: &[String], start: usize) -> Option<(usize, &str)> {
     args.iter()
         .enumerate()
         .skip(start)
-        .find_map(|(idx, arg)| (!is_option_arg(arg)).then_some((idx, arg.as_str())))
+        .find_map(|(idx, arg)| (!is_option_arg(arg) && arg != "-").then_some((idx, arg.as_str())))
 }
 
 fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'a str)> {
@@ -191,14 +195,9 @@ fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'
     })
 }
 
-/// First non-option arg at/after `start`, usable as a display target. Strips
-/// the stdin-marker residual: `is_option_arg` deliberately exempts a bare `-`,
-/// so it is the one dashed token `first_non_option` can return — drop it here
-/// rather than display stdin-marker noise as a target.
+/// First non-option arg at/after `start`, usable as a display target.
 fn target_after(args: &[String], start: usize) -> Option<&str> {
-    first_non_option(args, start)
-        .map(|(_, arg)| arg)
-        .filter(|t| *t != "-")
+    first_non_option(args, start).map(|(_, arg)| arg)
 }
 
 fn raw_display(parts: &[&str]) -> String {

@@ -154,10 +154,13 @@
             // suffix counts, so `python-config` keeps the first-arg treatment
             // (its arg is NOT basenamed like a script would be).
             (&["python-config", "a/b"], "python-config a/b"),
-            // Deliberate post-refactor behavior: the uniform target dash-guard
-            // drops a bare "-" target (old cargo nextest / go test kept it).
+            // Deliberate post-refactor behavior: `first_non_option` skips a
+            // bare "-" stdin marker and keeps scanning (old cargo nextest /
+            // go test displayed it), so a real target after it still shows.
             (&["go", "test", "-"], "go test"),
             (&["cargo", "nextest", "-"], "cargo nextest"),
+            (&["go", "test", "-", "./..."], "go test ./..."),
+            (&["cat", "-", "notes.txt"], "cat notes.txt"),
         ];
         for (args, want) in cases {
             assert_eq!(&display(&argv(args)), want, "display for {args:?}");

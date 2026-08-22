@@ -336,10 +336,10 @@ impl ZellijPlugin for State {
             // no other plugin required) and carries `ModeInfo.session_name`,
             // which is all this plugin ever needed from `SessionUpdate` in
             // the first place; liveness itself now comes from the presence
-            // files' own mtimes, turned into a per-entry stale/fresh state
-            // (`sessions::STALE_AFTER_SECS`) rather than a Zellij-reported
-            // peer list — and, per the never-vanish roster, a peer past
-            // that age dims rather than vanishing.
+            // files' own mtimes, graded per entry rather than read from a
+            // Zellij-reported peer list: fresh (≤90s,
+            // `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
+            // reaped past `sessions::DEAD_AFTER_SECS` (300s).
             EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already

@@ -235,20 +235,17 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let force       = opts.force;
     let inject_flag = opts.inject;
     let layout_name = opts.layout;
-    // Tty-ness resolved once at the boundary; every consent step below
-    // (`inject_mode`, `confirm`) takes it as a parameter rather than probing
-    // stdin again mid-chain.
-    let is_tty = {
-        use std::io::IsTerminal;
-        std::io::stdin().is_terminal()
-    };
+    // Tty-ness resolved once by the `setup::run` dispatcher; every consent
+    // step below (`inject_mode`, `confirm`) takes it as a parameter rather
+    // than probing stdin again mid-chain.
+    let is_tty      = opts.is_tty;
     let Some(config_dir) = zellij_config_dir_or_report() else { return };
 
     // One reader, shared with `check` (`read_zellij_env`): current state into
     // Facts. The env's config text is reused below for the `edit_zellij`
     // splice; the resolved paths are what every write below aims at.
     let (env, paths) = read_zellij_env(&config_dir, layout_name);
-    let ZellijPaths { config_path, wasm_dest, layout_path } = paths;
+    let ZellijPaths { config_path, wasm_dest, layout_path, .. } = paths;
     let location = zellij_plugin_location(&wasm_dest);
     let facts = analyze_zellij(&env);
 
@@ -601,8 +598,10 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
                         "No layout at {} — create it with the rail layout?",
                         layout_path.display()
                     );
-                    // Prompt mode implies !yes && is_tty (see `inject_mode`).
-                    if confirm(&prompt, yes, is_tty) {
+                    // Prompt mode implies !yes && is_tty (see `inject_mode`),
+                    // so pass a literal false: `inject_mode` stays the sole
+                    // authority on `yes` for this flow.
+                    if confirm(&prompt, false, is_tty) {
                         create_full_layout(layout_path, dry_run);
                     } else {
                         print_missing_layout_fallback(layout_path);
@@ -630,7 +629,8 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
         }
         InjectMode::Prompt => {
             let prompt = format!("Inject the rail into {}?", layout_path.display());
-            if !confirm(&prompt, yes, is_tty) {
+            // Prompt mode implies !yes (see above) — literal false, as ever.
+            if !confirm(&prompt, false, is_tty) {
                 print_paste_snippet(&facts);
                 return;
             }

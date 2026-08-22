@@ -338,14 +338,16 @@ impl LineBg {
     /// per-row `finalize` closure is the caller; the row-less rail surfaces
     /// never come through here — they are all `LineBg::Rail` by
     /// construction and take the one-line identity in [`paint_if_cards`]
-    /// instead. `rail` is the precomputed panel-base escape. `None` out
-    /// means the line is never painted.
-    fn escape(self, row: &TabRow, theme: &DerivedColors, rail: &str) -> Option<String> {
+    /// instead. `rail` is the precomputed panel-base escape, borrowed
+    /// straight through (`Cow::Borrowed`) rather than re-allocated per
+    /// inter-card separator line per frame. `None` out means the line is
+    /// never painted.
+    fn escape<'a>(self, row: &TabRow, theme: &DerivedColors, rail: &'a str) -> Option<std::borrow::Cow<'a, str>> {
         match self {
             LineBg::None => Option::None,
-            LineBg::Rail => Some(rail.to_string()),
-            LineBg::Card => Some(card_tint(row, theme)),
-            LineBg::ActiveChild => Some(tc_bg(theme.surface_agent)),
+            LineBg::Rail => Some(std::borrow::Cow::Borrowed(rail)),
+            LineBg::Card => Some(std::borrow::Cow::Owned(card_tint(row, theme))),
+            LineBg::ActiveChild => Some(std::borrow::Cow::Owned(tc_bg(theme.surface_agent))),
         }
     }
 }
@@ -358,6 +360,10 @@ impl LineBg {
 /// Rail line per frame for a value the caller already holds. Outside Cards
 /// density the line passes through untouched.
 fn paint_if_cards(line: Line, cards: bool, width: usize, rail: &str) -> Line {
+    debug_assert!(
+        matches!(line.bg, LineBg::Rail | LineBg::None),
+        "row-less surface emitted a row-owned line class"
+    );
     match line.bg {
         LineBg::Rail if cards => line.painted(width, rail),
         _ => line,
@@ -1500,15 +1506,10 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                     } else {
                         Seg::new(&idle, clamped)
                     };
-                    // Only the current line ever holds a `•` here (`marker`
-                    // above); peers carry the alignment space, which paints
-                    // the same in any color.
-                    let marker_seg = if entry.is_current {
-                        Seg::new(accent, marker)
-                    } else {
-                        Seg::new(&idle, marker)
-                    };
-                    format!("{} {}", marker_seg, label_seg)
+                    // Peers' alignment space paints identically in any
+                    // color — byte-stable output.
+                    let marker_color = if entry.is_current { accent } else { &idle };
+                    format!("{} {}", Seg::new(marker_color, marker), label_seg)
                 },
             );
             let target = (!entry.is_current)
@@ -1612,12 +1613,17 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // Resolve a raw line's surface through the one `LineBg::escape` map by
         // consuming the complete `Line`. Metadata such as targets and hotspots
         // rides inside the value, so Cards finalization cannot forget it when
-        // `Line` grows another lockstep field.
+        // `Line` grows another lockstep field. Outside Cards density nothing
+        // paints, so the map (and its owned Card/ActiveChild escapes) is
+        // never consulted at all.
         let finalize = |line: Line| -> Line {
-            let bg = line.bg;
-            let mut line = match bg.escape(row, &opts.theme, &rail) {
-                Some(esc) if cards => line.painted(width, &esc),
-                _ => line,
+            let mut line = if cards {
+                match line.bg.escape(row, &opts.theme, &rail) {
+                    Some(esc) => line.painted(width, &esc),
+                    None => line,
+                }
+            } else {
+                line
             };
             line.bg = LineBg::None;
             line

@@ -99,16 +99,29 @@ contains_word() {
     [[ "$1" =~ $re ]]
 }
 
-# File-tool activity: "<verb> <basename>" from the path at jq path $2 in the
-# hook payload. Prints nothing when the STRIPPED basename is empty — a
+# Fork-free whole-string whitespace trim (mirrors Rust .trim()): sets
+# trim_result to $1 with leading + trailing [:space:] (newlines included)
+# stripped via parameter expansion — no subshell, no pipeline. Used on the
+# high-frequency sites only (the per-tool-call Bash branch and the pending
+# gate); the once-per-turn prompt/ack/done trims keep their pipelines.
+trim() { # $1 = string → trim_result
+    trim_result="${1#"${1%%[![:space:]]*}"}"
+    trim_result="${trim_result%"${trim_result##*[![:space:]]}"}"
+}
+
+# File-tool activity: sets tool_activity to "<verb> <basename>" from the path
+# at jq path $2 in the hook payload. Sets the global directly rather than
+# printing for a $(…) capture — this runs on the per-file-tool-hook hot path,
+# and the command substitution cost an extra subshell fork per hook. Leaves
+# tool_activity untouched when the STRIPPED basename is empty — a
 # trailing-slash path ("src/") has a non-empty path but an empty basename, and
 # Rust's basename() filters that to None, so a dangling "<verb> " with no name
-# must not broadcast. Always exits 0 (callers assign under `set -e`).
-file_activity() { # $1 = verb, $2 = jq path to the file path
+# must not broadcast. The `return 0` guards `set -e` when the guard is falsy.
+file_activity() { # $1 = verb, $2 = jq path to the file path → tool_activity
     local fp base
     fp="$(jq -r "$2 // empty" <<<"$input" 2>/dev/null || true)"
     base="${fp##*/}"
-    [[ -n "$base" ]] && printf '%s %s' "$1" "$base"
+    [[ -n "$base" ]] && tool_activity="$1 $base"
     return 0
 }
 
@@ -140,11 +153,11 @@ if [[ "$status" == "running" ]]; then
         tool_activity=""
         case "$tool_name" in
             Edit|Write|MultiEdit)
-                tool_activity="$(file_activity editing '.tool_input.file_path')" ;;
+                file_activity editing '.tool_input.file_path' ;;
             NotebookEdit)
-                tool_activity="$(file_activity editing '.tool_input.notebook_path')" ;;
+                file_activity editing '.tool_input.notebook_path' ;;
             Read)
-                tool_activity="$(file_activity reading '.tool_input.file_path')" ;;
+                file_activity reading '.tool_input.file_path' ;;
             Grep|Glob)
                 tool_activity="searching"
                 ;;
@@ -171,11 +184,12 @@ if [[ "$status" == "running" ]]; then
                 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
                 # POSIX lowercase (works on macOS' stock Bash 3.2; ${cmd,,} is Bash 4+).
                 cmd_lower="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
-                # Leading whitespace (newlines included) stripped by parameter
-                # expansion — this is the per-tool-call hot path, so no forks.
+                # Whitespace (newlines included) stripped by trim() — this is
+                # the per-tool-call hot path, so no forks.
                 # Non-empty after the strip mirrors Rust .trim(): an
                 # all-whitespace command derives nothing.
-                rest="${cmd#"${cmd%%[![:space:]]*}"}"
+                trim "$cmd"
+                rest="$trim_result"
                 if [[ -n "$rest" ]]; then
                     if contains_word "$cmd_lower" "git push"; then
                         tool_activity="pushing"
@@ -216,8 +230,8 @@ fi
 # (parity with the Rust producer's msg.trim()) so a whitespace-padded generic
 # phrase is still dropped; the broadcast itself keeps the raw msg, as Rust does.
 if [[ "$status" == "pending" ]]; then
-    m_trim="$(printf '%s' "$msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    case "$m_trim" in
+    trim "$msg"
+    case "$trim_result" in
         ""|"Claude needs attention"|"Claude Code needs your attention")
             exit 0
             ;;

@@ -84,12 +84,15 @@ impl LedgerEntry {
     /// control chars that would otherwise reach the render grid.
     /// `from_observation` never builds a blank field; disk-loaded entries are
     /// held to the same never-blank policy — an all-control-chars value
-    /// scrubs to nothing and falls back to a fixed token instead ("turn
-    /// done" for the label: the same token a live agent turn with an empty
-    /// msg gets, rather than a third vocabulary).
+    /// scrubs to nothing and falls back to a fixed token instead. The label
+    /// fallback is deliberately origin-neutral ("done", not "turn done"):
+    /// origin is not retained on a disk-loaded entry, so this seam cannot
+    /// know whether the entry was an agent turn or a command completion —
+    /// only `from_observation`, which still holds the observation, may pick
+    /// an origin-specific token.
     pub(crate) fn sanitized(mut self) -> LedgerEntry {
         self.tab_name = sanitized_or(&self.tab_name, MAX_TAB_NAME_CHARS, "tab");
-        self.label = sanitized_or(&self.label, MAX_MSG_CHARS, "turn done");
+        self.label = sanitized_or(&self.label, MAX_MSG_CHARS, "done");
         self
     }
 }
@@ -253,11 +256,11 @@ mod tests {
         assert_eq!(e.label, "did things");
 
         // A label that is NOTHING BUT control chars scrubs to empty — fall
-        // back to the same "turn done" token a live agent turn with an empty
-        // msg gets (`from_observation`), so a ledger row never renders
-        // without an identity and the fallback vocabulary stays singular.
+        // back to an origin-NEUTRAL "done": origin is not retained on a
+        // disk-loaded entry, so this seam must not guess "turn done" (an
+        // agent-turn claim) for what may have been a command completion.
         let e = entry(1, LedgerOutcome::Done, "\x1b[2J\x07", 5).sanitized();
-        assert_eq!(e.label, "turn done");
+        assert_eq!(e.label, "done");
     }
 
     #[test]

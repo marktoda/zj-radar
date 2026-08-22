@@ -99,14 +99,6 @@ fn git_repo_branch(cwd: &str) -> (String, String) {
     (repo, branch)
 }
 
-// Bytes of stdin we're willing to buffer: the shared producer cap
-// (`core::pipe::MAX_STDIN_BYTES`, also notify.sh's `head -c` bound). Generous —
-// 8 MiB dwarfs any real hook payload (even a Write tool's full file `content`)
-// — so it never truncates a legitimate input; it only bounds a degenerate
-// multi-MB/GB stream. Note this is the *input* cap, distinct from the plugin's
-// 64 KB *wire* cap on the broadcast payload the CLI produces.
-use crate::pipe::MAX_STDIN_BYTES;
-
 fn read_stdin() -> String {
     use std::io::IsTerminal;
     let stdin = std::io::stdin();
@@ -118,7 +110,7 @@ fn read_stdin() -> String {
         eprintln!("zj-radar: no piped stdin; using empty payload");
         return String::new();
     }
-    read_capped(stdin.lock(), MAX_STDIN_BYTES)
+    read_capped(stdin.lock(), crate::pipe::MAX_STDIN_BYTES)
 }
 
 /// Read up to `cap` bytes as UTF-8, ignoring IO/UTF-8 errors (the caller derives

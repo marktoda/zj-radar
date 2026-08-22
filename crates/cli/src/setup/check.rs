@@ -213,11 +213,9 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
     let Some(config_dir) = zellij_config_dir_or_report() else { return true };
     let (env, paths) = read_zellij_env(&config_dir, layout_name);
-    // The inspected layout's NAME is the resolved path's stem — the same place
-    // `zellij_config_file_item` gets its path, so the report and the read
-    // can't name different layouts.
-    let inspected_layout = paths.layout_path.file_stem().map(|s| s.to_string_lossy().into_owned());
-    let mut items = zellij_check_items(&analyze_zellij(&env), inspected_layout.as_deref().unwrap_or("default"));
+    // The inspected layout's NAME comes back on `paths` — the same resolution
+    // the read used, so the report and the read can't name different layouts.
+    let mut items = zellij_check_items(&analyze_zellij(&env), &paths.layout_name);
     if let Some(item) =
         zellij_config_file_item(std::env::var_os("ZELLIJ_CONFIG_FILE"), &paths.config_path)
     {

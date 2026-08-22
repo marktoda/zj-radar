@@ -116,6 +116,7 @@ pub(crate) struct ZellijSetupOpts<'a> {
     layout:      Option<&'a str>,
     dry_run:     bool,
     yes:         bool,
+    is_tty:      bool,
 }
 
 pub(crate) struct CodexSetupOpts {
@@ -123,6 +124,7 @@ pub(crate) struct CodexSetupOpts {
     force:         bool,
     dry_run:       bool,
     yes:           bool,
+    is_tty:        bool,
 }
 
 /// The single operation a `setup` invocation performs. Resolving this once makes
@@ -233,6 +235,13 @@ pub fn run(options: SetupOptions<'_>) {
     }
 
     let uninstall = mode == Mode::Uninstall;
+    // Tty-ness resolved ONCE at the invocation boundary (the `inject_mode`
+    // pattern); every consent step in the targets below takes it as a
+    // parameter rather than probing stdin again mid-chain.
+    let is_tty = {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal()
+    };
     if want_zellij {
         let wasm_source = if uninstall {
             WasmSource::None
@@ -254,6 +263,7 @@ pub fn run(options: SetupOptions<'_>) {
                 layout:  options.layout,
                 dry_run: options.dry_run,
                 yes:     options.yes,
+                is_tty,
             },
         );
     }
@@ -265,11 +275,12 @@ pub fn run(options: SetupOptions<'_>) {
                 force:         options.force,
                 dry_run:       options.dry_run,
                 yes:           options.yes,
+                is_tty,
             },
         );
     }
     if want_claude {
-        setup_claude(uninstall, options.dry_run, options.yes);
+        setup_claude(uninstall, options.dry_run, options.yes, is_tty);
     }
 }
 
@@ -305,17 +316,17 @@ pub(crate) fn confirm(prompt: &str, yes: bool, is_tty: bool) -> bool {
     }
     print!("{prompt} [y/N] ");
     let _ = std::io::stdout().flush();
-    confirm_answer(std::io::stdin().lock())
+    let mut line = String::new();
+    let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+    consented(&line)
 }
 
-/// The read-and-parse half of [`confirm`], over any reader: `y`/`yes` (case
-/// folded) consent; anything else — including EOF — declines. Split out so
-/// answered-y, answered-n, and EOF-decline stay unit-tested (the tty gate
-/// above keeps the real stdin out of reach in tests).
-fn confirm_answer(mut reader: impl std::io::BufRead) -> bool {
-    let mut line = String::new();
-    let _ = reader.read_line(&mut line);
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+/// The parse half of [`confirm`]: `y`/`yes` (case folded) consent; anything
+/// else — including the empty string an EOF'd read leaves — declines. Split
+/// out so answered-y, answered-n, and EOF-decline stay unit-tested (the tty
+/// gate above keeps the real stdin out of reach in tests).
+fn consented(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// The shared "commit an edit" tail for every `setup_*` step: prompt (unless
@@ -402,19 +413,18 @@ mod tests {
     }
 
     #[test]
-    fn confirm_answer_accepts_only_y_or_yes() {
-        use std::io::Cursor;
+    fn consented_accepts_only_y_or_yes() {
         // Answered y (any case, either spelling) → consent.
-        assert!(confirm_answer(Cursor::new("y\n")));
-        assert!(confirm_answer(Cursor::new("Y\n")));
-        assert!(confirm_answer(Cursor::new("yes\n")));
-        assert!(confirm_answer(Cursor::new("  YES  \n")));
+        assert!(consented("y\n"));
+        assert!(consented("Y\n"));
+        assert!(consented("yes\n"));
+        assert!(consented("  YES  \n"));
         // Answered n (or anything else) → decline.
-        assert!(!confirm_answer(Cursor::new("n\n")));
-        assert!(!confirm_answer(Cursor::new("no\n")));
-        assert!(!confirm_answer(Cursor::new("yep\n")));
-        // EOF with no answer declines — the default must be the safe "no".
-        assert!(!confirm_answer(Cursor::new("")));
+        assert!(!consented("n\n"));
+        assert!(!consented("no\n"));
+        assert!(!consented("yep\n"));
+        // EOF leaves the buffer empty — the default must be the safe "no".
+        assert!(!consented(""));
     }
 
     #[test]

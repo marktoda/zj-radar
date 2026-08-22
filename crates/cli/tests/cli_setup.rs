@@ -1,12 +1,6 @@
 //! Integration tests for `zj-radar setup` — codex hooks.json wiring, the
 //! zellij install/uninstall/doctor flows, and the claude plugin-CLI flow.
 //!
-//! Codex coverage:
-//!   1. one real run → writes hooks.json with the ZJ_RADAR_CODEX_HOOK=v1
-//!      marker, without touching a foreign notify slot.
-//!   2. dry-run does NOT write hooks.json; positive control: real run DOES write.
-//!   3. idempotency: two real runs → identical hooks.json; first run is non-vacuous.
-//!
 //! Codex tests isolate via CODEX_HOME pointing to a tempdir. The
 //! `codex_installed()` guard inside setup accepts a pre-existing hooks.json, so
 //! we seed the tempdir with an empty `{}` to satisfy it without needing a fake
@@ -28,7 +22,7 @@ fn isolated_codex_home() -> TempDir {
     dir
 }
 
-// ── Test 1: real run installs hooks without touching a foreign notify slot ──
+// ── real run installs hooks without touching a foreign notify slot ──────────
 
 #[test]
 fn setup_codex_installs_hooks_without_touching_foreign_notify() {
@@ -100,7 +94,7 @@ fn setup_dry_run_does_not_write_hooks_json() {
     );
 }
 
-// ── Test 2: idempotency ─────────────────────────────────────────────────────
+// ── idempotency ─────────────────────────────────────────────────────────────
 
 #[test]
 fn setup_codex_hooks_is_idempotent() {
@@ -136,7 +130,7 @@ fn setup_codex_hooks_is_idempotent() {
     );
 }
 
-// ── Test 2b: codex hook guidance mentions disabled hooks when config says so ──
+// ── codex hook guidance mentions disabled hooks when config says so ───────────
 //
 // `print_codex_hook_guidance` writes the `hooks appear disabled` warning to
 // STDERR (it's a warning) and the `run \`/hooks\`` line to STDOUT — always,
@@ -201,7 +195,7 @@ fn setup_codex_guidance_silent_on_disabled_warning_when_hooks_enabled() {
     );
 }
 
-// ── Test 3: `--wasm` and `--download` are mutually exclusive ─────────────────
+// ── `--wasm` and `--download` are mutually exclusive ─────────────────────────
 // The guard must short-circuit before any download or config write.
 
 #[test]
@@ -394,7 +388,7 @@ fn isolated_zellij_config(layout_text: &str) -> TempDir {
     dir
 }
 
-// ── Test 4pre: --inject with NO layout file creates the full layout ──────────
+// ── --inject with NO layout file creates the full layout ─────────────────────
 // A stock Zellij ships no layout file at all — this is most first installs.
 // The old behavior printed a fragment snippet with nothing to paste it into
 // (a dead end); with --inject consent, the full known-good layout is created.
@@ -447,7 +441,7 @@ fn setup_zellij_yes_never_creates_a_layout_file() {
     );
 }
 
-// ── Test 4a: --inject writes the rail into the layout and creates a .bak ──────
+// ── --inject writes the rail into the layout and creates a .bak ───────────────
 
 #[test]
 fn setup_zellij_inject_writes_rail_and_bak() {
@@ -489,7 +483,7 @@ fn setup_zellij_inject_writes_rail_and_bak() {
     );
 }
 
-// ── Test 4a2: --inject with existing swaps skips swap blocks, prints advisory ──
+// ── --inject with existing swaps skips swap blocks, prints advisory ────────────
 
 #[test]
 fn setup_zellij_inject_with_existing_swaps_skips_swaps_and_advises() {
@@ -548,7 +542,7 @@ layout {
     );
 }
 
-// ── Test 4b: --yes without --inject → Snippet: layout unchanged, prints snippet ─
+// ── --yes without --inject → Snippet: layout unchanged, prints snippet ──────────
 
 #[test]
 fn setup_zellij_yes_without_inject_prints_snippet_and_does_not_modify() {
@@ -581,7 +575,7 @@ fn setup_zellij_yes_without_inject_prints_snippet_and_does_not_modify() {
     );
 }
 
-// ── Test 4c: --uninstall reverses injection ────────────────────────────────────
+// ── --uninstall reverses injection ─────────────────────────────────────────────
 
 #[test]
 fn setup_zellij_uninstall_reverses_injection() {
@@ -626,7 +620,7 @@ fn setup_zellij_uninstall_reverses_injection() {
     );
 }
 
-// ── Test 4c2: --uninstall deletes a layout that setup created whole ───────────
+// ── --uninstall deletes a layout that setup created whole ─────────────────────
 // The no-layout `--inject` path writes `full_layout()` as a new file — no
 // markers, but it references the `radar` alias. Uninstall strips the alias, so
 // leaving that layout behind would strand the next plain Zellij launch on a
@@ -660,7 +654,7 @@ fn setup_zellij_uninstall_deletes_layout_setup_created_whole() {
     );
 }
 
-// ── Test 4c3: --uninstall never deletes an edited marker-less layout ──────────
+// ── --uninstall never deletes an edited marker-less layout ────────────────────
 // Same starting point, but the user has edited the file since: no longer
 // byte-identical to `full_layout()`, so it must survive — with an advisory
 // naming the dead `radar` alias reference instead of a silent strand.
@@ -707,7 +701,7 @@ fn setup_zellij_uninstall_advises_on_edited_whole_created_layout() {
     );
 }
 
-// ── Test 4d: --dry-run prints what would change, writes nothing ────────────────
+// ── --dry-run prints what would change, writes nothing ─────────────────────────
 
 #[test]
 fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
@@ -741,7 +735,7 @@ fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     );
 }
 
-// ── Test 5: zellij producer hint on the success tail ─────────────────────────
+// ── zellij producer hint on the success tail ─────────────────────────────────
 //
 // `print_producer_hint_if_needed` runs at the tail of a successful `setup
 // zellij` install, on both the `Outcome::Unchanged` arm (config already up to
@@ -840,7 +834,7 @@ fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
     );
 }
 
-// ── Test 6: the grant hint is skipped when permissions.kdl already grants ─────
+// ── the grant hint is skipped when permissions.kdl already grants ─────────────
 //
 // The install path used to build its `ZellijFacts` with `permissions_text:
 // None`, so `granted` was always None and the first-launch grant walkthrough
@@ -1485,7 +1479,7 @@ fn setup_claude_skips_when_binary_missing() {
 fn setup_claude_without_consent_runs_nothing() {
     // Piped stdin means no tty at the boundary probe, so `confirm` takes the
     // safe "no" without reading (answered-y/-n and EOF-decline live in
-    // `confirm_answer`'s unit tests) — the invariant here is that the unmet
+    // `consented`'s unit tests) — the invariant here is that the unmet
     // prompt never lets the plugin CLI run, and says how to consent (-y).
     let shim = ShimDir::new();
     shim.add_recorder("claude");

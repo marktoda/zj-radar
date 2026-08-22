@@ -59,14 +59,27 @@ pub(crate) const STALE_AFTER_SECS: u64 = 90;
 /// returns, fresh.
 pub(crate) const DEAD_AFTER_SECS: u64 = 300;
 
-/// A peer's [`Presence`] plus the staleness derived from its presence
-/// file's mtime age at the last read (see the module doc). `stale` is a
-/// snapshot from that read, not re-evaluated against a live clock — like
-/// every other peer fact here, it's only ever as fresh as the last
-/// `update_presences` call.
+/// A peer's [`Presence`] plus its presence file's mtime age at the last
+/// read (see the module doc). `age_secs` is a snapshot from that read, not
+/// re-evaluated against a live clock — like every other peer fact here,
+/// it's only ever as fresh as the last `update_presences` call.
 struct Peer {
     presence: Presence,
-    stale: bool,
+    age_secs: u64,
+}
+
+impl Peer {
+    /// Past [`STALE_AFTER_SECS`]: dimmed on the badge, unreachable via
+    /// `cycle()`. The one place the threshold is applied.
+    fn stale(&self) -> bool {
+        self.age_secs > STALE_AFTER_SECS
+    }
+
+    /// Past [`DEAD_AFTER_SECS`]: reaped from the badge, name reported for
+    /// the on-disk unlink. The one place the threshold is applied.
+    fn dead(&self) -> bool {
+        self.age_secs > DEAD_AFTER_SECS
+    }
 }
 
 /// A row in the shared ordering: a [`Presence`] (own or peer) plus whether
@@ -89,7 +102,6 @@ struct OrderedEntry<'a> {
 /// `peers` this pass, reported so the runtime can unlink their files
 /// (`Effect::DismissPresence`). Sorted by name, so the downstream effect
 /// order is deterministic (the dedup map isn't).
-#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PresenceUpdate {
     pub changed: bool,
     pub dead: Vec<String>,
@@ -172,13 +184,19 @@ impl Sessions {
         // carried alongside is whichever entry won this dedup — a corpse
         // losing to a fresh recreation of the same name also loses its
         // (typically old) age along with it.
-        let mut by_name: HashMap<String, (Presence, u64)> = HashMap::new();
+        let mut by_name: HashMap<String, Peer> = HashMap::new();
         for (json, age_secs) in raw {
             let Some(p) = Presence::parse(&json) else { continue };
-            if by_name.get(&p.session_name).is_some_and(|(kept, _)| kept.updated_epoch_s > p.updated_epoch_s) {
-                continue; // existing is strictly fresher: keep it
+            match by_name.entry(p.session_name.clone()) {
+                std::collections::hash_map::Entry::Occupied(kept)
+                    if kept.get().presence.updated_epoch_s > p.updated_epoch_s => {} // existing is strictly fresher: keep it
+                std::collections::hash_map::Entry::Occupied(mut kept) => {
+                    kept.insert(Peer { presence: p, age_secs });
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(Peer { presence: p, age_secs });
+                }
             }
-            by_name.insert(p.session_name.clone(), (p, age_secs));
         }
         // Grade each entry's age AFTER the dedup, never before: a dead
         // corpse must not report its name dead when a fresher file for the
@@ -186,12 +204,11 @@ impl Sessions {
         let mut dead: Vec<String> = Vec::new();
         self.peers = by_name
             .into_values()
-            .filter_map(|(presence, age_secs)| {
-                if age_secs > DEAD_AFTER_SECS {
-                    dead.push(presence.session_name);
-                    return None;
+            .filter(|p| {
+                if p.dead() {
+                    dead.push(p.presence.session_name.clone());
                 }
-                Some(Peer { presence, stale: age_secs > STALE_AFTER_SECS })
+                !p.dead()
             })
             .collect();
         dead.sort();
@@ -368,8 +385,8 @@ impl Sessions {
             if own_name == Some(peer.presence.session_name.as_str()) {
                 continue;
             }
-            let entry = OrderedEntry { presence: &peer.presence, is_current: false, stale: peer.stale };
-            if peer.stale {
+            let entry = OrderedEntry { presence: &peer.presence, is_current: false, stale: peer.stale() };
+            if peer.stale() {
                 stale.push(entry);
             } else if peer.presence.attention > 0 {
                 attention.push(entry);

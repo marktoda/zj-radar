@@ -104,6 +104,11 @@ const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 /// fire alone starved exactly the busiest sessions stale.
 const PRESENCE_HEARTBEAT_S: u64 = 60;
 
+// The liveness ladder's safety argument IS this ordering — writes beat the
+// dim threshold, and dimming long precedes the file-deleting reap.
+const _: () = assert!(PRESENCE_HEARTBEAT_S < crate::sessions::STALE_AFTER_SECS);
+const _: () = assert!(crate::sessions::STALE_AFTER_SECS < crate::sessions::DEAD_AFTER_SECS);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     RequestPermission,
@@ -159,7 +164,10 @@ pub(crate) enum Effect {
     SwitchSession { name: String, tab_position: Option<usize> },
     /// Delete every on-disk presence file whose `session_name` matches
     /// `name` — all of them, since a name can have multiple pid-keyed
-    /// corpses (`sessions.rs`'s dedup doc). Emitted by `mouse_right_click`
+    /// corpses (`sessions.rs`'s dedup doc) — except this session's own
+    /// live file, which `SessionFiles::remove_presences_matching` spares
+    /// by path identity, so even a dismiss of our own name (a dead corpse
+    /// of a restarted session) is safe. Emitted by `mouse_right_click`
     /// right after `Sessions::dismiss` has already dropped the name from
     /// THIS instance's in-memory roster (the instant-feedback half); this
     /// is the on-disk half, so every peer's next Fast read converges too.
@@ -569,9 +577,9 @@ impl PluginRuntime {
     /// what the target resolved to:
     ///
     /// - **A peer-session badge line** (`session: Some(name)`) — dismiss a
-    ///   STALE cross-session entry, the manual complement to the 6h
-    ///   open-time sweep (`session_files`'s `PRESENCE_MAX_AGE`), for a
-    ///   session the user already knows is dead. This branch is untouched
+    ///   STALE cross-session entry, the manual complement to the
+    ///   `sessions::DEAD_AFTER_SECS` auto-reap, for a stale-not-yet-dead
+    ///   entry the user already knows is dead. This branch is untouched
     ///   from before issue #5 and takes precedence: a session target never
     ///   also carries a `pane_id`, but checking it first keeps the cases
     ///   visibly exclusive rather than relying on that absence. Everything
@@ -743,23 +751,17 @@ impl PluginRuntime {
     /// already reaped from the badge, and each gets an
     /// `Effect::DismissPresence` here so the on-disk file is unlinked too —
     /// idempotent across the per-tab instances (every unlink after the
-    /// first finds nothing left matching). One exemption: our OWN name. A
-    /// dead corpse can carry this session's name (pid-keyed files — see
-    /// `Sessions::ordered`'s collision note), and the on-disk dismiss
-    /// deletes by name content with deliberately no own-file exclusion
-    /// (`SessionFiles::remove_presences_matching`) — dismissing our own
-    /// name would unlink our own LIVE presence file and blank this session
-    /// off every peer's badge until the next heartbeat. Such a corpse is
-    /// left to the open-time `PRESENCE_MAX_AGE` sweep instead (it never
-    /// renders anyway — `ordered()` drops own-name peers outright).
+    /// first finds nothing left matching). Unconditional, own name
+    /// included: a dead corpse can carry this session's name (pid-keyed
+    /// files — see `Sessions::ordered`'s collision note), and reaping it is
+    /// safe because the on-disk delete spares our own live file by *path*
+    /// identity (`SessionFiles::remove_presences_matching`'s own-file
+    /// exclusion), never by name.
     pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
         let update = self.sessions.update_presences(raw);
         let change = RadarChange { render: update.changed, ..RadarChange::default() };
         let mut out = self.project(vec![], change, self.last_now_epoch_s);
         for name in update.dead {
-            if name == self.own_session_name {
-                continue;
-            }
             out.effects.push(Effect::DismissPresence { name });
         }
         out

@@ -38,16 +38,15 @@ const NOTIFY_CLAIM_TTL: Duration = Duration::from_secs(30);
 const NOTIFY_CLAIM_SWEEP_AGE: Duration = Duration::from_secs(300);
 const PERMISSION_GRANTED_MARKER: &str = "granted";
 const PERMISSION_DENIED_MARKER: &str = "denied";
-/// Horizon after which a presence file is deleted as debris at `open` time —
-/// the ONLY true forgetting a peer's roster entry is subject to (never-vanish
-/// roster, user decision: a remembered session must never silently vanish
-/// from the badge — `docs/design.md`). Peers dead well before their file
-/// turns 6h old still keep showing up in every other session's badge, dimmed
-/// as stale
-/// (`sessions::STALE_AFTER_SECS`) rather than dropped — this sweep only
-/// exists so a long string of genuinely dead sessions' files don't
-/// accumulate forever in the shared root. Generous: a detached-but-alive
-/// session whose timer idles must not be reaped.
+/// Horizon after which a presence file is deleted as debris at `open` time.
+/// NOT the primary forgetting: the roster ladder (`docs/design.md`) is
+/// fresh (≤90s, `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
+/// reaped past `sessions::DEAD_AFTER_SECS` (300s), when the runtime's
+/// auto-reap unlinks the file (`Effect::DismissPresence`). This sweep is
+/// the backstop for debris that reap can't touch — malformed/unparseable
+/// files, which never produce a name to dismiss by. Generous: a live
+/// session heartbeats its file every 60s, so anything this old is
+/// unambiguously abandoned.
 const PRESENCE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 /// Deliberately distinct from the pid-scoped `session_prefix` (`zj-radar.<pid>`) so
 /// `is_owned_session_file` / `is_current_session_file` and the snapshot sweep
@@ -193,20 +192,17 @@ impl SessionFiles {
     /// Raw JSON of every OTHER session's presence file (own pid excluded, tmp
     /// files excluded), paired with how long ago its mtime was last touched.
     /// Parsing/validation is the caller's job (`Presence::parse` skips
-    /// corrupt peers) — and so, now, is staleness: this method used to treat
-    /// an old mtime as "peer is gone" and skip it outright, but the
-    /// never-vanish-roster user decision (`docs/design.md`) is that a
-    /// remembered session must never silently vanish from the badge, so
-    /// every peer file found comes back
-    /// unconditionally. `age_secs` is measured off THIS session's own
+    /// corrupt peers) — and so is liveness grading: every peer file found
+    /// comes back unconditionally, and `sessions::Sessions::update_presences`
+    /// grades its age into the fresh (≤90s) → stale/dimmed (90–300s) →
+    /// reaped (>300s, `sessions::DEAD_AFTER_SECS`) ladder without doing its
+    /// own filesystem I/O. `age_secs` is measured off THIS session's own
     /// filesystem clock reading the file's mtime — not the peer's
     /// self-reported `updated_epoch_s` inside the JSON, which a corrupt or
-    /// merely-slow-to-update peer could get wrong — and lets
-    /// `sessions::Sessions::update_presences` mark an entry stale
-    /// (`sessions::STALE_AFTER_SECS`) without doing its own filesystem I/O.
-    /// Read-only regardless: nothing is ever deleted here (the open-time
-    /// sweep, `PRESENCE_MAX_AGE`, owns the only actual forgetting). Read on
-    /// timer ticks only — bounded by live session count, never per-pane.
+    /// merely-slow-to-update peer could get wrong. Read-only regardless:
+    /// nothing is ever deleted here (the reap's `Effect::DismissPresence`
+    /// and the open-time `PRESENCE_MAX_AGE` sweep own the forgetting). Read
+    /// on timer ticks only — bounded by live session count, never per-pane.
     pub(crate) fn read_peer_presences(&self) -> Vec<PeerPresenceFile> {
         self.read_peer_presences_at(SystemTime::now())
     }
@@ -231,28 +227,32 @@ impl SessionFiles {
     }
 
     /// Delete every presence file in the shared root whose raw JSON content
-    /// satisfies `matches` — the on-disk half of a manual dismiss
-    /// (`Effect::DismissPresence`), and the only forgetting besides the
-    /// open-time `PRESENCE_MAX_AGE` sweep. Same file recognizer as
-    /// `read_peer_presences` (prefix + `.json`, so tmp files and snapshots
-    /// never match), but deliberately no own-file exclusion: this is
-    /// content-driven, not identity-driven, and the runtime only ever calls
-    /// it for a name it has confirmed stale — the own entry is never stale
-    /// (`sessions::Sessions::dismiss`). Every match is deleted, not just the
-    /// freshest: a name can have multiple pid-keyed corpses on disk (see
-    /// `update_presences`'s dedup doc in `sessions.rs`). Parse-agnostic on
-    /// purpose — the predicate receives raw file content, and the caller
-    /// (lib.rs's effect handler) supplies a `Presence::parse`-based closure,
-    /// so name matching stays exactly as lenient as every other presence
-    /// read path without this module learning about `Presence` at all.
-    /// A no-op in disabled mode (no writable root).
+    /// satisfies `matches` — the on-disk half of a dismiss
+    /// (`Effect::DismissPresence`, manual or auto-reap). Same file
+    /// recognizer as `read_peer_presences` (prefix + `.json`, so tmp files
+    /// and snapshots never match) and the same own-file exclusion, applied
+    /// at the same pre-read seam: this session's own live file is spared by
+    /// *path* identity, so the delete primitive itself can never unlink it
+    /// — but its NAME is still matched like any other content, so a dead
+    /// pid-keyed corpse carrying our own name (a restarted session) is
+    /// reaped here like any other corpse. Every match is deleted, not just
+    /// the freshest: a name can have multiple pid-keyed corpses on disk
+    /// (see `update_presences`'s dedup doc in `sessions.rs`). One edge two
+    /// servers sharing a presence root can hit: a name-matched delete could
+    /// unlink a same-named LIVE session under another server — covered by
+    /// the non-destructive doctrine (`sessions::Sessions::dismiss`): its
+    /// next heartbeat republishes the file and it reappears fresh.
+    /// Parse-agnostic on purpose — the predicate receives raw file content,
+    /// and the caller (lib.rs's effect handler) supplies a
+    /// `Presence::parse`-based closure, so name matching stays exactly as
+    /// lenient as every other presence read path without this module
+    /// learning about `Presence` at all. A no-op in disabled mode (no
+    /// writable root).
     pub(crate) fn remove_presences_matching(&self, matches: impl Fn(&str) -> bool) {
         let Some(paths) = &self.paths else {
             return;
         };
-        // Pass-all name predicate: the delete is content-driven by design
-        // (see above), so every presence file must actually be read.
-        for_each_presence_file(&paths.root, |_| true, |entry, json| {
+        for_each_presence_file(&paths.root, |name| !paths.is_own_presence_file(name), |entry, json| {
             if matches(&json) {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1039,13 +1039,12 @@ mod tests {
 
     #[test]
     fn read_peer_presences_never_drops_an_old_mtime_peer_and_reports_its_age() {
-        // Never-vanish roster, user decision: a remembered session must
-        // never silently vanish from the badge. This method used to skip a
-        // peer once its file's mtime drifted past a liveness TTL; now it must keep
-        // returning that peer unconditionally — dropping only ever happens
-        // at `open`'s much-longer `PRESENCE_MAX_AGE` sweep — and report an
-        // honest age so the caller (`sessions::Sessions`) can mark it stale
-        // instead.
+        // The read path grades nothing: this method used to skip a peer
+        // once its file's mtime drifted past a liveness TTL; now it must
+        // keep returning that peer unconditionally with an honest age, so
+        // the caller (`sessions::Sessions`) owns the whole fresh → stale →
+        // reaped ladder — dropping happens there (`DEAD_AFTER_SECS`) or at
+        // `open`'s much-longer `PRESENCE_MAX_AGE` debris sweep, never here.
         let dir = tempfile::tempdir().unwrap();
         let reader = SessionFiles::open_with_roots_at(
             SessionFileIds { plugin_id: 1, zellij_pid: 100 },
@@ -1083,7 +1082,7 @@ mod tests {
         let old = peers.iter().find(|p| p.json.contains("\"old\"")).expect("old-mtime peer still present, not dropped");
         assert!(fresh.age_secs < 5, "freshly-written peer's age should read ~0s, got {}", fresh.age_secs);
         assert!(old.age_secs >= old_age.as_secs(), "backdated peer's age must reflect its real mtime, got {}", old.age_secs);
-        assert!(old_path.exists(), "the read path must never delete anything — only the open-time sweep does");
+        assert!(old_path.exists(), "the read path must never delete anything — only the dismiss/reap and the open-time sweep do");
     }
 
     #[test]
@@ -1136,6 +1135,41 @@ mod tests {
         assert!(!dir.path().join("zj-radar.presence.200.json").exists());
         assert!(!dir.path().join("zj-radar.presence.300.json").exists());
         assert!(dir.path().join("zj-radar.presence.400.json").exists());
+    }
+
+    #[test]
+    fn remove_presences_matching_spares_the_own_file_but_reaps_same_name_corpses() {
+        // The own-file exclusion lives at the delete primitive itself, by
+        // *path* identity: a dismiss of this session's own NAME (a dead
+        // pid-keyed corpse of a restarted session) unlinks the corpse's
+        // file while the live file this instance keeps heartbeating is
+        // structurally unreachable — which is what lets the runtime's
+        // auto-reap treat its own name like any other dead name.
+        let dir = tempfile::tempdir().unwrap();
+        let me = SessionFiles::open_with_roots_at(
+            SessionFileIds { plugin_id: 1, zellij_pid: 100 },
+            [dir.path().to_path_buf()],
+            SystemTime::now(),
+            SNAPSHOT_MAX_AGE,
+        );
+        me.files.persist_presence(r#"{"session_name":"alpha","running":1,"attention":0}"#);
+        // A corpse of a previous server incarnation, same name, older pid.
+        std::fs::write(
+            dir.path().join("zj-radar.presence.99.json"),
+            r#"{"session_name":"alpha","running":0,"attention":0}"#,
+        )
+        .unwrap();
+
+        me.files.remove_presences_matching(|json| json.contains(r#""alpha""#));
+
+        assert!(
+            dir.path().join("zj-radar.presence.100.json").exists(),
+            "the own live file must be spared by path identity even when its name matches"
+        );
+        assert!(
+            !dir.path().join("zj-radar.presence.99.json").exists(),
+            "a same-name corpse under another pid must be reaped"
+        );
     }
 
     #[test]
