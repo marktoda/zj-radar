@@ -52,8 +52,8 @@ The rail and the status feed are separate installs (sidebar vs
 Diagnose in order:
 
 1. **`zj-radar setup zellij --check`** — the `producer` item says whether a
-   producer (the Claude plugin or Codex hooks) is wired at all; the `grant`
-   item catches a missing permission grant.
+   producer (the Claude plugin, Codex hooks, or Opencode bridge plugin) is
+   wired at all; the `grant` item catches a missing permission grant.
 2. **Bypass the producers with the smoke test** — broadcast a fake status
    straight from a shell *inside* the session (see
    [Writing your own producer](producers.md#writing-your-own-producer) for the

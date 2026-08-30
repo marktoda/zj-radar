@@ -47,11 +47,11 @@ wrapping your agents. It's a status rail for the session you already run.
 
 ## Highlights
 
-- See which Claude Code / Codex tabs are **working, done, errored, or waiting for you**.
+- See which Claude Code / Codex / Opencode tabs are **working, done, errored, or waiting for you**.
 - **Jump directly** to the tab that needs attention (bind `attention-next` — see [binding keys to commands](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md#binding-keys-to-commands)).
 - Keep your existing Zellij workflow — **no new terminal, no tmux wrapper, no agent orchestrator**.
 - **Push-driven** updates via `zellij pipe`; no pane polling, no per-output host queries.
-- Works with **Claude Code** today, **Codex** via the native CLI, and any
+- Works with **Claude Code**, **Codex**, and **Opencode** today, and any
   [custom producer](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#writing-your-own-producer) that can send JSON.
 - Running more than one Zellij session? A **cross-session badge** shows every
   other session's live status-origin pane counts, with click-to-switch and a
@@ -96,8 +96,9 @@ panes stay dark (the sidebar deliberately doesn't guess at agents it can't
 hear from). One command per agent:
 
 ```sh
-zj-radar setup claude   # installs the zj-radar-claude plugin via Claude Code's marketplace
-zj-radar setup codex    # wires Codex hooks — then run `/hooks` inside Codex to trust them
+zj-radar setup claude    # installs the zj-radar-claude plugin via Claude Code's marketplace
+zj-radar setup codex     # wires Codex hooks — then run `/hooks` inside Codex to trust them
+zj-radar setup opencode  # drops the JS bridge plugin into opencode's plugins dir — then restart opencode
 ```
 
 (Prefer Claude Code's own UI? `/plugin install zj-radar-claude@zj-radar` inside
@@ -220,12 +221,14 @@ The full option table, keybindings for runtime config, and `attention-next` /
 
 ## Producers
 
-A producer broadcasts agent status to the sidebar. zj-radar ships three and
+A producer broadcasts agent status to the sidebar. zj-radar ships four and
 documents the wire format so you can write your own:
 
 - **Claude Code** — a Claude plugin that auto-registers status hooks (no
   `settings.json` editing).
 - **Codex / native CLI** — `zj-radar notify` + `zj-radar setup codex`.
+- **Opencode** — a vendored JS bridge plugin dropped into opencode's
+  auto-loaded plugins dir (`zj-radar setup opencode`).
 - **Custom** — `zj-radar notify generic --status/--msg/--task/--source` from
   any script (no JSON needed), or broadcast a `zj_radar.status.v1` JSON
   payload from anything.
@@ -238,7 +241,7 @@ schema, and a copy-paste smoke test.
 | Doc | What's in it |
 |-----|--------------|
 | [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md) | Full sidebar install: CLI + manual setup, layout templates, permissions, remote-URL caveat, Nix / home-manager. |
-| [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, and writing your own producer (payload schema + smoke test). |
+| [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, Opencode, and writing your own producer (payload schema + smoke test). |
 | [`docs/configuration.md`](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md) | Density/naming/header/glyphs, runtime config, and keybindings. |
 | [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md) | Attention/activity semantics: jobs vs services vs interactive programs, and how each renders. |
 | [`docs/rail-reference.md`](https://github.com/marktoda/zj-radar/blob/main/docs/rail-reference.md) | The executable render spec — `include_str!`'d by the plugin's reference tests. |
@@ -256,8 +259,10 @@ schema, and a copy-paste smoke test.
   interactive, each with its own presentation (spinner + run tag, steady `▸`,
   muted label); see [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md).
 - ✅ **Claude Code producer** — ships as a Claude plugin (`plugins/zj-radar-claude`).
-- ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex) and
-  conflict-aware `setup`; see [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md#codex-and-the-native-cli).
+- ✅ **Codex producer** — native CLI `notify` + `setup codex` (hooks.json).
+- ✅ **Opencode producer** — vendored JS bridge plugin + `setup opencode`.
+- ✅ **`zj-radar` CLI** — native, jq-free `notify` (Claude + Codex + Opencode)
+  and conflict-aware `setup`; see [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md).
 - ✅ **Prebuilt releases** — a tagged release ships static Linux + macOS CLI
   binaries, a one-line `curl | sh` installer, and the sidebar wasm;
   `zj-radar setup zellij --download` fetches the matching wasm. See

@@ -252,9 +252,9 @@ unaffected.
 
 ```json
 { "v": 1,
-  "source": "claude",                 // Kind vocabulary: claude | codex | gemini | command |
+  "source": "claude",                 // Kind vocabulary: claude | codex | opencode | gemini | command |
                                       //   test | build | deploy | server | other (unknown → other);
-                                      //   the instrumented-agent set is exactly {claude, codex}
+                                      //   the instrumented-agent set is exactly {claude, codex, opencode}
   "pane": { "type": "terminal", "id": 12 },   // typed to match Zellij's PaneId enum
   "status": "running",                // running | pending | done | error | idle
   "repo": "pinky",
@@ -440,7 +440,7 @@ the normal `cwd_changed` path):
   main-thread work), and treat naming as best-effort cosmetics — a missing cwd/title just leaves
   the existing name.
 
-## 7. Agent adapters (v1: Claude + Codex)
+## 7. Agent adapters (v1: Claude + Codex + Opencode)
 
 - **Claude Code** — a Claude plugin (`plugins/zj-radar-claude/`) whose `scripts/notify.sh`
   broadcasts the rich `zj_radar.status.v1` payload (computing repo/branch/msg/pane). Claude

@@ -1,0 +1,162 @@
+// ZJ_RADAR_OPENCODE_PLUGIN=v1
+//
+// zj-radar bridge plugin for opencode. vendored by `zj-radar setup opencode`
+// into opencode's auto-loaded global plugins dir (~/.config/opencode/plugins/),
+// so no `opencode.json` edit is needed and a clean uninstall is one file delete.
+//
+// Spawn discipline (load-bearing, see CONTEXT.md → Status contract / Bounded
+// sends): this bridge spawns `zj-radar notify opencode --status <s>` per event
+// with the payload JSON on stdin. The `zellij pipe` send is bounded by the CLI
+// path (self_limiting_pipe_argv's watchdog survives this bridge's own death),
+// so the bridge adds no second pipe client. Spawns are strictly FIFO (never
+// concurrent) to preserve in-order / latest-wins; each child has a hard ~10s
+// kill timer as an outer backstop; a rejected child never breaks the queue.
+// ASYNC SPAWN ONLY — never a synchronous spawn: the plugin runs in opencode's
+// process, so a wedged rail must not freeze the TUI event loop.
+//
+// The bridge picks the status class (it knows the event); the Rust adapter
+// (crates/cli/src/agents/opencode.rs) owns the refinements keyed off the
+// payload's `event` field.
+
+// Resolved once at plugin init. `directory` is the session cwd (forwarded as
+// `cwd` on every spawn so the rail resolves repo/branch without a host probe).
+let CWD = "";
+
+// The last assistant text part seen via `message.part.updated`, tracked so a
+// `session.idle` (which carries no message text) can emit the turn's final
+// assistant text for the adapter's trailing-question Done→Pending remap.
+let lastAssistantText = "";
+
+// FIFO spawn queue: each notify resolves before the next spawns, preserving
+// in-order / latest-wins. A rejected child is swallowed so the queue never jams.
+let chain = Promise.resolve();
+
+function enqueue(status, payload) {
+  chain = chain.then(() => notify(status, payload)).catch(() => {});
+  return chain;
+}
+
+// Bounded async spawn: write the JSON payload to the child's stdin, then close
+// it; a hard kill timer reaps a wedged child so the queue keeps moving. Returns
+// a promise that resolves when the child exits (cleanly or killed).
+function notify(status, payload) {
+  // Gate: skip entirely when not running under Zellij (the CLI no-ops anyway,
+  // but spawning it pointlessly burns a process per event).
+  if (!process.env.ZELLIJ) return Promise.resolve();
+  // Gate: skip spawn when zj-radar isn't on PATH (Bun.which returns undefined).
+  // Wiring only happens via `zj-radar setup opencode`, which implies the binary
+  // — but a partial install or a moved binary must not throw inside the TUI.
+  if (!Bun.which("zj-radar")) return Promise.resolve();
+
+  const data = JSON.stringify({ ...payload, cwd: CWD });
+  let child;
+  try {
+    child = Bun.spawn(["zj-radar", "notify", "opencode", "--status", status], {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  } catch {
+    return Promise.resolve(); // spawn failed — never throw in the TUI
+  }
+  try {
+    child.stdin.write(data);
+    child.stdin.end();
+  } catch {
+    // A broken stdin pipe is the child's problem; the kill timer reaps it.
+  }
+  const timer = setTimeout(() => {
+    try { child.kill(); } catch {}
+  }, 10_000);
+  return child.exited
+    .then(() => clearTimeout(timer))
+    .catch(() => clearTimeout(timer));
+}
+
+// Extract the user's prompt text from a chat.message `output.parts` array
+// (UserMessage itself carries no text — the prompt is in its TextParts).
+function promptText(parts) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p) => p && p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+}
+
+// Extract a human message from opencode's error union ({ name, data: { message? } }).
+function errorMessage(error) {
+  if (!error) return "";
+  if (error.data && typeof error.data.message === "string" && error.data.message) {
+    return error.data.message;
+  }
+  return typeof error.name === "string" ? error.name : "";
+}
+
+export const ZjRadarPlugin = async ({ directory }) => {
+  CWD = typeof directory === "string" ? directory : "";
+  return {
+    // User submitted a prompt → running, with the prompt text for task capture.
+    "chat.message": async (_input, output) => {
+      const prompt = promptText(output && output.parts);
+      enqueue("running", { event: "chat.message", prompt });
+    },
+
+    // Tool about to run / just ran → running, with the live tool activity.
+    "tool.execute.before": async (input, output) => {
+      enqueue("running", {
+        event: "tool.execute",
+        tool: input && input.tool,
+        tool_input: output && output.args,
+      });
+    },
+    "tool.execute.after": async (input) => {
+      enqueue("running", {
+        event: "tool.execute",
+        tool: input && input.tool,
+        tool_input: input && input.args,
+      });
+    },
+
+    // opencode is asking for permission → pending, with the permission title.
+    "permission.ask": async (input) => {
+      enqueue("pending", {
+        event: "permission.ask",
+        message: input && input.title,
+      });
+    },
+
+    // The catch-all event stream: session lifecycle + assistant-text tracking.
+    event: async ({ event }) => {
+      const type = event && event.type;
+      const props = (event && event.properties) || {};
+      switch (type) {
+        // Track the latest assistant text part so session.idle can emit it.
+        case "message.part.updated": {
+          const part = props.part;
+          if (part && part.type === "text" && typeof part.text === "string") {
+            lastAssistantText = part.text;
+          }
+          break;
+        }
+        // Turn complete → done, with the tracked final assistant text (the
+        // adapter remaps to pending if it ends in a question).
+        case "session.idle":
+          enqueue("done", { event: "session.idle", message: lastAssistantText });
+          lastAssistantText = "";
+          break;
+        // A real failure signal Claude's hook model lacks → error.
+        case "session.error":
+          enqueue("error", { event: "session.error", message: errorMessage(props.error) });
+          lastAssistantText = "";
+          break;
+        // Session lifecycle → idle (row recedes; /clear, new/deleted session).
+        case "session.created":
+        case "session.deleted":
+          enqueue("idle", { event: "session.lifecycle" });
+          lastAssistantText = "";
+          break;
+      }
+    },
+  };
+};

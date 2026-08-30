@@ -31,7 +31,7 @@ keeps the model extensible:
 | Axis | Type | Values | Who owns it |
 |---|---|---|---|
 | **Origin** | `ObservationOrigin` (exists) | `StatusPipe` \| `Command` | intake: pushed payload vs `CommandChanged` |
-| **Kind** | `Kind` (exists) | Claude, Codex, Gemini, Test, Build, Deploy, Server, Command, Other | classification (`Kind::from_source` on the pushed source token / `command::classify`) |
+| **Kind** | `Kind` (exists) | Claude, Codex, Opencode, Gemini, Test, Build, Deploy, Server, Command, Other | classification (`Kind::from_source` on the pushed source token / `command::classify`) |
 | **Class** | semantic vocabulary — **not** a stored or derived Rust type | `Job` \| `Service` \| `Companion` | this document |
 
 The classes are the *semantic model*, deliberately NOT an `AttentionClass`

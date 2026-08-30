@@ -51,6 +51,7 @@
         // shapes, so it carries no evidence and is not a parameter.
         assert!(is_agent_command(&argv(&["claude"])));
         assert!(is_agent_command(&argv(&["codex"])));
+        assert!(is_agent_command(&argv(&["opencode"])));
         // Env/wrapper prefixes are peeled, mirroring is_shell_prompt.
         assert!(is_agent_command(&argv(&["env", "FOO=1", "claude"])));
         // Shells, ordinary commands, and nothing don't vouch.
@@ -179,6 +180,7 @@
             // Agents, by basename.
             (argv(&["claude"]), "claude", Kind::Claude),
             (argv(&["codex", "--dangerously-bypass-sandbox"]), "codex", Kind::Codex),
+            (argv(&["opencode", "run", "hi"]), "opencode", Kind::Opencode),
             (argv(&["gemini"]), "gemini", Kind::Gemini),
             // Test runners across ecosystems.
             // The `--features` VALUE reads as a target ("cargo test cli") — a
@@ -770,7 +772,7 @@
         // The set of suppressed agents is exactly the push adapters (see the
         // `agent_names_match_push_adapter_sources` guard); Gemini is NOT one —
         // see `gemini_foreground_command_is_tracked`.
-        for agent in &["claude", "codex"] {
+        for agent in &["claude", "codex", "opencode"] {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &[agent.to_string()], true, Some("/work/repo"), 1);
             assert!(
@@ -787,10 +789,11 @@
 
     #[test]
     fn gemini_foreground_command_is_tracked() {
-        // Gemini has no push adapter (the shipped scope is Claude + Codex), so
-        // unlike them it is *observed* via command-tracking rather than
-        // suppressed — otherwise its panes would show nothing at all. It carries
-        // its own `Kind::Gemini` source so it renders with the gemini mark.
+        // Gemini has no push adapter (the shipped scope is Claude, Codex, and
+        // Opencode), so unlike them it is *observed* via command-tracking
+        // rather than suppressed — otherwise its panes would show nothing at
+        // all. It carries its own `Kind::Gemini` source so it renders with the
+        // gemini mark.
         let mut store = CommandStore::default();
         store.on_command_changed(1, &["gemini".to_string()], true, Some("/work/repo"), 1);
         store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));

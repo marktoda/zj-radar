@@ -530,7 +530,8 @@ fn print_grant_hint_if_needed(facts: &ZellijFacts) {
 
 /// Emit a producer hint at the tail of `setup zellij` when no producer is wired,
 /// per `facts.producer_wired` (derived from Codex hooks + the Claude plugin
-/// manifest, same as `run`'s detection — see `analyze_zellij`).
+/// manifest + the opencode bridge plugin, same as `run`'s detection — see
+/// `analyze_zellij`).
 fn print_producer_hint_if_needed(facts: &ZellijFacts) {
     if !facts.producer_wired() {
         println!("zellij: {}", crate::run::PRODUCER_HINT);

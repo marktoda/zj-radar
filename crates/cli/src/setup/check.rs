@@ -137,13 +137,17 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts, layout_name: &str) -> Vec<Chec
     });
 
     // 5. producer — diagnosis, not a guess: say WHICH producer the doctor saw.
-    items.push(match (f.codex_producer, f.claude_producer) {
-        (true, true) => CheckItem::ok("producer", "Codex hooks and Claude plugin wired"),
-        (true, false) => CheckItem::ok("producer", "Codex hooks wired"),
-        (false, true) => CheckItem::ok("producer", "Claude plugin wired"),
-        (false, false) => CheckItem::missing(
+    items.push(match (f.codex_producer, f.claude_producer, f.opencode_producer) {
+        (true, true, true) => CheckItem::ok("producer", "Codex, Claude, and Opencode producers wired"),
+        (true, true, false) => CheckItem::ok("producer", "Codex hooks and Claude plugin wired"),
+        (true, false, true) => CheckItem::ok("producer", "Codex hooks and Opencode plugin wired"),
+        (false, true, true) => CheckItem::ok("producer", "Claude and Opencode plugins wired"),
+        (true, false, false) => CheckItem::ok("producer", "Codex hooks wired"),
+        (false, true, false) => CheckItem::ok("producer", "Claude plugin wired"),
+        (false, false, true) => CheckItem::ok("producer", "Opencode plugin wired"),
+        (false, false, false) => CheckItem::missing(
             "producer",
-            "no producer detected — run `zj-radar setup claude` or `zj-radar setup codex`",
+            "no producer detected — run `zj-radar setup claude`, `zj-radar setup codex`, or `zj-radar setup opencode`",
         ),
     });
 
@@ -204,6 +208,46 @@ pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
             CheckItem::ok("plugin", format!("{CLAUDE_PLUGIN} plugin installed"))
         } else {
             CheckItem::missing("plugin", format!("{CLAUDE_PLUGIN} not installed — run `zj-radar setup claude`"))
+        },
+    ]
+}
+
+/// Returns true when any item is `Missing` — see [`check_codex`]. The opencode
+/// producer is a vendored JS bridge plugin in opencode's auto-loaded plugins
+/// dir; the doctor has two facts: the binary and our marker in the plugin file.
+pub(crate) fn check_opencode() -> bool {
+    let env = OpencodeEnv {
+        opencode_on_path:   which("opencode"),
+        zj_radar_on_path:   which("zj-radar"),
+        plugin_text:        opencode_plugin_text(),
+    };
+    let items = opencode_check_items(&analyze_opencode(&env));
+    println!("opencode:");
+    print_check_items(&items)
+}
+
+pub(crate) fn opencode_check_items(f: &OpencodeFacts) -> Vec<CheckItem> {
+    vec![
+        if f.opencode_on_path {
+            CheckItem::ok("opencode binary", "found on PATH")
+        } else {
+            CheckItem::missing("opencode binary", "not found on PATH")
+        },
+        if f.zj_radar_on_path {
+            CheckItem::ok("zj-radar binary", "found on PATH")
+        } else {
+            CheckItem::missing("zj-radar binary", "not found on PATH")
+        },
+        match f.plugin_is_ours {
+            None => CheckItem::missing(
+                "plugin",
+                "zj-radar bridge plugin not installed — run `zj-radar setup opencode`",
+            ),
+            Some(true) => CheckItem::ok("plugin", "zj-radar bridge plugin installed"),
+            Some(false) => CheckItem::warn(
+                "plugin",
+                "plugin file present but not ours (no marker) — re-run `zj-radar setup opencode --force` to replace it",
+            ),
         },
     ]
 }
@@ -462,6 +506,7 @@ mod tests {
             granted:                 Some(true),
             codex_producer:          true,
             claude_producer:         false,
+            opencode_producer:       false,
             config_managed:          false,
             zellij_version:          Some("zellij 0.44.3".to_string()),
         }

@@ -291,7 +291,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// `RUNNING_PIPE_TIMEOUT_SECS`, while the once-per-turn edges keep the full
 /// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
 /// the default here (instead of per-entry env prefixes in hooks.json) gives
-/// every producer — claude, codex, generic — the policy from one seam.
+/// every producer — claude, codex, opencode, generic — the policy from one seam.
 /// Clamped to an hour: `Instant::now() + Duration::from_secs(u64::MAX)`
 /// overflows and panics, and this module promises the calling hook never
 /// sees a panic.

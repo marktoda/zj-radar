@@ -109,7 +109,7 @@ Mirror Cmux/code-notify's proven shape:
 
 > **As shipped:** the declarative table with a `Format` enum and the per-agent
 > disable env var never materialized. The implementation is per-surface modules
-> (`crates/cli/src/setup/{claude,codex,zellij}.rs` over a shared `edit.rs`)
+> (`crates/cli/src/setup/{claude,codex,opencode,zellij}.rs` over a shared `edit.rs`)
 > that keep the rules that mattered: strip-own-then-re-add with markers,
 > refuse-to-write on unparseable files, atomic writes, diff preview + `--yes`
 > and `--dry-run`.

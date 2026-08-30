@@ -51,7 +51,7 @@
 **Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏; a running
 **server** holds a steady `▸` instead — services don't spin)* · `◆` needs-you ·
 `●` done · `✗` error.
-**Kind marks:** `✳` claude · `❉` codex · `✦` gemini · `$` command · `⚙` build ·
+**Kind marks:** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini · `$` command · `⚙` build ·
 `⚗` test · `⇡` deploy · `❯` server · `⦿` other.
 
 **Width ruler (32):**
@@ -986,7 +986,7 @@ tab <pos> "<name>" [active]
   ...
 ```
 
-- `kind` ∈ claude·codex·gemini·command·build·test·deploy·server·other
+- `kind` ∈ claude·codex·opencode·gemini·command·build·test·deploy·server·other
 - `status` ∈ running·pending·done·error·idle
 - `waiting <N>m` backdates the pane's waiting-on-you edge by N minutes so the
   `· Nm` wait tag renders (pending panes only; without it the pane applied
