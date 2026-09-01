@@ -3169,18 +3169,10 @@ prop_compose! {
 }
 
 prop_compose! {
-    fn arb_kind()(n in 0u8..9) -> Kind {
-        match n {
-            0 => Kind::Claude,
-            1 => Kind::Codex,
-            2 => Kind::Gemini,
-            3 => Kind::Command,
-            4 => Kind::Other,
-            5 => Kind::Test,
-            6 => Kind::Build,
-            7 => Kind::Deploy,
-            _ => Kind::Server,
-        }
+    // Drawn from `Kind::ALL` like `arb_status` above — a hand ladder here
+    // silently skipped `Kind::Opencode` when producer #3 landed.
+    fn arb_kind()(k in proptest::sample::select(Kind::ALL.to_vec())) -> Kind {
+        k
     }
 }
 

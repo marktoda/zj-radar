@@ -9,10 +9,10 @@
 // with the payload JSON on stdin. The `zellij pipe` send is bounded by the CLI
 // path (self_limiting_pipe_argv's watchdog survives this bridge's own death),
 // so the bridge adds no second pipe client. Spawns are never concurrent:
-// status edges (pending/done/error/idle) go out strictly FIFO, while `running`
-// refreshes coalesce to the latest unsent one (latest-wins is the project's
-// ordering rule, so a stale running is free to drop and can never head-of-line
-// block an edge). Each child has a hard ~10s kill timer as an outer backstop;
+// status edges (pending/done/error/idle) and the task-carrying `chat.message`
+// go out strictly FIFO, while tool-activity `running` refreshes coalesce to
+// the latest unsent one (latest-wins is the project's ordering rule, so a
+// stale running is free to drop and can never head-of-line block an edge). Each child has a hard ~10s kill timer as an outer backstop;
 // a rejected child never breaks the queue.
 // ASYNC SPAWN ONLY — never a synchronous spawn: the plugin runs in opencode's
 // process, so a wedged rail must not freeze the TUI event loop.
@@ -25,11 +25,16 @@
 // `cwd` on every spawn so the rail resolves repo/branch without a host probe).
 let CWD = "";
 
-// The root (user-facing) sessionID. opencode's task tool forks subagent
-// sessions with `parentID`, and their prompts/tools/idle fire the same hooks
-// and bus events — pinning the root lets the bridge ignore them, so a subagent
-// finishing never paints Done (or clobbers the task label) mid-turn.
-let rootSessionID = null;
+// Subagent (task-tool) sessions. opencode forks them with `parentID`, and
+// their prompts/tools/idle fire the same hooks and bus events as the user's
+// session — so a subagent finishing would paint Done (and clobber the task
+// label) mid-turn. Children always announce themselves via `session.created`
+// (info.parentID) before anything else, so the bridge learns the set from
+// the stream and drops their events; every *other* session is the user's.
+// Deliberately NOT a "pin the root" latch: switching to an existing session
+// (picker, `-c`, `--session`, attach) fires no `session.created`, and a latch
+// would freeze the rail on the old session forever.
+const childSessions = new Set();
 
 // The current user message ID: opencode publishes `message.part.updated` for
 // the user's own prompt parts too (Part carries no role), so parts of this
@@ -52,7 +57,11 @@ let queue = [];
 let processing = false;
 
 function enqueue(status, payload) {
-  if (status === "running") {
+  // Only tool-activity refreshes are droppable. The `chat.message` running
+  // carries the prompt that becomes the sticky task label — coalescing it
+  // away under a backlog would lose the label for the whole turn.
+  const droppable = status === "running" && payload.event !== "chat.message";
+  if (droppable) {
     pendingRunning = payload;
   } else {
     if (pendingRunning !== null) {
@@ -152,13 +161,15 @@ function permMessage(props) {
   return patterns ? `${name}: ${patterns}` : name;
 }
 
-// Helper to check if event or payload belongs to a child/subagent session.
+// Whether a payload declares itself a child/subagent session (Session.Info
+// carries `parentID`), or names a session already learned as a child.
 function isChildSession(props) {
   if (!props) return false;
   if (props.parentID || props.parent_id || (props.info && (props.info.parentID || props.info.parent_id))) {
     return true;
   }
-  return false;
+  const sid = eventSession(props);
+  return sid !== null && childSessions.has(sid);
 }
 
 // The sessionID an event belongs to. Current opencode stamps a top-level
@@ -179,14 +190,8 @@ export const ZjRadarPlugin = async ({ directory }) => {
   CWD = typeof directory === "string" ? directory : "";
   return {
     // User submitted a prompt → running, with the prompt text for task capture.
-    "chat.message": async (_input, output) => {
-      if (!output || isChildSession(output)) return;
-      const outputSessionID = output.sessionID || output.session_id || (_input && (_input.sessionID || _input.session_id));
-      if (outputSessionID && !rootSessionID) {
-        rootSessionID = outputSessionID;
-      } else if (rootSessionID && outputSessionID && outputSessionID !== rootSessionID) {
-        return;
-      }
+    "chat.message": async (input, output) => {
+      if (!output || isChildSession(input) || isChildSession(output)) return;
       lastAssistantText = "";
       const msgID = output.id || output.messageID || (output.message && output.message.id);
       if (msgID) {
@@ -200,7 +205,6 @@ export const ZjRadarPlugin = async ({ directory }) => {
     // Tool about to run / just ran → running, with the live tool activity.
     "tool.execute.before": async (input, output) => {
       if (isChildSession(input) || isChildSession(output)) return;
-      if (rootSessionID && input && input.sessionID && input.sessionID !== rootSessionID) return;
       enqueue("running", {
         event: "tool.execute",
         tool: input && input.tool,
@@ -209,7 +213,6 @@ export const ZjRadarPlugin = async ({ directory }) => {
     },
     "tool.execute.after": async (input) => {
       if (isChildSession(input)) return;
-      if (rootSessionID && input && input.sessionID && input.sessionID !== rootSessionID) return;
       enqueue("running", {
         event: "tool.execute",
         tool: input && input.tool,
@@ -231,17 +234,32 @@ export const ZjRadarPlugin = async ({ directory }) => {
     event: async ({ event }) => {
       const type = event && event.type;
       const props = (event && event.properties) || {};
-      if (isChildSession(props)) return;
-
       const eventSessionID = eventSession(props);
-      if (type === "session.created") {
-        if (!props.parentID && !props.info?.parentID) {
-          rootSessionID = eventSessionID || null;
-        }
-      }
-      if (rootSessionID && eventSessionID && eventSessionID !== rootSessionID && type !== "session.created" && type !== "session.deleted") {
+
+      // Permission prompts block the user's TUI whichever session raised them
+      // (a subagent's `bash` asks through the parent's UI), so they are the one
+      // class of event that must NOT be filtered by session.
+      if (type === "permission.asked") {
+        enqueue("pending", { event: "permission.ask", message: permMessage(props) });
         return;
       }
+      if (type === "permission.replied") {
+        // The user answered → back to running now, rather than on the next
+        // tool/idle event (a denied permission throws inside the tool, so
+        // `tool.execute.after` may never come).
+        enqueue("running", { event: "permission.replied" });
+        return;
+      }
+
+      // Learn (and forget) subagent sessions from their lifecycle events.
+      if ((type === "session.created" || type === "session.updated") && eventSessionID) {
+        if (props.parentID || (props.info && props.info.parentID)) childSessions.add(eventSessionID);
+      }
+      if (type === "session.deleted" && eventSessionID && childSessions.has(eventSessionID)) {
+        childSessions.delete(eventSessionID);
+        return;
+      }
+      if (isChildSession(props)) return;
 
       switch (type) {
         // Track message role updates so we can accurately ignore user parts.
@@ -267,16 +285,6 @@ export const ZjRadarPlugin = async ({ directory }) => {
           }
           break;
         }
-        // opencode permission bus event (opencode >= 1.14).
-        case "permission.asked":
-          enqueue("pending", { event: "permission.ask", message: permMessage(props) });
-          break;
-        // The user answered → back to running now, rather than on the next
-        // tool/idle event (a denied permission throws inside the tool, so
-        // `tool.execute.after` may never come).
-        case "permission.replied":
-          enqueue("running", { event: "permission.replied" });
-          break;
         // Turn complete → done, with the tracked final assistant text (the
         // adapter remaps to pending if it ends in a question).
         case "session.idle":
@@ -292,9 +300,6 @@ export const ZjRadarPlugin = async ({ directory }) => {
         // Session lifecycle → idle (row recedes; /clear, new/deleted session).
         case "session.created":
         case "session.deleted":
-          if (type === "session.deleted" && eventSessionID && eventSessionID === rootSessionID) {
-            rootSessionID = null;
-          }
           enqueue("idle", { event: "session.lifecycle" });
           lastAssistantText = "";
           break;

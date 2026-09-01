@@ -176,6 +176,15 @@ pub fn baseline_msg(status: Status, msg: &str) -> String {
     }
 }
 
+/// A non-empty string field of a JSON payload, or `None`. Shared by the codex
+/// and opencode adapters (both read `cwd`-style fields off a `serde_json::Value`).
+pub(crate) fn string_field(v: &serde_json::Value, field: &str) -> Option<String> {
+    v.get(field)
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 pub(crate) fn basename(path: &str) -> Option<&str> {
     if path.is_empty() {
         return None;

@@ -42,7 +42,18 @@ fn opencode_config_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> Op
 }
 
 fn opencode_installed(opencode_on_path: bool) -> bool {
-    opencode_on_path || opencode_plugin_path().is_some_and(|p| p.exists())
+    opencode_installed_from(
+        opencode_on_path,
+        opencode_config_dir().is_some_and(|d| d.is_dir()),
+        opencode_plugin_path().is_some_and(|p| p.exists()),
+    )
+}
+
+/// Pure: is opencode present on this machine? The binary on PATH, or a
+/// populated `~/.config/opencode/` (opencode.json, auth — a Nix/bun-run user
+/// may have no `opencode` on PATH), or our plugin already dropped there.
+fn opencode_installed_from(on_path: bool, config_dir_exists: bool, plugin_exists: bool) -> bool {
+    on_path || config_dir_exists || plugin_exists
 }
 
 /// What `setup opencode` found at the plugin path. Three-state on purpose:
@@ -132,10 +143,9 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         );
         return;
     }
-    // The plugins dir may not exist yet on a fresh opencode install; create it
-    // (and parents) on install so `backup_then_write` can place the file. This
-    // is the one mkdir in the setup tree — opencode auto-loads the dir but
-    // doesn't guarantee it exists.
+    // The plugins dir may not exist yet on a fresh opencode install; the
+    // atomic write below creates it (and parents) — after consent, so a
+    // declined install leaves nothing behind.
     let Some(path) = opencode_plugin_path() else { return };
     let opencode_on_path = which("opencode");
     if !uninstall && !opencode_installed(opencode_on_path) {
@@ -164,6 +174,12 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         }
         if opts.dry_run {
             println!("--- would remove {} (dry-run) ---", path.display());
+            return;
+        }
+        // Same consent step as every other setup write/remove: a non-tty run
+        // without -y skips rather than deleting unasked.
+        if !confirm(&format!("Remove {}?", path.display()), opts.yes, opts.is_tty) {
+            println!("opencode: skipped (declined)");
             return;
         }
         if let Err(e) = std::fs::remove_file(&path) {
@@ -201,11 +217,6 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         print_opencode_guidance(&facts);
         return;
     }
-    // Ensure the plugins dir exists before the backup+write (opencode auto-loads
-    // it, but a fresh install may not have created it).
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let prompt = format!("Write {}?", path.display());
     if !confirm_and_write("opencode", &path, OPENCODE_PLUGIN_JS, opts.yes, opts.is_tty, &prompt, || Ok(())) {
         return;
@@ -228,7 +239,7 @@ fn print_opencode_guidance(facts: &OpencodeFacts) {
 #[cfg(test)]
 mod tests {
     use super::super::{OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER};
-    use super::{opencode_config_dir_from, plan_install, plan_uninstall, Existing, InstallPlan, UninstallPlan};
+    use super::{opencode_config_dir_from, opencode_installed_from, plan_install, plan_uninstall, Existing, InstallPlan, UninstallPlan};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -263,6 +274,16 @@ mod tests {
             opencode_config_dir_from(Some(OsString::new()), Some(os("/home/u"))),
             Some(PathBuf::from("/home/u/.config/opencode")),
         );
+    }
+
+    #[test]
+    fn opencode_counts_as_installed_via_binary_config_dir_or_plugin() {
+        assert!(opencode_installed_from(true, false, false));
+        // A populated ~/.config/opencode with no binary on PATH (Nix/bun-run
+        // users) must not make an explicit `setup opencode` silently skip.
+        assert!(opencode_installed_from(false, true, false));
+        assert!(opencode_installed_from(false, false, true));
+        assert!(!opencode_installed_from(false, false, false));
     }
 
     fn unreadable() -> Existing {

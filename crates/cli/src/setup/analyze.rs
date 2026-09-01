@@ -430,7 +430,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: None,
             installed_plugins_text: Some(r#"{"plugins":["zj-radar-claude"]}"#.to_string()),
-            opencode_plugin_text:   None,
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),

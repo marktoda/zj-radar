@@ -100,7 +100,10 @@ This writes the vendored bridge plugin to `$XDG_CONFIG_HOME/opencode/plugins/`
 (or `~/.config/opencode/plugins/` when `XDG_CONFIG_HOME` is unset). The bridge
 serializes each opencode hook/bus-event payload and spawns
 `zj-radar notify opencode --status <s>` with JSON on stdin; all classification
-stays in Rust (it requires the `zj-radar` binary — no JS-side derive twin).
+stays in Rust (it requires the `zj-radar` binary). The bridge picks the
+status *class* (it knows which event fired); the Rust adapter owns every
+refinement — tool activity, task capture, the trailing-question remap, the
+blank-permission backstop — so the JS never grows a second classifier.
 
 - **Requires the `zj-radar` binary on `PATH`.** Unlike Claude's `jq` fallback,
   opencode wiring has no script fallback: `setup opencode` implies the binary.

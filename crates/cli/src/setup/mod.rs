@@ -10,7 +10,7 @@ mod analyze;
 mod check;
 mod claude;
 mod codex;
-mod detect;
+pub(crate) mod detect;
 mod download;
 mod edit;
 mod opencode;

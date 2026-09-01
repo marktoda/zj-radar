@@ -5,7 +5,7 @@
 //! pure-editor / thin-IO split that `setup.rs` uses.
 
 use super::fsutil::atomic_write;
-use super::setup::{CODEX_HOOK_MARKER, OPENCODE_PLUGIN_MARKER};
+use super::setup::CODEX_HOOK_MARKER;
 use std::path::{Path, PathBuf};
 
 /// Shown on first run (create OR attach) when the wasm isn't granted. The grant
@@ -214,7 +214,7 @@ pub(crate) fn claude_producer_wired(installed_plugins_json: Option<&str>) -> boo
 /// plugin text the caller already gathered (the shared `opencode_plugin_text`
 /// reader behind `run`'s advisory, `setup zellij`'s epilogue, and `--check`).
 pub(crate) fn opencode_producer_wired(opencode_plugin: Option<&str>) -> bool {
-    opencode_plugin.is_some_and(|p| p.contains(OPENCODE_PLUGIN_MARKER))
+    opencode_plugin.is_some_and(crate::setup::detect::opencode_plugin_is_ours)
 }
 
 /// Join argv into a copy-pasteable shell command. Every printed command hint
@@ -834,6 +834,7 @@ pub fn run(opts: RunOptions) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::setup::OPENCODE_PLUGIN_MARKER;
     use tempfile::tempdir;
 
     #[test]

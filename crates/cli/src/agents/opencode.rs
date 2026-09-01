@@ -11,7 +11,7 @@
 //! no-op. `session.error` maps to `Status::Error` — a real failure signal
 //! Claude's hook model deliberately lacks (see the claude.rs header comment).
 
-use super::{tool_activity, AgentUpdate, Intake};
+use super::{string_field, tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
 use serde_json::Value;
 
@@ -111,8 +111,9 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
 /// vocabulary. opencode built-ins (`read`, `bash`, …) and common spelling
 /// variants are covered; an unknown name passes through unchanged (it falls
 /// to the `_` arm of `tool_activity`, yielding `None` → the `working`
-/// baseline). `mcp__*` names pass through verbatim so the shared
-/// basename-extraction arm handles them.
+/// baseline). opencode keys MCP tools `<server>_<tool>` (no `mcp__` prefix),
+/// so they are indistinguishable from unknown names here and read as the
+/// baseline too.
 fn normalize_tool_name(raw: &str) -> &str {
     match raw {
         "read" => "Read",
@@ -126,7 +127,6 @@ fn normalize_tool_name(raw: &str) -> &str {
         "task" | "subtask" => "Task",
         "todowrite" | "todo" => "TodoWrite",
         "applypatch" | "apply_patch" => "apply_patch",
-        n if n.starts_with("mcp__") => n,
         _ => raw,
     }
 }
@@ -149,13 +149,6 @@ fn normalize_tool_args(input: &Value) -> Value {
         out.insert(k.to_string(), v.clone());
     }
     Value::Object(out)
-}
-
-fn string_field(v: &Value, field: &str) -> Option<String> {
-    v.get(field)
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]

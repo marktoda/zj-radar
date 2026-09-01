@@ -1,6 +1,6 @@
 //! Codex hook/notify JSON → Radar status update.
 
-use super::{tool_activity, AgentUpdate, Intake};
+use super::{string_field, tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
 use serde_json::Value;
 
@@ -90,13 +90,6 @@ fn permission_message(v: &Value) -> String {
 fn last_assistant_message(v: &Value) -> Option<String> {
     v.get("last_assistant_message")
         .and_then(|x| x.as_str())
-        .map(str::to_string)
-}
-
-fn string_field(v: &Value, field: &str) -> Option<String> {
-    v.get(field)
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
         .map(str::to_string)
 }
 
