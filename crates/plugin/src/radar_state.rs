@@ -1110,22 +1110,19 @@ impl RadarState {
     /// never fans out an unbounded number of blocking host calls. Every returned
     /// id is recorded as attempted, so it is requested at most once per lifetime.
     ///
-    /// Bootstrap exists only to name tabs, so it is a no-op (and pays for no
-    /// blocking reads) when naming is `Off` — mirroring `rename_tabs`.
+    /// Bootstrap exists to name tabs, so it is a no-op (and pays for no
+    /// blocking reads) when naming is `Off` — mirroring `rename_tabs`. Unlike
+    /// renames it is NOT scoped to the owned tab: the cwd also stamps `repo`
+    /// on observed commands (`command_changed`), which titles their desktop
+    /// notification and so feeds the cross-instance claim key — every
+    /// instance must hold the same fact or the election dedupes nothing.
     fn cwd_bootstrap_targets(&mut self, naming_mode: config::NamingMode) -> Vec<u32> {
         if naming_mode == config::NamingMode::Off {
             return Vec::new();
         }
-        let Some(position) = self
-            .naming_tab_id
-            .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
-            .map(|tab| tab.position)
-        else {
-            return Vec::new();
-        };
         let mut focused = Vec::new();
         let mut others = Vec::new();
-        if let Some(panes) = self.tab_panes.get(&position) {
+        for panes in self.tab_panes.values() {
             for p in panes {
                 if self.pane_cwd.contains_key(&p.id)
                     || self.cwd_bootstrap_attempted.contains(&p.id)
@@ -1151,13 +1148,6 @@ impl RadarState {
             self.cwd_bootstrap_attempted.insert(*id);
         }
         targets
-    }
-
-    pub(crate) fn recompute_cwd_bootstrap(
-        &mut self,
-        naming_mode: config::NamingMode,
-    ) -> Vec<u32> {
-        self.cwd_bootstrap_targets(naming_mode)
     }
 
     /// Delegate naming to the [`TabNamer`]: assemble resolved facts, then let the

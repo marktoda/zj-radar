@@ -225,7 +225,6 @@ impl ZellijSession {
     ///
     /// The returned session does NOT own the isolated root — `self` does, and
     /// must outlive it (drop `self` last).
-    #[allow(dead_code)]
     pub fn start_sibling(&self, name: &str, layout_kdl: &str) -> ZellijSession {
         let (rows, cols) = *self.size.lock().unwrap();
         Self::start_internal(name, layout_kdl, self.isolated.shared(), rows, cols)
@@ -317,7 +316,6 @@ impl ZellijSession {
     }
 
     /// Return the private HOME path used by this session's Zellij processes.
-    #[allow(dead_code)]
     pub fn temp_home(&self) -> &std::path::Path {
         self.isolated.home()
     }
@@ -603,7 +601,6 @@ impl ZellijSession {
     /// Names held by Zellij's authoritative tab model, in position order.
     /// Unlike sidebar text, this does not read any plugin instance's possibly
     /// stale render; `query-tab-names` asks the session host directly.
-    #[allow(dead_code)]
     pub fn tab_names(&self) -> Vec<String> {
         let output = self.isolated.command("zellij")
             .args(["--session", &self.name, "action", "query-tab-names"])
@@ -625,7 +622,6 @@ impl ZellijSession {
     /// Session names visible through this test's private Zellij socket.
     /// Exposed so the isolation regression can prove the spawned session is
     /// present privately while absent from the ambient/default server.
-    #[allow(dead_code)]
     pub fn isolated_session_names(&self) -> Vec<String> {
         let output = self.isolated.command("zellij")
             .args(["list-sessions", "--short", "--no-formatting"])
@@ -685,7 +681,6 @@ impl Drop for ZellijSession {
 /// Session names visible to an ordinary Zellij CLI with no harness overrides.
 /// A private E2E session appearing here is proof that the isolation boundary
 /// leaked. No live server is also valid and reports an empty list.
-#[cfg(feature = "e2e")]
 pub fn ambient_session_names() -> Vec<String> {
     let output = Command::new("zellij")
         .args(["list-sessions", "--short", "--no-formatting"])
@@ -694,7 +689,6 @@ pub fn ambient_session_names() -> Vec<String> {
     session_names(output)
 }
 
-#[cfg(feature = "e2e")]
 fn session_names(output: std::process::Output) -> Vec<String> {
     if !output.status.success() {
         return Vec::new();
@@ -879,7 +873,6 @@ pub fn pre_grant_permissions(wasm: &Path) -> IsolatedEnvironment {
 /// An isolated environment with NO permission grant — the ungranted first-run
 /// state. Mirrors `pre_grant_permissions` minus the grant, so a session started
 /// with it reproduces "attached but never granted" (nothing in `permissions.kdl`).
-#[allow(dead_code)]
 pub fn isolated_temp_home() -> IsolatedEnvironment {
     IsolatedEnvironment::new()
 }
@@ -1002,8 +995,6 @@ pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
 /// `new_tab_template`. Every tab gets an independent sidebar plugin instance.
 /// The initial unnamed tab starts at `/tmp`, allowing Managed naming to claim it
 /// before a test applies a manual rename.
-#[cfg(feature = "e2e")]
-#[allow(dead_code)]
 pub fn runtime_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
     let wasm_abs = plugin_wasm
         .canonicalize()

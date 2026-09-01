@@ -742,11 +742,15 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     eprintln!("[e2e] PASS: a real rail click switched the active tab end-to-end");
 }
 
-/// Regression probe for a newly-created tab losing its manual name when the user
-/// visits its immediate predecessor. The exact reported sequence is: 13 existing
-/// tabs → create tab 14 → manually rename tab 14 → visit tab 13. Jumping farther
-/// back does not reproduce as consistently, making the N/N-1 instance boundary
-/// part of the contract rather than incidental setup.
+/// A manual tab name must survive the user switching to another tab — i.e. to
+/// another plugin instance. Pre-fix every instance held rename authority over
+/// every tab, so a background instance could land a rename computed from a
+/// stale snapshot on top of the user's name. Two tabs is the smallest
+/// configuration with a foreign instance; the bug itself is a timing race that
+/// does not reproduce deterministically, so this is a live probe of the
+/// ownership path (the owner names its tab; a foreign instance never renames
+/// it), not a regression pin — `sidebar_instance_never_renames_a_foreign_tab`
+/// in the runtime tests is the pin.
 #[test]
 #[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
 fn manual_tab_name_survives_switch_to_another_plugin_instance() {
@@ -762,96 +766,49 @@ fn manual_tab_name_survives_switch_to_another_plugin_instance() {
     let layout = runtime_sidebar_tabs_layout(&wasm);
     let session = ZellijSession::start(&session_name, &layout, &wasm, isolated);
 
-    // Create tabs 2..13 through `new_tab_template`, visiting each as Zellij does
-    // during normal `new-tab` use. A non-default final name proves the new
-    // instance has loaded and its initial auto-naming round has settled.
-    let preexisting_cwds = [
-        "/var", "/usr", "/opt", "/etc", "/dev", "/proc",
-        "/run", "/bin", "/sbin", "/srv", "/mnt", "/boot",
-    ];
-    for (index, cwd) in preexisting_cwds.iter().enumerate() {
-        session.run_action(&["new-tab", "--cwd", cwd]);
-        let expected_count = index + 2;
-        let ready = session.wait_until(Duration::from_secs(10), |s| {
-            let names = s.tab_names();
-            names.len() == expected_count
-                && names.last().is_some_and(|name| !name.starts_with("Tab #"))
-        });
-        assert!(
-            ready,
-            "runtime tab {expected_count} never completed auto-naming; got {:?}",
-            session.tab_names()
-        );
-    }
-    assert_eq!(session.tab_names().len(), 13, "setup must stop at N-1");
-
-    // Tab 13 is active now. Leave a terminal marker so the N→N-1 navigation is
+    // Tab 1 is active. Leave a terminal marker so the navigation back to it is
     // confirmed independently of either tab's mutable name.
-    let pane13 = session.discover_terminal_pane_id();
+    let pane1 = session.discover_terminal_pane_id();
 
-    // Create N=14 and wait for its own plugin instance to auto-name it before
-    // applying the manual name. The bug is not an immediate rename-before-load
-    // race: the user names a normal, fully-created new tab.
+    // Create tab 2 through `new_tab_template` and wait for its OWN instance to
+    // auto-name it: a non-default name proves the new instance loaded and its
+    // ownership resolved (the user renames a normal, fully-created tab).
     session.run_action(&["new-tab", "--cwd", "/home"]);
-    let tab14_ready = session.wait_until(Duration::from_secs(10), |s| {
+    let tab2_ready = session.wait_until(Duration::from_secs(10), |s| {
         let names = s.tab_names();
-        names.len() == 14 && names.last().is_some_and(|name| !name.starts_with("Tab #"))
+        names.len() == 2 && names.last().is_some_and(|name| !name.starts_with("Tab #"))
     });
     assert!(
-        tab14_ready,
-        "tab 14 never completed its initial auto-name; got {:?}",
+        tab2_ready,
+        "tab 2 never completed its initial auto-name; got {:?}",
         session.tab_names()
     );
 
-    // Retry until the manual name remains authoritative for 500ms. This removes
-    // unrelated in-flight auto-name effects from setup while preserving the
-    // stale tab-13 instance that only reclaims tab 14 when reactivated.
     let manual_name = "keep-this-manual-name";
-    let acceptance_deadline = Instant::now() + Duration::from_secs(8);
-    let mut stable_since = None;
-    while Instant::now() < acceptance_deadline {
-        if session.tab_names().get(13).is_some_and(|name| name == manual_name) {
-            let since = stable_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(500) {
-                break;
-            }
-        } else {
-            stable_since = None;
-            session.run_action(&["rename-tab", manual_name]);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500)),
-        "tab 14's manual name never became stable before navigation; got {:?}",
-        session.tab_names()
-    );
-
-    // Visit precisely N-1. Poll the host model for several seconds so both a
-    // transient overwrite and the persistent loss are captured; sidebar text is
-    // diagnostic only and cannot create a false reproduction.
-    let on_tab13 = session.wait_until(Duration::from_secs(8), |s| {
-        s.run_action(&["go-to-tab", "13"]);
-        s.dump_screen().contains(&format!("ZPID={pane13}"))
+    session.run_action(&["rename-tab", manual_name]);
+    let renamed = session.wait_until(Duration::from_secs(5), |s| {
+        s.tab_names().get(1).is_some_and(|name| name == manual_name)
     });
-    assert!(on_tab13, "could not navigate from tab 14 to tab 13");
+    assert!(renamed, "manual rename never landed; got {:?}", session.tab_names());
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut overwritten = None;
+    // Switch to tab 1 (a different instance) and hold on Zellij's authoritative
+    // tab names for a few seconds: a rename from any instance would show here.
+    let on_tab1 = session.wait_until(Duration::from_secs(8), |s| {
+        s.run_action(&["go-to-tab", "1"]);
+        s.dump_screen().contains(&format!("ZPID={pane1}"))
+    });
+    assert!(on_tab1, "could not navigate from tab 2 to tab 1");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         let names = session.tab_names();
-        if !names.get(13).is_some_and(|name| name == manual_name) {
-            overwritten = Some(names);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            names.get(1).is_some_and(|name| name == manual_name),
+            "switching tabs overwrote tab 2's manual name; names={names:?};\nsidebar:\n{}",
+            sidebar_region(&session.screen(), 32)
+        );
+        std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(
-        overwritten.is_none(),
-        "visiting tab 13 overwrote tab 14's manual name; names={:?};\nsidebar:\n{}",
-        overwritten.unwrap_or_default(),
-        sidebar_region(&session.screen(), 32)
-    );
 }
 
 /// Pins the load-bearing property behind the exit-clear fix: per-pane

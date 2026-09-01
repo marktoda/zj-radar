@@ -720,8 +720,11 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
         theme: None,
         exits: Vec::new(),
     });
+    // The cwd bootstrap is deliberately NOT ownership-scoped (the cwd also
+    // stamps observed commands' repo, which the notification claim key hashes
+    // — every instance must agree on it); only renames are.
     assert!(topology.effects.iter().any(|effect| {
-        matches!(effect, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![10])
+        matches!(effect, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![10, 11])
     }));
 
     let foreign = runtime.cwd_changed(11, "/work/foreign".into());

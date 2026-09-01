@@ -365,7 +365,6 @@ fn pane_update(tab_panes: HashMap<usize, Vec<TerminalPane>>) -> PaneUpdate {
 fn panes_changed_requests_cwd_bootstrap_for_new_pane_without_cwd() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
 
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
@@ -381,7 +380,6 @@ fn panes_changed_requests_cwd_bootstrap_for_new_pane_without_cwd() {
 fn panes_changed_requests_no_cwd_bootstrap_when_naming_off() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
 
     let change = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
@@ -397,7 +395,6 @@ fn panes_changed_requests_no_cwd_bootstrap_when_naming_off() {
 fn panes_changed_skips_cwd_bootstrap_when_cwd_already_known() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
     radar.cwd_changed(7, "/work/repo".into(), config::NamingMode::Managed);
 
     let change = radar.panes_changed(
@@ -416,7 +413,6 @@ fn panes_changed_requests_each_pane_cwd_only_once_even_if_unresolved() {
     // must never re-issue it, or we rebuild the meltdown re-poll loop.
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
     let update = || pane_update(HashMap::from([(0, vec![focused_pane(7)])]));
 
     let first = radar.panes_changed(update(), 1, 0, config::NamingMode::Managed);
@@ -583,7 +579,6 @@ fn panes_changed_persists_when_an_exit_displaces_a_completion() {
 fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
 
     let first = radar.panes_changed(
         pane_update(HashMap::from([(0, vec![focused_pane(7)])])),
@@ -609,7 +604,6 @@ fn cwd_bootstrap_attempt_resets_when_pane_id_is_recycled() {
 fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
-    own_tab(&mut radar, 0);
     // Eight unfocused panes (ids 1..=8) plus one focused pane (id 9): more
     // candidates than the per-update cap.
     let mut panes: Vec<TerminalPane> = (1..=MAX_CWD_BOOTSTRAP_PER_UPDATE as u32)
