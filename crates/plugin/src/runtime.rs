@@ -375,8 +375,19 @@ impl PluginRuntime {
         self.radar.rows(self.tick)
     }
 
+    pub(crate) fn own_plugin_tab_changed(&mut self, position: Option<usize>) {
+        if self.config.role == config::Role::Sidebar {
+            self.radar.own_plugin_tab_changed(position);
+        }
+    }
+
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
-        let change = self.radar.tabs_changed(tabs);
+        let had_naming_tab = self.radar.has_naming_tab();
+        let mut change = self.radar.tabs_changed(tabs);
+        if !had_naming_tab && self.radar.has_naming_tab() {
+            change.renames = self.radar.recompute_renames(self.config.naming);
+            change.cwd_bootstrap = self.radar.recompute_cwd_bootstrap(self.config.naming);
+        }
         self.project(vec![], change, crate::clock::now_epoch_s())
     }
 

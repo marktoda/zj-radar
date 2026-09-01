@@ -554,6 +554,7 @@ fn panes_changed_emits_resolve_cwd_effect_for_new_panes() {
         ..config::Config::default()
     });
     runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
+    runtime.own_plugin_tab_changed(Some(0));
 
     let mut focused = pane(7);
     focused.focused_in_tab = true;
@@ -578,6 +579,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
         ..config::Config::default()
     });
     runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
+    runtime.own_plugin_tab_changed(Some(0));
     runtime.radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
     let rename = runtime.cwd_changed(7, "/work/myrepo".into());
@@ -625,6 +627,46 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
         .expect("promoted command");
     assert_eq!(state.status, Status::Running);
     assert_eq!(state.repo, "myrepo");
+}
+
+#[test]
+fn sidebar_instance_never_renames_a_foreign_tab() {
+    let mut runtime = runtime_with_config(config::Config {
+        naming: NamingMode::Managed,
+        density: Density::Compact,
+        ..config::Config::default()
+    });
+    runtime.tabs_changed(vec![
+        tab(0, "Tab #1", true),
+        tab(1, "Tab #2", false),
+    ]);
+    runtime.own_plugin_tab_changed(Some(0));
+    let topology = runtime.panes_changed(PaneUpdate {
+        tab_panes: HashMap::from([
+            (0, vec![pane(10)]),
+            (1, vec![pane(11)]),
+        ]),
+        live: HashSet::from([10, 11]),
+        theme: None,
+        exits: Vec::new(),
+    });
+    assert!(topology.effects.iter().any(|effect| {
+        matches!(effect, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![10])
+    }));
+
+    let foreign = runtime.cwd_changed(11, "/work/foreign".into());
+    assert!(
+        foreign.effects.iter().all(|effect| {
+            !matches!(effect, Effect::RenameTab { position: 1, .. })
+        }),
+        "tab 1's sidebar must not rename tab 2: {:?}",
+        foreign.effects
+    );
+
+    let owned = runtime.cwd_changed(10, "/work/owned".into());
+    assert!(owned.effects.iter().any(|effect| {
+        matches!(effect, Effect::RenameTab { position: 0, name } if name == "owned")
+    }));
 }
 
 #[test]

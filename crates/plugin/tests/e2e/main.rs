@@ -21,17 +21,43 @@ mod harness;
 #[cfg(feature = "e2e")]
 use harness::*;
 
+/// The harness itself is an E2E dependency: every test must run on a private
+/// Zellij server, even when the caller already has a live server and exports
+/// XDG cache/config overrides. Prove the session exists through the harness's
+/// socket while remaining invisible through an ordinary ambient CLI.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn harness_runs_on_a_private_zellij_server() {
+    let wasm = plugin_wasm_path();
+    assert!(wasm.exists(), "Plugin wasm not found at {:?}", wasm);
+    let isolated = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_isolation_{}", std::process::id());
+    let session = ZellijSession::start(&session_name, &sidebar_layout(&wasm), &wasm, isolated);
+
+    let private = session.isolated_session_names();
+    assert!(
+        private.iter().any(|name| name == &session_name),
+        "private socket must list its own session; got {private:?}"
+    );
+
+    let ambient = ambient_session_names();
+    assert!(
+        ambient.iter().all(|name| name != &session_name),
+        "E2E session leaked onto the ambient Zellij server; ambient={ambient:?}"
+    );
+}
+
 /// Smoke test: start Zellij with the plugin sidebar, pipe a status message,
 /// and assert that the repo/message text appears in the rendered screen.
 ///
 /// # How it works
-/// 1. `pre_grant_permissions` seeds Zellij's `permissions.kdl` in an isolated
-///    temp HOME (never touches the real user cache) and returns the TempDir.
+/// 1. `pre_grant_permissions` seeds Zellij's `permissions.kdl` in a complete
+///    isolated environment (never touches the real user cache).
 /// 2. `ZellijSession::start` spawns Zellij with `--new-session-with-layout`
 ///    (works from inside an outer session) and a layout using `/tmp` as CWD
 ///    (avoids slow direnv/devenv init). It polls the PTY buffer until the
 ///    plugin's " RADAR" header appears. All Zellij subprocesses use the same
-///    temp HOME so they share the isolated server/cache.
+///    private HOME, XDG roots, and socket dir.
 /// 3. `discover_terminal_pane_id` injects `echo ZPID=$ZELLIJ_PANE_ID` into
 ///    the terminal pane and reads the result from `dump-screen`. The pane ID
 ///    must match the `"pane": {"id": ...}` field in the pipe payload for the
@@ -51,7 +77,7 @@ fn plugin_loads_and_renders_status() {
     );
 
     // Pre-grant plugin permissions so the modal prompt never fires.
-    // Returns an isolated temp HOME — never touches the real user's cache.
+    // Returns an isolated process environment — never touches the user's cache.
     let temp_home = pre_grant_permissions(&wasm);
 
     // Use a process-unique session name to avoid collisions on concurrent runs.
@@ -214,10 +240,10 @@ fn multi_agent_needs_you_is_visible() {
 /// the isolated session and assert that its piped status drives the sidebar.
 ///
 /// # How notify.sh reaches the isolated session
-/// `run_notify_sh` sets `HOME=<session temp home>` on the bash subprocess.
-/// Because all Zellij subprocesses for this session share that temp HOME,
-/// the `zellij pipe` call inside notify.sh connects to the same isolated
-/// Zellij server and delivers the pipe message to the plugin.
+/// `run_notify_sh` gives the bash subprocess the same private HOME, XDG roots,
+/// and socket dir as the session. The `zellij pipe` call inside notify.sh thus
+/// connects to the isolated Zellij server and delivers the message to the
+/// plugin.
 ///
 /// `ZELLIJ=1` and `ZELLIJ_PANE_ID=terminal_<pane_id>` are also set so
 /// notify.sh passes its guard checks and uses the correct pane number.
@@ -667,12 +693,22 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     });
     assert!(on_tab1, "could not return to tab 1 before the click");
 
+    // These are synthetic producers attached to idle shells, so their Running
+    // observations correctly enter the prompt-return grace clock. Refresh them
+    // after the tab-switch setup so that expiry cannot turn this click-routing
+    // test into a stale-status timing test.
+    session.pipe_status(&p1);
+    session.pipe_status(&p2);
+
     // Both tab rows must render in tab 1's rail before we can click tab 2's.
+    // Retain the exact screen that satisfied the poll: a subsequent timer render
+    // may otherwise make the row lookup observe a different frame.
+    let mut screen = session.screen();
     let ready = session.wait_until(std::time::Duration::from_secs(6), |s| {
-        let sb = sidebar_region(&s.screen(), 32);
+        screen = s.screen();
+        let sb = sidebar_region(&screen, 32);
         sb.contains("alpha") && sb.contains("beta")
     });
-    let screen = session.screen();
     let sidebar = sidebar_region(&screen, 32);
     eprintln!("[e2e] rail before click (32 cols):\n{}", sidebar);
     assert!(
@@ -706,6 +742,118 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     );
 
     eprintln!("[e2e] PASS: a real rail click switched the active tab end-to-end");
+}
+
+/// Regression probe for a newly-created tab losing its manual name when the user
+/// visits its immediate predecessor. The exact reported sequence is: 13 existing
+/// tabs → create tab 14 → manually rename tab 14 → visit tab 13. Jumping farther
+/// back does not reproduce as consistently, making the N/N-1 instance boundary
+/// part of the contract rather than incidental setup.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn manual_tab_name_survives_switch_to_another_plugin_instance() {
+    use std::time::{Duration, Instant};
+
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {wasm:?}. Build it:\n  cargo build --release --target wasm32-wasip1 -p zj-radar-plugin"
+    );
+    let isolated = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_manual_name_{}", std::process::id());
+    let layout = runtime_sidebar_tabs_layout(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, isolated);
+
+    // Create tabs 2..13 through `new_tab_template`, visiting each as Zellij does
+    // during normal `new-tab` use. A non-default final name proves the new
+    // instance has loaded and its initial auto-naming round has settled.
+    let preexisting_cwds = [
+        "/var", "/usr", "/opt", "/etc", "/dev", "/proc",
+        "/run", "/bin", "/sbin", "/srv", "/mnt", "/boot",
+    ];
+    for (index, cwd) in preexisting_cwds.iter().enumerate() {
+        session.run_action(&["new-tab", "--cwd", cwd]);
+        let expected_count = index + 2;
+        let ready = session.wait_until(Duration::from_secs(10), |s| {
+            let names = s.tab_names();
+            names.len() == expected_count
+                && names.last().is_some_and(|name| !name.starts_with("Tab #"))
+        });
+        assert!(
+            ready,
+            "runtime tab {expected_count} never completed auto-naming; got {:?}",
+            session.tab_names()
+        );
+    }
+    assert_eq!(session.tab_names().len(), 13, "setup must stop at N-1");
+
+    // Tab 13 is active now. Leave a terminal marker so the N→N-1 navigation is
+    // confirmed independently of either tab's mutable name.
+    let pane13 = session.discover_terminal_pane_id();
+
+    // Create N=14 and wait for its own plugin instance to auto-name it before
+    // applying the manual name. The bug is not an immediate rename-before-load
+    // race: the user names a normal, fully-created new tab.
+    session.run_action(&["new-tab", "--cwd", "/home"]);
+    let tab14_ready = session.wait_until(Duration::from_secs(10), |s| {
+        let names = s.tab_names();
+        names.len() == 14 && names.last().is_some_and(|name| !name.starts_with("Tab #"))
+    });
+    assert!(
+        tab14_ready,
+        "tab 14 never completed its initial auto-name; got {:?}",
+        session.tab_names()
+    );
+
+    // Retry until the manual name remains authoritative for 500ms. This removes
+    // unrelated in-flight auto-name effects from setup while preserving the
+    // stale tab-13 instance that only reclaims tab 14 when reactivated.
+    let manual_name = "keep-this-manual-name";
+    let acceptance_deadline = Instant::now() + Duration::from_secs(8);
+    let mut stable_since = None;
+    while Instant::now() < acceptance_deadline {
+        if session.tab_names().get(13).is_some_and(|name| name == manual_name) {
+            let since = stable_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(500) {
+                break;
+            }
+        } else {
+            stable_since = None;
+            session.run_action(&["rename-tab", manual_name]);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500)),
+        "tab 14's manual name never became stable before navigation; got {:?}",
+        session.tab_names()
+    );
+
+    // Visit precisely N-1. Poll the host model for several seconds so both a
+    // transient overwrite and the persistent loss are captured; sidebar text is
+    // diagnostic only and cannot create a false reproduction.
+    let on_tab13 = session.wait_until(Duration::from_secs(8), |s| {
+        s.run_action(&["go-to-tab", "13"]);
+        s.dump_screen().contains(&format!("ZPID={pane13}"))
+    });
+    assert!(on_tab13, "could not navigate from tab 14 to tab 13");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut overwritten = None;
+    while Instant::now() < deadline {
+        let names = session.tab_names();
+        if !names.get(13).is_some_and(|name| name == manual_name) {
+            overwritten = Some(names);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        overwritten.is_none(),
+        "visiting tab 13 overwrote tab 14's manual name; names={:?};\nsidebar:\n{}",
+        overwritten.unwrap_or_default(),
+        sidebar_region(&session.screen(), 32)
+    );
 }
 
 /// Pins the load-bearing property behind the exit-clear fix: per-pane
@@ -1097,14 +1245,14 @@ fn session_next_switches_to_the_session_with_attention() {
     let pid = std::process::id();
     let layout = sidebar_layout(&wasm);
 
-    // `a` owns the temp HOME (deletes it on drop); `b` is a sibling on the
-    // SAME server socket dir + cache root (see `start_sibling`'s doc) — the
+    // `a` owns the isolated root (deletes it on drop); `b` is a sibling on the
+    // SAME private server socket dir + cache root (see `start_sibling`'s doc) — the
     // two servers are otherwise completely independent processes, exactly
     // like two real terminal windows a user opened separately.
     let a = ZellijSession::start(&format!("zjr_xsess_a_{pid}"), &layout, &wasm, temp_home);
     eprintln!("[e2e] session A ({}) loaded", a.name);
     let b = a.start_sibling(&format!("zjr_xsess_b_{pid}"), &layout);
-    eprintln!("[e2e] session B ({}) loaded (sibling of A, shared HOME)", b.name);
+    eprintln!("[e2e] session B ({}) loaded (sibling of A, shared private server)", b.name);
 
     // Give B a tracked agent needing attention. This is what B's plugin folds
     // into its own `Presence` (attention=1, running=0) and persists to the

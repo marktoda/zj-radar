@@ -347,7 +347,10 @@ replacement is push-only and tiered:
 
   Guardrails: only `rename_tab` when the derived name actually differs (avoid redundant
   main-thread work), and treat naming as best-effort cosmetics — a missing cwd/title just leaves
-  the existing name.
+  the existing name. Write authority is local: each sidebar instance may rename only the tab
+  containing its own plugin pane. It resolves that ownership to stable `TabId` from pushed
+  `PaneUpdate` + `TabUpdate` state before emitting any rename, so a stale instance in tab N-1
+  cannot overwrite tab N's manual name and tab position changes cannot redirect an effect.
 
 ## 7. Agent adapters (v1: Claude + Codex)
 
