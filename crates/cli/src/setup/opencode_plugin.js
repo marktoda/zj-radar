@@ -22,18 +22,57 @@
 // `cwd` on every spawn so the rail resolves repo/branch without a host probe).
 let CWD = "";
 
+// Track root sessionID to ignore child (subagent) sessions created by tasks.
+let rootSessionID = null;
+
+// Track the user message ID to ignore user prompt parts in message.part.updated.
+let lastUserMessageID = null;
+
+// Map of messageID -> role to track message roles across events.
+let messageRoles = new Map();
+
 // The last assistant text part seen via `message.part.updated`, tracked so a
 // `session.idle` (which carries no message text) can emit the turn's final
 // assistant text for the adapter's trailing-question Done→Pending remap.
 let lastAssistantText = "";
 
-// FIFO spawn queue: each notify resolves before the next spawns, preserving
-// in-order / latest-wins. A rejected child is swallowed so the queue never jams.
-let chain = Promise.resolve();
+// Queue with latest-wins coalescing for `running` events: running refreshes are
+// droppable so a backlog under slow/wedged sends never blocks pending/done edges.
+let pendingRunning = null;
+let queue = [];
+let processing = false;
 
 function enqueue(status, payload) {
-  chain = chain.then(() => notify(status, payload)).catch(() => {});
-  return chain;
+  if (status === "running") {
+    pendingRunning = payload;
+  } else {
+    if (pendingRunning !== null) {
+      queue.push({ status: "running", payload: pendingRunning });
+      pendingRunning = null;
+    }
+    queue.push({ status, payload });
+  }
+  processQueue();
+}
+
+async function processQueue() {
+  if (processing) return;
+  processing = true;
+
+  while (queue.length > 0 || pendingRunning !== null) {
+    let item;
+    if (queue.length > 0) {
+      item = queue.shift();
+    } else {
+      item = { status: "running", payload: pendingRunning };
+      pendingRunning = null;
+    }
+    try {
+      await notify(item.status, item.payload);
+    } catch {}
+  }
+
+  processing = false;
 }
 
 // Bounded async spawn: write the JSON payload to the child's stdin, then close
@@ -93,17 +132,51 @@ function errorMessage(error) {
   return typeof error.name === "string" ? error.name : "";
 }
 
+// Extract a permission description from permission.asked properties.
+function permMessage(props) {
+  if (!props) return "Permission requested";
+  const name = props.permission || props.tool || "permission";
+  const patterns = Array.isArray(props.patterns) && props.patterns.length > 0
+    ? props.patterns.join(", ")
+    : "";
+  return patterns ? `${name}: ${patterns}` : name;
+}
+
+// Helper to check if event or payload belongs to a child/subagent session.
+function isChildSession(props) {
+  if (!props) return false;
+  if (props.parentID || props.parent_id || (props.info && (props.info.parentID || props.info.parent_id))) {
+    return true;
+  }
+  return false;
+}
+
 export const ZjRadarPlugin = async ({ directory }) => {
   CWD = typeof directory === "string" ? directory : "";
   return {
     // User submitted a prompt → running, with the prompt text for task capture.
     "chat.message": async (_input, output) => {
-      const prompt = promptText(output && output.parts);
+      if (!output || isChildSession(output)) return;
+      const outputSessionID = output.sessionID || output.session_id || (_input && (_input.sessionID || _input.session_id));
+      if (outputSessionID && !rootSessionID) {
+        rootSessionID = outputSessionID;
+      } else if (rootSessionID && outputSessionID && outputSessionID !== rootSessionID) {
+        return;
+      }
+      lastAssistantText = "";
+      const msgID = output.id || output.messageID || (output.message && output.message.id);
+      if (msgID) {
+        lastUserMessageID = msgID;
+        messageRoles.set(msgID, "user");
+      }
+      const prompt = promptText(output && (output.parts || (output.message && output.message.parts)));
       enqueue("running", { event: "chat.message", prompt });
     },
 
     // Tool about to run / just ran → running, with the live tool activity.
     "tool.execute.before": async (input, output) => {
+      if (isChildSession(input) || isChildSession(output)) return;
+      if (rootSessionID && input && input.sessionID && input.sessionID !== rootSessionID) return;
       enqueue("running", {
         event: "tool.execute",
         tool: input && input.tool,
@@ -111,6 +184,8 @@ export const ZjRadarPlugin = async ({ directory }) => {
       });
     },
     "tool.execute.after": async (input) => {
+      if (isChildSession(input)) return;
+      if (rootSessionID && input && input.sessionID && input.sessionID !== rootSessionID) return;
       enqueue("running", {
         event: "tool.execute",
         tool: input && input.tool,
@@ -130,15 +205,46 @@ export const ZjRadarPlugin = async ({ directory }) => {
     event: async ({ event }) => {
       const type = event && event.type;
       const props = (event && event.properties) || {};
+      if (isChildSession(props)) return;
+
+      const eventSessionID = props.sessionID || props.session_id || (props.info && (props.info.sessionID || props.info.session_id));
+      if (type === "session.created") {
+        if (!props.parentID && !props.info?.parentID) {
+          rootSessionID = eventSessionID || null;
+        }
+      }
+      if (rootSessionID && eventSessionID && eventSessionID !== rootSessionID && type !== "session.created" && type !== "session.deleted") {
+        return;
+      }
+
       switch (type) {
+        // Track message role updates so we can accurately ignore user parts.
+        case "message.updated": {
+          const msg = props.message || props.info || props;
+          const id = msg && (msg.id || msg.messageID);
+          const role = msg && msg.role;
+          if (id && role) {
+            messageRoles.set(id, role);
+          }
+          break;
+        }
         // Track the latest assistant text part so session.idle can emit it.
         case "message.part.updated": {
           const part = props.part;
+          const msgID = (part && part.messageID) || props.messageID || (props.message && props.message.id);
+          const role = (part && part.role) || props.role || (props.message && props.message.role) || (msgID && messageRoles.get(msgID));
+          if (role === "user" || (msgID && lastUserMessageID && msgID === lastUserMessageID)) {
+            break;
+          }
           if (part && part.type === "text" && typeof part.text === "string") {
             lastAssistantText = part.text;
           }
           break;
         }
+        // opencode permission bus event (opencode >= 1.14).
+        case "permission.asked":
+          enqueue("pending", { event: "permission.ask", message: permMessage(props) });
+          break;
         // Turn complete → done, with the tracked final assistant text (the
         // adapter remaps to pending if it ends in a question).
         case "session.idle":
@@ -153,6 +259,9 @@ export const ZjRadarPlugin = async ({ directory }) => {
         // Session lifecycle → idle (row recedes; /clear, new/deleted session).
         case "session.created":
         case "session.deleted":
+          if (type === "session.deleted" && eventSessionID && eventSessionID === rootSessionID) {
+            rootSessionID = null;
+          }
           enqueue("idle", { event: "session.lifecycle" });
           lastAssistantText = "";
           break;
@@ -160,3 +269,5 @@ export const ZjRadarPlugin = async ({ directory }) => {
     },
   };
 };
+
+export default ZjRadarPlugin;
