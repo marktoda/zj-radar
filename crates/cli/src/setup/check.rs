@@ -136,19 +136,13 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts, layout_name: &str) -> Vec<Chec
         Some(false) => CheckItem::missing("grant", "wasm not granted — run `zj-radar setup zellij -y` to pre-authorize (or `--grant` from inside Zellij)"),
     });
 
-    // 5. producer — diagnosis, not a guess: say WHICH producer the doctor saw.
-    items.push(match (f.codex_producer, f.claude_producer, f.opencode_producer) {
-        (true, true, true) => CheckItem::ok("producer", "Codex, Claude, and Opencode producers wired"),
-        (true, true, false) => CheckItem::ok("producer", "Codex hooks and Claude plugin wired"),
-        (true, false, true) => CheckItem::ok("producer", "Codex hooks and Opencode plugin wired"),
-        (false, true, true) => CheckItem::ok("producer", "Claude and Opencode plugins wired"),
-        (true, false, false) => CheckItem::ok("producer", "Codex hooks wired"),
-        (false, true, false) => CheckItem::ok("producer", "Claude plugin wired"),
-        (false, false, true) => CheckItem::ok("producer", "Opencode plugin wired"),
-        (false, false, false) => CheckItem::missing(
-            "producer",
-            "no producer detected — run `zj-radar setup claude`, `zj-radar setup codex`, or `zj-radar setup opencode`",
-        ),
+    // 5. producer — diagnosis, not a guess: say WHICH producers the doctor saw.
+    items.push(if f.producers.is_empty() {
+        let routes: Vec<String> =
+            crate::agents::Agent::ALL.iter().map(|a| format!("`zj-radar setup {}`", a.source())).collect();
+        CheckItem::missing("producer", format!("no producer detected — run one of {}", routes.join(", ")))
+    } else {
+        CheckItem::ok("producer", format!("wired: {}", crate::producers::names(&f.producers)))
     });
 
     // 6. managed config (only emit when true)
@@ -190,8 +184,7 @@ pub(crate) fn zellij_config_file_item(
 /// producer is wired through Claude Code's plugin marketplace, so the doctor
 /// has exactly two facts to verify: the binary and the installed plugin.
 pub(crate) fn check_claude() -> bool {
-    let wired =
-        crate::run::claude_producer_wired(claude_installed_plugins_text().as_deref());
+    let wired = crate::producers::ProducerTexts::read().is_wired(crate::agents::Agent::Claude);
     let items = claude_check_items(which("claude"), wired);
     println!("claude:");
     print_check_items(&items)
@@ -507,9 +500,7 @@ mod tests {
             wasm_present:            true,
             has_rail:                Some(true),
             granted:                 Some(true),
-            codex_producer:          true,
-            claude_producer:         false,
-            opencode_producer:       false,
+            producers:               vec![crate::agents::Agent::Codex],
             config_managed:          false,
             zellij_version:          Some("zellij 0.44.3".to_string()),
         }
@@ -644,12 +635,24 @@ mod tests {
 
     #[test]
     fn zellij_check_items_no_producer_is_missing() {
-        let mut f = all_good_facts();
-        f.codex_producer = false;
+        let f = ZellijFacts { producers: vec![], ..all_good_facts() };
         let items = zellij_check_items(&f, "default");
         let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
         assert_eq!(producer.level, CheckLevel::Missing);
-        assert!(producer.detail.contains("setup codex"), "hint must mention setup codex");
+        for agent in crate::agents::Agent::ALL {
+            let route = format!("`zj-radar setup {}`", agent.source());
+            assert!(producer.detail.contains(&route), "hint must name the {route} route: {}", producer.detail);
+        }
+    }
+
+    #[test]
+    fn zellij_check_items_names_every_wired_producer() {
+        use crate::agents::Agent;
+        let f = ZellijFacts { producers: vec![Agent::Claude, Agent::Opencode], ..all_good_facts() };
+        let items = zellij_check_items(&f, "default");
+        let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
+        assert_eq!(producer.level, CheckLevel::Ok);
+        assert_eq!(producer.detail, "wired: claude, opencode");
     }
 
     #[test]
@@ -780,8 +783,7 @@ mod tests {
             wasm_present: false,
             has_rail: Some(false),
             granted: Some(false),
-            codex_producer: false,
-            claude_producer: false,
+            producers: vec![],
             zellij_version: None,
             ..all_good_facts()
         };

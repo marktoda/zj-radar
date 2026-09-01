@@ -528,22 +528,18 @@ fn print_grant_hint_if_needed(facts: &ZellijFacts) {
     );
 }
 
-/// Emit a producer hint at the tail of `setup zellij` when no producer is wired,
-/// per `facts.producer_wired` (derived from Codex hooks + the Claude plugin
-/// manifest + the opencode bridge plugin, same as `run`'s detection — see
-/// `analyze_zellij`).
+/// Emit a producer hint at the tail of `setup zellij`: the full "no producer
+/// wired" hint when nothing is, else one note per agent that is on PATH but
+/// not wired (same detection as `run` and the doctor — `crate::producers`).
 fn print_producer_hint_if_needed(facts: &ZellijFacts) {
-    if !facts.producer_wired() {
-        println!("zellij: {}", crate::run::PRODUCER_HINT);
-    } else {
-        if which("opencode") && !facts.opencode_producer {
-            println!("zellij: note: opencode found on PATH but bridge plugin not installed — run `zj-radar setup opencode`");
-        }
-        if which("claude") && !facts.claude_producer {
-            println!("zellij: note: claude found on PATH but plugin not installed — run `zj-radar setup claude`");
-        }
-        if which("codex") && !facts.codex_producer {
-            println!("zellij: note: codex found on PATH but hooks not installed — run `zj-radar setup codex`");
+    if let Some(hint) = crate::producers::producer_hint(&facts.producers) {
+        println!("zellij: {hint}");
+        return;
+    }
+    for agent in crate::agents::Agent::ALL {
+        let name = agent.source();
+        if which(name) && !facts.producers.contains(agent) {
+            println!("zellij: note: {name} found on PATH but not wired — run `zj-radar setup {name}`");
         }
     }
 }

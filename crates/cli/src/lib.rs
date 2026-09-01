@@ -29,6 +29,7 @@ mod agents;
 mod fsutil;
 pub(crate) mod layout;
 mod notify;
+mod producers;
 mod run;
 mod setup;
 

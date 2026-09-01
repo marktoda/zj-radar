@@ -29,7 +29,7 @@ pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
 
 /// True iff the opencode plugin file's text carries our ownership marker. The
 /// single reader behind `analyze_opencode`, the install/uninstall gating, the
-/// doctor, and `run`'s `opencode_producer_wired` (the `CODEX_HOOK_MARKER`
+/// doctor, and producer detection (`crate::producers`; the `CODEX_HOOK_MARKER`
 /// precedent: one shared source of truth so detection can't drift). A foreign
 /// plugin file (no marker) is never mistaken for ours.
 pub(crate) fn opencode_plugin_is_ours(plugin_text: &str) -> bool {

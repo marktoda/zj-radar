@@ -41,6 +41,23 @@ let CWD = "";
 // would freeze the rail on the old session forever.
 const childSessions = new Set();
 
+// Sessions already classified (child or not). The one gap in the stream is a
+// subagent *resumed* by `task_id` after an opencode restart: no
+// `session.created`, and its `chat.message` fires before `session.updated`.
+// For a never-seen session, `chat.message` asks the SDK once instead; an
+// unreachable SDK classifies it as the user's (today's behavior, never worse).
+const classifiedSessions = new Set();
+let sdk = null;
+
+async function classify(sessionID) {
+  if (typeof sessionID !== "string" || classifiedSessions.has(sessionID)) return;
+  classifiedSessions.add(sessionID);
+  try {
+    const { data } = await sdk.session.get({ sessionID });
+    if (data && data.parentID) childSessions.add(sessionID);
+  } catch {}
+}
+
 // messageID → role for the current turn. Part carries no role, and opencode
 // publishes `message.part.updated` for the user's own prompt parts too (and
 // for compaction's synthetic user message, which never passes `chat.message`)
@@ -183,14 +200,17 @@ function endTurn() {
   messageRoles.clear();
 }
 
-export const ZjRadarPlugin = async ({ directory }) => {
+export const ZjRadarPlugin = async ({ directory, client }) => {
   CWD = typeof directory === "string" ? directory : "";
+  sdk = client;
   return {
     // User submitted a prompt → running, with the prompt text for task capture.
     // Fires before the message is stored, so the role is known before any of
     // its parts arrive via `message.part.updated`.
     "chat.message": async (input, output) => {
-      if (!output || isChild(input && input.sessionID)) return;
+      const sessionID = input && input.sessionID;
+      await classify(sessionID);
+      if (!output || isChild(sessionID)) return;
       lastAssistantText = "";
       if (output.message && output.message.id) messageRoles.set(output.message.id, "user");
       enqueue("running", { event: "chat.message", prompt: promptText(output.parts) });
@@ -235,12 +255,15 @@ export const ZjRadarPlugin = async ({ directory }) => {
         // Learn subagent sessions from their lifecycle; forget them on delete.
         case "session.created":
         case "session.updated":
-          if (props.info && props.info.parentID && sessionID) {
+          if (!sessionID) break;
+          classifiedSessions.add(sessionID);
+          if (props.info && props.info.parentID) {
             childSessions.add(sessionID);
             return;
           }
           break;
         case "session.deleted":
+          classifiedSessions.delete(sessionID);
           if (childSessions.delete(sessionID)) return;
           break;
       }

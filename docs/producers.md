@@ -89,9 +89,9 @@ writes one entry per event across seven hook events (`UserPromptSubmit`,
 ## Opencode
 
 [Opencode](https://opencode.ai) auto-loads JS plugins from its global plugins
-dir, so wiring is one file drop — **no `opencode.json` editing**; uninstall
-deletes that file (a `.zj-radar.bak` from an earlier rewrite may remain, and
-opencode ignores it):
+dir, so wiring is one file drop — **no `opencode.json` editing**, and
+`--uninstall` removes that file (and the `.zj-radar.bak` an earlier rewrite
+left beside it):
 
 ```sh
 zj-radar setup opencode
@@ -142,6 +142,15 @@ blank-permission backstop — so the JS never grows a second classifier.
   Claude. The minimum verified opencode version is 1.18.x (the plugin is
   vendored per zj-radar release; re-running `setup opencode` heals drift via
   the marker rewrite).
+- **The bridge runs where the server runs.** The default `opencode` TUI hosts
+  its server in-process, so status lands on that pane. With `opencode serve`
+  plus `opencode attach`, the plugin runs in the *server's* process: status is
+  attributed to the server's pane, or dropped when the server isn't under
+  Zellij.
+- **Slash commands label the task with their expansion.** opencode expands a
+  `/command` template before the bridge sees the prompt (there is no marker
+  left on the message), so the sticky task line reads the template's first
+  line rather than skipping the command the way Claude's producer does.
 
 ## Any script: `zj-radar notify generic`
 
