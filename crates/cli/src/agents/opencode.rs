@@ -19,8 +19,8 @@ use serde_json::Value;
 /// bridge always passes `--status`, so this is the robustness/test path).
 fn status_from_event(event: &str) -> Option<Status> {
     match event {
-        "chat.message" | "tool.execute" | "permission.replied" => Some(Status::Running),
-        "permission.ask" => Some(Status::Pending),
+        "chat.message" | "tool.execute" | "needs_you.replied" => Some(Status::Running),
+        "permission.ask" | "question.ask" => Some(Status::Pending),
         "session.idle" => Some(Status::Done),
         "session.error" => Some(Status::Error),
         "session.lifecycle" => Some(Status::Idle),
@@ -107,26 +107,22 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     })
 }
 
-/// Map opencode's lowercase tool names to the shared `tool_activity`
-/// vocabulary. opencode built-ins (`read`, `bash`, …) and common spelling
-/// variants are covered; an unknown name passes through unchanged (it falls
-/// to the `_` arm of `tool_activity`, yielding `None` → the `working`
-/// baseline). opencode keys MCP tools `<server>_<tool>` (no `mcp__` prefix),
-/// so they are indistinguishable from unknown names here and read as the
-/// baseline too.
+/// Map opencode's built-in tool ids (`packages/opencode/src/tool/registry.ts`,
+/// all lowercase) to the shared `tool_activity` vocabulary. Anything else —
+/// including MCP tools, which opencode keys `<server>_<tool>` — passes through
+/// and falls to `tool_activity`'s `_` arm: `None` → the `working` baseline.
 fn normalize_tool_name(raw: &str) -> &str {
     match raw {
         "read" => "Read",
-        "write" | "create" | "save" => "Write",
-        "edit" | "str_replace" | "update" => "Edit",
-        "bash" | "execute" => "Bash",
+        "write" => "Write",
+        "edit" => "Edit",
+        "bash" => "Bash",
         "grep" => "Grep",
-        "glob" | "list" => "Glob",
-        "webfetch" | "fetch" => "WebFetch",
-        "websearch" | "search" => "WebSearch",
-        "task" | "subtask" => "Task",
-        "todowrite" | "todo" => "TodoWrite",
-        "applypatch" | "apply_patch" => "apply_patch",
+        "glob" => "Glob",
+        "webfetch" => "WebFetch",
+        "websearch" => "WebSearch",
+        "task" => "Task",
+        "todowrite" => "TodoWrite",
         _ => raw,
     }
 }
@@ -240,14 +236,16 @@ mod tests {
     }
 
     #[test]
-    fn permission_replied_resumes_running() {
-        // The user answered the prompt: the row leaves ◆ immediately instead of
-        // waiting for the next tool/idle event (a denied permission throws
-        // inside the tool, so `tool.execute.after` may never come).
-        let u = derive(&intake(r#"{"event":"permission.replied","cwd":"/repo"}"#, None)).unwrap();
+    fn question_ask_is_pending_and_any_needs_you_reply_resumes_running() {
+        // opencode's built-in `question` tool blocks the TUI like a permission
+        // prompt; the bridge sends it as `question.ask`, and every reply edge
+        // (permission.replied / question.replied / question.rejected) arrives
+        // as one `needs_you.replied` running.
+        let u = derive(&intake(r#"{"event":"question.ask","message":"Which auth strategy?"}"#, None)).unwrap();
+        assert_eq!(u.status, Status::Pending);
+        assert_eq!(u.msg, "Which auth strategy?");
+        let u = derive(&intake(r#"{"event":"needs_you.replied"}"#, None)).unwrap();
         assert_eq!(u.status, Status::Running);
-        assert_eq!(u.msg, "working");
-        assert_eq!(u.task, None);
     }
 
     #[test]

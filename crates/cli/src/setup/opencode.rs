@@ -192,7 +192,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
     match plan_install(&existing, opts.force) {
         InstallPlan::UpToDate => {
             println!("opencode: plugin already up to date ({})", path.display());
-            print_opencode_guidance(&facts);
+            print_opencode_guidance(&facts, false);
             return;
         }
         InstallPlan::RefuseForeign => {
@@ -214,7 +214,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
     }
     if opts.dry_run {
         println!("--- {} (dry-run) ---\n{OPENCODE_PLUGIN_JS}", path.display());
-        print_opencode_guidance(&facts);
+        print_opencode_guidance(&facts, true);
         return;
     }
     let prompt = format!("Write {}?", path.display());
@@ -222,18 +222,21 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         return;
     }
     println!("opencode: plugin installed ({})", path.display());
-    print_opencode_guidance(&facts);
+    print_opencode_guidance(&facts, true);
 }
 
-fn print_opencode_guidance(facts: &OpencodeFacts) {
+fn print_opencode_guidance(facts: &OpencodeFacts, wrote: bool) {
     if !facts.zj_radar_on_path {
         eprintln!(
             "opencode: warning — `zj-radar` not found on PATH; the bridge spawns it per event, \
              so status won't broadcast until it's installed"
         );
     }
-    // Plugins load once at opencode startup, so a write mid-session needs a restart.
-    println!("opencode: restart opencode (or reload plugins) for the bridge to take effect.");
+    // Plugins load once at opencode startup, so a write mid-session needs a
+    // restart — but an already-current file needs nothing.
+    if wrote {
+        println!("opencode: restart opencode (or reload plugins) for the bridge to take effect.");
+    }
 }
 
 #[cfg(test)]

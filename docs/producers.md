@@ -89,8 +89,9 @@ writes one entry per event across seven hook events (`UserPromptSubmit`,
 ## Opencode
 
 [Opencode](https://opencode.ai) auto-loads JS plugins from its global plugins
-dir, so wiring is one file drop — **no `opencode.json` editing**, clean
-uninstall = delete one file:
+dir, so wiring is one file drop — **no `opencode.json` editing**; uninstall
+deletes that file (a `.zj-radar.bak` from an earlier rewrite may remain, and
+opencode ignores it):
 
 ```sh
 zj-radar setup opencode
@@ -121,14 +122,15 @@ blank-permission backstop — so the JS never grows a second classifier.
 - **Restart opencode after installing** — plugins load once at startup, so a
   write mid-session needs a restart (or plugin reload) to take effect.
 - The bridge covers `chat.message` (running + task), `tool.execute.before`/
-  `after` (running + tool activity), the `permission.asked` bus event
-  (pending; the pre-1.14 `permission.ask` hook is kept as a fallback) and
-  `permission.replied` (back to running), `session.idle` (done, with the
-  trailing-question → pending remap), `session.error` (error — a real failure
-  signal Claude's hook model lacks), and `session.created`/`session.deleted`
-  (idle). Events from subagent (task-tool) sessions are ignored — only the
-  root session drives the row — and the user's own prompt text is never
-  mistaken for assistant text. Sends are async-only (never synchronous — the
+  `after` (running + tool activity), the `permission.asked` and
+  `question.asked` bus events (pending — both block the TUI, from whichever
+  session raised them) and their `replied`/`rejected` edges (back to
+  running), `session.idle` (done, with the trailing-question → pending remap),
+  `session.error` (error — a real failure signal Claude's hook model lacks;
+  the user's own Esc interrupt is not an error and settles on done), and
+  `session.created`/`session.deleted` (idle). Events from subagent (task-tool)
+  sessions are ignored, and the user's own prompt text is never mistaken for
+  assistant text. Sends are async-only (never synchronous — the
   bridge runs in opencode's process and must not freeze the TUI), one child
   at a time, with a hard ~10 s kill timer per child. Status *edges*
   (pending/done/error/idle) are strictly FIFO; `running` refreshes coalesce to

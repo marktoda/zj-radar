@@ -187,7 +187,7 @@ effects. The real external seam remains the **pipe payload schema** (versioned).
 | Codex `Stop`                                  | `done`    |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored (the main turn keeps owning the pane) |
 | Codex legacy `agent-turn-complete`            | `done`    |
-| Observed command exiting nonzero              | `error` — with opencode's `session.error`, one of the two `error` sources. Claude's map deliberately has no `error`: its hook vocabulary carries no reliable turn-level failure signal (`PostToolUse`'s per-tool `is_error` is normal, recoverable agent behavior), so mapping hooks to `Error` would paint healthy turns red |
+| Observed command exiting nonzero              | `error` — one of two `error` sources (the other: opencode's `session.error`, minus the user's own Esc interrupt). Claude's map deliberately has no `error`: its hook vocabulary carries no reliable turn-level failure signal (`PostToolUse`'s per-tool `is_error` is normal, recoverable agent behavior), so mapping hooks to `Error` would paint healthy turns red |
 | Agent pane returns to its shell prompt (observed exit) | `idle` — terminal statuses clear at once; a `Running` instead arms the 15-tick stale grace (see §6, *Running exit grace*) |
 | Agent pane's root process exits (pane manifest `exited`) | `idle` — definitive producer death: clears even a `Running` immediately, no grace (see §6, *Running exit grace*) |
 
@@ -451,6 +451,13 @@ the normal `cwd_changed` path):
   maps lifecycle events to `running`/`pending`/`done`. The legacy single-slot
   `config.toml` `notify` path remains available behind `--legacy-notify` for older
   Codex installs and can only emit `done`.
+- **Opencode** — `zj-radar setup opencode` drops a marker-owned JS bridge plugin into
+  opencode's auto-loaded plugins dir; it spawns `zj-radar notify opencode --status <s>`
+  per hook/bus event with the payload on stdin. Covers `running` (prompt, tools),
+  `pending` (permission and `question` prompts, from any session — subagents ask
+  through the parent TUI), `done` (`session.idle`), and `error` (`session.error`,
+  except the user's own Esc). Subagent sessions are filtered; tool-activity
+  refreshes coalesce so a slow pipe never delays an edge.
 - **Aider** — parked (one-line `--notifications-command`, status-only) for a later phase.
 
 ## 8. Build & packaging (Nix)

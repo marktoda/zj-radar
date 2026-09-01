@@ -12,14 +12,19 @@
 // status edges (pending/done/error/idle) and the task-carrying `chat.message`
 // go out strictly FIFO, while tool-activity `running` refreshes coalesce to
 // the latest unsent one (latest-wins is the project's ordering rule, so a
-// stale running is free to drop and can never head-of-line block an edge). Each child has a hard ~10s kill timer as an outer backstop;
-// a rejected child never breaks the queue.
+// stale running is free to drop and can never head-of-line block an edge).
+// Each child has a hard ~10s kill timer as an outer backstop; a rejected child
+// never breaks the queue.
 // ASYNC SPAWN ONLY — never a synchronous spawn: the plugin runs in opencode's
 // process, so a wedged rail must not freeze the TUI event loop.
 //
 // The bridge picks the status class (it knows the event); the Rust adapter
 // (crates/cli/src/agents/opencode.rs) owns the refinements keyed off the
 // payload's `event` field.
+//
+// Event shapes are opencode ≥ 1.18 (`packages/schema/src/v1/*.ts`): every bus
+// event carries a top-level `sessionID`; `session.*` also carry `info`
+// (Session.Info, whose own key is `id`), `message.part.updated` carries `part`.
 
 // Resolved once at plugin init. `directory` is the session cwd (forwarded as
 // `cwd` on every spawn so the rail resolves repo/branch without a host probe).
@@ -28,32 +33,34 @@ let CWD = "";
 // Subagent (task-tool) sessions. opencode forks them with `parentID`, and
 // their prompts/tools/idle fire the same hooks and bus events as the user's
 // session — so a subagent finishing would paint Done (and clobber the task
-// label) mid-turn. Children always announce themselves via `session.created`
-// (info.parentID) before anything else, so the bridge learns the set from
-// the stream and drops their events; every *other* session is the user's.
+// label) mid-turn. Children announce themselves via `session.created`
+// (info.parentID) before anything else, so the bridge learns the set from the
+// stream and drops their events; every *other* session is the user's.
 // Deliberately NOT a "pin the root" latch: switching to an existing session
 // (picker, `-c`, `--session`, attach) fires no `session.created`, and a latch
 // would freeze the rail on the old session forever.
 const childSessions = new Set();
 
-// The current user message ID: opencode publishes `message.part.updated` for
-// the user's own prompt parts too (Part carries no role), so parts of this
-// message must never land in `lastAssistantText`.
-let lastUserMessageID = null;
+// messageID → role for the current turn. Part carries no role, and opencode
+// publishes `message.part.updated` for the user's own prompt parts too (and
+// for compaction's synthetic user message, which never passes `chat.message`)
+// — so only parts of a known-assistant message may become `lastAssistantText`.
+const messageRoles = new Map();
 
-// messageID -> role, learned from `message.updated` (which does carry role);
-// cleared at each turn boundary so it stays bounded.
-let messageRoles = new Map();
-
-// The last assistant text part seen via `message.part.updated`, tracked so a
-// `session.idle` (which carries no message text) can emit the turn's final
-// assistant text for the adapter's trailing-question Done→Pending remap.
+// The last assistant text part seen, so a `session.idle` (which carries no
+// message text) can emit the turn's final assistant text for the adapter's
+// trailing-question Done→Pending remap.
 let lastAssistantText = "";
 
-// Queue with latest-wins coalescing for `running` events: running refreshes are
-// droppable so a backlog under slow/wedged sends never blocks pending/done edges.
+// opencode's `halt()` publishes `session.error` and then sets the session idle
+// in the same tick, so a real error is always followed by `session.idle`.
+// Latched, that idle must not paint Done over the error; the latch clears on
+// the next non-error send (the user's next prompt, a tool, a permission).
+let errorLatched = false;
+
+// Queue: edges FIFO, one droppable slot for the latest tool-activity running.
 let pendingRunning = null;
-let queue = [];
+const queue = [];
 let processing = false;
 
 function enqueue(status, payload) {
@@ -70,18 +77,16 @@ function enqueue(status, payload) {
     }
     queue.push({ status, payload });
   }
+  errorLatched = status === "error";
   processQueue();
 }
 
 async function processQueue() {
   if (processing) return;
   processing = true;
-
   while (queue.length > 0 || pendingRunning !== null) {
-    let item;
-    if (queue.length > 0) {
-      item = queue.shift();
-    } else {
+    let item = queue.shift();
+    if (item === undefined) {
       item = { status: "running", payload: pendingRunning };
       pendingRunning = null;
     }
@@ -89,7 +94,6 @@ async function processQueue() {
       await notify(item.status, item.payload);
     } catch {}
   }
-
   processing = false;
 }
 
@@ -130,7 +134,7 @@ function notify(status, payload) {
     .catch(() => clearTimeout(timer));
 }
 
-// Extract the user's prompt text from a chat.message `output.parts` array
+// The user's prompt text from a chat.message `output.parts` array
 // (UserMessage itself carries no text — the prompt is in its TextParts).
 function promptText(parts) {
   if (!Array.isArray(parts)) return "";
@@ -141,7 +145,7 @@ function promptText(parts) {
     .trim();
 }
 
-// Extract a human message from opencode's error union ({ name, data: { message? } }).
+// A human message from opencode's error union ({ name, data: { message? } }).
 function errorMessage(error) {
   if (!error) return "";
   if (error.data && typeof error.data.message === "string" && error.data.message) {
@@ -150,158 +154,129 @@ function errorMessage(error) {
   return typeof error.name === "string" ? error.name : "";
 }
 
-// Extract a permission description from `permission.asked` properties
-// ({ id, sessionID, permission, patterns, metadata, always, tool? } — no title).
-function permMessage(props) {
-  if (!props) return "Permission requested";
+// `permission.asked` is the flattened Request — no title; derive one from
+// `permission` (e.g. "bash") + `patterns` (e.g. "cargo test").
+function permissionMessage(props) {
   const name = typeof props.permission === "string" && props.permission ? props.permission : "permission";
-  const patterns = Array.isArray(props.patterns) && props.patterns.length > 0
-    ? props.patterns.join(", ")
-    : "";
+  const patterns = Array.isArray(props.patterns) ? props.patterns.join(", ") : "";
   return patterns ? `${name}: ${patterns}` : name;
 }
 
-// Whether a payload declares itself a child/subagent session (Session.Info
-// carries `parentID`), or names a session already learned as a child.
-function isChildSession(props) {
-  if (!props) return false;
-  if (props.parentID || props.parent_id || (props.info && (props.info.parentID || props.info.parent_id))) {
-    return true;
-  }
-  const sid = eventSession(props);
-  return sid !== null && childSessions.has(sid);
+// `question.asked` is the flattened Request: `questions[].question`.
+function questionMessage(props) {
+  const first = Array.isArray(props.questions) ? props.questions[0] : null;
+  return first && typeof first.question === "string" ? first.question : "question";
 }
 
-// The sessionID an event belongs to. Current opencode stamps a top-level
-// `sessionID` on every event; older shapes carried only `{ info }` (whose
-// session key is `id`) or `{ part }` (which carries its own `sessionID`).
+// The sessionID a bus event belongs to (top-level on every current event;
+// `info.id` / `part.sessionID` cover the older wrapped shapes).
 function eventSession(props) {
-  if (!props) return null;
-  return (
-    props.sessionID ||
-    props.session_id ||
-    (props.info && (props.info.sessionID || props.info.session_id || props.info.id)) ||
-    (props.part && props.part.sessionID) ||
-    null
-  );
+  return props.sessionID || (props.info && props.info.id) || (props.part && props.part.sessionID) || null;
+}
+
+function isChild(sessionID) {
+  return typeof sessionID === "string" && childSessions.has(sessionID);
+}
+
+function endTurn() {
+  lastAssistantText = "";
+  messageRoles.clear();
 }
 
 export const ZjRadarPlugin = async ({ directory }) => {
   CWD = typeof directory === "string" ? directory : "";
   return {
     // User submitted a prompt → running, with the prompt text for task capture.
+    // Fires before the message is stored, so the role is known before any of
+    // its parts arrive via `message.part.updated`.
     "chat.message": async (input, output) => {
-      if (!output || isChildSession(input) || isChildSession(output)) return;
+      if (!output || isChild(input && input.sessionID)) return;
       lastAssistantText = "";
-      const msgID = output.id || output.messageID || (output.message && output.message.id);
-      if (msgID) {
-        lastUserMessageID = msgID;
-        messageRoles.set(msgID, "user");
-      }
-      const prompt = promptText(output && (output.parts || (output.message && output.message.parts)));
-      enqueue("running", { event: "chat.message", prompt });
+      if (output.message && output.message.id) messageRoles.set(output.message.id, "user");
+      enqueue("running", { event: "chat.message", prompt: promptText(output.parts) });
     },
 
     // Tool about to run / just ran → running, with the live tool activity.
+    // `after` is load-bearing: a permission is asked inside the tool, between
+    // `before` and `after`, so `after` is what brings a ◆ back to running.
     "tool.execute.before": async (input, output) => {
-      if (isChildSession(input) || isChildSession(output)) return;
-      enqueue("running", {
-        event: "tool.execute",
-        tool: input && input.tool,
-        tool_input: output && output.args,
-      });
+      if (isChild(input && input.sessionID)) return;
+      enqueue("running", { event: "tool.execute", tool: input.tool, tool_input: output && output.args });
     },
     "tool.execute.after": async (input) => {
-      if (isChildSession(input)) return;
-      enqueue("running", {
-        event: "tool.execute",
-        tool: input && input.tool,
-        tool_input: input && input.args,
-      });
+      if (isChild(input && input.sessionID)) return;
+      enqueue("running", { event: "tool.execute", tool: input.tool, tool_input: input.args });
     },
 
-    // Legacy (< 1.14) permission hook → pending. Current opencode no longer
-    // triggers it (the signal is the `permission.asked` bus event below);
-    // kept so older installs still get the needs-you moment.
-    "permission.ask": async (input) => {
-      enqueue("pending", {
-        event: "permission.ask",
-        message: input && input.title,
-      });
-    },
-
-    // The catch-all event stream: session lifecycle + assistant-text tracking.
+    // The bus: needs-you prompts, session lifecycle, assistant-text tracking.
     event: async ({ event }) => {
       const type = event && event.type;
       const props = (event && event.properties) || {};
-      const eventSessionID = eventSession(props);
-
-      // Permission prompts block the user's TUI whichever session raised them
-      // (a subagent's `bash` asks through the parent's UI), so they are the one
-      // class of event that must NOT be filtered by session.
-      if (type === "permission.asked") {
-        enqueue("pending", { event: "permission.ask", message: permMessage(props) });
-        return;
-      }
-      if (type === "permission.replied") {
-        // The user answered → back to running now, rather than on the next
-        // tool/idle event (a denied permission throws inside the tool, so
-        // `tool.execute.after` may never come).
-        enqueue("running", { event: "permission.replied" });
-        return;
-      }
-
-      // Learn (and forget) subagent sessions from their lifecycle events.
-      if ((type === "session.created" || type === "session.updated") && eventSessionID) {
-        if (props.parentID || (props.info && props.info.parentID)) childSessions.add(eventSessionID);
-      }
-      if (type === "session.deleted" && eventSessionID && childSessions.has(eventSessionID)) {
-        childSessions.delete(eventSessionID);
-        return;
-      }
-      if (isChildSession(props)) return;
+      const sessionID = eventSession(props);
 
       switch (type) {
-        // Track message role updates so we can accurately ignore user parts.
-        case "message.updated": {
-          const msg = props.message || props.info || props;
-          const id = msg && (msg.id || msg.messageID);
-          const role = msg && msg.role;
-          if (id && role) {
-            messageRoles.set(id, role);
+        // Needs-you prompts block the user's TUI whichever session raised them
+        // (a subagent's `bash` asks through the parent's UI), so they are never
+        // filtered by session. The user answering brings the row back to
+        // running now — a denied permission throws inside the tool, so
+        // `tool.execute.after` may never come.
+        case "permission.asked":
+          enqueue("pending", { event: "permission.ask", message: permissionMessage(props) });
+          return;
+        case "question.asked":
+          enqueue("pending", { event: "question.ask", message: questionMessage(props) });
+          return;
+        case "permission.replied":
+        case "question.replied":
+        case "question.rejected":
+          enqueue("running", { event: "needs_you.replied" });
+          return;
+
+        // Learn subagent sessions from their lifecycle; forget them on delete.
+        case "session.created":
+        case "session.updated":
+          if (props.info && props.info.parentID && sessionID) {
+            childSessions.add(sessionID);
+            return;
           }
           break;
-        }
+        case "session.deleted":
+          if (childSessions.delete(sessionID)) return;
+          break;
+      }
+      if (isChild(sessionID)) return;
+
+      switch (type) {
+        case "message.updated":
+          if (props.info && props.info.id && props.info.role) messageRoles.set(props.info.id, props.info.role);
+          break;
         // Track the latest assistant text part so session.idle can emit it.
         case "message.part.updated": {
           const part = props.part;
-          const msgID = (part && part.messageID) || props.messageID || (props.message && props.message.id);
-          const role = (part && part.role) || props.role || (props.message && props.message.role) || (msgID && messageRoles.get(msgID));
-          if (role === "user" || (msgID && lastUserMessageID && msgID === lastUserMessageID)) {
-            break;
-          }
-          if (part && part.type === "text" && typeof part.text === "string") {
-            lastAssistantText = part.text;
-          }
+          if (!part || part.type !== "text" || typeof part.text !== "string") break;
+          if (messageRoles.get(part.messageID) === "assistant") lastAssistantText = part.text;
           break;
         }
         // Turn complete → done, with the tracked final assistant text (the
-        // adapter remaps to pending if it ends in a question).
+        // adapter remaps to pending if it ends in a question). Skipped while
+        // an error is latched: that idle is the tail of the error, not a Done.
         case "session.idle":
-          enqueue("done", { event: "session.idle", message: lastAssistantText });
-          lastAssistantText = "";
-          messageRoles.clear();
+          if (!errorLatched) enqueue("done", { event: "session.idle", message: lastAssistantText });
+          endTurn();
           break;
-        // A real failure signal Claude's hook model lacks → error.
+        // A real failure → error (a signal Claude's hook model lacks). An Esc
+        // interrupt also arrives here as `MessageAbortedError`; that is the
+        // user's own action, so it falls through to the idle → Done path.
         case "session.error":
+          if (props.error && props.error.name === "MessageAbortedError") break;
           enqueue("error", { event: "session.error", message: errorMessage(props.error) });
-          lastAssistantText = "";
+          endTurn();
           break;
         // Session lifecycle → idle (row recedes; /clear, new/deleted session).
         case "session.created":
         case "session.deleted":
           enqueue("idle", { event: "session.lifecycle" });
-          lastAssistantText = "";
+          endTurn();
           break;
       }
     },
