@@ -308,7 +308,7 @@ hooks' `timeout` values must clear the cap plus 2s slack (welded by
 ## 6. Plugin ↔ Zellij wiring
 
 - **Permissions:** `ReadApplicationState` (tab/pane state), `ReadCliPipes` (broadcast),
-  `ChangeApplicationState` (`switch_tab_to`, `rename_tab`), and `RunCommands` — the plugin now
+  `ChangeApplicationState` (`switch_tab_to`, `rename_tab_with_id`), and `RunCommands` — the plugin now
   owns OS desktop notifications and hands each one to the host via `run_command` (see §12; a
   reversal of the original "notifications stay in the adapters, no `RunCommands`" stance). When
   the grant is absent, `run_command` is a silent host no-op, so notifications simply don't fire.
@@ -428,15 +428,16 @@ the normal `cwd_changed` path):
 - **v1.x (optional auto-naming, push-sourced only):** if generic names on plain tabs feel like a
   regression, derive names from **events we already receive**, never from queries:
   - *Agent tabs* — the hook payload already carries `repo`; on a status change, optionally
-    `rename_tab(position+1, repo)`. `rename_tab` is a fire-and-forget `ChangeApplicationState`
+    `rename_tab_with_id(tab_id, repo)`. It is a fire-and-forget `ChangeApplicationState`
     action (no blocking return), and it fires only on change, not per tick — so it cannot
-    recreate the poll storm.
+    recreate the poll storm. Addressed by Zellij's stable tab id, never position — see
+    `TabRename` in `tab_namer.rs` for why.
   - *Plain tabs* — subscribe to **`CwdChanged`** (pushed) to learn a pane's cwd → git-root
     basename; read program from **`PaneInfo.title`** in the `PaneUpdate` manifest we already
     consume. Both are push signals; the only `get_pane_*` call anywhere is the once-per-pane
     `ResolveCwd` bootstrap above.
 
-  Guardrails: only `rename_tab` when the derived name actually differs (avoid redundant
+  Guardrails: only rename when the derived name actually differs (avoid redundant
   main-thread work), and treat naming as best-effort cosmetics — a missing cwd/title just leaves
   the existing name. Write authority is local: each sidebar instance may rename only the tab
   containing its own plugin pane. It resolves that ownership to stable `TabId` from pushed

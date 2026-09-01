@@ -30,21 +30,26 @@ pub(crate) struct PaneFacts {
     pub focused: bool,
 }
 
-/// The naming facts for one tab: its identity, current name, position, and the
-/// per-pane facts to draw a name from.
+/// The naming facts for one tab: its identity, current name, and the per-pane
+/// facts to draw a name from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabFacts {
     pub id: TabId,
     pub name: String,
-    pub position: usize,
     pub panes: Vec<PaneFacts>,
 }
 
 /// A requested tab rename — this module's output vocabulary. `radar_state` uses
-/// it in `RadarChange`; the runtime turns it into a `RenameTab` effect.
+/// it in `RadarChange`; the runtime turns it into a `RenameTab` effect. Addressed
+/// by stable `TabId`, never position: facts are joined from a `PaneUpdate` and
+/// the *previous* `TabUpdate`, so a position computed here can point at a
+/// neighbour for one event after a tab closes or moves — an id cannot. (The
+/// pane join in `name_facts` is still position-keyed — Zellij's manifest is —
+/// so the *name* can be a neighbour's for that one event; the next pane/cwd
+/// event re-picks.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabRename {
-    pub position: usize,
+    pub id: TabId,
     pub name: String,
 }
 
@@ -95,7 +100,7 @@ impl TabNamer {
             if force || is_default_name(&tab.name) || ours {
                 self.applied.insert(tab.id, desired.clone());
                 out.push(TabRename {
-                    position: tab.position,
+                    id: tab.id,
                     name: desired,
                 });
             }
@@ -241,19 +246,18 @@ mod tests {
         }
     }
 
-    /// Build a single-position tab with the given current name and panes.
+    /// Build a tab with the given id, current name, and panes.
     fn tab(id: usize, name: &str, panes: Vec<PaneFacts>) -> TabFacts {
         TabFacts {
             id: TabId::new(id),
             name: name.into(),
-            position: 0,
             panes,
         }
     }
 
     fn renamed_to(name: &str) -> Vec<TabRename> {
         vec![TabRename {
-            position: 0,
+            id: TabId::new(1),
             name: name.into(),
         }]
     }

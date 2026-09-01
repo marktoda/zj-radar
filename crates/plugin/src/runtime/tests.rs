@@ -657,7 +657,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     assert_eq!(
         rename.effects,
         vec![Effect::RenameTab {
-            position: 0,
+            tab_id: TabId::new(1),
             name: "myrepo".into(),
         }]
     );
@@ -730,7 +730,7 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
     let foreign = runtime.cwd_changed(11, "/work/foreign".into());
     assert!(
         foreign.effects.iter().all(|effect| {
-            !matches!(effect, Effect::RenameTab { position: 1, .. })
+            !matches!(effect, Effect::RenameTab { tab_id, .. } if *tab_id == TabId::new(2))
         }),
         "tab 1's sidebar must not rename tab 2: {:?}",
         foreign.effects
@@ -738,7 +738,7 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
 
     let owned = runtime.cwd_changed(10, "/work/owned".into());
     assert!(owned.effects.iter().any(|effect| {
-        matches!(effect, Effect::RenameTab { position: 0, name } if name == "owned")
+        matches!(effect, Effect::RenameTab { tab_id, name } if *tab_id == TabId::new(1) && name == "owned")
     }));
 }
 
@@ -1779,7 +1779,7 @@ fn project_emits_effects_in_canonical_order() {
     let change = RadarChange {
         render: true,
         snapshot: SnapshotWrite::Now,
-        renames: vec![TabRename { position: 0, name: "renamed".into() }],
+        renames: vec![TabRename { id: TabId::new(1), name: "renamed".into() }],
         cwd_bootstrap: vec![7],
         settle: true,
         ..RadarChange::default()
