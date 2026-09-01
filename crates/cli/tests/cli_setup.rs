@@ -1598,3 +1598,111 @@ fn setup_zellij_dry_run_never_contradicts_itself_about_the_grant() {
         "the BLANK-rail warning contradicts the would-pre-authorize line; stdout:\n{stdout}"
     );
 }
+
+// ── opencode: the vendored bridge plugin under $XDG_CONFIG_HOME/opencode ─────
+//
+// `opencode_installed()` accepts a populated config dir, so an empty
+// `<xdg>/opencode/` stands in for the binary. The marker is the header line
+// the CLI keys idempotency / --uninstall / --check on.
+
+const OPENCODE_MARKER: &str = "ZJ_RADAR_OPENCODE_PLUGIN=v1";
+
+fn isolated_opencode_xdg() -> (TempDir, std::path::PathBuf) {
+    let xdg = TempDir::new().unwrap();
+    fs::create_dir_all(xdg.path().join("opencode")).unwrap();
+    let plugin = xdg.path().join("opencode/plugins/zj-radar.js");
+    (xdg, plugin)
+}
+
+fn opencode_cmd(xdg: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "opencode"])
+        .args(args)
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("HOME", xdg.path())
+        .assert()
+}
+
+#[test]
+fn setup_opencode_installs_the_marked_bridge_and_is_idempotent() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
+
+    opencode_cmd(&xdg, &["--yes"]).success();
+    let first = fs::read_to_string(&plugin).unwrap();
+    assert!(first.contains(OPENCODE_MARKER), "install must write the marked bridge: {first:?}");
+    assert!(!bak.exists(), "a fresh install has nothing to back up");
+
+    let out = opencode_cmd(&xdg, &["--yes"]).success().get_output().clone();
+    assert_eq!(fs::read_to_string(&plugin).unwrap(), first, "second run must be a no-op");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("already up to date"), "stdout:\n{stdout}");
+    assert!(!stdout.contains("restart opencode"), "nothing was written, so no restart hint:\n{stdout}");
+}
+
+#[test]
+fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    fs::write(&plugin, "export const Other = async () => ({});\n").unwrap();
+
+    opencode_cmd(&xdg, &["--yes"]).failure();
+    assert!(!fs::read_to_string(&plugin).unwrap().contains(OPENCODE_MARKER), "refused: file untouched");
+
+    opencode_cmd(&xdg, &["--yes", "--force"]).success();
+    assert!(fs::read_to_string(&plugin).unwrap().contains(OPENCODE_MARKER));
+    let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
+    assert!(bak.exists(), "--force over a foreign file keeps a restore point");
+}
+
+#[test]
+fn setup_opencode_uninstall_removes_the_bridge_and_its_backup() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    fs::write(&plugin, format!("// {OPENCODE_MARKER}\n// stale ours\n")).unwrap();
+    opencode_cmd(&xdg, &["--yes"]).success(); // stale-ours rewrite leaves a .bak
+    let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
+    assert!(bak.exists(), "precondition: the rewrite backed up the stale bridge");
+
+    opencode_cmd(&xdg, &["--uninstall", "--yes"]).success();
+    assert!(!plugin.exists(), "uninstall removes the bridge");
+    assert!(!bak.exists(), "uninstall removes its backup too — a clean uninstall leaves nothing of ours");
+}
+
+#[test]
+fn setup_opencode_uninstall_without_consent_leaves_the_bridge() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    opencode_cmd(&xdg, &["--yes"]).success();
+
+    // Non-tty, no -y: same skip as every other setup write/remove.
+    let out = opencode_cmd(&xdg, &["--uninstall"]).success().get_output().clone();
+    assert!(plugin.exists(), "declined uninstall must not delete");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("skipped"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn setup_opencode_dry_run_writes_nothing() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    let out = opencode_cmd(&xdg, &["--dry-run"]).success().get_output().clone();
+    assert!(!plugin.exists());
+    assert!(!plugin.parent().unwrap().exists(), "dry-run must not create the plugins dir either");
+    assert!(String::from_utf8_lossy(&out.stdout).contains(OPENCODE_MARKER));
+}
+
+#[test]
+fn setup_opencode_check_reports_the_bridge_state() {
+    // The binary item stays Missing here (no `opencode` on the test PATH), so
+    // the doctor exits non-zero throughout; the plugin item is what flips.
+    let (xdg, _plugin) = isolated_opencode_xdg();
+    let out = opencode_cmd(&xdg, &["--check"]).failure().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("missing plugin:"), "stdout:\n{stdout}");
+    assert!(stdout.contains("`zj-radar setup opencode`"), "the remedy must be named:\n{stdout}");
+
+    opencode_cmd(&xdg, &["--yes"]).success();
+    let out = opencode_cmd(&xdg, &["--check"]).failure().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok plugin: zj-radar bridge plugin installed"), "stdout:\n{stdout}");
+}

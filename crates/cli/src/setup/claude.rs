@@ -10,7 +10,7 @@
 use super::*;
 
 /// The plugin name as it appears installed (and in `installed_plugins.json`,
-/// where [`crate::run::claude_producer_wired`] detects it).
+/// where `crate::producers` detects it).
 pub(crate) const CLAUDE_PLUGIN: &str = "zj-radar-claude";
 
 /// The marketplace's NAME once added — Claude Code names it after the repo's
@@ -37,7 +37,7 @@ pub(crate) fn claude_installed_plugins_text() -> Option<String> {
 }
 
 pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
-    let wired = crate::run::claude_producer_wired(claude_installed_plugins_text().as_deref());
+    let wired = crate::producers::ProducerTexts::read().is_wired(crate::agents::Agent::Claude);
     if uninstall {
         uninstall_claude(wired, dry_run, yes, is_tty);
     } else {

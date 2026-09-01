@@ -185,6 +185,9 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         if let Err(e) = std::fs::remove_file(&path) {
             crate::exit::fail_report("opencode", format!("remove failed — {e}"));
         }
+        // The rewrite path's restore point is ours too: a clean uninstall leaves
+        // nothing of zj-radar in opencode's plugins dir.
+        let _ = std::fs::remove_file(path_with_suffix(&path, BACKUP_SUFFIX));
         println!("opencode: plugin removed ({})", path.display());
         return;
     }

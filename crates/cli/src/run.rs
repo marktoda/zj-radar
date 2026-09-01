@@ -5,7 +5,7 @@
 //! pure-editor / thin-IO split that `setup.rs` uses.
 
 use super::fsutil::atomic_write;
-use super::setup::CODEX_HOOK_MARKER;
+use super::producers::{producer_hint, ProducerTexts};
 use std::path::{Path, PathBuf};
 
 /// Shown on first run (create OR attach) when the wasm isn't granted. The grant
@@ -17,11 +17,6 @@ use std::path::{Path, PathBuf};
 /// branching into a second, dead-end message.
 const GRANT_HINT: &str = "First run: a permission prompt opens — press y to enable agent status \
     (if it doesn't appear, press Ctrl-y in the session).";
-/// Three producers, three wiring routes — name all, because `zj-radar setup`
-/// wires each agent symmetrically (claude drives Claude Code's plugin
-/// marketplace; opencode drops a vendored JS bridge into its plugins dir).
-pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup claude` \
-    (Claude Code), `zj-radar setup codex` (Codex), or `zj-radar setup opencode` (Opencode).";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -180,41 +175,6 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
     last.is_some_and(|granted| {
         REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.iter().any(|t| t == required))
     })
-}
-
-/// Producer-detection advisory: `Some(hint)` when NO producer is wired (Codex
-/// hooks lack our marker AND the Claude producer plugin is absent AND the
-/// opencode bridge plugin is absent), else `None`.
-pub(crate) fn producer_hint(
-    codex_hooks: Option<&str>,
-    claude_present: bool,
-    opencode_present: bool,
-) -> Option<String> {
-    if codex_producer_wired(codex_hooks) || claude_present || opencode_present {
-        None
-    } else {
-        Some(PRODUCER_HINT.to_string())
-    }
-}
-
-/// True iff Codex's hooks file carries our marker — the Codex producer's
-/// detection route, twin of [`claude_producer_wired`].
-pub(crate) fn codex_producer_wired(codex_hooks: Option<&str>) -> bool {
-    codex_hooks.is_some_and(|h| h.contains(CODEX_HOOK_MARKER))
-}
-
-/// True iff Claude Code's installed-plugins manifest lists zj-radar's producer
-/// plugin ([`crate::setup::CLAUDE_PLUGIN`]). `None`/empty input returns `false`.
-pub(crate) fn claude_producer_wired(installed_plugins_json: Option<&str>) -> bool {
-    installed_plugins_json.is_some_and(|s| s.contains(crate::setup::CLAUDE_PLUGIN))
-}
-
-/// True iff the opencode bridge plugin file carries our marker — the opencode
-/// producer's detection route, twin of [`codex_producer_wired`]. Reads the
-/// plugin text the caller already gathered (the shared `opencode_plugin_text`
-/// reader behind `run`'s advisory, `setup zellij`'s epilogue, and `--check`).
-pub(crate) fn opencode_producer_wired(opencode_plugin: Option<&str>) -> bool {
-    opencode_plugin.is_some_and(crate::setup::detect::opencode_plugin_is_ours)
 }
 
 /// Join argv into a copy-pasteable shell command. Every printed command hint
@@ -423,9 +383,7 @@ struct RunFacts {
     /// long gone — the marker they wait on will never land without help.
     resurrect_layout_defers: bool,
     permissions_kdl: Option<String>,
-    codex_hooks: Option<String>,
-    installed_plugins: Option<String>,
-    opencode_plugin: Option<String>,
+    producers: ProducerTexts,
 }
 
 /// What to launch and what to advise — the pure result of `plan_run`.
@@ -491,9 +449,7 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     if !granted {
         advisories.push(GRANT_HINT.to_string());
     }
-    let claude = claude_producer_wired(facts.installed_plugins.as_deref());
-    let opencode = opencode_producer_wired(facts.opencode_plugin.as_deref());
-    if let Some(hint) = producer_hint(facts.codex_hooks.as_deref(), claude, opencode) {
+    if let Some(hint) = producer_hint(&facts.producers.wired()) {
         advisories.push(hint);
     }
     RunPlan {
@@ -690,9 +646,7 @@ pub fn run(opts: RunOptions) {
         inside_zellij: std::env::var_os("ZELLIJ").is_some(),
         resurrect_layout_defers,
         permissions_kdl: zellij_permissions_text(),
-        codex_hooks: crate::setup::codex_hooks_text(),
-        installed_plugins: crate::setup::claude_installed_plugins_text(),
-        opencode_plugin: crate::setup::opencode_plugin_text(),
+        producers: ProducerTexts::read(),
     };
     let plan = plan_run(&facts);
 
@@ -834,7 +788,7 @@ pub fn run(opts: RunOptions) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::OPENCODE_PLUGIN_MARKER;
+    use crate::setup::{CODEX_HOOK_MARKER, OPENCODE_PLUGIN_MARKER};
     use tempfile::tempdir;
 
     #[test]
@@ -1146,56 +1100,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_producer_detection() {
-        let with_plugin = r#"{"plugins":["zj-radar-claude","some-other-plugin"]}"#;
-        assert!(claude_producer_wired(Some(with_plugin)));
-        let without_plugin = r#"{"plugins":["some-other-plugin","another-one"]}"#;
-        assert!(!claude_producer_wired(Some(without_plugin)));
-        assert!(!claude_producer_wired(None));
-    }
-
-    #[test]
-    fn opencode_producer_detection() {
-        let ours = format!("// {OPENCODE_PLUGIN_MARKER}\nexport const …");
-        assert!(opencode_producer_wired(Some(&ours)));
-        assert!(!opencode_producer_wired(Some("// some other plugin\n")));
-        assert!(!opencode_producer_wired(None));
-    }
-
-    #[test]
-    fn producer_hint_only_when_none_wired() {
-        let wired = format!("{CODEX_HOOK_MARKER} zj-radar notify codex");
-        assert!(producer_hint(Some(&wired), false, false).is_none());
-        assert!(producer_hint(None, true, false).is_none());
-        assert!(producer_hint(None, false, true).is_none());
-        // The hint must name EVERY wiring route — `setup <agent>` covers each
-        // agent symmetrically (claude drives Claude Code's plugin marketplace;
-        // opencode drops a vendored JS bridge into its plugins dir).
-        let hint = producer_hint(None, false, false).unwrap();
-        assert!(hint.contains("zj-radar setup codex"), "must name the Codex route: {hint}");
-        assert!(hint.contains("zj-radar setup claude"), "must name the Claude route: {hint}");
-        assert!(hint.contains("zj-radar setup opencode"), "must name the Opencode route: {hint}");
-    }
-
-    #[test]
-    fn producer_detection_covers_every_instrumented_agent() {
-        // Producer detection knows exactly three wiring routes: the Codex hooks
-        // marker (`codex_producer_wired`), the Claude plugin manifest
-        // (`claude_producer_wired`), and the opencode bridge plugin marker
-        // (`opencode_producer_wired`). This is the ONE wiring point the agent
-        // guard lattice doesn't reach: a new instrumented agent would wire
-        // fine but `run` would still say "no producer wired". If this list is
-        // out of date, teach detection the new agent's route (here, PRODUCER_HINT,
-        // and the doctor's producer item in setup/check.rs), then extend it.
-        let covered = ["claude", "codex", "opencode"];
-        let sources: Vec<&str> = crate::agents::Agent::ALL.iter().map(|a| a.source()).collect();
-        assert_eq!(
-            sources, covered,
-            "Agent::ALL grew — add a producer-detection route for the new agent"
-        );
-    }
-
-    #[test]
     fn bundled_layout_has_swaps_and_alias() {
         assert!(LAYOUT.contains("swap_tiled_layout"), "rail layout must declare swaps");
         assert!(LAYOUT.contains("location=\"radar\""), "rail must use the radar alias");
@@ -1294,9 +1198,11 @@ mod tests {
             permissions_kdl: granted.then(|| {
                 format!("\"{wasm}\" {{\n    {}\n}}\n", REQUIRED_PLUGIN_PERMISSIONS.join("\n    "))
             }),
-            codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
-            installed_plugins: claude.then(|| "zj-radar-claude".to_string()),
-            opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            producers: ProducerTexts {
+                codex_hooks:     codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
+                claude_plugins:  claude.then(|| "zj-radar-claude".to_string()),
+                opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            },
         }
     }
 
@@ -1360,9 +1266,8 @@ mod tests {
     #[test]
     fn plan_run_is_quiet_when_only_opencode_is_wired() {
         // The opencode bridge is a producer in its own right: granted + only the
-        // opencode plugin present must yield no "no producer wired" advisory.
-        // This is the one call site exercising `RunFacts.opencode_plugin` →
-        // `opencode_producer_wired` → `producer_hint` end-to-end.
+        // opencode plugin present must yield no "no producer wired" advisory
+        // (`RunFacts.producers` → `wired()` → `producer_hint`, end-to-end).
         let p = plan_run(&facts4(true, false, false, true));
         assert!(p.advisories.is_empty(), "{:?}", p.advisories);
 
