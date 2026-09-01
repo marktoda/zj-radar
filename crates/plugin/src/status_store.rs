@@ -8,8 +8,9 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Ticks a `Running` pane may sit at a shell prompt before its pushed status is
-/// declared stale and cleared to idle (~seconds at the Fast cadence, which a
-/// Running row always keeps armed). Long enough that a mid-turn foreground
+/// declared stale and cleared to idle (~seconds at the Fast cadence, which the
+/// armed clock itself keeps alive — `needs_ticks` counts live suspect clocks,
+/// since a Running *service* row no longer arms it). Long enough that a mid-turn foreground
 /// flicker — which re-asserts the agent's foreground or a fresh hook payload
 /// well inside the window — never trips it; short enough that killing an agent
 /// mid-turn doesn't leave a "working" row spinning forever.
@@ -65,7 +66,7 @@ impl StatusStore {
         // Sticky task label: a new prompt replaces it, taskless events (the
         // overwhelming majority — every tool hook) carry it forward, and idle
         // (`/clear`) resets it along with the msg.
-        let task = if p.status == crate::status::Status::Idle {
+        let task = if p.status == Status::Idle {
             String::new()
         } else if p.task.is_empty() {
             prev.map(|s| s.task.clone()).unwrap_or_default()
@@ -128,7 +129,7 @@ impl StatusStore {
     /// instance may seed one flood-stale row. Accepted: reaching this path at
     /// all means a producer is flooding past the cap.
     fn evict_over_cap(&mut self) {
-        while self.store.observations().count() > MAX_TRACKED_PANES {
+        while self.store.len() > MAX_TRACKED_PANES {
             let Some(oldest) = self
                 .store
                 .observations()
@@ -137,13 +138,7 @@ impl StatusStore {
             else {
                 return;
             };
-            let keep: HashSet<u32> = self
-                .store
-                .observations()
-                .map(|(id, _)| id)
-                .filter(|&id| id != oldest)
-                .collect();
-            let _ = self.store.prune(&keep);
+            self.store.remove(oldest);
             self.suspect_running.remove(&oldest);
         }
     }
@@ -202,8 +197,10 @@ impl StatusStore {
     /// suspicion has outlived the grace window gets cleared to idle — its
     /// producer died mid-turn and will never send the clearing broadcast.
     /// Returns the cleared pane ids (Running is not a completion, so there is
-    /// no ledger edge to hand back). Driven by the timer, which a Running row
-    /// always keeps armed at the Fast cadence.
+    /// no ledger edge to hand back). Driven by the timer, which `needs_ticks`
+    /// keeps armed at the Fast cadence while any suspect clock is live — the
+    /// clock itself is the arming reason, since a Running *service* row no
+    /// longer is (`docs/activity-model.md` §3).
     pub fn expire_stale_running(&mut self, now_tick: u64) -> Vec<u32> {
         let due: Vec<u32> = self
             .suspect_running
@@ -223,7 +220,9 @@ impl StatusStore {
     }
 
     /// The shared idle overwrite behind both clear paths: repo/branch/kind kept
-    /// (the tab keeps its name), msg/task dropped, `ever_active` sticky.
+    /// (the tab keeps its name), msg/task dropped, `ever_active` forced true —
+    /// reaching here means the pane held a non-Idle status, so it stays a
+    /// muted row rather than reverting to untracked.
     fn force_idle(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
         let old = self.store.get(pane_id)?.clone();
         let _ = self.store.insert(
@@ -262,16 +261,18 @@ impl StatusStore {
         self.store.get(pane_id)
     }
 
-    /// True if any observation is currently `Running` — the one *animated* state
-    /// (its glyph spins each tick). Matches `CommandStore::has_pending_or_active`'s
-    /// narrowness on purpose: a finished `Done`/`Error` or a waiting `Pending` is
-    /// terminal for tick purposes — it doesn't animate, and its notification/recede
-    /// is a one-shot the settle carries — so it must NOT pin the timer awake. (An
-    /// earlier version counted every non-idle status here to "refresh elapsed
-    /// time," but elapsed time isn't rendered, so a backgrounded `Done` just spun
-    /// the timer forever — see the timer-arming discussion in `runtime`.)
-    pub fn any_running(&self) -> bool {
-        self.store.any(|s| s.status == crate::status::Status::Running)
+    /// True while this store has tick-driven work: an *animated* Running row
+    /// ([`TrackedObservation::animating`] — the spinning glyph and, for jobs,
+    /// the advancing `· 4m` run tag are what need ticks; a Running service
+    /// holds the steady mark and is excluded), or an armed stale-Running
+    /// grace clock (`suspect_running` is measured in ticks, and for a service
+    /// row this predicate is its only tick source — the ghost of a killed
+    /// `source: server` producer must expire in ~15s, not ~15 Slow fires).
+    /// A finished `Done`/`Error` or a waiting `Pending` is terminal for tick
+    /// purposes — its notification/recede is a one-shot the settle carries —
+    /// so it must NOT pin the timer awake.
+    pub fn needs_ticks(&self) -> bool {
+        !self.suspect_running.is_empty() || self.store.any(TrackedObservation::animating)
     }
 
     pub(crate) fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
@@ -294,8 +295,6 @@ impl StatusStore {
 mod tests {
     use super::*;
 
-    use crate::status::Status;
-
     fn payload(pane_id: u32, status: Status) -> StatusPayload {
         StatusPayload {
             pane_id,
@@ -311,6 +310,26 @@ mod tests {
 
     fn payload_with_task(pane_id: u32, status: Status, task: &str) -> StatusPayload {
         StatusPayload { task: task.into(), ..payload(pane_id, status) }
+    }
+
+    #[test]
+    fn needs_ticks_excludes_running_services_but_counts_suspect_clocks() {
+        // A pushed `source: server` Running row (reachable via `notify
+        // generic`) holds the steady mark — it must not pin the 1 Hz timer…
+        let mut s = StatusStore::default();
+        s.apply(StatusPayload { source: "server".into(), ..payload(1, Status::Running) }, 1, 0);
+        assert!(!s.needs_ticks(), "a steady service costs zero ticks");
+        // …but its stale-Running grace clock is tick-measured, and this
+        // predicate is that clock's ONLY tick source for a service row: a
+        // killed producer's ghost must expire in ~15s, not ~15 Slow fires.
+        s.clear_on_prompt_return(1, 2);
+        assert!(s.needs_ticks(), "an armed suspect clock needs ticks");
+        let cleared = s.expire_stale_running(2 + RUNNING_SUSPECT_GRACE_TICKS);
+        assert_eq!(cleared, vec![1], "ghost expires to idle");
+        assert!(!s.needs_ticks(), "expiry disarms");
+        // A non-service Running row still arms, as ever.
+        s.apply(payload(2, Status::Running), 10, 0);
+        assert!(s.needs_ticks());
     }
 
     #[test]
@@ -406,7 +425,7 @@ mod tests {
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
         assert!(s.get(1).unwrap().ever_active, "stays a muted row, not removed");
-        assert!(!s.any_running(), "the ghost no longer pins the fast timer");
+        assert!(!s.needs_ticks(), "the ghost no longer pins the fast timer");
     }
 
     #[test]
@@ -479,7 +498,7 @@ mod tests {
         s.apply(payload(1, Status::Running), 1, 0);
         s.apply(payload(1, Status::Idle), 2, 0);
         assert!(s.get(1).unwrap().ever_active);
-        assert!(!s.any_running());
+        assert!(!s.needs_ticks());
     }
 
     #[test]

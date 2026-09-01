@@ -51,9 +51,19 @@ EOF
     return 1
   fi
   export ZELLIJ=1 ZELLIJ_PANE_ID=terminal_7
+  # Hermetic deadlines: a developer-exported override would silently change
+  # every timing property this suite pins (watchdog kills, ordering-guard
+  # skew). Tests that need an override set their own.
+  unset ZJ_RADAR_PIPE_TIMEOUT
 }
 
 teardown_fakes() { rm -rf "$FAKEBIN"; }
+
+# The adversarial 8-MiB tests bound the hook with GNU `timeout`, which stock
+# macOS lacks — skip (must run in test context) rather than fail there.
+require_timeout() {
+  command -v timeout >/dev/null || skip "GNU timeout not on PATH (brew install coreutils, or use nix develop)"
+}
 
 # Extract the JSON payload from the last zellij call.
 # notify.sh invokes: zellij pipe --name zj_radar.status.v1 -- "$payload"
@@ -64,11 +74,24 @@ teardown_fakes() { rm -rf "$FAKEBIN"; }
 # poll is kept as cheap insurance for the Rust producer path and slow runners:
 # it returns the instant the record is written. Callers that expect NO
 # broadcast assert on `[ ! -s "$RECORD" ]` directly and never call this.
+# 10s ceiling, same as wait_for_lines: under heavy parallel load (a nix build
+# saturating the cores) the old 3s ceiling expired and read as a payload flake.
 last_payload() {
-  local i
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 100); do
     [ -s "$RECORD" ] && break
     sleep 0.1
   done
   tail -n1 "$RECORD" | cut -f1 | sed 's/.*-- //'
+}
+
+# Poll (10s ceiling) until $1 holds at least $2 lines. Shared by the two
+# ordering guards (native + fallback) so their wait policy can't drift; returns
+# regardless so the caller's own assertion produces the diagnostic.
+wait_for_lines() {
+  local file="$1" want="$2"
+  for _ in $(seq 1 100); do
+    [ "$(wc -l <"$file" 2>/dev/null || echo 0)" -ge "$want" ] && return 0
+    sleep 0.1
+  done
+  return 0
 }

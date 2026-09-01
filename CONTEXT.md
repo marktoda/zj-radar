@@ -8,7 +8,9 @@ zj-radar's architecture, focusing on the key interfaces and state flows.
 The rendered sidebar: the pinned left column listing every tab with per-tab agent
 status. The **rail seam** is the renderer's single deep interface —
 `render_rail(rows, ledger, opts) -> RenderedRail` (with `onboarding(opts) -> RenderedRail`
-as the sibling face for the no-agents-yet state). Everything a caller needs to draw and to resolve a
+as the sibling face for the no-agents-yet state, and
+`needs_permission(opts, grant_hint) -> RenderedRail` as the third face for the
+not-yet-granted state). Everything a caller needs to draw and to resolve a
 click crosses this one seam; layout planning (overflow folding, card spacing,
 multi-pane tree expansion) is implementation *behind* it, not interface.
 
@@ -22,19 +24,26 @@ character grid, so layout and color are orthogonal and testable apart.
 ## RenderedRail
 
 The rail seam's output: the emitted `ansi` paired with a same-height
-**target map**. `target_at_line(line)` resolves a physical line to a `RailTarget`
-(a tab to switch to, or a pane to show); header / gap / idle-strip lines resolve
-to `None`. The runtime caches the last `RenderedRail` and resolves mouse clicks
+**target map** and a same-height **hotspot map**. `target_at_line(line)`
+resolves a physical line to a `RailTarget` (a tab to switch to, a pane to
+show, or a session to switch to); header / gap / idle-strip lines resolve to
+`None`. `hotspot_at(line, col)` resolves column-aware: each hotspot entry is
+`Option<(start_col, HotspotAction)>`, and only the glyph's own display cells
+trigger it — a `HotspotAction::DismissPresence` (`✕` on a stale session-badge
+line) or `HotspotAction::Acknowledge` (`✓` on an unacknowledged status-origin
+Pending). The runtime caches the last `RenderedRail` and resolves mouse clicks
 against it — so the rail the user sees *is* the rail clicks are scored against.
 
 ## RailTarget
 
-What a clickable line resolves to: a tab to switch to (`tab_position`) or a
-specific pane to show (`pane_id`) — for an expanded multi-pane row's tree
-lines, or for a single-pane tab's line-2 detail line(s), which target that
-tab's one tracked pane. Header, gap, and idle-strip lines have no
-`RailTarget`. The runtime turns a `RailTarget` into a `SwitchTab` / `ShowPane`
-effect on click.
+What a clickable line resolves to: a tab to switch to (`tab_position`), a
+specific pane to show (`pane_id`), or a peer session to switch to
+(`session: Option<String>`, carrying the peer's attention tab). Pane targets
+cover an expanded multi-pane row's tree lines *and* a single-pane tab's pane
+line and line-2 detail line(s), which target that tab's one tracked pane.
+Header, gap, and idle-strip lines have no `RailTarget`. The runtime turns a
+`RailTarget` into a `SwitchTab` / `ShowPane` / `SwitchSession` effect on
+click.
 
 ## RadarState
 
@@ -66,6 +75,16 @@ were looking at, leaving every other tab stale. That focus-driven recede is gone
 `RadarState::note_focus` still records the focused terminal, but *only* so the
 notifier can suppress the pane you're watching — it never mutates a status.
 
+Pruning has a **one-manifest grace** (`absent_once`): a tracked pane's first
+absence from the pane manifest is held, not pruned — Zellij's break-pane
+family reports session state while a moved pane is extracted and in no tab,
+so a single absence can't distinguish a close from a mid-move flash. A pane
+still absent on the *next* manifest is confirmed gone and prunes then, filed
+in the ledger under the tab identity captured at first absence (by the
+confirming manifest the live index no longer carries it). Level-triggered:
+the grace set is recomputed from the current manifest every `panes_changed`,
+so a reappearing pane simply drops out.
+
 The runtime owns host concerns: permission flow, timers, rendered-rail caching,
 and turning repo-owned outcomes into Zellij effects. The rail owns layout and
 click-target lockstep. `RadarState` owns the domain facts between those seams.
@@ -89,15 +108,25 @@ handler by construction.
 
 **Cadence** is a related but distinct axis — how often the one-shot timer
 re-fires, not whether it notifies. Two speeds (`PluginRuntime::desired_cadence`):
-Fast (1 Hz) while there's tick-windowed work — `has_running_work` (a spinning
-glyph), an un-carried completion edge (a status-pipe recede/notify deferred to
-the timer because its own focus can't be trusted), a command `Done` awaiting
-its `DONE_TTL_TICKS` recede, or an active ping flash. Slow (1/60 Hz — once a
-minute) once none of that holds but a ledger entry is still un-saturated
-(`ledger_any_unsaturated`): nothing is animating, but a displayed age is still
-changing. Fully disarmed (`None`) once every ledger age has hit `1h+` — the
-saturation cutoff (`## Ledger`) is exactly what lets the timer stop for good
-instead of ticking forever to redraw an age that will never change again.
+Fast (1 Hz) while there's tick-windowed work — the permission flow still live
+(`permission.is_waiting()` / `selectable()`), `timer_should_continue` (a
+spinning glyph via `needs_fast_ticks`, an un-carried completion edge — a
+status-pipe recede/notify deferred to the timer because its own focus can't be
+trusted — a command `Done` awaiting its `DONE_TTL_TICKS` recede, or an active
+ping flash), or a pending cross-session cycle selection awaiting its
+idle-commit (`sessions.wants_fast_cadence()`). Slow (1/60 Hz — once a minute)
+once none of that holds but a minute-granular age is still changing — a
+ledger entry (`ledger_any_unsaturated`) or a pending row's `· Nm` wait tag
+(`pending_wait_unsaturated`) short of the `1h+` saturation cutoff — **and
+unconditionally while `own_session_name` is non-empty**: a known name means a
+presence file is published, and the Slow tick's heartbeat is the only writer
+keeping its mtime fresh for peers (`## Cross-session presence`). Full disarm
+(`None`) therefore survives in exactly two shapes: *pre-name* (no `ModeUpdate`
+has delivered a session name yet, and every age has saturated) and *denied*
+(a permission-denied rail disarms unconditionally — without
+`ReadApplicationState` no clearing event ever arrives, so a snapshot-loaded
+stale `Running` would otherwise pin Fast ticks forever behind a static
+needs-permission face).
 
 ## Render gate
 
@@ -115,13 +144,16 @@ proportional to actual change:
   promotes it), a `CwdChanged` (naming rides the `RenameTab` effect's own
   `TabUpdate` echo).
 - **Label-only deferral.** A Running→Running update (new activity label, same
-  status) neither renders nor persists inline: the Fast (1 Hz) tick is armed
-  whenever anything is Running and repaints unconditionally, so the label
+  status) on an *animating* row neither renders nor persists inline: the Fast
+  (1 Hz) tick is armed while the row animates (`TrackedObservation::animating`
+  — Running and not a service) and repaints unconditionally, so the label
   lands ≤1s later, and the snapshot write rides the tick's flush
   (`SnapshotWrite::Deferred` → the runtime's `snapshot_dirty`; an inline
   `SnapshotWrite::Now` on the same pass clears the flag — it supersedes).
-  Only while Running — a rewritten Pending question renders now, because
-  Pending doesn't pin Fast cadence.
+  Only while animating — a rewritten Pending question renders now (Pending
+  doesn't pin Fast cadence), and so does a Running *service's* label (the
+  steady `▸` row doesn't either — deferral there would mean the ≤60s Slow
+  heartbeat).
 - **Rows-diff gate.** `project` drops a requested render whose content-derived
   key (rows, ledger lines, badge, theme) equals what the last `render()`
   actually drew (`last_render_key`, stamped in `render`). `force_render`
@@ -228,21 +260,24 @@ redirecting ownership to a neighbour.
 
 ## Lockstep
 
-The load-bearing invariant of the rail: the emitted ANSI and the click-target map
-stay in exact 1:1 line correspondence. `line_count() == ansi newline count`, and
-every drawn line maps to the intended target (or a deliberate `None`). Lockstep is
-why click-to-switch lands on the row the user pointed at. Lockstep is now
-structural, not discipline-held: `render_rail` builds a single `Vec<Line>` where
-each line carries its own `RailTarget`, and `ansi`/`targets`/line-count all derive
-from that one list via `RenderedRail::from_lines`. There is no separate height
-predictor — a row's footprint is `block.len()` of the very lines it renders — so
-the emitted ANSI and the click-target map cannot drift.
+The load-bearing invariant of the rail: the emitted ANSI, the click-target
+map, and the hotspot map stay in exact 1:1 line correspondence — three
+parallel vectors (`ansi`, `targets`, `hotspots`). `line_count() == ansi
+newline count`, and every drawn line maps to the intended target and hotspot
+(or a deliberate `None`). Lockstep is why click-to-switch lands on the row the
+user pointed at — and why a `✕`/`✓` glyph hotspot fires only on its own cells.
+Lockstep is now structural, not discipline-held: `render_rail` builds a single
+`Vec<Line>` where each line carries its own `RailTarget` and optional
+`(start_col, HotspotAction)`, and `ansi`/`targets`/`hotspots`/line-count all
+derive from that one list via `RenderedRail::from_lines`. There is no separate
+height predictor — a row's footprint is `block.len()` of the very lines it
+renders — so the emitted ANSI and the click maps cannot drift.
 
 ## Status contract
 
 The real external seam between producers and the plugin: the versioned
 `zj_radar.status.v1` pipe payload (`{v, source, pane, status, repo, branch,
-msg, task}`). Producers (the Claude plugin, the Codex CLI) are adapters that
+msg, task, ack}`). Producers (the Claude plugin, the Codex CLI) are adapters that
 broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
 oversized/malformed). Ordering is latest-wins — the pipe delivers in order and no
 producer stamps a sequence, so there is nothing to reorder. Unknown fields are
@@ -250,7 +285,27 @@ tolerated and ignored, so older producers still parse: a legacy `seq` and the
 former `on_focus` clear-on-focus hint (dropped when focus stopped driving state)
 both round-trip harmlessly. `task` (optional): sticky task label — empty/absent
 leaves the stored label unchanged, non-empty replaces it; the plugin clears it
-on idle and on return-to-shell.
+on idle and on return-to-shell. `ack` (optional, default false): "the user has
+already seen this" — state converges as usual but the notifier stays silent.
+
+The pipe is no longer strictly producer→plugin one-way: the plugin is itself a
+caller. The rail's acknowledge gesture broadcasts a synthetic `status.v1`
+payload (Pending → Done, `ack: true`) rather than mutating local state, so the
+dismissal converges across every tab's instance through the exact same intake
+a real producer's broadcast uses (`Effect::BroadcastStatus`).
+
+**Bounded sends.** `zellij pipe` is a backpressure channel: the client process
+is held until *every* loaded plugin instance consumes the message, and an
+instance wedged at Zellij's permission prompt holds it forever — unbounded
+sends at hook rate once turned one wedged rail into an EMFILE crash of the
+whole session. Every caller therefore sends through the self-limiting `sh`
+subtree built by `core/pipe.rs::self_limiting_pipe_argv`: a detached
+sleep+kill watchdog rides inside the spawned subtree and reaps its own hung
+client even if the caller is killed mid-send. Deadlines are status-keyed —
+`DEFAULT_PIPE_TIMEOUT_SECS` (5s) for the once-per-turn edges,
+`RUNNING_PIPE_TIMEOUT_SECS` (2s) for `running` heartbeats (a dropped heartbeat
+is replaced by the next tool event; a dropped edge loses real state). The
+plugin's own ack broadcast goes through the same argv.
 
 ## Information source
 
@@ -267,23 +322,46 @@ a `Kind`-keyed `Status`:
   `Kind::from_source`, pinned by the `source_round_trips_through_kind` guard test.
 - **Observed** — uninstrumented commands (e.g. `cargo test`) that Radar watches
   from outside. The plugin classifies the observed argv via
-  `crates/core/src/command.rs::command_kind` and infers status from the process
+  `crates/core/src/command.rs::classify` and infers status from the process
   lifecycle. No wire, no CLI. `cargo test` lives here, **not** in `agents/`.
+  *Interactive* commands (editors/pagers/TUIs — `DEFAULT_INTERACTIVE` +
+  the `interactive_commands` config) are observed but never earn a Running
+  row: they record a quiet pending whose identity labels exits and the muted
+  pane label (`docs/activity-model.md`).
 
-The two modalities also interact at *exit*: a pushed producer (an agent) fires no
-hook when it quits, so its last status (`done`/`pending`/`error`) would otherwise
-linger forever. When the observed layer sees that pane return to a shell prompt
-(`command::is_shell_prompt` — no foreground command, or a shell/prompt program),
-`RadarState` clears the stale pushed status to idle (`StatusStore::clear_on_prompt_return`).
-The clear ignores a `Running` status — a live turn re-asserts `Running` via its
-hooks, so a transient foreground flicker can't be mistaken for the agent exiting.
-Because it rides the shared `CommandChanged` signal (not per-client focus), every
-tab's instance clears in lockstep.
+The two modalities also interact at *exit* — the **producer-death model**. A
+pushed producer (an agent) fires no hook when it quits, so its last status
+would otherwise linger forever. The model: (agent argv present, `exited` =
+false) = alive; `exited` = dead. Three paths converge on it:
+
+- **Prompt return.** When the observed layer sees the pane return to a shell
+  prompt (`command::is_shell_prompt` — no foreground command, or a
+  shell/prompt program), `RadarState` clears a stale terminal status
+  (`done`/`pending`/`error`) to idle
+  (`StatusStore::clear_on_prompt_return`). A `Running` status is *not*
+  cleared immediately — a live turn's foreground can flicker through the
+  shell mid-turn — it instead arms a **stale-Running grace clock**
+  (`RUNNING_SUSPECT_GRACE_TICKS`, ~15 Fast ticks). If the clock outlives the
+  window, `expire_stale_running` clears the row: the producer died mid-turn
+  and will never send the clearing broadcast.
+- **Live-again evidence.** The agent's exe reappearing as the pane's
+  foreground command cancels the grace clock
+  (`cancel_running_suspect`) — the flicker resolved as a flicker. Other
+  commands don't vouch: a command run in the shell an agent died in must not
+  keep its ghost alive.
+- **Definitive death.** The pane manifest's `exited` flag is producer death,
+  full stop — an agent-rooted pane (`zellij run -- claude`) never shows a
+  shell prompt for the first path to see. `StatusStore::clear_on_exit`
+  clears even a `Running` immediately, no grace clock.
+
+All three ride shared signals (`CommandChanged`, the pane manifest, the
+shared timer — not per-client focus), so every tab's instance clears in
+lockstep.
 
 Both modalities emit a `source` string that must be a subset of `Kind`
 (`Kind::from_source`). Both halves are guarded: the agent half by
 `source_round_trips_through_kind` (in `crates/cli/src/agents`), the command half by
-`command_source_round_trips_through_kind` (in `crates/core/src/command.rs`) — each pins that its
+`classify_source_round_trips_through_kind` (in `crates/core/src/command/tests.rs`) — each pins that its
 classifier's `source` token round-trips back to the same `Kind`, never the
 `Other` sentinel.
 
@@ -293,23 +371,30 @@ The per-pane → per-tab roll-up: severity order `error > pending > running > do
 idle`, with `done/total` counts and a highest-severity detail line. Tab status is
 never derived from tab names — a single tab can hold several agent panes.
 
-The **roll-up seam** is `rollup::roll_up(panes, resolve) -> TabDisplay` (in
-`crates/plugin/src/rollup.rs`): a deep, pure module that owns its output
+The **roll-up seam** is `rollup::roll_up(panes, resolve, quiet) -> TabDisplay`
+(in `crates/plugin/src/rollup.rs`): a deep, pure module that owns its output
 vocabulary (`TabDisplay`, `PaneDisplay`,
-`PrimaryDetail`, `ProgressCounts`, `Outcome`) — the renderer *consumes* these, so
+`PrimaryDetail`, `ProgressCounts`, `ExitOutcome`) — the renderer *consumes* these, so
 presentation depends on the roll-up, not the reverse. `resolve(pane_id) ->
-Option<&TrackedObservation>` is the only thing crossing in: the "status pipe wins
+Option<&TrackedObservation>` is the main thing crossing in: the "status pipe wins
 over command" precedence across observation sources stays in `RadarState`
 (`RadarState::resolve`), so `roll_up` never learns there is more than one store.
-`Outcome`'s display methods
-(`full`/`minimal`/`role` — glyphs and width-driven forms) live in `render`; the
-enum here is pure semantics.
+`quiet(pane_id)` feeds the interactive muted label (`PaneDisplay::Interactive`
+from the command store's quiet pendings); `roll_up` owns its precedence — shown
+only where no live observation outranks it, contributing nothing to counts or
+severity. On equal severity, a bounded job outranks a service for the primary
+detail (`docs/activity-model.md` §3).
+`ExitOutcome`'s display methods
+(`full`/`minimal`/`role`/`renders_tag` — glyphs and width-driven forms) live in
+`render`; the enum here is pure semantics. (Not to be confused with the
+runtime's `Outcome`, which names its `{render, effects}` return value.)
 
 ## Setup analysis
 
 How `zj-radar setup` learns the current state of the world. The **setup-analysis
-seam** is `analyze(&Env) -> Facts`, one per target (`analyze_zellij`,
-`analyze_codex` in `crates/cli/src/setup/analyze.rs`): a pure derivation fed a thin
+seam** is a pure analyze function per target —
+`analyze_zellij(&ZellijEnv) -> ZellijFacts` and `analyze_codex(&CodexEnv) ->
+CodexFacts` in `crates/cli/src/setup/analyze.rs` — each fed a thin
 `Env` of already-read values (file contents, fs stat booleans) by the IO shell.
 `Facts` (`ZellijFacts`, `CodexFacts`) is the single home for every derived fact —
 "is our alias present?" (managed vs unmanaged kept distinct), has-rail, granted,
@@ -340,29 +425,36 @@ feed the parsed rows into `Sessions` (`sessions.rs`) — pure state, no
 `zellij-tile`, that derives the cross-session badge on demand from
 `peers`/`own`, exactly like `RadarState` never caches a derived value.
 
-**Liveness is the mtime, not a roster — and a remembered session never
-vanishes (task-14).** An earlier iteration subscribed to
+**Liveness is the mtime, not a roster — graded fresh → stale → dead.** An
+earlier iteration subscribed to
 `Event::SessionUpdate` and cross-checked a peer list against presence files.
 E2E against real Zellij 0.44.3 showed `SessionUpdate` only delivers peers
 after some plugin has called the blocking `get_session_list()` host
 function — which nothing in this stack does, and which would violate the
 push-driven doctrine (`CONTRIBUTING.md`; `smart-tabs-postmortem.md`) if it
 did. `SessionUpdate` was dropped entirely (task-8b): liveness is judged from
-a presence file's mtime. Task-8b had the READ path (`read_peer_presences`)
-drop a peer once its mtime passed a TTL; task-14 changed that on user
-request — a session the badge has ever shown must never silently disappear
-from it. `read_peer_presences` now returns every peer file it finds,
-unconditionally, paired with that file's mtime age; only a much longer 6h
-open-time sweep at plugin `load()` ever actually deletes one (genuine
-debris). `Sessions` (`sessions.rs`) turns that age into a per-entry
-fresh/stale state (`STALE_AFTER_SECS`, 90s — 50% margin over the 60s
-heartbeat): stale entries dim on the badge and are unreachable via
-`session-next`/`session-prev` (switching onto a likely-dead session would
-have Zellij resurrect it as an empty zombie), but stay on screen. A session
-with nothing new to report still heartbeats — an unconditional
-`PersistPresence` on every Slow (60s) tick, bypassing the normal
-content-edge gate — so an idle-but-alive session's file rarely even crosses
-into stale. The session's own name arrives the same push-style way its
+a presence file's mtime. That judgment rests on a write-side guarantee: a
+live session rewrites its presence file at least every 60s (`project`'s
+`PRESENCE_HEARTBEAT_S` level trigger — any pass through `project` re-emits
+the write once the last one is that old, bypassing the normal content-edge
+gate), so file age reliably means what it says. `read_peer_presences`
+returns every peer file it finds, unconditionally, paired with that file's
+mtime age; `Sessions` (`sessions.rs`) grades that age per entry:
+fresh (≤`STALE_AFTER_SECS`, 90s — 50% margin over the 60s heartbeat),
+stale (90–300s — dims on the badge and is unreachable via
+`session-next`/`session-prev`, since switching onto a likely-dead session
+would have Zellij resurrect it as an empty zombie, but stays on screen),
+dead (past `DEAD_AFTER_SECS`, 300s — five missed heartbeats: reaped from
+the badge and its file unlinked via `Effect::DismissPresence`). Dimming
+stays twitchy because it's reversible cosmetics; the reap is conservative
+because it deletes a file — though even a false reap (a machine-sleep wake
+makes every file look old for up to one heartbeat) is harmless, since the
+live session's next heartbeat republishes and the entry returns fresh.
+Right-click dismiss remains the manual reap for a stale-not-yet-dead entry;
+a 6h open-time sweep at plugin `load()` remains the backstop for debris the
+reap can't touch (malformed/unparseable files, which never produce a name
+to dismiss by — an own-name corpse is NOT in that bucket, since the on-disk
+dismiss spares the live file by path identity and reaps the corpse). The session's own name arrives the same push-style way its
 liveness does: `Event::ModeUpdate`'s `ModeInfo.session_name`, not a
 session-list lookup.
 

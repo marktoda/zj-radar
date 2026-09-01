@@ -100,6 +100,17 @@ impl TrackedObservation {
         }
     }
 
+    /// Running work that draws an *animated* glyph — the one observation state
+    /// that needs per-second ticks. Running services are excluded: they render
+    /// the steady `▸` mark, so nothing about them animates
+    /// (`docs/activity-model.md` §3). THE shared term of both stores' cadence
+    /// predicates (`StatusStore::needs_ticks`,
+    /// `CommandStore::needs_ticks`), so the service exclusion can
+    /// never half-apply.
+    pub fn animating(&self) -> bool {
+        self.status == Status::Running && !self.kind.is_service()
+    }
+
     /// Re-scrub the free-text fields with the same sanitizer and caps live
     /// intake applies at parse. Live observations are sanitized already; this
     /// is for observations loaded off disk, where a pre-sanitize build (or a
@@ -115,7 +126,7 @@ impl TrackedObservation {
 }
 
 /// A map of pane id → resolved observation, plus the lifecycle every source
-/// shares (`prune`, snapshot insert). Focus no longer touches the store — the rail
+/// shares (`prune`, snapshot insert). Focus never touches the store — the rail
 /// shows what was pushed until a new broadcast, the exit-clear, or a prune. Both
 /// `StatusStore` and `CommandStore` *contain* one of these and delegate to it — the
 /// "two sources" split lives only in their intake (`apply` vs the command debounce
@@ -173,9 +184,25 @@ impl ObservationStore {
         self.map.iter().map(|(&pane_id, observation)| (pane_id, observation))
     }
 
-    /// Does any observation satisfy `pred`? The two stores resting-state predicates
-    /// differ (`StatusStore` counts any non-idle, `CommandStore` only `Running`),
-    /// so each passes its own closure rather than sharing one definition.
+    /// How many panes hold an observation. Feeds the tracked-pane cap check
+    /// (`StatusStore::evict_over_cap`); no `is_empty` twin because the cap
+    /// path only ever needs the count.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Evict-only removal: like `get_mut`, this bypasses the displaced-
+    /// completion recede that `insert`/`prune` return — deliberately, so a
+    /// cap eviction never ledgers what it drops (its only caller,
+    /// `StatusStore::evict_over_cap`, evicts flood-stale rows silently).
+    pub fn remove(&mut self, pane_id: u32) {
+        self.map.remove(&pane_id);
+    }
+
+    /// Does any observation satisfy `pred`? Both stores' cadence predicates
+    /// pass [`TrackedObservation::animating`]; other callers (Done-awaiting-
+    /// recede, tests) pass their own closures.
     pub fn any(&self, pred: impl Fn(&TrackedObservation) -> bool) -> bool {
         self.map.values().any(pred)
     }
@@ -225,6 +252,16 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_true_round_trips_through_the_snapshot() {
+        // The notifier's silence exemption must survive a rehydrate: an acked
+        // status reloaded from the snapshot must not re-notify.
+        let obs = TrackedObservation { acknowledged: true, ..sample() };
+        let json = serde_json::to_string(&obs).unwrap();
+        assert!(json.contains(r#""acknowledged":true"#), "ack persists: {json}");
+        assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+    }
+
+    #[test]
     fn insert_returns_displaced_and_prune_returns_every_drop() {
         let mut s = ObservationStore::default();
         assert!(s.insert(1, sample()).is_none());
@@ -250,6 +287,8 @@ mod tests {
         assert_eq!(obs.status, Status::Idle);
         assert_eq!(obs.exit_code, None);
         assert_eq!(obs.task, "", "pre-task snapshots load with an empty label");
+        assert!(!obs.acknowledged, "pre-ack snapshots load unacknowledged");
+        assert_eq!(obs.pending_epoch_s, None, "pre-wait-tag snapshots load with no pending stamp");
         // An unknown origin is rejected so a corrupt entry can't masquerade as a
         // valid one — the snapshot loader drops the whole snapshot instead.
         let bad = json.replace(r#""origin":"command""#, r#""origin":"???""#);

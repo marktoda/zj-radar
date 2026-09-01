@@ -5,6 +5,10 @@ pub(crate) enum CheckLevel {
     Ok,
     Warn,
     Missing,
+    /// Advice about state the doctor cannot observe (e.g. Codex hook trust).
+    /// Prints as `note`; never counts toward the Missing exit code, and unlike
+    /// `Warn` doesn't imply anything is off — a healthy install may carry one.
+    Note,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -38,6 +42,14 @@ impl CheckItem {
             detail: detail.into(),
         }
     }
+
+    fn note(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            level: CheckLevel::Note,
+            name,
+            detail: detail.into(),
+        }
+    }
 }
 
 /// Returns true when any item is `Missing` — the doctor's contribution to the
@@ -56,21 +68,17 @@ pub(crate) fn check_codex(legacy_notify: bool) -> bool {
 }
 
 /// `CheckItem`s for `zj-radar setup zellij --check`. Pure over fully-derived
-/// `ZellijFacts`; the derivation lives in `analyze_zellij`.
-pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
+/// `ZellijFacts` plus the NAME of the layout those facts were read for
+/// (`--layout NAME`, else the config's `default_layout`, else `default`);
+/// the derivation lives in `analyze_zellij` / `read_zellij_env`.
+pub(crate) fn zellij_check_items(f: &ZellijFacts, layout_name: &str) -> Vec<CheckItem> {
     let mut items = Vec::new();
 
     // 0. the zellij binary itself — every other item is moot without it, and
     // an all-ok report on a zellij-less machine would be a --check lie.
     let floor = min_supported_zellij_display();
     items.push(match &f.zellij_version {
-        None => CheckItem::missing(
-            "zellij binary",
-            format!(
-                "not found on PATH — install Zellij {floor}+ first \
-                 (https://zellij.dev/documentation/installation)"
-            ),
-        ),
+        None => CheckItem::missing("zellij binary", zellij_missing_message()),
         Some(v) if !zellij_version_is_supported(v) => CheckItem::warn(
             "zellij binary",
             format!(
@@ -103,16 +111,21 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts) -> Vec<CheckItem> {
         )
     });
 
-    // 3. layout (rail)
+    // 3. layout (rail) — name the layout actually inspected: "default layout"
+    // was a lie under `--check --layout mine`.
     items.push(match f.has_rail {
         None => CheckItem::warn(
             "layout",
-            "no layout file found — the rail won't appear; run `zj-radar setup zellij --inject` to create one",
+            format!(
+                "no `{layout_name}` layout file found — the rail won't appear; run `zj-radar setup zellij --inject` to create one"
+            ),
         ),
-        Some(true) => CheckItem::ok("layout", "default layout has the radar rail"),
+        Some(true) => CheckItem::ok("layout", format!("`{layout_name}` layout has the radar rail")),
         Some(false) => CheckItem::missing(
             "layout",
-            "default layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet",
+            format!(
+                "`{layout_name}` layout does not have the radar rail — run `zj-radar setup zellij` or paste the snippet"
+            ),
         ),
     });
 
@@ -188,9 +201,9 @@ pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
             CheckItem::missing("claude binary", "not found on PATH")
         },
         if wired {
-            CheckItem::ok("plugin", "zj-radar-claude plugin installed")
+            CheckItem::ok("plugin", format!("{CLAUDE_PLUGIN} plugin installed"))
         } else {
-            CheckItem::missing("plugin", "zj-radar-claude not installed — run `zj-radar setup claude`")
+            CheckItem::missing("plugin", format!("{CLAUDE_PLUGIN} not installed — run `zj-radar setup claude`"))
         },
     ]
 }
@@ -200,7 +213,9 @@ pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
     let Some(config_dir) = zellij_config_dir_or_report() else { return true };
     let (env, paths) = read_zellij_env(&config_dir, layout_name);
-    let mut items = zellij_check_items(&analyze_zellij(&env));
+    // The inspected layout's NAME comes back on `paths` — the same resolution
+    // the read used, so the report and the read can't name different layouts.
+    let mut items = zellij_check_items(&analyze_zellij(&env), &paths.layout_name);
     if let Some(item) =
         zellij_config_file_item(std::env::var_os("ZELLIJ_CONFIG_FILE"), &paths.config_path)
     {
@@ -217,6 +232,7 @@ fn print_check_items(items: &[CheckItem]) -> bool {
             CheckLevel::Ok => "ok",
             CheckLevel::Warn => "warn",
             CheckLevel::Missing => "missing",
+            CheckLevel::Note => "note",
         };
         println!("  {status} {}: {}", item.name, item.detail);
     }
@@ -284,13 +300,11 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
                 "foreign notify is preserved; hooks do not use the notify slot",
             ));
         }
-    }
-
-    if !legacy_notify {
-        items.push(CheckItem::warn(
-            "hook trust",
-            "run `/hooks` in Codex after install or hook changes",
-        ));
+        // The one-time reminder hook mode carries: Codex only runs hooks the
+        // user has trusted via `/hooks`. A Note, not a warn — the doctor can't
+        // observe trust state, and an unconditional warn made every healthy
+        // install read perma-Warn. (Legacy notify mode has no hooks to trust.)
+        items.push(CheckItem::note("hook trust", CODEX_HOOK_TRUST_ADVICE));
     }
     items
 }
@@ -322,9 +336,12 @@ mod tests {
             "hooks.json",
             "all zj-radar Codex hooks installed"
         )));
-        assert!(items.iter().any(|item| item.name == "hook trust"
-            && item.level == CheckLevel::Warn
-            && item.detail.contains("/hooks")));
+        // The trust reminder is a Note item, never a warn — an unconditional
+        // warn made every healthy install read perma-Warn, and Notes are
+        // ignored by the Missing exit-code logic.
+        let trust = items.iter().find(|item| item.name == "hook trust").expect("hook trust note");
+        assert_eq!(trust.level, CheckLevel::Note);
+        assert!(trust.detail.contains("/hooks"), "must point at `/hooks`: {}", trust.detail);
     }
 
     #[test]
@@ -451,7 +468,7 @@ mod tests {
     }
 
     fn all_good_check_items() -> Vec<CheckItem> {
-        zellij_check_items(&all_good_facts())
+        zellij_check_items(&all_good_facts(), "default")
     }
 
     #[test]
@@ -472,7 +489,7 @@ mod tests {
         // No zellij on PATH: every other item is moot, and an all-ok report
         // on a zellij-less machine would be a --check lie.
         let absent = ZellijFacts { zellij_version: None, ..all_good_facts() };
-        assert!(zellij_check_items(&absent)
+        assert!(zellij_check_items(&absent, "default")
             .iter()
             .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Missing));
         // Below the floor: warn (advice), not missing — version parsing is
@@ -481,7 +498,7 @@ mod tests {
             zellij_version: Some("zellij 0.43.1".to_string()),
             ..all_good_facts()
         };
-        assert!(zellij_check_items(&old)
+        assert!(zellij_check_items(&old, "default")
             .iter()
             .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Warn));
     }
@@ -513,7 +530,7 @@ mod tests {
     fn zellij_check_items_nix_store_alias_warns() {
         let mut f = all_good_facts();
         f.alias_is_store_path = true;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
         assert_eq!(alias.level, CheckLevel::Warn, "nix-store alias must warn");
         assert!(alias.detail.contains("nix/store"), "warn detail must mention nix/store");
@@ -524,7 +541,7 @@ mod tests {
     fn zellij_check_items_rail_less_layout_is_missing() {
         let mut f = all_good_facts();
         f.has_rail = Some(false);
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
         assert_eq!(layout_item.level, CheckLevel::Missing, "layout without rail must be missing");
         assert!(layout_item.detail.contains("setup zellij"), "hint must mention setup zellij");
@@ -534,7 +551,7 @@ mod tests {
     fn zellij_check_items_ungranted_wasm_is_missing() {
         let mut f = all_good_facts();
         f.granted = Some(false);
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
         assert_eq!(grant.level, CheckLevel::Missing, "ungranted wasm must be missing");
         assert!(grant.detail.contains("--grant"), "hint must mention --grant");
@@ -544,7 +561,7 @@ mod tests {
     fn zellij_check_items_managed_config_warns() {
         let mut f = all_good_facts();
         f.config_managed = true;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let managed = items.iter().find(|i| i.name == "managed config").expect("managed config item");
         assert_eq!(managed.level, CheckLevel::Warn, "managed config must warn");
         assert!(managed.detail.contains("symlink"), "warn detail must mention symlink");
@@ -554,7 +571,7 @@ mod tests {
     fn zellij_check_items_missing_alias_is_missing() {
         let mut f = all_good_facts();
         f.unmanaged_alias_present = false;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
         assert_eq!(alias.level, CheckLevel::Missing);
     }
@@ -563,7 +580,7 @@ mod tests {
     fn zellij_check_items_no_layout_warns() {
         let mut f = all_good_facts();
         f.has_rail = None;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
         assert_eq!(layout_item.level, CheckLevel::Warn, "missing layout file should warn");
     }
@@ -572,7 +589,7 @@ mod tests {
     fn zellij_check_items_no_permissions_warns() {
         let mut f = all_good_facts();
         f.granted = None;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
         assert_eq!(grant.level, CheckLevel::Warn, "no permissions.kdl should warn");
     }
@@ -581,7 +598,7 @@ mod tests {
     fn zellij_check_items_no_producer_is_missing() {
         let mut f = all_good_facts();
         f.codex_producer = false;
-        let items = zellij_check_items(&f);
+        let items = zellij_check_items(&f, "default");
         let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
         assert_eq!(producer.level, CheckLevel::Missing);
         assert!(producer.detail.contains("setup codex"), "hint must mention setup codex");
@@ -617,5 +634,106 @@ mod tests {
         let items = all_good_check_items();
         let names: Vec<&str> = items.iter().map(|i| i.name).collect();
         assert_eq!(names, &["zellij binary", "alias", "wasm", "layout", "grant", "producer"]);
+    }
+
+    #[test]
+    fn zellij_check_layout_item_names_the_inspected_layout() {
+        // `--layout mine` used to report on "default layout" regardless — the
+        // item must name the layout the doctor actually read, in every arm.
+        for has_rail in [Some(true), Some(false), None] {
+            let f = ZellijFacts { has_rail, ..all_good_facts() };
+            let items = zellij_check_items(&f, "mine");
+            let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
+            assert!(
+                layout_item.detail.contains("`mine`"),
+                "has_rail={has_rail:?}: detail must name the layout: {}",
+                layout_item.detail
+            );
+        }
+    }
+
+    #[test]
+    fn claude_check_items_cover_binary_and_plugin() {
+        // Mirrors the codex item tests: both facts good → both ok. The plugin
+        // detail interpolates the shared CLAUDE_PLUGIN const, so assert against
+        // it rather than re-pinning the literal here.
+        let items = claude_check_items(true, true);
+        assert!(items.contains(&CheckItem::ok("claude binary", "found on PATH")));
+        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
+        assert_eq!(plugin.level, CheckLevel::Ok);
+        assert!(
+            plugin.detail.contains(CLAUDE_PLUGIN),
+            "plugin item must name the plugin: {}",
+            plugin.detail
+        );
+
+        // Binary absent → missing.
+        let items = claude_check_items(false, true);
+        assert!(items.contains(&CheckItem::missing("claude binary", "not found on PATH")));
+
+        // Plugin absent → missing, with the remedy pinned so the hint the
+        // doctor prints stays a real invocation.
+        let items = claude_check_items(true, false);
+        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
+        assert_eq!(plugin.level, CheckLevel::Missing);
+        assert!(
+            plugin.detail.contains("run `zj-radar setup claude`"),
+            "remedy wording must name the setup command: {}",
+            plugin.detail
+        );
+    }
+
+    /// Every backtick-quoted `zj-radar …` invocation the doctor prints as a
+    /// remedy must parse as a real CLI invocation — a hint that clap rejects
+    /// sends the user into a usage error instead of a fix.
+    #[test]
+    fn remedy_hints_parse_as_real_invocations() {
+        use clap::Parser;
+        let all_missing = || ZellijFacts {
+            unmanaged_alias_present: false,
+            wasm_present: false,
+            has_rail: Some(false),
+            granted: Some(false),
+            codex_producer: false,
+            claude_producer: false,
+            zellij_version: None,
+            ..all_good_facts()
+        };
+        let warn_variants = ZellijFacts { has_rail: None, granted: None, ..all_missing() };
+
+        let mut details: Vec<String> = Vec::new();
+        for items in [
+            zellij_check_items(&all_missing(), "default"),
+            zellij_check_items(&warn_variants, "default"),
+            claude_check_items(false, false),
+            codex_check_items(
+                &analyze_codex(&CodexEnv {
+                    codex_on_path:    false,
+                    zj_radar_on_path: false,
+                    config_text:      None,
+                    hooks_text:       None,
+                }),
+                false,
+            ),
+        ] {
+            details.extend(items.into_iter().map(|i| i.detail));
+        }
+
+        let invocations: Vec<&str> = details
+            .iter()
+            .flat_map(|d| d.split('`').skip(1).step_by(2)) // backticked spans
+            .filter(|s| s.starts_with("zj-radar "))
+            .collect();
+        assert!(
+            invocations.contains(&"zj-radar setup zellij -y"),
+            "the grant remedy must be among the extracted hints: {invocations:?}"
+        );
+        for invocation in invocations {
+            let argv: Vec<&str> = invocation.split_whitespace().collect();
+            assert!(
+                crate::Cli::try_parse_from(&argv).is_ok(),
+                "remedy hint `{invocation}` must parse as a real CLI invocation"
+            );
+        }
     }
 }

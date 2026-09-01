@@ -2,7 +2,7 @@ use super::*;
 use crate::command::{DEBOUNCE_TICKS, DONE_TTL_TICKS, EpochSecs, Tick};
 use crate::kind::Kind;
 use crate::payload::StatusPayload;
-use crate::rollup::Outcome;
+use crate::rollup::ExitOutcome;
 use crate::test_fixtures::{self, pane, payload_in_repo};
 
 /// Unlike the shared `test_fixtures::tab` (id derived from position), this
@@ -771,7 +771,7 @@ fn finished_command_pane_carries_outcome_through_rows() {
     assert_eq!(row.display.status, Status::Error);
     let detail = row.display.detail.as_ref().unwrap();
     assert_eq!(detail.msg, "cargo build", "msg stays pure (tag is structural)");
-    assert_eq!(detail.outcome, Some(Outcome::Failed(Some(2))));
+    assert_eq!(detail.outcome, Some(ExitOutcome::Failed(Some(2))));
 }
 
 #[test]
@@ -1968,7 +1968,7 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
     radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
     // A live not-Pending → Pending edge at tick 5 arms a flash through tick 6
-    // (`flash_until = tick + 2`, and `rows` reads `now_tick < flash_until`).
+    // (`flash_until = tick + FLASH_TICKS`, and `rows` reads `now_tick < flash_until`).
     let wire = payload::to_wire(&StatusPayload {
         msg: "approve?".into(),
         ..payload_in_repo(7, Status::Pending, "repo")

@@ -27,6 +27,9 @@ pub(crate) struct ZellijPaths {
     pub config_path: PathBuf,
     pub wasm_dest:   PathBuf,
     pub layout_path: PathBuf,
+    /// The layout NAME `layout_path` was resolved from (`resolve_layout_name`),
+    /// carried so reports name exactly the layout the read inspected.
+    pub layout_name: String,
 }
 
 /// The one IO gathering point behind [`ZellijEnv`]: read every input
@@ -37,20 +40,21 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
     let config_path = zellij_config_path(config_dir);
     let wasm_dest = zellij_wasm_dest(config_dir);
     let config_text = std::fs::read_to_string(&config_path).ok();
-    let layout_path =
-        crate::setup::detect::resolve_layout_path(config_dir, layout_name, config_text.as_deref());
+    let layout_name =
+        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref());
+    let layout_path = crate::setup::detect::resolve_layout_path(config_dir, &layout_name);
     let env = ZellijEnv {
         layout_text:            std::fs::read_to_string(&layout_path).ok(),
         permissions_text:       crate::run::zellij_permissions_text(),
         codex_hooks_text:       codex_hooks_text(),
         installed_plugins_text: claude_installed_plugins_text(),
         wasm_present:           wasm_dest.is_file(),
-        config_managed:         config_is_managed(&config_path),
+        config_managed:         path_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
         zellij_version:         zellij_version_output(),
         config_text,
     };
-    (env, ZellijPaths { config_path, wasm_dest, layout_path })
+    (env, ZellijPaths { config_path, wasm_dest, layout_path, layout_name })
 }
 
 /// Every derived fact about the current Zellij setup state, in one place. Both
@@ -104,6 +108,17 @@ pub(crate) const MIN_SUPPORTED_ZELLIJ: (u32, u32, u32) = (0, 44, 3);
 pub(crate) fn min_supported_zellij_display() -> String {
     let (major, minor, patch) = MIN_SUPPORTED_ZELLIJ;
     format!("{major}.{minor}.{patch}")
+}
+
+/// The one "no zellij binary" diagnostic — shared by the doctor, the grant
+/// launcher, and `run`, so the floor and the install URL can't drift between
+/// them.
+pub(crate) fn zellij_missing_message() -> String {
+    format!(
+        "zellij not found on PATH — install Zellij {}+ first \
+         (https://zellij.dev/documentation/installation)",
+        min_supported_zellij_display()
+    )
 }
 
 /// Lenient version-floor gate: warn only on a definitely-too-old version.

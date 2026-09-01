@@ -154,10 +154,13 @@
             // suffix counts, so `python-config` keeps the first-arg treatment
             // (its arg is NOT basenamed like a script would be).
             (&["python-config", "a/b"], "python-config a/b"),
-            // Deliberate post-refactor behavior: the uniform target dash-guard
-            // drops a bare "-" target (old cargo nextest / go test kept it).
+            // Deliberate post-refactor behavior: `first_non_option` skips a
+            // bare "-" stdin marker and keeps scanning (old cargo nextest /
+            // go test displayed it), so a real target after it still shows.
             (&["go", "test", "-"], "go test"),
             (&["cargo", "nextest", "-"], "cargo nextest"),
+            (&["go", "test", "-", "./..."], "go test ./..."),
+            (&["cat", "-", "notes.txt"], "cat notes.txt"),
         ];
         for (args, want) in cases {
             assert_eq!(&display(&argv(args)), want, "display for {args:?}");
@@ -323,7 +326,7 @@
     }
 
     #[test]
-    fn command_source_round_trips_through_kind() {
+    fn classify_source_round_trips_through_kind() {
         // Twin of the agent-side `source_round_trips_through_kind` (see
         // CONTEXT.md "Information source"). The command path stores
         // `classify(..).1.as_source()` and the roll-up reads it back via
@@ -346,7 +349,7 @@
     }
 
     #[test]
-    fn resolved_command_source_round_trips_through_kind() {
+    fn resolved_source_round_trips_through_kind() {
         // End-to-end twin: drive a command through the store and confirm the
         // *persisted* observation `source` (not just the classifier output)
         // round-trips to the kind the classifier picked. Guards the wiring in
@@ -557,7 +560,7 @@
         // keeps its id and stays live, so its `exited` dedup entry survives. When
         // the pane is RE-RUN and exits with the SAME code, the second exit must
         // still resolve to Done — otherwise the row is stuck Running forever and
-        // `has_pending_or_active` keeps the timer armed (poll/CPU drain).
+        // `needs_ticks` keeps the timer armed (poll/CPU drain).
         let mut store = CommandStore::default();
 
         // First run: promote to Running, then exit 0 → Done.
@@ -583,7 +586,7 @@
             "a re-run's exit must apply even when its code matches the prior run"
         );
         assert!(
-            !store.has_pending_or_active(),
+            !store.needs_ticks(),
             "a finished re-run must not keep the timer armed"
         );
     }
@@ -613,7 +616,7 @@
     fn prune_drops_dead_panes_from_all_maps() {
         let mut store = CommandStore::default();
 
-        // Set up pane 1: pending
+        // Set up pane 1: pending (quiet — vim is interactive; prune must see it too)
         store.on_command_changed(1, &["vim".to_string()], true, None, 1);
         // Set up pane 2: resolved Running
         store.on_command_changed(2, &["cargo".to_string()], true, None, 1);
@@ -638,34 +641,35 @@
         );
     }
 
-    // ── Test 8: has_pending_or_active
+    // ── Test 8: needs_ticks
 
     #[test]
-    fn has_pending_or_active_reflects_state() {
+    fn needs_ticks_reflects_state() {
         let mut store = CommandStore::default();
-        assert!(!store.has_pending_or_active(), "empty store → false");
+        assert!(!store.needs_ticks(), "empty store → false");
 
-        // Add a pending entry
-        store.on_command_changed(1, &["vim".to_string()], true, None, 1);
-        assert!(store.has_pending_or_active(), "true while pending");
+        // Add a pending entry (a promotable job — an interactive command like
+        // vim records only a QUIET pending, which must never arm the timer).
+        store.on_command_changed(1, &["sleep".to_string(), "30".to_string()], true, None, 1);
+        assert!(store.needs_ticks(), "true while pending");
 
         // Promote to Running
         let promote_tick = 1 + DEBOUNCE_TICKS;
         store.on_timer(Tick(promote_tick), EpochSecs(0));
-        assert!(store.has_pending_or_active(), "true while Running");
+        assert!(store.needs_ticks(), "true while Running");
 
         // Return to shell → tentative; still active (Running) until debounce.
         let leave_tick = promote_tick + 1;
         store.on_command_changed(1, &[], false, None, leave_tick);
         assert!(
-            store.has_pending_or_active(),
+            store.needs_ticks(),
             "still active until the debounce window flips it to Done"
         );
 
         // Timer past debounce → Done (no pending, no Running).
         store.on_timer(Tick(leave_tick + DEBOUNCE_TICKS), EpochSecs(0));
         assert!(
-            !store.has_pending_or_active(),
+            !store.needs_ticks(),
             "false once Done (no pending, no Running)"
         );
     }
@@ -864,6 +868,31 @@
         );
     }
 
+    #[test]
+    fn unclassifiable_foreground_argv_touches_no_bookkeeping() {
+        // An argv `classify` renders to nothing (here: control chars that
+        // sanitize away) is no evidence about the pane. In particular it must
+        // not cancel an armed Running→Done confirm: nothing would ever re-arm
+        // it, and the row would stick Running forever.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &argv(&["make"]), true, Some("/repo"), 1);
+        let promote_tick = 1 + DEBOUNCE_TICKS;
+        store.on_timer(Tick(promote_tick), EpochSecs(0));
+        assert_eq!(store.get(1).unwrap().status, Status::Running);
+
+        // The command leaves the foreground → tentative-done armed…
+        store.on_command_changed(1, &[], false, None, promote_tick + 1);
+        // …then an unclassifiable fg argv arrives. It must leave the armed
+        // confirm alone.
+        store.on_command_changed(1, &argv(&["\u{1b}"]), true, Some("/repo"), promote_tick + 1);
+        store.on_timer(Tick(promote_tick + 1 + DEBOUNCE_TICKS), EpochSecs(0));
+        assert_eq!(
+            store.get(1).unwrap().status,
+            Status::Done,
+            "the armed Running→Done confirm must survive an unclassifiable fg argv"
+        );
+    }
+
     // ── Done TTL recede, epoch stamping, easing-safe promotion ──
 
     #[test]
@@ -918,8 +947,9 @@
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         let t0 = s.get(1).unwrap().last_change_tick;
         s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 50); // re-report
-        s.on_timer(Tick(50 + DEBOUNCE_TICKS), EpochSecs(150));                                // re-promote
+        let r = s.on_timer(Tick(50 + DEBOUNCE_TICKS), EpochSecs(150));                        // re-promote
         assert_eq!(s.get(1).unwrap().last_change_tick, t0, "same command keeps its start tick");
+        assert!(!r.changed, "identical re-promotion stores an identical observation — no snapshot write");
     }
 
     #[test]
@@ -1088,4 +1118,272 @@
         // no follow-up event at all
         s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
         assert_eq!(s.get(1).unwrap().status, Status::Running, "documented failure mode");
+    }
+
+    // ── Interactive commands: the Companion class (docs/activity-model.md) ──
+
+    #[test]
+    fn interactive_set_disjoint_from_prompt_and_agent_names() {
+        // The three name lists carry three DIFFERENT contracts (prompt /
+        // push-owned / quiet), and a name drifting into two of them silently
+        // re-creates the "opened nvim reads as returned-to-shell" trap.
+        for name in DEFAULT_INTERACTIVE {
+            assert!(
+                !IGNORE_NAMES.contains(name),
+                "{name} must not double as a shell-prompt name"
+            );
+            assert!(
+                !AGENT_NAMES.contains(name),
+                "{name} must not double as a push-agent name"
+            );
+        }
+        // WRAPPERS is a different animal (a transparency list, not a
+        // classification role) but must stay disjoint from ALL THREE
+        // membership lists: `effective_program` peels a wrapper away before
+        // any membership check runs, so a name in both would be silently
+        // invisible to its other list (a wrapped-away "interactive" name
+        // would un-quiet; a wrapped-away shell would break the prompt).
+        for name in WRAPPERS {
+            assert!(
+                !IGNORE_NAMES.contains(name)
+                    && !AGENT_NAMES.contains(name)
+                    && !DEFAULT_INTERACTIVE.contains(name),
+                "{name} is peeled by effective_program — membership lists would never see it"
+            );
+        }
+    }
+
+    #[test]
+    fn display_first_token_is_the_exe_basename() {
+        // The interactive sweep (`set_interactive_extras`) matches promoted
+        // rows on the display's first whitespace token — sound only while
+        // every display path leads with the peeled exe basename. Pin it
+        // across every rule shape: table rules, python, the first-arg
+        // fallback, and wrapper/env peeling.
+        let cases: &[&[&str]] = &[
+            &["cargo", "test", "core"],
+            &["go", "build", "./..."],
+            &["npm", "run", "dev"],
+            &["pytest", "-q", "tests"],
+            &["make", "deploy"],
+            &["python", "-m", "pytest", "t.py"],
+            &["python3.12", "app.py"],
+            &["nvim", "README.md"],
+            &["/usr/bin/htop"],
+            &["sudo", "make", "install"],
+            &["RUST_LOG=debug", "cargo", "build"],
+            &["env", "FOO=1", "k9s"],
+        ];
+        for case in cases {
+            let raw = argv(case);
+            let (peeled, name) = effective_program(&raw);
+            let (display, _) = classify(peeled);
+            let first = display.split_whitespace().next().unwrap_or("");
+            assert_eq!(
+                first.trim_start_matches('-'),
+                name,
+                "display {display:?} must lead with the exe for {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_command_never_promotes_and_never_arms_the_timer() {
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["nvim", "README.md"]), true, None, 0);
+        assert!(
+            !s.needs_ticks(),
+            "a quiet pending must not pin the 1 Hz cadence"
+        );
+        let r = s.on_timer(Tick(DEBOUNCE_TICKS * 10), EpochSecs(100));
+        assert!(s.get(1).is_none(), "never promoted to a Running row");
+        assert!(!r.changed);
+        assert_eq!(
+            s.quiet_identity(1),
+            Some(("nvim README.md", Kind::Command)),
+            "identity is recorded for the muted label and exit labeling"
+        );
+    }
+
+    #[test]
+    fn interactive_over_running_flips_prior_command_done() {
+        // `cargo build` finished and nvim was opened in the same pane: the
+        // build row must flip Done via the same tentative-done debounce the
+        // shell-return path uses.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["cargo", "build"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+        s.on_command_changed(1, &argv(&["nvim"]), true, None, DEBOUNCE_TICKS + 1);
+        s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
+        let obs = s.get(1).unwrap();
+        assert_eq!(obs.status, Status::Done, "prior Running command completed");
+        assert_eq!(obs.msg, "cargo build");
+        assert_eq!(s.quiet_identity(1), Some(("nvim", Kind::Command)));
+    }
+
+    #[test]
+    fn held_pane_interactive_exit_labels_from_quiet_pending() {
+        // `zellij run -- nvim`, editor closed: the manifest exit must wear the
+        // quiet pending's identity — never a blank Done row.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["nvim"]), true, Some("/w/proj"), 0);
+        s.on_exit(1, Some(0), Tick(50), EpochSecs(1000));
+        let obs = s.get(1).unwrap();
+        assert_eq!(obs.status, Status::Done);
+        assert_eq!(obs.msg, "nvim", "completion labeled from the quiet pending");
+        assert_eq!(obs.repo, "proj");
+        assert_eq!(s.quiet_identity(1), None, "exit consumed the pending");
+    }
+
+    #[test]
+    fn childless_interactive_root_still_records_quiet_pending() {
+        // `zellij run -- nvim`: the editor IS the pane root, and a childless
+        // root reports `is_foreground=false` (the flag only encodes "the root
+        // has a child" — see `is_shell_prompt`). That report is the editor
+        // alive, not a return to the prompt: the quiet pending must form
+        // anyway, or the held pane's exit inserts the blank Done row the
+        // activity model promises never happens (`docs/activity-model.md` §5).
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["nvim"]), false, Some("/w/proj"), 0);
+        assert_eq!(
+            s.quiet_identity(1),
+            Some(("nvim", Kind::Command)),
+            "muted label available while the run-pane editor is open"
+        );
+        assert!(!s.needs_ticks(), "an open editor never pins the timer");
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert!(s.get(1).is_none(), "quiet pending never promotes to Running");
+
+        s.on_exit(1, Some(0), Tick(50), EpochSecs(1000));
+        let obs = s.get(1).unwrap();
+        assert_eq!(obs.status, Status::Done);
+        assert_eq!(obs.msg, "nvim", "exit labeled — never a blank row");
+        assert_eq!(obs.repo, "proj");
+    }
+
+    #[test]
+    fn interactive_commands_are_not_prompts_and_not_agents() {
+        // The prompt contract is untouched: opening an editor must not read
+        // as "returned to shell" (which exit-clears pushed agent statuses) and
+        // must not vouch for an agent (grace-clock cancel).
+        for name in ["nvim", "less", "htop"] {
+            assert!(!is_shell_prompt(&argv(&[name])));
+            assert!(!is_agent_command(&argv(&[name])));
+        }
+    }
+
+    #[test]
+    fn shell_return_discards_quiet_pending() {
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["nvim"]), true, None, 0);
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, 5);
+        assert_eq!(s.quiet_identity(1), None, "back at the prompt — label gone");
+        assert!(s.get(1).is_none(), "no row was ever created");
+    }
+
+    #[test]
+    fn sweep_skips_a_row_already_leaving_the_foreground() {
+        // gdb promoted to Running, then returned to the shell — its
+        // tentative-done is armed. A config.v1 naming gdb interactive that
+        // lands inside the debounce window must NOT sweep the row: the pane is
+        // back at the prompt, so demoting to Idle and reconstructing a quiet
+        // pending would ghost a muted `gdb` label that nothing ever clears
+        // (the shell-return CommandChanged already fired — edge-triggered,
+        // never replayed). Let the armed confirm flip Running→Done normally.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["gdb"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, DEBOUNCE_TICKS + 1);
+
+        s.set_interactive_extras(["gdb"]);
+        assert_eq!(s.quiet_identity(1), None, "no ghost label for a prompt pane");
+        assert_eq!(s.get(1).unwrap().status, Status::Running, "left for the confirm");
+
+        s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
+        assert_eq!(s.get(1).unwrap().status, Status::Done, "real completion lands");
+    }
+
+    #[test]
+    fn set_interactive_extras_sweeps_promoted_rows_level_triggered() {
+        // gdb is not in the defaults: it promotes to Running. Adding it as an
+        // extra must demote the row NOW — a TUI fires no further
+        // CommandChanged until it exits, so the sweep is the only edge.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["gdb"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(1).unwrap().status, Status::Running);
+
+        let changed = s.set_interactive_extras(["gdb"]);
+        assert!(changed);
+        assert_eq!(s.get(1).unwrap().status, Status::Idle, "demoted, not ledgered");
+        assert!(!s.needs_ticks());
+        // Promotion consumed the pending, so the sweep RECONSTRUCTS the quiet
+        // pending from the observation — the swept state must be identical to
+        // the intake state: muted label available, exits labeled.
+        assert_eq!(
+            s.quiet_identity(1),
+            Some(("gdb", Kind::Command)),
+            "demote reconstructs the quiet pending"
+        );
+        // …and un-quieting is symmetric even for a swept row: the
+        // reconstructed pending flips promotable and re-promotes.
+        let changed = s.set_interactive_extras([]);
+        assert!(changed);
+        s.on_timer(Tick(DEBOUNCE_TICKS * 3), EpochSecs(300));
+        assert_eq!(
+            s.get(1).unwrap().status,
+            Status::Running,
+            "swept row re-promotes after the extra is removed"
+        );
+        let changed = s.set_interactive_extras(["gdb"]);
+        assert!(changed, "re-quieting demotes again");
+
+        // Symmetric: clearing the extras un-quiets a pending, which then
+        // promotes on the next tick.
+        s.on_command_changed(2, &argv(&["gdb"]), true, None, 10);
+        assert_eq!(s.quiet_identity(2), Some(("gdb", Kind::Command)));
+        let changed = s.set_interactive_extras([]);
+        assert!(changed, "pending flipped promotable");
+        s.on_timer(Tick(10 + DEBOUNCE_TICKS), EpochSecs(200));
+        assert_eq!(s.get(2).unwrap().status, Status::Running, "un-quieted and promoted");
+    }
+
+    #[test]
+    fn service_running_does_not_arm_the_timer() {
+        // A Running Server renders the steady mark — nothing animates, so it
+        // must not pin the 1 Hz cadence (docs/activity-model.md §3). The
+        // pending phase still arms (the promotion tick needs to fire).
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
+        assert!(s.needs_ticks(), "pending promotion still needs a tick");
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        let obs = s.get(1).unwrap();
+        assert_eq!((obs.status, obs.kind), (Status::Running, Kind::Server));
+        assert!(!s.needs_ticks(), "a steady service costs zero ticks");
+    }
+
+    #[test]
+    fn service_done_confirm_still_arms_the_timer() {
+        // The regression the service exclusion nearly shipped: `pending_done`
+        // used to inherit its tick source from the Running row it debounces.
+        // For a service that row no longer arms, so `pending_done` must count
+        // in the predicate itself — a Ctrl-C'd dev server flips Done in ~2s,
+        // not on the ≤60s Slow heartbeat.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        assert!(!s.needs_ticks(), "steady while the server runs");
+
+        // Ctrl-C: back to the shell arms the tentative-done…
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, DEBOUNCE_TICKS + 1);
+        assert!(
+            s.needs_ticks(),
+            "the armed Done confirm is a scheduled one-shot — it needs ticks"
+        );
+        // …which the debounce window then confirms, and the timer may disarm.
+        s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
+        assert_eq!(s.get(1).unwrap().status, Status::Done, "a dead dev server is news");
+        assert!(!s.needs_ticks());
     }

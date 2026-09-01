@@ -4,9 +4,11 @@
 //!
 //! The **stable surface** for external producers is the root re-exports below
 //! ([`StatusPayload`], [`parse`], [`to_wire`], [`Status`], [`Kind`],
-//! [`STATUS_PIPE_NAME`]) plus the [`payload`] module's `MAX_*` contract
-//! consts. Everything else is workspace-internal plumbing shared with the
-//! zj-radar plugin and CLI, with no stability guarantee.
+//! [`STATUS_PIPE_NAME`], [`self_limiting_pipe_argv`],
+//! [`DEFAULT_PIPE_TIMEOUT_SECS`], [`RUNNING_PIPE_TIMEOUT_SECS`]) plus the
+//! [`payload`] module's `MAX_*` contract consts. Everything else is
+//! workspace-internal plumbing shared with the zj-radar plugin and CLI, with
+//! no stability guarantee.
 //!
 //! External producers emit the status contract by building a [`StatusPayload`]
 //! (use `..Default::default()` for every field you don't set — it means exactly
@@ -26,16 +28,20 @@
 //!     msg: "running tests".into(),
 //!     ..Default::default()
 //! });
-//! // then: `zellij pipe --name $STATUS_PIPE_NAME -- "$json"`
+//! // then spawn `self_limiting_pipe_argv(&json, DEFAULT_PIPE_TIMEOUT_SECS)` —
+//! // the bounded send. A naked `zellij pipe` can block forever on a wedged
+//! // consumer and leak FDs in the Zellij server (see [`pipe`]).
 //! # assert_eq!(STATUS_PIPE_NAME, "zj_radar.status.v1");
 //! # assert!(json.contains(r#""status":"running""#));
 //! ```
 
 #![forbid(unsafe_code)]
 
-// `command`, `observation`, and `wire` are internal to the zj-radar workspace
+// `command` and `observation` are internal to the zj-radar workspace
 // (consumed by the plugin and CLI crates) with no stability guarantee — hidden
 // from the published docs so the stable surface above is what producers see.
+// `wire` is private outright: its macros expand in-crate and nothing outside
+// this crate names it.
 #[doc(hidden)]
 pub mod command;
 pub mod kind;
@@ -44,12 +50,13 @@ pub mod observation;
 pub mod payload;
 pub mod pipe;
 pub mod status;
-#[doc(hidden)]
-pub mod wire;
+mod wire;
 
 // The friendly external surface, re-exported at the root. In-repo consumers
 // keep using the module paths.
 pub use kind::Kind;
 pub use payload::{parse, to_wire, StatusPayload, STATUS_PIPE_NAME};
-pub use pipe::{self_limiting_pipe_argv, DEFAULT_PIPE_TIMEOUT_SECS};
+pub use pipe::{
+    self_limiting_pipe_argv, DEFAULT_PIPE_TIMEOUT_SECS, MAX_STDIN_BYTES, RUNNING_PIPE_TIMEOUT_SECS,
+};
 pub use status::Status;

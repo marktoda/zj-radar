@@ -198,9 +198,9 @@ pub(crate) fn codex_producer_wired(codex_hooks: Option<&str>) -> bool {
 }
 
 /// True iff Claude Code's installed-plugins manifest lists zj-radar's producer
-/// plugin (`zj-radar-claude`). `None`/empty input returns `false`.
+/// plugin ([`crate::setup::CLAUDE_PLUGIN`]). `None`/empty input returns `false`.
 pub(crate) fn claude_producer_wired(installed_plugins_json: Option<&str>) -> bool {
-    installed_plugins_json.is_some_and(|s| s.contains("zj-radar-claude"))
+    installed_plugins_json.is_some_and(|s| s.contains(crate::setup::CLAUDE_PLUGIN))
 }
 
 /// Join argv into a copy-pasteable shell command. Every printed command hint
@@ -329,7 +329,7 @@ pub(crate) fn materialize(
     version: &str,
     assets: &Assets,
 ) -> std::io::Result<Materialized> {
-    let wasm_path = dir.join("plugins").join("zj_radar.wasm");
+    let wasm_path = dir.join("plugins").join(crate::WASM_FILE_NAME);
     let config_path = dir.join("config.kdl");
     let layout_path = dir.join("layouts").join("radar.kdl");
     let onboarding_layout_path = dir.join("layouts").join("radar-onboarding.kdl");
@@ -729,12 +729,15 @@ pub fn run(opts: RunOptions) {
     // radar sessions created by versions that predate the marker.
     if plan.foreign_session {
         use std::io::IsTerminal;
+        // One boundary probe, reused by `confirm` below (its parameter, per
+        // the `inject_mode` pattern).
+        let is_tty = std::io::stdin().is_terminal();
         let escape = format!(
             "attach with your own config via `zellij attach {}`, or pick a different \
              name with `zj-radar run <name>`",
             facts.session
         );
-        if !std::io::stdin().is_terminal() {
+        if !is_tty {
             crate::exit::fail_report(
                 "zj-radar",
                 format!(
@@ -751,7 +754,7 @@ pub fn run(opts: RunOptions) {
              zj-radar's bundled config (keybinds, theme)?",
             facts.session
         );
-        if !crate::setup::confirm(&question) {
+        if !crate::setup::confirm(&question, false, is_tty) {
             eprintln!("zj-radar: not attaching — {escape}");
             return;
         }
@@ -802,14 +805,7 @@ pub fn run(opts: RunOptions) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             unstamp_on_failure();
-            crate::exit::fail_report(
-                "zj-radar",
-                format!(
-                    "zellij not found on PATH — install Zellij {}+ first \
-                     (https://zellij.dev/documentation/installation)",
-                    crate::setup::min_supported_zellij_display(),
-                ),
-            );
+            crate::exit::fail_report("zj-radar", crate::setup::zellij_missing_message());
         }
         Err(e) => {
             unstamp_on_failure();

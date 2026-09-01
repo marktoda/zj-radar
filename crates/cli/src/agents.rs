@@ -6,12 +6,13 @@
 //! This is the PUSHED modality of the information-source model (see CONTEXT.md):
 //! instrumented agents report rich status through the status contract. The
 //! OBSERVED modality — uninstrumented commands like `cargo test`, classified by
-//! `command.rs::command_source` inside the plugin — is a sibling, not part of
+//! `command.rs::classify` inside the plugin — is a sibling, not part of
 //! this seam. Both converge on the `Kind`/`source` vocabulary.
 
 mod claude;
 mod codex;
 
+use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
 use serde_json::Value;
 use zj_radar_core::command::contains_word;
@@ -118,8 +119,8 @@ const ACK_PROMPTS: &[&str] = &[
 ];
 
 /// Extract a sticky task label from a submitted prompt: the first non-empty
-/// line, trimmed, capped at 512 chars (the same producer-side bound as `msg`,
-/// protecting the 64 KiB wire cap). `None` — meaning "keep the previous
+/// line, trimmed, capped at [`MAX_WIRE_FIELD_CHARS`] (the same bound `to_wire`
+/// applies to every free-text field). `None` — meaning "keep the previous
 /// label" — for empty prompts, slash commands, harness-injected tag lines,
 /// and bare acknowledgements.
 pub fn task_from_prompt(prompt: &str) -> Option<String> {
@@ -140,7 +141,7 @@ pub fn task_from_prompt(prompt: &str) -> Option<String> {
     if ACK_PROMPTS.contains(&normalized) {
         return None;
     }
-    Some(line.chars().take(512).collect())
+    Some(line.chars().take(MAX_WIRE_FIELD_CHARS).collect())
 }
 
 /// The trailing question in a final assistant message, if the turn ends by
@@ -154,7 +155,24 @@ pub fn trailing_question(msg: &str) -> Option<&str> {
     (line.ends_with('?') || line.ends_with('？')).then_some(line)
 }
 
-fn basename(path: &str) -> Option<&str> {
+/// The msg baseline every producer shares (the Claude adapter and `notify
+/// generic`; codex builds per-event and never needs it; the bash fallback
+/// mirrors it in notify.sh): idle always broadcasts a BLANK msg — it means
+/// "no activity", so any stale message the payload rides in on (e.g. a
+/// SessionStart session_title) is dropped and the row recedes cleanly on
+/// `/clear` — and a running row with nothing better to say gets the
+/// `working` placeholder so it never renders blank.
+pub fn baseline_msg(status: Status, msg: &str) -> String {
+    if status == Status::Idle {
+        String::new()
+    } else if status == Status::Running && msg.trim().is_empty() {
+        "working".to_string()
+    } else {
+        msg.to_string()
+    }
+}
+
+pub(crate) fn basename(path: &str) -> Option<&str> {
     if path.is_empty() {
         return None;
     }
@@ -502,9 +520,9 @@ mod tests {
     }
 
     #[test]
-    fn task_from_prompt_caps_at_512_chars() {
-        let long = "x".repeat(600);
-        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), 512);
+    fn task_from_prompt_caps_at_wire_field_bound() {
+        let long = "x".repeat(MAX_WIRE_FIELD_CHARS + 88);
+        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), MAX_WIRE_FIELD_CHARS);
     }
 
     #[test]

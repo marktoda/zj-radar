@@ -19,6 +19,24 @@ fn wait_tag_is_pending_only_minute_floored_and_frozen_at_saturation() {
 }
 
 #[test]
+fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
+    // Jobs wear the stopwatch; the band matches wait_tag (shared minute_tag).
+    assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 59), None);
+    assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 240).as_deref(), Some("4m"));
+    assert_eq!(
+        run_tag(Status::Running, Kind::Command, Some(0), crate::ledger::SATURATE_S).as_deref(),
+        Some("1h+"),
+        "frozen at 1h+ — the display never changes again"
+    );
+    // Agents label their own turns; services never complete: neither is timed.
+    assert_eq!(run_tag(Status::Running, Kind::Claude, Some(0), 9_999), None);
+    assert_eq!(run_tag(Status::Running, Kind::Server, Some(0), 9_999), None);
+    // Non-Running statuses and unstamped panes (untracked): no tag.
+    assert_eq!(run_tag(Status::Done, Kind::Build, Some(0), 9_999), None);
+    assert_eq!(run_tag(Status::Running, Kind::Build, None, 9_999), None);
+}
+
+#[test]
 fn truncate_does_not_strand_a_zwj_before_the_ellipsis() {
     // A ZWJ family emoji cut mid-cluster must not leave a dangling U+200D that
     // fuses with the appended '…'. The result ends in a clean ellipsis.
@@ -62,6 +80,11 @@ fn display(
             }]
         })
         .unwrap_or_default();
+    // Mirror `roll_up`: a Running tab animates unless the work is a service
+    // (steady mark, no fast cadence). A detail-less Running fixture animates —
+    // in production a Running status implies an animating observation existed.
+    let animating =
+        status == Status::Running && detail.as_ref().is_none_or(|d| !d.kind.is_service());
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -71,6 +94,7 @@ fn display(
         },
         detail,
         panes,
+        animating,
     }
 }
 
@@ -288,6 +312,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 pe(10, Kind::Claude, Status::Pending, "approve"),
                 pe(11, Kind::Claude, Status::Running, "tests"),
             ],
+            animating: true,
         }),
         tab(2, "plain", display(Status::Idle, 0, 0, None)),
     ];
@@ -407,7 +432,7 @@ fn active_and_waiting_row_bar_is_attention_not_accent() {
 
 #[test]
 fn empty_msg_ok_completion_emits_no_bare_mark_line() {
-    // `Outcome::Ok` renders an empty tag (`Outcome::full` — the line-1 status
+    // `ExitOutcome::Ok` renders an empty tag (`ExitOutcome::full` — the line-1 status
     // glyph is the one done signal), so with an empty msg there is nothing for
     // line 2 to say: the row must stay a single line, not emit a bare
     // "  ‹mark› " prefix with no activity. A Failed outcome DOES render a tag,
@@ -417,7 +442,7 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
         tab(1, "n", display(status, 1, 1, Some(d)))
     };
 
-    let ok_lines = render_row(&row(Status::Done, Some(Outcome::Ok)), &ro(30, 0));
+    let ok_lines = render_row(&row(Status::Done, Some(ExitOutcome::Ok)), &ro(30, 0));
     assert_eq!(
         ok_lines.len(),
         1,
@@ -425,7 +450,7 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
         ok_lines.iter().map(|l| &l.text).collect::<Vec<_>>()
     );
 
-    let failed_lines = render_row(&row(Status::Error, Some(Outcome::Failed(Some(1)))), &ro(30, 0));
+    let failed_lines = render_row(&row(Status::Error, Some(ExitOutcome::Failed(Some(1)))), &ro(30, 0));
     assert_eq!(failed_lines.len(), 2, "a Failed outcome still earns its line 2");
     assert!(failed_lines[1].text.contains("exit 1"), "line 2 carries the tag: {:?}", failed_lines[1].text);
 }
@@ -793,6 +818,7 @@ fn multi_pending_detail_never_exceeds_width() {
         },
         detail: Some(detail),
         panes: vec![],
+        animating: false,
     })];
     for width in [14usize, 16, 17, 20, 24] {
         let s = render(&rows, &ro(width, 0));
@@ -954,7 +980,7 @@ fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
 }
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
-fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: Outcome) -> PaneDisplay {
+fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: ExitOutcome) -> PaneDisplay {
     PaneDisplay::Tracked {
         pane_id: id,
         kind,
@@ -1013,7 +1039,7 @@ fn child_prefix_is_tree_connector_with_optional_spine() {
 fn compose_activity_reserves_outcome_against_truncation() {
     let cmd_color = "\x1b[2m"; // stand-in; we assert on visible text + role
     // Wide: command and full tag both intact.
-    let wide = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, cmd_color);
+    let wide = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, cmd_color);
     assert!(wide.contains("cargo build"), "command shown: {:?}", wide);
     assert!(wide.contains("exit 1"), "full tag shown: {:?}", wide);
     assert!(wide.contains(Role::Error.ansi()), "tag is red: {:?}", wide);
@@ -1021,7 +1047,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     // Narrow: command is squeezed but the outcome survives in full.
     let narrow = compose_activity(
         "cargo build integration suite",
-        Some(Outcome::Failed(Some(1))),
+        Some(ExitOutcome::Failed(Some(1))),
         14,
         cmd_color,
     );
@@ -1033,7 +1059,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     );
 
     // Extreme: only the irreducible glyph fits; command is dropped entirely.
-    let tiny = compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 2, cmd_color);
+    let tiny = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 2, cmd_color);
     assert!(tiny.contains('✗'), "minimal glyph survives: {:?}", tiny);
     assert!(!tiny.contains("cargo"), "command dropped at extreme width: {:?}", tiny);
 
@@ -1041,7 +1067,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
     for avail in 1..=30 {
         let s = compose_activity(
             "cargo build integration",
-            Some(Outcome::Failed(Some(137))),
+            Some(ExitOutcome::Failed(Some(137))),
             avail,
             cmd_color,
         );
@@ -1057,7 +1083,7 @@ fn compose_activity_reserves_outcome_against_truncation() {
 
 #[test]
 fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
-    let s = compose_activity("cargo build", Some(Outcome::Ok), 30, "\x1b[90m");
+    let s = compose_activity("cargo build", Some(ExitOutcome::Ok), 30, "\x1b[90m");
     let plain = strip_sgr(&s);
     assert_eq!(plain, "cargo build", "no ✓ and no trailing space: {plain:?}");
     assert!(!s.contains("\x1b[32m\x1b[0m"), "no empty green SGR pair: {s:?}");
@@ -1065,9 +1091,9 @@ fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
 
 #[test]
 fn error_tag_is_exit_n_without_duplicate_cross() {
-    let s = strip_sgr(&compose_activity("cargo build", Some(Outcome::Failed(Some(1))), 30, "\x1b[90m"));
+    let s = strip_sgr(&compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, "\x1b[90m"));
     assert_eq!(s, "cargo build exit 1");
-    let unknown = strip_sgr(&compose_activity("make", Some(Outcome::Failed(None)), 30, "\x1b[90m"));
+    let unknown = strip_sgr(&compose_activity("make", Some(ExitOutcome::Failed(None)), 30, "\x1b[90m"));
     assert_eq!(unknown, "make ✗");
 }
 
@@ -1077,7 +1103,7 @@ fn finished_command_line2_shows_role_colored_tag() {
         let d = PrimaryDetail { kind: Kind::Build, outcome, ..pd("r", "", msg, status) };
         tab(1, "web", display(status, 1, 1, Some(d)))
     };
-    let done = render(&[mk(Status::Done, Some(Outcome::Ok), "cargo build")], &ro(30, 0));
+    let done = render(&[mk(Status::Done, Some(ExitOutcome::Ok), "cargo build")], &ro(30, 0));
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
     assert!(
         !dline.contains('✓') && strip_sgr(dline).trim() == "└ ● ⚙ cargo build",
@@ -1086,7 +1112,7 @@ fn finished_command_line2_shows_role_colored_tag() {
     );
 
     let err = render(
-        &[mk(Status::Error, Some(Outcome::Failed(Some(2))), "cargo build")],
+        &[mk(Status::Error, Some(ExitOutcome::Failed(Some(2))), "cargo build")],
         &ro(30, 0),
     );
     let eline = err.lines().find(|l| l.contains("cargo build")).unwrap();
@@ -1101,7 +1127,7 @@ fn finished_command_line2_shows_role_colored_tag() {
 fn multi_pane_finished_command_shows_outcome_tag() {
     let a = display_multi(vec![
         pe(1, Kind::Build, Status::Running, "cargo build"),
-        pe_outcome(2, Kind::Test, Status::Done, "cargo test", Outcome::Ok),
+        pe_outcome(2, Kind::Test, Status::Done, "cargo test", ExitOutcome::Ok),
     ]);
     let row = tab(1, "ci", a);
     let s = render(&[row], &ro(30, 0));
@@ -1156,6 +1182,13 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             ..pd("r", "b", msg.clone(), *pane_status) }),
         _ => None,
     });
+    // Mirror `roll_up`: any Running non-service pane animates the tab.
+    let animating = panes.iter().any(|p| match p {
+        PaneDisplay::Tracked { kind, status, .. } => {
+            *status == Status::Running && !kind.is_service()
+        }
+        _ => false,
+    });
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -1165,6 +1198,7 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         },
         detail,
         panes,
+        animating,
     }
 }
 
@@ -1263,6 +1297,7 @@ fn multi_pane_untracked_only_summary_names_panes() {
             PaneDisplay::untracked(1, "shell"),
             PaneDisplay::untracked(2, "logs"),
         ],
+        animating: false,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -1289,6 +1324,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
             pe(1, Kind::Codex, Status::Running, "tests"),
             PaneDisplay::untracked(2, "shell"),
         ],
+        animating: true,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -2001,52 +2037,31 @@ fn no_emitted_line_exceeds_width_cards() {
 
 #[test]
 fn card_spacing_per_density() {
-    // The ONE source of truth for spacing knobs, by density.
+    // The ONE source of truth for the spacing knob, by density.
     use crate::config::Density::*;
-    assert_eq!(
-        card_spacing(Compact),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 0
-        }
-    );
-    assert_eq!(
-        card_spacing(Comfortable),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1
-        }
-    );
-    assert_eq!(
-        card_spacing(Cards),
-        CardSpacing {
-            pad_x: 0,
-            pad_y: 0,
-            gap: 1
-        }
-    );
+    assert_eq!(card_spacing(Compact), CardSpacing { gap: 0 });
+    assert_eq!(card_spacing(Comfortable), CardSpacing { gap: 1 });
+    assert_eq!(card_spacing(Cards), CardSpacing { gap: 1 });
 }
 
 #[test]
-fn card_block_lines_is_pad_y_plus_content_plus_gap() {
-    // The single footprint source: pad_y + full_lines + gap.
+fn card_block_lines_is_content_plus_gap() {
+    // The single footprint source: full_lines + gap.
     let opts = ro(40, 0);
     let idle_row_val = tab(1, "t", display(Status::Idle, 0, 0, None));
     let full_lines = render_row(&idle_row_val, &opts).len();
     assert_eq!(full_lines, 1);
-    // Cards: 0 pad_y + 1 content + 1 gap = 2.
+    // Cards: 1 content + 1 gap = 2.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Cards)),
         2
     );
-    // Comfortable: 0 pad_y + 1 content + 1 gap = 2.
+    // Comfortable: 1 content + 1 gap = 2.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Comfortable)),
         2
     );
-    // Compact: 0 + 1 + 0 = 1.
+    // Compact: 1 content + 0 gap = 1.
     assert_eq!(
         card_block_lines(full_lines, card_spacing(crate::config::Density::Compact)),
         1
@@ -2501,6 +2516,24 @@ fn heartbeat_marches_one_column_per_tick_while_working() {
         Some(0),
         "tick == width wraps back to col 0: {:?}",
         rule_wrap
+    );
+}
+
+#[test]
+fn heartbeat_stays_off_for_a_service_only_rail() {
+    // A Running *service* holds the steady ▸ and never arms the Fast cadence
+    // — a sweep here would only teleport once per Slow fire, and motion
+    // promises bounded work (docs/activity-model.md §1). The tab detail's
+    // kind is the exact gate: the job-over-service tie-break guarantees the
+    // detail is a job whenever any Running job exists.
+    let server = PrimaryDetail { kind: Kind::Server, ..pd("r", "b", "npm run dev", Status::Running) };
+    let rows = vec![tab(1, "dev", display(Status::Running, 0, 1, Some(server)))];
+    let s = render(&rows, &ro(20, 3));
+    let rule = strip_sgr(s.lines().nth(1).unwrap());
+    assert!(
+        !rule.contains('◆'),
+        "no heartbeat for a service-only Running rail: {:?}",
+        rule
     );
 }
 
@@ -3486,7 +3519,7 @@ fn multi_pane_collapsed_footprint_is_header_plus_expanded_plus_collapse() {
 fn single_running_pane_with_detail_is_two_content_lines() {
     // Single-pane Running tab with a non-empty detail msg → 2 content lines
     // (name row + detail row). Mirrors the row_lines assertion from
-    // lib.rs::click_mapping_cards_pad_y_and_post_content_row.
+    // lib.rs::click_mapping_cards_multi_line_card_and_post_content_row.
     let opts = ro(40, 0);
     let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
     let row = tab(1, "t", a);
@@ -3658,14 +3691,25 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
     assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
-    assert_eq!(LineBg::Rail.escape(&active_row, &theme, &rail), Some(rail.clone()));
     assert_eq!(
-        LineBg::Card.escape(&active_row, &theme, &rail),
-        Some(card_tint(&active_row, &theme)),
+        LineBg::Rail.escape(&active_row, &theme, &rail).as_deref(),
+        Some(rail.as_str()),
     );
+    // Rail resolves by borrowing the caller's precomputed escape — the
+    // per-separator-line allocation this map used to pay is gone.
+    assert!(matches!(
+        LineBg::Rail.escape(&active_row, &theme, &rail),
+        Some(std::borrow::Cow::Borrowed(_)),
+    ));
+    let card = card_tint(&active_row, &theme);
     assert_eq!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
-        Some(tc_bg(theme.surface_agent)),
+        LineBg::Card.escape(&active_row, &theme, &rail).as_deref(),
+        Some(card.as_str()),
+    );
+    let agent = tc_bg(theme.surface_agent);
+    assert_eq!(
+        LineBg::ActiveChild.escape(&active_row, &theme, &rail).as_deref(),
+        Some(agent.as_str()),
     );
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
@@ -3674,6 +3718,26 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
         LineBg::ActiveChild.escape(&active_row, &theme, &rail),
         LineBg::Card.escape(&active_row, &theme, &rail),
     );
+}
+
+#[test]
+fn paint_if_cards_paints_rail_lines_under_cards_only() {
+    // The row-less surfaces (header, badge, idle strip, bottom region) are
+    // all `LineBg::Rail`; `paint_if_cards` is that one identity — paint the
+    // panel base under Cards, pass through untouched otherwise.
+    let theme = DerivedColors::default();
+    let rail = tc_bg(theme.rail_bg);
+    let line = || Line::new("hi\n".to_string(), None, LineBg::Rail);
+
+    let painted = paint_if_cards(line(), true, 8, &rail);
+    assert_eq!(painted.text, paint_card_line("hi\n", 8, &rail), "Cards paints the panel base");
+
+    let untouched = paint_if_cards(line(), false, 8, &rail);
+    assert_eq!(untouched.text, "hi\n", "outside Cards the line passes through");
+
+    // A never-painted line stays unpainted even under Cards.
+    let none = paint_if_cards(Line::new("hi\n".to_string(), None, LineBg::None), true, 8, &rail);
+    assert_eq!(none.text, "hi\n");
 }
 
 #[test]
@@ -3745,6 +3809,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
             pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
         ],
+        animating: true,
     });
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper
@@ -3906,6 +3971,45 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
 }
 
 #[test]
+fn current_line_marker_renders_in_accent_and_peers_carry_no_marker() {
+    // The `•` you-are-here marker used to paint in the same muted idle_text
+    // as every label around it — invisible in practice (live-use feedback:
+    // "I thought there was highlighting of the current session but I don't
+    // see it"). It must render in accent, while the label colors stay per
+    // their own rules (the current line's label stays idle_text).
+    let opts = ro(24, 0);
+    let idle_color = tc_fg(opts.theme.idle_text);
+    let accent = Role::Accent.ansi();
+
+    let entries = vec![
+        badge_entry("work", true, 0, 0, None, false),
+        badge_entry("alpha", false, 0, 0, None, false),
+    ];
+    let lines = render_session_badge(&entries, &opts);
+
+    assert!(
+        lines[0].text.contains(&format!("{accent}•")),
+        "the current line's marker must render in accent, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        !lines[0].text.contains(&format!("{idle_color}•")),
+        "the marker must no longer paint in the invisible muted idle color, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        lines[0].text.contains(&format!("{idle_color}work")),
+        "the current line's LABEL keeps the plain idle color — only the marker takes accent, got {:?}",
+        lines[0].text
+    );
+    assert!(
+        !lines[1].text.contains('•'),
+        "a peer line carries the alignment space, never a marker, got {:?}",
+        lines[1].text
+    );
+}
+
+#[test]
 fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     // A peer with NOTHING needing attention (`attention_tab_position: None`)
     // must not resolve to "tab 0" — that would force-focus a real tab in a
@@ -3936,11 +4040,13 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     );
 }
 
-// -- Pinning: stale badge entries (task-14) ---------------------------------
-// A remembered session must never silently vanish from the badge; it dims
-// to stale instead. The renderer's job is narrow: paint it in a receded
-// color and keep its click target — `Sessions::cycle` (sessions.rs's own
-// tests) is what actually keeps Alt+[/] from landing on it.
+// -- Pinning: stale badge entries -------------------------------------------
+// A stale-but-not-yet-dead session dims on the badge rather than vanishing
+// (`Sessions`' fresh → stale → dead ladder; the reap itself lives in
+// sessions.rs — a dead entry never reaches this renderer). The renderer's
+// job is narrow: paint a stale entry in a receded color and keep its click
+// target — `Sessions::cycle` (sessions.rs's own tests) is what actually
+// keeps Alt+[/] from landing on it.
 
 #[test]
 fn stale_badge_entry_renders_dimmed_but_stays_clickable() {
@@ -4004,8 +4110,8 @@ fn stale_entry_undims_once_superseded_by_a_fresh_entry() {
 #[test]
 fn lone_fresh_own_entry_with_only_stale_peers_still_renders() {
     // The single-session zero-line rule counts `entries.len()`, not fresh
-    // entries — a stale peer still counts toward the 2+ threshold, since the
-    // roster's whole point is remembering (task-14).
+    // entries — a stale-but-not-yet-dead peer still counts toward the 2+
+    // threshold: it stays visible (dimmed) until the dead reap.
     let entries = vec![
         badge_entry("work", true, 0, 0, None, false),
         stale_badge_entry("alpha", false, 0, 0, None, false, true),

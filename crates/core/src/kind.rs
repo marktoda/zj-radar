@@ -92,6 +92,20 @@ impl Kind {
             | Kind::Server => false,
         }
     }
+
+    /// Whether this kind is a *service* — unending by design (a dev server, a
+    /// watcher), the `Service` attention class in `docs/activity-model.md`.
+    /// A Running service renders a steady mark instead of a spinner (nothing
+    /// is completing, so nothing animates) and never arms the fast cadence.
+    /// Exhaustive for the same reason as `is_agent`: a new variant must
+    /// declare its side before it compiles.
+    pub fn is_service(self) -> bool {
+        match self {
+            Kind::Server => true,
+            Kind::Claude | Kind::Codex | Kind::Gemini | Kind::Command | Kind::Other
+            | Kind::Test | Kind::Build | Kind::Deploy => false,
+        }
+    }
 }
 
 // `Kind` crosses the persisted snapshot as its `source` wire token. Lenient,

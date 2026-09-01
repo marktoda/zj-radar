@@ -2,14 +2,16 @@
 test:
     cargo test --all-features
 
-# Bash hook + installer tests (requires bats + shellcheck + jq on PATH).
+# Bash hook + installer tests (requires bats + shellcheck + jq on PATH, plus
+# GNU coreutils for `timeout` — two adversarial-input cases skip without it).
 # Builds the CLI first: parity.bats compares the bash producer against
 # target/debug/zj-radar. Covers every shipped shell script: notify.sh (the
 # Claude producer hook), install.sh (the curl|sh release asset — see
-# scripts/tests/install.bats), and funnel.sh (the fresh-machine CI check).
+# scripts/tests/install.bats), funnel.sh (the fresh-machine CI check), and the
+# demo/ recording scripts.
 test-bash:
     cargo build -p zj-radar
-    shellcheck plugins/zj-radar-claude/scripts/notify.sh scripts/install.sh scripts/funnel.sh
+    shellcheck plugins/zj-radar-claude/scripts/notify.sh scripts/install.sh scripts/funnel.sh demo/record.sh demo/agent.sh demo/banner.sh demo/demorc.sh
     bats plugins/zj-radar-claude/tests scripts/tests
 
 # Live E2E (L5): builds the wasm plugin, drives a real Zellij in a PTY.
@@ -66,5 +68,11 @@ dev-build:
 build-wasm:
     cargo build --target wasm32-wasip1 -p zj-radar-plugin
 
-# Everything a PR must pass locally.
+# The crane-sandboxed checks the `hermetic` CI job runs (slow first time;
+# everything builds inside the nix sandbox).
+hermetic:
+    nix flake check -L
+
+# Everything a PR must pass locally. CI runs more on top of this: the
+# `hermetic` job (nix flake check) and the live E2E suite (test-e2e).
 ci: test clippy build-wasm test-bash

@@ -26,6 +26,11 @@ before the tag**. The order below matters; each step gates the next.
    version is `rust-version` in the root `Cargo.toml`; bump it there if the
    dependency floor rose).
 
+   Also glance at the latest nightly canaries: the `hermetic` and `deny` jobs
+   in `ci.yml`, and `funnel.yml`'s run against `latest`. A red nightly means
+   the release would inherit a known problem (or the funnel script itself is
+   broken, which blocks step 6).
+
 3. **Push main.** Docs reference release URLs; they 404 until the tag exists,
    so push + publish + tag should happen in one sitting.
 
@@ -39,14 +44,19 @@ before the tag**. The order below matters; each step gates the next.
    cargo publish -p zj-radar
    ```
 
-   Core's API is allowed to break between 0.1.x releases (it's internal); the
+   Core's API is allowed to break between 0.x releases (it's internal); the
    exact pin is what protects previously published CLIs. Never loosen it to a
    caret/minor range.
 
-   Publishing before the tag opens a short window where crates.io serves the
-   new version but its GitHub release assets don't exist yet — `cargo binstall`
-   falls back to a source build until `release.yml` finishes. Harmless, but
-   don't announce until step 6 passes.
+   Publishing before the tag opens a window where crates.io serves the new
+   version but its GitHub release assets don't exist yet — and that window is
+   **not** harmless. A `cargo install zj-radar` from crates.io embeds no wasm
+   (the CLI's `build.rs` has no sibling plugin crate to build), so on such an
+   install `zj-radar run`'s first-use fetch and `setup zellij --download` hit
+   the version-pinned release URL (`CARGO_PKG_VERSION`) and 404 until the tag's
+   assets exist. `cargo binstall` falls back to a source build with the same
+   hole. Keep the window minutes long: publish and tag in the same sitting
+   (steps 4–5 back to back), and don't announce until step 6 passes.
 
 5. **Tag and push the tag:**
 
@@ -59,10 +69,16 @@ before the tag**. The order below matters; each step gates the next.
    a tag message.
 
    `release.yml` builds the wasm (nix) + portable CLI tarballs, checksums
-   everything, and creates the GitHub release — but only after its gates pass:
-   the fast deterministic + bash suites re-run on the tagged commit, and the
-   live E2E suite runs on both OSes (via the reusable `e2e.yml`). A red gate
-   means nothing publishes; fix, delete the tag, re-tag.
+   everything, and creates the GitHub release. The builds start in parallel
+   with the gates — the fast deterministic + bash suites re-running on the
+   tagged commit, and the live E2E suite on both OSes (via the reusable
+   `e2e.yml`) — but only the publish job waits on all of them
+   (`needs: [build-wasm, build-cli, test, e2e]`), so a red gate still means
+   nothing publishes; fix, delete the tag, re-tag.
+
+   To dry-run the pipeline first, cut an RC: any tag containing `-`
+   (e.g. `v0.5.0-rc.1`) is auto-marked a prerelease and never becomes
+   `latest`, so the curl|sh installer's `/latest/` URL is unaffected.
 
 6. **Verify the release assets.** The `verify-funnel` job in `release.yml`
    does this automatically after the release is created: it runs the README

@@ -99,13 +99,6 @@ fn git_repo_branch(cwd: &str) -> (String, String) {
     (repo, branch)
 }
 
-/// Bytes of stdin we're willing to buffer. Generous — 8 MiB dwarfs any real hook
-/// payload (even a Write tool's full file `content`) — so it never truncates a
-/// legitimate input; it only bounds a degenerate multi-MB/GB stream. Note this is
-/// the *input* cap, distinct from the plugin's 64 KB *wire* cap on the broadcast
-/// payload the CLI produces.
-const MAX_STDIN_BYTES: u64 = 8 << 20;
-
 fn read_stdin() -> String {
     use std::io::IsTerminal;
     let stdin = std::io::stdin();
@@ -117,7 +110,7 @@ fn read_stdin() -> String {
         eprintln!("zj-radar: no piped stdin; using empty payload");
         return String::new();
     }
-    read_capped(stdin.lock(), MAX_STDIN_BYTES)
+    read_capped(stdin.lock(), crate::pipe::MAX_STDIN_BYTES)
 }
 
 /// Read up to `cap` bytes as UTF-8, ignoring IO/UTF-8 errors (the caller derives
@@ -210,14 +203,7 @@ fn wire_vocabulary() -> String {
 /// broadcasts blank; an empty task means "keep the stored label" (wire rule).
 fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -> Option<AgentUpdate> {
     let status = Status::try_from_wire(status?)?;
-    let msg = msg.unwrap_or("");
-    let msg = if status == Status::Idle {
-        String::new()
-    } else if status == Status::Running && msg.trim().is_empty() {
-        "working".to_string()
-    } else {
-        msg.to_string()
-    };
+    let msg = crate::agents::baseline_msg(status, msg.unwrap_or(""));
     Some(AgentUpdate {
         status,
         msg,
@@ -235,25 +221,18 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
     let (repo, branch) = git_repo_branch(&cwd);
-    // Bound the message client-side so a pathologically long final assistant
-    // message can't push the whole payload past the plugin's MAX_PAYLOAD_BYTES
-    // cap — which would drop the *entire* status update (e.g. losing a `done`
-    // edge and leaving the tab stuck "working"). The cap is generous relative to
-    // the plugin's 60-char display cap so its sanitizer still has content after
-    // control-char stripping.
-    let msg: String = update.msg.chars().take(512).collect();
-    // Same bound for the task label, for the same reason — the adapters cap
-    // their own derivations, but `notify generic --task` arrives verbatim, and
-    // an uncapped label can blow the wire cap (or Linux's per-arg E2BIG limit)
-    // all on its own. Defense-in-depth here covers every path.
-    let task: String = update.task.unwrap_or_default().chars().take(512).collect();
+    // No client-side length caps here: `to_wire` bounds every free-text field
+    // at MAX_WIRE_FIELD_CHARS — the single seam every producer path (adapter
+    // msg, `notify generic --task`, repo/branch) already flows through — so a
+    // pathologically long input can't push the payload past the plugin's
+    // MAX_PAYLOAD_BYTES cap or Linux's per-arg E2BIG limit.
     let payload = to_wire(&StatusPayload {
         pane_id,
         status: update.status,
         repo,
         branch,
-        msg,
-        task,
+        msg: update.msg,
+        task: update.task.unwrap_or_default(),
         source: source.to_string(),
         ack: false,
     });
@@ -279,7 +258,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // parent-side deadline below. The parent loop stays as the reaper on the
     // normal path (and as a backstop), padded past the watchdog so the subtree
     // ordinarily wins.
-    let timeout = pipe_send_timeout();
+    let timeout = pipe_send_timeout(update.status);
     let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
     let Ok(mut child) = Command::new(&argv[0])
         .args(&argv[1..])
@@ -306,21 +285,39 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
 /// seconds — shared with notify.sh's bash fallback, keep the two in sync)
-/// overrides for tests; the shared default (`pipe::DEFAULT_PIPE_TIMEOUT_SECS`)
-/// is orders of magnitude above a healthy send (milliseconds) yet caps a
-/// wedged one at hook rate. Clamped to an hour:
-/// `Instant::now() + Duration::from_secs(u64::MAX)` overflows and panics,
-/// and this module promises the calling hook never sees a panic.
-fn pipe_send_timeout() -> std::time::Duration {
-    parse_pipe_timeout(std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok())
+/// overrides both defaults; absent that, the default is keyed on the status
+/// being sent: `running` heartbeats ride the per-tool-call hot path and are
+/// droppable (the next tool event replaces one), so they get the short
+/// `RUNNING_PIPE_TIMEOUT_SECS`, while the once-per-turn edges keep the full
+/// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
+/// the default here (instead of per-entry env prefixes in hooks.json) gives
+/// every producer — claude, codex, generic — the policy from one seam.
+/// Clamped to an hour: `Instant::now() + Duration::from_secs(u64::MAX)`
+/// overflows and panics, and this module promises the calling hook never
+/// sees a panic.
+fn pipe_send_timeout(status: Status) -> std::time::Duration {
+    parse_pipe_timeout(
+        std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
+        default_pipe_timeout_secs(status),
+    )
+}
+
+/// The status-keyed half of `pipe_send_timeout`, split out (like
+/// `parse_pipe_timeout`) so it is testable without racing on process-global
+/// env.
+fn default_pipe_timeout_secs(status: Status) -> u64 {
+    match status {
+        Status::Running => crate::pipe::RUNNING_PIPE_TIMEOUT_SECS,
+        _ => crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+    }
 }
 
 /// The parse half of `pipe_send_timeout`, split out so the fallback and the
 /// overflow clamp are unit-testable without racing on process-global env.
-fn parse_pipe_timeout(raw: Option<String>) -> std::time::Duration {
+fn parse_pipe_timeout(raw: Option<String>, default_secs: u64) -> std::time::Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .map(|secs| std::time::Duration::from_secs(secs.min(3600)))
-        .unwrap_or(std::time::Duration::from_secs(crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS))
+        .unwrap_or(std::time::Duration::from_secs(default_secs))
 }
 
 #[cfg(test)]
@@ -331,25 +328,51 @@ mod tests {
 
     #[test]
     fn pipe_timeout_defaults_and_falls_back_on_garbage() {
-        // Unset, non-numeric, negative, and suffixed forms all take the shared
+        // Unset, non-numeric, negative, and suffixed forms all take the given
         // default — fail closed, matching notify.sh's regex guard. Pinned to
         // the core constant so the CLI's watchdog and parent deadline can
         // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
-                parse_pipe_timeout(raw.map(String::from)).as_secs(),
+                parse_pipe_timeout(raw.map(String::from), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS)
+                    .as_secs(),
                 crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
         }
-        assert_eq!(parse_pipe_timeout(Some("2".into())).as_secs(), 2);
+        assert_eq!(
+            parse_pipe_timeout(Some("2".into()), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS).as_secs(),
+            2
+        );
+    }
+
+    #[test]
+    fn pipe_timeout_default_is_keyed_on_status() {
+        // `running` heartbeats are droppable → short cap; edges keep the full
+        // default. The env override (tested above via parse_pipe_timeout)
+        // beats both. Pinned to the core constants so notify.sh's mirrored
+        // literals and the hooks.json headroom guard share one source.
+        assert_eq!(
+            default_pipe_timeout_secs(Status::Running),
+            crate::pipe::RUNNING_PIPE_TIMEOUT_SECS
+        );
+        for edge in [Status::Done, Status::Pending, Status::Idle] {
+            assert_eq!(
+                default_pipe_timeout_secs(edge),
+                crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+                "status={edge:?}"
+            );
+        }
     }
 
     #[test]
     fn pipe_timeout_clamps_so_instant_addition_cannot_panic() {
         // u64::MAX seconds would overflow `Instant + Duration` and panic —
         // this module promises the calling hook never sees a panic.
-        let d = parse_pipe_timeout(Some(u64::MAX.to_string()));
+        let d = parse_pipe_timeout(
+            Some(u64::MAX.to_string()),
+            crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
+        );
         assert_eq!(d.as_secs(), 3600);
         let _ = std::time::Instant::now() + d; // must not panic
     }

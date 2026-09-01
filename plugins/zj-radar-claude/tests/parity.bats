@@ -2,7 +2,7 @@
 load helper
 
 SCRIPT="$BATS_TEST_DIRNAME/../scripts/notify.sh"
-CLI="$BATS_TEST_DIRNAME/../../../target/debug/zj-radar"
+CLI="${CARGO_TARGET_DIR:-$BATS_TEST_DIRNAME/../../../target}/debug/zj-radar"
 
 # Run both producers over the same hook JSON + status and assert the ENTIRE
 # payloads match (key order normalized with jq -S) — msg, task, status, repo,
@@ -50,7 +50,12 @@ parity_noop() { # $1 = hook JSON, $2 = status arg
   [ ! -s "$RECORD" ] || { echo "rust broadcast for input: $1 → $(cat "$RECORD")"; return 1; }
 }
 
-setup() { setup_fakes; }
+setup() {
+  setup_fakes
+  # FAIL, don't skip: a skipped parity suite is zero weld coverage between the
+  # two producers that still reads as a green run.
+  [ -x "$CLI" ] || { echo "build the CLI first: cargo build -p zj-radar" >&2; return 1; }
+}
 teardown() { teardown_fakes; }
 
 @test "parity: Edit activity" {
@@ -83,6 +88,57 @@ teardown() { teardown_fakes; }
 
 @test "parity: TodoWrite activity" {
   parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"TodoWrite","tool_input":{"todos":[]}}' running
+}
+
+@test "parity: apply_patch activity" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"apply_patch","tool_input":{"patch":"*** Begin Patch"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "editing files" ]
+}
+
+@test "parity: mcp tool derives 'using <last __ segment>'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"mcp__slack__send_message","tool_input":{}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "using send_message" ]
+}
+
+@test "parity: mcp tool with empty trailing segment falls back to working" {
+  # rsplit("__").next() filters an empty segment to None in Rust; both
+  # producers must land on the neutral baseline, never "using ".
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"mcp__broken__","tool_input":{}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "working" ]
+}
+
+@test "parity: git pull derives 'syncing'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git pull --rebase"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
+}
+
+@test "parity: git fetch derives 'syncing'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git fetch origin"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "syncing" ]
+}
+
+@test "parity: build verb derives 'building'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"cargo build --release"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
+}
+
+@test "parity: compile verb derives 'building'" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"gcc -c compile main.c"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
+}
+
+@test "parity: leading-newline Bash command still derives its first token" {
+  # The first token comes from the WHOLE string (Rust split_whitespace().next());
+  # a line-based read would see an empty first line and derive nothing.
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"\n  ls -la"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "running ls" ]
+}
+
+@test "parity: trailing-slash edit path derives no activity (empty basename)" {
+  # basename("src/") is empty — Rust filters it to None; the bash producer must
+  # guard the STRIPPED value too, or it broadcasts a dangling "editing ".
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "working" ]
 }
 
 @test "parity: word-bounded classification (no substring misfire)" {
@@ -167,7 +223,7 @@ teardown() { teardown_fakes; }
 @test "parity: generic pending backstop drops the broadcast in both" {
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs attention"}' pending
   # Whitespace-padded generic phrase and whitespace-only msg must also drop —
-  # both producers compare a TRIMMED copy (msg.trim() / the sed trim).
+  # both producers compare a TRIMMED copy (msg.trim() / the trim() helper).
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"  Claude needs attention  "}' pending
   parity_noop '{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"   "}' pending
 }

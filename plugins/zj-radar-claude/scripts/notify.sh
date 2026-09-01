@@ -20,14 +20,8 @@ set -euo pipefail
 
 status="${1:-running}"
 
-# Read the hook payload up front so the running-path notify below can be
-# backgrounded. `running` rides UserPromptSubmit and Pre/PostToolUse — the
-# hottest events Claude has — and a synchronous notify blocks the harness
-# (UserPromptSubmit blocks the user's prompt) until it exits. On a quiet
-# machine that's milliseconds; on a saturated one (test suites, subagent
-# fleets) process spawns crawl and the hook eats the 30s timeout. A running
-# ping is fire-and-forget by nature: losing one under load is harmless,
-# blocking a prompt is not.
+# Read the hook payload up front, once: the cap below has to apply on both
+# dispatch paths, and the bash fallback re-parses the same buffer repeatedly.
 # Cap the read at 8 MiB (parity with the Rust CLI's MAX_STDIN_BYTES): a
 # degenerate multi-GB stream must bound memory, not buffer whole. Truncated
 # input just fails the jq parses below and no-ops — the safe degradation.
@@ -37,18 +31,34 @@ input="$(head -c 8388608 2>/dev/null || true)"
 # the same Zellij gate, pending backstop, and payload schema. Falls back to the
 # bash implementation below when the binary isn't installed.
 #
-# Dispatch split, reconciling the in-order contract with the hot-path note
-# above: `running` is backgrounded (self-healing — the next event overwrites
-# it, and the plugin's stale-Running grace clock catches a straggler), but the
-# EDGES (done/pending/idle) go synchronously — an edge overtaken by a stale
-# `running` is exactly the stuck-spinner bug the tail comment on the bash path
-# documents, and edges fire once per turn, off the harness's critical path.
+# Synchronous for EVERY status — the same in-order rule the bash path's tail
+# comment spells out. An earlier split backgrounded `running` (the hot path:
+# UserPromptSubmit and Pre/PostToolUse) and kept the edges synchronous, which
+# let a delayed `running` land AFTER the `done` that followed it; the plugin is
+# latest-wins, so the stale `running` took the pane and the spinner stuck.
+# Nothing reliably corrects that: `done` is the last hook of a turn, so there
+# may be no next event to overwrite it, and the stale-Running grace clock is
+# armed by a return-to-shell edge that never fires while Claude itself is the
+# pane's foreground process. The CLI bounds its own send (`pipe_send_timeout`
+# in crates/cli/src/notify.rs), so a wedged rail costs a capped wait rather
+# than an open-ended hook; a healthy local server answers in milliseconds.
+#
+# The cap only holds if the hook runner lets it finish: Claude Code kills the
+# hook at hooks.json's `timeout`. The graceful exit lands at ~cap (the
+# in-subtree watchdog kills the pipe client at the deadline; the CLI's parent
+# reaper at cap + 1 s is only the backstop when that watchdog fails), so
+# hooks.json keeps `timeout` >= cap + 2: backstop plus spawn/derivation slack.
+# The cap itself is keyed on the status at the send, in both producers:
+# `running` heartbeats — the per-tool-call hot path — default to 2 s (an
+# expired one is a dropped heartbeat the next event replaces, so a wedged rail
+# stalls each hook ~2 s instead of ~5), while the once-per-turn edges keep the
+# full 5 s, because dropping one loses real state. ZJ_RADAR_PIPE_TIMEOUT
+# overrides both. Welded to hooks.json by crates/plugin's
+# hooks_manifest_tests; the CLI half lives in pipe_send_timeout.
 if command -v zj-radar >/dev/null 2>&1; then
-    if [[ "$status" == "running" ]]; then
-        ( printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 & )
-    else
-        printf '%s' "$input" | zj-radar notify claude --status "$status" >/dev/null 2>&1 || true
-    fi
+    printf '%s' "$input" \
+        | zj-radar notify claude --status "$status" >/dev/null 2>&1 \
+        || true
     exit 0
 fi
 
@@ -89,6 +99,32 @@ contains_word() {
     [[ "$1" =~ $re ]]
 }
 
+# Fork-free whole-string whitespace trim (mirrors Rust .trim()): sets
+# trim_result to $1 with leading + trailing [:space:] (newlines included)
+# stripped via parameter expansion — no subshell, no pipeline. Used on the
+# high-frequency sites only (the per-tool-call Bash branch and the pending
+# gate); the once-per-turn prompt/ack/done trims keep their pipelines.
+trim() { # $1 = string → trim_result
+    trim_result="${1#"${1%%[![:space:]]*}"}"
+    trim_result="${trim_result%"${trim_result##*[![:space:]]}"}"
+}
+
+# File-tool activity: sets tool_activity to "<verb> <basename>" from the path
+# at jq path $2 in the hook payload. Sets the global directly rather than
+# printing for a $(…) capture — this runs on the per-file-tool-hook hot path,
+# and the command substitution cost an extra subshell fork per hook. Leaves
+# tool_activity untouched when the STRIPPED basename is empty — a
+# trailing-slash path ("src/") has a non-empty path but an empty basename, and
+# Rust's basename() filters that to None, so a dangling "<verb> " with no name
+# must not broadcast. The `return 0` guards `set -e` when the guard is falsy.
+file_activity() { # $1 = verb, $2 = jq path to the file path → tool_activity
+    local fp base
+    fp="$(jq -r "$2 // empty" <<<"$input" 2>/dev/null || true)"
+    base="${fp##*/}"
+    [[ -n "$base" ]] && tool_activity="$1 $base"
+    return 0
+}
+
 # For running events (PreToolUse/PostToolUse), derive a live activity string
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
@@ -117,17 +153,11 @@ if [[ "$status" == "running" ]]; then
         tool_activity=""
         case "$tool_name" in
             Edit|Write|MultiEdit)
-                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
-                ;;
+                file_activity editing '.tool_input.file_path' ;;
             NotebookEdit)
-                fp="$(jq -r '.tool_input.notebook_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="editing ${fp##*/}"
-                ;;
+                file_activity editing '.tool_input.notebook_path' ;;
             Read)
-                fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
-                [[ -n "$fp" ]] && tool_activity="reading ${fp##*/}"
-                ;;
+                file_activity reading '.tool_input.file_path' ;;
             Grep|Glob)
                 tool_activity="searching"
                 ;;
@@ -140,12 +170,27 @@ if [[ "$status" == "running" ]]; then
             TodoWrite)
                 tool_activity="planning"
                 ;;
+            apply_patch)
+                tool_activity="editing files"
+                ;;
+            mcp__*)
+                # MCP tools: "using <server's tool name>" — the segment after the
+                # LAST "__" (mirrors Rust's rsplit("__").next()); an empty segment
+                # (a trailing "__") derives nothing, like Rust's is_empty filter.
+                seg="${tool_name##*__}"
+                [[ -n "$seg" ]] && tool_activity="using $seg"
+                ;;
             Bash)
                 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
                 # POSIX lowercase (works on macOS' stock Bash 3.2; ${cmd,,} is Bash 4+).
                 cmd_lower="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
-                # Non-empty after stripping ALL whitespace (mirrors Rust .trim()).
-                if [[ -n "$(printf '%s' "$cmd" | tr -d '[:space:]')" ]]; then
+                # Whitespace (newlines included) stripped by trim() — this is
+                # the per-tool-call hot path, so no forks.
+                # Non-empty after the strip mirrors Rust .trim(): an
+                # all-whitespace command derives nothing.
+                trim "$cmd"
+                rest="$trim_result"
+                if [[ -n "$rest" ]]; then
                     if contains_word "$cmd_lower" "git push"; then
                         tool_activity="pushing"
                     elif contains_word "$cmd_lower" "git commit"; then
@@ -159,8 +204,13 @@ if [[ "$status" == "running" ]]; then
                     elif contains_word "$cmd_lower" "install"; then
                         tool_activity="installing"
                     else
-                        # first token, basename only
-                        read -r first_token _ <<<"$cmd"
+                        # First token of the WHOLE string, basename only —
+                        # $rest starts at the first non-space char, so cutting
+                        # at the next whitespace mirrors Rust's
+                        # split_whitespace().next(). Not `read -r tok _`:
+                        # read consumes one LINE, so a leading-newline command
+                        # yielded an empty token where Rust skips ahead to it.
+                        first_token="${rest%%[[:space:]]*}"
                         first_base="${first_token##*/}"
                         [[ -n "$first_base" ]] && tool_activity="running $first_base"
                     fi
@@ -180,8 +230,8 @@ fi
 # (parity with the Rust producer's msg.trim()) so a whitespace-padded generic
 # phrase is still dropped; the broadcast itself keeps the raw msg, as Rust does.
 if [[ "$status" == "pending" ]]; then
-    m_trim="$(printf '%s' "$msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    case "$m_trim" in
+    trim "$msg"
+    case "$trim_result" in
         ""|"Claude needs attention"|"Claude Code needs your attention")
             exit 0
             ;;
@@ -264,13 +314,20 @@ fi
 # message (it is already queued server-side), so ordering still holds — sends
 # stay sequential and an expired send was going nowhere anyway. GNU `timeout`
 # isn't on stock macOS, hence the hand-rolled sleep+kill pair.
-pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-5}"
+# Status-keyed default (parity with the CLI's pipe_send_timeout — keep the
+# literals in sync with core::pipe's RUNNING/DEFAULT_PIPE_TIMEOUT_SECS):
+# `running` heartbeats are droppable, edges are not. Keyed on the FINAL
+# status, after the done→pending question remap above, so a remapped edge
+# keeps the edge deadline.
+default_deadline=5
+[[ "$status" == "running" ]] && default_deadline=2
+pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-$default_deadline}"
 # Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
 # so a value `sleep` rejects would kill it before the `kill` line runs and the
 # send would silently be unbounded again — the exact hazard this exists to
 # prevent. Whole seconds only (suffix forms like `10s` parse in GNU sleep but
 # not in the Rust producer's u64 parse; the two must stay in sync).
-[[ "$pipe_deadline" =~ ^[0-9]+$ ]] || pipe_deadline=5
+[[ "$pipe_deadline" =~ ^[0-9]+$ ]] || pipe_deadline="$default_deadline"
 zellij pipe --name zj_radar.status.v1 -- "$payload" >/dev/null 2>&1 &
 pipe_pid=$!
 ( sleep "$pipe_deadline"; kill "$pipe_pid" ) >/dev/null 2>&1 &

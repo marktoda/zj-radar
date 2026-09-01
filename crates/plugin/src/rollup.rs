@@ -5,7 +5,7 @@
 //! operation named "Tab Roll-Up" in `CONTEXT.md`: a deep, pure module that
 //! turns a tab's panes plus a per-pane observation lookup into the `TabDisplay`
 //! the rail renders. It owns the whole render-input vocabulary — `TabDisplay`,
-//! `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`, `Outcome`, plus the
+//! `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`, `ExitOutcome`, plus the
 //! rail-row types `TabRow`/`LedgerLine` and the topology record
 //! `TerminalPane` — so the arrows run one way: `radar_state` builds these,
 //! `render` consumes them, and neither imports the other.
@@ -37,7 +37,7 @@ pub(crate) struct TerminalPane {
 /// (`full`/`minimal`/`role`) live in `render`, since they encode glyphs and a
 /// width-driven form; the enum here is pure semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
+pub(crate) enum ExitOutcome {
     /// Exit 0 / returned to the shell with no failure evidence.
     Ok,
     /// Nonzero exit; `Some(code)` when known, `None` for a signal/no-code exit.
@@ -45,7 +45,7 @@ pub enum Outcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryDetail {
+pub(crate) struct PrimaryDetail {
     pub repo: String,
     pub branch: String,
     pub msg: String,
@@ -54,7 +54,7 @@ pub struct PrimaryDetail {
     pub status: Status,
     pub kind: Kind,
     /// End-result tag for a finished command pane (None for agents/active).
-    pub outcome: Option<Outcome>,
+    pub outcome: Option<ExitOutcome>,
     /// Wall-clock stamp of the waiting-on-you edge (Pending only) — the
     /// renderer turns it into the `· 12m` wait tag against its own
     /// `now_epoch_s`, so no epoch threads through the roll-up itself.
@@ -62,7 +62,7 @@ pub struct PrimaryDetail {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PaneDisplay {
+pub(crate) enum PaneDisplay {
     Tracked {
         pane_id: u32,
         kind: Kind,
@@ -71,15 +71,30 @@ pub enum PaneDisplay {
         msg: String,
         task: String,
         since_tick: u64,
-        outcome: Option<Outcome>,
+        outcome: Option<ExitOutcome>,
         /// Waiting-on-you stamp (Pending only) — see `PrimaryDetail`.
         pending_epoch_s: Option<u64>,
-        /// See `PrimaryDetail::acknowledged`.
+        /// The right-click acknowledge exemption: the payload rode in with
+        /// `ack: true` (the user has already seen this status), so the
+        /// notifier skips it. Cleared by the pane's next real broadcast —
+        /// see `StatusStore::apply`.
         acknowledged: bool,
     },
     Untracked {
         pane_id: u32,
         title: String,
+    },
+    /// A pane whose foreground is an interactive command (editor/pager/TUI) —
+    /// the Companion class (`docs/activity-model.md`): it waits on the user,
+    /// so it is pane *context*, not activity. Renders as a muted identity
+    /// label (`└ ○ $ nvim README.md`), never a spinner, and contributes
+    /// nothing to counts, severity, or notifications. Built from the command
+    /// store's quiet pending; shown only when no live observation outranks it
+    /// (an active/attention observation keeps its `Tracked` row).
+    Interactive {
+        pane_id: u32,
+        kind: Kind,
+        msg: String,
     },
 }
 
@@ -93,20 +108,39 @@ impl PaneDisplay {
         Self::Untracked { pane_id, title }
     }
 
+    /// Tracked only (an observation-backed row) — test vocabulary; production
+    /// code branches on `earns_pane_line`/`status()` instead.
+    #[cfg(test)]
     pub(crate) fn is_tracked(&self) -> bool {
         matches!(self, Self::Tracked { .. })
     }
 
+    /// Whether this pane earns a line in the rail's pane roster: tracked
+    /// panes (they have an observation to show) and interactive panes (their
+    /// muted identity label IS the line). Untracked panes render nothing.
+    pub(crate) fn earns_pane_line(&self) -> bool {
+        matches!(self, Self::Tracked { .. } | Self::Interactive { .. })
+    }
+
+    /// Interactive only — test vocabulary, like `is_tracked`; production
+    /// code reads `status()` (an Interactive pane has no observation-status).
+    #[cfg(test)]
+    pub(crate) fn is_interactive(&self) -> bool {
+        matches!(self, Self::Interactive { .. })
+    }
+
     pub(crate) fn pane_id(&self) -> u32 {
         match self {
-            Self::Tracked { pane_id, .. } | Self::Untracked { pane_id, .. } => *pane_id,
+            Self::Tracked { pane_id, .. }
+            | Self::Untracked { pane_id, .. }
+            | Self::Interactive { pane_id, .. } => *pane_id,
         }
     }
 
     pub(crate) fn status(&self) -> Option<Status> {
         match self {
             Self::Tracked { status, .. } => Some(*status),
-            Self::Untracked { .. } => None,
+            Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
     }
 
@@ -116,14 +150,14 @@ impl PaneDisplay {
 
     pub(crate) fn kind(&self) -> Kind {
         match self {
-            Self::Tracked { kind, .. } => *kind,
+            Self::Tracked { kind, .. } | Self::Interactive { kind, .. } => *kind,
             Self::Untracked { .. } => Kind::Other,
         }
     }
 
     pub(crate) fn msg(&self) -> &str {
         match self {
-            Self::Tracked { msg, .. } => msg,
+            Self::Tracked { msg, .. } | Self::Interactive { msg, .. } => msg,
             Self::Untracked { title, .. } => title,
         }
     }
@@ -131,7 +165,7 @@ impl PaneDisplay {
     pub(crate) fn task(&self) -> &str {
         match self {
             Self::Tracked { task, .. } => task,
-            Self::Untracked { .. } => "",
+            Self::Untracked { .. } | Self::Interactive { .. } => "",
         }
     }
 
@@ -141,14 +175,14 @@ impl PaneDisplay {
     pub(crate) fn since_tick(&self) -> Option<u64> {
         match self {
             Self::Tracked { since_tick, .. } => Some(*since_tick),
-            Self::Untracked { .. } => None,
+            Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
     }
 
-    pub(crate) fn outcome(&self) -> Option<Outcome> {
+    pub(crate) fn outcome(&self) -> Option<ExitOutcome> {
         match self {
             Self::Tracked { outcome, .. } => *outcome,
-            Self::Untracked { .. } => None,
+            Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
     }
 
@@ -156,7 +190,7 @@ impl PaneDisplay {
     pub(crate) fn pending_epoch_s(&self) -> Option<u64> {
         match self {
             Self::Tracked { pending_epoch_s, .. } => *pending_epoch_s,
-            Self::Untracked { .. } => None,
+            Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
     }
 
@@ -175,15 +209,22 @@ impl PaneDisplay {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabDisplay {
+pub(crate) struct TabDisplay {
     pub status: Status,
     pub progress: ProgressCounts,
     pub detail: Option<PrimaryDetail>,
     pub panes: Vec<PaneDisplay>,
+    /// Any pane in this tab holds tick-driven motion —
+    /// [`TrackedObservation::animating`], the same canonical term both stores'
+    /// cadence predicates use, so the service exclusion can never half-apply
+    /// between cadence and paint. Render reads this for the header sweep
+    /// instead of re-deriving it from `detail` (which would lean on the
+    /// job-over-service tie-break for correctness).
+    pub animating: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProgressCounts {
+pub(crate) struct ProgressCounts {
     pub done: usize,
     pub total: usize,
     pub pending: usize,
@@ -193,24 +234,43 @@ pub struct ProgressCounts {
 ///
 /// `resolve` maps a pane id to its resolved observation, if any. The caller owns
 /// the precedence across observation sources (status pipe vs command); this
-/// function only sees "is there an observation for this pane?".
+/// function only sees "is there an observation for this pane?". `quiet` maps a
+/// pane id to its interactive foreground identity `(msg, kind)`, if any — the
+/// command store's quiet pending (`docs/activity-model.md` §5).
 ///
 /// A pane with no observation — or one that has never been active — renders as an
 /// untracked pane and does not count toward `done/total`. `pending` is counted
-/// whenever an observation reports `Pending`, active or not.
-pub fn roll_up<'a>(
+/// whenever an observation reports `Pending`, active or not. A quiet identity
+/// renders as [`PaneDisplay::Interactive`] whenever no live observation outranks
+/// it: it replaces the Untracked face and an *Idle* observation's muted row
+/// ("nvim" beats a stale finished-command echo), but never a non-idle one —
+/// counts and severity always come from observations alone, so an open editor
+/// can't read as work in `done/total`.
+pub(crate) fn roll_up<'a, 'q>(
     panes: &[TerminalPane],
     resolve: impl Fn(u32) -> Option<&'a TrackedObservation>,
+    quiet: impl Fn(u32) -> Option<(&'q str, Kind)>,
 ) -> TabDisplay {
     let mut best: Option<PrimaryDetail> = None;
     let mut done = 0usize;
     let mut total = 0usize;
     let mut pending = 0usize;
+    let mut animating = false;
     let mut pane_displays = Vec::with_capacity(panes.len());
+
+    let interactive = |pane_id: u32| {
+        quiet(pane_id).map(|(msg, kind)| PaneDisplay::Interactive {
+            pane_id,
+            kind,
+            msg: msg.to_string(),
+        })
+    };
 
     for pane in panes {
         let Some(s) = resolve(pane.id) else {
-            pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
+            let display = interactive(pane.id)
+                .unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
+            pane_displays.push(display);
             continue;
         };
 
@@ -225,7 +285,12 @@ pub fn roll_up<'a>(
             if s.status == Status::Pending {
                 pending += 1;
             }
-            pane_displays.push(PaneDisplay::Tracked {
+            let display = if s.status == Status::Idle {
+                interactive(pane.id)
+            } else {
+                None
+            };
+            pane_displays.push(display.unwrap_or_else(|| PaneDisplay::Tracked {
                 pane_id: pane.id,
                 kind: s.kind,
                 origin: s.origin,
@@ -236,18 +301,24 @@ pub fn roll_up<'a>(
                 outcome: pane_outcome(s),
                 pending_epoch_s: s.pending_epoch_s,
                 acknowledged: s.acknowledged,
-            });
+            }));
         } else {
-            pane_displays.push(PaneDisplay::untracked(pane.id, &pane.title));
+            let display = interactive(pane.id)
+                .unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
+            pane_displays.push(display);
         }
-        // Most-urgent active pane wins, ties broken by most-recent change.
-        // `Status: Ord` ranks severity, so this is a single lexicographic
-        // `(status, tick)` compare — `>=` keeps the last pane on a full tie.
+        animating = animating || s.animating();
+        // Most-urgent active pane wins; on equal severity a bounded *job*
+        // outranks a *service* (a spinning build summarizes the tab better
+        // than a dev server that is merely up — `docs/activity-model.md` §3);
+        // remaining ties break by most-recent change. `Status: Ord` ranks
+        // severity, so this is a single lexicographic `(status, job, tick)`
+        // compare — `>=` keeps the last pane on a full tie.
         if s.status.is_active() {
-            let key = (s.status, s.last_change_tick);
+            let key = (s.status, !s.kind.is_service(), s.last_change_tick);
             let wins = best
                 .as_ref()
-                .is_none_or(|d| key >= (d.status, d.since_tick));
+                .is_none_or(|d| key >= (d.status, !d.kind.is_service(), d.since_tick));
             if wins {
                 best = Some(PrimaryDetail {
                     repo: s.repo.clone(),
@@ -273,6 +344,7 @@ pub fn roll_up<'a>(
         },
         detail: best,
         panes: pane_displays,
+        animating,
     }
 }
 
@@ -281,13 +353,13 @@ pub fn roll_up<'a>(
 /// (no tag; the line-1 status glyph is the one done signal); Error →
 /// `Failed(exit_code)` (`exit N`, or `✗` when the code is unknown). Returns
 /// `None` for active/idle panes and all agents.
-fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
+fn pane_outcome(s: &TrackedObservation) -> Option<ExitOutcome> {
     if s.origin != ObservationOrigin::Command {
         return None;
     }
     match s.status {
-        Status::Done => Some(Outcome::Ok),
-        Status::Error => Some(Outcome::Failed(s.exit_code)),
+        Status::Done => Some(ExitOutcome::Ok),
+        Status::Error => Some(ExitOutcome::Failed(s.exit_code)),
         _ => None,
     }
 }
@@ -296,16 +368,28 @@ fn pane_outcome(s: &TrackedObservation) -> Option<Outcome> {
 /// rolled-up [`TabDisplay`]. Built by `RadarState::rows`; `render_rail` never
 /// reaches past it into state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabRow {
+pub(crate) struct TabRow {
     pub number: u32,
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
-    /// True for the two ticks after this tab's pane flipped from not-Pending
-    /// to Pending (`RadarState::flash_until`) — the one-shot "ping" that
+    /// True while this tab is inside its ping window after a pane flipped
+    /// from not-Pending to Pending (`RadarState::flash_until`; the window's
+    /// length is `radar_state::FLASH_TICKS`) — the one-shot "ping" that
     /// outranks the active tint in `card_tint` in the renderer.
     pub flash: bool,
     pub display: TabDisplay,
+}
+
+impl TabRow {
+    /// The 0-based tab position Zellij's switch/jump APIs speak — `number`
+    /// is the rail's 1-based display ordinal. The one home for that
+    /// conversion (`target_for_row`'s click targets, `own_presence`'s
+    /// `attention_tab_position`), so the two consumers can never disagree
+    /// off-by-one.
+    pub(crate) fn tab_position(&self) -> usize {
+        self.number.saturating_sub(1) as usize
+    }
 }
 
 /// A ledger entry, resolved for rendering: the live tab position (or `None`

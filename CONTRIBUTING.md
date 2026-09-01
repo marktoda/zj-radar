@@ -10,11 +10,11 @@ zj-radar is a three-member Cargo workspace:
 
 | Path | What it is |
 |------|------------|
-| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema and status/command classification (`command`, `kind`, `observation`, `payload`, `status`, `wire`). No `clap`, no `zellij-tile`. |
+| `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema and status/command classification (`command`, `kind`, `observation`, `payload`, `pipe`, `status`, `wire`). No `clap`, no `zellij-tile`. |
 | `crates/cli/` | The native `zj-radar` CLI (`notify`, `setup`, `run`). `build.rs` embeds the wasm via `include_bytes!`. |
 | `crates/plugin/` | The Zellij sidebar wasm plugin (`zj_radar_plugin`, Rust → `wasm32-wasip1`). A thin Zellij adapter (`lib.rs`/`main.rs`, wasm-only) over host-testable modules (runtime, stores, model, renderer). |
 | `plugins/zj-radar-claude/` | The Claude Code producer plugin (hooks + bundled `notify.sh`). |
-| `docs/` | Living design docs. Start with [`CONTEXT.md`](CONTEXT.md) (domain glossary) and [`docs/design.md`](docs/design.md). |
+| `docs/` | Living design docs. Start with [`CONTEXT.md`](CONTEXT.md) (domain glossary), [`docs/design.md`](docs/design.md), and [`docs/activity-model.md`](docs/activity-model.md) (how pane activity maps to the statuses the rail shows). |
 
 Two ideas are load-bearing — read [`CONTEXT.md`](CONTEXT.md) before changing the
 core:
@@ -36,8 +36,11 @@ core:
 - **MSRV is Rust 1.95** (`rust-version` in the root `Cargo.toml`). CI's `msrv`
   job builds with exactly that toolchain, so language/stdlib features newer
   than 1.95 will fail the PR. Dev otherwise tracks `stable`.
-- For the full suite: `just`, plus `bats`, `shellcheck`, and `jq` (bash hook
-  tests) and `zellij` on `PATH` (live E2E).
+- For the full suite: `just`, plus `bats`, `shellcheck`, `jq`, and GNU
+  coreutils for `timeout` (bash hook tests — on stock macOS
+  `brew install coreutils` or `nix develop`; without it two cases skip) and
+  `zellij` ≥ 0.44.3 on `PATH` (live E2E — the version the plugin's
+  `zellij-tile` pin targets; the harness warns on other versions).
 - Optional: Nix. `nix develop` drops you into a shell with everything pinned;
   `nix flake check` runs the same checks the `hermetic` CI job uses.
 
@@ -65,7 +68,7 @@ Run a single test with `cargo test <name>` (scope it with e.g.
 it with `just review` (`cargo insta review`).
 
 - The shared core (`status`, `payload`, `command`, `kind`, `observation`,
-  `wire`) lives in `crates/core`; the sidebar's own modules (`render`, `rollup`,
+  `pipe`, `wire`) lives in `crates/core`; the sidebar's own modules (`render`, `rollup`,
   `radar_state`, `config`, `theme`, `session_files`, …) live in
   `crates/plugin/src`. Neither carries a `zellij-tile` dependency on the native
   target, so both run host-side — no wasm needed for most work.
@@ -74,8 +77,17 @@ it with `just review` (`cargo insta review`).
   CI fails on unreviewed snapshot drift.
 - **E2E is serial by design** (`--test-threads=1`): each test spawns its own
   Zellij session and parallel sessions contend at startup. It runs nightly on
-  both OSes, on PRs that touch the plugin/core/producer paths (ubuntu only),
-  and as a release gate — not on every push.
+  both OSes, on PRs that touch what it exercises (plugin/core/producer paths,
+  plus `Cargo.lock`, `justfile`, the flake files, and the workflow itself —
+  ubuntu only), as a release gate, and on demand via `workflow_dispatch` — not
+  on every push.
+- **Some docs and assets are test inputs**, wired in via `include_str!`:
+  `docs/rail-reference.md` is an executable spec (`reference_tests.rs`), the
+  pipe names/verbs in `docs/configuration.md` are guard-tested (`config.rs`,
+  `control.rs`), the plugin pins `notify.sh`'s pipe name (`lib.rs`),
+  `hooks.json` timeouts are checked for headroom (`hooks_manifest_tests.rs`),
+  and `examples/radar-sidebar.kdl` is validated by `layout.rs`. Editing or
+  renaming any of these can fail `just test` — that's by design.
 
 ## Lint & formatting
 
@@ -88,8 +100,17 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 > run `cargo fmt` / `cargo fmt --all` — it would reformat the whole codebase and
 > the diff will be rejected. Match the formatting of the surrounding code.
 
-`shellcheck` runs over `plugins/zj-radar-claude/scripts/notify.sh` in CI; run it
-locally if you touch the script.
+`just test-bash` shellchecks every shipped shell script
+(`plugins/zj-radar-claude/scripts/notify.sh`, `scripts/install.sh`,
+`scripts/funnel.sh`) and runs the bats suites in `plugins/zj-radar-claude/tests`
+and `scripts/tests`; run it locally if you touch any of them.
+
+Dependency advisories are checked by a nightly `cargo deny check advisories
+licenses sources` CI job (config in `deny.toml`) — deliberately not a PR gate,
+since the advisory DB updates daily and would fail PRs for problems they didn't
+introduce. Reproduce locally with `cargo deny check`
+([`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) is available in
+the Nix dev shell; otherwise install it separately).
 
 ## Dev loop
 
@@ -116,7 +137,12 @@ details.
    or `rail-reference.md` scenario; new wire/parse behavior → a unit/proptest.
 5. Update docs (`README.md`, `docs/`, `CONTEXT.md`) when behavior or interfaces
    change.
-6. Don't commit generated artifacts (`target/`) or editor/tool state.
+6. **Hermetic build:** any new `include_str!`/`include_bytes!` of a non-Rust
+   file must be whitelisted in `flake.nix`'s source filter, or the crane build
+   can't see the file. Only the `hermetic` CI job (`nix flake check`, nightly
+   and on PRs targeting `main`) exercises that filter — plain `cargo` builds
+   won't catch the miss.
+7. Don't commit generated artifacts (`target/`) or editor/tool state.
 
 ## Adding a producer or an agent
 

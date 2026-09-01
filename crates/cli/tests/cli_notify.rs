@@ -5,7 +5,22 @@ use support::ShimDir;
 // The CLI passes the payload via argv:
 //   zellij pipe --name zj_radar.status.v1 -- <json>
 // The recorder captures all argv in `args` (split by whitespace); stdin is empty.
-// Since the JSON payload may contain spaces, we join args back and search the full string.
+// Since the JSON payload may contain spaces, `ShimDir::sole_pipe_argv` joins the
+// args back into one string the assertions search.
+
+/// Run `zj-radar notify <agent>` under the shims with `hook` piped to stdin,
+/// pane id 7 — the shared invocation every broadcast test starts from.
+fn notify(shims: &ShimDir, agent: &str, hook: &str) {
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["notify", agent])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .write_stdin(hook)
+        .assert()
+        .success();
+}
 
 #[test]
 fn claude_posttooluse_edit_broadcasts_editing_activity() {
@@ -14,29 +29,9 @@ fn claude_posttooluse_edit_broadcasts_editing_activity() {
     shims.add_fake_git("/home/u/myrepo", "main");
 
     let hook = r#"{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
+    notify(&shims, "claude", hook);
 
-    Command::cargo_bin("zj-radar")
-        .unwrap()
-        .arg("notify")
-        .arg("claude")
-        .env("PATH", shims.path_env())
-        .env("ZELLIJ", "1")
-        .env("ZELLIJ_PANE_ID", "terminal_7")
-        .write_stdin(hook)
-        .assert()
-        .success();
-
-    let calls = shims.recorded("zellij");
-    assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast");
-    let c = &calls[0];
-
-    // Payload is passed as argv after `--`, so join all recorded args to inspect.
-    let argv = c.args.join(" ");
-    assert!(
-        c.args.contains(&"pipe".to_string()),
-        "expected 'pipe' subcommand in: {argv}"
-    );
-    assert_eq!(c.stdin, "", "payload should be sent as argv, not stdin");
+    let argv = shims.sole_pipe_argv();
     assert!(
         argv.contains("\"pane\""),
         "payload missing pane field: {argv}"
@@ -58,25 +53,38 @@ fn claude_posttooluse_bash_git_push_broadcasts_pushing() {
     shims.add_fake_git("/home/u/myrepo", "main");
 
     let hook = r#"{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git push origin main"}}"#;
+    notify(&shims, "claude", hook);
 
-    Command::cargo_bin("zj-radar")
-        .unwrap()
-        .arg("notify")
-        .arg("claude")
-        .env("PATH", shims.path_env())
-        .env("ZELLIJ", "1")
-        .env("ZELLIJ_PANE_ID", "terminal_7")
-        .write_stdin(hook)
-        .assert()
-        .success();
-
-    let calls = shims.recorded("zellij");
-    assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast");
-    let argv = calls[0].args.join(" ");
+    let argv = shims.sole_pipe_argv();
     assert!(
         argv.contains("pushing"),
         "payload missing 'pushing' activity: {argv}"
     );
+}
+
+#[test]
+fn codex_permissionrequest_broadcasts_pending_payload() {
+    // The codex twin of the claude cases above: a PermissionRequest hook must
+    // broadcast a pending payload naming the question, on the status pipe.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    let hook = r#"{"hook_event_name":"PermissionRequest","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"git push","description":"Approve network access?"}}"#;
+    notify(&shims, "codex", hook);
+
+    let argv = shims.sole_pipe_argv();
+    assert!(
+        argv.contains("--name zj_radar.status.v1"),
+        "broadcast must target the status pipe: {argv}"
+    );
+    assert!(argv.contains("\"source\":\"codex\""), "payload: {argv}");
+    assert!(argv.contains("\"status\":\"pending\""), "payload: {argv}");
+    assert!(
+        argv.contains("\"id\":7"),
+        "payload missing derived pane id 7 (ZELLIJ_PANE_ID=terminal_7): {argv}"
+    );
+    assert!(argv.contains("Approve network access?"), "payload: {argv}");
 }
 
 #[test]

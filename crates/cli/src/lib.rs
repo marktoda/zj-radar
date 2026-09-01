@@ -19,6 +19,11 @@ pub(crate) use zj_radar_core::{command, kind, payload, pipe, status};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// The wasm artifact's file name — identical at the release-asset URL, the
+/// installed plugin path, and `run`'s owned config dir, so the three can't
+/// drift. (`build.rs` repeats the literal: it can't import the crate it builds.)
+pub(crate) const WASM_FILE_NAME: &str = "zj_radar.wasm";
+
 mod agents;
 mod fsutil;
 pub(crate) mod layout;
@@ -31,7 +36,9 @@ mod setup;
 /// layers; they mark the invocation failed here instead of threading a Result
 /// through every signature. [`run`] maps it to the process exit code, so
 /// `zj-radar setup … && next` composes correctly in scripts and installers.
-/// A user *declining* a confirmation prompt is not a failure.
+/// A user *declining* a confirmation prompt is not a failure. `notify` is
+/// exempt: it is invoked from an agent hook and must exit 0 on any input, so
+/// its diagnostics are plain `eprintln!` hints that never set the flag.
 pub(crate) mod exit {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -117,8 +124,10 @@ enum Command {
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
+        /// Skip the confirmation prompt. The doctor's remedy hints print the
+        /// short form (`setup zellij -y`), so the alias must exist for them
+        /// to be copy-pasteable.
+        #[arg(long, short = 'y')]
         yes: bool,
         /// Check setup status without writing files. Conflicts with
         /// `--uninstall`: silently running the doctor instead of uninstalling
@@ -174,6 +183,16 @@ pub fn run() -> std::process::ExitCode {
                     dry_run,
                 );
             } else {
+                // `--msg`/`--task`/`--source` belong to `notify generic`; the
+                // agent adapters derive all three from the hook payload. Hint
+                // and continue — never a clap conflict: notify is called from
+                // hooks and must stay exit-0 on any input (see `exit`).
+                if msg.is_some() || task.is_some() || source.is_some() {
+                    eprintln!(
+                        "zj-radar: --msg/--task/--source apply to `notify generic` only — \
+                         ignored for `notify {agent}`"
+                    );
+                }
                 notify::run(&agent, input.as_deref(), status.as_deref(), dry_run);
             }
         }

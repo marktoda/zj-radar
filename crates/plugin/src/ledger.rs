@@ -75,27 +75,37 @@ impl LedgerEntry {
         } else {
             obs.msg.clone()
         };
-        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name), label, pane_id })
+        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"), label, pane_id })
     }
 
     /// Re-scrub the free-text fields. Live entries are built from
     /// already-sanitized state; this is for entries loaded off disk, where a
     /// pre-sanitize build (or a hand-edited snapshot) may have persisted raw
     /// control chars that would otherwise reach the render grid.
+    /// `from_observation` never builds a blank field; disk-loaded entries are
+    /// held to the same never-blank policy — an all-control-chars value
+    /// scrubs to nothing and falls back to a fixed token instead. The label
+    /// fallback is deliberately origin-neutral ("done", not "turn done"):
+    /// origin is not retained on a disk-loaded entry, so this seam cannot
+    /// know whether the entry was an agent turn or a command completion —
+    /// only `from_observation`, which still holds the observation, may pick
+    /// an origin-specific token.
     pub(crate) fn sanitized(mut self) -> LedgerEntry {
-        self.tab_name = sanitized_or(&self.tab_name);
-        self.label = sanitize(&self.label, MAX_MSG_CHARS);
+        self.tab_name = sanitized_or(&self.tab_name, MAX_TAB_NAME_CHARS, "tab");
+        self.label = sanitized_or(&self.label, MAX_MSG_CHARS, "done");
         self
     }
 }
 
-/// Sanitize (strip controls/ANSI, cap like a tab name) + fall back to `"tab"`
-/// for an empty result, so a ledgered entry never shows a blank tab column.
-fn sanitized_or(name: &str) -> String {
-    let clean = sanitize(name, MAX_TAB_NAME_CHARS);
+/// THE never-blank scrub both free-text ledger columns share: sanitize
+/// (strip controls/ANSI, cap at `max_chars`), trim, and fall back to
+/// `fallback` for an empty result — a ledger row never renders a blank
+/// column.
+fn sanitized_or(text: &str, max_chars: usize, fallback: &str) -> String {
+    let clean = sanitize(text, max_chars);
     let trimmed = clean.trim();
     if trimmed.is_empty() {
-        "tab".to_string()
+        fallback.to_string()
     } else {
         trimmed.to_string()
     }
@@ -113,8 +123,9 @@ fn is_same_event(a: &LedgerEntry, b: &LedgerEntry) -> bool {
 
 #[derive(Default)]
 pub(crate) struct Ledger {
+    /// Newest at front.
     entries: VecDeque<LedgerEntry>,
-} // newest at front
+}
 
 impl Ledger {
     /// Append unless a matching entry (same pane/outcome/label within
@@ -185,18 +196,27 @@ impl Ledger {
 }
 
 /// Relative age per the spec §4.4 table. Negative (clock skew) → "<1m".
-///
-/// The final band starts at SATURATE_S so the rendered age stops changing
-/// exactly when `any_unsaturated` goes false and the Slow timer disarms —
-/// a frozen "1h+" is what makes full disarm safe.
+/// The ledger presents the sub-minute band (a fresh completion still reads as
+/// an age); the rail's time tags render nothing there — one band, two faces.
 pub(crate) fn format_age(at_epoch_s: u64, now_epoch_s: u64) -> String {
-    let age = now_epoch_s.saturating_sub(at_epoch_s);
+    minute_tag(now_epoch_s.saturating_sub(at_epoch_s)).unwrap_or_else(|| "<1m".to_string())
+}
+
+/// THE minute band every age display shares — the ledger's `format_age` and
+/// the rail's wait/run tags (`render::{wait_tag, run_tag}`): `None` under a
+/// minute, whole minutes below the saturate window, frozen at `1h+` past it.
+/// `age` is in seconds — or Fast-cadence ticks, which advance at ~1 Hz (see
+/// `render::run_tag`).
+/// The freeze is load-bearing for cadence disarm — the rendered age stops
+/// changing exactly when `any_unsaturated` goes false and the Slow timer
+/// disarms — so the band must not exist twice.
+pub(crate) fn minute_tag(age: u64) -> Option<String> {
     if age < 60 {
-        "<1m".to_string()
+        None
     } else if age < SATURATE_S {
-        format!("{}m", age / 60)
+        Some(format!("{}m", age / 60))
     } else {
-        "1h+".to_string()
+        Some("1h+".to_string())
     }
 }
 
@@ -234,6 +254,13 @@ mod tests {
         let e = LedgerEntry { tab_name: "ev\x1b[2Jil\ntab".into(), ..e }.sanitized();
         assert_eq!(e.tab_name, "evil tab");
         assert_eq!(e.label, "did things");
+
+        // A label that is NOTHING BUT control chars scrubs to empty — fall
+        // back to an origin-NEUTRAL "done": origin is not retained on a
+        // disk-loaded entry, so this seam must not guess "turn done" (an
+        // agent-turn claim) for what may have been a command completion.
+        let e = entry(1, LedgerOutcome::Done, "\x1b[2J\x07", 5).sanitized();
+        assert_eq!(e.label, "done");
     }
 
     #[test]

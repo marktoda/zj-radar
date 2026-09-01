@@ -123,6 +123,7 @@ teardown() { teardown_fakes; }
   # argument at 128 KB (MAX_ARG_STRLEN), so interpolating it into `bash -c`
   # dies E2BIG before the hook even runs (only on Linux — macOS has no per-arg
   # cap, which is how the argv version passed locally while failing CI).
+  require_timeout
   local payload; payload="$(mktemp)"
   {
     printf '{"hook_event_name":"PostToolUse","cwd":"'
@@ -139,6 +140,7 @@ teardown() { teardown_fakes; }
   # MAX_STDIN_BYTES: a stream larger than the cap must be bounded (never
   # buffered whole) and the truncated, no-longer-valid JSON must degrade
   # through the jq guards to a clean exit.
+  require_timeout
   local payload; payload="$(mktemp)"
   head -c 9000000 /dev/zero | tr '\0' 'x' > "$payload"
   run timeout 10 "$SCRIPT" running < "$payload"
@@ -268,4 +270,100 @@ EOF
   run bash -c "echo '{\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp\"}' | ZJ_RADAR_PIPE_TIMEOUT=abc '$SCRIPT' done"
   [ "$status" -eq 0 ]
   (( SECONDS - start < 30 ))  # 5s fallback + slack, nowhere near the 60s hang
+}
+
+@test "native CLI dispatch keeps running→done in order (stuck-spinner guard)" {
+  # helper.bash strips every real zj-radar off PATH so the rest of this file
+  # exercises the bash fallback; this case pins the OTHER branch — the native
+  # dispatch, which is the only path an installed machine ever takes.
+  #
+  # The producer's contract is in-order (CONTEXT.md → Status contract: the
+  # plugin is latest-wins and no payload carries a sequence, so a producer that
+  # reorders its own sends has no downstream correction). A backgrounded
+  # `running` can be overtaken by the `done` that follows it, and the rail then
+  # spins forever: Claude stays the pane's foreground process while it sits at
+  # its prompt, so no return-to-shell edge ever arrives to clear it.
+  local cli_log="$FAKEBIN/cli.log"
+  # Fake CLI: drain stdin, parse --status, and record it AFTER the delay, so
+  # the log reflects ARRIVAL order rather than call order. A `running` send is
+  # the slow one — exactly the skew a loaded machine produces. 2 s of skew, not
+  # 1: the guard only turns red if the second invocation completes inside the
+  # delay, and a loaded CI runner can eat a full second in fork/exec alone —
+  # a too-small margin lets the regression pass vacuously green.
+  cat >"$FAKEBIN/zj-radar" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null 2>&1 || true
+status=""
+while [[ \$# -gt 0 ]]; do
+  [[ "\$1" == "--status" ]] && { status="\$2"; shift; }
+  shift
+done
+[[ "\$status" == "running" ]] && sleep 2
+printf '%s\n' "\$status" >> "$cli_log"
+EOF
+  chmod +x "$FAKEBIN/zj-radar"
+  # Non-vacuity: the dispatch must resolve OUR fake. If it didn't, the script
+  # would fall through to the bash path and the ordering claim would be untested.
+  [ "$(command -v zj-radar)" = "$FAKEBIN/zj-radar" ]
+
+  rm -f "$RECORD" "$cli_log"
+  printf '%s' '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}' \
+    | "$SCRIPT" running
+  printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp","last_assistant_message":"finished"}' \
+    | "$SCRIPT" done
+
+  # Both sends must land before order can be judged: a backgrounded `running`
+  # arrives well after the script that started it returned.
+  wait_for_lines "$cli_log" 2
+
+  # Non-vacuity: the native branch exits before the bash fallback's zellij send,
+  # so a silent fall-through would leave a payload here.
+  [ ! -s "$RECORD" ]
+
+  local expected actual
+  expected="$(printf 'running\ndone')"
+  actual="$(cat "$cli_log" 2>/dev/null || true)"
+  [ "$actual" = "$expected" ] || {
+    printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
+    return 1
+  }
+}
+
+@test "bash fallback keeps running→done in order (stuck-spinner guard, fallback path)" {
+  # The native-CLI case above pins one dispatch branch; this pins the OTHER —
+  # the bash fallback, where this exact bug shipped once before (the send
+  # comment at the script's tail records it). Same shape: the fake zellij logs
+  # payloads AFTER a delay on `running`, so the log is ARRIVAL order and a
+  # re-backgrounded send would let `done` overtake.
+  local order_log="$FAKEBIN/order.log"
+  cat >"$FAKEBIN/zellij" <<EOF
+#!/usr/bin/env bash
+payload="\${!#}"
+[[ "\$payload" == *'"status":"running"'* ]] && sleep 2
+printf '%s\n' "\$payload" >> "$order_log"
+exit 0
+EOF
+  chmod +x "$FAKEBIN/zellij"
+  # Unlike the native twin's fake CLI, this fake runs UNDER notify.sh's real
+  # sleep+kill watchdog — and the running send's default deadline (2 s) equals
+  # the fake's delay, so without a generous override the watchdog would race
+  # the fake's log write and fail this guard for a reason unrelated to
+  # ordering. The override doesn't weaken the assertion; order is judged from
+  # the log, not the deadline.
+  export ZJ_RADAR_PIPE_TIMEOUT=30
+
+  printf '%s' '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}' \
+    | "$SCRIPT" running
+  printf '%s' '{"hook_event_name":"Stop","cwd":"/tmp","last_assistant_message":"finished"}' \
+    | "$SCRIPT" done
+
+  wait_for_lines "$order_log" 2
+
+  local expected actual
+  expected="$(printf '"status":"running"\n"status":"done"')"
+  actual="$(grep -o '"status":"[a-z]*"' "$order_log" 2>/dev/null || true)"
+  [ "$actual" = "$expected" ] || {
+    printf 'expected:\n%s\n\nactual:\n%s\n' "$expected" "$actual"
+    return 1
+  }
 }

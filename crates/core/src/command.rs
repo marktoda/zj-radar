@@ -8,10 +8,10 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Debounce window: a pending fg command must survive this many ticks before
-/// being promoted to Running. Floored at 2 (~2s at the plugin's 1s tick) so an
+/// being promoted to Running. Kept at 2 (~2s at the plugin's 1s tick) so an
 /// instant `cd`/`ls`-style command that returns to the shell prompt within the
-/// window never earns a line (spec §3.2) — 1 tick left too narrow a margin
-/// against real-world scheduling jitter between the fg command and its
+/// window never earns a line (spec §3.2) — a 1-tick debounce left too narrow a
+/// margin against real-world scheduling jitter between the fg command and its
 /// immediate return.
 ///
 /// This does NOT fully close the "running cd" symptom: promotion fires purely
@@ -49,8 +49,8 @@ pub struct Tick(pub u64);
 pub struct EpochSecs(pub u64);
 
 /// What a tick did to the command store: whether any observation changed (the
-/// snapshot-persist trigger, exactly the old bool), and the completions that
-/// left the card this tick (TTL recede or promotion-displaced) for the ledger.
+/// snapshot-persist trigger), and the completions that left the card this
+/// tick (TTL recede or promotion-displaced) for the ledger.
 pub struct TimerReport {
     pub changed: bool,
     pub receded: Vec<(u32, TrackedObservation)>,
@@ -84,24 +84,55 @@ const IGNORE_NAMES: &[&str] = &[
 /// still surfaces a Running/Done lifecycle under their own `Kind`.
 pub const AGENT_NAMES: &[&str] = &["claude", "codex"];
 
-/// A pending foreground command awaiting debounce promotion.
+/// Interactive programs — editors, pagers, monitors, git TUIs, file managers —
+/// that sit open waiting on the *user* rather than doing bounded work
+/// (`docs/activity-model.md`: the Companion class). Classification data, not an
+/// ignore list: a command here still records its identity as a quiet pending
+/// (never promoted to a Running row, but labeling its exit and feeding the
+/// muted pane label), extended per-user by the `interactive_commands` config
+/// key. The third name-list role beside the other two, and the roles must
+/// never merge (pinned by `interactive_set_disjoint_from_prompt_and_agent_names`):
+/// `IGNORE_NAMES` = "back at the prompt" (exit-clears pushed status),
+/// `AGENT_NAMES` = "owned by the push pipe", this = "a real command that never
+/// earns a Running row". An editor placed in `IGNORE_NAMES` instead would make
+/// "opened nvim" read as "returned to shell" and wrongly exit-clear a finished
+/// agent's pushed status.
+pub const DEFAULT_INTERACTIVE: &[&str] = &[
+    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro",
+    "less", "more", "most", "man",
+    "htop", "btop", "top",
+    "lazygit", "tig", "gitui", "k9s",
+    "fzf", "ranger", "yazi", "nnn", "lf", "mc",
+];
+
+/// A pending foreground command awaiting debounce promotion — or, for an
+/// interactive command (`promotable: false`), a *quiet* pending: identity
+/// recorded for exit labeling and the muted pane label, but never promoted to
+/// a Running row and never arming the fast cadence.
 struct Pending {
     command: String,
     cwd: String,
     kind: Kind,
     since_tick: u64,
+    promotable: bool,
+    /// The peeled exe basename (`effective_program`), stamped at intake — the
+    /// interactive re-judge matches on THIS, not the display string, so its
+    /// correctness is structural rather than held by the display-shape guard
+    /// test. (The sweep over already-promoted *observations* still derives it
+    /// from the display — see `set_interactive_extras`.)
+    program: String,
 }
 
 /// Tracks per-pane command activity for terminal panes that have no agent
 /// producer. The resolved display state is stored as `TrackedObservation` so it can be
 /// consumed uniformly by the downstream aggregator.
-#[derive(Default)]
 pub struct CommandStore {
     /// Resolved displayable state, ready for aggregation. The map and its focus
     /// lifecycle are shared with `StatusStore` via `ObservationStore`; only the
     /// command-specific debounce maps below are unique to this store.
     store: ObservationStore,
-    /// Pending fg commands awaiting debounce promotion.
+    /// Pending fg commands awaiting debounce promotion (or quiet — see
+    /// [`Pending::promotable`]).
     pending: HashMap<u32, Pending>,
     /// Panes whose Running command has *left* the foreground, awaiting debounce
     /// confirmation before flipping to Done. Value = tick first observed leaving.
@@ -112,6 +143,22 @@ pub struct CommandStore {
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
     /// identical exits.
     exited: HashMap<u32, Option<i32>>,
+    /// The effective interactive set: [`DEFAULT_INTERACTIVE`] ∪ the user's
+    /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
+    /// Matched on the peeled program name at intake.
+    interactive: HashSet<String>,
+}
+
+impl Default for CommandStore {
+    fn default() -> Self {
+        CommandStore {
+            store: ObservationStore::default(),
+            pending: HashMap::new(),
+            pending_done: HashMap::new(),
+            exited: HashMap::new(),
+            interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
+        }
+    }
 }
 
 /// Extract the basename from a path-like string (split on `/`, take last
@@ -131,11 +178,15 @@ fn is_option_arg(s: &str) -> bool {
     s.starts_with('-') && s != "-"
 }
 
+/// First non-option arg at/after `start`. Also skips the stdin-marker
+/// residual: `is_option_arg` deliberately exempts a bare `-`, so it is the one
+/// dashed token this scan would otherwise surface — skip it and keep scanning
+/// rather than hand stdin-marker noise back as a verb or target.
 fn first_non_option(args: &[String], start: usize) -> Option<(usize, &str)> {
     args.iter()
         .enumerate()
         .skip(start)
-        .find_map(|(idx, arg)| (!is_option_arg(arg)).then_some((idx, arg.as_str())))
+        .find_map(|(idx, arg)| (!is_option_arg(arg) && arg != "-").then_some((idx, arg.as_str())))
 }
 
 fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'a str)> {
@@ -144,6 +195,7 @@ fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'
     })
 }
 
+/// First non-option arg at/after `start`, usable as a display target.
 fn target_after(args: &[String], start: usize) -> Option<&str> {
     first_non_option(args, start).map(|(_, arg)| arg)
 }
@@ -318,7 +370,7 @@ fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
         return exe.to_string();
     };
     if rule.target_verbs.contains(&verb) {
-        if let Some(target) = target_after(args, idx + 1).filter(|t| !t.starts_with('-')) {
+        if let Some(target) = target_after(args, idx + 1) {
             return raw_display(&[exe, verb, target]);
         }
     }
@@ -492,31 +544,47 @@ impl CommandStore {
         // mean back-to-the-prompt; agents are owned by the push pipe (see
         // AGENT_NAMES). Either way we never open a command lifecycle for them.
         let in_ignore_set = IGNORE_NAMES.contains(&name) || AGENT_NAMES.contains(&name);
+        let interactive = self.interactive.contains(name);
 
-        if !is_foreground || in_ignore_set {
+        // An interactive argv takes the intake arm below whatever the
+        // foreground flag says: the flag only encodes "the root has a child"
+        // (see `is_shell_prompt`), so a childless interactive ROOT
+        // (`zellij run -- nvim`) reports `is_foreground=false` — and that
+        // report is the editor alive, not a return to the prompt. Dropping it
+        // here would skip the quiet pending, and the held pane's exit would
+        // insert the blank Done row the activity model promises never happens.
+        // Shell panes can't reach this override: their childless root IS the
+        // shell, which the ignore set already catches.
+        if (!is_foreground && !interactive) || in_ignore_set {
             // The foreground command (if any) has ended: clear pending and, if a
             // command was Running, mark it *tentatively* done. `on_timer`
             // confirms the Done after the debounce window — so a momentary
             // foreground drop (a child subprocess, a TUI handoff) doesn't flip
             // the row to Done and straight back.
             self.pending.remove(&pane_id);
-            if self
-                .store
-                .get(pane_id)
-                .is_some_and(|s| s.status == Status::Running)
-            {
-                self.pending_done.entry(pane_id).or_insert(tick);
-            }
+            self.arm_tentative_done(pane_id, tick);
             // Otherwise leave resolved unchanged (idle stays idle).
         } else {
-            // A real foreground command is running: it is no longer leaving, so
-            // cancel any tentative-done.
-            self.pending_done.remove(&pane_id);
             // Build the cleaned command string and its Kind in one pass.
             let (cmd_string, kind) = classify(command);
             if cmd_string.is_empty() {
-                // Unknown/empty argv — never surface a blank Running row.
+                // Unknown/empty argv — never surface a blank Running row. This
+                // check runs FIRST: an argv we can't classify is no evidence
+                // about the pane, so it must touch nothing — in particular it
+                // must not cancel an armed Running→Done confirm below (nothing
+                // would ever re-arm it, sticking the row Running forever).
                 return;
+            }
+            if interactive {
+                // An interactive command (editor/pager/TUI) is the pane's fg:
+                // any PRIOR Running command has ended, exactly as in the ignore
+                // branch above — opening nvim after `cargo build` finished must
+                // still flip the build row to Done.
+                self.arm_tentative_done(pane_id, tick);
+            } else {
+                // A real foreground command is running: it is no longer
+                // leaving, so cancel any tentative-done.
+                self.pending_done.remove(&pane_id);
             }
 
             // A genuine new run opens here: forget any prior run's exit so its
@@ -528,6 +596,10 @@ impl CommandStore {
             self.exited.remove(&pane_id);
 
             let cwd_str = cwd.unwrap_or("").to_string();
+            // Interactive commands record a QUIET pending: the identity is kept
+            // — it labels a held pane's exit (`● $ nvim`, never a blank Done row)
+            // and feeds the muted pane label — but `on_timer` never promotes it
+            // to a Running row, and it never arms the fast cadence.
             self.pending.insert(
                 pane_id,
                 Pending {
@@ -535,8 +607,25 @@ impl CommandStore {
                     cwd: cwd_str,
                     kind,
                     since_tick: tick,
+                    promotable: !interactive,
+                    program: name.to_string(),
                 },
             );
+        }
+    }
+
+    /// Start the tentative-done debounce for a pane whose Running command has
+    /// left the foreground: `on_timer` confirms the Done after the debounce
+    /// window, so a momentary drop (a child subprocess, a TUI handoff) doesn't
+    /// flip the row to Done and straight back. `or_insert` keeps the FIRST
+    /// observation tick — re-reports must not restart the window.
+    fn arm_tentative_done(&mut self, pane_id: u32, tick: u64) {
+        if self
+            .store
+            .get(pane_id)
+            .is_some_and(|s| s.status == Status::Running)
+        {
+            self.pending_done.entry(pane_id).or_insert(tick);
         }
     }
 
@@ -548,7 +637,10 @@ impl CommandStore {
     /// (or debounce-confirmed Done) reaches tabs opened later, keeping every
     /// instance's rail convergent (the same guarantee pushed statuses already
     /// have). Debounce-map bookkeeping alone does not count: it is not
-    /// snapshotted. `TimerReport::receded` carries every completion that left
+    /// snapshotted. Neither does an identical re-promotion (Zellij re-reported
+    /// the same still-running foreground): the stored observation is
+    /// unchanged, so no write is owed.
+    /// `TimerReport::receded` carries every completion that left
     /// the card this tick (a Done/Error displaced by re-promotion, or a Done
     /// that TTL-receded to Idle) for the ledger.
     pub fn on_timer(&mut self, tick: Tick, now_epoch_s: EpochSecs) -> TimerReport {
@@ -558,7 +650,7 @@ impl CommandStore {
         let to_promote: Vec<u32> = self
             .pending
             .iter()
-            .filter(|(_, p)| tick.saturating_sub(p.since_tick) >= DEBOUNCE_TICKS)
+            .filter(|(_, p)| p.promotable && tick.saturating_sub(p.since_tick) >= DEBOUNCE_TICKS)
             .map(|(&id, _)| id)
             .collect();
 
@@ -573,13 +665,19 @@ impl CommandStore {
                     if prev.status == Status::Running && prev.msg == obs.msg {
                         obs.last_change_tick = prev.last_change_tick;
                     }
+                    // With the start tick carried over, an identical
+                    // re-promotion stores a byte-identical observation —
+                    // nothing observable changed, so it must not trigger a
+                    // snapshot write per re-report.
+                    changed |= prev != &obs;
+                } else {
+                    changed = true;
                 }
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
                         receded.push((pane_id, prev));
                     }
                 }
-                changed = true;
             }
         }
 
@@ -658,48 +756,53 @@ impl CommandStore {
         if self.exited.get(&pane_id) == Some(&exit_status) {
             return None;
         }
-        // A bare exit replay must not resurrect a receded completion: Zellij
-        // re-reports exited panes on every manifest update (level-triggered),
-        // and a freshly-spawned instance has an empty dedup map. Once a
-        // command pane has receded to Idle, only a new observed lifecycle
-        // (CommandChanged → pending) or a prune lights it again — a `pending`
-        // entry means a fresh run is in flight, so its exit applies even when
-        // it beats the debounce promotion. Cost: a re-run that exits with no
-        // intervening CommandChanged stays swallowed (pre-existing, rare,
-        // documented race). `self.store` only ever holds command-origin
-        // observations, so no origin check is needed here.
-        if !self.pending.contains_key(&pane_id)
-            && self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle)
-        {
-            return None;
-        }
-
         let new_status = match exit_status {
             Some(0) => Status::Done,
             Some(_) => Status::Error,
             None => Status::Done,
         };
 
-        // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op edge,
-        // for the same replay against a *still-displayed* completion: a fresh
-        // instance (empty `exited` dedup) replaying a held pane's exit over a
-        // snapshot-loaded Done/Error with the same outcome learns nothing new.
-        // Prime the dedup and stop — pushing the completion into `receded`
-        // would ghost a ledger entry for a card that never changed, re-stamping
-        // `completed_epoch_s = now` would duplicate it past the nearest-neighbor
-        // merge window, and bumping `last_change_tick` would postpone the Done
-        // TTL forever under repeated replays. A `pending` entry means a fresh
-        // run is in flight, so its (possibly identical-code) exit is genuine
-        // news and falls through; so does a different exit code (a new outcome
-        // on a re-run pane), which keeps the displacement behavior below.
-        if !self.pending.contains_key(&pane_id)
-            && self
+        // Replay guards, sharing one predicate: a `pending` entry means a
+        // fresh run is in flight, so its (possibly identical-code) exit is
+        // genuine news and falls through — its exit applies even when it beats
+        // the debounce promotion. `self.store` only ever holds command-origin
+        // observations, so no origin check is needed here.
+        if !self.pending.contains_key(&pane_id) {
+            // A bare exit replay must not resurrect a receded completion:
+            // Zellij re-reports exited panes on every manifest update
+            // (level-triggered), and a freshly-spawned instance has an empty
+            // dedup map. Once a command pane has receded to Idle, only a new
+            // observed lifecycle (CommandChanged → pending) or a prune lights
+            // it again. Cost: a re-run that exits with no intervening
+            // CommandChanged stays swallowed (pre-existing, rare, documented
+            // race).
+            if self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle) {
+                return None;
+            }
+            // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op
+            // edge, for the same replay against a *still-displayed*
+            // completion: a fresh instance (empty `exited` dedup) replaying a
+            // held pane's exit over a snapshot-loaded Done/Error with the same
+            // outcome learns nothing new. Prime the dedup and stop — pushing
+            // the completion into `receded` would ghost a ledger entry for a
+            // card that never changed, re-stamping `completed_epoch_s = now`
+            // would duplicate it past the nearest-neighbor merge window, and
+            // bumping `last_change_tick` would postpone the Done TTL forever
+            // under repeated replays. A different exit code (a new outcome on
+            // a re-run pane) falls through, which keeps the displacement
+            // behavior below. Only this arm primes `self.exited`: an
+            // identical-outcome replay is exactly what the per-code dedup can
+            // absorb (priming reconstructs the entry a fresh instance lost),
+            // while the Idle arm above blocks replays of *any* code by status
+            // alone, so a per-code entry would add nothing there.
+            if self
                 .store
                 .get(pane_id)
                 .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
-        {
-            self.exited.insert(pane_id, exit_status);
-            return None;
+            {
+                self.exited.insert(pane_id, exit_status);
+                return None;
+            }
         }
 
         self.exited.insert(pane_id, exit_status);
@@ -800,12 +903,24 @@ impl CommandStore {
         let _ = self.store.insert(pane_id, observation);
     }
 
-    /// True if any pane is Running or has a pending fg command. Used (alongside
-    /// `StatusStore::any_running`) to keep the timer armed while work animates: a
-    /// finished command is terminal and needs no further ticking, so only
-    /// `Running` (plus a not-yet-promoted pending command) counts as live here.
-    pub fn has_pending_or_active(&self) -> bool {
-        !self.pending.is_empty() || self.store.any(|s| s.status == Status::Running)
+    /// True while this store has tick-driven work: an animated Running row
+    /// ([`TrackedObservation::animating`] — services hold the steady mark and
+    /// are excluded), a promotable pending awaiting its debounce promotion, or
+    /// a tentative-Done awaiting its debounce confirm. Used (alongside
+    /// `StatusStore::needs_ticks`) to keep the timer armed; a finished command
+    /// is terminal and needs no further ticking.
+    ///
+    /// `pending_done` counts explicitly: it is a scheduled one-shot exactly
+    /// like a promotable pending, and it is the only tick source for a
+    /// *service* row's Running→Done confirm — the Running row that used to
+    /// keep the timer armed for it is precisely what the service exclusion
+    /// turned off (a Ctrl-C'd dev server must still flip Done in ~2s, not on
+    /// the Slow heartbeat). A quiet pending never promotes, so an open editor
+    /// still costs zero ticks.
+    pub fn needs_ticks(&self) -> bool {
+        self.pending.values().any(|p| p.promotable)
+            || !self.pending_done.is_empty()
+            || self.store.any(TrackedObservation::animating)
     }
 
     /// Any command Done is by definition inside its TTL window (TTL flips it to
@@ -814,6 +929,96 @@ impl CommandStore {
     pub fn has_done_awaiting_recede(&self) -> bool {
         self.store.any(|s| s.status == Status::Done)
     }
+
+    /// Compose the effective interactive set (`DEFAULT_INTERACTIVE` ∪ `extras`)
+    /// and apply it **level-triggered**: sweep already-recorded state so the
+    /// config works on rows that will never see another `CommandChanged` — a
+    /// mid-session TUI fires no event until it exits, and a restart's snapshot
+    /// rehydrates its Running row, so without the sweep the spinner (and its
+    /// 1 Hz cadence pin) would persist until the editor closes. Matching keys
+    /// on the display's first whitespace token, which equals the peeled exe
+    /// basename by construction of every display path (pinned by
+    /// `display_first_token_is_the_exe_basename`). Returns whether anything
+    /// observable changed (the caller's render/persist trigger).
+    pub fn set_interactive_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
+        self.interactive = DEFAULT_INTERACTIVE
+            .iter()
+            .copied()
+            .chain(extras)
+            .map(str::to_string)
+            .collect();
+        let mut changed = false;
+        // Re-judge every pending against the new set — symmetric, so removing
+        // an extra un-quiets its pending and the next tick promotes it. The
+        // match key is the intake-stamped `program`, the same peeled name the
+        // intake classification used.
+        for p in self.pending.values_mut() {
+            let want = !self.interactive.contains(&p.program);
+            if p.promotable != want {
+                p.promotable = want;
+                changed = true;
+            }
+        }
+        // Demote already-promoted Running rows for now-interactive commands to
+        // Idle. Not a completion, so nothing is ledgered. Promotion consumed
+        // the pending, so RECONSTRUCT the quiet pending from the observation —
+        // that makes the swept state identical to the intake state: the muted
+        // Interactive label shows, a held pane's exit stays labeled, and
+        // removing the config entry later re-promotes symmetrically. (The
+        // observation's `repo` is already a basename; `on_exit`'s
+        // `basename(cwd)` is idempotent over it.)
+        //
+        // A row with an armed tentative-done is exempt: its command already
+        // left the foreground (the pane is back at the prompt), so demoting it
+        // would ghost a quiet pending that no future CommandChanged clears —
+        // the shell-return edge already fired. The armed confirm flips it
+        // Running→Done on schedule, which is the true outcome.
+        let to_demote: Vec<u32> = self
+            .store
+            .observations()
+            .filter(|(id, s)| {
+                s.status == Status::Running
+                    && !self.pending_done.contains_key(id)
+                    && first_token(&s.msg).is_some_and(|t| self.interactive.contains(t))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for pane_id in to_demote {
+            if let Some(s) = self.store.get_mut(pane_id) {
+                s.status = Status::Idle;
+                changed = true;
+                let quiet = Pending {
+                    command: s.msg.clone(),
+                    cwd: s.repo.clone(),
+                    kind: s.kind,
+                    since_tick: s.last_change_tick,
+                    promotable: false,
+                    // Observations don't carry the peeled name; re-derive it
+                    // from the display (the same key that matched `to_demote`,
+                    // held by the display-shape guard test).
+                    program: first_token(&s.msg).unwrap_or_default().to_string(),
+                };
+                self.pending.entry(pane_id).or_insert(quiet);
+            }
+        }
+        changed
+    }
+
+    /// The quiet identity of a pane whose interactive command is in the
+    /// foreground: `(display, kind)` from its non-promotable pending. Feeds
+    /// the rail's muted pane label (`rollup::PaneDisplay::Interactive`).
+    pub fn quiet_identity(&self, pane_id: u32) -> Option<(&str, Kind)> {
+        self.pending
+            .get(&pane_id)
+            .filter(|p| !p.promotable)
+            .map(|p| (p.command.as_str(), p.kind))
+    }
+}
+
+/// First whitespace-separated token of a display string, login-dash stripped —
+/// the exe basename by construction (see `set_interactive_extras`).
+fn first_token(display: &str) -> Option<&str> {
+    display.split_whitespace().next().map(|t| t.trim_start_matches('-'))
 }
 
 #[cfg(test)]

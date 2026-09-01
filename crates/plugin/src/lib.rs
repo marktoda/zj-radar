@@ -41,6 +41,8 @@ mod permission;
 mod presence;
 mod radar_state;
 #[cfg(test)]
+mod hooks_manifest_tests;
+#[cfg(test)]
 mod reference_tests;
 mod render;
 mod rollup;
@@ -102,14 +104,6 @@ impl State {
     }
 
 
-    /// Zellij's permission prompt for a visible status/sidebar plugin is tied to
-    /// the pane that called `request_permission`. Keep only that pane selectable
-    /// while a y/n answer is pending; peer sidebar instances stay passive while
-    /// they wait for the first grant to populate Zellij's permission cache.
-    fn sidebar_should_be_selectable(&self) -> bool {
-        self.runtime.sidebar_should_be_selectable()
-    }
-
     fn record_permission_request_started(&mut self) {
         self.runtime.record_permission_request_started();
     }
@@ -122,15 +116,16 @@ impl State {
     /// Click tests historically asserted the width-80 layout; keep that explicit.
     /// When no height has been set yet (last_render_height == 0), use this
     /// session's natural content height (see `PluginRuntime::natural_height`)
-    /// so folding/overflow never discards rows unexpectedly — and, since Task
-    /// 13, so the bottom region's pinned footer doesn't pad the render out to
+    /// so folding/overflow never discards rows unexpectedly — and so the
+    /// bottom region's pinned footer doesn't pad the render out to
     /// an unboundedly large height (`usize::MAX / 2` used to be a safe "big
     /// enough" sentinel; now it would land in the footer's unbounded-filler
     /// branch and blow the allocator).
     ///
     /// # Contract — LIVE, permission-granted rail only
     ///
-    /// This helper unconditionally sets `permission_granted = true` so that
+    /// This helper unconditionally sets the permission state to
+    /// `PermissionState::Resolved { granted: true }` so that
     /// `runtime.render` produces a real tab rail rather than the onboarding
     /// screen. It is intentionally a LIVE-RAIL fixture and MUST NOT be used
     /// to test the no-permission / onboarding case. Onboarding tests must
@@ -334,7 +329,7 @@ impl ZellijPlugin for State {
             // Replaces `SessionUpdate`: stock zj-radar never calls the
             // blocking `get_session_list()` host fn that's the ONLY thing
             // that repopulates `SessionUpdate`'s peer list in zellij 0.44.3
-            // (task-8-report.md's root-cause dive) — only Zellij's own
+            // (`docs/design.md`, "Why not SessionUpdate") — only Zellij's own
             // session-manager plugin does, so a user without it open would
             // see an empty cross-session badge forever. `ModeUpdate` fires
             // automatically right after this plugin loads (Zellij's
@@ -343,10 +338,10 @@ impl ZellijPlugin for State {
             // no other plugin required) and carries `ModeInfo.session_name`,
             // which is all this plugin ever needed from `SessionUpdate` in
             // the first place; liveness itself now comes from the presence
-            // files' own mtimes, turned into a per-entry stale/fresh state
-            // (`sessions::STALE_AFTER_SECS`) rather than a Zellij-reported
-            // peer list — and, per task-14, a peer past that age dims
-            // rather than vanishing.
+            // files' own mtimes, graded per entry rather than read from a
+            // Zellij-reported peer list: fresh (≤90s,
+            // `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
+            // reaped past `sessions::DEAD_AFTER_SECS` (300s).
             EventType::ModeUpdate,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
@@ -436,7 +431,7 @@ impl ZellijPlugin for State {
                 } else {
                     crate::permission::PermissionProbe::default()
                 };
-                let outcome = self.runtime.timer(probe, elapsed_s);
+                let outcome = self.runtime.timer(probe, elapsed_s, crate::clock::now_epoch_s());
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, col)) => {
@@ -815,28 +810,33 @@ mod tests {
 
     #[test]
     fn sidebar_stays_selectable_until_permissions_are_granted() {
+        // Zellij's permission prompt for a visible status/sidebar plugin is
+        // tied to the pane that called `request_permission` — the pane must
+        // stay selectable while the y/n answer is pending (`is_requesting`
+        // drives every `SetSelectable`), and peer sidebars that never asked
+        // stay passive.
         let mut s = State::default();
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "peer sidebars that did not request permission stay passive"
         );
 
         s.record_permission_request_started();
         assert!(
-            s.sidebar_should_be_selectable(),
+            s.runtime.permission.is_requesting(),
             "the sidebar that owns the first-run prompt must remain focusable"
         );
 
         s.record_permission_result(true);
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "after permissions are granted the sidebar returns to passive mode"
         );
 
         let mut s = State::default();
         s.record_permission_result(false);
         assert!(
-            !s.sidebar_should_be_selectable(),
+            !s.runtime.permission.is_requesting(),
             "after permissions are denied the prompt is gone, so the rail is passive"
         );
     }
@@ -1064,13 +1064,13 @@ mod tests {
 
     #[test]
     fn click_mapping_accounts_for_gaps_comfortable() {
-        // Comfortable density, large height → spacing.gap = 1, pad_y = 0.
+        // Comfortable density, large height → spacing.gap = 1.
         // 2 idle tabs, header=2 lines.
         // Layout: header(2) | tab0 content(1) | tab0 gap(1) | tab1 content(1) | tab1 gap(1)
         // Lines:   0,1      | 2               | 3           | 4               | 5
         //
         // The gap is EXTERNAL separation, so the gap line (3) maps to None — only
-        // the owned pad_y + content rows belong to a tab. Tab 1 starts at line 4.
+        // the owned content rows belong to a tab. Tab 1 starts at line 4.
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.runtime.last_render_height = 100; // large → no overflow
         state.runtime.config = config::Config {
@@ -1124,7 +1124,7 @@ mod tests {
     fn click_mapping_cards_one_line_header() {
         // Cards density: the carded hero is a single " RADAR …" title line (no
         // rule), so the header occupies ONE line, not two. Cards now carries
-        // gap = 1 (trailing rail_bg row after each card) and pad_y = 0.
+        // gap = 1 (trailing rail_bg row after each card).
         // The gap rows map to None (they are external separation, not owned by
         // a tab). The click mapping must stay in lockstep with render():
         //   line 0  → header (1 line, no rule) → None
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn click_mapping_cards_pad_y_and_post_content_row() {
+    fn click_mapping_cards_multi_line_card_and_post_content_row() {
         // Exercises the gap semantics explicitly with a multi-line card so the
         // boundary between one card's last content row and the gap row is clear.
         //   header(1) | tab0 content×2 | tab0 gap(1) | tab1 content(1) | tab1 gap(1)

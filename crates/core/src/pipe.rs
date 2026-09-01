@@ -26,6 +26,33 @@ use crate::payload::STATUS_PIPE_NAME;
 /// no environment) uses it directly.
 pub const DEFAULT_PIPE_TIMEOUT_SECS: u64 = 5;
 
+/// Send deadline for `running` heartbeats, which ride the hottest hooks —
+/// per tool call, twice (Pre + Post). Deliberately shorter than
+/// [`DEFAULT_PIPE_TIMEOUT_SECS`]: an expired `running` is a dropped heartbeat
+/// the next tool event replaces, so against a wedged rail the hot path stalls
+/// ~2 s per hook instead of ~5, while the once-per-turn edges
+/// (`done`/`pending`/`idle`) keep the full default — dropping one of those
+/// loses real state (a lost `done` sticks the spinner with no later event to
+/// clear it). 2 s rather than 1: under full-parallel test load a 1 s deadline
+/// lost the race to fork/exec alone (see the shim comment in cli_notify.rs),
+/// and a `running` is not always pure heartbeat — PostToolUse is the
+/// Pending→Running recovery edge after an answered permission prompt, and
+/// UserPromptSubmit carries the sticky task label.
+pub const RUNNING_PIPE_TIMEOUT_SECS: u64 = 2;
+// "Deliberately shorter" is the invariant, pinned at compile time: the hot
+// heartbeat deadline must stay below the once-per-turn edge deadline.
+const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
+
+/// Cap on hook stdin read by a producer before JSON parsing — the shared
+/// contract between the CLI producer's bounded read and the bash fallback's
+/// `head -c`. Hook payloads are small JSON (well under a megabyte); the cap
+/// only bounds a runaway or hostile writer. Lives beside the send deadlines
+/// because it is the same family: a producer limiting itself so a misbehaving
+/// peer cannot wedge or bloat the hook path. This is the *input* cap, distinct
+/// from the plugin's 64 KB *wire* cap on the broadcast payload the producer
+/// derives from that input.
+pub const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024;
+
 // $1 = deadline seconds, $2 = pipe name, $3 = payload — positional parameters,
 // never interpolated into the script (same no-escaping rule as the plugin's
 // `notify_command`), so an arbitrary payload cannot break out of the command.

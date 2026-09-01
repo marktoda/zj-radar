@@ -151,7 +151,7 @@ fn codex_hook_group() -> HookGroup {
             "type": "command",
             "command": CODEX_HOOK_COMMAND,
             "commandWindows": CODEX_HOOK_COMMAND_WINDOWS,
-            "timeout": 5
+            "timeout": super::CODEX_HOOK_TIMEOUT_SECS
         })]),
         meta: Map::new(),
     }
@@ -248,8 +248,7 @@ pub(crate) fn brace_delta(line: &str) -> isize {
         .sum()
 }
 
-fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
-    let mut changed = false;
+fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) {
     let mut i = 0;
     // Recomputed after every drain (indexes shift). Scoping to plugins blocks
     // is what keeps `--force` surgical: a user's `radar` node in some other
@@ -269,9 +268,7 @@ fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) -> bool {
         }
         lines.drain(i..=end);
         mask = crate::setup::detect::in_plugins_block_mask(lines);
-        changed = true;
     }
-    changed
 }
 
 /// Is this line the opening of the KDL `plugins` block — not a sibling node
@@ -347,8 +344,9 @@ fn one_line_block_spans(line: &str) -> Option<(usize, usize)> {
 /// Expand a one-line `plugins { … }` node into a multi-line block so the alias
 /// can be spliced in as a child: `plugins {}` becomes `plugins {` / `}`, with
 /// any inline content moved to its own (still valid, `;`-separated) line and a
-/// trailing comment kept on the closing line. Returns whether a line changed.
-fn expand_one_line_plugins_block(lines: &mut Vec<String>) -> bool {
+/// trailing comment kept on the closing line. Expands at most the FIRST such
+/// node — the caller's re-scan (`find_plugins_insert`) picks the splice point.
+fn expand_one_line_plugins_block(lines: &mut Vec<String>) {
     for i in 0..lines.len() {
         if !is_plugins_node_line(&lines[i]) {
             continue;
@@ -365,9 +363,8 @@ fn expand_one_line_plugins_block(lines: &mut Vec<String>) -> bool {
         }
         repl.push(format!("{indent}{}", &line[close..]));
         lines.splice(i..=i, repl);
-        return true;
+        return;
     }
-    false
 }
 
 /// Does any top-level `plugins` block contain a `radar` child? The post-edit

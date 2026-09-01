@@ -65,19 +65,11 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         }
     }
 
-    // A running broadcast with no message renders as a blank active row. Give it
-    // a neutral baseline; the tool-activity substitution below refines it when a
-    // tool name/input is present. idle is the inverse — it means "no activity",
-    // so it always carries a blank msg (drops any stale message the payload
-    // happens to ride in on, e.g. a SessionStart session_title), letting the row
-    // recede cleanly on `/clear`.
-    let mut out_msg = if status == Status::Idle {
-        String::new()
-    } else if status == Status::Running && msg.trim().is_empty() {
-        "working".to_string()
-    } else {
-        msg.to_string()
-    };
+    // The shared producer baseline (`agents::baseline_msg`): running-but-blank
+    // gets `working`, idle always broadcasts blank. The tool-activity
+    // substitution below refines the running case when a tool name/input is
+    // present.
+    let mut out_msg = super::baseline_msg(status, msg);
 
     // For PreToolUse/PostToolUse, show the live action instead of the baseline.
     if status == Status::Running && matches!(event, Some("PreToolUse") | Some("PostToolUse")) {

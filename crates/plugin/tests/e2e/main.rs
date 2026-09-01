@@ -15,10 +15,8 @@
 //   - The plugin wasm already built:
 //     `cargo build --release --target wasm32-wasip1`
 
-#[cfg(feature = "e2e")]
 mod harness;
 
-#[cfg(feature = "e2e")]
 use harness::*;
 
 /// The harness itself is an E2E dependency: every test must run on a private
@@ -1220,14 +1218,14 @@ fn rail_paints_every_column_of_its_pane() {
 /// `SessionUpdate`'s peer list (`peer_sessions_cache`) when some plugin
 /// calls the blocking host fn `get_session_list()`, which only Zellij's own
 /// `session-manager` plugin does — zj-radar's plugin never does, by design
-/// (CLAUDE.md: "push-driven, never poll-driven"). See task-8-report.md for
-/// the full root-cause dive (this test used to fail with a STOP-CONDITION
-/// panic pointing at exactly that). task-8b-brief.md's amendment drops
+/// (CLAUDE.md: "push-driven, never poll-driven"). See `docs/design.md`,
+/// "Why not SessionUpdate", for the full root-cause dive (this test used to
+/// fail with a STOP-CONDITION panic pointing at exactly that). The fix drops
 /// `SessionUpdate` from the design entirely: liveness is now the presence
-/// files' own mtimes, turned into a per-entry fresh/stale state
-/// (`sessions::STALE_AFTER_SECS`) rather than a read-time drop (task-14),
-/// and this session's own name comes from `ModeUpdate` instead — both
-/// push-style, neither needing any other plugin to be running.
+/// files' own mtimes, graded per entry into fresh (≤90s,
+/// `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) → reaped past
+/// `sessions::DEAD_AFTER_SECS` (300s), and this session's own name comes from `ModeUpdate`
+/// instead — both push-style, neither needing any other plugin to be running.
 #[test]
 #[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
 fn session_next_switches_to_the_session_with_attention() {
@@ -1271,7 +1269,7 @@ fn session_next_switches_to_the_session_with_attention() {
     // heartbeat and this test would need up to a minute of real wall time to
     // stay honest. Piping a `running` status into A's OWN terminal arms A's
     // Fast cadence indefinitely (an active `Running` row animates every
-    // tick — see `timer_should_continue`/`has_running_work`) without giving A
+    // tick — see `timer_should_continue`/`needs_fast_ticks`) without giving A
     // any attention of its own, so it doesn't interfere with the ordering
     // assertion below (B is still the only attention>0 peer).
     let pane_a = a.discover_terminal_pane_id();
@@ -1298,8 +1296,8 @@ fn session_next_switches_to_the_session_with_attention() {
         "A's badge never showed {needle:?}. Either B never learned its own session name from \
          `Event::ModeUpdate` (so `project` withheld `Effect::PersistPresence`), or B's presence \
          file (written under the shared /cache root) never reached A (A's `Effect::ReadPresences` \
-         is Fast-tick-gated — see the rail above for whether A even looks fast-armed). Since \
-         task-14, a stale peer still renders (dimmed) rather than being dropped, so a bare \
+         is Fast-tick-gated — see the rail above for whether A even looks fast-armed). Under \
+         the fresh→stale→reaped ladder, a merely-stale peer still renders (dimmed) for 300s before the reap, so a bare \
          name with the wrong (or missing) counts, not an absent line, is the sign of a genuine \
          presence-plumbing failure here. See the printed rail above.",
     );

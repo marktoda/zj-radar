@@ -9,24 +9,43 @@
 
 use super::*;
 
-/// The marketplace repo (`claude plugin marketplace add <this>`).
-const CLAUDE_MARKETPLACE: &str = "marktoda/zj-radar";
 /// The plugin name as it appears installed (and in `installed_plugins.json`,
 /// where [`crate::run::claude_producer_wired`] detects it).
-const CLAUDE_PLUGIN: &str = "zj-radar-claude";
-/// The qualified id `claude plugin install` takes.
-const CLAUDE_PLUGIN_ID: &str = "zj-radar-claude@zj-radar";
+pub(crate) const CLAUDE_PLUGIN: &str = "zj-radar-claude";
 
-pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool) {
+/// The marketplace's NAME once added — Claude Code names it after the repo's
+/// basename, so it is derived from the slug `marketplace add` takes
+/// (`repo_slug()`: Cargo's `repository`, `ZJ_RADAR_REPO` overriding — the
+/// same fork-follows knob as `--download`). The one derivation behind the
+/// qualified plugin id (`zj-radar-claude@<name>`) and the uninstall
+/// epilogue's `marketplace remove <name>`, so the three can't drift on a fork.
+/// Uses the crate's empty-segment-guarded [`crate::agents::basename`], so a
+/// degenerate slug (trailing slash, empty) falls back to the slug whole
+/// rather than yielding an empty name (`zj-radar-claude@`).
+fn claude_marketplace_name(repo_slug: &str) -> &str {
+    crate::agents::basename(repo_slug).unwrap_or(repo_slug)
+}
+
+/// Read Claude Code's installed-plugins manifest
+/// (`~/.claude/plugins/installed_plugins.json`) for producer *detection* —
+/// the same three consumers as [`codex_hooks_text`], and the same drift class
+/// it guards against: one reader, so `run`'s advisory, `setup zellij`'s
+/// epilogue hint, and `--check` can never probe different paths.
+pub(crate) fn claude_installed_plugins_text() -> Option<String> {
+    dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok())
+}
+
+pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     let wired = crate::run::claude_producer_wired(claude_installed_plugins_text().as_deref());
     if uninstall {
-        uninstall_claude(wired, dry_run, yes);
+        uninstall_claude(wired, dry_run, yes, is_tty);
     } else {
-        install_claude(wired, dry_run, yes);
+        install_claude(wired, dry_run, yes, is_tty);
     }
 }
 
-fn install_claude(wired: bool, dry_run: bool, yes: bool) {
+fn install_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
     if wired {
         println!("claude: already wired ({CLAUDE_PLUGIN} plugin installed)");
         return;
@@ -38,27 +57,31 @@ fn install_claude(wired: bool, dry_run: bool, yes: bool) {
         println!("claude: skipped (binary not found)");
         return;
     }
+    let marketplace = repo_slug();
+    let plugin_id = format!("{CLAUDE_PLUGIN}@{}", claude_marketplace_name(&marketplace));
     if dry_run {
-        println!("claude: would run `claude plugin marketplace add {CLAUDE_MARKETPLACE}` (dry-run)");
-        println!("claude: would run `claude plugin install {CLAUDE_PLUGIN_ID}` (dry-run)");
+        println!("claude: would run `claude plugin marketplace add {marketplace}` (dry-run)");
+        println!("claude: would run `claude plugin install {plugin_id}` (dry-run)");
         return;
     }
-    if !yes
-        && !confirm(&format!(
+    if !confirm(
+        &format!(
             "Install the {CLAUDE_PLUGIN} producer via Claude Code's plugin marketplace \
-             (adds the {CLAUDE_MARKETPLACE} marketplace)?"
-        ))
-    {
+             (adds the {marketplace} marketplace)?"
+        ),
+        yes,
+        is_tty,
+    ) {
         println!("claude: skipped (declined)");
         return;
     }
     // Adding an already-configured marketplace may fail depending on the
     // Claude Code version — not worth parsing; the install below is the step
     // whose failure actually means something.
-    if let Err(e) = run_claude(&["plugin", "marketplace", "add", CLAUDE_MARKETPLACE]) {
+    if let Err(e) = run_claude(&["plugin", "marketplace", "add", &marketplace]) {
         eprintln!("claude: marketplace add did not succeed ({e}) — continuing, it may already be configured");
     }
-    if let Err(e) = run_claude(&["plugin", "install", CLAUDE_PLUGIN_ID]) {
+    if let Err(e) = run_claude(&["plugin", "install", &plugin_id]) {
         crate::exit::fail_report("claude", format!("plugin install failed — {e}"));
         return;
     }
@@ -68,7 +91,7 @@ fn install_claude(wired: bool, dry_run: bool, yes: bool) {
     );
 }
 
-fn uninstall_claude(wired: bool, dry_run: bool, yes: bool) {
+fn uninstall_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
     if !wired {
         println!("claude: already removed ({CLAUDE_PLUGIN} plugin not installed)");
         return;
@@ -85,7 +108,7 @@ fn uninstall_claude(wired: bool, dry_run: bool, yes: bool) {
         );
         return;
     }
-    if !yes && !confirm(&format!("Uninstall the {CLAUDE_PLUGIN} plugin via `claude plugin uninstall`?")) {
+    if !confirm(&format!("Uninstall the {CLAUDE_PLUGIN} plugin via `claude plugin uninstall`?"), yes, is_tty) {
         println!("claude: skipped (declined)");
         return;
     }
@@ -95,7 +118,8 @@ fn uninstall_claude(wired: bool, dry_run: bool, yes: bool) {
     }
     println!(
         "claude: removed the {CLAUDE_PLUGIN} plugin (marketplace entry left in place — \
-         remove with `claude plugin marketplace remove zj-radar`)"
+         remove with `claude plugin marketplace remove {}`)",
+        claude_marketplace_name(&repo_slug())
     );
 }
 
@@ -106,5 +130,25 @@ fn run_claude(args: &[&str]) -> Result<(), String> {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("`claude {}` exited with {s}", args.join(" "))),
         Err(e) => Err(format!("could not run `claude` — {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marketplace_name_is_the_slug_basename_so_forks_agree() {
+        // The name Claude Code assigns to an added marketplace is the repo's
+        // basename. Because the plugin id and the uninstall epilogue both call
+        // this on the same slug `marketplace add` takes, the three surfaces
+        // agree structurally — including under a `ZJ_RADAR_REPO` override.
+        assert_eq!(claude_marketplace_name("marktoda/zj-radar"), "zj-radar");
+        assert_eq!(claude_marketplace_name("fork-owner/zj-radar-fork"), "zj-radar-fork");
+        // Degenerate slug without a slash: use it whole rather than panic.
+        assert_eq!(claude_marketplace_name("zj-radar"), "zj-radar");
+        // Trailing slash must not yield an empty name (`zj-radar-claude@` and
+        // a dangling `marketplace remove `): fall back to the slug whole.
+        assert_eq!(claude_marketplace_name("marktoda/zj-radar/"), "marktoda/zj-radar/");
     }
 }

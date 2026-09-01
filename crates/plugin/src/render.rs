@@ -14,7 +14,13 @@
 //! 5. **Bottom region** — ledger lines, footer (rule + tally + hint), filler.
 
 use crate::config::Density;
-use crate::rollup::{LedgerLine, Outcome, PaneDisplay, TabDisplay, TabRow};
+use crate::kind::Kind;
+// One minute band for every age display (its `1h+` freeze is load-bearing
+// for cadence disarm — pre-session-name; a named session stays Slow-armed
+// for the presence heartbeat, see `desired_cadence`) — owned by the ledger,
+// shared by the wait/run tags.
+use crate::ledger::minute_tag;
+use crate::rollup::{ExitOutcome, LedgerLine, PaneDisplay, TabDisplay, TabRow};
 use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
@@ -55,6 +61,26 @@ const MAX_PANE_LINES: usize = 6;
 /// exactly what [`child_prefix`] emits. Holding this fixed keeps the glyph
 /// aligned across all child lines (see `child_prefix`'s doc).
 const TREE_PREFIX_COLS: usize = 3;
+
+/// The steady mark for a Running *service* (`Kind::is_service`) — a dev
+/// server is up, not progressing, so nothing animates (`docs/activity-model.md`
+/// §3: a spinner promises bounded work). The steadiness is also what lets the
+/// timer stand down around an all-service rail (to Slow once the session name
+/// is known — the presence heartbeat, see `desired_cadence` — or fully
+/// pre-name): identical rows across ticks fall to the render gate, and the
+/// cadence predicates count only `TrackedObservation::animating` rows.
+const SERVICE_GLYPH: char = '▸';
+
+/// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
+/// (easing to a slow blink — see [`spin_glyph`]). The single owner of the
+/// service/job glyph split, shared by the tab header and the pane lines.
+fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
+    if kind.is_service() {
+        SERVICE_GLYPH
+    } else {
+        spin_glyph(now_tick, since_tick)
+    }
+}
 
 /// Spinner frame for a Running glyph: full speed normally; after
 /// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
@@ -136,23 +162,23 @@ pub struct RenderOpts {
     /// whenever `len() <= 1` (only this session, or no peer presence has
     /// crossed the shared `/cache` root yet), so every caller that never
     /// populates this (every
-    /// pre-existing test, and any host that hasn't wired Task 5/6's session
+    /// pre-existing test, and any host that hasn't wired the session
     /// plumbing) renders byte-identical to before this field existed.
     pub badge: Vec<BadgeEntry>,
 }
 
-/// Presentation for the roll-up's `Outcome` tag. The enum itself lives in
+/// Presentation for the roll-up's `ExitOutcome` tag. The enum itself lives in
 /// `rollup` (pure semantics); these methods encode the glyphs and the
 /// width-driven roomy/tight forms, which are the renderer's concern.
-impl Outcome {
+impl ExitOutcome {
     /// The roomy form. `Ok` is EMPTY — the line-1 status glyph (green ●) is the
     /// one done signal; a tag would double-mark it. Errors carry the info the
     /// line-1 `✗` can't: the exit code.
     fn full(self) -> String {
         match self {
-            Outcome::Ok => String::new(),
-            Outcome::Failed(Some(code)) => format!("exit {}", code),
-            Outcome::Failed(None) => "✗".to_string(),
+            ExitOutcome::Ok => String::new(),
+            ExitOutcome::Failed(Some(code)) => format!("exit {}", code),
+            ExitOutcome::Failed(None) => "✗".to_string(),
         }
     }
 
@@ -161,22 +187,22 @@ impl Outcome {
     /// only failures do. Lets callers ask "is there a tag?" without building
     /// the `full()` string just to test it for emptiness.
     fn renders_tag(self) -> bool {
-        !matches!(self, Outcome::Ok)
+        !matches!(self, ExitOutcome::Ok)
     }
 
     /// The irreducible short form, shown when width is too tight for `full`.
     fn minimal(self) -> &'static str {
         match self {
-            Outcome::Ok => "",
-            Outcome::Failed(_) => "✗",
+            ExitOutcome::Ok => "",
+            ExitOutcome::Failed(_) => "✗",
         }
     }
 
     /// The hue the tag reads in: success (green) / error (red).
     fn role(self) -> Role {
         match self {
-            Outcome::Ok => Role::Success,
-            Outcome::Failed(_) => Role::Error,
+            ExitOutcome::Ok => Role::Success,
+            ExitOutcome::Failed(_) => Role::Error,
         }
     }
 }
@@ -306,18 +332,41 @@ enum LineBg {
 }
 
 impl LineBg {
-    /// The one home for the surface-class → bg-escape map. `render_rail` resolves
-    /// every painted line through here, so the `ActiveChild` vs `Card` split (the
-    /// drift `cards_active_more_line_*` guards) lives in a single place. `row` is
-    /// the card's owning row (only `Card` consults it); `rail` is the precomputed
-    /// panel-base escape. `None` means the line is never painted.
-    fn escape(self, row: &TabRow, theme: &DerivedColors, rail: &str) -> Option<String> {
+    /// The one home for the row-surface map — how a line class resolves
+    /// against its owning `row` (the `ActiveChild` vs `Card` split the
+    /// `cards_active_more_line_*` drift guards pin). `render_body`'s
+    /// per-row `finalize` closure is the caller; the row-less rail surfaces
+    /// never come through here — they are all `LineBg::Rail` by
+    /// construction and take the one-line identity in [`paint_if_cards`]
+    /// instead. `rail` is the precomputed panel-base escape, borrowed
+    /// straight through (`Cow::Borrowed`) rather than re-allocated per
+    /// inter-card separator line per frame. `None` out means the line is
+    /// never painted.
+    fn escape<'a>(self, row: &TabRow, theme: &DerivedColors, rail: &'a str) -> Option<std::borrow::Cow<'a, str>> {
         match self {
             LineBg::None => Option::None,
-            LineBg::Rail => Some(rail.to_string()),
-            LineBg::Card => Some(card_tint(row, theme)),
-            LineBg::ActiveChild => Some(tc_bg(theme.surface_agent)),
+            LineBg::Rail => Some(std::borrow::Cow::Borrowed(rail)),
+            LineBg::Card => Some(std::borrow::Cow::Owned(card_tint(row, theme))),
+            LineBg::ActiveChild => Some(std::borrow::Cow::Owned(tc_bg(theme.surface_agent))),
         }
+    }
+}
+
+/// The one Cards-density paint step for the row-less rail surfaces (header,
+/// cross-session badge, idle strip, bottom region). Those four sites emit
+/// `LineBg::Rail` lines exclusively, so this is the Rail identity applied
+/// directly — borrowing the precomputed `rail` escape rather than routing
+/// through [`LineBg::escape`], which would allocate a fresh `String` per
+/// Rail line per frame for a value the caller already holds. Outside Cards
+/// density the line passes through untouched.
+fn paint_if_cards(line: Line, cards: bool, width: usize, rail: &str) -> Line {
+    debug_assert!(
+        matches!(line.bg, LineBg::Rail | LineBg::None),
+        "row-less surface emitted a row-owned line class"
+    );
+    match line.bg {
+        LineBg::Rail if cards => line.painted(width, rail),
+        _ => line,
     }
 }
 
@@ -431,6 +480,9 @@ impl RenderedRail {
         self.targets.get(line as usize).cloned().flatten()
     }
 
+    /// Test vocabulary — production hotspot resolution goes through
+    /// `hotspot_at` (column-aware); this line-only form exists for asserts.
+    #[cfg(test)]
     pub(crate) fn hotspot_at_line(&self, line: isize) -> Option<(usize, HotspotAction)> {
         if line < 0 {
             return None;
@@ -483,18 +535,23 @@ fn spine_seg(active: bool, tab_status: Status) -> String {
 /// Single-pane tabs keep the chunk-1 line-2 behavior; multi-pane tabs use
 /// the line-per-pane design.
 fn is_multi_pane(display: &TabDisplay) -> bool {
-    display.panes.iter().filter(|p| p.is_tracked()).count() > 1
+    display.panes.iter().filter(|p| p.earns_pane_line()).count() > 1
 }
 
-/// The rail's identity header. Single source of truth for the header's vertical
-/// span. Headerless only when there's truly nothing to show — no rows AND no
-/// ledger history (`has_content` is false) — or when `header` is false, which
-/// suppresses the identity block so rows start at line 0.
+/// The rail's identity header's vertical span. This cannot simply measure
+/// `render_header`'s output: the body budget needs the header's height BEFORE
+/// `plan_layout` runs, but `render_header` takes `overflow` — an output of
+/// that very planning — so the dependency is genuinely circular. The two
+/// therefore share exactly one fact, stated here and re-checked by the
+/// `debug_assert_eq!` at the end of [`render_header`]: 0 lines when headerless,
+/// 1 in Cards, 2 otherwise. Headerless only when there's truly nothing to
+/// show — no rows AND no ledger history (`has_content` is false) — or when
+/// `header` is false, which suppresses the identity block so rows start at
+/// line 0.
 ///
 /// In Cards density the carded hero is just the " RADAR …" title (1 line) — the
 /// `═` rule is dropped so cards begin immediately under the title. Compact and
-/// Comfortable keep the two-line title+rule header. `render_rail()` uses the
-/// same emitted header lines for ANSI and targets, so the count stays in lockstep.
+/// Comfortable keep the two-line title+rule header.
 fn header_lines(header: bool, density: Density, has_content: bool) -> usize {
     if !has_content || !header {
         0
@@ -582,7 +639,9 @@ fn identity_and_detail<'a>(status: Status, task: &'a str, msg: &'a str) -> (&'a 
 
 /// The `· 12m` wait tag for a pane blocked on the user: whole minutes since
 /// the waiting-on-you edge (`pending_epoch_s`), frozen at `1h+` once saturated
-/// — the same freeze the ledger uses, so the Slow cadence can disarm. `None`
+/// — the same freeze the ledger uses, so the Slow cadence can disarm
+/// (pre-session-name; a named session stays Slow-armed for the presence
+/// heartbeat — see `desired_cadence`). `None`
 /// under a minute (a fresh ask needs no clock), for every non-Pending status,
 /// and for unstamped rows (pre-upgrade snapshots). Per ⟦D-timer⟧ this lives on
 /// the pane's identity line, never the tab line.
@@ -590,23 +649,29 @@ fn wait_tag(status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> O
     if status != Status::Pending {
         return None;
     }
-    let age = now_epoch_s.saturating_sub(pending_epoch_s?);
-    if age < 60 {
-        None
-    } else if age < crate::ledger::SATURATE_S {
-        Some(format!("{}m", age / 60))
-    } else {
-        Some("1h+".to_string())
-    }
+    minute_tag(now_epoch_s.saturating_sub(pending_epoch_s?))
 }
 
-/// Append the wait tag to an identity line: `migrate schema · 12m`. Identity
+/// The `· 4m` elapsed tag for a long-running bounded *job* — whole minutes
+/// since the run's true start (`since_tick` survives re-promotions of the same
+/// command, `command.rs`), same band as the wait tag. Jobs only
+/// (`docs/activity-model.md` §3): agents label their own turns and services
+/// never complete, so neither wears a stopwatch. Ticks read as seconds because
+/// an animated Running row is exactly what holds the 1 Hz cadence armed.
+fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -> Option<String> {
+    if status != Status::Running || kind.is_agent() || kind.is_service() {
+        return None;
+    }
+    minute_tag(now_tick.saturating_sub(since_tick?))
+}
+
+/// Append a time tag to an identity line: `migrate schema · 12m`. Identity
 /// passes through untouched when no tag applies, keeping calm rows
 /// bit-identical to the tagless rail.
-fn with_wait_tag(identity: &str, status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> String {
-    match wait_tag(status, pending_epoch_s, now_epoch_s) {
+fn with_time_tag(identity: String, tag: Option<String>) -> String {
+    match tag {
         Some(tag) => format!("{identity} · {tag}"),
-        None => identity.to_string(),
+        None => identity,
     }
 }
 
@@ -618,7 +683,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let hotspot = row.display.panes.iter()
         .any(PaneDisplay::has_unacknowledged_status_pending)
         .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
-    let hotspot = HotspotSlot::new(opts.width, 6, hotspot);
+    let hotspot = HotspotSlot::new(opts.width, TAB_HEADER_HOTSPOT_MIN, hotspot);
     let width = hotspot.content_width();
     let now_tick = opts.now_tick;
     let st = row.display.status;
@@ -636,16 +701,13 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // start at fixed columns; `▌` when active, plain space otherwise.
     let bar = spine_seg(row.active, st);
 
-    // Internal left padding: `pad_x` cells after the col-0 spine/space, before
-    // the glyph. At extreme-narrow widths clamp pad_x then num so the prefix
-    // never exceeds `width`.
-    let pad_x = card_spacing(opts.density).pad_x;
-
     // col 1: status glyph (working spins; eases to a slow blink for
     // long-runners — see `spin_glyph`).
     let glyph_char = if st == Status::Running {
-        let since_tick = row.display.detail.as_ref().map(|d| d.since_tick).unwrap_or(now_tick);
-        spin_glyph(now_tick, since_tick)
+        let detail = row.display.detail.as_ref();
+        let since_tick = detail.map(|d| d.since_tick).unwrap_or(now_tick);
+        let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
+        running_glyph(kind, now_tick, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -664,20 +726,18 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // cue — the accent spine + brighter card — so the two stay independent.)
     let label_bold = st != Status::Idle;
 
-    // left visible prefix is "X[pad]<glyph> <num> " — bar/glyph are 1 cell each;
-    // `pad_len` is the Cards-only internal left pad (1 col, else 0).
-    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. Clamp pad first, then num.
+    // left visible prefix is "X<glyph> <num> " — bar/glyph are 1 cell each.
+    // Bare minimum: bar(1, always reserved) + glyph(1) + sp(1) + num. At
+    // extreme-narrow widths clamp num so the prefix never exceeds `width`.
     let num_full = row.number.to_string();
     let bar_width = 1;
     let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
-    let pad_len = pad_x.min(width.saturating_sub(bare_min + 1)); // keep 1 col for at least '1'
-    let num_budget = width.saturating_sub(bare_min + pad_len);
+    let num_budget = width.saturating_sub(bare_min);
     let num = truncate(&num_full, num_budget);
     let num_w = UnicodeWidthStr::width(num.as_str());
     // Trailing sp after num only if it fits.
-    let has_trailing_sp = bare_min + pad_len + num_w < width;
-    let pad = " ".repeat(pad_len);
-    let prefix_len = bare_min + pad_len + num_w + if has_trailing_sp { 1 } else { 0 };
+    let has_trailing_sp = bare_min + num_w < width;
+    let prefix_len = bare_min + num_w + if has_trailing_sp { 1 } else { 0 };
     // Trailing bell marker (⚑ + space, 2 cols). The prefix
     // clamp only guarantees the prefix itself fits `width`; suppress the bell at
     // extreme-narrow widths where it wouldn't fit beside the prefix, or it would
@@ -709,12 +769,27 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         text: label_text.into(),
     };
     let line = Line::new(
-        format!("{}{}{}{}{}\n", bar, pad, label, " ".repeat(gap), bell),
+        format!("{}{}{}{}\n", bar, label, " ".repeat(gap), bell),
         Some(tab_target.clone()),
         LineBg::Card,
     );
     hotspot.finish(line, &hue(Role::Attention))
 }
+
+/// Columns [`HotspotSlot::new`] reserves once a hotspot is admitted:
+/// separator space (1) + action glyph (1). Also the slot term of every
+/// `*_HOTSPOT_MIN` admission minimum below.
+const HOTSPOT_SLOT_COLS: usize = 2;
+
+// Hotspot admission minimums, one per hotspot-bearing line class: each is the
+// line's minimal meaningful visible prefix plus the `HOTSPOT_SLOT_COLS`
+// separator+glyph reservation `HotspotSlot::new` makes once admitted.
+/// Tab header line: bar(1) + glyph(1) + sp(1) + 1-digit num(1) = 4, + slot.
+const TAB_HEADER_HOTSPOT_MIN: usize = 4 + HOTSPOT_SLOT_COLS;
+/// Pane identity line: tree prefix(3) + glyph(1) + sp(1) + mark(1) = 6, + slot.
+const PANE_LINE_HOTSPOT_MIN: usize = 6 + HOTSPOT_SLOT_COLS;
+/// Session badge line: here-marker(1) + sp(1) = 2, + slot.
+const BADGE_LINE_HOTSPOT_MIN: usize = 2 + HOTSPOT_SLOT_COLS;
 
 /// Owns the complete hotspot suffix contract: admission at a site's minimum
 /// width, reservation of separator+glyph, and release-build enforcement when
@@ -729,7 +804,11 @@ struct HotspotSlot {
 impl HotspotSlot {
     fn new(width: usize, minimum: usize, action: Option<HotspotAction>) -> Self {
         let action = action.filter(|_| width >= minimum);
-        let content_width = if action.is_some() { width - 2 } else { width };
+        let content_width = if action.is_some() {
+            width.saturating_sub(HOTSPOT_SLOT_COLS)
+        } else {
+            width
+        };
         Self { width, content_width, action }
     }
 
@@ -797,16 +876,25 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         if skip_silent {
             let says_something = !identity.trim().is_empty()
                 || pane.outcome().is_some_and(|o| o.renders_tag());
-            if pane_status == Status::Idle || !says_something {
+            // `status()` (not `render_status()`) is the gate on purpose: an
+            // *observation* resting at Idle is silent, while an Interactive
+            // pane has no observation-status at all — its muted label IS its
+            // content (an open editor names the pane).
+            if pane.status() == Some(Status::Idle) || !says_something {
                 return Vec::new();
             }
         }
-        let identity =
-            with_wait_tag(identity, pane_status, pane.pending_epoch_s(), opts.now_epoch_s);
+        // The two tags key on disjoint statuses (Pending vs Running), so the
+        // `or_else` chain IS the "at most one tag per line" rule.
+        let identity = with_time_tag(
+            identity.to_string(),
+            wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s)
+                .or_else(|| run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick)),
+        );
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
-        let hotspot = HotspotSlot::new(opts.width, 8, hotspot);
+        let hotspot = HotspotSlot::new(opts.width, PANE_LINE_HOTSPOT_MIN, hotspot);
         let content_width = hotspot.content_width();
         let text = emit_pane_line(pane, &identity, detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
@@ -833,7 +921,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // belong to the tab above."
     if is_multi_pane(&row.display) {
         let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
-            .filter(|p| p.is_tracked())
+            .filter(|p| p.earns_pane_line())
             .collect();
         let total_tracked = tracked_panes.len();
         let show = total_tracked.min(MAX_PANE_LINES);
@@ -878,11 +966,11 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     // Unlike the multi-pane roster (where every tracked pane earns a line),
     // the single pane's line is emitted only when it says something: a
     // non-empty identity OR an outcome tag that actually renders (`Ok`'s tag
-    // is empty by design — see `Outcome::renders_tag` — so an empty-msg Ok
+    // is empty by design — see `ExitOutcome::renders_tag` — so an empty-msg Ok
     // completion earns no line at all). Idle stays header-only. The gate
     // itself lives inside `pane_lines` (`skip_silent`), judged on the very
     // identity it emits.
-    if let Some(pane) = row.display.panes.iter().find(|p| p.is_tracked()) {
+    if let Some(pane) = row.display.panes.iter().find(|p| p.earns_pane_line()) {
         lines.extend(pane_lines(pane, Branch::Elbow, true));
     }
     lines
@@ -897,18 +985,16 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 /// (`exit 1`) to the irreducible glyph (`✗`). The returned string fits within
 /// `avail` columns and carries its own color escapes (each segment
 /// RESET-terminated).
-fn compose_activity(cmd: &str, outcome: Option<Outcome>, avail: usize, cmd_color: &str) -> String {
-    let Some(oc) = outcome else {
+fn compose_activity(cmd: &str, outcome: Option<ExitOutcome>, avail: usize, cmd_color: &str) -> String {
+    // No outcome, or one that renders no tag (Ok), is "no tag at all": no
+    // separator space, no empty SGR pair — the status glyph already carries
+    // the done signal.
+    let Some(oc) = outcome.filter(|o| o.renders_tag()) else {
         return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
     };
-    // An outcome that renders no tag (Ok) is "no tag at all": no separator
-    // space, no empty SGR pair — the status glyph already carries the signal.
-    if !oc.renders_tag() {
-        return Seg::new(cmd_color, truncate(cmd, avail)).to_string();
-    }
     let role = oc.role().ansi();
     let cmd = cmd.trim();
-    // Outcome with no command (e.g. an exit with no recorded command string):
+    // ExitOutcome with no command (e.g. an exit with no recorded command string):
     // show the largest form that fits.
     if cmd.is_empty() {
         let full = oc.full();
@@ -991,7 +1077,7 @@ fn emit_pane_line(
     let status = pane.render_status();
     let glyph = if status == Status::Running {
         let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
-        spin_glyph(opts.now_tick, since_tick)
+        running_glyph(pane.kind(), opts.now_tick, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };
@@ -1190,7 +1276,7 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
 
 fn target_for_row(row: &TabRow) -> RailTarget {
     RailTarget {
-        tab_position: row.number.saturating_sub(1) as usize,
+        tab_position: row.tab_position(),
         pane_id: None,
         session: None,
     }
@@ -1241,17 +1327,17 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     // independent of the later title-squeeze clamp.
     let avail = width.saturating_sub(title_w);
     let combined_w = |b: &str| UnicodeWidthStr::width(primary.as_str()) + 1 + UnicodeWidthStr::width(b);
-    // (text, color, bold) run(s) that make up the right slot, in emission order.
-    let right_segs: Vec<(String, &str, bool)> = match &badge {
+    // The `Seg` run(s) that make up the right slot, in emission order.
+    let right_segs: Vec<Seg> = match &badge {
         Some(b) if combined_w(b) <= avail => {
-            vec![(primary.clone(), primary_color, false), (format!(" {b}"), Role::Attention.ansi(), true)]
+            vec![Seg::new(primary_color, primary.clone()), Seg::bold(Role::Attention.ansi(), format!(" {b}"))]
         }
         // Combined doesn't fit: the overflow marker always wins, but a plain
         // census loses to the badge — drop it and keep the badge alone.
-        Some(b) if !overflow => vec![(b.clone(), Role::Attention.ansi(), true)],
-        _ => vec![(primary.clone(), primary_color, false)],
+        Some(b) if !overflow => vec![Seg::bold(Role::Attention.ansi(), b.clone())],
+        _ => vec![Seg::new(primary_color, primary.clone())],
     };
-    let plain_right: String = right_segs.iter().map(|(t, _, _)| t.as_str()).collect();
+    let plain_right: String = right_segs.iter().map(|s| s.text.as_ref()).collect();
     let right_full_w = UnicodeWidthStr::width(plain_right.as_str());
     let right_w = right_full_w.min(width);
     // At extreme-narrow widths the gap can be 0 (no `.max(1)`) so the
@@ -1268,7 +1354,7 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     } else {
         right_segs
             .into_iter()
-            .map(|(t, c, b)| if b { Seg::bold(c, t).to_string() } else { Seg::new(c, t).to_string() })
+            .map(|s| s.to_string())
             .collect::<String>()
     };
     let mut title_line = String::new();
@@ -1288,6 +1374,13 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
             LineBg::Rail,
         ));
     }
+    // The one fact `header_lines` states independently (it must, for the body
+    // budget — see its doc) re-checked against what was actually emitted.
+    debug_assert_eq!(
+        lines.len(),
+        header_lines(opts.header, opts.density, has_content),
+        "render_header and header_lines disagree on the header's span"
+    );
     lines
 }
 
@@ -1324,8 +1417,9 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// every existing single-session snapshot/test stays byte-identical (the
 /// badge is additive, never a subtraction from the render surface). A lone
 /// fresh own-entry plus only STALE peers still clears this threshold and
-/// renders (task-14: the roster's whole point is remembering) — the count
-/// is over `entries`, not over fresh entries.
+/// renders (a stale-but-not-yet-dead entry stays visible by design — only
+/// `sessions::DEAD_AFTER_SECS` reaps) — the count is over `entries`, not
+/// over fresh entries.
 ///
 /// The current session's own line carries NO click target at all — you
 /// can't "switch to" the session you're already in, and unlike a peer line
@@ -1344,9 +1438,13 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// `opts.glyphs`) rather than inventing a parallel icon vocabulary the nerd/
 /// plain config wouldn't know about. `selected` (the pending Alt+[/] cycle
 /// target) renders bold+accent; a `stale` entry recedes past the ordinary
-/// muted `idle_text` (see the color derivation below); everything else —
-/// including the current line — renders in `idle_text`, so the badge reads
-/// as a status strip, not a second row of cards.
+/// muted `idle_text` (see the color derivation below); every other label —
+/// including the current line's — renders in `idle_text`, so the badge
+/// reads as a status strip, not a second row of cards. The one accent in
+/// that strip is the current line's `•` you-are-here marker: rendered in
+/// `idle_text` it was invisible against the muted labels around it
+/// (live-use feedback), so the marker alone takes `Role::Accent` while the
+/// label color rules above stay untouched.
 ///
 /// A trailing blank separator line closes the block (live-use feedback: the
 /// badge read as glued to the first card below it without one) — appended
@@ -1365,7 +1463,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     }
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
-    // A stale entry (task-14: dimmed, never dropped from the badge) recedes
+    // A stale entry (dimmed, never dropped from the badge) recedes
     // one step further than the ordinary muted `idle_text` every other line
     // uses — blended halfway toward the panel background, the same "recede
     // toward bg" idiom `DerivedColors::from_bg_fg` already uses for its own
@@ -1381,7 +1479,7 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
         .map(|entry| {
             let hotspot = (entry.stale && !entry.is_current)
                 .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
-            let hotspot = HotspotSlot::new(width, 4, hotspot);
+            let hotspot = HotspotSlot::new(width, BADGE_LINE_HOTSPOT_MIN, hotspot);
             let content_width = hotspot.content_width();
             let mut label = entry.name.clone();
             if entry.running > 0 {
@@ -1390,9 +1488,9 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
             if entry.attention > 0 {
                 label.push_str(&format!(" {}{}", entry.attention, attention_glyph));
             }
-            // A dim `•` marks "you are here" on the current line, independent
-            // of `selected` — a plain space keeps every other line's label
-            // aligned under it.
+            // An accent `•` marks "you are here" on the current line,
+            // independent of `selected` — a plain space keeps every other
+            // line's label aligned under it.
             let marker = if entry.is_current { "•" } else { " " };
             const PREFIX_VIS: usize = 2; // marker + its separating space
             let text = prefixed_line(
@@ -1408,7 +1506,10 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                     } else {
                         Seg::new(&idle, clamped)
                     };
-                    format!("{} {}", Seg::new(&idle, marker), label_seg)
+                    // Peers' alignment space paints identically in any
+                    // color — byte-stable output.
+                    let marker_color = if entry.is_current { accent } else { &idle };
+                    format!("{} {}", Seg::new(marker_color, marker), label_seg)
                 },
             );
             let target = (!entry.is_current)
@@ -1478,48 +1579,55 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // working" tally computed later in `render_bottom`; the two live in
     // separate pipeline stages (body vs. bottom region) and sharing one
     // number across that seam would cost more plumbing than the one `filter`
-    // it saves.
-    let working = rows.iter().any(|r| r.display.status == Status::Running);
+    // it saves. Two gates: the tab's HEADLINE is Running (a needs-you tab
+    // with a working sibling keeps a calm rule — attention outranks motion),
+    // and `TabDisplay::animating` — the canonical cadence term
+    // (`TrackedObservation::animating`), so the sweep only marches for work
+    // the timer actually animates: a rail whose only Running rows are
+    // services (steady `▸`, no Fast cadence) must not draw a sweep that
+    // would only teleport once per Slow fire — motion promises bounded work
+    // (`docs/activity-model.md` §1). The footer tally deliberately stays
+    // Status-only — "1 working" for an up dev server is honest English, and
+    // a count is not an animation.
+    let working = rows
+        .iter()
+        .any(|r| r.display.status == Status::Running && r.display.animating);
 
     let mut flat: Vec<Line> = Vec::new();
 
     // Header.
     for line in render_header(rows, opts, overflow, has_content, working) {
-        flat.push(if cards { line.painted(width, &rail) } else { line });
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Cross-session badge (zero lines with ≤1 session — see
     // `render_session_badge`), between the header and the first card.
     for line in badge_lines {
-        flat.push(if cards { line.painted(width, &rail) } else { line });
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Body: one card block per kept row.
     for &(i, budget) in &plan {
         let row = &rows[i];
-        let row_target = target_for_row(row);
 
         // Resolve a raw line's surface through the one `LineBg::escape` map by
         // consuming the complete `Line`. Metadata such as targets and hotspots
         // rides inside the value, so Cards finalization cannot forget it when
-        // `Line` grows another lockstep field.
+        // `Line` grows another lockstep field. Outside Cards density nothing
+        // paints, so the map (and its owned Card/ActiveChild escapes) is
+        // never consulted at all.
         let finalize = |line: Line| -> Line {
-            let bg = line.bg;
-            let mut line = match bg.escape(row, &opts.theme, &rail) {
-                Some(esc) if cards => line.painted(width, &esc),
-                _ => line,
+            let mut line = if cards {
+                match line.bg.escape(row, &opts.theme, &rail) {
+                    Some(esc) => line.painted(width, &esc),
+                    None => line,
+                }
+            } else {
+                line
             };
             line.bg = LineBg::None;
             line
         };
-
-        // pad_y internal top padding — belongs to this card's click span.
-        // Cloned each iteration (`RailTarget` isn't `Copy`; `session` is a
-        // `String`) — `pad_y` can be >1, so a plain move would only survive
-        // the first pass.
-        for _ in 0..spacing.pad_y {
-            flat.push(finalize(Line::new("\n".to_string(), Some(row_target.clone()), LineBg::Card)));
-        }
 
         // content (truncated to the planned budget == today's compression).
         for line in blocks[i].iter().take(budget) {
@@ -1534,7 +1642,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
 
     // Idle strip.
     for line in render_strip(strip_folded, opts) {
-        flat.push(if cards { line.painted(width, &rail) } else { line });
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     flat
@@ -1772,7 +1880,7 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // `leftover` measures — no special-casing needed.
     let leftover = opts.height.saturating_sub(flat.len());
     for line in render_bottom(rows, ledger, leftover, opts) {
-        flat.push(if cards { line.painted(width, &rail) } else { line });
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Final height clamp. The body is budgeted against `height - header_lines`, so
