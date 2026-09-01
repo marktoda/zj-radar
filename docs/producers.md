@@ -104,9 +104,11 @@ stays in Rust (it requires the `zj-radar` binary — no JS-side derive twin).
 
 - **Requires the `zj-radar` binary on `PATH`.** Unlike Claude's `jq` fallback,
   opencode wiring has no script fallback: `setup opencode` implies the binary.
-  Under `--pure` / `OPENCODE_PURE`, opencode disables external plugins *and*
-  the pane's command tracking is suppressed, so the row goes dark under
-  `--pure` (same tradeoff class as claude/codex).
+  Because `opencode` is a recognized agent executable (`AGENT_NAMES`), uninstrumented
+  `opencode` panes are ignored by command tracking to prevent duplicate activity
+  rows. An `opencode` pane will remain dark until `zj-radar setup opencode` is run
+  and opencode is restarted (or if `--pure` / `OPENCODE_PURE` is passed, which disables
+  external plugins).
 - **Restart opencode after installing** — plugins load once at startup, so a
   write mid-session needs a restart (or plugin reload) to take effect.
 - The bridge covers `chat.message` (running + task), `tool.execute.before`/

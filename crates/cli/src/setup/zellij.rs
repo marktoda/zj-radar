@@ -535,6 +535,16 @@ fn print_grant_hint_if_needed(facts: &ZellijFacts) {
 fn print_producer_hint_if_needed(facts: &ZellijFacts) {
     if !facts.producer_wired() {
         println!("zellij: {}", crate::run::PRODUCER_HINT);
+    } else {
+        if which("opencode") && !facts.opencode_producer {
+            println!("zellij: note: opencode found on PATH but bridge plugin not installed — run `zj-radar setup opencode`");
+        }
+        if which("claude") && !facts.claude_producer {
+            println!("zellij: note: claude found on PATH but plugin not installed — run `zj-radar setup claude`");
+        }
+        if which("codex") && !facts.codex_producer {
+            println!("zellij: note: codex found on PATH but hooks not installed — run `zj-radar setup codex`");
+        }
     }
 }
 
