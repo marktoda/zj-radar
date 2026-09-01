@@ -46,7 +46,9 @@ before the tag**. The order below matters; each step gates the next.
 
    Core's API is allowed to break between 0.x releases (it's internal); the
    exact pin is what protects previously published CLIs. Never loosen it to a
-   caret/minor range.
+   caret/minor range. Note that core gains a new `Kind` variant on any new
+   producer (e.g. `Opencode`): downstream exhaustive matches on `Kind` break,
+   but core is internal so the only consumer is this workspace.
 
    Publishing before the tag opens a window where crates.io serves the new
    version but its GitHub release assets don't exist yet — and that window is

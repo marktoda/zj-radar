@@ -109,7 +109,7 @@ Mirror Cmux/code-notify's proven shape:
 
 > **As shipped:** the declarative table with a `Format` enum and the per-agent
 > disable env var never materialized. The implementation is per-surface modules
-> (`crates/cli/src/setup/{claude,codex,zellij}.rs` over a shared `edit.rs`)
+> (`crates/cli/src/setup/{claude,codex,opencode,zellij}.rs` over a shared `edit.rs`)
 > that keep the rules that mattered: strip-own-then-re-add with markers,
 > refuse-to-write on unparseable files, atomic writes, diff preview + `--yes`
 > and `--dry-run`.
@@ -119,10 +119,11 @@ Shipped agent wiring:
 |---|---|---|---|
 | Codex | `~/.codex/hooks.json` | command hooks with `ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex` marker | `UserPromptSubmit` / tool hooks / subagents → running; `PermissionRequest` → pending; `Stop` → done |
 | Codex legacy | `~/.codex/config.toml` `notify` | `notify = ["zj-radar","notify","codex"]` only with `--legacy-notify` | `agent-turn-complete` → done |
+| Opencode | `~/.config/opencode/plugins/zj-radar.js` | vendored JS bridge with the `ZJ_RADAR_OPENCODE_PLUGIN=v1` marker (auto-loaded; no `opencode.json` edit) | `chat.message` / tool hooks → running; `permission.asked` → pending; `session.idle` → done; `session.error` → error |
 
 Other agents follow the same strip-own-then-re-add installer pattern against
-their native hook/plugin config; none beyond Codex (and the Claude Code plugin
-in §1) ship today.
+their native hook/plugin config; Codex, Opencode, and the Claude Code plugin
+(§1) are the three that ship today.
 
 ## 3. One universal notifier (not per-agent scripts)
 

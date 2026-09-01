@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, strip_managed_zellij_alias};
+use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, opencode_plugin_is_ours, strip_managed_zellij_alias};
 
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
@@ -13,6 +13,9 @@ pub(crate) struct ZellijEnv {
     pub permissions_text:      Option<String>,
     pub codex_hooks_text:      Option<String>,
     pub installed_plugins_text: Option<String>,
+    /// The opencode bridge plugin's text (`~/.config/opencode/plugins/zj-radar.js`),
+    /// read for producer detection — `None` when the file is absent.
+    pub opencode_plugin_text:  Option<String>,
     pub wasm_present:          bool,
     pub config_managed:        bool,
     pub wasm_path:             String,
@@ -48,6 +51,7 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
         permissions_text:       crate::run::zellij_permissions_text(),
         codex_hooks_text:       codex_hooks_text(),
         installed_plugins_text: claude_installed_plugins_text(),
+        opencode_plugin_text:   opencode_plugin_text(),
         wasm_present:           wasm_dest.is_file(),
         config_managed:         path_is_managed(&config_path),
         wasm_path:              wasm_dest.to_string_lossy().into_owned(),
@@ -69,6 +73,7 @@ pub(crate) struct ZellijFacts {
     pub granted:                 Option<bool>,
     pub codex_producer:          bool,
     pub claude_producer:         bool,
+    pub opencode_producer:       bool,
     pub config_managed:          bool,
     pub zellij_version:          Option<String>,
 }
@@ -77,7 +82,7 @@ impl ZellijFacts {
     /// Any producer at all — what install gating and the doctor's pass/fail
     /// care about; the per-producer bools let the doctor SAY which one.
     pub(crate) fn producer_wired(&self) -> bool {
-        self.codex_producer || self.claude_producer
+        self.codex_producer || self.claude_producer || self.opencode_producer
     }
 }
 
@@ -171,6 +176,7 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         .map(|t| crate::run::wasm_is_granted(t, &env.wasm_path));
     let claude_producer = crate::run::claude_producer_wired(env.installed_plugins_text.as_deref());
     let codex_producer = crate::run::codex_producer_wired(env.codex_hooks_text.as_deref());
+    let opencode_producer = crate::run::opencode_producer_wired(env.opencode_plugin_text.as_deref());
     ZellijFacts {
         managed_alias_present,
         unmanaged_alias_present,
@@ -180,6 +186,7 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         granted,
         codex_producer,
         claude_producer,
+        opencode_producer,
         config_managed: env.config_managed,
         zellij_version: env.zellij_version.clone(),
     }
@@ -278,6 +285,35 @@ fn codex_hooks_disabled_in_config(existing: &str) -> Result<bool, String> {
         == Some(false))
 }
 
+/// Raw, already-read environment for opencode setup. The only IO layer.
+pub(crate) struct OpencodeEnv {
+    pub opencode_on_path:   bool,
+    pub zj_radar_on_path:   bool,
+    pub plugin_text:        Option<String>,
+}
+
+/// Every derived fact about opencode setup state. `plugin_is_ours` is the
+/// single home for "is the installed plugin ours?" — read by the install/
+/// uninstall gating, the doctor, and `run`'s detection (via
+/// `opencode_plugin_is_ours` in `detect.rs`).
+pub(crate) struct OpencodeFacts {
+    pub opencode_on_path: bool,
+    pub zj_radar_on_path: bool,
+    /// `None` = plugin file absent; `Some(true)` = ours (marker present);
+    /// `Some(false)` = foreign (file present, marker absent).
+    pub plugin_is_ours:   Option<bool>,
+}
+
+/// Pure: derive every opencode setup fact from already-read inputs. No I/O.
+pub(crate) fn analyze_opencode(env: &OpencodeEnv) -> OpencodeFacts {
+    let plugin_is_ours = env.plugin_text.as_deref().map(opencode_plugin_is_ours);
+    OpencodeFacts {
+        opencode_on_path: env.opencode_on_path,
+        zj_radar_on_path: env.zj_radar_on_path,
+        plugin_is_ours,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +328,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: None,
             installed_plugins_text: None,
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
@@ -324,6 +361,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: None,
             installed_plugins_text: None,
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
@@ -352,6 +390,7 @@ mod tests {
             permissions_text: Some(perms),
             codex_hooks_text: None,
             installed_plugins_text: None,
+            opencode_plugin_text: None,
             wasm_present: true,
             config_managed: false,
             wasm_path: wasm_path.to_string(),
@@ -371,6 +410,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: None,
             installed_plugins_text: None,
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
@@ -390,6 +430,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: None,
             installed_plugins_text: Some(r#"{"plugins":["zj-radar-claude"]}"#.to_string()),
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),
@@ -407,6 +448,7 @@ mod tests {
             permissions_text: None,
             codex_hooks_text: Some(format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
             installed_plugins_text: None,
+            opencode_plugin_text: None,
             wasm_present: false,
             config_managed: false,
             wasm_path: "/x.wasm".to_string(),

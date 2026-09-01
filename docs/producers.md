@@ -1,8 +1,8 @@
 # Producers — sending agent status to the sidebar
 
 The sidebar is just a display. A **producer** is whatever broadcasts agent
-status to it. zj-radar ships producers for Claude Code and Codex, and the wire
-format is a documented pipe payload so you can write your own.
+status to it. zj-radar ships producers for Claude Code, Codex, and Opencode,
+and the wire format is a documented pipe payload so you can write your own.
 
 Install the [sidebar](install.md) first, then add a producer below.
 
@@ -50,20 +50,21 @@ nix build github:marktoda/zj-radar#zj-radar-cli   # -> result/bin/zj-radar
 cargo install zj-radar
 ```
 
-- **`zj-radar notify <claude|codex>`** — broadcasts agent status. The Claude
+- **`zj-radar notify <claude|codex|opencode>`** — broadcasts agent status. The Claude
   plugin's hook script automatically prefers it when it's on `PATH` (jq-free);
   otherwise the plugin falls back to its bundled `bash`+`jq` script.
-- **`zj-radar setup [claude|codex]`** — idempotently wires the named agent
-  (bare `setup` wires every detected agent). Codex gets hook entries in
+- **`zj-radar setup [claude|codex|opencode]`** — idempotently wires the named
+  agent (bare `setup` wires every detected agent). Codex gets hook entries in
   `hooks.json` under `$CODEX_HOME` (or `~/.codex` when it's unset) calling
   `zj-radar notify codex`. This preserves any existing Codex `notify` program
   (e.g. a Computer Use notifier), because hooks are additive. Claude is wired
   through Claude Code's own `claude plugin` CLI (marketplace add + install —
   the same install as [above](#claude-code)) rather than by editing files.
-  Both take the same flags: `--dry-run` to preview, `--uninstall` to remove
+  Opencode gets a vendored JS bridge plugin (see [below](#opencode)).
+  All take the same flags: `--dry-run` to preview, `--uninstall` to remove
   only zj-radar's wiring, and `--check` to diagnose the current setup. After
-  installing or changing hooks, run `/hooks` inside Codex once to review and
-  trust the command hook.
+  installing or changing Codex hooks, run `/hooks` inside Codex once to review
+  and trust the command hook.
 - **`zj-radar setup codex --legacy-notify`** — opt-in fallback for older Codex
   setups that only support the single `notify` program. It refuses to replace a
   foreign notifier unless `--force` is also passed.
@@ -85,6 +86,63 @@ writes one entry per event across seven hook events (`UserPromptSubmit`,
 [below](#writing-your-own-producer)) — a `commandWindows` variant, and the
 `ZJ_RADAR_CODEX_HOOK=v1` marker that idempotency and `--uninstall` key on.
 
+## Opencode
+
+[Opencode](https://opencode.ai) auto-loads JS plugins from its global plugins
+dir, so wiring is one file drop — **no `opencode.json` editing**; uninstall
+deletes that file (a `.zj-radar.bak` from an earlier rewrite may remain, and
+opencode ignores it):
+
+```sh
+zj-radar setup opencode
+```
+
+This writes the vendored bridge plugin to `$XDG_CONFIG_HOME/opencode/plugins/`
+(or `~/.config/opencode/plugins/` when `XDG_CONFIG_HOME` is unset). The bridge
+serializes each opencode hook/bus-event payload and spawns
+`zj-radar notify opencode --status <s>` with JSON on stdin; all classification
+stays in Rust (it requires the `zj-radar` binary). The bridge picks the
+status *class* (it knows which event fired); the Rust adapter owns every
+refinement — tool activity, task capture, the trailing-question remap, the
+blank-permission backstop — so the JS never grows a second classifier.
+
+- **Requires the `zj-radar` binary on `PATH`.** Unlike Claude's `jq` fallback,
+  opencode wiring has no script fallback: `setup opencode` implies the binary.
+- **An unwired opencode pane is dark, not un-enriched.** `opencode` is an
+  instrumented agent (`AGENT_NAMES`), so the sidebar suppresses ordinary
+  command-tracking for its panes and relies on the bridge for every row. With
+  the bridge absent — a fresh install that skipped `setup opencode`, or
+  `--pure` / `OPENCODE_PURE`, which disables external plugins — the pane shows
+  no Running/Done row at all (same tradeoff class as claude/codex).
+  `zj-radar setup --check` and the `setup zellij` epilogue both report the
+  missing bridge when `opencode` is on `PATH`. **Upgrading from a release
+  before opencode support:** panes that previously fell through to
+  command-tracking go dark once the wasm is upgraded; run
+  `zj-radar setup opencode` and restart opencode.
+- **Restart opencode after installing** — plugins load once at startup, so a
+  write mid-session needs a restart (or plugin reload) to take effect.
+- The bridge covers `chat.message` (running + task), `tool.execute.before`/
+  `after` (running + tool activity), the `permission.asked` and
+  `question.asked` bus events (pending — both block the TUI, from whichever
+  session raised them) and their `replied`/`rejected` edges (back to
+  running), `session.idle` (done, with the trailing-question → pending remap),
+  `session.error` (error — a real failure signal Claude's hook model lacks;
+  the user's own Esc interrupt is not an error and settles on done), and
+  `session.created`/`session.deleted` (idle). Events from subagent (task-tool)
+  sessions are ignored, and the user's own prompt text is never mistaken for
+  assistant text. Sends are async-only (never synchronous — the
+  bridge runs in opencode's process and must not freeze the TUI), one child
+  at a time, with a hard ~10 s kill timer per child. Status *edges*
+  (pending/done/error/idle) are strictly FIFO; `running` refreshes coalesce to
+  the latest unsent one so a slow or wedged pipe never queues stale refreshes
+  ahead of an edge. The `ZJ_RADAR_OPENCODE_PLUGIN=v1` marker in the plugin
+  header is what idempotency, `--uninstall`, and `--check` key on; a foreign
+  plugin file (no marker) is refused unless `--force` replaces it.
+- **One TUI, many sessions, one pane:** latest event wins — same semantics as
+  Claude. The minimum verified opencode version is 1.18.x (the plugin is
+  vendored per zj-radar release; re-running `setup opencode` heals drift via
+  the marker rewrite).
+
 ## Any script: `zj-radar notify generic`
 
 Anything that isn't an instrumented agent — deploy scripts, cron jobs,
@@ -104,8 +162,8 @@ zj-radar notify generic --status done --msg "deploy finished" --source deploy
 - `--task`: the sticky task label (empty keeps the stored one).
 - `--source`: picks the kind mark — `test` ⚗ · `build` ⚙ · `deploy` ⇡ ·
   `server` ❯ · `command` $, and the agent tokens `claude` ✳ · `codex` ❉ ·
-  `gemini` ✦ — anything else (including the default `generic`) renders the
-  neutral `⦿`.
+  `opencode` ✺ · `gemini` ✦ — anything else (including the default `generic`)
+  renders the neutral `⦿`.
 - Repo/branch come from `git` in the calling directory; the pane id from
   `$ZELLIJ_PANE_ID`. Outside Zellij it's a silent no-op (safe under `set -e`).
   `--dry-run` prints the payload instead of broadcasting.

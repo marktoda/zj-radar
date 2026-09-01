@@ -1,16 +1,19 @@
-//! `zj-radar setup [claude|codex|zellij]` — idempotent, conflict-aware local
-//! wiring. Claude is wired through Claude Code's own plugin marketplace (we
-//! drive the `claude plugin` CLI, never its files); Codex gets hooks.json
-//! entries; Zellij setup installs the wasm at a stable path and manages the
-//! `radar` alias in `config.kdl`.
+//! `zj-radar setup [claude|codex|opencode|zellij]` — idempotent,
+//! conflict-aware local wiring. Claude is wired through Claude Code's own
+//! plugin marketplace (we drive the `claude plugin` CLI, never its files);
+//! Codex gets hooks.json entries; Opencode gets a vendored JS bridge plugin
+//! dropped into its auto-loaded global plugins dir (no `opencode.json` edit);
+//! Zellij setup installs the wasm at a stable path and manages the `radar`
+//! alias in `config.kdl`.
 
 mod analyze;
 mod check;
 mod claude;
 mod codex;
-mod detect;
+pub(crate) mod detect;
 mod download;
 mod edit;
+mod opencode;
 mod preseed;
 mod zellij;
 pub(crate) use analyze::*;
@@ -19,6 +22,7 @@ pub(crate) use claude::*;
 pub(crate) use codex::*;
 pub(crate) use download::*;
 pub(crate) use edit::*;
+pub(crate) use opencode::*;
 pub(crate) use zellij::*;
 
 use std::path::{Path, PathBuf};
@@ -69,6 +73,22 @@ pub(crate) const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end
 // trailing punctuation — callers supply their own.
 pub(crate) const CODEX_HOOK_TRUST_ADVICE: &str =
     "run `/hooks` in Codex to review and trust the zj-radar command hook";
+
+/// The idempotency/ownership marker stamped into the vendored opencode bridge
+/// plugin's header. One shared source of truth (the CODEX_HOOK_MARKER
+/// precedent) behind `setup opencode`'s install/uninstall gating, the doctor,
+/// and `run`'s producer detection, so the three can't drift on what counts as
+/// "ours". The JS plugin carries it as a leading comment: `// ZJ_RADAR_OPENCODE_PLUGIN=v1`.
+pub(crate) const OPENCODE_PLUGIN_MARKER: &str = "ZJ_RADAR_OPENCODE_PLUGIN=v1";
+/// The filename opencode auto-loads from its global plugins dir — the single
+/// install/uninstall target (no `opencode.json` edit, clean uninstall = delete
+/// one file). Inside the cargo package via `include_str!` so `cargo publish`
+/// works (a repo-root path would break crates.io installs).
+pub(crate) const OPENCODE_PLUGIN_FILE_NAME: &str = "zj-radar.js";
+/// The vendored bridge plugin, embedded so `setup opencode` writes a known-good
+/// copy and `cargo publish` packages it. A `flake.nix` filter entry covers this
+/// non-Rust `include_str!` input for the hermetic build.
+pub(crate) const OPENCODE_PLUGIN_JS: &str = include_str!("opencode_plugin.js");
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -127,6 +147,13 @@ pub(crate) struct CodexSetupOpts {
     is_tty:        bool,
 }
 
+pub(crate) struct OpencodeSetupOpts {
+    pub force:   bool,
+    pub dry_run: bool,
+    pub yes:     bool,
+    pub is_tty:  bool,
+}
+
 /// The single operation a `setup` invocation performs. Resolving this once makes
 /// the precedence (grant > check > uninstall > install) explicit instead of
 /// implicit in the order of `if` blocks.
@@ -177,6 +204,10 @@ pub fn run(options: SetupOptions<'_>) {
 
     let bare = options.targets.is_empty() && options.wasm.is_none() && !options.download;
     let want_codex = bare || options.targets.iter().any(|a| a == "codex");
+    // Bare `setup` = detected agents only: claude and opencode join codex
+    // there, and each `setup_*` itself skips gracefully when the binary is
+    // absent.
+    let want_opencode = bare || options.targets.iter().any(|a| a == "opencode");
     // Bare `setup` = detected agents only: claude joins codex there, and
     // `setup_claude` itself skips gracefully when the binary is absent.
     let want_claude = bare || options.targets.iter().any(|a| a == "claude");
@@ -186,9 +217,9 @@ pub fn run(options: SetupOptions<'_>) {
     for a in options
         .targets
         .iter()
-        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "zellij"))
+        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "zellij"))
     {
-        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, zellij). Skipping."));
+        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, opencode, zellij). Skipping."));
     }
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
     // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
@@ -225,6 +256,11 @@ pub fn run(options: SetupOptions<'_>) {
         // doesn't have.
         if options.targets.iter().any(|a| a == "claude") || (both && which("claude")) {
             missing |= check_claude();
+        }
+        // opencode's doctor is binary-gated the same way: a machine without
+        // opencode shouldn't be failed by an agent it doesn't have.
+        if options.targets.iter().any(|a| a == "opencode") || (both && which("opencode")) {
+            missing |= check_opencode();
         }
         if missing {
             // The items above are the diagnostic; this sets the exit code so
@@ -281,6 +317,17 @@ pub fn run(options: SetupOptions<'_>) {
     }
     if want_claude {
         setup_claude(uninstall, options.dry_run, options.yes, is_tty);
+    }
+    if want_opencode {
+        setup_opencode(
+            uninstall,
+            OpencodeSetupOpts {
+                force:   options.force,
+                dry_run: options.dry_run,
+                yes:     options.yes,
+                is_tty,
+            },
+        );
     }
 }
 

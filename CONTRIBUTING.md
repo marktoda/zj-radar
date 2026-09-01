@@ -1,8 +1,9 @@
 # Contributing to zj-radar
 
 Thanks for your interest! zj-radar is a native [Zellij](https://zellij.dev)
-sidebar (Rust → `wasm32-wasip1`) plus a host-side CLI and a Claude Code producer
-plugin. This guide covers how to build, test, and propose changes.
+sidebar (Rust → `wasm32-wasip1`) plus a host-side CLI and producer adapters for
+Claude Code, Codex, and Opencode. This guide covers how to build, test, and
+propose changes.
 
 ## Project shape
 
@@ -11,9 +12,10 @@ zj-radar is a three-member Cargo workspace:
 | Path | What it is |
 |------|------------|
 | `crates/core/` | Pure shared library (`zj_radar_core`): the versioned wire schema and status/command classification (`command`, `kind`, `observation`, `payload`, `pipe`, `status`, `wire`). No `clap`, no `zellij-tile`. |
-| `crates/cli/` | The native `zj-radar` CLI (`notify`, `setup`, `run`). `build.rs` embeds the wasm via `include_bytes!`. |
+| `crates/cli/` | The native `zj-radar` CLI (`notify`, `setup`, `run`). `build.rs` embeds the wasm via `include_bytes!`; `setup opencode` embeds a vendored JS bridge via `include_str!`. |
 | `crates/plugin/` | The Zellij sidebar wasm plugin (`zj_radar_plugin`, Rust → `wasm32-wasip1`). A thin Zellij adapter (`lib.rs`/`main.rs`, wasm-only) over host-testable modules (runtime, stores, model, renderer). |
 | `plugins/zj-radar-claude/` | The Claude Code producer plugin (hooks + bundled `notify.sh`). |
+| `crates/cli/src/setup/opencode_plugin.js` | The Opencode producer bridge (vendored into opencode's plugins dir by `zj-radar setup opencode`). |
 | `docs/` | Living design docs. Start with [`CONTEXT.md`](CONTEXT.md) (domain glossary), [`docs/design.md`](docs/design.md), and [`docs/activity-model.md`](docs/activity-model.md) (how pane activity maps to the statuses the rail shows). |
 
 Two ideas are load-bearing — read [`CONTEXT.md`](CONTEXT.md) before changing the

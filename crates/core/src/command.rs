@@ -82,7 +82,7 @@ const IGNORE_NAMES: &[&str] = &[
 /// pins the two sets. Agents without an adapter (e.g. Gemini today) are
 /// deliberately absent: they fall through to ordinary command-tracking, which
 /// still surfaces a Running/Done lifecycle under their own `Kind`.
-pub const AGENT_NAMES: &[&str] = &["claude", "codex"];
+pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode"];
 
 /// Interactive programs — editors, pagers, monitors, git TUIs, file managers —
 /// that sit open waiting on the *user* rather than doing bounded work

@@ -5,7 +5,8 @@ thin — it points at the real docs rather than duplicating them.
 
 zj-radar is a native [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
 plus a host-side `zj-radar` CLI and producer adapters for Claude Code (a bundled
-Claude plugin) and Codex (hooks installed by `zj-radar setup codex`) — both
+Claude plugin), Codex (hooks installed by `zj-radar setup codex`), and Opencode
+(a vendored JS bridge plugin installed by `zj-radar setup opencode`) — all
 first-class producers.
 
 ## Read first

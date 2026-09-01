@@ -11,6 +11,7 @@
 
 mod claude;
 mod codex;
+mod opencode;
 
 use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
@@ -49,13 +50,14 @@ pub struct AgentUpdate {
 pub enum Agent {
     Claude,
     Codex,
+    Opencode,
 }
 
 impl Agent {
     /// Every push-reporter agent, in declaration order. Lets the coherence
     /// guards iterate the variants without re-typing the list (mirrors
     /// `Kind::ALL`).
-    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex];
+    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex, Agent::Opencode];
 
     /// Parse the `notify <agent>` CLI argument. Inverse of [`Agent::source`].
     pub fn from_cli(s: &str) -> Option<Agent> {
@@ -68,6 +70,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Opencode => "opencode",
         }
     }
 
@@ -76,6 +79,7 @@ impl Agent {
         match self {
             Agent::Claude => claude::derive(intake),
             Agent::Codex => codex::derive(intake),
+            Agent::Opencode => opencode::derive(intake),
         }
     }
 }
@@ -172,6 +176,15 @@ pub fn baseline_msg(status: Status, msg: &str) -> String {
     }
 }
 
+/// A non-empty string field of a JSON payload, or `None`. Shared by the codex
+/// and opencode adapters (both read `cwd`-style fields off a `serde_json::Value`).
+pub(crate) fn string_field(v: &serde_json::Value, field: &str) -> Option<String> {
+    v.get(field)
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 pub(crate) fn basename(path: &str) -> Option<&str> {
     if path.is_empty() {
         return None;
@@ -226,6 +239,7 @@ mod tests {
             let expected = match agent {
                 Agent::Claude => Kind::Claude,
                 Agent::Codex => Kind::Codex,
+                Agent::Opencode => Kind::Opencode,
             };
             assert_eq!(
                 Kind::from_source(agent.source()),
@@ -273,10 +287,10 @@ mod tests {
     fn all_lists_every_variant() {
         for &a in Agent::ALL {
             match a {
-                Agent::Claude | Agent::Codex => {}
+                Agent::Claude | Agent::Codex | Agent::Opencode => {}
             }
         }
-        assert_eq!(Agent::ALL.len(), 2, "a variant is missing from Agent::ALL");
+        assert_eq!(Agent::ALL.len(), 3, "a variant is missing from Agent::ALL");
     }
 
     /// The clap doc-comment on the `agent` arg (lib.rs) cannot be dynamic. This

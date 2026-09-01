@@ -45,6 +45,9 @@
           || (pkgs.lib.hasSuffix "/examples/radar-sidebar.kdl" path)
           # include_str!'d by the plugin (config.rs, control.rs docs guard tests).
           || (pkgs.lib.hasSuffix "/docs/configuration.md" path)
+          # include_str!'d by the CLI's opencode setup (crates/cli/src/setup/mod.rs)
+          # — the vendored JS bridge plugin written by `zj-radar setup opencode`.
+          || (pkgs.lib.hasSuffix "/crates/cli/src/setup/opencode_plugin.js" path)
           # include_str!'d by the plugin's producer-script guard test (lib.rs).
           || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path)
           # include_str!'d by the plugin's hook-headroom guard (hooks_manifest_tests.rs).

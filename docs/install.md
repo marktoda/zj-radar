@@ -250,7 +250,8 @@ modifies any file. Reported items (six always; two more only when applicable):
 - **wasm** — plugin file exists at the expected stable path.
 - **layout** — default layout contains the injected radar rail.
 - **grant** — `permissions.kdl` records a grant for the wasm path.
-- **producer** — Codex hooks and/or Claude plugin wired up (names which).
+- **producer** — Codex hooks, the Claude plugin, and/or the Opencode bridge
+  plugin wired up (names which).
 - **managed config** — emitted only when `config.kdl` is a symlink
   (home-manager); warns that direct edits may be overwritten.
 - **config env** — emitted only when `$ZELLIJ_CONFIG_FILE` points somewhere
@@ -339,9 +340,11 @@ Everything zj-radar touches, what creates it, and what `setup zellij
 | Per-session plugin state under Zellij's cache + `/tmp/zj-radar` fallback | the running plugin | self-pruning (24 h); safe to delete anytime |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
 | `zj-radar-claude` plugin + `zj-radar` marketplace entry, inside Claude Code's own plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; the marketplace entry stays — `claude plugin marketplace remove zj-radar` |
+| `$XDG_CONFIG_HOME/opencode/plugins/zj-radar.js` (or `~/.config/opencode/plugins/zj-radar.js`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (deletes only when the marker is present) |
 
 So a complete removal is: `zj-radar setup zellij --uninstall && zj-radar setup
-claude --uninstall && zj-radar setup codex --uninstall`, then delete the wasm,
+claude --uninstall && zj-radar setup codex --uninstall && zj-radar setup
+opencode --uninstall`, then delete the wasm,
 the `zj-radar` data dir, and the grant block — plus
 `claude plugin marketplace remove zj-radar` and the binary itself, wherever you
 installed it.

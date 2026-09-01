@@ -278,11 +278,12 @@ renders — so the emitted ANSI and the click maps cannot drift.
 
 The real external seam between producers and the plugin: the versioned
 `zj_radar.status.v1` pipe payload (`{v, source, pane, status, repo, branch,
-msg, task, ack}`). Producers (the Claude plugin, the Codex CLI) are adapters that
-broadcast it; the plugin defends itself at parse time (sanitize, truncate, drop
-oversized/malformed). Ordering is latest-wins — the pipe delivers in order and no
-producer stamps a sequence, so there is nothing to reorder. Unknown fields are
-tolerated and ignored, so older producers still parse: a legacy `seq` and the
+msg, task, ack}`). Producers (the Claude plugin, the Codex CLI, the Opencode
+bridge plugin) are adapters that broadcast it; the plugin defends itself at
+parse time (sanitize, truncate, drop oversized/malformed). Ordering is
+latest-wins — the pipe delivers in order and no producer stamps a sequence,
+so there is nothing to reorder. Unknown fields are tolerated and ignored, so
+older producers still parse: a legacy `seq` and the
 former `on_focus` clear-on-focus hint (dropped when focus stopped driving state)
 both round-trip harmlessly. `task` (optional): sticky task label — empty/absent
 leaves the stored label unchanged, non-empty replaces it; the plugin clears it
@@ -394,19 +395,22 @@ runtime's `Outcome`, which names its `{render, effects}` return value.)
 
 How `zj-radar setup` learns the current state of the world. The **setup-analysis
 seam** is a pure analyze function per target —
-`analyze_zellij(&ZellijEnv) -> ZellijFacts` and `analyze_codex(&CodexEnv) ->
-CodexFacts` in `crates/cli/src/setup/analyze.rs` — each fed a thin
-`Env` of already-read values (file contents, fs stat booleans) by the IO shell.
-`Facts` (`ZellijFacts`, `CodexFacts`) is the single home for every derived fact —
-"is our alias present?" (managed vs unmanaged kept distinct), has-rail, granted,
-producer-wired, the Codex hooks-feature and notify states.
+`analyze_zellij(&ZellijEnv) -> ZellijFacts`, `analyze_codex(&CodexEnv) ->
+CodexFacts`, and `analyze_opencode(&OpencodeEnv) -> OpencodeFacts` in
+`crates/cli/src/setup/analyze.rs` — each fed a thin `Env` of already-read values
+(file contents, fs stat booleans) by the IO shell.
+`Facts` (`ZellijFacts`, `CodexFacts`, `OpencodeFacts`) is the single home for
+every derived fact — "is our alias present?" (managed vs unmanaged kept
+distinct), has-rail, granted, producer-wired, the Codex hooks-feature and notify
+states, the opencode plugin-ownership state.
 
 Both consumers project from `Facts`: `*_check_items(&Facts)` renders the
-`--check` doctor output; the install orchestrators (`setup_zellij`, `setup_codex`)
-read `Facts` for their gating decisions and pull raw config text from `Env` for
-the `edit_*` splice. The pure mutators (`edit_zellij`, `edit_codex`,
-`edit_codex_hooks` → `Outcome`) are NOT driven by `Facts` — they share only the
-low-level primitive detectors (`notify_is_ours`, `has_unmanaged_radar_alias`,
+`--check` doctor output; the install orchestrators (`setup_zellij`,
+`setup_codex`, `setup_opencode`) read `Facts` for their gating decisions and
+pull raw config text from `Env` for the `edit_*` splice. The pure mutators
+(`edit_zellij`, `edit_codex`, `edit_codex_hooks` → `Outcome`) are NOT driven by
+`Facts` — they share only the low-level primitive detectors (`notify_is_ours`,
+`has_unmanaged_radar_alias`, `opencode_plugin_is_ours`,
 `strip_managed_zellij_alias`, `codex_hook_handler_is_ours`), which live in
 `crates/cli/src/setup/detect.rs`, a neutral module that both `analyze` and `edit`
 depend on. The legacy-notify vs hooks choice is a flag the consumer projects on,

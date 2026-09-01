@@ -6,7 +6,7 @@
 #
 #   agent.sh <source> <repo> <branch> <scenario>
 #
-# <source> is a Kind wire token (claude|codex|gemini|test|build|deploy|command).
+# <source> is a Kind wire token (claude|codex|opencode|gemini|test|build|deploy|command).
 # <scenario> selects one of the arcs below. Run only inside Zellij.
 set -euo pipefail
 

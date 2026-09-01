@@ -27,6 +27,15 @@ pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
             .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
 }
 
+/// True iff the opencode plugin file's text carries our ownership marker. The
+/// single reader behind `analyze_opencode`, the install/uninstall gating, the
+/// doctor, and `run`'s `opencode_producer_wired` (the `CODEX_HOOK_MARKER`
+/// precedent: one shared source of truth so detection can't drift). A foreign
+/// plugin file (no marker) is never mistaken for ours.
+pub(crate) fn opencode_plugin_is_ours(plugin_text: &str) -> bool {
+    plugin_text.contains(OPENCODE_PLUGIN_MARKER)
+}
+
 /// The layout name a `config.kdl` selects via `default_layout "name"`, or
 /// `None` when unset. Line-scan like the other config detectors: the node at
 /// line start (not commented out), its first argument quoted or bare. This is
