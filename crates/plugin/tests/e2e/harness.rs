@@ -95,6 +95,12 @@ impl EnvironmentRoot {
 /// remember HOME but accidentally reach the ambient cache or server.
 pub struct IsolatedEnvironment {
     root: EnvironmentRoot,
+    /// The socket dir lives under literal `/tmp`, NOT under the temp HOME:
+    /// Unix socket paths cap at ~104 bytes (`sun_path`), and Zellij derives the
+    /// max session-name length from what's left after the socket dir — on
+    /// macOS the default tempdir (`/var/folders/.../T/...`) leaves a budget of
+    /// zero and every `--session` name is rejected.
+    socket: EnvironmentRoot,
 }
 
 impl IsolatedEnvironment {
@@ -103,11 +109,20 @@ impl IsolatedEnvironment {
             root: EnvironmentRoot::Owned(
                 tempfile::TempDir::new().expect("failed to create isolated Zellij environment"),
             ),
+            socket: EnvironmentRoot::Owned(
+                tempfile::Builder::new()
+                    .prefix("zjr")
+                    .tempdir_in("/tmp")
+                    .expect("failed to create isolated Zellij socket dir"),
+            ),
         }
     }
 
     fn shared(&self) -> Self {
-        Self { root: EnvironmentRoot::Shared(self.root.path().to_path_buf()) }
+        Self {
+            root: EnvironmentRoot::Shared(self.root.path().to_path_buf()),
+            socket: EnvironmentRoot::Shared(self.socket.path().to_path_buf()),
+        }
     }
 
     fn home(&self) -> &Path {
@@ -127,7 +142,7 @@ impl IsolatedEnvironment {
     }
 
     fn socket_dir(&self) -> std::path::PathBuf {
-        self.home().join("socket")
+        self.socket.path().to_path_buf()
     }
 
     fn zellij_cache_dir(&self) -> std::path::PathBuf {
