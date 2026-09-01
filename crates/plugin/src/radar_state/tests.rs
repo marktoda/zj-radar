@@ -19,6 +19,10 @@ fn focused_pane(id: u32) -> TerminalPane {
     }
 }
 
+fn own_tab(radar: &mut RadarState, position: usize) {
+    radar.own_plugin_tab_changed(Some(position));
+}
+
 #[test]
 fn command_changed_to_shell_clears_a_pushed_done() {
     let mut radar = RadarState::default();
@@ -278,6 +282,7 @@ fn rename_ownership_follows_stable_tab_id_across_reorder() {
         tab(10, 0, "Tab #1", true),
         tab(20, 1, "custom", false),
     ]);
+    own_tab(&mut radar, 0);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
     let rename = radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
     assert_eq!(
@@ -326,6 +331,7 @@ fn observation_origin_is_source_specific() {
 fn managed_naming_skips_manual_names_but_force_overrides() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "manual", true)]);
+    own_tab(&mut radar, 0);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
     radar.pane_cwd.insert(1, "/work/repo".into());
 
@@ -637,6 +643,7 @@ fn cwd_bootstrap_prioritizes_focused_panes_and_caps_volume_per_update() {
 fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
 
     // 1. New tab → bootstrap requests pane 7's cwd.
     let opened = radar.panes_changed(
@@ -1036,6 +1043,7 @@ fn old_code_version_guard_note() {
 fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1), pane(2)]);
     radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
     radar.cwd_changed(2, "/work/beta".into(), config::NamingMode::Managed);
@@ -1060,6 +1068,7 @@ fn applied_tab_name_sticks_when_focus_moves_to_a_different_repo_pane() {
 fn manual_rename_is_preserved_through_focus_and_cwd_changes() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
     radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
     // Zellij echoes our auto-name, then the user renames the tab by hand.
@@ -1084,6 +1093,7 @@ fn manual_rename_is_preserved_through_focus_and_cwd_changes() {
 fn applied_tab_name_repicks_when_the_naming_pane_closes() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
     radar.set_tab_panes_for_position(0, vec![focused_pane(1), pane(2)]);
     radar.cwd_changed(1, "/work/alpha".into(), config::NamingMode::Managed);
     radar.cwd_changed(2, "/work/beta".into(), config::NamingMode::Managed);

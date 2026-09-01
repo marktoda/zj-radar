@@ -248,6 +248,17 @@ pane still justifies it, and `Managed` never clobbers a manual rename (only
 reads that *feed* naming) stays in `RadarState` — it ensures cwd facts exist; it
 is not naming policy.
 
+**Naming ownership is per tab, never session-wide.** Each sidebar instance
+learns the position of its own plugin pane from `PaneUpdate`, correlates that
+position once with `TabUpdate`, and retains the resulting stable `TabId`.
+`RadarState` passes only that tab's facts to `TabNamer`. Until the identity
+resolves it emits no renames; an onboarding instance never owns a tab. This
+prevents a stale background sidebar from applying its private `applied` history
+to another tab after navigation, and retaining `TabId` rather than position
+keeps close/reorder events from redirecting ownership to a neighbour. The cwd
+bootstrap stays session-wide: the cwd also stamps `repo` on observed commands,
+which every instance must agree on for the notification claim key.
+
 ## Lockstep
 
 The load-bearing invariant of the rail: the emitted ANSI, the click-target

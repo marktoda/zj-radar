@@ -89,6 +89,8 @@ pub struct State {
     runtime: PluginRuntime,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     session_files: SessionFiles,
+    #[cfg(target_arch = "wasm32")]
+    plugin_id: Option<u32>,
 }
 
 // ── Pure helper wrappers (no host calls) — compiled only for host tests ──
@@ -345,6 +347,7 @@ impl ZellijPlugin for State {
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
         let ids = get_plugin_ids();
+        self.plugin_id = Some(ids.plugin_id);
         let session = SessionFiles::open(SessionFileIds {
             plugin_id: ids.plugin_id,
             zellij_pid: ids.zellij_pid,
@@ -375,6 +378,15 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::PaneUpdate(manifest) => {
+                let own_tab_position = self.plugin_id.and_then(|plugin_id| {
+                    manifest.panes.iter().find_map(|(tab_pos, panes)| {
+                        panes
+                            .iter()
+                            .any(|pane| pane.is_plugin && pane.id == plugin_id)
+                            .then_some(*tab_pos)
+                    })
+                });
+                self.runtime.own_plugin_tab_changed(own_tab_position);
                 // Pure adapter: copy the host's `PaneInfo` fields into `RawPane`s.
                 // All policy — plugin-skip, title sanitize, theme-color precedence —
                 // lives in the host-tested `PaneUpdate::from_raw`.

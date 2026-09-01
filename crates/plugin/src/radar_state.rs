@@ -236,6 +236,14 @@ pub(crate) struct RadarState {
     tab_panes: HashMap<usize, Vec<TerminalPane>>,
     pane_cwd: HashMap<u32, String>,
     namer: TabNamer,
+    /// The stable identity of the one tab this sidebar instance may rename.
+    /// Resolved once by correlating this plugin pane's manifest position with
+    /// `TabUpdate`; keeping the id (not the position) makes later tab reorders
+    /// unable to redirect a stale instance's rename effects at a neighbour.
+    naming_tab_id: Option<TabId>,
+    /// Manifest position held until the corresponding tab facts arrive. A new
+    /// plugin can receive `PaneUpdate` before its first `TabUpdate`.
+    naming_tab_position: Option<usize>,
     last_focused: Option<u32>,
     live_panes: Option<HashSet<u32>>,
     /// Pane ids we have already requested an initial `get_pane_cwd` read for.
@@ -434,6 +442,7 @@ impl RadarState {
         }
         self.tabs = tabs;
         self.touch();
+        self.resolve_naming_tab();
         // Drop naming state for tabs that closed (the update carries the full
         // current set), so `applied` doesn't accrete gone tabs.
         let live: HashSet<TabId> = self.tabs.iter().map(|t| t.id).collect();
@@ -443,6 +452,35 @@ impl RadarState {
             settle: false,
             ..RadarChange::default()
         }
+    }
+
+    /// Record which tab contains this plugin pane. Ownership resolves once and
+    /// then rests on Zellij's stable `TabId`: every tab has one sidebar, so no
+    /// instance ever needs write authority over a peer's name.
+    pub(crate) fn own_plugin_tab_changed(&mut self, position: Option<usize>) {
+        if self.naming_tab_id.is_some() {
+            return;
+        }
+        self.naming_tab_position = position;
+        self.resolve_naming_tab();
+    }
+
+    fn resolve_naming_tab(&mut self) {
+        if self.naming_tab_id.is_some() {
+            return;
+        }
+        let Some(position) = self.naming_tab_position else {
+            return;
+        };
+        self.naming_tab_id = self
+            .tabs
+            .iter()
+            .find(|tab| tab.position == position)
+            .map(|tab| tab.id);
+    }
+
+    pub(crate) fn has_naming_tab(&self) -> bool {
+        self.naming_tab_id.is_some()
     }
 
     pub(crate) fn panes_changed(
@@ -1072,8 +1110,12 @@ impl RadarState {
     /// never fans out an unbounded number of blocking host calls. Every returned
     /// id is recorded as attempted, so it is requested at most once per lifetime.
     ///
-    /// Bootstrap exists only to name tabs, so it is a no-op (and pays for no
-    /// blocking reads) when naming is `Off` — mirroring `rename_tabs`.
+    /// Bootstrap exists to name tabs, so it is a no-op (and pays for no
+    /// blocking reads) when naming is `Off` — mirroring `rename_tabs`. Unlike
+    /// renames it is NOT scoped to the owned tab: the cwd also stamps `repo`
+    /// on observed commands (`command_changed`), which titles their desktop
+    /// notification and so feeds the cross-instance claim key — every
+    /// instance must hold the same fact or the election dedupes nothing.
     fn cwd_bootstrap_targets(&mut self, naming_mode: config::NamingMode) -> Vec<u32> {
         if naming_mode == config::NamingMode::Off {
             return Vec::new();
@@ -1115,7 +1157,14 @@ impl RadarState {
         if naming_mode == config::NamingMode::Off {
             return Vec::new();
         }
-        let facts = self.name_facts();
+        let Some(naming_tab_id) = self.naming_tab_id else {
+            return Vec::new();
+        };
+        let facts: Vec<TabFacts> = self
+            .name_facts()
+            .into_iter()
+            .filter(|tab| tab.id == naming_tab_id)
+            .collect();
         self.namer.rename(&facts, naming_mode)
     }
 

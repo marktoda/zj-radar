@@ -22,8 +22,9 @@
 /// `pre_grant_permissions` adds the plugin path to that file before the session
 /// starts, so the `PermissionRequestResult(Granted)` fires immediately on load.
 ///
-/// Permission grants are written to an ISOLATED temp HOME so the real user cache
-/// is never polluted. All Zellij subprocesses share the same temp HOME.
+/// Permission grants are written to an ISOLATED temp environment so the real
+/// user cache is never polluted. Every Zellij subprocess shares its HOME, XDG
+/// cache/config/data roots, and socket dir; none can discover the user's server.
 ///
 /// ## Pane ID discovery
 /// The plugin only renders piped status when the `pane_id` in the payload matches
@@ -59,32 +60,124 @@ pub struct ZellijSession {
     /// (rows, cols) of the PTY at session start; `screen()` sizes its vt100
     /// parser from this.
     size: Mutex<(u16, u16)>,
-    /// HOME used by this session's Zellij subprocesses. Either an owned temp
-    /// dir (deleted on Drop) or a path borrowed from a sibling's owned dir
-    /// (see `HomeHandle`) — never both, or `start_sibling` and its parent
-    /// would race to delete the same directory.
-    _temp_home: HomeHandle,
+    /// Private filesystem + socket environment used by every subprocess in
+    /// this test session. The owner removes it after teardown; siblings borrow
+    /// the same root so cross-session tests still share one private server.
+    isolated: IsolatedEnvironment,
 }
 
-/// Who owns the on-disk lifetime of a session's HOME directory.
+/// Who owns the on-disk lifetime of an isolated test environment.
 ///
-/// `start_sibling` needs a second Zellij session to use the SAME HOME as an
-/// existing one (so both resolve to the same Zellij cache dir — and thus the
-/// same plugin `/cache` mount — for presence files to actually cross), but
-/// exactly ONE of the two `ZellijSession`s must delete that directory on
+/// `start_sibling` needs a second Zellij session to use the SAME isolated root
+/// as an existing one (so both resolve to the same socket and Zellij cache dir
+/// — and thus the same plugin `/cache` mount — for presence files to actually
+/// cross), but exactly ONE of the two `ZellijSession`s must delete that root on
 /// Drop. `Owned` is the original `tempfile::TempDir` (deletes on drop);
 /// `Shared` is just the path, borrowed from the owner and inert on drop.
-enum HomeHandle {
+enum EnvironmentRoot {
     Owned(tempfile::TempDir),
     Shared(std::path::PathBuf),
 }
 
-impl HomeHandle {
+impl EnvironmentRoot {
     fn path(&self) -> &Path {
         match self {
-            HomeHandle::Owned(t) => t.path(),
-            HomeHandle::Shared(p) => p.as_path(),
+            EnvironmentRoot::Owned(t) => t.path(),
+            EnvironmentRoot::Shared(p) => p.as_path(),
         }
+    }
+}
+
+/// The complete process boundary for one E2E server. HOME alone is not an
+/// isolation boundary: XDG_CACHE_HOME can redirect permission reads to the
+/// user's cache, while Zellij's default socket dir is shared by uid. Keeping
+/// the paths and command wiring together makes it impossible for a helper to
+/// remember HOME but accidentally reach the ambient cache or server.
+pub struct IsolatedEnvironment {
+    root: EnvironmentRoot,
+    /// The socket dir lives under literal `/tmp`, NOT under the temp HOME:
+    /// Unix socket paths cap at ~104 bytes (`sun_path`), and Zellij derives the
+    /// max session-name length from what's left after the socket dir — on
+    /// macOS the default tempdir (`/var/folders/.../T/...`) leaves a budget of
+    /// zero and every `--session` name is rejected.
+    socket: EnvironmentRoot,
+}
+
+impl IsolatedEnvironment {
+    fn new() -> Self {
+        Self {
+            root: EnvironmentRoot::Owned(
+                tempfile::TempDir::new().expect("failed to create isolated Zellij environment"),
+            ),
+            socket: EnvironmentRoot::Owned(
+                tempfile::Builder::new()
+                    .prefix("zjr")
+                    .tempdir_in("/tmp")
+                    .expect("failed to create isolated Zellij socket dir"),
+            ),
+        }
+    }
+
+    fn shared(&self) -> Self {
+        Self {
+            root: EnvironmentRoot::Shared(self.root.path().to_path_buf()),
+            socket: EnvironmentRoot::Shared(self.socket.path().to_path_buf()),
+        }
+    }
+
+    fn home(&self) -> &Path {
+        self.root.path()
+    }
+
+    fn cache_home(&self) -> std::path::PathBuf {
+        self.home().join(".cache")
+    }
+
+    fn config_home(&self) -> std::path::PathBuf {
+        self.home().join(".config")
+    }
+
+    fn data_home(&self) -> std::path::PathBuf {
+        self.home().join(".local/share")
+    }
+
+    fn socket_dir(&self) -> std::path::PathBuf {
+        self.socket.path().to_path_buf()
+    }
+
+    fn zellij_cache_dir(&self) -> std::path::PathBuf {
+        if cfg!(target_os = "macos") {
+            self.home().join("Library/Caches/org.Zellij-Contributors.Zellij")
+        } else {
+            self.cache_home().join("zellij")
+        }
+    }
+
+    fn configure_command(&self, command: &mut Command) {
+        command
+            .env("HOME", self.home())
+            .env("XDG_CACHE_HOME", self.cache_home())
+            .env("XDG_CONFIG_HOME", self.config_home())
+            .env("XDG_DATA_HOME", self.data_home())
+            .env("ZELLIJ_SOCKET_DIR", self.socket_dir())
+            .env_remove("ZELLIJ_CONFIG_FILE")
+            .env_remove("ZELLIJ_CONFIG_DIR");
+    }
+
+    fn command(&self, program: &str) -> Command {
+        let mut command = Command::new(program);
+        self.configure_command(&mut command);
+        command
+    }
+
+    fn configure_builder(&self, command: &mut CommandBuilder) {
+        command.env("HOME", self.home());
+        command.env("XDG_CACHE_HOME", self.cache_home());
+        command.env("XDG_CONFIG_HOME", self.config_home());
+        command.env("XDG_DATA_HOME", self.data_home());
+        command.env("ZELLIJ_SOCKET_DIR", self.socket_dir());
+        command.env_remove("ZELLIJ_CONFIG_FILE");
+        command.env_remove("ZELLIJ_CONFIG_DIR");
     }
 }
 
@@ -94,17 +187,17 @@ impl ZellijSession {
     /// Blocks until the zj-radar plugin has rendered its initial frame
     /// (identified by the " RADAR" header text in the PTY buffer).
     ///
-    /// `temp_home` is an isolated temp directory used as HOME for all Zellij
-    /// subprocesses. This ensures permission grants stay out of the real user
-    /// cache. The caller is responsible for writing permissions.kdl under
-    /// `temp_home` before calling this (see `pre_grant_permissions`).
+    /// `isolated` owns the private HOME, XDG roots, and socket directory used by
+    /// every Zellij subprocess. The caller is responsible for writing
+    /// permissions.kdl into it before calling this (see
+    /// `pre_grant_permissions`).
     pub fn start(
         name: &str,
         layout_kdl: &str,
         plugin_wasm: &Path,
-        temp_home: tempfile::TempDir,
+        isolated: IsolatedEnvironment,
     ) -> Self {
-        Self::start_with_size(name, layout_kdl, plugin_wasm, temp_home, 40, 100)
+        Self::start_with_size(name, layout_kdl, plugin_wasm, isolated, 40, 100)
     }
 
     /// `start`, but at an explicit outer PTY size. `start` delegates here with
@@ -114,52 +207,46 @@ impl ZellijSession {
         name: &str,
         layout_kdl: &str,
         _plugin_wasm: &Path,
-        temp_home: tempfile::TempDir,
+        isolated: IsolatedEnvironment,
         rows: u16,
         cols: u16,
     ) -> Self {
-        Self::start_internal(name, layout_kdl, HomeHandle::Owned(temp_home), rows, cols)
+        Self::start_internal(name, layout_kdl, isolated, rows, cols)
     }
 
     /// Second session on the SAME server socket dir + cache as `self`, so the
     /// two servers exchange `SessionUpdate` and share the plugin cache root.
     ///
-    /// Reuses `self`'s temp HOME path (not `isolated_temp_home()`) — same
-    /// permissions.kdl (no re-prompt) and, critically, the same Zellij cache
-    /// dir, which is where zellij maps each plugin's `/cache` mount. Two
-    /// sessions on DIFFERENT HOMEs get DIFFERENT `/cache` roots and never see
-    /// each other's presence files no matter how long they wait; sharing
-    /// HOME is the one thing that makes the two servers' plugin instances
-    /// agree on where presence lives. (Zellij's own session socket dir turns
-    /// out to be keyed by OS temp dir + uid, not HOME, so `--session
-    /// <name>`-addressed sessions already see each other in `SessionUpdate`
-    /// regardless of HOME — verified empirically against 0.44.3 — but the
-    /// shared `/cache` mount is NOT: that one really does require the same
-    /// HOME, which is what this constructor buys.)
+    /// Reuses `self`'s isolated root (not `isolated_temp_home()`) — same socket,
+    /// permissions.kdl (no re-prompt), and Zellij cache dir, which is where
+    /// zellij maps each plugin's `/cache` mount. Two sessions on different
+    /// roots are intentionally invisible to one another; siblings share the
+    /// private server and plugin cache so presence files actually cross.
     ///
-    /// The returned session does NOT own the temp HOME directory — `self`
-    /// does, and must outlive it (drop `self` last).
+    /// The returned session does NOT own the isolated root — `self` does, and
+    /// must outlive it (drop `self` last).
     pub fn start_sibling(&self, name: &str, layout_kdl: &str) -> ZellijSession {
         let (rows, cols) = *self.size.lock().unwrap();
-        let shared_home = HomeHandle::Shared(self._temp_home.path().to_path_buf());
-        Self::start_internal(name, layout_kdl, shared_home, rows, cols)
+        Self::start_internal(name, layout_kdl, self.isolated.shared(), rows, cols)
     }
 
-    /// Shared implementation behind `start_with_size` (owned HOME) and
-    /// `start_sibling` (borrowed HOME) — everything past HOME lifetime is
-    /// identical.
-    fn start_internal(name: &str, layout_kdl: &str, home: HomeHandle, rows: u16, cols: u16) -> Self {
+    /// Shared implementation behind `start_with_size` (owned environment) and
+    /// `start_sibling` (borrowed environment).
+    fn start_internal(
+        name: &str,
+        layout_kdl: &str,
+        isolated: IsolatedEnvironment,
+        rows: u16,
+        cols: u16,
+    ) -> Self {
         assert_zellij_version();
-        let temp_home_path = home.path().to_path_buf();
 
         // Kill any previous session with this name to avoid conflicts.
-        let _ = Command::new("zellij")
+        let _ = isolated.command("zellij")
             .args(["delete-session", name, "--force"])
-            .env("HOME", &temp_home_path)
             .output();
-        let _ = Command::new("zellij")
+        let _ = isolated.command("zellij")
             .args(["kill-session", name])
-            .env("HOME", &temp_home_path)
             .output();
         std::thread::sleep(Duration::from_millis(300));
 
@@ -193,11 +280,9 @@ impl ZellijSession {
         cmd.env_remove("ZELLIJ");
         cmd.env_remove("ZELLIJ_SESSION_NAME");
         cmd.env_remove("ZELLIJ_PANE_ID");
+        isolated.configure_builder(&mut cmd);
         // Disable direnv/devenv to avoid slow shell initialization (30+ s).
         cmd.env("DIRENV_DISABLE", "1");
-        // Isolate Zellij's cache/config to the temp HOME so we never touch
-        // the real user's permissions.kdl or other Zellij state.
-        cmd.env("HOME", &temp_home_path);
 
         let child = pty.slave.spawn_command(cmd).unwrap();
 
@@ -224,15 +309,15 @@ impl ZellijSession {
             _reader,
             buf,
             size: Mutex::new((rows, cols)),
-            _temp_home: home,
+            isolated,
         };
         s.wait_until_ready();
         s
     }
 
-    /// Return the temp HOME path used by this session's Zellij processes.
+    /// Return the private HOME path used by this session's Zellij processes.
     pub fn temp_home(&self) -> &std::path::Path {
-        self._temp_home.path()
+        self.isolated.home()
     }
 
     /// Poll the PTY buffer until the plugin's " RADAR" header appears, indicating
@@ -291,7 +376,7 @@ impl ZellijSession {
     /// typically gets pane_id=0, but we verify at runtime to be safe.
     pub fn discover_terminal_pane_id(&self) -> u32 {
         // Inject: echo "ZPID=$ZELLIJ_PANE_ID"
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -299,12 +384,10 @@ impl ZellijSession {
                 "write-chars",
                 r#"echo "ZPID=$ZELLIJ_PANE_ID""#,
             ])
-            .env("HOME", self._temp_home.path())
             .output();
         // Send Enter (keycode 13).
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args(["--session", &self.name, "action", "write", "13"])
-            .env("HOME", self._temp_home.path())
             .output();
         std::thread::sleep(Duration::from_millis(800));
 
@@ -332,7 +415,7 @@ impl ZellijSession {
         std::thread::sleep(Duration::from_millis(300));
 
         // Inject `echo ZPID2=$ZELLIJ_PANE_ID` into the newly focused pane.
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -340,11 +423,9 @@ impl ZellijSession {
                 "write-chars",
                 r#"echo "ZPID2=$ZELLIJ_PANE_ID""#,
             ])
-            .env("HOME", self._temp_home.path())
             .output();
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args(["--session", &self.name, "action", "write", "13"])
-            .env("HOME", self._temp_home.path())
             .output();
         std::thread::sleep(Duration::from_millis(600));
 
@@ -360,17 +441,16 @@ impl ZellijSession {
 
     /// Inject a `zellij action` sub-command into the session.
     fn action(&self, args: &[&str]) -> std::process::Output {
-        Command::new("zellij")
+        self.isolated.command("zellij")
             .args(["--session", &self.name, "action"])
             .args(args)
-            .env("HOME", self._temp_home.path())
             .output()
             .expect("zellij action failed to spawn")
     }
 
     /// Send a `zj_radar.status.v1` pipe message to the plugin.
     pub fn pipe_status(&self, json: &str) {
-        let out = Command::new("zellij")
+        let out = self.isolated.command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -380,7 +460,6 @@ impl ZellijSession {
                 "--",
                 json,
             ])
-            .env("HOME", self._temp_home.path())
             .output()
             .expect("zellij pipe failed to spawn");
         if !out.status.success() {
@@ -396,8 +475,8 @@ impl ZellijSession {
 
     /// Fire the real notify.sh against this session (true hook->pipe->render).
     ///
-    /// Sets HOME to the session's isolated temp home so that the `zellij pipe`
-    /// inside notify.sh connects to the same isolated Zellij server.
+    /// Gives notify.sh the session's full isolated environment so that the
+    /// `zellij pipe` inside it connects to the same private Zellij server.
     /// `ZELLIJ_SESSION_NAME` is set so `zellij pipe` (which has no `--session`
     /// flag) targets the right session even when invoked outside a live PTY.
     ///
@@ -411,7 +490,8 @@ impl ZellijSession {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins/zj-radar-claude/scripts/notify.sh");
         use std::io::Write as _;
-        let mut child = std::process::Command::new("bash")
+        let mut command = self.isolated.command("bash");
+        command
             .arg(&script)
             .arg(status)
             // Gate: notify.sh exits immediately if these are unset.
@@ -420,11 +500,10 @@ impl ZellijSession {
             // ZELLIJ_SESSION_NAME lets `zellij pipe` (no --session flag) target
             // the correct session when called outside a live Zellij PTY.
             .env("ZELLIJ_SESSION_NAME", &self.name)
-            // Critical: same HOME → same isolated Zellij server socket.
-            .env("HOME", self._temp_home.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        let mut child = command
             .spawn()
             .expect("spawn notify.sh");
         child
@@ -519,6 +598,38 @@ impl ZellijSession {
         let _ = self.action(args);
     }
 
+    /// Names held by Zellij's authoritative tab model, in position order.
+    /// Unlike sidebar text, this does not read any plugin instance's possibly
+    /// stale render; `query-tab-names` asks the session host directly.
+    pub fn tab_names(&self) -> Vec<String> {
+        let output = self.isolated.command("zellij")
+            .args(["--session", &self.name, "action", "query-tab-names"])
+            .output()
+            .expect("zellij query-tab-names failed to spawn");
+        assert!(
+            output.status.success(),
+            "zellij query-tab-names failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Session names visible through this test's private Zellij socket.
+    /// Exposed so the isolation regression can prove the spawned session is
+    /// present privately while absent from the ambient/default server.
+    pub fn isolated_session_names(&self) -> Vec<String> {
+        let output = self.isolated.command("zellij")
+            .args(["list-sessions", "--short", "--no-formatting"])
+            .output()
+            .expect("isolated zellij list-sessions failed to spawn");
+        session_names(output)
+    }
+
     /// Write raw bytes to the PTY master. Used to answer Zellij's native
     /// permission prompt — a client-side modal, NOT a pane's terminal, so it must
     /// go through the PTY (the same path `wait_until_ready` uses to auto-grant),
@@ -557,16 +668,37 @@ fn assert_zellij_version() {
 
 impl Drop for ZellijSession {
     fn drop(&mut self) {
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args(["delete-session", &self.name, "--force"])
-            .env("HOME", self._temp_home.path())
             .output();
-        let _ = Command::new("zellij")
+        let _ = self.isolated.command("zellij")
             .args(["kill-session", &self.name])
-            .env("HOME", self._temp_home.path())
             .output();
-        // _temp_home is dropped here, auto-cleaning the isolated cache dir.
+        // `isolated` drops here, removing its cache/config/data/socket roots.
     }
+}
+
+/// Session names visible to an ordinary Zellij CLI with no harness overrides.
+/// A private E2E session appearing here is proof that the isolation boundary
+/// leaked. No live server is also valid and reports an empty list.
+pub fn ambient_session_names() -> Vec<String> {
+    let output = Command::new("zellij")
+        .args(["list-sessions", "--short", "--no-formatting"])
+        .output()
+        .expect("ambient zellij list-sessions failed to spawn");
+    session_names(output)
+}
+
+fn session_names(output: std::process::Output) -> Vec<String> {
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -665,6 +797,12 @@ fn regex_capture_u32(marker: &str, haystack: &str) -> Option<u32> {
 /// Absolute path to the built wasm plugin.
 /// The caller must build it first (via `cargo build --release --target wasm32-wasip1`).
 pub fn plugin_wasm_path() -> std::path::PathBuf {
+    // Diagnosis/release verification can drive the exact installed or downloaded
+    // artifact without copying it over the workspace build. Ordinary E2E runs
+    // remain pinned to the freshly built workspace WASM.
+    if let Some(path) = std::env::var_os("ZJR_E2E_PLUGIN_WASM") {
+        return std::path::PathBuf::from(path);
+    }
     // In a virtual workspace every member shares the workspace-root target dir,
     // so `cargo build -p zj-radar-plugin` writes here, not under crates/plugin.
     // CARGO_MANIFEST_DIR is the crate dir (crates/plugin); go up two levels.
@@ -698,10 +836,10 @@ pub fn plugin_wasm_path() -> std::path::PathBuf {
 /// added by the notify feature and must stay listed here).
 ///
 /// If the path is already present, the file is left unchanged.
-/// Returns the temp HOME dir so the caller can pass it to `ZellijSession::start`.
-pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
-    let temp_home = tempfile::TempDir::new().expect("failed to create temp HOME dir");
-    let cache_dir = zellij_cache_dir_for(temp_home.path());
+/// Returns the complete isolated environment for `ZellijSession::start`.
+pub fn pre_grant_permissions(wasm: &Path) -> IsolatedEnvironment {
+    let isolated = IsolatedEnvironment::new();
+    let cache_dir = isolated.zellij_cache_dir();
     std::fs::create_dir_all(&cache_dir).ok();
 
     let perm_file = cache_dir.join("permissions.kdl");
@@ -729,14 +867,14 @@ pub fn pre_grant_permissions(wasm: &Path) -> tempfile::TempDir {
         }
     }
 
-    temp_home
+    isolated
 }
 
-/// An isolated temp HOME with NO permission grant — the ungranted first-run
+/// An isolated environment with NO permission grant — the ungranted first-run
 /// state. Mirrors `pre_grant_permissions` minus the grant, so a session started
 /// with it reproduces "attached but never granted" (nothing in `permissions.kdl`).
-pub fn isolated_temp_home() -> tempfile::TempDir {
-    tempfile::TempDir::new().expect("failed to create temp HOME dir")
+pub fn isolated_temp_home() -> IsolatedEnvironment {
+    IsolatedEnvironment::new()
 }
 
 /// A rail layout whose plugin DEFERS permission (`defer_permission "true"`) and
@@ -763,15 +901,6 @@ pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
 }}"#,
         wasm = wasm_abs.display()
     )
-}
-
-/// Return the Zellij cache dir inside `home` (same logic Zellij uses for HOME).
-fn zellij_cache_dir_for(home: &Path) -> std::path::PathBuf {
-    if cfg!(target_os = "macos") {
-        home.join("Library/Caches/org.Zellij-Contributors.Zellij")
-    } else {
-        home.join(".cache/zellij")
-    }
 }
 
 /// Build a KDL layout that pins the zj-radar plugin in a 32-column left sidebar.
@@ -855,6 +984,41 @@ pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
         pane focus=true cwd="/tmp"
     }}
     tab name="two" {{
+        pane focus=true cwd="/tmp"
+    }}
+}}"#
+    )
+}
+
+/// User-shaped starting layout: the initial tab uses `default_tab_template`,
+/// while tabs created later through `action new-tab` use the concrete
+/// `new_tab_template`. Every tab gets an independent sidebar plugin instance.
+/// The initial unnamed tab starts at `/tmp`, allowing Managed naming to claim it
+/// before a test applies a manual rename.
+pub fn runtime_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
+    let wasm_abs = plugin_wasm
+        .canonicalize()
+        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let w = wasm_abs.display();
+    format!(
+        r#"layout {{
+    default_tab_template {{
+        pane split_direction="vertical" {{
+            pane size=32 borderless=true {{
+                plugin location="file:{w}"
+            }}
+            children
+        }}
+    }}
+    new_tab_template {{
+        pane split_direction="vertical" {{
+            pane size=32 borderless=true {{
+                plugin location="file:{w}"
+            }}
+            pane focus=true
+        }}
+    }}
+    tab focus=true {{
         pane focus=true cwd="/tmp"
     }}
 }}"#
