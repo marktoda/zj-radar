@@ -71,6 +71,12 @@ impl TabId {
     pub(crate) fn new(raw: usize) -> Self {
         Self(raw)
     }
+
+    /// The host's raw id, for id-addressed host calls (`rename_tab_with_id`).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn raw(self) -> usize {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1182,7 +1188,6 @@ impl RadarState {
                 TabFacts {
                     id: tab.id,
                     name: tab.name.clone(),
-                    position: tab.position,
                     panes: panes
                         .iter()
                         .map(|p| PaneFacts {

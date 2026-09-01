@@ -207,7 +207,7 @@ impl State {
                 Effect::HeartbeatPermissionLock => {
                     self.session_files.heartbeat_permission_lock()
                 }
-                Effect::RenameTab { position, name } => rename_tab(position as u32 + 1, &name),
+                Effect::RenameTab { tab_id, name } => rename_tab_with_id(tab_id.raw() as u64, &name),
                 Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
                 Effect::ShowPane { pane_id } => {
                     show_pane_with_id(PaneId::Terminal(pane_id), false, true);

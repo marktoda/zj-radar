@@ -288,7 +288,7 @@ fn rename_ownership_follows_stable_tab_id_across_reorder() {
     assert_eq!(
         rename.renames,
         vec![TabRename {
-            position: 0,
+            id: TabId::new(10),
             name: "alpha".into(),
         }]
     );
@@ -301,7 +301,7 @@ fn rename_ownership_follows_stable_tab_id_across_reorder() {
     assert_eq!(
         rename.renames,
         vec![TabRename {
-            position: 1,
+            id: TabId::new(10),
             name: "beta".into(),
         }]
     );
@@ -342,7 +342,7 @@ fn managed_naming_skips_manual_names_but_force_overrides() {
     assert_eq!(
         forced,
         vec![TabRename {
-            position: 0,
+            id: TabId::new(10),
             name: "repo".into(),
         }]
     );
@@ -659,7 +659,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     assert_eq!(
         bootstrapped.renames,
         vec![TabRename {
-            position: 0,
+            id: TabId::new(10),
             name: "alpha".into(),
         }]
     );
@@ -678,7 +678,7 @@ fn bootstrapped_cwd_names_the_tab_and_later_cd_still_renames() {
     assert_eq!(
         moved.renames,
         vec![TabRename {
-            position: 0,
+            id: TabId::new(10),
             name: "beta".into(),
         }]
     );
@@ -1112,7 +1112,7 @@ fn applied_tab_name_repicks_when_the_naming_pane_closes() {
     assert_eq!(
         change.renames,
         vec![TabRename {
-            position: 0,
+            id: TabId::new(10),
             name: "beta".into(),
         }]
     );

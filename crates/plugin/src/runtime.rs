@@ -46,7 +46,7 @@ use crate::control::Verb;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
-use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite};
+use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
@@ -116,7 +116,7 @@ pub(crate) enum Effect {
     SetTimeout(Cadence),
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
-    RenameTab { position: usize, name: String },
+    RenameTab { tab_id: TabId, name: String },
     SwitchTab { position: usize },
     ShowPane { pane_id: u32 },
     /// Read these panes' working directories once (blocking `get_pane_cwd`) to
@@ -1182,7 +1182,7 @@ impl PluginRuntime {
     fn effects_from_renames(&self, renames: Vec<TabRename>) -> Vec<Effect> {
         renames
             .into_iter()
-            .map(|TabRename { position, name }| Effect::RenameTab { position, name })
+            .map(|TabRename { id, name }| Effect::RenameTab { tab_id: id, name })
             .collect()
     }
 
