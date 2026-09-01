@@ -1357,6 +1357,20 @@ mod tests {
     }
 
     #[test]
+    fn plan_run_is_quiet_when_only_opencode_is_wired() {
+        // The opencode bridge is a producer in its own right: granted + only the
+        // opencode plugin present must yield no "no producer wired" advisory.
+        // This is the one call site exercising `RunFacts.opencode_plugin` →
+        // `opencode_producer_wired` → `producer_hint` end-to-end.
+        let p = plan_run(&facts4(true, false, false, true));
+        assert!(p.advisories.is_empty(), "{:?}", p.advisories);
+
+        let p = plan_run(&facts4(true, false, false, false));
+        assert_eq!(p.advisories.len(), 1, "{:?}", p.advisories);
+        assert!(p.advisories[0].contains("zj-radar setup opencode"), "{}", p.advisories[0]);
+    }
+
+    #[test]
     fn plan_run_advises_grant_when_ungranted() {
         let p = plan_run(&facts(false, true, false)); // producer wired, not granted
         assert_eq!(p.advisories.len(), 1);

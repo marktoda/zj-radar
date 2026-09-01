@@ -19,7 +19,7 @@ use serde_json::Value;
 /// bridge always passes `--status`, so this is the robustness/test path).
 fn status_from_event(event: &str) -> Option<Status> {
     match event {
-        "chat.message" | "tool.execute" => Some(Status::Running),
+        "chat.message" | "tool.execute" | "permission.replied" => Some(Status::Running),
         "permission.ask" => Some(Status::Pending),
         "session.idle" => Some(Status::Done),
         "session.error" => Some(Status::Error),
@@ -244,6 +244,17 @@ mod tests {
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Approve network access?");
         assert_eq!(u.cwd.as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn permission_replied_resumes_running() {
+        // The user answered the prompt: the row leaves ◆ immediately instead of
+        // waiting for the next tool/idle event (a denied permission throws
+        // inside the tool, so `tool.execute.after` may never come).
+        let u = derive(&intake(r#"{"event":"permission.replied","cwd":"/repo"}"#, None)).unwrap();
+        assert_eq!(u.status, Status::Running);
+        assert_eq!(u.msg, "working");
+        assert_eq!(u.task, None);
     }
 
     #[test]

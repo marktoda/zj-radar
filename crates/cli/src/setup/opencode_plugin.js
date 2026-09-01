@@ -8,9 +8,12 @@
 // sends): this bridge spawns `zj-radar notify opencode --status <s>` per event
 // with the payload JSON on stdin. The `zellij pipe` send is bounded by the CLI
 // path (self_limiting_pipe_argv's watchdog survives this bridge's own death),
-// so the bridge adds no second pipe client. Spawns are strictly FIFO (never
-// concurrent) to preserve in-order / latest-wins; each child has a hard ~10s
-// kill timer as an outer backstop; a rejected child never breaks the queue.
+// so the bridge adds no second pipe client. Spawns are never concurrent:
+// status edges (pending/done/error/idle) go out strictly FIFO, while `running`
+// refreshes coalesce to the latest unsent one (latest-wins is the project's
+// ordering rule, so a stale running is free to drop and can never head-of-line
+// block an edge). Each child has a hard ~10s kill timer as an outer backstop;
+// a rejected child never breaks the queue.
 // ASYNC SPAWN ONLY — never a synchronous spawn: the plugin runs in opencode's
 // process, so a wedged rail must not freeze the TUI event loop.
 //
@@ -22,13 +25,19 @@
 // `cwd` on every spawn so the rail resolves repo/branch without a host probe).
 let CWD = "";
 
-// Track root sessionID to ignore child (subagent) sessions created by tasks.
+// The root (user-facing) sessionID. opencode's task tool forks subagent
+// sessions with `parentID`, and their prompts/tools/idle fire the same hooks
+// and bus events — pinning the root lets the bridge ignore them, so a subagent
+// finishing never paints Done (or clobbers the task label) mid-turn.
 let rootSessionID = null;
 
-// Track the user message ID to ignore user prompt parts in message.part.updated.
+// The current user message ID: opencode publishes `message.part.updated` for
+// the user's own prompt parts too (Part carries no role), so parts of this
+// message must never land in `lastAssistantText`.
 let lastUserMessageID = null;
 
-// Map of messageID -> role to track message roles across events.
+// messageID -> role, learned from `message.updated` (which does carry role);
+// cleared at each turn boundary so it stays bounded.
 let messageRoles = new Map();
 
 // The last assistant text part seen via `message.part.updated`, tracked so a
@@ -132,10 +141,11 @@ function errorMessage(error) {
   return typeof error.name === "string" ? error.name : "";
 }
 
-// Extract a permission description from permission.asked properties.
+// Extract a permission description from `permission.asked` properties
+// ({ id, sessionID, permission, patterns, metadata, always, tool? } — no title).
 function permMessage(props) {
   if (!props) return "Permission requested";
-  const name = props.permission || props.tool || "permission";
+  const name = typeof props.permission === "string" && props.permission ? props.permission : "permission";
   const patterns = Array.isArray(props.patterns) && props.patterns.length > 0
     ? props.patterns.join(", ")
     : "";
@@ -149,6 +159,20 @@ function isChildSession(props) {
     return true;
   }
   return false;
+}
+
+// The sessionID an event belongs to. Current opencode stamps a top-level
+// `sessionID` on every event; older shapes carried only `{ info }` (whose
+// session key is `id`) or `{ part }` (which carries its own `sessionID`).
+function eventSession(props) {
+  if (!props) return null;
+  return (
+    props.sessionID ||
+    props.session_id ||
+    (props.info && (props.info.sessionID || props.info.session_id || props.info.id)) ||
+    (props.part && props.part.sessionID) ||
+    null
+  );
 }
 
 export const ZjRadarPlugin = async ({ directory }) => {
@@ -193,7 +217,9 @@ export const ZjRadarPlugin = async ({ directory }) => {
       });
     },
 
-    // opencode is asking for permission → pending, with the permission title.
+    // Legacy (< 1.14) permission hook → pending. Current opencode no longer
+    // triggers it (the signal is the `permission.asked` bus event below);
+    // kept so older installs still get the needs-you moment.
     "permission.ask": async (input) => {
       enqueue("pending", {
         event: "permission.ask",
@@ -207,7 +233,7 @@ export const ZjRadarPlugin = async ({ directory }) => {
       const props = (event && event.properties) || {};
       if (isChildSession(props)) return;
 
-      const eventSessionID = props.sessionID || props.session_id || (props.info && (props.info.sessionID || props.info.session_id));
+      const eventSessionID = eventSession(props);
       if (type === "session.created") {
         if (!props.parentID && !props.info?.parentID) {
           rootSessionID = eventSessionID || null;
@@ -245,11 +271,18 @@ export const ZjRadarPlugin = async ({ directory }) => {
         case "permission.asked":
           enqueue("pending", { event: "permission.ask", message: permMessage(props) });
           break;
+        // The user answered → back to running now, rather than on the next
+        // tool/idle event (a denied permission throws inside the tool, so
+        // `tool.execute.after` may never come).
+        case "permission.replied":
+          enqueue("running", { event: "permission.replied" });
+          break;
         // Turn complete → done, with the tracked final assistant text (the
         // adapter remaps to pending if it ends in a question).
         case "session.idle":
           enqueue("done", { event: "session.idle", message: lastAssistantText });
           lastAssistantText = "";
+          messageRoles.clear();
           break;
         // A real failure signal Claude's hook model lacks → error.
         case "session.error":

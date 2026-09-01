@@ -104,21 +104,33 @@ stays in Rust (it requires the `zj-radar` binary — no JS-side derive twin).
 
 - **Requires the `zj-radar` binary on `PATH`.** Unlike Claude's `jq` fallback,
   opencode wiring has no script fallback: `setup opencode` implies the binary.
-  Because `opencode` is a recognized agent executable (`AGENT_NAMES`), uninstrumented
-  `opencode` panes are ignored by command tracking to prevent duplicate activity
-  rows. An `opencode` pane will remain dark until `zj-radar setup opencode` is run
-  and opencode is restarted (or if `--pure` / `OPENCODE_PURE` is passed, which disables
-  external plugins).
+- **An unwired opencode pane is dark, not un-enriched.** `opencode` is an
+  instrumented agent (`AGENT_NAMES`), so the sidebar suppresses ordinary
+  command-tracking for its panes and relies on the bridge for every row. With
+  the bridge absent — a fresh install that skipped `setup opencode`, or
+  `--pure` / `OPENCODE_PURE`, which disables external plugins — the pane shows
+  no Running/Done row at all (same tradeoff class as claude/codex).
+  `zj-radar setup --check` and the `setup zellij` epilogue both report the
+  missing bridge when `opencode` is on `PATH`. **Upgrading from a release
+  before opencode support:** panes that previously fell through to
+  command-tracking go dark once the wasm is upgraded; run
+  `zj-radar setup opencode` and restart opencode.
 - **Restart opencode after installing** — plugins load once at startup, so a
   write mid-session needs a restart (or plugin reload) to take effect.
 - The bridge covers `chat.message` (running + task), `tool.execute.before`/
-  `after` (running + tool activity), `permission.ask` (pending),
-  `session.idle` (done, with the trailing-question → pending remap),
-  `session.error` (error — a real failure signal Claude's hook model lacks),
-  and `session.created`/`session.deleted` (idle). Spawns are strictly FIFO
-  (in-order / latest-wins), async-only (never synchronous — the bridge runs in
-  opencode's process and must not freeze the TUI), with a hard ~10 s kill
-  timer per child. The `ZJ_RADAR_OPENCODE_PLUGIN=v1` marker in the plugin
+  `after` (running + tool activity), the `permission.asked` bus event
+  (pending; the pre-1.14 `permission.ask` hook is kept as a fallback) and
+  `permission.replied` (back to running), `session.idle` (done, with the
+  trailing-question → pending remap), `session.error` (error — a real failure
+  signal Claude's hook model lacks), and `session.created`/`session.deleted`
+  (idle). Events from subagent (task-tool) sessions are ignored — only the
+  root session drives the row — and the user's own prompt text is never
+  mistaken for assistant text. Sends are async-only (never synchronous — the
+  bridge runs in opencode's process and must not freeze the TUI), one child
+  at a time, with a hard ~10 s kill timer per child. Status *edges*
+  (pending/done/error/idle) are strictly FIFO; `running` refreshes coalesce to
+  the latest unsent one so a slow or wedged pipe never queues stale refreshes
+  ahead of an edge. The `ZJ_RADAR_OPENCODE_PLUGIN=v1` marker in the plugin
   header is what idempotency, `--uninstall`, and `--check` key on; a foreign
   plugin file (no marker) is refused unless `--force` replaces it.
 - **One TUI, many sessions, one pane:** latest event wins — same semantics as

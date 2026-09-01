@@ -79,7 +79,7 @@ enum Command {
         /// `generic` (any script — pass explicit `--status`/`--msg`/`--task`
         /// flags, no hook payload needed).
         agent: String,
-        /// Hook payload as a trailing argument (codex). Claude passes it on stdin instead.
+        /// Hook payload as a trailing argument (codex). Claude and opencode pass it on stdin instead.
         input: Option<String>,
         /// Explicit status (claude hooks pass this; required for `generic`):
         /// running | pending | done | error | idle.

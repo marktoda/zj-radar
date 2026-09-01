@@ -68,16 +68,16 @@ macro_rules! kinds {
 }
 
 kinds! {
-    Claude  => "claude",   '✳', '\u{f06a9}'; // nf-md-robot
-    Codex   => "codex",    '❉', '\u{f167a}'; // nf-md-robot-outline
-    Opencode => "opencode", '✺', '\u{f0eae}'; // nf-md-code-braces
-    Gemini  => "gemini",   '✦', '\u{f0eb9}'; // nf-md-star-four-points (sparkle)
-    Command => "command",  '$', '$';
-    Other   => "other",    '⦿', '⦿';
-    Test    => "test",     '⚗', '⚗';
-    Build   => "build",    '⚙', '⚙';
-    Deploy  => "deploy",   '⇡', '⇡';
-    Server  => "server",   '❯', '❯';
+    Claude   => "claude",   '✳', '\u{f06a9}'; // nf-md-robot
+    Codex    => "codex",    '❉', '\u{f167a}'; // nf-md-robot-outline
+    Opencode => "opencode", '✺', '\u{f0169}'; // nf-md-code-braces
+    Gemini   => "gemini",   '✦', '\u{f0eb9}'; // nf-md-star-four-points (sparkle)
+    Command  => "command",  '$', '$';
+    Other    => "other",    '⦿', '⦿';
+    Test     => "test",     '⚗', '⚗';
+    Build    => "build",    '⚙', '⚙';
+    Deploy   => "deploy",   '⇡', '⇡';
+    Server   => "server",   '❯', '❯';
 }
 
 impl Kind {
@@ -179,7 +179,7 @@ mod tests {
         // Agent marks become heavier font-native MDI glyphs in the Nerd set.
         assert_eq!(Kind::Claude.mark(Nerd), '\u{f06a9}');
         assert_eq!(Kind::Codex.mark(Nerd), '\u{f167a}');
-        assert_eq!(Kind::Opencode.mark(Nerd), '\u{f0eae}');
+        assert_eq!(Kind::Opencode.mark(Nerd), '\u{f0169}');
         assert_eq!(Kind::Gemini.mark(Nerd), '\u{f0eb9}');
         // Task marks are shared across sets.
         assert_eq!(Kind::Build.mark(Nerd), '⚙');
