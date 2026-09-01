@@ -800,15 +800,35 @@ fn manual_tab_name_survives_switch_to_another_plugin_instance() {
     assert!(on_tab1, "could not navigate from tab 2 to tab 1");
 
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut observed_preserved = false;
+    let mut overwritten = None;
+    let mut last_names = Vec::new();
     while Instant::now() < deadline {
-        let names = session.tab_names();
-        assert!(
-            names.get(1).is_some_and(|name| name == manual_name),
-            "switching tabs overwrote tab 2's manual name; names={names:?};\nsidebar:\n{}",
-            sidebar_region(&session.screen(), 32)
-        );
+        last_names = session.tab_names();
+        match last_names.get(1) {
+            Some(name) if name == manual_name => observed_preserved = true,
+            Some(_) => {
+                overwritten = Some(last_names.clone());
+                break;
+            }
+            // `query-tab-names` can briefly return an empty successful response
+            // while the client switches tabs. That is no observation, not proof
+            // that the host replaced the name; keep polling for a full snapshot.
+            None => {}
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
+    assert!(
+        overwritten.is_none(),
+        "switching tabs overwrote tab 2's manual name; names={:?};\nsidebar:\n{}",
+        overwritten.unwrap_or_default(),
+        sidebar_region(&session.screen(), 32)
+    );
+    assert!(
+        observed_preserved,
+        "query-tab-names never returned a complete post-switch snapshot; last names={last_names:?};\nsidebar:\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
 }
 
 /// Pins the load-bearing property behind the exit-clear fix: per-pane
