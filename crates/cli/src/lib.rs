@@ -1,6 +1,6 @@
 //! Native CLI (`zj-radar`): the host front door for the sidebar.
 //!
-//! Three subcommands, one per module:
+//! Four subcommands, one per module:
 //! - `notify <agent>` ([`notify`]) — the *pushed* information source. Reads an
 //!   agent's hook payload and broadcasts a `zj_radar.status.v1` update. Each
 //!   agent is a peer adapter behind the [`agents::Agent::derive`] seam, so
@@ -11,6 +11,9 @@
 //!   into a Zellij layout ([`layout`]).
 //! - `run` ([`run`]) — turnkey launch of a Zellij session that owns its own
 //!   config with the rail preinstalled.
+//! - `update` ([`update`]) — move the CLI and the sidebar wasm to a newer
+//!   release together (self-replace, then re-exec `setup zellij --download`);
+//!   hands Nix/cargo-managed binaries back to their package manager.
 
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.

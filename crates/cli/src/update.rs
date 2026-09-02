@@ -23,6 +23,10 @@ pub(crate) struct UpdateOptions {
 #[derive(Debug, PartialEq, Eq)]
 enum WasmState {
     NotInstalled,
+    /// A symlink (home-manager / Nix): the same guard `setup zellij` applies to
+    /// a symlinked config.kdl — writing through it is reverted on the next
+    /// switch, and the bytes are that build's, not the release's.
+    Managed,
     Current,
     Stale,
     /// Couldn't tell (no config dir, no published checksum, no sha256 tool).
@@ -40,6 +44,21 @@ pub fn run(options: UpdateOptions) {
         }
     };
     let cli_behind = is_newer(&target, current);
+    // Forward only: a pin older than this CLI would refresh the wasm to the
+    // pin while the binary stays put — exactly the version split `update`
+    // exists to prevent. Downgrades go through the installer, which replaces
+    // the CLI first (then `setup zellij --download` follows its version).
+    if !cli_behind && target != current {
+        crate::exit::fail_report(
+            "update",
+            format!(
+                "ZJ_RADAR_VERSION=v{target} is older than this CLI (v{current}) — update only moves forward. \
+                 To downgrade, reinstall that release: ZJ_RADAR_VERSION=v{target} …/install.sh | sh, \
+                 then `zj-radar setup zellij --download`"
+            ),
+        );
+        return;
+    }
     if cli_behind {
         println!("cli:  v{current} → v{target} available");
     } else {
@@ -51,6 +70,9 @@ pub fn run(options: UpdateOptions) {
         WasmState::NotInstalled => {
             println!("wasm: not installed — run `zj-radar setup zellij --download` to add the sidebar")
         }
+        WasmState::Managed => {
+            println!("wasm: a symlink (managed by Nix / home-manager) — update it through your Nix config")
+        }
         WasmState::Current => println!("wasm: matches v{target} (up to date)"),
         WasmState::Stale => println!("wasm: differs from v{target} — will be refreshed"),
         WasmState::Unknown(why) => println!("wasm: could not compare ({why})"),
@@ -58,9 +80,12 @@ pub fn run(options: UpdateOptions) {
 
     let wasm_stale = wasm == WasmState::Stale;
     if options.check {
-        if cli_behind || wasm_stale {
+        if cli_behind {
             println!("run `zj-radar update` to apply");
-            crate::exit::fail_report("update", "a newer release is available");
+            crate::exit::fail_report("update", format!("v{target} is available"));
+        } else if wasm_stale {
+            println!("run `zj-radar update` to apply");
+            crate::exit::fail_report("update", format!("the installed sidebar wasm does not match v{target}"));
         }
         return;
     }
@@ -109,12 +134,19 @@ pub fn run(options: UpdateOptions) {
     if cli_behind {
         println!("zj-radar: the Claude Code plugin updates from inside Claude — `/plugin update zj-radar-claude@zj-radar`");
     }
-    rerun(&exe, &target, &["setup", "--check"]);
+    // The doctor's exit code grades install completeness (a machine with no
+    // producer wired reads "missing"), not this update — its items are the
+    // report; only a failure to *run* it is ours.
+    let _ = std::process::Command::new(&exe)
+        .args(["setup", "--check"])
+        .env("ZJ_RADAR_VERSION", &target)
+        .status()
+        .map_err(|e| crate::exit::fail_report("update", format!("could not run {} — {e}", exe.display())));
 }
 
 /// Run a follow-up `zj-radar` step through `exe`, inheriting stdio so its own
 /// output lands in the user's terminal. `false` (with the failure reported)
-/// when it didn't exit cleanly — steps after it still run, since a doctor
+/// when it didn't exit cleanly — steps after it still run, since the doctor
 /// report is most useful exactly when something went wrong.
 fn rerun(exe: &Path, target: &str, args: &[&str]) -> bool {
     println!("zj-radar: running `zj-radar {}`", args.join(" "));
@@ -190,6 +222,9 @@ fn wasm_state(target: &str) -> WasmState {
         return WasmState::Unknown("no Zellij config dir — set $HOME".to_string());
     };
     let installed = crate::setup::zellij_wasm_dest(&config_dir);
+    if crate::setup::path_is_managed(&installed) {
+        return WasmState::Managed;
+    }
     if !installed.is_file() {
         return WasmState::NotInstalled;
     }
