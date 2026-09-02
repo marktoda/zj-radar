@@ -132,20 +132,40 @@ fn update_refuses_to_overwrite_a_cargo_installed_binary() {
     let cargo_bin = home.path().join(".cargo").join("bin");
     fs::create_dir_all(&cargo_bin).unwrap();
     let relocated = cargo_bin.join("zj-radar");
-    fs::copy(assert_cmd::cargo::cargo_bin("zj-radar"), &relocated).unwrap();
+    let src = assert_cmd::cargo::cargo_bin("zj-radar");
+    // Hard-link, don't copy: `fs::copy` opens the destination for writing, and
+    // under a parallel test runner a concurrent test's fork can inherit that
+    // descriptor and make the exec below fail with ETXTBSY ("Text file busy")
+    // on Linux. A hard link opens no writable fd. Fall back to copy only across
+    // filesystems (EXDEV), where the retry below covers the rare race.
+    if fs::hard_link(&src, &relocated).is_err() {
+        fs::copy(&src, &relocated).unwrap();
+    }
 
-    let out = Command::new(&relocated)
-        .arg("update")
-        .env("HOME", home.path())
-        .env_remove("CARGO_HOME")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", "99.0.0")
-        .assert()
-        .success() // a redirect, not a failure
-        .get_output()
-        .clone();
-    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Spawn, tolerating a transient ETXTBSY from the copy-fallback path: retry a
+    // few times as the concurrent writer's fd closes. The hard-link path never
+    // hits this.
+    let mut attempt = 0;
+    let output = loop {
+        let result = Command::new(&relocated)
+            .arg("update")
+            .env("HOME", home.path())
+            .env_remove("CARGO_HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("ZELLIJ_CONFIG_DIR")
+            .env("ZJ_RADAR_VERSION", "99.0.0")
+            .output();
+        match result {
+            Ok(o) => break o,
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("spawning relocated binary failed: {e}"),
+        }
+    };
+    assert!(output.status.success(), "update should redirect (exit 0), got {:?}", output.status);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("cargo install zj-radar"), "should hand off to cargo: {stdout}");
     // The binary itself is untouched.
     assert_eq!(
