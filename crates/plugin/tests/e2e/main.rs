@@ -784,12 +784,21 @@ fn manual_tab_name_survives_switch_to_another_plugin_instance() {
         session.tab_names()
     );
 
+    // Rename tab 2 by its stable id, not the focused tab. `rename-tab` with no
+    // id targets whatever tab the attached client has focused, and after
+    // `new-tab` that focus can still be settling — the rename then lands on
+    // nothing observable and the test flakes with "never landed" (issue #34).
+    // Zellij tab ids are 0-based (the first tab is id 0), so the second tab is
+    // id 1 — distinct from `go-to-tab`, which is 1-based by position.
     let manual_name = "keep-this-manual-name";
-    session.run_action(&["rename-tab", manual_name]);
-    let renamed = session.wait_until(Duration::from_secs(5), |s| {
-        s.tab_names().get(1).is_some_and(|name| name == manual_name)
+    session.run_action_checked(&["rename-tab", "--tab-id", "1", manual_name]);
+    let (renamed, timeline) = session.sample_tab_names_until(Duration::from_secs(5), |names| {
+        names.get(1).is_some_and(|name| name == manual_name)
     });
-    assert!(renamed, "manual rename never landed; got {:?}", session.tab_names());
+    assert!(
+        renamed,
+        "manual rename never landed; tab-name timeline (elapsed → names) was {timeline:?}"
+    );
 
     // Switch to tab 1 (a different instance) and hold on Zellij's authoritative
     // tab names for a few seconds: a rename from any instance would show here.
