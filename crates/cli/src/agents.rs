@@ -402,39 +402,20 @@ mod tests {
     }
 
     #[test]
-    fn tool_bash_git_push() {
-        let input = json(r#"{"command": "git push origin main"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "pushing");
-    }
-
-    #[test]
-    fn tool_bash_git_commit() {
-        let input = json(r#"{"command": "git commit -m x"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "committing");
-    }
-
-    #[test]
-    fn tool_bash_git_pull() {
-        let input = json(r#"{"command": "git pull"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "syncing");
-    }
-
-    #[test]
-    fn tool_bash_cargo_test() {
-        let input = json(r#"{"command": "cargo test --features cli"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "running tests");
-    }
-
-    #[test]
-    fn tool_bash_npm_run_build() {
-        let input = json(r#"{"command": "npm run build"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "building");
-    }
-
-    #[test]
-    fn tool_bash_pip_install() {
-        let input = json(r#"{"command": "pip install foo"}"#);
-        assert_eq!(tool_activity("Bash", &input).unwrap(), "installing");
+    fn tool_bash_verbs_derive_their_activity() {
+        // The positive half of the word-bounded classification below: each verb
+        // maps to its activity. Table-driven, matching that sibling test's shape.
+        for (cmd, expected) in [
+            ("git push origin main", "pushing"),
+            ("git commit -m x", "committing"),
+            ("git pull", "syncing"),
+            ("cargo test --features cli", "running tests"),
+            ("npm run build", "building"),
+            ("pip install foo", "installing"),
+        ] {
+            let input = json(&format!(r#"{{"command": {cmd:?}}}"#));
+            assert_eq!(tool_activity("Bash", &input).as_deref(), Some(expected), "cmd={cmd}");
+        }
     }
 
     #[test]

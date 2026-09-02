@@ -257,21 +257,98 @@ fn interrupted_download_leaves_no_partial_wasm() {
 
     // Downloads stage in a per-user `zj-radar-<user>/` subdir of the temp root;
     // sweep the whole tree so a leftover wasm/.part/.sha256 anywhere is caught.
-    fn sweep(dir: &std::path::Path, hits: &mut Vec<String>) {
-        for entry in fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.is_dir() {
-                sweep(&path, hits);
-            } else {
-                hits.push(path.display().to_string());
-            }
-        }
-    }
     let mut leftovers = Vec::new();
-    sweep(tmp.path(), &mut leftovers);
+    sweep_files(tmp.path(), &mut leftovers);
     assert!(
         leftovers.is_empty(),
         "a failed download must leave neither the wasm nor a .part behind, found {leftovers:?}"
+    );
+}
+
+/// Collect every file path under `dir`, recursively. Shared by the download
+/// tests that assert a failed/rejected fetch stages nothing durable.
+fn sweep_files(dir: &std::path::Path, hits: &mut Vec<String>) {
+    for entry in fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            sweep_files(&path, hits);
+        } else {
+            hits.push(path.display().to_string());
+        }
+    }
+}
+
+// A downloaded wasm whose bytes do not match the release's published `.sha256`
+// must be refused, not installed — Zellij loads the wasm with permissions, so a
+// payload that fails its digest is the security boundary of the whole download
+// path. The generalization to `download_verified_asset` shipped without a test
+// for this branch; this pins it.
+
+#[test]
+fn checksum_mismatch_refuses_to_install_the_wasm() {
+    let fakebin = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+
+    // A fake `curl` that serves BOTH fetches this flow makes: real-looking wasm
+    // bytes for the `.wasm` URL, and a digest that cannot match those bytes
+    // (all zeros) for the `.sha256` sidecar. Distinguished by the URL suffix.
+    let curl = fakebin.path().join("curl");
+    fs::write(
+        &curl,
+        "#!/bin/sh\nurl=\"\"; out=\"\"; prev=\"\"\n\
+         for a in \"$@\"; do\n\
+         \x20 case \"$a\" in *github.com*) url=\"$a\";; esac\n\
+         \x20 [ \"$prev\" = \"-o\" ] && out=\"$a\"\n\
+         \x20 prev=\"$a\"\n\
+         done\n\
+         case \"$url\" in\n\
+         \x20 *.sha256) printf '%s' 0000000000000000000000000000000000000000000000000000000000000000 > \"$out\";;\n\
+         \x20 *) printf 'not-the-real-wasm' > \"$out\";;\n\
+         esac\n\
+         exit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Prepend the fake curl but keep the inherited PATH, so `sha256sum`/`shasum`
+    // still resolve — without a hash tool the code degrades to a TLS-only
+    // warning and the mismatch would never be caught (a different path).
+    let path = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--download", "--yes"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("PATH", path)
+        .env("TMPDIR", tmp.path())
+        .assert()
+        .failure();
+
+    // Nothing installed at the destination, and no staged bytes left behind.
+    assert!(
+        !config_dir.path().join("plugins").join("zj_radar.wasm").exists(),
+        "a checksum mismatch must not leave an installed wasm"
+    );
+    // Keep only download artifacts: `zellij --version` (real zellij is on PATH
+    // here) writes its own log under TMPDIR, which is not our concern.
+    let mut swept = Vec::new();
+    sweep_files(tmp.path(), &mut swept);
+    let staged: Vec<_> = swept
+        .into_iter()
+        .filter(|p| p.contains("zj_radar") || p.ends_with(".part") || p.ends_with(".sha256"))
+        .collect();
+    assert!(
+        staged.is_empty(),
+        "a rejected download must leave no wasm/.part/.sha256 behind, found {staged:?}"
     );
 }
 

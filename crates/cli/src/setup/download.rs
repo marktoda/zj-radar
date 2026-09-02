@@ -330,4 +330,27 @@ mod tests {
         assert_eq!(parse_sha256(&"a".repeat(65)), None); // too long
         assert_eq!(parse_sha256(&format!("{}g", "a".repeat(63))), None); // 64 chars, one non-hex
     }
+
+    #[test]
+    fn compute_sha256_matches_the_known_digest_of_a_file() {
+        // `parse_sha256` is unit-tested, but the shell-out + parse composition
+        // that feeds it is not — a regression in how `sha256sum`/`shasum -a 256`
+        // output is consumed would slip the checksum guard.
+        let Some(dir) = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| Some(std::env::temp_dir()))
+        else {
+            return;
+        };
+        let f = dir.join(format!("zj-radar-sha-probe-{}", std::process::id()));
+        std::fs::write(&f, b"abc").unwrap();
+        let got = compute_sha256(&f);
+        let _ = std::fs::remove_file(&f);
+        // SHA-256("abc"), the canonical NIST test vector. `None` = no sha256
+        // tool on PATH, where the checksum guard already degrades to a TLS-only
+        // warning, so an absent tool is not a failure.
+        if let Some(hex) = got {
+            assert_eq!(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        }
+    }
 }

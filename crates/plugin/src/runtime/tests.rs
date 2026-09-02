@@ -23,6 +23,33 @@ fn runtime_with_config(config: config::Config) -> PluginRuntime {
     }
 }
 
+/// A granted runtime with the default test `config()` and NO session name —
+/// the "permission resolved, nameless" shape many render/effect tests hand-roll
+/// inline. `runtime_with_granted_permission` differs by also setting a session
+/// name, which only the presence tests need.
+fn granted_runtime() -> PluginRuntime {
+    PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    }
+}
+
+/// Push the canonical Done ledger entry (tab 1 "work", "cargo test", pane 5) at
+/// `at_epoch_s`. The cadence tests differ only in that timestamp — a fresh
+/// `now` vs a saturated `0` — so a helper makes that the visible payload
+/// instead of burying it in a repeated eight-line literal.
+fn seed_done_ledger(rt: &mut PluginRuntime, at_epoch_s: u64) {
+    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
+        at_epoch_s,
+        outcome: crate::ledger::LedgerOutcome::Done,
+        tab_id: TabId::new(1),
+        tab_name: "work".into(),
+        label: "cargo test".into(),
+        pane_id: 5,
+    });
+}
+
 impl PluginRuntime {
     /// Test shorthand: deliver a timer fire "now" (a real wall-clock
     /// capture) with the given elapsed. The sites that still pass an
@@ -760,11 +787,7 @@ fn config_pipe_accepts_json_scalars() {
 fn render_records_targets_and_mouse_click_returns_host_effect() {
     // 3 tracked panes → multi-pane mode (line-per-pane).
     // Line 2 = tab header, line 3 = pane 20, line 4 = pane 21, line 5 = pane 22.
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     runtime.tabs_changed(vec![tab(0, "team", false), tab(1, "plain", false)]);
     runtime
         .radar
@@ -800,11 +823,7 @@ fn single_pane_detail_line_click_shows_the_pane() {
     // (line 2) + detail line (line 3). The detail line describes that one
     // pane, so it must click-target the pane (ShowPane), not the tab
     // (SwitchTab) — mirroring the multi-pane tree rows.
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     runtime.tabs_changed(vec![tab(0, "team", false)]);
     runtime
         .radar
@@ -882,11 +901,7 @@ fn no_tabs_with_history_renders_ledger_not_scanning() {
 
 #[test]
 fn command_attention_next_emits_switch_tab() {
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     // tab 0 active (running), tab 1 pending → attention.
     runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
     runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
@@ -910,22 +925,14 @@ fn command_is_inert_without_permission() {
 
 #[test]
 fn command_no_op_when_no_attention() {
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     runtime.tabs_changed(vec![tab(0, "a", true)]);
     assert_eq!(runtime.control(Verb::AttentionNext), Outcome::default());
 }
 
 #[test]
 fn control_pipe_unknown_verb_is_no_op() {
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     assert_eq!(runtime.control_pipe("attention-top"), Outcome::default());
     assert_eq!(runtime.control_pipe(""), Outcome::default());
 }
@@ -936,11 +943,7 @@ fn control_pipe_unknown_verb_is_no_op() {
 /// in production once Zellij's first `ModeUpdate` lands) — needed for the
 /// presence edge in `project` to ever fire.
 fn runtime_with_granted_permission() -> PluginRuntime {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     rt.session_name_changed(Some("work".into()));
     rt
 }
@@ -1091,11 +1094,7 @@ fn presence_withheld_until_own_session_name_is_known() {
     // Same status edge as above, but WITHOUT `session_name_changed` ever landing —
     // an unnamed presence file is useless to peers, so `project` must not
     // emit `PersistPresence` no matter what the own counts do.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     drive_tabs_and_panes(&mut rt);
 
     let out = rt.status_pipe(&payload_json(7, "running"));
@@ -1386,11 +1385,7 @@ fn right_click_without_permission_is_inert_even_on_stale_session_line() {
 ///   6   tab1 header line   → (1, None)
 ///   7   tab1 pane 20 line  → (1, Some(20)) — Pending
 fn runtime_with_pending_panes() -> PluginRuntime {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     rt.tabs_changed(vec![tab(0, "a", false), tab(1, "b", false)]);
     rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
     rt.radar.set_tab_panes_for_position(1, vec![pane(20)]);
@@ -1477,11 +1472,7 @@ fn right_click_on_a_running_pane_row_is_a_strict_no_op() {
 
 #[test]
 fn right_click_on_a_tab_row_with_no_tracked_panes_is_a_strict_no_op() {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     rt.tabs_changed(vec![tab(0, "a", false)]);
     let _ = rt.render(100, 80);
     assert_eq!(rt.mouse_right_click(2, 0), Outcome::default(), "no panes at all in this tab");
@@ -1999,11 +1990,7 @@ fn flash_keeps_fast_timer_until_cleared() {
 
 #[test]
 fn command_attention_prev_emits_switch_tab() {
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     // tab 0 active (running); tabs 1 and 2 pending → attention.
     // From active 0: Next steps forward to 1, Prev wraps backward to 2.
     runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false), tab(2, "c", false)]);
@@ -2020,11 +2007,7 @@ fn command_attention_prev_emits_switch_tab() {
 
 #[test]
 fn control_pipe_dispatches_known_verb() {
-    let mut runtime = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut runtime = granted_runtime();
     // tab 0 active (running), tab 1 pending → attention.
     runtime.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
     runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
@@ -2110,20 +2093,9 @@ fn command_ttl_recede_rearms_slow_not_fast_when_ledgered() {
 
 #[test]
 fn idle_with_fresh_history_arms_slow_and_repaints() {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: now,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    seed_done_ledger(&mut rt, now);
     assert!(rt.timer_chain.armed().is_none(), "setup: nothing has armed a timer yet");
 
     // Any event that runs `project` (here, a no-op topology update) must
@@ -2150,21 +2122,10 @@ fn saturated_history_fully_disarms() {
     // `session_name_changed` ever lands, so `own_session_name` stays at its
     // Default empty). Once a name is known the presence-liveness heartbeat
     // keeps Slow armed instead — see the sibling test below.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     // Any epoch older than SATURATE_S relative to the real wall clock —
     // 0 trivially qualifies.
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: 0,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    seed_done_ledger(&mut rt, 0);
     assert_eq!(
         rt.desired_cadence(crate::clock::now_epoch_s()),
         None,
@@ -2195,19 +2156,8 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     // feature exists for.
     // So: saturation may step the cadence down to Slow, but never to None
     // while the name is known.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: 0,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    let mut rt = granted_runtime();
+    seed_done_ledger(&mut rt, 0);
     // Seed `last_now_epoch_s` with a real wall-clock capture (any entry
     // point that owns an epoch does) BEFORE the name lands, so the arm
     // decision inside `session_name_changed`'s project pass evaluates at
@@ -2249,20 +2199,9 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
 
 #[test]
 fn fast_work_arriving_during_slow_rearms_fast() {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: now,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    seed_done_ledger(&mut rt, now);
     rt.tabs_changed(vec![]);
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: slow-armed on fresh history");
 
@@ -2284,20 +2223,9 @@ fn fast_work_arriving_during_slow_rearms_fast() {
 /// history (one fire in flight), then a Running broadcast tops up Fast
 /// (a second, non-cancellable fire in flight).
 fn slow_armed_then_fast_topup() -> PluginRuntime {
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: now,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    seed_done_ledger(&mut rt, now);
     rt.tabs_changed(vec![]); // arms Slow: one fire in flight
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: slow-armed on fresh history");
     let raw = payload::to_wire(&payload_for(5, Status::Running));
@@ -2388,20 +2316,9 @@ fn lone_slow_fire_processes_as_the_live_chain() {
     // A slow fire with no other fire in flight IS the live chain — its
     // 60s elapsed must not get it swallowed, or the idle heartbeat (and
     // the ledger-age repaint it exists for) would die.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
-    rt.radar.ledger_mut().push(crate::ledger::LedgerEntry {
-        at_epoch_s: now,
-        outcome: crate::ledger::LedgerOutcome::Done,
-        tab_id: TabId::new(1),
-        tab_name: "work".into(),
-        label: "cargo test".into(),
-        pane_id: 5,
-    });
+    seed_done_ledger(&mut rt, now);
     rt.tabs_changed(vec![]); // arms Slow: the only fire in flight
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow));
 
@@ -2520,11 +2437,7 @@ fn read_presences_is_bound_to_fast_fires_only() {
     // 90s; a per-second directory scan per instance bought nothing). `timer`
     // tells Fast from Slow the same way `TimerChain::on_fire` tells live from
     // stale: by `elapsed_s` against `STALE_FIRE_ELAPSED_S`.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
 
     let scans: Vec<bool> = (0..(2 * PRESENCE_READ_TICK_INTERVAL))
         .map(|_| {
@@ -2543,11 +2456,7 @@ fn read_presences_is_bound_to_fast_fires_only() {
     // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
     // must not — even though a scan is overdue (no scan has EVER run, the
     // strongest form of "due" the last-scan gate knows).
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let slow = rt.timer_slow(PermissionProbe::default());
     assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
 }
@@ -2628,11 +2537,7 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
     // ORIGINAL stale Slow arm lands somewhere in the stream. Run it out
     // past 15 minutes of virtual time and assert every live Slow fire
     // still re-arms and still heartbeats.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let mut sim = FireSim::new();
 
     // name-known: arms Slow immediately (idle from birth so far).
@@ -2794,11 +2699,7 @@ fn sustained_fast_cadence_with_unchanged_content_still_heartbeats_presence() {
     // every peer dims this — the busiest — session as stale. Hold Fast for
     // 4 virtual minutes and assert a `PersistPresence` keeps landing well
     // inside every 90s window.
-    let mut rt = PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    };
+    let mut rt = granted_runtime();
     let mut sim = FireSim::new();
     let named = rt.session_name_changed(Some("work".into()));
     sim.schedule_from(&named.effects);
