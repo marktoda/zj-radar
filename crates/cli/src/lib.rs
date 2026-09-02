@@ -32,6 +32,7 @@ mod notify;
 mod producers;
 mod run;
 mod setup;
+mod update;
 
 /// Process-wide failure flag. The setup/run orchestrators report refusals and
 /// write failures by printing a diagnostic and returning early through several
@@ -157,6 +158,14 @@ enum Command {
         #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall", "dry_run", "check"])]
         grant: bool,
     },
+    /// Update the CLI and the sidebar wasm to the latest release together
+    /// (set ZJ_RADAR_VERSION to pin a specific release tag).
+    Update {
+        /// Report whether an update is available without writing anything;
+        /// exits non-zero when one is.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// CLI entry point (called by `src/main.rs`). Returns the process exit code:
@@ -226,6 +235,9 @@ pub fn run() -> std::process::ExitCode {
                 layout: layout.as_deref(),
                 grant,
             });
+        }
+        Command::Update { check } => {
+            update::run(update::UpdateOptions { check });
         }
     }
     if exit::failed() {

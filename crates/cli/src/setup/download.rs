@@ -17,9 +17,9 @@ fn wasm_release_url(version: &str) -> String {
 }
 
 /// The `.sha256` sidecar published next to the wasm asset (same release, same
-/// version). Generated and uploaded by `.github/workflows/release.yml`.
-fn wasm_checksum_url(version: &str) -> String {
-    format!("{}.sha256", wasm_release_url(version))
+/// version). Also what `update --check` compares the installed wasm against.
+pub(crate) fn wasm_checksum_url(version: &str) -> String {
+    checksum_url(&wasm_release_url(version))
 }
 
 /// The `owner/repo` slug release assets are fetched from. Defaults to the
@@ -41,30 +41,37 @@ pub(crate) fn repo_slug() -> String {
     }
 }
 
-/// Fetch the wasm matching `version` to `dest` (creating its parent dir). Shells
-/// out to curl (or wget) rather than linking a Rust TLS stack — keeping the host
-/// build free of openssl/rustls, and curl is already assumed by the install flow.
+/// Fetch the wasm matching `version` to `dest` (creating its parent dir).
 /// Shared by `setup zellij --download` and `run`'s first-use fallback (when the
 /// CLI shipped without an embedded wasm).
 pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
-    }
-    let url = wasm_release_url(version);
     // Progress is prose → stderr: `run` reaches this download BEFORE its
     // `--print-cmd` branch prints, so anything on stdout here would be
     // captured by `$(zj-radar run --print-cmd)` and corrupt the command.
-    eprintln!("zj-radar: downloading wasm {version} from {url}");
-    // Download to a `.part` sibling and rename into place only after the
-    // transfer AND checksum both succeed. curl/wget write `dest` incrementally,
-    // so an interrupted transfer straight to `dest` would leave a partial file
-    // that the `exists()`/up-to-date gates treat as a valid wasm forever after —
-    // and Zellij would then load it with permissions.
+    eprintln!("zj-radar: downloading wasm {version} from {}", wasm_release_url(version));
+    download_verified_asset(&wasm_release_url(version), dest, &format!("zj_radar.wasm v{version}"))
+}
+
+/// Fetch a release asset at `url` to `dest` (creating its parent dir) and
+/// verify it against the `.sha256` sidecar published beside it. Shells out to
+/// curl (or wget) rather than linking a Rust TLS stack — keeping the host build
+/// free of openssl/rustls, and curl is already assumed by the install flow.
+/// `describe` names the asset in diagnostics (e.g. `zj_radar.wasm v0.5.0`).
+///
+/// The transfer lands in a `.part` sibling and is renamed into place only
+/// after the download AND checksum both succeed. curl/wget write incrementally,
+/// so an interrupted transfer straight to `dest` would leave a partial file
+/// that the `exists()`/up-to-date gates treat as a valid asset forever after —
+/// and Zellij would then load a partial wasm with permissions.
+pub(crate) fn download_verified_asset(url: &str, dest: &Path, describe: &str) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
+    }
     let part = match dest.file_name().and_then(|n| n.to_str()) {
         Some(name) => dest.with_file_name(format!("{name}.part")),
         None => return Err(format!("invalid download destination {}", dest.display())),
     };
-    let fetched = run_download(&url, &part)
+    let fetched = run_download(url, &part)
         .and_then(|()| {
             if !part.is_file() {
                 return Err(format!(
@@ -72,7 +79,7 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
                     part.display()
                 ));
             }
-            verify_checksum(version, &part)
+            verify_checksum(&checksum_url(url), &part, describe)
         })
         .and_then(|()| {
             std::fs::rename(&part, dest)
@@ -84,53 +91,65 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
     fetched
 }
 
-/// Verify the freshly-downloaded wasm against its published `.sha256` sidecar.
-///
-/// Strict when the sidecar is fetchable: a mismatch is a hard error and the bad
-/// wasm is removed — Zellij runs this wasm with permissions, so a payload that
-/// doesn't match its published digest must never be installed. When the sidecar
-/// is absent (a release predating checksums) or no local sha256 tool is on PATH,
-/// this warns and continues rather than blocking install — TLS + GitHub release
-/// storage remain the floor, and every new release publishes the sidecar (see
-/// `.github/workflows/release.yml`), so absence is the exception, not the norm.
-fn verify_checksum(version: &str, wasm: &Path) -> Result<(), String> {
-    // The sidecar stages NEXT TO the wasm being verified (a user-owned dir on
-    // every call path: the private download dir, or the owned config dir), not
-    // at a predictable shared-temp path another local user could pre-plant.
-    let Some(name) = wasm.file_name().and_then(|n| n.to_str()) else {
-        return Err(format!("invalid wasm path {}", wasm.display()));
-    };
-    let sidecar = wasm.with_file_name(format!("{name}.sha256"));
+/// The `.sha256` sidecar `.github/workflows/release.yml` publishes next to
+/// every binary asset (wasm and CLI tarballs alike).
+pub(crate) fn checksum_url(asset_url: &str) -> String {
+    format!("{asset_url}.sha256")
+}
+
+/// Fetch the published digest for an asset, or `None` when the release has no
+/// sidecar (predates checksums) or it is unreadable. Stages the sidecar next to
+/// `beside` (a user-owned dir on every call path) rather than at a predictable
+/// shared-temp path another local user could pre-plant.
+pub(crate) fn fetch_published_sha256(sidecar_url: &str, beside: &Path) -> Option<String> {
+    let name = beside.file_name().and_then(|n| n.to_str())?;
+    let sidecar = beside.with_file_name(format!("{name}.sha256"));
     let _ = std::fs::remove_file(&sidecar); // clear any stale sidecar first
-    if !try_download(&wasm_checksum_url(version), &sidecar) {
-        eprintln!(
-            "zj-radar: warning — no checksum published for v{version}; \
-             installed wasm is TLS-verified only (integrity not checked)"
-        );
-        return Ok(());
+    if !try_download(sidecar_url, &sidecar) {
+        return None;
     }
     let expected = std::fs::read_to_string(&sidecar).ok().and_then(|s| parse_sha256(&s));
     let _ = std::fs::remove_file(&sidecar);
-    let Some(expected) = expected else {
-        eprintln!("zj-radar: warning — checksum for v{version} was unreadable; skipping integrity check");
+    expected
+}
+
+/// Verify a freshly-downloaded asset against its published `.sha256` sidecar.
+///
+/// Strict when the sidecar is fetchable: a mismatch is a hard error and the bad
+/// file is removed — Zellij runs the wasm with permissions and the CLI tarball
+/// becomes an executable, so a payload that doesn't match its published digest
+/// must never be installed. When the sidecar is absent (a release predating
+/// checksums) or no local sha256 tool is on PATH, this warns and continues
+/// rather than blocking install — TLS + GitHub release storage remain the
+/// floor, and every new release publishes the sidecar (see
+/// `.github/workflows/release.yml`), so absence is the exception, not the norm.
+fn verify_checksum(sidecar_url: &str, asset: &Path, describe: &str) -> Result<(), String> {
+    if asset.file_name().and_then(|n| n.to_str()).is_none() {
+        return Err(format!("invalid asset path {}", asset.display()));
+    }
+    let Some(expected) = fetch_published_sha256(sidecar_url, asset) else {
+        eprintln!(
+            "zj-radar: warning — no readable checksum published for {describe}; \
+             installed file is TLS-verified only (integrity not checked)"
+        );
         return Ok(());
     };
-    let Some(actual) = compute_sha256(wasm) else {
+    let Some(actual) = compute_sha256(asset) else {
         eprintln!(
             "zj-radar: warning — no sha256 tool (sha256sum/shasum) on PATH; \
-             skipping integrity check for v{version}"
+             skipping integrity check for {describe}"
         );
         return Ok(());
     };
     if actual.eq_ignore_ascii_case(&expected) {
         // Prose → stderr, like the download progress line above.
-        eprintln!("zj-radar: wasm checksum verified");
+        eprintln!("zj-radar: {describe} checksum verified");
         Ok(())
     } else {
-        let _ = std::fs::remove_file(wasm); // don't leave a mismatched wasm staged
+        let _ = std::fs::remove_file(asset); // don't leave a mismatched file staged
         Err(format!(
-            "checksum mismatch for zj_radar.wasm v{version}\n  expected {expected}\n  got      {actual}\n\
-             Refusing to install a wasm that does not match its published checksum."
+            "checksum mismatch for {describe}\n  expected {expected}\n  got      {actual}\n\
+             Refusing to install a file that does not match its published checksum."
         ))
     }
 }
@@ -148,7 +167,7 @@ fn parse_sha256(raw: &str) -> Option<String> {
 /// (Linux/coreutils), else `shasum -a 256` (macOS). `None` when neither is on
 /// PATH. Shelling out keeps the host build free of a crypto dependency, the same
 /// reason the download itself uses curl/wget rather than a Rust TLS stack.
-fn compute_sha256(path: &Path) -> Option<String> {
+pub(crate) fn compute_sha256(path: &Path) -> Option<String> {
     use std::process::Command;
     let out = if which("sha256sum") {
         Command::new("sha256sum").arg(path).output().ok()?
@@ -176,7 +195,7 @@ pub(crate) fn download_wasm(version: &str) -> Result<PathBuf, String> {
 /// verification and the install copy (TOCTOU) by another local user. Fails
 /// closed: if the dir can't be made ours-only (someone else owns the name, or
 /// it's a symlink), we refuse rather than stage downloads in it.
-fn private_download_dir() -> Result<PathBuf, String> {
+pub(crate) fn private_download_dir() -> Result<PathBuf, String> {
     let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let dir = std::env::temp_dir().join(format!("zj-radar-{user}"));
     std::fs::create_dir_all(&dir)
@@ -212,8 +231,7 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
             Ok(())
         } else {
             Err(format!(
-                "curl failed for {url} — is v{} released? See https://github.com/{}/releases",
-                env!("CARGO_PKG_VERSION"),
+                "curl failed for {url} — is that release published? See https://github.com/{}/releases",
                 repo_slug()
             ))
         };
