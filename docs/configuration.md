@@ -151,7 +151,7 @@ each. Tabs that are merely *running* or *idle* are skipped. Repeated presses
 sweep every attention tab and cycle.
 
 `session-next` / `session-prev` step the cross-session badge's highlighted
-selection (see [Cross-session badge](../README.md#cross-session-badge)) through
+selection (see [Cross-session badge](using.md#cross-session-badge)) through
 the same order the badge itself renders in — current session first, then any
 session that needs attention, then the rest — wrapping around, with the
 current session included as a normal stop. Each tap only moves the highlight;
