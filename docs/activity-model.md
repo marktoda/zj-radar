@@ -1,8 +1,8 @@
 # The activity model: states, classes, and presentation
 
-**Status:** living design — shipped (see §7); kept current as the
-implementation evolves. `docs/design.md` documents the pipeline (how state
-moves); this documents the *semantics* (what state means and how it looks).
+`design.md` documents the pipeline (how state moves); this documents the
+semantics (what a state means and how it looks). Everything here is shipped;
+§7 lists what remains.
 
 ## 1. The core principle
 
@@ -34,24 +34,16 @@ keeps the model extensible:
 | **Kind** | `Kind` (exists) | Claude, Codex, Opencode, Gemini, Test, Build, Deploy, Server, Command, Other | classification (`Kind::from_source` on the pushed source token / `command::classify`) |
 | **Class** | semantic vocabulary — **not** a stored or derived Rust type | `Job` \| `Service` \| `Companion` | this document |
 
-The classes are the *semantic model*, deliberately NOT an `AttentionClass`
-enum: tracing the actual consumers shows no call site would ever match all
-three variants. `Companion` is consumed entirely at intake (the promotion
-policy, §5) — it never becomes an observation, so no store, notify path, or
-severity/progress count ever sees it; its only downstream form is the quiet
-identity that roll-up turns into `PaneDisplay::Interactive` (§5). `Service`
-has two *owners* — the glyph split
-(`render::running_glyph`) and the cadence term
-(`TrackedObservation::animating`, which both stores' predicates call) — plus
-two Kind-reading presentation refinements: the run-tag exclusion
-(`render::run_tag` — services never wear a stopwatch, §3) and the
-job-over-service roll-up tie-break. `Job` is the default everywhere. The
-codebase's existing pattern for this is **predicates, not parallel enums**
-(`Kind::is_agent()`, `Status::{is_active, needs_attention, is_completion}`),
-so the code realizes the model as: the interactive set as intake policy
-(`Companion`), and the `Kind::is_service()` predicate (`Service`) behind
-those four readers. A speculative enum with zero exhaustive matchers would
-be a maintenance liability, not a seam.
+The classes are a semantic model, not an `AttentionClass` enum. No call site
+would ever match all three variants: `Companion` is consumed entirely at intake
+(§5) and never becomes an observation; `Service` has four readers (the glyph
+split in `render::running_glyph`, the cadence term
+`TrackedObservation::animating`, the run-tag exclusion in `render::run_tag`,
+and the roll-up tie-break); `Job` is the default everywhere. So the code
+follows its existing pattern of predicates rather than parallel enums
+(`Kind::is_agent()`, `Status::{is_active, needs_attention, is_completion}`):
+the interactive set is intake policy, and `Kind::is_service()` sits behind the
+four readers.
 
 - **`Job`** — bounded work with an end. Kinds: `Test`, `Build`, `Deploy`,
   `Command`, `Other`.
@@ -213,40 +205,31 @@ from two places — the end of `PluginRuntime::load` and after
 covers both a mid-session config change and a stale Running-nvim row
 rehydrated from another instance's snapshot; no ordering special cases.
 
-The sweep is what makes the fix apply to already-promoted rows at all: a
-mid-session TUI never fires another `CommandChanged` until it exits, so
-without it a config change — or a restart, whose snapshot rehydrates the
-Running row — leaves the spinner (and its 1 Hz cadence pin) live until the
-editor closes. The simpler "drop all command-origin Running rows and let
-re-promotion recover" is unsound: re-reports are incidental, not guaranteed
-(the `DEBOUNCE_TICKS` comment in `command.rs` — a dropped edge means nothing
-ever calls `on_command_changed` again), so a legit build row could vanish
-permanently. A row whose tentative-Done is already armed is exempt — its
-command has left the foreground, so sweeping it would ghost a quiet label no
-future edge clears; the armed confirm flips it Done instead. Pendings
-re-judge on the intake-stamped peeled program name (structural); only the
-observation sweep matches on the display's first whitespace token, which
-equals the exe basename by construction of every display path — pinned by a
-guard test (§7).
+The sweep is what makes the fix apply to already-promoted rows: a mid-session
+TUI fires no further `CommandChanged` until it exits, so without it a config
+change (or a restart whose snapshot rehydrates the Running row) leaves the
+spinner and its cadence pin live until the editor closes. Dropping all
+command-origin Running rows and letting re-promotion recover would be unsound:
+re-reports are not guaranteed, so a legitimate build row could vanish for good.
+A row whose tentative-Done is already armed is exempt; its command has left the
+foreground, and the armed confirm flips it Done. Pendings re-judge on the
+intake-stamped peeled program name; the observation sweep matches on the
+display's first token, which equals the exe basename by construction (guard
+test, §7).
 
-Why identity-preserving suppression rather than the simpler ignore-branch
-(measured cost: ~15 lines — one field, one intake arm, two predicate
-filters): the preserved identity is exactly the state the target
-presentations need — the labeled exit uses it (without it, a held
-`zellij run -- nvim` exit inserts a *blank* Done row and a blank-bodied
-notification), and a future alt-screen classifier produces the identical
-mark. The ignore-branch discards identity and is forward-incompatible.
+Identity-preserving suppression rather than an ignore branch: the preserved
+identity is what the labeled exit needs (without it a held `zellij run -- nvim`
+exit inserts a blank Done row and a blank notification), and a future
+alt-screen classifier produces the identical mark.
 
-**The muted label is a roll-up feature, not a free render.** Quiet pendings
-live in `CommandStore.pending`; `rows()` reads only observations, and the
-pane roster otherwise shows tracked panes. The implemented path:
-`CommandStore::quiet_identity` feeds `roll_up`'s `quiet` lookup, which
-builds `PaneDisplay::Interactive` — shown only where no live observation
-outranks it, included in the roster via `earns_pane_line`. The tempting
-shortcut — promote quiet commands to an *Idle* observation carrying identity
-— is wrong twice: `ever_active: true` would count an open editor in
-`done/total` progress forever, and `ever_active: false` renders as Untracked
-anyway (the identity never shows).
+**The muted label is a roll-up feature.** Quiet pendings live in
+`CommandStore.pending`; `rows()` reads only observations.
+`CommandStore::quiet_identity` feeds `roll_up`'s `quiet` lookup, which builds
+`PaneDisplay::Interactive`, shown only where no live observation outranks it
+and included in the roster via `earns_pane_line`. Promoting quiet commands to
+an Idle observation instead would either count an open editor in `done/total`
+forever (`ever_active: true`) or never show the identity (`ever_active: false`
+renders as Untracked).
 
 ## 6. Extension guide
 
@@ -264,16 +247,12 @@ anyway (the identity never shows).
 
 ## 7. Status
 
-**Shipped in one cut** (issue #13 plus the semantics it exposed): the
-quiet-pending mechanism, the built-in interactive set + `interactive_commands`
-config key (level-triggered sweep), the Companion muted identity label
-(`PaneDisplay::Interactive`), the Service steady `▸` mark + cadence
-exclusion (both stores), the long-Job `· Nm` run tag, and the job-over-service
-roll-up tie-break. Guard tests pin the seams: display-first-token == exe
-basename (the sweep's matching invariant), `DEFAULT_INTERACTIVE` disjoint
-from `IGNORE_NAMES`/`AGENT_NAMES` (§4), and the executable rail spec
-scenarios AD/AE (`docs/rail-reference.md`).
+Shipped: the quiet-pending mechanism, the built-in interactive set and
+`interactive_commands` key with its level-triggered sweep, the Companion muted
+label, the Service steady `▸` and cadence exclusion, the long-Job run tag, and
+the job-over-service tie-break. Guard tests pin the seams: display first token
+equals exe basename, `DEFAULT_INTERACTIVE` disjoint from
+`IGNORE_NAMES`/`AGENT_NAMES`, and rail-reference scenarios AD/AE.
 
-**Remaining:** propose `is_alternate_screen`/`is_raw_mode` on Zellij's
-`PaneInfo` (§4 layer 4) — the general detector that would cover REPLs and
-TUIs behind ssh/docker, with the name lists decaying into a fallback.
+Remaining: propose `is_alternate_screen`/`is_raw_mode` on Zellij's `PaneInfo`
+(§4 layer 4), the general detector for REPLs and TUIs behind ssh/docker.

@@ -39,7 +39,7 @@ Each fires a `zellij pipe --name zj_radar.status.v1` broadcast. It is a **no-op
 outside Zellij**, so it's safe to leave enabled everywhere.
 
 The bundled `notify.sh` requires `jq` and `git` on PATH (to parse the payload and
-derive repo/branch). If the native [`zj-radar`](../../docs/producers.md#codex-and-the-native-cli)
+derive repo/branch). If the native [`zj-radar`](../../docs/install.md)
 CLI is installed, the script automatically prefers it (`exec zj-radar notify
 claude`), which needs neither `jq` nor `bash` — the `jq`+`bash` path is only the
 fallback when the binary isn't on PATH.

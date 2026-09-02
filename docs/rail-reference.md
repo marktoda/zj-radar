@@ -10,41 +10,34 @@
 ## Design rules (this revision)
 
 1. **Width 32 columns.** The layout snippets all use `size=32` to match. ⟦D8⟧
-2. **Elapsed marks cost, nothing else.** No elapsed/timer on tab lines or calm
-   pane lines. Two per-pane exceptions (the ⟦D-timer⟧ "per-pane, not per-tab"
-   answer, scoped to where time is *costly*), both whole minutes ≥ 1m, frozen
-   at `1h+` (the ledger's saturate window): a `pending` pane's identity line
-   carries a `· Nm` wait tag (the cost of ignoring it — see T5), and a
-   long-running bounded *job* (command-classified work: build/test/deploy/
-   command — never an agent, never a server) carries a `· Nm` run tag (the
-   cost still being paid — see AE). Under a minute, and for every other
-   status, lines stay bit-identical to the tagless rail.
-   ⟦D-timer ✓ pending + long-job⟧
+2. **Elapsed marks cost, nothing else.** No timer on tab lines or calm pane
+   lines. Two per-pane exceptions, both whole minutes ≥ 1m and frozen at
+   `1h+`: a `pending` pane's identity line carries a `· Nm` wait tag (T5), and
+   a long-running bounded job (build/test/deploy/command, never an agent or a
+   server) carries a `· Nm` run tag (AE). Under a minute, and for every other
+   status, lines are identical to the tagless rail. ⟦D-timer⟧
 3. **One line per real pane — no collapsing.** Every *tracked* pane (an agent or
    a real command) gets its own line regardless of status or tab focus. No
    tally, no `+N verb` — those were hard to parse.
-4. **Prompt programs are not panes.** `starship`/`zsh`/`bash`/… never surface as
-   a pane line (the `$ (starship)` phantom is gone). A pane that has only ever
-   run the shell prompt is untracked → no line. ⟦D4 ✓ locked⟧
+4. **Prompt programs are not panes.** `starship`/`zsh`/`bash`/… never surface
+   as a pane line. A pane that has only ever run the shell prompt is untracked
+   and gets no line. ⟦D4⟧
    **Interactive programs are context, not activity** (`docs/activity-model.md`):
-   an editor/pager/TUI in the foreground (`nvim`, `less`, `htop`, … +
-   `interactive_commands` config) never earns a Running row — its pane renders
-   a *muted identity label* (idle glyph + kind mark + command), pure
-   navigation aid, zero urgency. See scenario AD. A running **server**
-   (`Kind::Server`) is activity that never *completes*: it keeps its row but
-   holds the steady `▸` mark instead of the spinner. See AE.
+   an editor, pager, or TUI in the foreground never earns a Running row; its
+   pane renders a muted identity label (idle glyph, kind mark, command). See
+   AD. A running **server** keeps its row but holds a steady `▸` instead of
+   the spinner. See AE.
 5. **Safety cap 6.** At most 6 pane lines per tab; beyond that, a final
    `+N more` line. (High on purpose — the common case never folds.) ⟦D6 ✓ = 6⟧
 6. **Position order.** Tabs and panes render in position order — no
    float-to-top. ⟦D7 ✓ locked⟧
 7. **No right-slot for now.** Status is carried by the glyph; we dropped the
    count/elapsed slot to keep lines clean. `done/total` may return later. ⟦D1⟧
-8. **Empty/initial is not a marketing screen.** No "AI agent activity" legend —
-   just render the tab list; an unnamed/first tab shows a placeholder name.
-   Now true end-to-end: the zero-tab onboarding face itself dropped
-   the status-glyph legend down to a one-line ` scanning… no agents yet`. That
-   face is a separate code path from this doc's harness (see §A's note below)
-   — `render_rail` and `aggregate` are what this file pins.
+8. **Empty/initial is not a marketing screen.** No legend; just the tab list,
+   with a placeholder name for an unnamed tab. The zero-tab onboarding face
+   is a one-line ` scanning… no agents yet` and a separate code path from
+   this harness (see §A); `render_rail` and `aggregate` are what this file
+   pins.
 
 ## Vocabulary
 
@@ -81,34 +74,23 @@ overflow marker > badge > plain census: a tight budget drops the census
 first and shows the bare badge (`n!` with no leading `·N`); the overflow
 marker itself is never dropped for the badge's sake.
 
-**Header heartbeat sweep.** In Compact/Comfortable density only (the
-densities with the `═` rule — Cards drops the rule entirely, so it never
-carries the heartbeat), whenever any row is Running *animating* work (its
-detail is a job, not a service — a rail whose only Running rows are steady-`▸`
-services draws no sweep, since without the Fast cadence the diamond would only
-teleport once per Slow fire, and motion promises bounded work) the rule line
-swaps one `═` character for a `◆` (`Role::Accent`, bold) at
-column `now_tick % width`, wrapping around as the tick advances — a pure,
-stateless function of `now_tick` that marches one column per render tick
-while any tab is actively working, and disappears the instant no row is
-`Running` (idle, or every row settled to Done/Error/Pending). Every fixture
-below is captured at the doc harness's fixed `now_tick = 0`, so a Compact/
-Comfortable scenario with a `Running` row shows the `◆` at column 0 (the
-rule's leftmost `═` is replaced): `◆═══════════════════════════════`.
+**Header heartbeat sweep.** In Compact and Comfortable density (the densities
+with a `═` rule), while any row is Running *animating* work (a job, not a
+steady-`▸` service), the rule swaps one `═` for a bold accent `◆` at column
+`now_tick % width`. It is a pure function of `now_tick`: it marches one column
+per render tick and disappears as soon as no row is Running. Fixtures below are
+captured at the harness's fixed `now_tick = 0`, so a Compact/Comfortable
+scenario with a Running row shows `◆═══════════════════════════════`.
 
-**Col 0 is always the spine column** — reserved on every line, active or not:
-`▌` for the focused tab, a plain space otherwise. This holds line 1 (the tab
-row) and every pane/child row to the same fixed columns regardless of focus,
-so the glyph/number/name never shift left by a column just because a row is
-inactive. Tab **glyph** = dominant status.
+**Col 0 is always the spine column**, reserved on every line: `▌` for the
+focused tab, a space otherwise. This keeps every row's glyph, number, and name
+at fixed columns regardless of focus. The tab **glyph** is the dominant status.
 **Multi-pane** tabs (>1 tracked pane) join their pane lines to the tab with a
-tree connector at column 1: `├` for every child that has a sibling (or a
-`+N more` line) below it, `└` for the last visible child. The connector sits one
-column right of the spine, so the prefix is 3 cols (`[spine/space][conn][space]`)
-and the status glyph aligns at column 3. **Single-pane** tabs render through the
-same tree machinery: the one tracked pane gets a `└` elbow line
-(` └ ‹glyph› ‹mark› ‹msg›`), so a tab with one pane and a tab with three scan
-identically (see §C).
+tree connector at column 1: `├` for a child with a sibling (or a `+N more`
+line) below it, `└` for the last visible child. The prefix is 3 columns
+(`[spine][conn][space]`), so the status glyph aligns at column 3.
+**Single-pane** tabs use the same tree machinery: the one tracked pane gets a
+`└` elbow line, so one pane and three panes scan identically (§C).
 
 ---
 
