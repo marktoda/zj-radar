@@ -1,14 +1,13 @@
 # Configuration
 
-zj-radar reads its options from the plugin alias and accepts live updates over a
-pipe. For a minimal example, see [Configuration in the README](../README.md#configuration).
+zj-radar reads its options from the plugin alias and accepts live updates over
+a pipe. For the defaults block, see [Configuration in the
+README](../README.md#configuration).
 
 ## Options
 
-With the recommended alias setup, options go on the `radar` alias in
-`~/.config/zellij/config.kdl`. Every key is optional and takes the default from
-the table below when omitted; the block below shows two keys set to **non-default**
-values purely to illustrate the syntax:
+Options go on the `radar` alias in `~/.config/zellij/config.kdl`. Every key is
+optional. This example sets two keys to non-default values:
 
 ```kdl
 plugins {
@@ -20,51 +19,47 @@ plugins {
 ```
 
 If `setup zellij` wrote your alias, it sits between `// zj-radar: managed
-plugin alias begin`/`end` marker comments — and a later `setup zellij` strips
-and re-emits that whole region containing only `naming "managed"`, so keys you
-add inside the markers are lost. Put custom keys on a hand-owned alias outside
-the markers, or drive them over the `config.v1` pipe below.
+plugin alias begin`/`end` markers, and a later `setup zellij` rewrites that
+region with only `naming "managed"`. Put custom keys on a hand-owned alias
+outside the markers, or set them over the `config.v1` pipe below.
 
-Layouts should continue to reference `plugin location="radar"`. Unknown keys are
-ignored and parsing never fails: an unrecognized value keeps the field as it
-was — the default on first load, the *current* value on a live `config.v1`
-override — so a typo never resets a setting:
+Unknown keys are ignored and parsing never fails. An unrecognized value keeps
+the field as it was, so a typo never resets a setting.
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
-| `density` | `cards` · `comfortable` · `compact` | `cards` | Card surface bands / blank separators / flush rail. |
-| `naming` | `off` · `managed` · `force` | `managed` | Auto-rename tabs from agent repo / pane title. `managed` only touches default or self-applied names; `force` overrides manual names. The self-applied memory lives in plugin memory, so after a Zellij server restart previously auto-applied names read as manual — use `force`, or rename the tab back to its default (`Tab #N`) to re-enable managed naming. |
-| `header` | `true` · `false` | `true` | Show the ` RADAR` identity header + tab count. |
-| `glyphs` | `plain` · `nerd` | `plain` | Status glyph set (`nerd` needs a Nerd Font). |
-| `jump_hint` | `alt-n` (or `alt`) · `hidden` (or `off`) | `hidden` | Footer advertises ` alt-[n] jump`. Opt in only when Alt+digit actually reaches Zellij on your machine: the binds must exist in your Zellij config (`zj-radar run` sessions bake Alt-1..9 → `GoToTab`, but don't set this — window managers commonly claim Alt+digit system-wide, and macOS terminals type `¡` unless option-as-alt is on). The rail never advertises a chord it can't verify. |
-| `notify` | `true` · `false` | `true` | Master switch for OS desktop notifications (macOS `osascript`, Linux `notify-send`). |
-| `notify_done` | `true` · `false` | `true` | Notify when a pane transitions into `done`. |
-| `notify_error` | `true` · `false` | `true` | Notify when a pane transitions into `error`. |
-| `notify_pending` | `true` · `false` | `true` | Notify when a pane transitions into `pending` (needs input). |
-| `notify_when_focused` | `true` · `false` | `false` | When `false`, suppress notifications for the focused pane (background panes only). |
-| `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra commands treated as *interactive* (an editor/pager/TUI that waits on you): the pane never shows a spinning running row — just a muted identity label. Extends the built-in set (`vi(m)`/`nvim`/`emacs`/`nano`/`hx`/`less`/`more`/`man`/`top`/`htop`/`btop`/`lazygit`/`tig`/`k9s`/`fzf`/`ranger`/`yazi`/`mc`/…). Applies live: adding a name demotes an already-running row immediately — except a row whose command has already left the foreground with a done-confirm armed, which still flips Running→Done on schedule. See [`activity-model.md`](activity-model.md). |
+| `density` | `cards` · `comfortable` · `compact` | `cards` | Tinted card bands / blank separators / flush rail. |
+| `naming` | `off` · `managed` · `force` | `managed` | Auto-name tabs from the agent's repo or the pane's cwd/title. `managed` never overwrites a name you set by hand; `force` does. See note 1. |
+| `header` | `true` · `false` | `true` | Show the ` RADAR` header and tab count. |
+| `glyphs` | `plain` · `nerd` | `plain` | Status glyph set. `nerd` needs a Nerd Font. |
+| `jump_hint` | `alt-n` · `hidden` | `hidden` | Footer advertises ` alt-[n] jump`. See note 2. |
+| `notify` | `true` · `false` | `true` | Master switch for desktop notifications. |
+| `notify_done` | `true` · `false` | `true` | Notify on transition to `done`. |
+| `notify_error` | `true` · `false` | `true` | Notify on transition to `error`. |
+| `notify_pending` | `true` · `false` | `true` | Notify on transition to `pending`. |
+| `notify_when_focused` | `true` · `false` | `false` | Also notify for the focused pane. |
+| `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra programs to treat as interactive: never a spinning row, only a muted label. Extends the built-in set of editors, pagers, and TUIs. Applies live. See [`activity-model.md`](activity-model.md). |
 
-Three further keys — `role`, `grant_hint`, and `defer_permission` — are also
-parsed, but they are set by `zj-radar run`'s own generated layouts; don't set
-them by hand.
+Notes:
 
-Notifications fire only on transitions **into** an attention status and, by
-default, only for **background** panes — the focused pane is suppressed unless
-`notify_when_focused` is `true`. A status arriving with the payload's `ack`
-flag never notifies (the user has already seen it — see
-[`producers.md`](producers.md)), and although the sidebar runs one instance per
-tab, each event is dispatched by exactly one instance, elected through a shared
-claim file — you get one notification, not one per tab. Delivery is
-best-effort: the plugin runs `osascript` on macOS, else `notify-send`
-(libnotify) on Linux; if neither is on `PATH` it is a silent no-op. This is why
-the plugin requests Zellij's `RunCommands` permission — to hand the
-notification to the OS, and to spawn the `zellij pipe` re-broadcast behind the
-`✓` acknowledge gesture described below.
+1. The "names I applied" memory lives in plugin memory. After a Zellij server
+   restart, previously auto-applied names read as manual, so `managed` leaves
+   them alone. Use `force`, or rename the tab back to its default `Tab #N`.
+2. Only set `jump_hint` when Alt+digit actually reaches Zellij on your machine.
+   Window managers often claim those chords, and macOS terminals type `¡`
+   unless option-as-alt is on. `zj-radar run` binds Alt-1..9 but does not set
+   this, because it cannot verify the chord arrives.
+
+Three more keys (`role`, `grant_hint`, `defer_permission`) are set by
+`zj-radar run`'s generated layouts. Don't set them by hand.
+
+Notification behavior (transitions only, background panes by default, one per
+event across tabs) is described in [`using.md`](using.md#notifications).
 
 ## Runtime config
 
-These can also be changed **at runtime** without editing the layout, by
-broadcasting a flat JSON object on the `zj_radar.config.v1` pipe:
+Change options without editing the layout by broadcasting a flat JSON object
+on the `zj_radar.config.v1` pipe:
 
 ```sh
 zellij pipe --name zj_radar.config.v1 -- '{"density":"compact","header":false}'
@@ -72,10 +67,9 @@ zellij pipe --name zj_radar.config.v1 -- '{"density":"compact","header":false}'
 
 ## Binding keys to runtime config
 
-The same payload can be driven from a keybind — no shell, no `zellij pipe`
-subprocess. Zellij's `MessagePlugin` action delivers a named pipe message
-straight to the plugin's `pipe()` entrypoint, exactly like the broadcast above.
-Add bindings to `~/.config/zellij/config.kdl`:
+The same payload can come from a keybind. Zellij's `MessagePlugin` action
+delivers a named pipe message straight to the plugin. Add to
+`~/.config/zellij/config.kdl`:
 
 ```kdl
 keybinds {
@@ -105,24 +99,17 @@ keybinds {
 }
 ```
 
-Notes:
-
-- `"radar"` is the same plugin alias your layout uses (`plugin location="radar"`).
-  If you have no alias, use the full URL instead, e.g.
-  `MessagePlugin "https://github.com/.../zj_radar.wasm" { … }`.
-- `MessagePlugin` broadcasts to **every** running radar instance (the sidebar is
-  one instance per tab), so the whole session re-renders at once — which is what
-  you want for a config change. If no instance is running it launches a headless
-  one to receive the message, which is harmless.
-- The `config.v1` pipe only **sets** a value; it can't *toggle* one (the payload
-  is stateless). So bind one key per discrete value, as above. A future
-  imperative command pipe could add `toggle`/`cycle` verbs.
+- `"radar"` is the plugin alias your layout uses. Without an alias, use the
+  full plugin URL instead.
+- `MessagePlugin` reaches every running radar instance (one per tab), so the
+  whole session updates at once. If none is running it launches a headless one
+  to receive the message, which is harmless.
+- `config.v1` sets values; it cannot toggle them. Bind one key per value.
 
 ## Binding keys to commands
 
-`config.v1` only *sets* state. For *imperative* actions — like jumping to the
-next agent that needs you — the plugin also accepts `zj_radar.cmd.v1`, whose
-payload is a single bare verb string:
+For imperative actions the plugin accepts `zj_radar.cmd.v1`, whose payload is
+a single verb:
 
 ```kdl
 keybinds {
@@ -145,40 +132,16 @@ keybinds {
 }
 ```
 
-`attention-next` / `attention-prev` walk the tabs whose agents are *waiting for
-you*, *errored*, or *done* — in tab order, wrapping around — and switch focus to
-each. Tabs that are merely *running* or *idle* are skipped. Repeated presses
-sweep every attention tab and cycle.
+- `attention-next` / `attention-prev` walk the tabs whose agents are waiting
+  for you, errored, or done, in tab order, wrapping. Running and idle tabs are
+  skipped.
+- `session-next` / `session-prev` move the cross-session badge's highlight
+  through the order the badge renders in (see [Cross-session
+  badge](using.md#cross-session-badge)). Nothing switches until about a second
+  after the last tap; landing back on your own session cancels. A committed
+  switch lands on the target's attention tab if it has one. With only one
+  session running these verbs do nothing.
 
-`session-next` / `session-prev` step the cross-session badge's highlighted
-selection (see [Cross-session badge](using.md#cross-session-badge)) through
-the same order the badge itself renders in — current session first, then any
-session that needs attention, then the rest — wrapping around, with the
-current session included as a normal stop. Each tap only moves the highlight;
-nothing switches yet. The selection **commits** on the first idle tick after
-about a second with no further tap — landing back on the current session
-cancels instead of switching. A committed switch jumps to the target
-session's attention tab if it has one, otherwise it leaves Zellij to restore
-that session's last focus. The badge — and therefore cycling — only has
-something to step through once a second zj-radar session is live; with just
-one session running, `session-next`/`session-prev` are no-ops.
-
-Dimmed (stale) badge entries are skipped by cycling, but you can dismiss one
-by clicking its right-edge `✕` directly in the rail — a mouse gesture, not a
-`cmd.v1` verb; a dismissed session that turns out to be alive reappears on its
-next heartbeat.
-
-Right-edge glyphs are the rail's working acknowledge/dismiss gesture: `✕` is
-shown only on a stale badge entry and `✓` on an unacknowledged status-origin
-pending tab/pane. Left-clicking elsewhere still navigates. The `✓` downgrades
-the pending pane(s) to `done`, and — because a click lands in exactly one
-plugin instance — it converges by re-broadcasting a `done` update over
-`zj_radar.status.v1`, the same pipe a real agent hook uses, rather than
-mutating this instance's state directly. Every tab's instance (including the
-one you clicked in) picks up the change through the normal status-pipe
-intake. A row with nothing pending is a no-op. Right-click keeps the same
-whole-row actions for parity, but is currently blocked upstream
-([zellij#5350](https://github.com/zellij-org/zellij/issues/5350)).
-
-Like every command pipe, an unknown verb is ignored, and the action is inert
-until the sidebar has been granted permissions.
+Unknown verbs are ignored. Both pipes are inert until the sidebar has been
+granted permissions. Mouse gestures (`✓` acknowledge, `✕` dismiss) are
+described in [`using.md`](using.md#mouse).
