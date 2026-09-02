@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 /// different versions otherwise can). Pure so the version→asset mapping is
 /// unit-tested; the fetch itself is thin IO below.
 fn wasm_release_url(version: &str) -> String {
-    format!(
-        "https://github.com/{}/releases/download/v{version}/{}",
-        repo_slug(),
-        crate::WASM_FILE_NAME
-    )
+    release_asset_url(version, crate::WASM_FILE_NAME)
+}
+
+/// Any asset of the `v{version}` GitHub release — the one place the URL shape
+/// lives (the wasm here, the CLI tarball in `update`).
+pub(crate) fn release_asset_url(version: &str, asset: &str) -> String {
+    format!("https://github.com/{}/releases/download/v{version}/{asset}", repo_slug())
 }
 
 /// The `.sha256` sidecar published next to the wasm asset (same release, same
@@ -98,18 +100,17 @@ pub(crate) fn checksum_url(asset_url: &str) -> String {
 }
 
 /// Fetch the published digest for an asset, or `None` when the release has no
-/// sidecar (predates checksums) or it is unreadable. Stages the sidecar next to
-/// `beside` (a user-owned dir on every call path) rather than at a predictable
-/// shared-temp path another local user could pre-plant.
-pub(crate) fn fetch_published_sha256(sidecar_url: &str, beside: &Path) -> Option<String> {
-    let name = beside.file_name().and_then(|n| n.to_str())?;
-    let sidecar = beside.with_file_name(format!("{name}.sha256"));
-    let _ = std::fs::remove_file(&sidecar); // clear any stale sidecar first
-    if !try_download(sidecar_url, &sidecar) {
+/// sidecar (predates checksums) or it is unreadable. `stage_at` is where the
+/// sidecar lands in transit — a user-owned dir on every call path (next to the
+/// asset being verified, or the private download dir), never a predictable
+/// shared-temp path another local user could pre-plant. Removed afterwards.
+pub(crate) fn fetch_published_sha256(sidecar_url: &str, stage_at: &Path) -> Option<String> {
+    let _ = std::fs::remove_file(stage_at); // clear any stale sidecar first
+    if !try_download(sidecar_url, stage_at) {
         return None;
     }
-    let expected = std::fs::read_to_string(&sidecar).ok().and_then(|s| parse_sha256(&s));
-    let _ = std::fs::remove_file(&sidecar);
+    let expected = std::fs::read_to_string(stage_at).ok().and_then(|s| parse_sha256(&s));
+    let _ = std::fs::remove_file(stage_at);
     expected
 }
 
@@ -124,10 +125,11 @@ pub(crate) fn fetch_published_sha256(sidecar_url: &str, beside: &Path) -> Option
 /// floor, and every new release publishes the sidecar (see
 /// `.github/workflows/release.yml`), so absence is the exception, not the norm.
 fn verify_checksum(sidecar_url: &str, asset: &Path, describe: &str) -> Result<(), String> {
-    if asset.file_name().and_then(|n| n.to_str()).is_none() {
+    let Some(name) = asset.file_name().and_then(|n| n.to_str()) else {
         return Err(format!("invalid asset path {}", asset.display()));
-    }
-    let Some(expected) = fetch_published_sha256(sidecar_url, asset) else {
+    };
+    let stage_at = asset.with_file_name(format!("{name}.sha256"));
+    let Some(expected) = fetch_published_sha256(sidecar_url, &stage_at) else {
         eprintln!(
             "zj-radar: warning — no readable checksum published for {describe}; \
              installed file is TLS-verified only (integrity not checked)"
@@ -249,7 +251,7 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
             Err(format!("wget failed for {url}"))
         };
     }
-    Err("need curl or wget on PATH to --download".to_string())
+    Err("need curl or wget on PATH to download".to_string())
 }
 
 /// Best-effort HTTPS fetch for *optional* assets (the checksum sidecar): returns

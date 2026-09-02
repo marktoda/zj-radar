@@ -53,8 +53,11 @@ pub fn run(options: UpdateOptions) {
             "update",
             format!(
                 "ZJ_RADAR_VERSION=v{target} is older than this CLI (v{current}) — update only moves forward. \
-                 To downgrade, reinstall that release: ZJ_RADAR_VERSION=v{target} …/install.sh | sh, \
-                 then `zj-radar setup zellij --download`"
+                 To downgrade, reinstall that release:\n  \
+                 ZJ_RADAR_VERSION=v{target} curl --proto '=https' --tlsv1.2 -LsSf \
+                 https://github.com/{}/releases/latest/download/install.sh | sh\n  \
+                 zj-radar setup zellij --download",
+                crate::setup::repo_slug()
             ),
         );
         return;
@@ -75,22 +78,27 @@ pub fn run(options: UpdateOptions) {
         }
         WasmState::Current => println!("wasm: matches v{target} (up to date)"),
         WasmState::Stale => println!("wasm: differs from v{target} — will be refreshed"),
-        WasmState::Unknown(why) => println!("wasm: could not compare ({why})"),
+        WasmState::Unknown(why) => println!("wasm: could not compare ({why}) — will be refreshed"),
     }
 
     let wasm_stale = wasm == WasmState::Stale;
     if options.check {
-        if cli_behind {
-            println!("run `zj-radar update` to apply");
-            crate::exit::fail_report("update", format!("v{target} is available"));
+        let behind = if cli_behind {
+            Some(format!("v{target} is available"))
         } else if wasm_stale {
+            Some(format!("the installed sidebar wasm does not match v{target}"))
+        } else {
+            None
+        };
+        if let Some(why) = behind {
             println!("run `zj-radar update` to apply");
-            crate::exit::fail_report("update", format!("the installed sidebar wasm does not match v{target}"));
+            crate::exit::fail_report("update", why);
         }
         return;
     }
 
-    if !cli_behind && !wasm_stale {
+    let refresh_wasm = needs_wasm_refresh(&wasm);
+    if !cli_behind && !refresh_wasm {
         println!("zj-radar: everything is up to date");
         return;
     }
@@ -119,29 +127,41 @@ pub fn run(options: UpdateOptions) {
 
     // The pin travels with the re-exec so a release landing between the
     // lookup above and this step can't split the two halves across versions.
-    let mut refreshed_wasm = false;
-    if wasm != WasmState::NotInstalled {
-        refreshed_wasm = rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]);
-    }
-    if cli_behind {
-        // Producer wiring is idempotent and cheap; a release may have changed
-        // the codex hook shape or the vendored opencode bridge.
-        rerun(&exe, &target, &["setup", "-y"]);
-    }
-    if refreshed_wasm {
+    if refresh_wasm && rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]) && wasm_stale {
         println!("zj-radar: restart Zellij (or open a new session) to load the updated sidebar");
     }
     if cli_behind {
+        // Re-wire only the producers already wired — a release may have changed
+        // the codex hook shape or the vendored opencode bridge — never one the
+        // user hasn't chosen (bare `setup` would install for every agent on PATH).
+        let wired = crate::producers::ProducerTexts::read().wired();
+        if !wired.is_empty() {
+            let mut args = vec!["setup"];
+            args.extend(wired.iter().map(|a| a.source()));
+            args.push("-y");
+            rerun(&exe, &target, &args);
+        }
         println!("zj-radar: the Claude Code plugin updates from inside Claude — `/plugin update zj-radar-claude@zj-radar`");
     }
     // The doctor's exit code grades install completeness (a machine with no
     // producer wired reads "missing"), not this update — its items are the
     // report; only a failure to *run* it is ours.
-    let _ = std::process::Command::new(&exe)
+    if let Err(e) = std::process::Command::new(&exe)
         .args(["setup", "--check"])
         .env("ZJ_RADAR_VERSION", &target)
         .status()
-        .map_err(|e| crate::exit::fail_report("update", format!("could not run {} — {e}", exe.display())));
+    {
+        crate::exit::fail_report("update", format!("could not run {} — {e}", exe.display()));
+    }
+}
+
+/// Which wasm states `setup zellij --download` should be re-run for: a real
+/// file that differs from the target, or one we couldn't compare (setup itself
+/// skips identical bytes, so the re-run is harmless when it turns out current).
+/// Never a symlink — home-manager owns it — and never a missing file, which is
+/// a `setup` decision the user hasn't made yet.
+fn needs_wasm_refresh(wasm: &WasmState) -> bool {
+    matches!(wasm, WasmState::Stale | WasmState::Unknown(_))
 }
 
 /// Run a follow-up `zj-radar` step through `exe`, inheriting stdio so its own
@@ -173,6 +193,13 @@ fn target_version() -> Result<String, String> {
     if let Ok(v) = std::env::var("ZJ_RADAR_VERSION") {
         let v = v.trim_start_matches('v');
         if !v.is_empty() {
+            // Validate here so a prerelease or typo is named as such, rather
+            // than failing the `is_newer` comparison and reading as "older".
+            if parse_version(v).is_none() {
+                return Err(format!(
+                    "ZJ_RADAR_VERSION={v} is not a MAJOR.MINOR.PATCH release version (e.g. v0.5.0)"
+                ));
+            }
             return Ok(v.to_string());
         }
     }
@@ -228,11 +255,11 @@ fn wasm_state(target: &str) -> WasmState {
     if !installed.is_file() {
         return WasmState::NotInstalled;
     }
-    let staging = match crate::setup::private_download_dir() {
-        Ok(dir) => dir.join(crate::WASM_FILE_NAME),
+    let sidecar = match crate::setup::private_download_dir() {
+        Ok(dir) => dir.join(format!("{}.sha256", crate::WASM_FILE_NAME)),
         Err(e) => return WasmState::Unknown(e),
     };
-    let Some(expected) = crate::setup::fetch_published_sha256(&crate::setup::wasm_checksum_url(target), &staging)
+    let Some(expected) = crate::setup::fetch_published_sha256(&crate::setup::wasm_checksum_url(target), &sidecar)
     else {
         return WasmState::Unknown(format!("no published checksum for v{target}"));
     };
@@ -367,10 +394,7 @@ pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
 /// The release tarball for a CLI version and Rust target triple — the same
 /// naming `scripts/install.sh` and `[package.metadata.binstall]` use.
 pub(crate) fn cli_release_url(version: &str, triple: &str) -> String {
-    format!(
-        "https://github.com/{}/releases/download/v{version}/zj-radar-{triple}.tar.gz",
-        crate::setup::repo_slug()
-    )
+    crate::setup::release_asset_url(version, &format!("zj-radar-{triple}.tar.gz"))
 }
 
 /// The Rust target triple the release workflow publishes for this host, fixed
@@ -523,6 +547,17 @@ mod tests {
             cli_release_url("0.5.1", "aarch64-apple-darwin"),
             "https://github.com/marktoda/zj-radar/releases/download/v0.5.1/zj-radar-aarch64-apple-darwin.tar.gz"
         );
+    }
+
+    #[test]
+    fn wasm_refresh_runs_only_for_a_real_file_that_differs_or_cannot_be_compared() {
+        assert!(needs_wasm_refresh(&WasmState::Stale));
+        assert!(needs_wasm_refresh(&WasmState::Unknown("no checksum".into())));
+        // Current: nothing to do. NotInstalled: a setup job, not ours. Managed:
+        // home-manager's — writing through the symlink is the bug this guards.
+        assert!(!needs_wasm_refresh(&WasmState::Current));
+        assert!(!needs_wasm_refresh(&WasmState::NotInstalled));
+        assert!(!needs_wasm_refresh(&WasmState::Managed));
     }
 
     #[test]

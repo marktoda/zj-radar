@@ -72,6 +72,25 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
     assert!(stderr.contains("install.sh"), "should point at the installer for downgrades: {stderr}");
 }
 
+#[test]
+fn update_rejects_a_pin_that_is_not_a_plain_version() {
+    let home = TempDir::new().unwrap();
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["update", "--check"])
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("ZELLIJ_CONFIG_DIR")
+        .env("ZJ_RADAR_VERSION", "v0.6.0-rc1")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("MAJOR.MINOR.PATCH"), "should name the expected shape, not call it older: {stderr}");
+    assert!(!stderr.contains("older"), "{stderr}");
+}
+
 #[cfg(unix)]
 #[test]
 fn update_leaves_a_symlinked_wasm_to_its_manager() {

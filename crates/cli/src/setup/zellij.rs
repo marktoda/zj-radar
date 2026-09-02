@@ -167,6 +167,44 @@ pub(crate) fn path_is_managed(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Install `src` at `wasm_dest` on the re-run path — the alias was already in
+/// config.kdl, so no config write (and no prompt) follows, but the wasm just
+/// passed or downloaded may be newer than the one on disk. Every upgrade goes
+/// through here: `zj-radar update` re-execs `setup zellij --download` for
+/// exactly this. Identical bytes are left alone (no rewrite, no message); a
+/// symlinked destination gets the same Nix / home-manager guard as config.kdl
+/// (a rename would replace the link with a file the next switch reverts). The
+/// write is atomic — a live session may load the wasm mid-copy otherwise.
+fn refresh_wasm(src: Option<&Path>, wasm_dest: &Path, dry_run: bool) {
+    let Some(src) = src else { return }; // no wasm source: uninstall, or a dry-run --download
+    if path_is_managed(wasm_dest) {
+        eprintln!(
+            "zellij: wasm at {} is a symlink (managed by Nix / home-manager) — zj-radar will not \
+             overwrite it; update the wasm via your Nix config instead. See docs/install.md.",
+            wasm_dest.display()
+        );
+        return;
+    }
+    let bytes = match std::fs::read(src) {
+        Ok(b) => b,
+        Err(e) => {
+            crate::exit::fail_report("zellij", format!("could not read wasm {} — {e}", src.display()));
+            return;
+        }
+    };
+    if std::fs::read(wasm_dest).is_ok_and(|current| current == bytes) {
+        return;
+    }
+    if dry_run {
+        println!("zellij: would copy {} -> {} (dry-run)", src.display(), wasm_dest.display());
+        return;
+    }
+    match crate::fsutil::atomic_write(wasm_dest, &bytes) {
+        Ok(()) => println!("zellij: wasm updated at {}", wasm_dest.display()),
+        Err(e) => crate::exit::fail_report("zellij", format!("wasm copy failed — {e}")),
+    }
+}
+
 /// Refusal for a bare `setup zellij` with no wasm source: name the install
 /// routes AND the supported wasm-less invocations, so the message is a menu,
 /// not a dead end.
@@ -357,6 +395,9 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 "zellij: config already up to date ({})",
                 config_path.display()
             );
+            // The alias is in place, but the wasm may not be the one just
+            // passed/downloaded — this arm is every upgrade's path.
+            refresh_wasm(src, &wasm_dest, dry_run);
             // alias already up to date — still offer injection and the grant.
             run_layout_inject(&layout_path, inject_flag, yes, dry_run, is_tty);
             if !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty) {
@@ -414,7 +455,10 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                         .map_err(|e| format!("create plugin dir failed — {e}"))?;
                 }
                 let src = src.ok_or("refused — pass --wasm <path-to-zj_radar.wasm> or --download")?;
-                std::fs::copy(src, &wasm_dest).map_err(|e| format!("wasm copy failed — {e}"))?;
+                // Atomic (read + temp-file rename), not `fs::copy` onto the
+                // destination: a live session may load the wasm mid-copy.
+                let bytes = std::fs::read(src).map_err(|e| format!("could not read wasm {} — {e}", src.display()))?;
+                crate::fsutil::atomic_write(&wasm_dest, &bytes).map_err(|e| format!("wasm copy failed — {e}"))?;
                 Ok(())
             };
             if !confirm_and_write("zellij", &config_path, &new, yes, is_tty, &prompt, copy_wasm) {
