@@ -115,6 +115,18 @@ fake_uname() {
   [[ "$output" == *"skipping integrity check"* ]]
 }
 
+@test "verify_sha256: no sha256 tool on PATH downgrades to the TLS floor" {
+  # A readable, VALID sidecar so the read+parse passes and the code reaches the
+  # tool selection — then neither sha256sum nor shasum resolves (empty PATH), so
+  # it must warn and return 0 rather than block, TLS remaining the floor. This
+  # is the security-sensitive "install without an integrity check" branch.
+  echo "payload" > "$TMP/f"
+  printf '%s  f\n' "$(hash_of "$TMP/f")" > "$TMP/f.sha256"
+  run run_installer "PATH= verify_sha256 '$TMP/f' '$TMP/f.sha256'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no sha256 tool"* ]]
+}
+
 # ── main, end to end with stubbed downloads ──────────────────────────────────
 # Everything but the network is real: tar, checksum tooling, install/cp.
 

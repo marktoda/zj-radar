@@ -497,6 +497,22 @@ mod tests {
     }
 
     #[test]
+    fn force_overrides_a_manual_name_that_stickiness_would_protect() {
+        // The manual name "manual" IS in the candidate space here (a second
+        // pane's repo), so `name_supported` holds — Managed keeps it, and Force
+        // must still re-pick to the top candidate "alpha". This pins the
+        // precedence between the two guards: earlier Force tests used a manual
+        // name outside the candidate space, where the re-pick is trivial.
+        let mut namer = TabNamer::default();
+        let panes = vec![repo_pane("alpha", true), repo_pane("manual", false)];
+        let tabs = vec![tab(1, "manual", panes)];
+        // Managed keeps the supported manual name.
+        assert!(namer.rename(&tabs, NamingMode::Managed).is_empty());
+        // Force re-picks to the focused pane's repo regardless of support.
+        assert_eq!(namer.rename(&tabs, NamingMode::Force), renamed_to("alpha"));
+    }
+
+    #[test]
     fn applied_name_is_sticky_while_any_pane_justifies_it() {
         let mut namer = TabNamer::default();
         // Focused `alpha` names the tab; `beta` also present.

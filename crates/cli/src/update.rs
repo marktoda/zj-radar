@@ -504,6 +504,11 @@ mod tests {
     fn is_newer_treats_unparseable_versions_as_not_newer() {
         assert!(!is_newer("nightly", "0.5.0"));
         assert!(!is_newer("0.5.1", "garbage"));
+        // A four-component version is not a plain MAJOR.MINOR.PATCH, so it is
+        // unparseable and never "newer" — the guard `parse_version` enforces so
+        // a `ZJ_RADAR_VERSION` pin is validated, not silently mis-ordered.
+        assert!(!is_newer("1.2.3.4", "1.2.3"));
+        assert!(!is_newer("1.2", "1.1.9")); // too few components
     }
 
     #[test]

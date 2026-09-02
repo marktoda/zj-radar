@@ -127,6 +127,28 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "building" ]
 }
 
+# The `test` and `install` verbs were pinned only negatively (git-checkout-latest
+# isn't a test, npm-uninstall isn't install). Without a positive case the two
+# producers could diverge on the verb output with the whole suite green.
+@test "parity: test verb activity matches between producers" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"cargo test --workspace"}}' running
+}
+
+@test "parity: install verb activity matches between producers" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"pip install requests"}}' running
+}
+
+# The bash producer groups Edit|Write|MultiEdit and reads NotebookEdit's
+# `notebook_path` (not `file_path`); the Rust side tests all three. Pin the
+# two untested file-tool branches so the key path difference stays in sync.
+@test "parity: MultiEdit activity" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"MultiEdit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}' running
+}
+
+@test "parity: NotebookEdit activity" {
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"NotebookEdit","tool_input":{"notebook_path":"/home/u/myrepo/nb.ipynb"}}' running
+}
+
 @test "parity: leading-newline Bash command still derives its first token" {
   # The first token comes from the WHOLE string (Rust split_whitespace().next());
   # a line-based read would see an empty first line and derive nothing.

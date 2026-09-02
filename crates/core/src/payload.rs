@@ -531,6 +531,15 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_strips_osc_st_terminated() {
+        // The OSC's other well-formed terminator is ST (`ESC \`), the third exit
+        // of the scanner alongside BEL and the stray-control bound. The doc
+        // comment promises ST support, so pin it: the sequence is removed and
+        // only the trailing text survives.
+        assert_eq!(sanitize("\x1b]0;evil title\x1b\\ok", 100), "ok");
+    }
+
+    #[test]
     fn sanitize_converts_newline_to_space() {
         assert_eq!(sanitize("a\nb", 100), "a b");
     }
