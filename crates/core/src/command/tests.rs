@@ -451,20 +451,8 @@
         assert!(store.get(1).is_none(), "must never become Running");
     }
 
-    // ── Test 3: starship ignore-set: stays Idle, no pending, no Done
-
-    #[test]
-    fn starship_on_idle_pane_leaves_no_trace() {
-        let mut store = CommandStore::default();
-        let cmd = vec!["starship".to_string()];
-
-        store.on_command_changed(1, &cmd, true, None, 1);
-        assert!(
-            !store.pending.contains_key(&1),
-            "starship must not enter pending"
-        );
-        assert!(store.get(1).is_none(), "no resolved state expected");
-    }
+    // starship's ignore-set behavior (no pending, no Done) is pinned alongside
+    // the other shells in `ignore_set_covers_all_shells` below.
 
     // direnv's per-prompt `direnv export <shell>` hook is back-to-the-prompt
     // machinery (like starship), not a tracked command: it must neither open its

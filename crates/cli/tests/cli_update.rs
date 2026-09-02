@@ -11,16 +11,26 @@ use tempfile::TempDir;
 /// version the CLI under test reports.
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
-#[test]
-fn update_check_reports_current_cli_and_missing_wasm_without_network() {
-    let home = TempDir::new().unwrap();
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["update", "--check"])
+/// `zj-radar update <args>` in an isolated HOME with `ZJ_RADAR_VERSION` pinned
+/// (which skips the network "latest" lookup) and the Zellij config-dir env
+/// cleared, so the resolved dir is `HOME/.config/zellij` and nothing here
+/// touches the network. Every test shares this env; only the args and version
+/// vary.
+fn update_cmd(home: &TempDir, version: &str, args: &[&str]) -> Command {
+    let mut cmd = Command::cargo_bin("zj-radar").unwrap();
+    cmd.arg("update")
+        .args(args)
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", CURRENT)
+        .env("ZJ_RADAR_VERSION", version);
+    cmd
+}
+
+#[test]
+fn update_check_reports_current_cli_and_missing_wasm_without_network() {
+    let home = TempDir::new().unwrap();
+    let out = update_cmd(&home, CURRENT, &["--check"])
         .assert()
         .success() // nothing to update → exit 0
         .get_output()
@@ -35,13 +45,7 @@ fn update_check_reports_current_cli_and_missing_wasm_without_network() {
 #[test]
 fn update_check_exits_nonzero_when_a_newer_release_is_pinned() {
     let home = TempDir::new().unwrap();
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["update", "--check"])
-        .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", "99.0.0")
+    let out = update_cmd(&home, "99.0.0", &["--check"])
         .assert()
         .failure() // an update is available → exit 1, scriptable
         .get_output()
@@ -56,13 +60,7 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
     // `update` only moves forward: refreshing the wasm to an older pin while
     // the CLI stays put would split the two halves across versions.
     let home = TempDir::new().unwrap();
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .arg("update")
-        .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", "0.0.1")
+    let out = update_cmd(&home, "0.0.1", &[])
         .assert()
         .failure()
         .get_output()
@@ -75,13 +73,7 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
 #[test]
 fn update_rejects_a_pin_that_is_not_a_plain_version() {
     let home = TempDir::new().unwrap();
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["update", "--check"])
-        .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", "v0.6.0-rc1")
+    let out = update_cmd(&home, "v0.6.0-rc1", &["--check"])
         .assert()
         .failure()
         .get_output()
@@ -106,13 +98,7 @@ fn update_leaves_a_symlinked_wasm_to_its_manager() {
     fs::write(&store_copy, b"\0asm").unwrap();
     std::os::unix::fs::symlink(&store_copy, plugins.join("zj_radar.wasm")).unwrap();
 
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["update", "--check"])
-        .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", CURRENT)
+    let out = update_cmd(&home, CURRENT, &["--check"])
         .assert()
         .success()
         .get_output()
@@ -125,13 +111,7 @@ fn update_leaves_a_symlinked_wasm_to_its_manager() {
 #[test]
 fn update_with_nothing_newer_does_not_reinstall_a_missing_wasm() {
     let home = TempDir::new().unwrap();
-    let out = Command::cargo_bin("zj-radar")
-        .unwrap()
-        .arg("update")
-        .env("HOME", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("ZELLIJ_CONFIG_DIR")
-        .env("ZJ_RADAR_VERSION", CURRENT)
+    let out = update_cmd(&home, CURRENT, &[])
         .assert()
         .success()
         .get_output()
