@@ -598,6 +598,52 @@ impl ZellijSession {
         let _ = self.action(args);
     }
 
+    /// Like [`run_action`], but panic with the action's own stderr when it
+    /// exits non-zero. `run_action` swallows the status, so a `zellij action`
+    /// that the host rejected (e.g. a rename against an id that raced a tab
+    /// close) becomes a silent no-op and later surfaces as a confusing
+    /// "name never changed". Use this for the actions a test's outcome hinges
+    /// on, so a rejected action names itself instead.
+    pub fn run_action_checked(&self, args: &[&str]) {
+        let output = self.action(args);
+        assert!(
+            output.status.success(),
+            "`zellij action {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Poll [`tab_names`] until `cond` holds, returning a timeline of every
+    /// distinct snapshot seen (one entry per change, timestamped from the
+    /// start). The bool says whether `cond` was met before `timeout`. Built
+    /// for tab-name assertions: on failure the timeline shows whether a name
+    /// ever appeared and was then replaced, or never appeared at all — the
+    /// distinction between a host-side overwrite and an action that never
+    /// landed, which a single final snapshot cannot tell apart.
+    pub fn sample_tab_names_until(
+        &self,
+        timeout: Duration,
+        mut cond: impl FnMut(&[String]) -> bool,
+    ) -> (bool, Vec<(Duration, Vec<String>)>) {
+        let start = Instant::now();
+        let deadline = start + timeout;
+        let mut timeline: Vec<(Duration, Vec<String>)> = Vec::new();
+        loop {
+            let names = self.tab_names();
+            if timeline.last().map(|(_, n)| n) != Some(&names) {
+                timeline.push((start.elapsed(), names.clone()));
+            }
+            if cond(&names) {
+                return (true, timeline);
+            }
+            if Instant::now() >= deadline {
+                return (false, timeline);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// Names held by Zellij's authoritative tab model, in position order.
     /// Unlike sidebar text, this does not read any plugin instance's possibly
     /// stale render; `query-tab-names` asks the session host directly.
