@@ -600,10 +600,14 @@ impl ZellijSession {
 
     /// Like [`run_action`], but panic with the action's own stderr when it
     /// exits non-zero. `run_action` swallows the status, so a `zellij action`
-    /// that the host rejected (e.g. a rename against an id that raced a tab
-    /// close) becomes a silent no-op and later surfaces as a confusing
-    /// "name never changed". Use this for the actions a test's outcome hinges
-    /// on, so a rejected action names itself instead.
+    /// that failed at the CLI boundary — a dead or missing session, an IPC
+    /// error, or a bad argument clap rejected — becomes a silent no-op that
+    /// later surfaces as a confusing "the state never changed". Use it for the
+    /// actions a test's outcome hinges on, so such a failure names itself.
+    /// Note: mutating actions like `rename-tab` are fire-and-forget — the CLI
+    /// exits 0 once the message is sent, so a server-side no-op (e.g. an
+    /// out-of-range tab id) does NOT trip this; the paired state assertion is
+    /// the real detector for that.
     pub fn run_action_checked(&self, args: &[&str]) {
         let output = self.action(args);
         assert!(
