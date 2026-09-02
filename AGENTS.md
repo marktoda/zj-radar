@@ -1,25 +1,22 @@
 # AGENTS.md
 
-Entry point for AI agents (and humans skimming) working in zj-radar. Keep this
-thin — it points at the real docs rather than duplicating them.
+Entry point for AI agents (and humans skimming) working in zj-radar. It points
+at the real docs rather than duplicating them.
 
-zj-radar is a native [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
-plus a host-side `zj-radar` CLI and producer adapters for Claude Code (a bundled
-Claude plugin), Codex (hooks installed by `zj-radar setup codex`), and Opencode
-(a vendored JS bridge plugin installed by `zj-radar setup opencode`) — all
-first-class producers.
+zj-radar is a [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
+plus a host-side `zj-radar` CLI and producer adapters for Claude Code (a
+bundled Claude plugin), Codex (hooks installed by `zj-radar setup codex`), and
+Opencode (a JS bridge installed by `zj-radar setup opencode`).
 
 ## Read first
 
-- [`CONTEXT.md`](CONTEXT.md) — domain glossary and the load-bearing seams (rail,
-  `RadarState`, roll-up, tab naming, the status contract). **Read before changing
-  the core.**
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — project shape, full build/test/lint
-  details, PR expectations.
-- [`docs/design.md`](docs/design.md) — the canonical living design.
-- [`docs/activity-model.md`](docs/activity-model.md) — the status/kind semantics:
-  attention classes (Job/Service/Companion), interactive-command suppression,
-  cadence rules.
+- [`CONTEXT.md`](CONTEXT.md): domain glossary and the seams. Read before
+  changing the core.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): project shape, build/test/lint, welded
+  files, PR rules, docs ownership.
+- [`docs/design.md`](docs/design.md): architecture and mechanisms.
+- [`docs/activity-model.md`](docs/activity-model.md): what each status and
+  kind means and how it renders.
 
 ## Commands
 
@@ -34,45 +31,30 @@ just review      # accept intentional insta snapshot changes (cargo insta review
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-The `wasm32-wasip1` target is requested by `rust-toolchain.toml` and
-auto-installs on first build (see [`docs/TOOLCHAIN.md`](docs/TOOLCHAIN.md)). The
-domain logic (`RadarState`, render, runtime, rollup, ledger, sessions) lives in
-`crates/plugin`, with the shared wire/classification layer in `crates/core` —
-both are host-testable (`zellij-tile` is `cfg(target_arch = "wasm32")`-scoped),
-so no wasm build is needed for typical work.
+No wasm build is needed for typical work: the plugin's domain modules and
+`crates/core` are host-testable (`zellij-tile` is wasm-only).
 
 ## Non-negotiable rules
 
-- **Do not run `rustfmt` / `cargo fmt`.** The code is intentionally hand-formatted
-  (e.g. aligned one-line multi-field structs). A `cargo fmt` diff will be rejected.
-  Match the surrounding code.
-- **Push-driven, never poll-driven.** No polling, and no per-event or per-tick
-  blocking host queries (`get_pane_running_command`, etc.); status arrives via
-  `zellij pipe` broadcasts. The single exception is the once-per-pane
-  `Effect::ResolveCwd` naming bootstrap (one blocking `get_pane_cwd` per
-  freshly-opened pane — pane-creation rate, never re-polled). Polling melted
-  the predecessor plugin — see
+- **Do not run `rustfmt` / `cargo fmt`.** The code is hand-formatted. Match
+  the surrounding code.
+- **Push-driven, never poll-driven.** No polling, no blocking host queries on
+  any per-event or per-tick path. The one exception is the once-per-pane
+  `Effect::ResolveCwd` naming bootstrap. See
   [`docs/smart-tabs-postmortem.md`](docs/smart-tabs-postmortem.md).
-- **Rail lockstep.** Emitted ANSI and the click-target map stay in exact 1:1 line
-  correspondence (`CONTEXT.md` → *Lockstep*). Keep it structural, not
-  discipline-held.
-- Some files are welded to tests — edit them through the test, not casually
-  (rail-reference spec, hooks.json timeouts, notify.sh's pipe name/deadlines,
-  configuration.md's pipe names and verbs, the example layout, plugin.json's
-  version). Cross-crate constants get text-pin tests too (grant probe and
-  Zellij version floor in `crates/plugin/src/lib.rs`, `Notify::agent` docs in
-  `crates/cli/src/agents.rs`). `flake.nix`'s source filter is the inventory of
-  non-Rust files the hermetic build needs — welds and other build inputs
-  alike — so a new `include_str!` outside crate sources needs a filter entry,
-  or the hermetic CI job can't see the file.
+- **Rail lockstep.** Emitted ANSI and the click-target map stay in 1:1 line
+  correspondence, structurally (`CONTEXT.md` → *Lockstep*).
+- **Welded files.** Several docs and assets are test inputs; edit them
+  through their test. The table is in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md#welded-files).
 
 ## Adding a producer or agent
 
-The producer interface is the versioned `zj_radar.status.v1` pipe payload. (The
-plugin's other external contracts: the `zj_radar.cmd.v1` keybind-verb pipe and
-`zj_radar.config.v1` live-override pipe — both in `docs/configuration.md` — and
-the cross-process presence-file format, `crates/plugin/src/presence.rs`.)
-New instrumented agent → `enum Agent` variant in `crates/cli/src/agents/` +
-`Agent::derive`; the `source_round_trips_through_kind` guard test tells you what
-else to wire. Observed (uninstrumented) commands like `cargo test` are classified
-in `crates/core/src/command.rs`, not in `agents/`.
+The producer interface is the `zj_radar.status.v1` pipe payload. The plugin's
+other external contracts are the `zj_radar.cmd.v1` and `zj_radar.config.v1`
+pipes ([`docs/configuration.md`](docs/configuration.md)) and the presence-file
+format (`crates/plugin/src/presence.rs`). A new instrumented agent is an
+`enum Agent` variant in `crates/cli/src/agents/` plus `Agent::derive`; the
+`source_round_trips_through_kind` guard test lists what else to wire.
+Observed commands like `cargo test` are classified in
+`crates/core/src/command.rs`, not in `agents/`.
