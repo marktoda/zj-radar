@@ -189,6 +189,13 @@ tests). Ghostty's window padding is drawn over the trailing columns.
 
 **Fix:** in Ghostty's config, `window-padding-color = extend`.
 
+## Sidebar is still the old version after `zj-radar update`
+
+A running session keeps the plugin it loaded. Restart Zellij, or open a new
+session. `zj-radar update --check` confirms the installed wasm matches the
+release. If it reports the wasm as a symlink managed by Nix or home-manager,
+`update` left it alone; update the flake input instead.
+
 ## Zellij plugin-reload quirks
 
 **Symptom:** during development, reloading the plugin opens an extra tiled

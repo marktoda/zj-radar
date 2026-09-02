@@ -554,6 +554,17 @@ choice is a flag the consumer projects on, never a fact.
   in CI. Consuming from Nix: [`install.md`](install.md#nix--home-manager).
 - Releases: one tag ships the wasm, static CLI tarballs, and the crates
   ([`RELEASING.md`](../RELEASING.md)).
+- `zj-radar update` moves the CLI and the wasm as one, because they share the
+  status contract and the setup expectations, and a hand-run upgrade of only
+  one half is the drift that broke installs before. It replaces the binary
+  first, then re-executes the *new* binary for `setup zellij --download`, so
+  the wasm it fetches is its own version; the resolved tag travels with the
+  re-exec as `ZJ_RADAR_VERSION` so a release landing mid-run cannot split
+  them. Nix and cargo installs are handed back to their tool rather than
+  overwritten behind its record; `--check` grades the wasm by sha256 against
+  the release sidecar, the only version signal a wasm file carries. Pins move
+  forward only: refreshing the wasm to an older pin while the binary stays
+  put would recreate the split.
 
 ## 16. Non-goals and follow-ups
 

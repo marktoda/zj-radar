@@ -66,8 +66,9 @@ zj-radar setup opencode  # Opencode bridge plugin; then restart opencode
 ```
 
 Want to look before you commit? `zj-radar run` starts a throwaway session with
-the rail wired in and leaves your config alone. Source builds, Nix, manual
-setup, and the full removal list are in
+the rail wired in and leaves your config alone. Later, `zj-radar update` moves
+the CLI and the sidebar to the latest release together. Source builds, Nix,
+manual setup, and the full removal list are in
 [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md).
 
 ## What you get

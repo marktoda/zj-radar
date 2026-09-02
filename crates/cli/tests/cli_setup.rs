@@ -1706,3 +1706,84 @@ fn setup_opencode_check_reports_the_bridge_state() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ok plugin: zj-radar bridge plugin installed"), "stdout:\n{stdout}");
 }
+
+// ── re-running setup zellij with a new wasm refreshes the installed file ────
+//
+// The alias in config.kdl is already managed on every machine that ran setup
+// once, so the second run lands in the "config already up to date" arm. That
+// arm must still install a NEW wasm — `zj-radar update` relies on exactly this
+// re-run to move the sidebar, and until it did, "re-run setup zellij
+// --download" upgraded nothing.
+
+fn setup_zellij_wasm(config_dir: &TempDir, wasm: &std::path::Path) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--wasm"])
+        .arg(wasm)
+        .arg("--yes")
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+}
+
+#[test]
+fn setup_zellij_rerun_with_a_different_wasm_replaces_the_installed_one() {
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let a = src.path().join("a.wasm");
+    let b = src.path().join("b.wasm");
+    fs::write(&a, b"\0asm-A").unwrap();
+    fs::write(&b, b"\0asm-B").unwrap();
+    let dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+
+    setup_zellij_wasm(&config_dir, &a).success();
+    assert_eq!(fs::read(&dest).unwrap(), b"\0asm-A");
+
+    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
+    assert_eq!(fs::read(&dest).unwrap(), b"\0asm-B", "second run must install the new wasm");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("wasm updated"), "should say the wasm was refreshed: {stdout}");
+}
+
+#[test]
+fn setup_zellij_rerun_with_the_same_wasm_does_not_rewrite() {
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let a = src.path().join("a.wasm");
+    fs::write(&a, b"\0asm-A").unwrap();
+    let dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+
+    setup_zellij_wasm(&config_dir, &a).success();
+    let before = fs::metadata(&dest).unwrap().modified().unwrap();
+    let out = setup_zellij_wasm(&config_dir, &a).success().get_output().clone();
+    assert_eq!(fs::metadata(&dest).unwrap().modified().unwrap(), before, "identical bytes must not rewrite");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("wasm updated"), "{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_zellij_rerun_never_writes_through_a_symlinked_wasm() {
+    // home-manager installs the wasm as a symlink into /nix/store. Writing
+    // through (or renaming over) it would either fail or replace the link with
+    // a file the next `home-manager switch` reverts — same guard as config.kdl.
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let a = src.path().join("a.wasm");
+    let b = src.path().join("b.wasm");
+    fs::write(&a, b"\0asm-A").unwrap();
+    fs::write(&b, b"\0asm-B").unwrap();
+    setup_zellij_wasm(&config_dir, &a).success();
+
+    // Swap the installed file for a symlink to a "store" copy.
+    let dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+    let store = src.path().join("store.wasm");
+    fs::write(&store, b"\0asm-STORE").unwrap();
+    fs::remove_file(&dest).unwrap();
+    std::os::unix::fs::symlink(&store, &dest).unwrap();
+
+    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
+    assert!(fs::symlink_metadata(&dest).unwrap().file_type().is_symlink(), "symlink must survive");
+    assert_eq!(fs::read(&store).unwrap(), b"\0asm-STORE", "store target must be untouched");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Nix"), "should explain why the wasm was skipped: {stderr}");
+}

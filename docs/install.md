@@ -218,6 +218,48 @@ Items are `ok`, `warn`, or `missing`:
 - **config env** (only when `$ZELLIJ_CONFIG_FILE` points elsewhere): Zellij
   reads that file, not the one setup edits.
 
+## Upgrade (`zj-radar update`)
+
+```sh
+zj-radar update            # move the CLI and the sidebar to the latest release
+zj-radar update --check    # report only; exit 1 when an update is available
+```
+
+`update` does four things:
+
+1. Finds the latest release (`ZJ_RADAR_VERSION` pins a tag) and compares it
+   to this CLI. If newer, it downloads the binary for this platform, verifies
+   the release's `.sha256` checksum, and swaps it in place. The running
+   process is unaffected; the next `zj-radar` is the new one.
+2. Runs `setup zellij --download` through the new binary, so the wasm at
+   `~/.config/zellij/plugins/zj_radar.wasm` comes from the same release. The
+   file is rewritten only when its bytes differ.
+3. Runs `setup` for the producers already wired (Codex hooks, Opencode
+   bridge), never for one you have not set up. The Claude Code plugin updates
+   from inside Claude: `/plugin update zj-radar-claude@zj-radar`.
+4. Runs the doctor (`setup --check`).
+
+Restart Zellij, or open a new session, to load the new sidebar. A running
+session keeps the old plugin.
+
+`--check` compares both halves: the CLI version against the release tag, and
+the installed wasm's checksum against the release's published `.sha256`. A
+wasm built from source reads as differing, since it is not byte-identical to
+the release artifact.
+
+What `update` does with each kind of install:
+
+| Install | Behavior |
+|---|---|
+| `curl \| sh` installer (`~/.local/bin`) | Replaced in place. |
+| `cargo install` (`~/.cargo/bin` or `$CARGO_HOME/bin`) | Left alone. Run `cargo install zj-radar` (or `cargo binstall zj-radar`), then `zj-radar setup zellij --download`. |
+| Nix / home-manager (`/nix/store` binary, or a symlinked wasm) | Left alone. Update the flake input. |
+| No sidebar installed | Reported; run `zj-radar setup zellij --download` to add one. |
+| No prebuilt binary (Intel macOS) | Build from source, then `zj-radar setup zellij --download`. |
+| `ZJ_RADAR_VERSION` older than this CLI | Refused. Downgrade with the installer and that tag. |
+
+Re-running `zj-radar setup zellij --download` by hand refreshes the wasm alone.
+
 ## Loading straight from a release URL
 
 Zellij can load a plugin from an `https://` URL and cache it:
