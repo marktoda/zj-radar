@@ -840,8 +840,8 @@ impl PluginRuntime {
     /// would otherwise veto it (the key may equal what was drawn before the
     /// tab went dark, while the frames in between were never painted).
     pub(crate) fn visibility_changed(&mut self, visible: bool) -> Outcome {
-        if self.hidden == !visible {
-            return Outcome::none();
+        if self.hidden != visible {
+            return Outcome::none(); // already in that state
         }
         self.hidden = !visible;
         if self.hidden {
