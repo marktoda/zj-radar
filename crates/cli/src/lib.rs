@@ -31,6 +31,7 @@ pub(crate) const WASM_FILE_NAME: &str = "zj_radar.wasm";
 mod agents;
 mod dedup;
 mod fsutil;
+mod git;
 pub(crate) mod layout;
 mod notify;
 mod producers;

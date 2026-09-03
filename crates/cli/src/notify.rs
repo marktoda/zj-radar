@@ -1,7 +1,8 @@
 //! `zj-radar notify <agent>` — the host shell: read the hook payload, derive an
 //! update behind the agent-intake seam, resolve repo/branch, broadcast.
 //! All agent-specific decisions live in `agents/`; this file is agent-agnostic
-//! plumbing plus the genuinely host-bound helpers (env, git, stdin).
+//! plumbing plus the genuinely host-bound helpers (env, stdin). Repo/branch
+//! resolution is `git.rs`; the last-sent dedup is `dedup.rs`.
 
 use super::agents::{Agent, AgentUpdate, Intake};
 use crate::dedup::{LastSent, SentKey};
@@ -31,73 +32,6 @@ fn pane_id_or_dry_run_hint(dry_run: bool) -> Option<u32> {
         eprintln!("zj-radar: not inside Zellij (no ZELLIJ/ZELLIJ_PANE_ID) — nothing would be broadcast");
     }
     pane_id
-}
-
-/// Derive the repository NAME from a git "common dir" path — the output of
-/// `git rev-parse --git-common-dir` made absolute. The common dir always points
-/// at the MAIN repo's git dir, even from inside a linked worktree, so this yields
-/// the repo name (e.g. `pinky`) rather than the worktree's own directory name
-/// (e.g. `reply-register`, which is what `--show-toplevel` returns in a worktree).
-///
-///   /Users/m/dev/pinky/.git        → "pinky"      (normal checkout or any worktree of it)
-///   /Users/m/dev/pinky/.git/       → "pinky"
-///   /Users/m/dev/acme.git          → "acme"       (bare repo)
-///   .git                           → None         (relative — caller falls back)
-fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
-    let trimmed = common_dir.trim().trim_end_matches('/');
-    // git < 2.31 doesn't know `--path-format`; rev-parse ECHOES the unknown
-    // flag to stdout (exit 0), so the captured "dir" is the flag text plus a
-    // relative `.git` on a second line. Require a single-line absolute path —
-    // anything else falls back to `--show-toplevel` in the caller.
-    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.contains('\n') {
-        return None;
-    }
-    let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
-    if base == ".git" {
-        // Repo root is the parent of the ".git" dir.
-        let parent = trimmed[..trimmed.len() - base.len()].trim_end_matches('/');
-        parent.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
-    } else if let Some(stripped) = base.strip_suffix(".git") {
-        // Bare repo "name.git".
-        (!stripped.is_empty()).then(|| stripped.to_string())
-    } else {
-        // Unusual: a common dir not ending in .git — use its basename.
-        Some(base.to_string())
-    }
-}
-
-/// Run `git -C <cwd> <args…>` and return its trimmed stdout, or `None` when git
-/// can't be spawned, exits non-zero, or produces only whitespace. The single
-/// shape behind every git probe here, so the success/trim/empty handling can't
-/// drift across calls (and treating empty output as "absent" matches what every
-/// caller wanted: two filtered it explicitly, the third used `unwrap_or_default`).
-fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
-    let trimmed = Command::new("git")
-        .args(["-C", cwd])
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-    (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn git_repo_branch(cwd: &str) -> (String, String) {
-    // Resolve the repo name from the COMMON git dir so worktrees report the main
-    // repo, not the worktree directory. Fall back to `--show-toplevel`'s basename
-    // for git versions without `--path-format` (added in 2.31).
-    let repo = git_output(
-        cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .and_then(|d| repo_name_from_common_dir(&d))
-    .or_else(|| {
-        git_output(cwd, &["rev-parse", "--show-toplevel"])
-            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
-    })
-    .unwrap_or_default();
-    let branch = git_output(cwd, &["branch", "--show-current"]).unwrap_or_default();
-    (repo, branch)
 }
 
 fn read_stdin() -> String {
@@ -235,7 +169,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
-    let (repo, branch) = git_repo_branch(&cwd);
+    let (repo, branch) = crate::git::repo_branch(&cwd);
     // No client-side length caps here: `to_wire` bounds every free-text field
     // at MAX_WIRE_FIELD_CHARS — the single seam every producer path (adapter
     // msg, `notify generic --task`, repo/branch) already flows through — so a
@@ -400,63 +334,6 @@ mod tests {
         );
         assert_eq!(d.as_secs(), 3600);
         let _ = std::time::Instant::now() + d; // must not panic
-    }
-
-    // --- repo_name_from_common_dir tests ---
-
-    #[test]
-    fn common_dir_normal_checkout_is_repo_name() {
-        // A normal checkout's common dir is "<repo>/.git" → repo basename.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_worktree_resolves_to_main_repo() {
-        // A worktree of "pinky" still reports the MAIN repo's common dir, so the
-        // name is "pinky" — NOT the worktree dir "reply-register".
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
-        // Trailing slash is tolerated.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git/"),
-            Some("pinky".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_bare_repo_strips_dot_git() {
-        assert_eq!(
-            repo_name_from_common_dir("/srv/git/acme.git"),
-            Some("acme".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_relative_or_empty_is_none() {
-        // Relative ".git" has no resolvable parent → None (caller falls back).
-        assert_eq!(repo_name_from_common_dir(".git"), None);
-        assert_eq!(repo_name_from_common_dir(""), None);
-        assert_eq!(repo_name_from_common_dir("   "), None);
-    }
-
-    #[test]
-    fn common_dir_old_git_flag_echo_is_none() {
-        // git < 2.31 doesn't know `--path-format`: rev-parse ECHOES the unknown
-        // flag to stdout and exits 0, so this exact string is what git_output
-        // hands us. It must be rejected (→ --show-toplevel fallback), not
-        // surfaced as a repo named "--path-format=absolute".
-        assert_eq!(
-            repo_name_from_common_dir("--path-format=absolute\n.git"),
-            None
-        );
-        // And any other multi-line or non-absolute output is equally untrusted.
-        assert_eq!(repo_name_from_common_dir("/a/.git\n/b/.git"), None);
-        assert_eq!(repo_name_from_common_dir("relative/.git"), None);
     }
 
     // --- generic producer ---
