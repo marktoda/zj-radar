@@ -21,6 +21,23 @@ pub(crate) enum Direction {
     Prev,
 }
 
+/// Whether two tab→panes maps agree pane-for-pane under `key` — the
+/// allocation-free compare behind `panes_changed`'s fast path. Pane order
+/// within a tab is Zellij's manifest order, which is stable between
+/// reports of an unchanged layout.
+fn same_topology(
+    a: &HashMap<usize, Vec<TerminalPane>>,
+    b: &HashMap<usize, Vec<TerminalPane>>,
+    same: impl Fn(&TerminalPane, &TerminalPane) -> bool,
+) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|(position, panes)| {
+            b.get(position).is_some_and(|other| {
+                panes.len() == other.len() && panes.iter().zip(other).all(|(x, y)| same(x, y))
+            })
+        })
+}
+
 /// Pick the next/previous tab position that needs attention, relative to the
 /// active tab, wrapping at the ends. Pure over `(position, status)` pairs so it
 /// is trivially testable and deterministic — every per-tab plugin instance that
@@ -496,10 +513,42 @@ impl RadarState {
         now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> RadarChange {
-        // Topology and store mutations below are too interleaved to prove a
-        // no-op cheaply — a manifest always invalidates the rows memo. (The
-        // runtime's rows-diff render gate still suppresses the *repaint* when
-        // the re-derived rows come out identical.)
+        // Fast path. Zellij reports a manifest on every focus move, resize,
+        // mouse-state change, and bell, so most carry the topology this
+        // instance already holds. Such a manifest can still move three
+        // things — focus (notifier suppression, the focused-pane naming
+        // candidate), the theme (the runtime's, from `update.theme`), and
+        // the cwd-bootstrap retry set — none of which `rows()` reads, so the
+        // memo survives and none of the store/ledger/prune machinery below
+        // needs to run. Each condition rules out one mutation below: no
+        // exits (no Done/Error flip), no grace in flight (a graced pane's
+        // second absence must prune), the same live set (no prune, no new
+        // pane), and pane-for-pane identical topology modulo focus.
+        if update.exits.is_empty()
+            && self.absent_once.is_empty()
+            && self.live_panes.as_ref() == Some(&update.live)
+            && same_topology(&self.tab_panes, &update.tab_panes, |x, y| x.id == y.id && x.title == y.title)
+        {
+            let focus_moved =
+                !same_topology(&self.tab_panes, &update.tab_panes, |x, y| x.focused_in_tab == y.focused_in_tab);
+            self.tab_panes = update.tab_panes;
+            self.note_focus(self.focused_terminal_in_active_tab());
+            return RadarChange {
+                render: false,
+                // The focused pane's repo is a naming candidate, so a focus
+                // move can rename; nothing else here can.
+                renames: if focus_moved { self.rename_tabs(naming) } else { Vec::new() },
+                // Cheap, and how a bootstrap batch capped at
+                // `MAX_CWD_BOOTSTRAP_PER_UPDATE` picks up its overflow.
+                cwd_bootstrap: self.cwd_bootstrap_targets(naming),
+                settle: true,
+                ..RadarChange::default()
+            };
+        }
+        // Past the fast path, topology and store mutations are too
+        // interleaved to prove a no-op cheaply — the manifest invalidates the
+        // rows memo. (The runtime's rows-diff render gate still suppresses
+        // the *repaint* when the re-derived rows come out identical.)
         self.touch();
         // Captured BEFORE `self.tab_panes` is overwritten below: every ledger
         // edge in this method (the exit-displace and both stores' prunes)

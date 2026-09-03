@@ -467,10 +467,16 @@ impl PluginRuntime {
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
         self.hidden = false; // manifests reach active-tab instances only
         let now = crate::clock::now_epoch_s();
+        // The theme rides the manifest but lives here, not in `RadarState`,
+        // so a manifest the radar treats as a no-op (its fast path) can
+        // still be a repaint when the focused pane's colors moved. The
+        // rows-diff gate keys on the theme, so an unchanged one stays quiet.
+        let theme_changed = update.theme.as_ref().is_some_and(|t| *t != self.theme);
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
+        let mut change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
+        change.render |= theme_changed;
         self.project(vec![], change, now)
     }
 
