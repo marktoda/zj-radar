@@ -1193,7 +1193,7 @@ fn rail_paints_every_column_of_its_pane() {
 /// separate processes, WITHOUT any session-manager trigger: B's plugin
 /// learns its own name from `Event::ModeUpdate` (push, automatic on load —
 /// no `get_session_list()` call needed) and persists presence to the shared
-/// `/cache` root; A's plugin reads that back directly off disk on a Fast
+/// `/cache` root; A's plugin reads that back directly off disk on a timer
 /// tick and renders a badge line for B; A's `session-next` (+ idle-commit
 /// ~1s later) really calls Zellij's `switch_session`, physically
 /// reattaching A's PTY client onto B.
@@ -1249,15 +1249,15 @@ fn session_next_switches_to_the_session_with_attention() {
     );
     b.pipe_status(&b_payload);
 
-    // `Effect::ReadPresences` (A reading the shared /cache root back) is
-    // gated to Fast timer fires only (runtime.rs `timer`), and A has nothing
-    // of its own yet to arm Fast — it would otherwise idle on the 60s Slow
-    // heartbeat and this test would need up to a minute of real wall time to
-    // stay honest. Piping a `running` status into A's OWN terminal arms A's
-    // Fast cadence indefinitely (an active `Running` row animates every
-    // tick — see `timer_should_continue`/`needs_fast_ticks`) without giving A
-    // any attention of its own, so it doesn't interfere with the ordering
-    // assertion below (B is still the only attention>0 peer).
+    // `Effect::ReadPresences` (A reading the shared /cache root back) rides
+    // every Slow (60s) fire and decimated Fast fires (runtime.rs `timer`),
+    // and A has nothing of its own yet to arm Fast — it would otherwise idle
+    // on the Slow heartbeat and this test would need up to a minute of real
+    // wall time to stay honest. Piping a `running` status into A's OWN
+    // terminal arms A's Fast cadence indefinitely (an active `Running` row
+    // animates every tick — see `timer_should_continue`/`needs_fast_ticks`)
+    // without giving A any attention of its own, so it doesn't interfere with
+    // the ordering assertion below (B is still the only attention>0 peer).
     let pane_a = a.discover_terminal_pane_id();
     eprintln!("[e2e] A terminal pane_id={pane_a}");
     let a_payload = format!(
@@ -1324,4 +1324,159 @@ fn session_next_switches_to_the_session_with_attention() {
          showed B's marker {marker:?} (session-next tapped, ~1 Fast tick should commit it)"
     );
     eprintln!("[e2e] PASS: session-next committed and A's client switched onto B");
+}
+
+/// Recursively find the peer-presence file under `root` whose JSON names
+/// `session_name`. The plugin writes it into Zellij's plugin `/cache` mount,
+/// whose host path is an implementation detail of Zellij (keyed by the plugin
+/// URL, and differently rooted on macOS vs Linux), so the test discovers it by
+/// walking the harness's private HOME rather than reconstructing that path.
+fn find_presence_file(root: &std::path::Path, session_name: &str) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(hit) = find_presence_file(&path, session_name) {
+                return Some(hit);
+            }
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("zj-radar.presence.") || !name.ends_with(".json") {
+            continue;
+        }
+        let json = std::fs::read_to_string(&path).unwrap_or_default();
+        if json.contains(&format!(r#""session_name":"{session_name}""#)) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Liveness grading is mtime arithmetic performed INSIDE the wasm sandbox:
+/// `session_files::read_peer_presences` asks WASI for each peer file's
+/// `modified()` and subtracts it from the plugin's own `SystemTime::now()`.
+/// Every other test of that ladder is host-side — the unit tests inject
+/// `age_secs` directly, and the cross-session test above only ever asserts
+/// that a FRESH peer appears. That leaves the whole fresh→stale→dead ladder
+/// resting on an assumption no test checks: that `modified()` works at all
+/// through Zellij's `/cache` mount. It has one degenerate failure mode that
+/// would look exactly like working code — `age_of`'s `unwrap_or(0)` treats a
+/// metadata or clock failure as "age 0", i.e. eternally fresh — under which
+/// no peer is ever graded stale, nothing is ever reaped, and no amount of
+/// scanning helps.
+///
+/// So: give A a live peer B, kill B, backdate B's presence file past the reap
+/// horizon, and require A to both drop the badge line AND unlink the file.
+/// That is the full production path — WASI `modified()` → `Sessions`' dead
+/// grading → `Effect::DismissPresence` → `remove_presences_matching` — and
+/// nothing short of it proves the ladder runs outside the host tests.
+///
+/// A is pinned Fast (a `running` row of its own) purely for wall-clock
+/// budget: the scan rides every Slow fire too, but waiting one out would add
+/// a minute of real time to the suite. Which cadences carry the scan is
+/// pinned host-side
+/// (`read_presences_rides_every_slow_fire_and_decimated_fast_fires`); what
+/// only Zellij can prove is the mtime arithmetic, and that is
+/// cadence-independent.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn dead_peer_presence_file_is_reaped_through_the_real_cache_mount() {
+    use std::time::Duration;
+
+    let wasm = plugin_wasm_path();
+    assert!(
+        wasm.exists(),
+        "Plugin wasm not found at {wasm:?}. Build it:\n  cargo build --release --target wasm32-wasip1 -p zj-radar-plugin"
+    );
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let pid = std::process::id();
+    let layout = sidebar_layout(&wasm);
+
+    let a = ZellijSession::start(&format!("zjr_reap_a_{pid}"), &layout, &wasm, temp_home);
+    let b = a.start_sibling(&format!("zjr_reap_b_{pid}"), &layout);
+    eprintln!("[e2e] A ({}) + sibling B ({}) loaded", a.name, b.name);
+
+    // B publishes a presence file, and A must see it — the same crossing the
+    // test above asserts, here only as the setup that makes the
+    // disappearance below meaningful.
+    let pane_b = b.discover_terminal_pane_id();
+    b.pipe_status(&format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_b}}},"status":"pending","repo":"reap-b-repo","msg":"pick one"}}"#
+    ));
+
+    // A's own `running` row keeps A's cadence Fast, so A rescans the shared
+    // root every `PRESENCE_READ_TICK_INTERVAL` ticks (~5s) instead of once a
+    // minute.
+    let pane_a = a.discover_terminal_pane_id();
+    a.pipe_status(&format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_a}}},"status":"running","repo":"reap-a-repo","msg":"keep-fast"}}"#
+    ));
+
+    let b_name = b.name.clone();
+    let saw_peer = a.wait_until(Duration::from_secs(10), |s| {
+        sidebar_region(&s.screen(), 32).contains(&b_name)
+    });
+    eprintln!("[e2e] A's rail with B alive:\n{}", sidebar_region(&a.screen(), 32));
+    assert!(
+        saw_peer,
+        "setup failed: A's badge never showed peer {b_name:?}, so this test could not go on to \
+         observe its removal. That is the cross-session presence path itself failing — see \
+         `session_next_switches_to_the_session_with_attention` for its diagnosis."
+    );
+
+    let presence = find_presence_file(a.temp_home(), &b_name).unwrap_or_else(|| {
+        panic!(
+            "no presence file naming {b_name:?} found under {:?}, yet A's badge rendered it — \
+             the badge can only come from such a file, so either the search missed it or \
+             Zellij mounted /cache somewhere outside the private HOME.",
+            a.temp_home()
+        )
+    });
+    eprintln!("[e2e] B's presence file: {presence:?}");
+
+    // Kill B so nothing rewrites the file back to fresh. The plugin has no
+    // exit hook (a killed server's file is exactly the corpse the reap exists
+    // for), so the file must outlive the session — assert that, rather than
+    // assume it, or the reap assertion below could pass on a file Zellij
+    // itself deleted.
+    drop(b);
+    assert!(
+        presence.exists(),
+        "B's presence file vanished when B's session was killed ({presence:?}). Then this test \
+         cannot distinguish a reap from Zellij's own cache teardown — and the corpse the reap \
+         is designed for would never exist in the field either."
+    );
+
+    // Backdate past `sessions::DEAD_AFTER_SECS` (300s — a private const, so
+    // spelled out here) with slack for scan latency. This is the one fact
+    // only the real stack can check: the plugin must read this mtime through
+    // WASI and compute a large age from it.
+    let dead_age = Duration::from_secs(300 + 120);
+    let backdated = std::time::SystemTime::now() - dead_age;
+    std::fs::File::options()
+        .write(true)
+        .open(&presence)
+        .expect("failed to open B's presence file to backdate it")
+        .set_times(std::fs::FileTimes::new().set_modified(backdated))
+        .expect("failed to backdate B's presence file mtime");
+
+    let reaped = a.wait_until(Duration::from_secs(20), |s| {
+        !sidebar_region(&s.screen(), 32).contains(&b_name) && !presence.exists()
+    });
+    eprintln!("[e2e] A's rail after backdating B:\n{}", sidebar_region(&a.screen(), 32));
+    assert!(
+        reaped,
+        "A never reaped dead peer {b_name:?} (badge still shows it: {}; file still on disk: \
+         {}). The plugin read this file's mtime through WASI and must have computed an age \
+         past `DEAD_AFTER_SECS`; if the badge line persists, either the age came back ~0 \
+         (`age_of`'s `unwrap_or(0)` swallowing a metadata/clock failure under the /cache \
+         mount, which would disable the whole staleness ladder in production) or the scan \
+         never ran. See the printed rail above.",
+        sidebar_region(&a.screen(), 32).contains(&b_name),
+        presence.exists()
+    );
+    eprintln!("[e2e] PASS: dead peer reaped from the badge and unlinked from the shared /cache");
 }

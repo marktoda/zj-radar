@@ -107,11 +107,15 @@ crystallizes *why* — these are constraints to preserve, not just happy acciden
     manifest delta, not a dirty tick) and #3 (cap concurrent in-flight calls). Decision logic
     lives in the pure `RadarState::cwd_bootstrap_targets`; the blocking call itself is isolated
     to `lib.rs::resolve_cwd` (wasm glue). Do not widen this to per-output or uncapped use.
-- **The one-shot timer must stay event-gated.** zj-radar re-arms its timer only while there is
-  *animating* work (a `Running` glyph that spins) or an un-carried completion edge still to
-  settle — a backgrounded `done`/`error`/`pending` row does not keep it awake
-  (`PluginRuntime::timer_should_continue`). Even while armed, a tick does no work proportional to
-  pane count. Keep it that way; never let a timer tick fan out into N host calls.
+- **The one-shot timer must stay event-gated, and its cadence must match the reason.** zj-radar
+  arms the 1 Hz *Fast* cadence only while there is *animating* work (a `Running` glyph that
+  spins) or an un-carried completion edge still to settle — a backgrounded
+  `done`/`error`/`pending` row does not keep it awake (`PluginRuntime::timer_should_continue`).
+  A named session otherwise decays to the 60 s *Slow* cadence, which exists to keep this
+  session's own presence file's mtime fresh, repaint minute-granular ages, and re-read the peer
+  presence directory. Even while armed, a tick does no work proportional to pane count: the peer
+  read is bounded by live session count and, on Fast, decimated. Keep it that way; never let a
+  timer tick fan out into N host calls.
 - **Output volume is irrelevant to us.** Because we key off discrete hook events
   (UserPromptSubmit / Pre/PostToolUse / Notification / Stop), a pane spewing megabytes of
   output costs us nothing. That is the exact dimension that melted smart-tabs.
