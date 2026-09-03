@@ -248,7 +248,10 @@ to every instance prompting. `setup zellij` normally pre-seeds the grant into
 
 **Subscriptions.** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`,
 `Timer`, `Mouse`, `PermissionRequestResult`, `ModeUpdate` (carries
-`ModeInfo.session_name`, the session-name source §13 depends on).
+`ModeInfo.session_name`, the session-name source §13 depends on), and
+`InitialKeybinds`, which is never handled: subscribing to it is Zellij's
+opt-out that strips the full keybinding table from every `ModeUpdate`, so the
+per-instance protobuf decode of each mode change stays small.
 
 **Tab index footgun.** `TabInfo.position` is 0-indexed; `switch_tab_to` is
 1-indexed. `display_tab_number = position + 1` is used for both rendering and

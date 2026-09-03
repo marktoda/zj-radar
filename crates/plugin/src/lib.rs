@@ -343,6 +343,16 @@ impl ZellijPlugin for State {
             // `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
             // reaped past `sessions::DEAD_AFTER_SECS` (300s).
             EventType::ModeUpdate,
+            // Never handled (falls to `update`'s `_ => false`), subscribed
+            // purely as an opt-out: Zellij ≥0.44 treats a plugin subscribed
+            // to `InitialKeybinds` as one that caches its keybinds, and
+            // sends every later `ModeUpdate` with `keybinds` EMPTY
+            // (`wasm_bridge.rs::apply_event_to_plugin`). Without it each
+            // `ModeUpdate` — every mode change, in every tab's instance —
+            // carries the whole keybinding table (141 binds in the stock
+            // config) through protobuf decode under the interpreter, for a
+            // plugin that only reads `session_name` off it.
+            EventType::InitialKeybinds,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
