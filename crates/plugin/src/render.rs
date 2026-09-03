@@ -207,11 +207,15 @@ impl ExitOutcome {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+/// Clamp `s` to `max` columns with a trailing `…`. Borrowed when it already
+/// fits — the common case for every label, name, and tag on the rail, and
+/// this runs dozens of times per frame.
+fn truncate(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
     if UnicodeWidthStr::width(s) <= max {
-        s.to_string()
+        Cow::Borrowed(s)
     } else if max == 0 {
-        String::new()
+        Cow::Borrowed("")
     } else {
         // Reserve 1 column for '…' (which itself has display width 1).
         let budget = max.saturating_sub(1);
@@ -232,7 +236,8 @@ fn truncate(s: &str, max: usize) -> String {
         while kept.ends_with('\u{200d}') {
             kept.pop();
         }
-        format!("{}…", kept)
+        kept.push('…');
+        Cow::Owned(kept)
     }
 }
 
@@ -331,23 +336,31 @@ enum LineBg {
     ActiveChild, // active multi-pane child line (surface_agent)
 }
 
+/// The three surface escapes a row's lines can paint onto, resolved once
+/// per row (`card` depends on the row; `rail` and `active_child` once per
+/// frame) so that [`LineBg::escape`] is a lookup, not an allocation per
+/// line per frame.
+struct Surfaces<'a> {
+    rail: &'a str,
+    card: &'a str,
+    active_child: &'a str,
+}
+
 impl LineBg {
     /// The one home for the row-surface map — how a line class resolves
-    /// against its owning `row` (the `ActiveChild` vs `Card` split the
-    /// `cards_active_more_line_*` drift guards pin). `render_body`'s
-    /// per-row `finalize` closure is the caller; the row-less rail surfaces
-    /// never come through here — they are all `LineBg::Rail` by
-    /// construction and take the one-line identity in [`paint_if_cards`]
-    /// instead. `rail` is the precomputed panel-base escape, borrowed
-    /// straight through (`Cow::Borrowed`) rather than re-allocated per
-    /// inter-card separator line per frame. `None` out means the line is
-    /// never painted.
-    fn escape<'a>(self, row: &TabRow, theme: &DerivedColors, rail: &'a str) -> Option<std::borrow::Cow<'a, str>> {
+    /// against its owning row's [`Surfaces`] (the `ActiveChild` vs `Card`
+    /// split the `cards_active_more_line_*` drift guards pin).
+    /// `render_body`'s per-row `finalize` closure is the caller; the
+    /// row-less rail surfaces never come through here — they are all
+    /// `LineBg::Rail` by construction and take the one-line identity in
+    /// [`paint_if_cards`] instead. `None` out means the line is never
+    /// painted.
+    fn escape<'a>(self, surfaces: &Surfaces<'a>) -> Option<&'a str> {
         match self {
             LineBg::None => Option::None,
-            LineBg::Rail => Some(std::borrow::Cow::Borrowed(rail)),
-            LineBg::Card => Some(std::borrow::Cow::Owned(card_tint(row, theme))),
-            LineBg::ActiveChild => Some(std::borrow::Cow::Owned(tc_bg(theme.surface_agent))),
+            LineBg::Rail => Some(surfaces.rail),
+            LineBg::Card => Some(surfaces.card),
+            LineBg::ActiveChild => Some(surfaces.active_child),
         }
     }
 }
@@ -734,7 +747,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let bare_min = bar_width + 1 + 1; // bar + glyph + sp (before num)
     let num_budget = width.saturating_sub(bare_min);
     let num = truncate(&num_full, num_budget);
-    let num_w = UnicodeWidthStr::width(num.as_str());
+    let num_w = UnicodeWidthStr::width(&*num);
     // Trailing sp after num only if it fits.
     let has_trailing_sp = bare_min + num_w < width;
     let prefix_len = bare_min + num_w + if has_trailing_sp { 1 } else { 0 };
@@ -759,7 +772,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let name = truncate(&row.name, name_budget);
 
     // gap can be 0 at extreme-narrow widths; saturating_sub prevents underflow.
-    let used = prefix_len + UnicodeWidthStr::width(name.as_str()) + bell_len;
+    let used = prefix_len + UnicodeWidthStr::width(&*name) + bell_len;
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
     let label_text = format!("{glyph_char} {num}{sp_after_num}{name}");
@@ -1001,7 +1014,7 @@ fn compose_activity(cmd: &str, outcome: Option<ExitOutcome>, avail: usize, cmd_c
         let tag = if UnicodeWidthStr::width(full.as_str()) <= avail {
             full
         } else {
-            truncate(oc.minimal(), avail)
+            truncate(oc.minimal(), avail).into_owned()
         };
         return Seg::new(role, tag).to_string();
     }
@@ -1257,21 +1270,32 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
 
     // Strip trailing newline; we'll add it back at the end.
     let bare = line.strip_suffix('\n').unwrap_or(line);
+    // Measured on the unpainted text: `bg` and `RESET` are SGR sequences,
+    // which `visible_width` skips, so re-arming cannot move the width.
+    let pad = width.saturating_sub(visible_width(bare));
+    let resets = bare.matches(RESET).count();
 
+    // One buffer, sized up front — this runs once per Cards line per frame
+    // under the interpreter, where the old replace + repeat + format chain
+    // was four allocations and three copies of the line.
+    let mut out = String::with_capacity(
+        bare.len() + bg.len() * (resets + 1) + pad + BG_RESET.len() + RESET.len() + 1,
+    );
+    out.push_str(bg);
     // Re-arm bg after every reset token inside the line.
-    let rearmed = bare.replace(RESET, &format!("{}{}", RESET, bg));
-
-    // Measure visible width of the re-armed content.
-    let vis = visible_width(&rearmed);
-
+    let mut parts = bare.split(RESET);
+    out.push_str(parts.next().unwrap_or_default());
+    for part in parts {
+        out.push_str(RESET);
+        out.push_str(bg);
+        out.push_str(part);
+    }
     // Pad to fill the band up to `width`.
-    let pad = if vis < width {
-        " ".repeat(width - vis)
-    } else {
-        String::new()
-    };
-
-    format!("{}{}{}{}{}\n", bg, rearmed, pad, BG_RESET, RESET)
+    out.extend(std::iter::repeat_n(' ', pad));
+    out.push_str(BG_RESET);
+    out.push_str(RESET);
+    out.push('\n');
+    out
 }
 
 fn target_for_row(row: &TabRow) -> RailTarget {
@@ -1564,7 +1588,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // the footer/last row rather than the folding math accounting for it.
     let badge_lines = render_session_badge(&opts.badge, opts);
 
-    let blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
+    let mut blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
     let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
         .map(|(r, b)| RowMeta { status: r.display.status, full_lines: b.len() })
         .collect();
@@ -1606,20 +1630,25 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
-    // Body: one card block per kept row.
+    // Body: one card block per kept row. The inter-card gap is the same
+    // rail-based blank on every row, so it is painted once and cloned.
+    let active_child = tc_bg(opts.theme.surface_agent);
+    let mut gap = paint_if_cards(Line::new("\n".to_string(), None, LineBg::Rail), cards, width, &rail);
+    gap.bg = LineBg::None;
     for &(i, budget) in &plan {
         let row = &rows[i];
+        let card = if cards { card_tint(row, &opts.theme) } else { String::new() };
+        let surfaces = Surfaces { rail: &rail, card: &card, active_child: &active_child };
 
         // Resolve a raw line's surface through the one `LineBg::escape` map by
         // consuming the complete `Line`. Metadata such as targets and hotspots
         // rides inside the value, so Cards finalization cannot forget it when
         // `Line` grows another lockstep field. Outside Cards density nothing
-        // paints, so the map (and its owned Card/ActiveChild escapes) is
-        // never consulted at all.
+        // paints, so the map is never consulted at all.
         let finalize = |line: Line| -> Line {
             let mut line = if cards {
-                match line.bg.escape(row, &opts.theme, &rail) {
-                    Some(esc) => line.painted(width, &esc),
+                match line.bg.escape(&surfaces) {
+                    Some(esc) => line.painted(width, esc),
                     None => line,
                 }
             } else {
@@ -1630,13 +1659,14 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         };
 
         // content (truncated to the planned budget == today's compression).
-        for line in blocks[i].iter().take(budget) {
-            flat.push(finalize(line.clone()));
+        // Each block is consumed exactly once — `plan` indexes are unique.
+        for line in std::mem::take(&mut blocks[i]).into_iter().take(budget) {
+            flat.push(finalize(line));
         }
 
         // gap external separation (dark panel base in Cards).
         for _ in 0..spacing.gap {
-            flat.push(finalize(Line::new("\n".to_string(), None, LineBg::Rail)));
+            flat.push(gap.clone());
         }
     }
 
@@ -1704,7 +1734,8 @@ fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let working = rows.iter().filter(|r| r.display.status == Status::Running).count();
     let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
     if need_you == 0 {
-        let text = truncate(&format!("{working} working"), width);
+        let tally = format!("{working} working");
+        let text = truncate(&tally, width);
         return Line::new(format!("{}\n", Seg::new(&idle, text)), None, LineBg::Rail);
     }
     let left = format!("{working} working · ");
@@ -1727,7 +1758,7 @@ fn ledger_rule(opts: &RenderOpts) -> Line {
     let prefix = "─ earlier ";
     let prefix_w = UnicodeWidthStr::width(prefix);
     let text = if opts.width <= prefix_w {
-        truncate(prefix, opts.width)
+        truncate(prefix, opts.width).into_owned()
     } else {
         format!("{}{}", prefix, "─".repeat(opts.width - prefix_w))
     };
@@ -1764,7 +1795,7 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
         |avail| {
             let name_budget = LEDGER_NAME_COLS.min(avail);
             let name = truncate(&line.tab_name, name_budget);
-            let name_w = UnicodeWidthStr::width(name.as_str());
+            let name_w = UnicodeWidthStr::width(&*name);
             let label_budget = avail.saturating_sub(name_w + 1);
             let mut text = format!(
                 "{} {} {}",
