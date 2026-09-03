@@ -329,6 +329,50 @@ EOF
   }
 }
 
+@test "native dispatch runs under plain sh and passes stdin straight through" {
+  # The dispatcher is the hot path every hook pays for, so it is POSIX sh
+  # (`#!/bin/sh`) and hands the payload to the CLI untouched — no `$(head)`
+  # capture, no printf pipe. Pin both: run the script under an explicit `sh`
+  # (not the shebang, not bash) and check the fake CLI saw the exact bytes.
+  local cli_log="$FAKEBIN/cli.log"
+  cat >"$FAKEBIN/zj-radar" <<EOF
+#!/bin/sh
+printf '%s|' "\$@" >> "$cli_log"
+cat >> "$cli_log"
+EOF
+  chmod +x "$FAKEBIN/zj-radar"
+  rm -f "$RECORD" "$cli_log"
+  local hook='{"hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"README.md"}}'
+  run sh -c "printf '%s' '$hook' | sh '$SCRIPT' running"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$cli_log")" = "notify|claude|--status|running|$hook" ]
+  [ ! -s "$RECORD" ]  # never fell through to the bash path
+}
+
+@test "bash fallback is reached from plain sh (re-exec) and from bash alike" {
+  # sh cannot run the fallback's bash syntax, so the dispatcher re-enters the
+  # file under bash. Both entry points must yield the same payload.
+  local hook='{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"finished"}'
+  rm -f "$RECORD"
+  printf '%s' "$hook" | sh "$SCRIPT" done
+  local via_sh; via_sh="$(last_payload)"
+  rm -f "$RECORD"
+  printf '%s' "$hook" | bash "$SCRIPT" done
+  local via_bash; via_bash="$(last_payload)"
+  [ -n "$via_sh" ]
+  [ "$via_sh" = "$via_bash" ]
+  [ "$(jq -r '.status' <<<"$via_sh")" = done ]
+}
+
+@test "no bash on the machine: dispatcher exits 0 without a broadcast" {
+  # No zj-radar and no bash resolvable → the fallback cannot run; the contract
+  # is the same silent no-op as outside Zellij, never an error into Claude.
+  rm -f "$RECORD"
+  PATH="" run /bin/sh "$SCRIPT" running <<<'{"hook_event_name":"Stop","cwd":"/tmp"}'
+  [ "$status" -eq 0 ]
+  [ ! -s "$RECORD" ]
+}
+
 @test "bash fallback keeps running→done in order (stuck-spinner guard, fallback path)" {
   # The native-CLI case above pins one dispatch branch; this pins the OTHER —
   # the bash fallback, where this exact bug shipped once before (the send

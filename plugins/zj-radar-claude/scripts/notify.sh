@@ -1,10 +1,26 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# shellcheck shell=bash
 # zj-radar Claude Code plugin notifier.
 #
 # Registered by the bundled hooks/hooks.json; called as `notify.sh <status>`
-# where <status> is running | pending | done (the hook event determines which).
-# Reads the Claude hook JSON on stdin for cwd + last message, then broadcasts a
-# zj_radar.status.v1 message to the zj-radar Zellij sidebar.
+# where <status> is running | pending | done | idle (the hook event determines
+# which). Reads the Claude hook JSON on stdin for cwd + last message, then
+# broadcasts a zj_radar.status.v1 message to the zj-radar Zellij sidebar.
+#
+# Two halves, one file:
+#   1. A POSIX sh dispatcher (this top section). When `zj-radar` is on PATH the
+#      hook is handed straight to the native CLI with stdin passed through
+#      untouched (the CLI bounds its own read at core::pipe::MAX_STDIN_BYTES),
+#      so the per-tool-call hot path is `sh` + one exec: no bash startup, no
+#      `$(head)` capture, no printf pipe. `#!/bin/sh` rather than bash for the
+#      same reason — it is the interpreter every hook pays for before anything
+#      else runs.
+#   2. A bash + jq fallback (everything below the re-exec) for machines without
+#      the binary. It needs bash, so the dispatcher re-enters this file under
+#      bash once. sh parses a script one command at a time, so the bash-only
+#      syntax further down is never read by sh: the exec comes first. The
+#      lint directive on line 2 checks the whole file as bash; keep this
+#      dispatcher section to POSIX constructs by inspection.
 #
 # Design contract (matches the sidebar plugin's pipe schema):
 #   - BROADCAST by name (never --plugin): reaches every sidebar instance and
@@ -13,23 +29,15 @@
 #     order, so the producer must not reorder its own broadcasts) and every
 #     failure path degrades to a silent no-op — never an error into Claude.
 #   - No-op outside Zellij, or on a non-terminal pane id.
-#
-# Dependency: jq (used to parse the hook payload + build JSON). The productized
-# `zj-radar notify` binary will remove this dependency.
-set -euo pipefail
 
 status="${1:-running}"
 
-# Read the hook payload up front, once: the cap below has to apply on both
-# dispatch paths, and the bash fallback re-parses the same buffer repeatedly.
-# Cap the read at 8 MiB (parity with the Rust CLI's MAX_STDIN_BYTES): a
-# degenerate multi-GB stream must bound memory, not buffer whole. Truncated
-# input just fails the jq parses below and no-ops — the safe degradation.
-input="$(head -c 8388608 2>/dev/null || true)"
-
 # Prefer the native CLI when present (drops the jq/bash dependency). It applies
-# the same Zellij gate, pending backstop, and payload schema. Falls back to the
-# bash implementation below when the binary isn't installed.
+# the same Zellij gate, pending backstop, and payload schema, plus the
+# producer-side last-sent dedup the bash path does not have (an identical
+# `running` re-broadcast within 30 s is dropped before any work; see
+# docs/producers.md). Falls through to the bash implementation below when the
+# binary isn't installed.
 #
 # Synchronous for EVERY status — the same in-order rule the bash path's tail
 # comment spells out. An earlier split backgrounded `running` (the hot path:
@@ -46,21 +54,42 @@ input="$(head -c 8388608 2>/dev/null || true)"
 # The cap only holds if the hook runner lets it finish: Claude Code kills the
 # hook at hooks.json's `timeout`. The graceful exit lands at ~cap (the
 # in-subtree watchdog kills the pipe client at the deadline; the CLI's parent
-# reaper at cap + 1 s is only the backstop when that watchdog fails), so
-# hooks.json keeps `timeout` >= cap + 2: backstop plus spawn/derivation slack.
-# The cap itself is keyed on the status at the send, in both producers:
-# `running` heartbeats — the per-tool-call hot path — default to 2 s (an
-# expired one is a dropped heartbeat the next event replaces, so a wedged rail
-# stalls each hook ~2 s instead of ~5), while the once-per-turn edges keep the
-# full 5 s, because dropping one loses real state. ZJ_RADAR_PIPE_TIMEOUT
-# overrides both. Welded to hooks.json by crates/plugin's
-# hooks_manifest_tests; the CLI half lives in pipe_send_timeout.
+# backstop at cap + 1 s only fires when that watchdog fails), so hooks.json
+# keeps `timeout` >= cap + 2: backstop plus spawn/derivation slack. The cap
+# itself is keyed on the status at the send, in both producers: `running`
+# heartbeats — the per-tool-call hot path — default to 2 s (an expired one is
+# a dropped heartbeat the next event replaces, so a wedged rail stalls each
+# hook ~2 s instead of ~5), while the once-per-turn edges keep the full 5 s,
+# because dropping one loses real state. ZJ_RADAR_PIPE_TIMEOUT overrides
+# both. Welded to hooks.json by crates/plugin's hooks_manifest_tests; the CLI
+# half lives in pipe_send_timeout.
+#
+# `exec`, so the CLI IS the hook process: one fewer process per event, and
+# the runner's timeout kill lands on the producer itself. The CLI exits 0 on
+# every input (notify never sets the failure flag), preserving the
+# never-error-into-Claude contract; `command -v` just confirmed the binary
+# resolves, so an exec failure is a race we accept.
 if command -v zj-radar >/dev/null 2>&1; then
-    printf '%s' "$input" \
-        | zj-radar notify claude --status "$status" >/dev/null 2>&1 \
-        || true
-    exit 0
+    exec zj-radar notify claude --status "$status" >/dev/null 2>&1
 fi
+
+# ---- bash + jq fallback ------------------------------------------------------
+# Re-enter under bash: the fallback uses [[ ]], ${var:0:n}, <<< and =~. No bash
+# on the machine → no fallback → exit 0 (the same silent no-op as outside
+# Zellij). $0 is the script's own path: hooks.json and the test suites invoke
+# it by absolute path.
+if [ -z "${BASH_VERSION:-}" ]; then
+    command -v bash >/dev/null 2>&1 || exit 0
+    exec bash "$0" "$@"
+fi
+set -euo pipefail
+
+# Read the hook payload once: the fallback re-parses the same buffer
+# repeatedly. Cap the read at 8 MiB (parity with the Rust CLI's
+# MAX_STDIN_BYTES): a degenerate multi-GB stream must bound memory, not buffer
+# whole. Truncated input just fails the jq parses below and no-ops — the safe
+# degradation.
+input="$(head -c 8388608 2>/dev/null || true)"
 
 # The bash fallback needs jq to build the payload. The final `jq -nc` below has
 # no `|| true`, so under `set -euo pipefail` a missing jq would abort mid-hook
@@ -74,7 +103,6 @@ command -v jq >/dev/null 2>&1 || exit 0
 pane_num="${ZELLIJ_PANE_ID#terminal_}"
 [[ "$pane_num" =~ ^[0-9]+$ ]] || exit 0
 
-# ($input was read before the binary dispatch above — stdin is already drained.)
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 # A real path can't exceed PATH_MAX (4 KB on Linux); anything longer is hostile
 # input. The cap also protects every downstream command that receives $cwd as
