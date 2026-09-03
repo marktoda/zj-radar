@@ -193,6 +193,26 @@ fn is_bidi_control(c: char) -> bool {
 /// - Unicode C1 control chars (U+0080–U+009F) — dropped
 /// - Bidi format/override chars (`is_bidi_control`) — dropped (Trojan-Source-style spoofing)
 pub fn sanitize(s: &str, max_chars: usize) -> String {
+    // Fast path: almost every string that reaches here is already clean —
+    // a repo name, a branch, a tool label, a snapshot field this very
+    // sanitizer wrote — and the scrub below is run on every field of every
+    // broadcast, manifest pane, and snapshot record, under the interpreter.
+    // One allocation-free scan settles the common case; anything that needs
+    // rewriting takes the full walk. `is_control` covers every byte the
+    // slow path rewrites or drops (C0 incl. `\n`/`\t`/`\r`, ESC, DEL, C1).
+    if s.chars().all(|c| !c.is_control() && !is_bidi_control(c)) {
+        return match s.char_indices().nth(max_chars) {
+            Some((cut, _)) => s[..cut].to_string(),
+            None => s.to_string(),
+        };
+    }
+    scrub(s, max_chars)
+}
+
+/// The full sanitizer walk (see [`sanitize`], whose fast path skips it for
+/// already-clean input). Kept separate so the property test can pin the
+/// fast path to this reference on arbitrary input.
+fn scrub(s: &str, max_chars: usize) -> String {
     let mut cleaned = String::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -734,6 +754,17 @@ mod tests {
                 prop_assert!(ch != '\x1b', "ESC leaked");
                 prop_assert!(!ch.is_control(), "control char leaked: {:?}", ch);
             }
+        }
+
+        /// The clean-input fast path must be indistinguishable from the full
+        /// scrub — on arbitrary input, including strings that mix clean text
+        /// with the bidi/control/ESC cases that force the slow walk.
+        #[test]
+        fn sanitize_fast_path_matches_the_scrub(
+            input in "(.|\\x1b\\[[0-9;]*m|\\u{202e}|\\x07|\\t){0,80}",
+            max in 1usize..120,
+        ) {
+            prop_assert_eq!(sanitize(&input, max), scrub(&input, max));
         }
 
         #[test]

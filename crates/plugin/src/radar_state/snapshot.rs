@@ -127,18 +127,26 @@ type LoadedSnapshot = (Vec<(u32, TrackedObservation)>, u64, Vec<LedgerEntry>);
 /// (the whole snapshot is dropped) — this is the drop-forward guard: a future
 /// version this build doesn't know is never partially trusted.
 pub(crate) fn load(raw: &str) -> Option<LoadedSnapshot> {
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    match value.get("v").and_then(serde_json::Value::as_u64)? as u32 {
-        RADAR_SNAPSHOT_V | PRE_LEDGER_SNAPSHOT_V => load_v3(value),
-        LEGACY_STATUS_SNAPSHOT_V => load_legacy_status(value),
+    // Peek the version through a one-field struct (serde skips the rest of
+    // the document without building it), then decode straight into the
+    // versioned record. The previous `Value` tree + `from_value` pass built
+    // and walked the whole document twice; this read runs on every load AND
+    // every read-merge-write, under the interpreter.
+    #[derive(Deserialize)]
+    struct Version {
+        v: u32,
+    }
+    let Version { v } = serde_json::from_str(raw).ok()?;
+    match v {
+        RADAR_SNAPSHOT_V | PRE_LEDGER_SNAPSHOT_V => load_v3(serde_json::from_str(raw).ok()?),
+        LEGACY_STATUS_SNAPSHOT_V => load_legacy_status(serde_json::from_str(raw).ok()?),
         _ => None,
     }
 }
 
-fn load_v3(value: serde_json::Value) -> Option<LoadedSnapshot> {
+fn load_v3(snapshot: RadarSnapshot) -> Option<LoadedSnapshot> {
     // `TrackedObservation` deserializes itself; an entry with an unknown origin
-    // fails deserialization, which drops the whole snapshot (`.ok()?`).
-    let snapshot: RadarSnapshot = serde_json::from_value(value).ok()?;
+    // fails deserialization, which drops the whole snapshot (`.ok()?` in `load`).
     // Free text rides the disk record verbatim; a pre-sanitize build (or a
     // hand-edited file) may have persisted raw control chars, so scrub both
     // observations and ledger on the way in like every other externally-
@@ -152,8 +160,7 @@ fn load_v3(value: serde_json::Value) -> Option<LoadedSnapshot> {
     Some((observations, snapshot.tick, ledger))
 }
 
-fn load_legacy_status(value: serde_json::Value) -> Option<LoadedSnapshot> {
-    let snapshot: LegacyStatusSnapshot = serde_json::from_value(value).ok()?;
+fn load_legacy_status(snapshot: LegacyStatusSnapshot) -> Option<LoadedSnapshot> {
     let observations = snapshot
         .panes
         .into_iter()
