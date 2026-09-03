@@ -115,6 +115,24 @@ dev sessions are swept; live ones are never killed. Run it from a plain
 terminal; `zj-radar run` refuses to nest inside Zellij. In the Nix shell,
 `nix develop -c just dev`.
 
+## Measuring plugin cost
+
+Zellij runs plugins under an interpreter (wasmi), so the number that predicts
+server CPU is executed wasm instructions, not host-side nanoseconds.
+`tools/wasm-fuel` (a standalone crate, not a workspace member) loads the
+built wasm the way Zellij does and reports per-event *fuel* for each event
+class the rail sees — manifests, broadcasts, ticks, renders, hidden-tab
+frames. Every change to a per-event path should show its before/after here:
+
+```sh
+just bench-wasm                          # the current build
+just bench-wasm old.wasm new.wasm        # side by side, with a Δ column
+```
+
+The harness's protobuf schema is vendored from `zellij-utils` (see
+`tools/wasm-fuel/src/proto/mod.rs`); re-vendor when the `zellij-tile` pin
+moves.
+
 ## Pull requests
 
 1. Open an issue first for anything non-trivial.

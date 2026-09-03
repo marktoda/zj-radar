@@ -63,6 +63,15 @@ dev-build:
     @echo "cli:  target/debug/zj-radar"
     @echo "wasm: target/wasm32-wasip1/release/zj_radar.wasm"
 
+# Interpreter cost of one Zellij event, in wasmi fuel (executed instructions,
+# the unit that predicts server CPU under Zellij's interpreter). Builds the
+# wasm, then drives it through a steady state and every event class the rail
+# sees. Pass two wasm paths to compare builds side by side:
+#   just bench-wasm old.wasm new.wasm
+bench-wasm *ARGS:
+    cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
+    cargo run --release --quiet --manifest-path tools/wasm-fuel/Cargo.toml -- {{ARGS}}
+
 # Wasm plugin compile check (matches CI's "wasm plugin compiles" step, so a
 # wasm-glue-only breakage fails locally too, not just in CI).
 build-wasm:
