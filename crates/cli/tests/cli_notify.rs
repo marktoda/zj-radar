@@ -149,7 +149,7 @@ fn dedup_state_is_scoped_per_pane_and_session() {
     notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_SESSION_NAME", "other")]);
     assert_eq!(shims.recorded("zellij").len(), 3);
     // The state files landed under the injected TMPDIR, not the real one.
-    let state = shims.dir.path().join("zj-radar");
+    let state = shims.dir.path().join("zj-radar-dedup");
     let mut names: Vec<_> = std::fs::read_dir(&state)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())

@@ -180,6 +180,27 @@ impl SessionFiles {
         write_via_tmp(&paths.snapshot_tmp, &paths.snapshot, json.as_bytes());
     }
 
+    /// A hidden instance's snapshot write (`Effect::PersistSnapshotIfStale`):
+    /// skip when the file's mtime is younger than `min_age` — a sibling just
+    /// wrote the same converged state — else read the existing record, hand
+    /// it to `json` for the merge, and write. `json` runs only on the write
+    /// path, so a skip costs one stat. A missing file counts as stale.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn persist_snapshot_if_stale(&self, min_age: Duration, json: impl FnOnce(Option<&str>) -> String) {
+        self.persist_snapshot_if_stale_at(min_age, json, SystemTime::now())
+    }
+
+    fn persist_snapshot_if_stale_at(&self, min_age: Duration, json: impl FnOnce(Option<&str>) -> String, now: SystemTime) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        if age_of(std::fs::metadata(&paths.snapshot), now).is_some_and(|age| age < min_age) {
+            return;
+        }
+        let existing = self.snapshot();
+        write_via_tmp(&paths.snapshot_tmp, &paths.snapshot, json(existing.as_deref()).as_bytes());
+    }
+
     /// Publish this session's presence for peer sessions' badges. Same atomic
     /// tmp+rename discipline as `persist_snapshot`; disabled mode is a no-op.
     pub(crate) fn persist_presence(&self, json: &str) {
@@ -1014,6 +1035,38 @@ mod tests {
         assert!(dir.join("zj-radar.1.unknown").exists());
         assert!(dir.join("zj-radar.1.json.tmp").exists());
         assert!(dir.join("zj-radar.1.permissions.tmp").exists());
+    }
+
+    #[test]
+    fn hidden_snapshot_write_skips_a_fresh_file_and_merges_into_a_stale_or_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SessionFiles::open_with_roots_at(
+            SessionFileIds { plugin_id: 1, zellij_pid: 42 },
+            [dir.path().to_path_buf()],
+            SystemTime::now(),
+            SNAPSHOT_MAX_AGE,
+        )
+        .files;
+        let snapshot = dir.path().join("zj-radar.42.json");
+        let min_age = Duration::from_secs(2);
+
+        // Missing: writes, and the merge closure sees no existing record.
+        files.persist_snapshot_if_stale_at(min_age, |existing| { assert!(existing.is_none()); "first".into() }, SystemTime::now());
+        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first");
+
+        // A sibling just wrote: skipped, and the merge is never even run.
+        files.persist_snapshot_if_stale_at(min_age, |_| unreachable!("fresh snapshot must not be re-merged"), SystemTime::now());
+        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first");
+
+        // Older than the window (a detached session's hidden instance is the
+        // only writer): the existing record is handed to the merge and the
+        // result written.
+        files.persist_snapshot_if_stale_at(
+            min_age,
+            |existing| format!("{}+second", existing.unwrap()),
+            SystemTime::now() + min_age,
+        );
+        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first+second");
     }
 
     #[test]

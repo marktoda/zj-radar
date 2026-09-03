@@ -239,11 +239,14 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// (see `core::pipe`'s accepted residuals); it bounds the hook, which is
 /// what the runner needs.
 ///
-/// Pid-reuse safe by construction: a waiter thread owns the child and is
-/// the only thing that reaps it, so when the timeout fires here the child
-/// is provably still unreaped (the waiter has not reported) and its pid is
-/// still ours. A signal fired from a detached timer thread *after* `wait`
-/// returned — the obvious alternative — has no such guarantee. `None` when
+/// Pid-reuse: a waiter thread owns the child and is the only thing that
+/// reaps it, so when the timeout fires here the waiter has not reported and
+/// the child is, up to one residual, still unreaped and the pid ours. The
+/// residual is the nanoseconds between the waiter's `wait()` returning and
+/// its `send()` — the same order of window `core::pipe`'s watchdog accepts.
+/// A signal fired from a detached timer thread *after* the caller's own
+/// `wait` returned — the obvious alternative — had a window of the whole
+/// remaining hook runtime instead. `None` when
 /// the status could not be learned (waiter thread unavailable, or the
 /// child would not die): treated as "not delivered", the safe reading for
 /// the dedup record. Never panics — this module promises the calling hook

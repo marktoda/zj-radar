@@ -102,7 +102,10 @@ impl ShimDir {
     /// exist on this machine (every `/home/u/myrepo` below) takes, since the
     /// native `.git` walk only claims positives.
     ///
-    /// The CLI invokes:
+    /// The CLI invokes, in order:
+    ///   `git -C <cwd> rev-parse --path-format=absolute --git-common-dir`
+    ///                                             → answered empty here, so it
+    ///                                               falls back to
     ///   `git -C <cwd> rev-parse --show-toplevel`  → repo toplevel path
     ///   `git -C <cwd> branch --show-current`      → branch name
     ///

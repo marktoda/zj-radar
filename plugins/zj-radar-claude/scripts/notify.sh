@@ -35,7 +35,7 @@ status="${1:-running}"
 # Prefer the native CLI when present (drops the jq/bash dependency). It applies
 # the same Zellij gate, pending backstop, and payload schema, plus the
 # producer-side last-sent dedup the bash path does not have (an identical
-# `running` re-broadcast within 30 s is dropped before any work; see
+# `running` re-broadcast within 10 s is dropped before any work; see
 # docs/producers.md). Falls through to the bash implementation below when the
 # binary isn't installed.
 #

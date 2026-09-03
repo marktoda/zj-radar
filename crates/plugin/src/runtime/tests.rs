@@ -1786,8 +1786,8 @@ fn project_emits_effects_in_canonical_order() {
 
     let kind = |e: &Effect| match e {
         Effect::RenameTab { .. } => 0,
-        Effect::PersistSnapshot => 1,
-        Effect::PersistPresence => 2,
+        Effect::PersistSnapshot | Effect::PersistSnapshotIfStale { .. } => 1,
+        Effect::PersistPresence | Effect::HeartbeatPresence { .. } => 2,
         Effect::ResolveCwd { .. } => 3,
         Effect::SetTimeout(_) => 4,
         Effect::Notify { .. } => 5,
@@ -3032,7 +3032,12 @@ fn hidden_rail_ticks_its_state_but_never_paints() {
 }
 
 #[test]
-fn hidden_rail_leaves_snapshot_writes_to_its_visible_sibling() {
+fn hidden_rail_writes_the_snapshot_only_when_no_sibling_just_did() {
+    // A hidden instance holds the same converged stores as its visible
+    // sibling, so its edge write is mtime-gated (one stat) rather than an
+    // unconditional read-merge-write — but it stays a write: a detached
+    // session has only hidden instances, and the fresh instances Zellij
+    // spawns on the next attach seed from this file.
     let mut rt = painted_runtime();
     rt.visibility_changed(false);
 
@@ -3040,26 +3045,30 @@ fn hidden_rail_leaves_snapshot_writes_to_its_visible_sibling() {
     assert!(!edge.render, "hidden: no paint on the edge");
     assert!(
         !edge.effects.contains(&Effect::PersistSnapshot),
-        "hidden: the visible instance holds the same state and writes it once, got {:?}",
+        "hidden: never the unconditional write, got {:?}",
+        edge.effects
+    );
+    assert!(
+        edge.effects.iter().any(|e| matches!(e, Effect::PersistSnapshotIfStale { unless_fresher_than_s } if *unless_fresher_than_s > 0)),
+        "hidden: the mtime-gated write, got {:?}",
         edge.effects
     );
     assert_eq!(
         rt.radar.status_store().get(7).map(|o| o.status),
         Some(Status::Done),
-        "the store still took the edge — only the write was skipped"
+        "the store took the edge like any instance"
     );
 
-    // A deferred label write pending from before the tab went dark is
-    // dropped at its flush too, not written late by the wrong instance.
+    // A deferred label write flushes through the same gate.
     rt.status_pipe(&payload_json(7, "running"));
     rt.snapshot_dirty = true;
     let flush = rt.timer_fast(PermissionProbe::default());
     assert!(
-        !flush.effects.contains(&Effect::PersistSnapshot),
-        "hidden flush is dropped, got {:?}",
+        flush.effects.iter().any(|e| matches!(e, Effect::PersistSnapshotIfStale { .. })),
+        "hidden flush is mtime-gated, got {:?}",
         flush.effects
     );
-    assert!(!rt.snapshot_dirty, "…and the dirty flag is consumed, not left to fire on reveal");
+    assert!(!rt.snapshot_dirty, "…and the dirty flag is consumed");
 }
 
 #[test]

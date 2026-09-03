@@ -43,6 +43,21 @@ pub const RUNNING_PIPE_TIMEOUT_SECS: u64 = 2;
 // heartbeat deadline must stay below the once-per-turn edge deadline.
 const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
 
+/// Ticks (one per second at the plugin's Fast cadence) a `Running` pane may
+/// sit at a shell prompt before the plugin declares its pushed status stale
+/// and clears it to idle. Long enough that a mid-turn foreground flicker —
+/// which re-asserts the agent's foreground or a fresh hook payload well
+/// inside the window — never trips it; short enough that killing an agent
+/// mid-turn doesn't leave a "working" row spinning forever.
+///
+/// Lives here, not in the plugin's status store, because it is half of a
+/// producer ↔ plugin contract: ANY payload for the pane cancels the clock,
+/// so a producer that suppresses identical `running` heartbeats
+/// (`crates/cli/src/dedup.rs`) must go quiet for strictly less than this,
+/// or a live agent's row clears to idle while it works. The CLI pins that
+/// ordering at compile time against this constant.
+pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = 15;
+
 /// Cap on hook stdin read by a producer before JSON parsing — the shared
 /// contract between the CLI producer's bounded read and the bash fallback's
 /// `head -c`. Hook payloads are small JSON (well under a megabyte); the cap

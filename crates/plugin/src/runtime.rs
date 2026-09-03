@@ -105,6 +105,24 @@ const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 /// fire alone starved exactly the busiest sessions stale.
 const PRESENCE_HEARTBEAT_S: u64 = 60;
 
+/// How recent a sibling's presence write must be for a heartbeat to skip
+/// (`Effect::HeartbeatPresence`). Every instance stamps its own clock on a
+/// skip, so the worst case for the file is one writer disappearing right
+/// after a sibling skipped: the file then ages `PRESENCE_HEARTBEAT_S` plus
+/// this window before the sibling is due. A quarter keeps that bound (75 s)
+/// under `sessions::STALE_AFTER_SECS` (90 s) with margin; a half would sit
+/// exactly on it.
+const PRESENCE_HEARTBEAT_SKIP_S: u64 = PRESENCE_HEARTBEAT_S / 4;
+const _: () = assert!(PRESENCE_HEARTBEAT_S + PRESENCE_HEARTBEAT_SKIP_S < crate::sessions::STALE_AFTER_SECS);
+
+/// How recent a sibling's snapshot write must be for a hidden instance to
+/// skip its own (`Effect::PersistSnapshotIfStale`). Siblings take the same
+/// edge within milliseconds of each other, and the deferred label flush
+/// rides each instance's own ~1 Hz tick, so two seconds covers a visible
+/// sibling's write and nothing else; a detached session's hidden instances
+/// always find the file older than this and write.
+const HIDDEN_SNAPSHOT_SKIP_S: u64 = 2;
+
 // The liveness ladder's safety argument IS this ordering — writes beat the
 // dim threshold, and dimming long precedes the file-deleting reap.
 const _: () = assert!(PRESENCE_HEARTBEAT_S < crate::sessions::STALE_AFTER_SECS);
@@ -115,7 +133,20 @@ pub(crate) enum Effect {
     RequestPermission,
     SetSelectable(bool),
     SetTimeout(Cadence),
+    /// Write the shared snapshot now — lib.rs reads the existing file,
+    /// merges (`snapshot_json`), and writes it back. A visible instance's
+    /// edge write.
     PersistSnapshot,
+    /// A hidden instance's edge write: the same read-merge-write, unless
+    /// the snapshot's mtime is already younger than `unless_fresher_than_s`
+    /// — a visible sibling holding the same converged stores has just
+    /// written it. Costs one stat when a sibling exists; writes when none
+    /// does. That second case is real: Zellij spawns a fresh instance of
+    /// every plugin for each client that attaches (`wasm_bridge::add_client`),
+    /// seeded from this file, while the detached client's instances live
+    /// on hidden and keep receiving broadcasts — they are the only holders
+    /// of everything that happened while nobody was attached.
+    PersistSnapshotIfStale { unless_fresher_than_s: u64 },
     PersistPermissionMarker(PermissionMarker),
     RenameTab { tab_id: TabId, name: String },
     SwitchTab { position: usize },
@@ -395,9 +426,12 @@ pub(crate) struct PluginRuntime {
     /// keeps its state machinery ticking — the stores' grace clocks count
     /// ticks, so a slowed hidden instance would drift from its siblings
     /// until reveal — but it neither paints (the paint is >95% of a tick's
-    /// interpreter cost, and nobody sees it) nor persists the snapshot (the
-    /// visible sibling holds the same converged state and writes it once
-    /// instead of N times). `Visible(true)` repaints the frame that was
+    /// interpreter cost, and nobody sees it) nor rewrites a snapshot a
+    /// visible sibling wrote moments ago (`Effect::PersistSnapshotIfStale`:
+    /// one stat instead of a read-merge-write, and still the write when no
+    /// sibling did — a detached session has only hidden instances, and the
+    /// instances Zellij spawns for the next attach seed from that file).
+    /// `Visible(true)` repaints the frame that was
     /// skipped. Belt and braces: `TabUpdate`/`PaneUpdate` only ever reach
     /// the instances in a client's active tab, so receiving one proves this
     /// instance visible and clears the flag even if a `Visible(true)` was
@@ -1288,17 +1322,17 @@ impl PluginRuntime {
         match c.snapshot {
             SnapshotWrite::Now => {
                 // One writer per edge, not N: every instance holds the same
-                // converged stores, so the visible one's write is the
-                // snapshot. A hidden instance drops the write outright (no
-                // deferral — its visible sibling already wrote). The one
-                // gap is a session with no visible instance at all (every
-                // client detached): the snapshot then ages until reattach,
-                // which only matters to a tab created from the CLI while
-                // detached, and that tab converges on the next broadcast
-                // like any late instance.
-                if !self.hidden {
-                    fx.push(Effect::PersistSnapshot);
-                }
+                // converged stores, so a visible instance writes and a
+                // hidden one writes only if no sibling just did (one stat
+                // against the file's mtime — `Effect::PersistSnapshotIfStale`).
+                // The hidden write must stay possible: a fully detached
+                // session has only hidden instances, and the instances Zellij
+                // spawns for the next client to attach seed from this file.
+                fx.push(if self.hidden {
+                    Effect::PersistSnapshotIfStale { unless_fresher_than_s: HIDDEN_SNAPSHOT_SKIP_S }
+                } else {
+                    Effect::PersistSnapshot
+                });
                 // An inline write covers anything a pending deferral would
                 // have flushed — clear it so the next tick doesn't repeat
                 // the exact read-merge-write this state exists to avoid.
@@ -1357,7 +1391,7 @@ impl PluginRuntime {
                 fx.push(Effect::PersistPresence);
                 self.last_presence_write_epoch_s = now_epoch_s;
             } else if now_epoch_s.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S {
-                fx.push(Effect::HeartbeatPresence { unless_fresher_than_s: PRESENCE_HEARTBEAT_S / 2 });
+                fx.push(Effect::HeartbeatPresence { unless_fresher_than_s: PRESENCE_HEARTBEAT_SKIP_S });
                 self.last_presence_write_epoch_s = now_epoch_s;
             }
         }

@@ -31,11 +31,11 @@ details and the event-to-status table are in
 [`plugins/zj-radar-claude/README.md`](../plugins/zj-radar-claude/README.md).
 
 With the `zj-radar` CLI installed, a `running` update identical to the one the
-pane last delivered (same message and task) within 30 seconds is not re-sent:
+pane last delivered (same message and task) within 10 seconds is not re-sent:
 Claude fires a hook before and after every tool call with the same content,
 and the second would only cost every sidebar instance a no-op. Any other
 status always goes out, and so does a `running` that changes anything or
-arrives after the 30 seconds. `ZJ_RADAR_NO_DEDUP=1` in the agent's
+arrives after the 10 seconds. `ZJ_RADAR_NO_DEDUP=1` in the agent's
 environment disables this; the bash fallback never dedups.
 
 ## Codex

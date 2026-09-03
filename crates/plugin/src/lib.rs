@@ -201,6 +201,11 @@ impl State {
                     let json = self.runtime.snapshot_json(existing.as_deref());
                     self.session_files.persist_snapshot(&json);
                 }
+                Effect::PersistSnapshotIfStale { unless_fresher_than_s } => {
+                    let min_age = std::time::Duration::from_secs(unless_fresher_than_s);
+                    self.session_files
+                        .persist_snapshot_if_stale(min_age, |existing| self.runtime.snapshot_json(existing))
+                }
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }

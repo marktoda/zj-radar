@@ -8,13 +8,11 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Ticks a `Running` pane may sit at a shell prompt before its pushed status is
-/// declared stale and cleared to idle (~seconds at the Fast cadence, which the
-/// armed clock itself keeps alive — `needs_ticks` counts live suspect clocks,
-/// since a Running *service* row no longer arms it). Long enough that a mid-turn foreground
-/// flicker — which re-asserts the agent's foreground or a fresh hook payload
-/// well inside the window — never trips it; short enough that killing an agent
-/// mid-turn doesn't leave a "working" row spinning forever.
-pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = 15;
+/// declared stale and cleared to idle — at the Fast cadence, which the armed
+/// clock itself keeps alive (`needs_ticks` counts live suspect clocks, since
+/// a Running *service* row no longer arms it). Defined in `core::pipe`: the
+/// CLI's heartbeat dedup must stay quiet for less than this, and pins that.
+pub use zj_radar_core::pipe::RUNNING_SUSPECT_GRACE_TICKS;
 
 /// Upper bound on tracked status observations across distinct pane ids. The
 /// per-payload defenses (size cap, sanitize) don't bound the number of

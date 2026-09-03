@@ -309,8 +309,8 @@ pub(crate) struct RadarState {
     /// Wall-clock animation (spinner frames, ages) deliberately does NOT bump
     /// it — those read `now_tick` at render time.
     generation: u64,
-    /// Memo for [`rows`](Self::rows): the last `(generation, now_tick)` it was
-    /// computed at, with its result. Events that consult rows more than once
+    /// Memo for [`rows`](Self::rows): the last `(generation, flashing tabs)`
+    /// it was computed at, with its result. Events that consult rows more than once
     /// per intake (the runtime's presence derivation, the render-gate compare,
     /// and the render itself, all under a wasm *interpreter* on the host side)
     /// pay the rollup once — and the `Rc` makes each hit a refcount bump, not
@@ -407,7 +407,7 @@ impl RadarState {
 
     /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
     /// sorts at intake, so this render-path call is a plain iteration.
-    /// Memoized on `(generation, now_tick)` and shared via `Rc`: one intake
+    /// Memoized on `(generation, flashing tabs)` and shared via `Rc`: one intake
     /// event consults rows several times (presence derivation, the render-gate
     /// diff, the render itself), and under Zellij's interpreted-wasm runtime
     /// both the repeat rollups AND per-hit deep clones were a measurable share
@@ -547,7 +547,10 @@ impl RadarState {
         // every tracked pane live (a status that arrived for a pane the
         // manifest does not carry must enter the grace on this report, not
         // wait for the topology to move), and pane-for-pane identical
-        // topology modulo focus.
+        // topology modulo focus. The compare names every `TerminalPane`
+        // field but focus — a new rows-visible field must join it. `exits`
+        // is level-triggered on the manifest, so a tab holding an exited
+        // pane takes the slow path on every report until that pane closes.
         if update.exits.is_empty()
             && self.absent_once.is_empty()
             && self.live_panes.as_ref() == Some(&update.live)

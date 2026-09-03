@@ -17,9 +17,18 @@
 //!   overwriting the record so the PostToolUse→running that follows it differs
 //!   and is sent.
 //! - **Only within [`DEDUP_TTL_SECS`].** The rail can drop a row without the
-//!   producer knowing (exit-clear grace, `/clear`, the 256-id eviction, a `✓`
-//!   ack), so an identical `running` is re-sent once the record is older than
-//!   the TTL — a bound on how long a rail can disagree with a busy producer.
+//!   producer knowing (`/clear`, the 256-id eviction, a fresh instance with no
+//!   snapshot), so an identical `running` is re-sent once the record is older
+//!   than the TTL — a bound on how long a rail can disagree with a busy
+//!   producer. The TTL sits below the plugin's stale-Running grace, which any
+//!   payload cancels: a longer silence would clear a live agent's row.
+//!   (A `✓` ack acts on a `Pending` row, so the record is `pending` and the
+//!   `running` that follows always differs — no interaction.)
+//! - **No sweep.** One ~150-byte file per `(session, pane)` ever used, until
+//!   the OS clears the runtime/temp dir; bounded by panes-ever, so a readdir
+//!   per hook is not worth it. Pane ids restart when a server is recreated
+//!   under the same session name, so a stale record can only suppress a new
+//!   pane's first `running` if it is byte-identical and inside the TTL.
 //! - **Repo and branch are not in the key.** They are resolved *after* this
 //!   check so a skipped send costs no git probe; a branch switch mid-task
 //!   surfaces with the next payload that differs in status/msg/task, or at the
@@ -38,12 +47,16 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// How long an identical `running` payload stays suppressed. 30 s is long
-/// enough that a tool loop's Pre/Post pairs and rapid-fire identical
-/// heartbeats collapse, short enough that a rail which silently dropped the
-/// row (grace clear, `/clear`, eviction, ack) re-converges within one
-/// human-noticeable beat rather than for the rest of the turn.
-pub const DEDUP_TTL_SECS: u64 = 30;
+/// How long an identical `running` payload stays suppressed. Long enough
+/// that a tool loop's Pre/Post pairs collapse (a tool call rarely runs 10 s
+/// between its two hooks) and rapid-fire identical heartbeats fold; short
+/// enough that a rail which silently dropped the row (`/clear`, eviction, a
+/// fresh instance with no snapshot) re-converges within a beat. Hard upper
+/// bound: the plugin's stale-Running grace — ANY payload for the pane cancels
+/// that clock, so a producer quiet for longer would let a live agent's row
+/// clear to idle. Pinned below it at compile time.
+pub const DEDUP_TTL_SECS: u64 = 10;
+const _: () = assert!(DEDUP_TTL_SECS < crate::pipe::RUNNING_SUSPECT_GRACE_TICKS);
 
 /// The fields a repeat must match exactly. `status` rides as its wire token
 /// (`Status` has no serde impl, and the file format should stay readable).
@@ -148,15 +161,17 @@ pub fn unix_now() -> u64 {
 }
 
 /// Where the per-user state files live. `$XDG_RUNTIME_DIR` when set (per-user,
-/// tmpfs, cleared at logout — the ideal home for a 30 s cache), else the
-/// process temp dir (`$TMPDIR`, per-user on macOS; `/tmp` on Linux without
-/// XDG, where a foreign `zj-radar` dir just makes every write fail open).
+/// tmpfs, cleared at logout — the ideal home for a seconds-long cache), else
+/// the process temp dir (`$TMPDIR`, per-user on macOS; `/tmp` on Linux
+/// without XDG, where a foreign dir just makes every write fail open). Its
+/// own leaf, not `zj-radar/`: on Linux that is the plugin's `/tmp/zj-radar`
+/// session-file root, whose presence scans read the directory.
 fn state_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("zj-radar")
+        .join("zj-radar-dedup")
 }
 
 /// Zellij session names are free text; fold anything outside a filename-safe
@@ -233,8 +248,8 @@ mod tests {
         let key = running("editing auth.rs");
         assert!(!ls.is_duplicate(Status::Running, &key, 1000), "no record yet");
         ls.record(&key, 1000);
-        assert!(ls.is_duplicate(Status::Running, &key, 1010));
-        assert!(!ls.is_duplicate(Status::Running, &running("other"), 1010));
+        assert!(ls.is_duplicate(Status::Running, &key, 1000 + DEDUP_TTL_SECS / 2));
+        assert!(!ls.is_duplicate(Status::Running, &running("other"), 1000 + DEDUP_TTL_SECS / 2));
         assert!(!ls.is_duplicate(Status::Running, &key, 1000 + DEDUP_TTL_SECS));
         // No temp file left behind — the record is the directory's only entry.
         let names: Vec<_> = std::fs::read_dir(dir.path())

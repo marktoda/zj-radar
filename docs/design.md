@@ -101,7 +101,8 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 └────────────────────────────────────────────────────────────────────────┘
         │ Effects: SwitchTab, ShowPane, RenameTab, RequestPermission,
         │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
-        │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd,
+        │ PersistSnapshotIfStale, PersistPermissionMarker,
+        │ HeartbeatPermissionLock, ResolveCwd,
         │ Notify, PersistPresence, HeartbeatPresence, ReadPresences,
         │ DismissPresence, SwitchSession, BroadcastStatus, CloseSelf
         ▼
@@ -118,7 +119,7 @@ seam is the versioned pipe payload.
 
 | Source event | Status |
 |---|---|
-| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse` and the plugin no-ops identical re-broadcasts, but it is the Pending → Running recovery edge after a mid-turn permission answer, so it stays registered. |
+| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going) |
 | Claude `Stop` | `done`, except a Stop whose last assistant message ends in a question maps to `pending`; the question becomes the message |
@@ -225,7 +226,9 @@ CLI (`crates/cli/src/dedup.rs`, at the `broadcast` choke point every producer
 path shares) keeps each pane's last confirmed delivery in a small state file
 under `$XDG_RUNTIME_DIR` or the temp dir, keyed by Zellij session and pane
 id, and drops a send only when the status is `running`, `(source, msg, task)`
-match the record, and the record is younger than `DEDUP_TTL_SECS` (30 s).
+match the record, and the record is younger than `DEDUP_TTL_SECS` (10 s — pinned
+below the plugin's stale-Running grace, which any payload cancels, so a
+suppressed heartbeat can never let a live agent's row clear to idle).
 Edges always send — which is what keeps PostToolUse the Pending→Running
 recovery edge: the `pending` overwrites the record, so the `running` after it
 differs. Repo and branch are resolved after the check (a skipped send costs no
@@ -246,14 +249,16 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `/tmp/zj-radar`, then persistence off. `/data` is not used: it is scoped per
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
-instance holds the same converged stores after a broadcast, so only the
-*visible* instances write (§9's visibility gate); a hidden tab's rail drops
-the write, and the rare overlap (two clients on two tabs) writes identical
-content, so races are benign. A fully detached session has no writer and its
-snapshot ages until reattach; that matters only to a tab created from the CLI
-while detached, which converges on the next broadcast like any late
-instance. With persistence off, late sidebars start empty until the next
-broadcast.
+instance holds the same converged stores after a broadcast, so a visible
+instance writes unconditionally and a hidden one (§9's visibility gate)
+writes only if no sibling wrote within the last two seconds — one stat
+instead of a read-merge-write when a visible sibling exists. The hidden write
+must stay possible: Zellij spawns a fresh instance of every plugin for each
+client that attaches, seeded from this file, while the detached client's
+instances live on hidden and keep receiving broadcasts, so after a
+detach → agents finish → reattach cycle they are the only holders of the
+truth. Overlapping writers produce identical content, so races are benign.
+With persistence off, late sidebars start empty until the next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -416,9 +421,10 @@ keep repaints proportional to change:
    overrides, which change the drawing without changing the key.
 4. **Visibility gate.** `Event::Visible(false)` (tab switch, tab close, layout
    apply, client detach) marks the instance hidden: it paints nothing, ticks
-   included, and skips snapshot writes, but its state machinery keeps ticking
-   at full cadence — the stores' grace clocks count ticks, so a slowed hidden
-   instance would drift from its siblings until reveal. `Visible(true)`
+   included, and turns its snapshot writes into mtime-gated ones (§5), but
+   its state machinery keeps ticking at full cadence — the stores' grace
+   clocks count ticks, so a slowed hidden instance would drift from its
+   siblings until reveal. `Visible(true)`
    force-renders the skipped frame. Zellij never sends `Visible` at load, so an
    instance starts visible, and any manifest it receives (which only reach
    active-tab plugins) also clears the flag — the bias is toward painting,
@@ -427,7 +433,8 @@ keep repaints proportional to change:
    about one.
 
 Underneath all four: `RadarState::generation` (bumped by every mutator of
-anything `rows()` reads) and the `rows()` memo keyed on `(generation, tick)`.
+anything `rows()` reads) and the `rows()` memo keyed on `(generation, the
+tabs mid-flash)` — the tick reaches a row only through the ping flash.
 One roll-up per event, shared by the presence derive, the gate compare, and
 the render. A missed `touch()` is a stale-rail bug, not a slow one.
 `tools/wasm-fuel` measures every layer in the interpreter's own unit
@@ -601,12 +608,16 @@ choice is a flag the consumer projects on, never a fact.
 - Rust, `zellij-tile = "0.44"`, target `wasm32-wasip1`. The artifact is a
   binary crate, not `cdylib`: Zellij loads plugins as WASI command modules and
   calls `_start`, which `register_plugin!`'s generated `main` provides.
-- Zellij runs one instance per tab, each under the wasmi interpreter with
-  its own linear memory, so per-instance fixed cost is paid N times. The
+- Zellij runs one instance per tab per attached client (a detached client's
+  instances linger hidden), each under the wasmi interpreter with its own
+  linear memory, so per-instance fixed cost is paid N times. The
   release profile optimizes for size; `.cargo/config.toml` shrinks the WASI
   shadow stack from wasm-ld's 1 MiB default to 256 KiB, which takes the
-  initial memory from 19 to 7 pages (448 KiB) per instance. Per-event
-  interpreter cost is measured in fuel by `tools/wasm-fuel`
+  initial memory from 19 to 7 pages (448 KiB) per instance; and the flake
+  runs binaryen's `wasm-opt -Oz` over the release wasm, which measured
+  12–27 % fewer executed instructions on every event class (and ~13 % fewer
+  bytes) than rustc's output alone. Per-event interpreter cost is measured
+  in fuel by `tools/wasm-fuel`
   ([`CONTRIBUTING.md`](../CONTRIBUTING.md#measuring-plugin-cost)).
 - The dev loop never reloads in place (Zellij does not safely hot-reload
   layout-created plugins); every `just dev` is a fresh sandboxed session
