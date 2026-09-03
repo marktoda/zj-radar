@@ -98,7 +98,9 @@ impl ShimDir {
     }
 
     /// Install a fake `git` that answers the `-C <cwd>` rev-parse/branch calls
-    /// that `cli/notify.rs` makes.
+    /// of `cli/git.rs`'s spawn fallback — the path a hook cwd that does not
+    /// exist on this machine (every `/home/u/myrepo` below) takes, since the
+    /// native `.git` walk only claims positives.
     ///
     /// The CLI invokes:
     ///   `git -C <cwd> rev-parse --show-toplevel`  → repo toplevel path
