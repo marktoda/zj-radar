@@ -34,10 +34,16 @@ impl ShimDir {
     /// `notify`'s spawn a silent no-op — the suite then fails with zero
     /// recorded broadcasts instead of pointing at the real problem.
     pub fn add_recorder(&self, name: &str) {
+        self.add_recorder_exiting(name, 0);
+    }
+
+    /// `add_recorder`, but the shim exits with `code` after recording —
+    /// models a `zellij pipe` that ran and failed (no server, bad session).
+    pub fn add_recorder_exiting(&self, name: &str, code: i32) {
         let log = self.dir.path().join(format!("{name}.log"));
         let script = format!(
             "#!/bin/sh\nstdin=\"$(cat)\"\n\
-             printf '%s\\t%s\\n' \"$*\" \"$(printf '%s' \"$stdin\" | tr '\\n' ' ')\" >> {log:?}\nexit 0\n",
+             printf '%s\\t%s\\n' \"$*\" \"$(printf '%s' \"$stdin\" | tr '\\n' ' ')\" >> {log:?}\nexit {code}\n",
             log = log
         );
         let bin = self.dir.path().join(name);

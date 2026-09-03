@@ -4,6 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, git, stdin).
 
 use super::agents::{Agent, AgentUpdate, Intake};
+use crate::dedup::{LastSent, SentKey};
 use crate::payload::{to_wire, StatusPayload};
 use crate::status::Status;
 use std::io::Read;
@@ -212,9 +213,23 @@ fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -
     })
 }
 
-/// The shared broadcast tail: resolve cwd → repo/branch, cap the message,
-/// build the wire payload, `zellij pipe` it (or print it under `--dry-run`).
+/// The shared broadcast tail, the choke point every producer path (`run`,
+/// `run_generic`, hence claude/codex/opencode/generic) funnels through: drop
+/// a redundant `running` repeat, resolve cwd → repo/branch, build the wire
+/// payload, `zellij pipe` it (or print it under `--dry-run`), and on a
+/// confirmed delivery record it as this pane's last-sent.
 fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
+    let task = update.task.unwrap_or_default();
+    // Dedup BEFORE the git probes so a skipped send costs no spawn at all.
+    // Repo/branch are therefore not in the key (see `dedup`). A dry run is a
+    // debugging tool: it neither consults nor touches the record.
+    let key = SentKey::new(update.status, source, &update.msg, &task);
+    let now = crate::dedup::unix_now();
+    let last_sent = if dry_run { None } else { LastSent::from_env(pane_id) };
+    if last_sent.as_ref().is_some_and(|l| l.is_duplicate(update.status, &key, now)) {
+        return;
+    }
+
     let cwd = update
         .cwd
         .filter(|s| !s.is_empty())
@@ -232,7 +247,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         repo,
         branch,
         msg: update.msg,
-        task: update.task.unwrap_or_default(),
+        task,
         source: source.to_string(),
         ack: false,
     });
@@ -270,17 +285,27 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         return; // sh missing/unspawnable — same silent no-op as before
     };
     let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(1);
-    loop {
+    let delivered = loop {
         match child.try_wait() {
-            Ok(Some(_)) => return, // sent (or zellij errored) — done either way
+            // The wrapper's status is `zellij pipe`'s (core::pipe): only a
+            // success is a confirmed delivery worth recording.
+            Ok(Some(status)) => break status.success(),
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            _ => break, // deadline hit, or wait itself failed
+            _ => {
+                // deadline hit, or wait itself failed
+                let _ = child.kill();
+                let _ = child.wait(); // reap — kill without wait leaves a zombie per hook
+                break false;
+            }
+        }
+    };
+    if delivered {
+        if let Some(last_sent) = last_sent {
+            last_sent.record(&key, now);
         }
     }
-    let _ = child.kill();
-    let _ = child.wait(); // reap — kill without wait leaves a zombie per hook
 }
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer

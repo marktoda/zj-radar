@@ -22,6 +22,139 @@ fn notify(shims: &ShimDir, agent: &str, hook: &str) {
         .success();
 }
 
+/// `notify claude --status <status>` with the last-sent dedup ARMED: a session
+/// identity (dedup is keyed per session × pane) and the state dir pinned
+/// inside the shim tempdir (`TMPDIR`, with `XDG_RUNTIME_DIR` — which would
+/// win on a Linux desktop — removed) so tests never touch the real one.
+fn notify_deduped(shims: &ShimDir, status: &str, hook: &str, extra_env: &[(&str, &str)]) {
+    let mut cmd = Command::cargo_bin("zj-radar").unwrap();
+    cmd.args(["notify", "claude", "--status", status])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("ZELLIJ_SESSION_NAME", "dedup-test")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZJ_RADAR_NO_DEDUP");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.write_stdin(hook).assert().success();
+}
+
+const PRE_EDIT: &str = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
+const POST_EDIT: &str = r#"{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
+
+#[test]
+fn identical_pre_and_post_running_payloads_send_once() {
+    // PreToolUse and PostToolUse derive byte-identical wire payloads; the
+    // second is a duplicate the rail would no-op anyway, so the producer
+    // drops it before spending a git probe or a `zellij pipe` fan-out.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 1, "the Post repeat must be deduped");
+
+    // A different activity is a different payload — sent.
+    let read = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Read","tool_input":{"file_path":"/home/u/myrepo/README.md"}}"#;
+    notify_deduped(&shims, "running", read, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2);
+}
+
+#[test]
+fn pending_edge_passes_and_the_recovery_running_is_sent() {
+    // The Pending→Running recovery edge (the reason PostToolUse stays
+    // registered): Notification→pending is never skipped and overwrites the
+    // record, so the PostToolUse→running that follows differs and goes out —
+    // an answered permission prompt must clear "needs you" at once.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    let pending = r#"{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs your permission to use Edit"}"#;
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "pending", pending, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    let sent: Vec<String> = shims
+        .recorded("zellij")
+        .iter()
+        .map(|c| c.args.join(" "))
+        .collect();
+    assert_eq!(sent.len(), 3, "running, pending, recovery running: {sent:?}");
+    assert!(sent[1].contains("\"status\":\"pending\""), "{sent:?}");
+    assert!(sent[2].contains("\"status\":\"running\""), "{sent:?}");
+    // …and only the recovery's own repeat collapses.
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 3);
+}
+
+#[test]
+fn edges_are_never_deduped() {
+    // Two identical `done` sends both go out: a dropped edge loses real state
+    // (the rail may have cleared the row in between), only running repeats.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    let stop = r#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"finished"}"#;
+    notify_deduped(&shims, "done", stop, &[]);
+    notify_deduped(&shims, "done", stop, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2);
+}
+
+#[test]
+fn failed_send_is_not_recorded_so_the_repeat_is_retried() {
+    // The sh wrapper exits with `zellij pipe`'s status; a failed client (no
+    // server, killed at the deadline) must not be recorded as delivered, or
+    // the pane would suppress its own retry for the dedup TTL.
+    let shims = ShimDir::new();
+    shims.add_recorder_exiting("zellij", 1);
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2, "an unconfirmed send must be retried");
+}
+
+#[test]
+fn no_dedup_env_disables_the_skip() {
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[("ZJ_RADAR_NO_DEDUP", "1")]);
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZJ_RADAR_NO_DEDUP", "1")]);
+    assert_eq!(shims.recorded("zellij").len(), 2);
+}
+
+#[test]
+fn dedup_state_is_scoped_per_pane_and_session() {
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    // Same payload from another pane: its own record, so it is sent.
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_PANE_ID", "terminal_8")]);
+    // Same pane id in another session: also its own record.
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_SESSION_NAME", "other")]);
+    assert_eq!(shims.recorded("zellij").len(), 3);
+    // The state files landed under the injected TMPDIR, not the real one.
+    let state = shims.dir.path().join("zj-radar");
+    let mut names: Vec<_> = std::fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "last-sent.dedup-test.7.json",
+            "last-sent.dedup-test.8.json",
+            "last-sent.other.7.json"
+        ]
+    );
+}
+
 #[test]
 fn claude_posttooluse_edit_broadcasts_editing_activity() {
     let shims = ShimDir::new();
