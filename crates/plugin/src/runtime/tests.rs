@@ -2429,11 +2429,9 @@ fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
 }
 
 #[test]
-fn read_presences_is_bound_to_fast_fires_only() {
-    // Finding 2 pin, tightened by the decimation pass: `Effect::ReadPresences`
-    // rides Fast fires only — never the Slow (60s) heartbeat, which exists
-    // purely to repaint ledger ages — and within Fast only every
-    // `PRESENCE_READ_TICK_INTERVAL`th tick (peers heartbeat at 60s and dim at
+fn read_presences_rides_every_slow_fire_and_decimated_fast_fires() {
+    // Within Fast, `Effect::ReadPresences` is decimated to one per
+    // `PRESENCE_READ_TICK_INTERVAL` ticks (peers heartbeat at 60s and dim at
     // 90s; a per-second directory scan per instance bought nothing). `timer`
     // tells Fast from Slow the same way `TimerChain::on_fire` tells live from
     // stale: by `elapsed_s` against `STALE_FIRE_ELAPSED_S`.
@@ -2452,13 +2450,51 @@ fn read_presences_is_bound_to_fast_fires_only() {
         "Fast fires must scan peers once per interval, got {scans:?}"
     );
 
-    // A lone Slow fire (nothing else in flight, so it's the live chain, not
-    // a stale leftover — see `lone_slow_fire_processes_as_the_live_chain`)
-    // must not — even though a scan is overdue (no scan has EVER run, the
-    // strongest form of "due" the last-scan gate knows).
+    // Every Slow fire scans, unconditionally. An idle rail runs on nothing
+    // but Slow fires, and the scan is the only thing that ever grades a peer
+    // stale or dead — the field bug this pins: with the scan bound to Fast
+    // fires, an idle session's badge froze at its last Fast-era read, so
+    // killed peers stayed listed (never dimmed, never reaped, their files
+    // never unlinked) until something happened to pin the rail Fast again.
     let mut rt = granted_runtime();
+    for _ in 0..3 {
+        let slow = rt.timer_slow(PermissionProbe::default());
+        assert!(slow.effects.contains(&Effect::ReadPresences), "every Slow fire must scan peers, got {:?}", slow.effects);
+    }
+}
+
+#[test]
+fn idle_rail_reaps_a_dead_peer_from_its_slow_heartbeat_alone() {
+    // The field report end to end: a named, idle session (nothing Running,
+    // no ledger — `desired_cadence` settles on Slow) whose only peer was
+    // killed hard, so its file's mtime just ages. The idle rail's Slow fire
+    // must request the scan, and the scan's read-back must reap the corpse
+    // and ask for its file to be unlinked.
+    let json = r#"{"session_name":"alpha","running":0,"attention":1}"#;
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.presences_changed(vec![fresh(json)]);
+    assert!(rt.sessions.badge().iter().any(|b| b.name == "alpha"), "setup: peer shows while fresh");
+
     let slow = rt.timer_slow(PermissionProbe::default());
-    assert!(!slow.effects.contains(&Effect::ReadPresences), "a Slow fire must not scan peers, got {:?}", slow.effects);
+    assert!(
+        slow.effects.contains(&Effect::ReadPresences),
+        "an idle rail's Slow fire is its only chance to notice a dead peer, got {:?}",
+        slow.effects
+    );
+    assert!(
+        slow.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
+        "a named idle rail must stay Slow-armed (the heartbeat contract), got {:?}",
+        slow.effects
+    );
+
+    let out = rt.presences_changed(vec![dead(json)]);
+    assert!(
+        out.effects.contains(&Effect::DismissPresence { name: "alpha".into() }),
+        "the read-back must reap the dead peer's file, got {:?}",
+        out.effects
+    );
+    assert!(!rt.sessions.badge().iter().any(|b| b.name == "alpha"), "the corpse must leave the badge");
 }
 
 // ── Fast-decay heartbeat survival (task-13 investigation) ───────────────

@@ -86,7 +86,8 @@ const STALE_FIRE_ELAPSED_S: f64 = 5.0;
 /// Fast (1 Hz) ticks between peer-presence directory scans — see the gate in
 /// [`PluginRuntime::timer`]. Peers heartbeat every 60s and dim as stale at
 /// 90s, so 5s scan latency is invisible on the badge; only an active Alt+[/]
-/// cycle (`Sessions::wants_fast_cadence`) reads every tick.
+/// cycle (`Sessions::wants_fast_cadence`) reads every tick. Slow (60s) fires
+/// scan unconditionally — they are already rarer than this interval.
 const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 
 /// Wall-clock seconds between own-presence liveness writes — the level
@@ -153,10 +154,11 @@ pub(crate) enum Effect {
     PersistPresence,
     /// Re-read every peer session's presence file and feed the result back
     /// through `presences_changed` — mirrors `ResolveCwd`'s
-    /// request/read-back pattern, except the read is gated on cadence
-    /// (Fast fires only — see `timer`) rather than on a fresh set of pane
-    /// ids: one directory scan per `PRESENCE_READ_TICK_INTERVAL` Fast ticks
-    /// (every tick mid-cycle), never on the Slow heartbeat.
+    /// request/read-back pattern, except the read is gated on cadence (see
+    /// `timer`) rather than on a fresh set of pane ids: every Slow (60s)
+    /// fire — an idle rail's only event source, and the only way it ever
+    /// notices a peer went stale or dead — plus one scan per
+    /// `PRESENCE_READ_TICK_INTERVAL` Fast ticks (every tick mid-cycle).
     ReadPresences,
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
@@ -486,25 +488,31 @@ impl PluginRuntime {
         // opened in that window would seed a rail missing the change — the same
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
-        // Cross-session peers: re-read the directory bound to Fast fires only
-        // — never on a Slow fire (which exists solely to repaint ledger ages
-        // and has no business paying for a peer scan). Within Fast, the scan
-        // is further decimated to one per `PRESENCE_READ_TICK_INTERVAL`
-        // ticks: peers heartbeat at 60s and dim at 90s, so a once-per-second
-        // directory read per instance (N tabs × N sessions of wasi stat+read)
-        // bought nothing — except mid-cycle (`wants_fast_cadence`), where the
-        // Alt+[/] selection UI wants the freshest roster every tick. Measured
-        // from the LAST scan (`last_presence_scan`), not the absolute tick,
-        // so the very first Fast fire always seeds the badge — a fresh
-        // instance must not sit blank for up to a full interval on an
-        // arbitrary tick phase.
-        if !is_slow_fire {
-            let scan_due = self.last_presence_scan
+        // Cross-session peers: re-read the directory on every Slow fire and
+        // on decimated Fast fires. The Slow fire is an idle rail's ONLY event
+        // source, and this scan is the only thing that ever re-grades a peer
+        // (`Sessions::update_presences` works off the age captured at read
+        // time) — so a rail that never scanned on Slow froze its badge at
+        // the last Fast-era read: killed peers stayed listed, never dimmed,
+        // never reaped, their files never unlinked, until something pinned
+        // the rail Fast again. One scan per minute is also the cheapest
+        // cadence on offer, so the "Slow exists solely to repaint ledger
+        // ages" economy argument never applied. Within Fast, the scan is
+        // decimated to one per `PRESENCE_READ_TICK_INTERVAL` ticks: peers
+        // heartbeat at 60s and dim at 90s, so a once-per-second directory
+        // read per instance (N tabs × N sessions of wasi stat+read) bought
+        // nothing — except mid-cycle (`wants_fast_cadence`), where the Alt+[/]
+        // selection UI wants the freshest roster every tick. Measured from the
+        // LAST scan (`last_presence_scan`), not the absolute tick, so the very
+        // first Fast fire always seeds the badge — a fresh instance must not
+        // sit blank for up to a full interval on an arbitrary tick phase.
+        let scan_due = is_slow_fire
+            || self.sessions.wants_fast_cadence()
+            || self.last_presence_scan
                 .is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
-            if self.sessions.wants_fast_cadence() || scan_due {
-                self.last_presence_scan = Some(self.tick);
-                effects.push(Effect::ReadPresences);
-            }
+        if scan_due {
+            self.last_presence_scan = Some(self.tick);
+            effects.push(Effect::ReadPresences);
         }
         // BEFORE re-arming below, commit an idle cycle selection if one is
         // pending. Committing here — not after `project` re-arms — matters:
