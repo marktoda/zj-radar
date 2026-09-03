@@ -12,6 +12,10 @@ test:
 test-bash:
     cargo build -p zj-radar
     shellcheck plugins/zj-radar-claude/scripts/notify.sh scripts/install.sh scripts/funnel.sh demo/record.sh demo/agent.sh demo/banner.sh demo/demorc.sh
+    # notify.sh's head runs under /bin/sh (dash on Debian/Ubuntu) before it
+    # re-execs bash for the fallback; the file-level directive lints it as
+    # bash, so lint the dispatcher section as POSIX sh on its own.
+    sed -n '3,/^# ---- bash/p' plugins/zj-radar-claude/scripts/notify.sh | shellcheck -s sh -
     bats plugins/zj-radar-claude/tests scripts/tests
 
 # Live E2E (L5): builds the wasm plugin, drives a real Zellij in a PTY.

@@ -160,7 +160,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     let key = SentKey::new(update.status, source, &update.msg, &task);
     let now = crate::dedup::unix_now();
     let last_sent = if dry_run { None } else { LastSent::from_env(pane_id) };
-    if last_sent.as_ref().is_some_and(|l| l.is_duplicate(update.status, &key, now)) {
+    if last_sent.as_ref().is_some_and(|l| l.is_duplicate(&key, now)) {
         return;
     }
 
@@ -192,99 +192,62 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         println!("{payload}");
         return;
     }
-    // Bounded send. `zellij pipe` blocks until every loaded plugin instance
-    // consumes the message (CLI-pipe backpressure) — a rail wedged at the
-    // permission prompt blocks it forever, and hooks fire per tool call, so an
-    // unbounded wait leaks one blocked client + two server FDs per call until
-    // the Zellij server EMFILEs and the whole session crashes. The message is
-    // queued server-side the moment it's sent; killing the client past the
-    // deadline retracts nothing and keeps sends sequential (latest-wins holds).
-    //
-    // The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
-    // sleep+kill watchdog), not here: hook runners kill their hooks, and this
-    // process dying mid-send must not orphan a blocked client — that leak is
-    // exactly how a wedged session EMFILE-crashed in production despite a
-    // parent-side deadline. So the parent simply blocks in `wait` (no poll
-    // loop: a 25 ms poll added ~12 ms to every healthy send), with a thread
-    // as the cap + 1 s backstop for the watchdog-fork-failed corner.
-    let timeout = pipe_send_timeout(update.status);
-    let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
-    let Ok(child) = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return; // sh missing/unspawnable — same silent no-op as before
-    };
-    // The wrapper's status is `zellij pipe`'s (core::pipe): only a success is
-    // a confirmed delivery worth recording as this pane's last-sent.
-    let delivered = wait_with_backstop(child, timeout + std::time::Duration::from_secs(1))
-        .is_some_and(|status| status.success());
-    if delivered {
+    // Only a confirmed delivery is worth recording as this pane's last-sent
+    // (the wrapper's status is `zellij pipe`'s — core::pipe).
+    if send(&payload, update.status) {
         if let Some(last_sent) = last_sent {
             last_sent.record(&key, now);
         }
     }
 }
 
-/// Block until `child` exits, or `after` elapses — then kill it and reap
-/// it. The backstop behind `broadcast`'s send: the spawned `sh` subtree
-/// ordinarily reaps its own hung client at the send deadline, but if its
-/// watchdog fork failed (process-table exhaustion) the wrapper would block
-/// for as long as the pipe does, and the hook with it — this returns the
-/// hook at cap + 1 s instead, inside the runner's `timeout >= cap + 2`
-/// headroom. Killing the wrapper does not reach the client in that corner
-/// (see `core::pipe`'s accepted residuals); it bounds the hook, which is
-/// what the runner needs.
+/// Deliver one wire payload through the self-limiting `zellij pipe` subtree;
+/// true iff the client confirmed delivery (exit 0).
 ///
-/// Pid-reuse: a waiter thread owns the child and is the only thing that
-/// reaps it, so when the timeout fires here the waiter has not reported and
-/// the child is, up to one residual, still unreaped and the pid ours. The
-/// residual is the nanoseconds between the waiter's `wait()` returning and
-/// its `send()` — the same order of window `core::pipe`'s watchdog accepts.
-/// A signal fired from a detached timer thread *after* the caller's own
-/// `wait` returned — the obvious alternative — had a window of the whole
-/// remaining hook runtime instead. `None` when
-/// the status could not be learned (waiter thread unavailable, or the
-/// child would not die): treated as "not delivered", the safe reading for
-/// the dedup record. Never panics — this module promises the calling hook
-/// never sees one.
-fn wait_with_backstop(mut child: std::process::Child, after: std::time::Duration) -> Option<std::process::ExitStatus> {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
-    let pid = child.id();
-    let (tx, rx) = channel();
-    if std::thread::Builder::new().spawn(move || { let _ = tx.send(child.wait()); }).is_err() {
-        return None; // no thread, no bounded wait; the subtree self-limits anyway
-    }
-    match rx.recv_timeout(after) {
-        Ok(status) => status.ok(),
-        Err(RecvTimeoutError::Disconnected) => None,
-        Err(RecvTimeoutError::Timeout) => {
-            terminate(pid);
-            // The waiter reaps the killed child and reports; a child that
-            // ignores SIGTERM (not `sh`) would hold this, so bound it too.
-            rx.recv_timeout(std::time::Duration::from_secs(1)).ok().and_then(Result::ok)
+/// Bounded send. `zellij pipe` blocks until every loaded plugin instance
+/// consumes the message (CLI-pipe backpressure) — a rail wedged at the
+/// permission prompt blocks it forever, and hooks fire per tool call, so an
+/// unbounded wait leaks one blocked client + two server FDs per call until
+/// the Zellij server EMFILEs and the whole session crashes. The message is
+/// queued server-side the moment it's sent; killing the client past the
+/// deadline retracts nothing and keeps sends sequential (latest-wins holds).
+///
+/// The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
+/// sleep+kill watchdog), not here: hook runners kill their hooks, and this
+/// process dying mid-send must not orphan a blocked client — that leak is
+/// exactly how a wedged session EMFILE-crashed in production despite a
+/// parent-side deadline. The parent blocks in `wait_timeout` (a SIGCHLD
+/// self-pipe, not a poll loop — a 25 ms poll once added ~12 ms to every
+/// healthy send) with cap + 1 s as the backstop for the watchdog-fork-failed
+/// corner: past it the wrapper is killed and reaped — `Child::kill` on a
+/// handle `wait_timeout` just reported alive, so the pid is still ours by
+/// construction — which returns the hook inside the runner's
+/// `timeout >= cap + 2` headroom. Killing the wrapper does not reach the
+/// client in that corner (see `core::pipe`'s accepted residuals); it bounds
+/// the hook, which is what the runner needs. Never panics — a hook must
+/// never see one.
+fn send(payload: &str, status: Status) -> bool {
+    use wait_timeout::ChildExt;
+    let timeout = pipe_send_timeout(status);
+    let argv = crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs());
+    let Ok(mut child) = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false; // sh missing/unspawnable — same silent no-op as before
+    };
+    match child.wait_timeout(timeout + std::time::Duration::from_secs(1)) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait(); // reap — a kill without a wait leaves a zombie per hook
+            false
         }
+        Err(_) => false,
     }
-}
-
-/// `kill(pid, SIGTERM)`. Only ever called from `wait_with_backstop` while
-/// the waiter thread still holds the unreaped child (see there).
-fn terminate(pid: u32) {
-    #[cfg(unix)]
-    {
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        const SIGTERM: i32 = 15;
-        // SAFETY: plain libc call with no pointer arguments; the caller
-        // guarantees the pid is an unreaped child of this process.
-        unsafe { kill(pid as i32, SIGTERM) };
-    }
-    #[cfg(not(unix))]
-    let _ = pid;
 }
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
@@ -383,39 +346,55 @@ mod tests {
 
     // --- send backstop ---
 
+    /// `send` against a hanging `zellij` shim returns at the backstop, not
+    /// with the child, and reports the send as not delivered.
     #[test]
-    fn backstop_kills_a_child_that_outlives_its_deadline() {
-        // A child with NO self-limiting watchdog (plain `sleep`) models the
-        // watchdog-fork-failed corner: the blocking wait must still return at
-        // the backstop, not ride the child. `sleep 30` vs a 200 ms backstop
-        // leaves no ambiguity about which one returned us.
-        let child = Command::new("sleep")
-            .arg("30")
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .expect("sleep is on every PATH this crate targets");
+    fn send_returns_undelivered_at_the_backstop_when_the_wrapper_hangs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shim = dir.path().join("sh");
+        // A `sh` that ignores its argv and sleeps: models the wrapper whose
+        // in-subtree watchdog failed to fork, so nothing else bounds it.
+        std::fs::write(&shim, "#!/bin/sh
+exec sleep 30
+").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut path = dir.path().as_os_str().to_owned();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        // `sh` resolves through PATH inside `send` (the argv's program is
+        // `sh`), so a shim dir first on PATH intercepts it. Cap 1 s → the
+        // backstop fires at 2 s.
         let start = std::time::Instant::now();
-        let status = wait_with_backstop(child, std::time::Duration::from_millis(200));
-        assert!(
-            status.is_none_or(|s| !s.success()),
-            "the child must have been killed, not exited: {status:?}"
-        );
+        let delivered = temp_env(&[("PATH", path.to_str().unwrap()), ("ZJ_RADAR_PIPE_TIMEOUT", "1")], || {
+            send("{}", Status::Running)
+        });
+        assert!(!delivered, "a hung wrapper is not a delivery");
         assert!(
             start.elapsed() < std::time::Duration::from_secs(10),
-            "wait rode the child instead of the backstop ({}ms)",
+            "send rode the child instead of the backstop ({}ms)",
             start.elapsed().as_millis()
         );
     }
 
-    #[test]
-    fn backstop_never_fires_on_a_child_that_exits_first() {
-        // The healthy path: the child is reaped well before the backstop, and
-        // its exit status is the child's own (a delivered send reads success).
-        let child = Command::new("true").spawn().unwrap();
-        let start = std::time::Instant::now();
-        let status = wait_with_backstop(child, std::time::Duration::from_secs(30));
-        assert!(status.is_some_and(|s| s.success()));
-        assert!(start.elapsed() < std::time::Duration::from_secs(5), "returned with the child, not the backstop");
+    /// Run `f` with the given environment variables set, restoring the
+    /// previous values afterwards (tests in this module are the only
+    /// writers, and cargo runs them in one process).
+    fn temp_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+        let saved: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var_os(k))).collect();
+        for (k, v) in vars {
+            std::env::set_var(k, v);
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        out
     }
 
     // --- generic producer ---

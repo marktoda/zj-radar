@@ -391,3 +391,83 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     // zellij's argv before the hang, so killing the client lost nothing.
     assert_eq!(shims.recorded("zellij").len(), 1);
 }
+
+/// A `.git` directory git itself would accept: `objects/`, `refs/`, and a
+/// symbolic HEAD — enough for the native walk in `cli/git.rs` to answer
+/// without spawning git.
+fn make_git_fixture(root: &std::path::Path, name: &str, head: &str) -> std::path::PathBuf {
+    let repo = root.join(name);
+    std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(repo.join(".git/refs/heads")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), head).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    repo
+}
+
+#[test]
+fn repo_and_branch_are_resolved_natively_without_spawning_git() {
+    // End to end through the binary: a real `.git` at the hook's cwd is
+    // answered by the file walk, and the `git` on PATH is never run (a
+    // recording shim that would answer nothing — so a fallback would ALSO
+    // show up as an empty repo in the payload).
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_recorder("git");
+    let repo = make_git_fixture(shims.dir.path(), "pinky", "ref: refs/heads/feat/x\n");
+    let hook = format!(
+        r#"{{"hook_event_name":"Stop","cwd":"{}","last_assistant_message":"done."}}"#,
+        repo.join("src").display()
+    );
+    notify(&shims, "claude", &hook);
+
+    let sent = shims.recorded("zellij");
+    assert_eq!(sent.len(), 1);
+    let argv = sent[0].args.join(" ");
+    assert!(argv.contains(r#""repo":"pinky""#), "payload: {argv}");
+    assert!(argv.contains(r#""branch":"feat/x""#), "payload: {argv}");
+    assert!(shims.recorded("git").is_empty(), "git must not be spawned for a walkable repo");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dedup_state_prefers_xdg_runtime_dir_over_tmpdir() {
+    // `dirs::runtime_dir` honors XDG_RUNTIME_DIR on Linux only (macOS has no
+    // runtime dir and falls back to TMPDIR), so the precedence is a Linux
+    // contract.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    let xdg = tempfile::tempdir().unwrap();
+    notify_deduped(&shims, "running", PRE_EDIT, &[("XDG_RUNTIME_DIR", xdg.path().to_str().unwrap())]);
+    assert!(xdg.path().join("zj-radar-dedup").is_dir(), "state under XDG_RUNTIME_DIR");
+    assert!(!shims.dir.path().join("zj-radar-dedup").exists(), "…and not under TMPDIR");
+}
+
+#[test]
+fn a_notify_invocation_clap_rejects_still_exits_zero_and_sends_nothing() {
+    // The hook execs the CLI directly, and Claude Code treats a non-zero
+    // hook exit as a blocking error with stderr discarded. A stale binary
+    // that rejects a flag the installed hook passes must be a logged no-op.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["notify", "claude", "--status", "running", "--no-such-flag"])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .write_stdin(PRE_EDIT)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "a malformed notify must exit 0, got {:?}", out.status);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ignoring this notify invocation"), "stderr: {stderr}");
+    assert!(shims.recorded("zellij").is_empty());
+
+    // Every other subcommand keeps clap's contract: usage on stderr, exit 2.
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "--no-such-flag"])
+        .assert()
+        .code(2);
+}

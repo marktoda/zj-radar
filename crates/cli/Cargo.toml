@@ -31,6 +31,10 @@ clap = { workspace = true }
 kdl = { workspace = true }
 toml_edit = { workspace = true }
 dirs = { workspace = true }
+# `Child::wait_timeout` for the bounded status send: a SIGCHLD self-pipe
+# and `poll`, no polling loop, no hand-rolled signal code. Already in the
+# tree via assert_cmd's dev-dependency chain.
+wait-timeout = "0.2"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

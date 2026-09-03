@@ -56,13 +56,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// that clock, so a producer quiet for longer would let a live agent's row
 /// clear to idle. Pinned below it at compile time.
 pub const DEDUP_TTL_SECS: u64 = 10;
-const _: () = assert!(DEDUP_TTL_SECS < crate::pipe::RUNNING_SUSPECT_GRACE_TICKS);
+const _: () = assert!(DEDUP_TTL_SECS < crate::pipe::RUNNING_QUIET_MAX_SECS);
 
-/// The fields a repeat must match exactly. `status` rides as its wire token
-/// (`Status` has no serde impl, and the file format should stay readable).
+/// The fields a repeat must match exactly. `status` serializes as its wire
+/// token (`core::status`'s lenient serde: an unknown token on disk reads as
+/// `Idle`, which is never redundant — fail open).
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SentKey {
-    pub status: String,
+    pub status: Status,
     pub source: String,
     pub msg: String,
     pub task: String,
@@ -71,7 +72,7 @@ pub struct SentKey {
 impl SentKey {
     pub fn new(status: Status, source: &str, msg: &str, task: &str) -> SentKey {
         SentKey {
-            status: status.as_wire().to_string(),
+            status,
             source: source.to_string(),
             msg: msg.to_string(),
             task: task.to_string(),
@@ -86,11 +87,11 @@ struct Record {
     sent_at: u64,
 }
 
-/// The pure rule: is `key` (about to be sent with `status`) a redundant repeat
-/// of `last`, as of `now`? Only `running` can be redundant; everything else is
-/// an edge and always sends.
-fn is_redundant(status: Status, key: &SentKey, last: &Record, now: u64) -> bool {
-    status == Status::Running
+/// The pure rule: is `key` (about to be sent) a redundant repeat of `last`,
+/// as of `now`? Only `running` can be redundant; everything else is an edge
+/// and always sends.
+fn is_redundant(key: &SentKey, last: &Record, now: u64) -> bool {
+    key.status == Status::Running
         && last.key == *key
         && now.saturating_sub(last.sent_at) < DEDUP_TTL_SECS
 }
@@ -124,11 +125,11 @@ impl LastSent {
     /// True when sending `key` now would repeat the last confirmed delivery
     /// (per [`is_redundant`]). A missing, unreadable, or malformed record
     /// means "not a repeat".
-    pub fn is_duplicate(&self, status: Status, key: &SentKey, now: u64) -> bool {
+    pub fn is_duplicate(&self, key: &SentKey, now: u64) -> bool {
         let Some(last) = self.read() else {
             return false;
         };
-        is_redundant(status, key, &last, now)
+        is_redundant(key, &last, now)
     }
 
     /// Record `key` as delivered at `now`. Temp-file + rename so a concurrent
@@ -167,9 +168,7 @@ pub fn unix_now() -> u64 {
 /// own leaf, not `zj-radar/`: on Linux that is the plugin's `/tmp/zj-radar`
 /// session-file root, whose presence scans read the directory.
 fn state_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+    dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("zj-radar-dedup")
 }
@@ -200,8 +199,8 @@ mod tests {
     #[test]
     fn identical_running_within_ttl_is_redundant() {
         let key = running("editing auth.rs");
-        assert!(is_redundant(Status::Running, &key, &last(key.clone(), 1000), 1000));
-        assert!(is_redundant(Status::Running, &key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS - 1));
+        assert!(is_redundant(&key, &last(key.clone(), 1000), 1000));
+        assert!(is_redundant(&key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS - 1));
     }
 
     #[test]
@@ -209,7 +208,7 @@ mod tests {
         // The TTL bounds how long a rail that silently dropped the row can
         // disagree with a busy producer.
         let key = running("editing auth.rs");
-        assert!(!is_redundant(Status::Running, &key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS));
+        assert!(!is_redundant(&key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS));
     }
 
     #[test]
@@ -220,7 +219,7 @@ mod tests {
             SentKey::new(Status::Running, "claude", "editing auth.rs", "other task"),
             SentKey::new(Status::Running, "generic", "editing auth.rs", "fix auth"),
         ] {
-            assert!(!is_redundant(Status::Running, &key, &last(other.clone(), 1000), 1000), "{other:?}");
+            assert!(!is_redundant(&key, &last(other.clone(), 1000), 1000), "{other:?}");
         }
     }
 
@@ -229,7 +228,7 @@ mod tests {
         // Dropping an edge loses real state; only running heartbeats collapse.
         for status in Status::ALL.iter().copied().filter(|s| *s != Status::Running) {
             let key = SentKey::new(status, "claude", "same", "same");
-            assert!(!is_redundant(status, &key, &last(key.clone(), 1000), 1000), "{status:?}");
+            assert!(!is_redundant(&key, &last(key.clone(), 1000), 1000), "{status:?}");
         }
     }
 
@@ -238,7 +237,7 @@ mod tests {
         // A record from the "future" reads as age 0 → still within TTL; the
         // saturating sub is what keeps the hook from panicking.
         let key = running("x");
-        assert!(is_redundant(Status::Running, &key, &last(key.clone(), 5000), 1000));
+        assert!(is_redundant(&key, &last(key.clone(), 5000), 1000));
     }
 
     #[test]
@@ -246,11 +245,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ls = LastSent::at(dir.path(), "my-session", 7);
         let key = running("editing auth.rs");
-        assert!(!ls.is_duplicate(Status::Running, &key, 1000), "no record yet");
+        assert!(!ls.is_duplicate(&key, 1000), "no record yet");
         ls.record(&key, 1000);
-        assert!(ls.is_duplicate(Status::Running, &key, 1000 + DEDUP_TTL_SECS / 2));
-        assert!(!ls.is_duplicate(Status::Running, &running("other"), 1000 + DEDUP_TTL_SECS / 2));
-        assert!(!ls.is_duplicate(Status::Running, &key, 1000 + DEDUP_TTL_SECS));
+        assert!(ls.is_duplicate(&key, 1000 + DEDUP_TTL_SECS / 2));
+        assert!(!ls.is_duplicate(&running("other"), 1000 + DEDUP_TTL_SECS / 2));
+        assert!(!ls.is_duplicate(&key, 1000 + DEDUP_TTL_SECS));
         // No temp file left behind — the record is the directory's only entry.
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -269,13 +268,13 @@ mod tests {
         let ls = LastSent::at(dir.path(), "s", 7);
         let run = running("running cargo");
         ls.record(&run, 1000);
-        assert!(ls.is_duplicate(Status::Running, &run, 1001), "pre-tool repeat collapses");
+        assert!(ls.is_duplicate(&run, 1001), "pre-tool repeat collapses");
         let pending = SentKey::new(Status::Pending, "claude", "Allow cargo?", "");
-        assert!(!ls.is_duplicate(Status::Pending, &pending, 1002));
+        assert!(!ls.is_duplicate(&pending, 1002));
         ls.record(&pending, 1002);
-        assert!(!ls.is_duplicate(Status::Running, &run, 1003), "recovery running must be sent");
+        assert!(!ls.is_duplicate(&run, 1003), "recovery running must be sent");
         ls.record(&run, 1003);
-        assert!(ls.is_duplicate(Status::Running, &run, 1004));
+        assert!(ls.is_duplicate(&run, 1004));
     }
 
     #[test]
@@ -283,9 +282,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ls = LastSent::at(dir.path(), "s", 7);
         std::fs::write(dir.path().join("last-sent.s.7.json"), b"not json").unwrap();
-        assert!(!ls.is_duplicate(Status::Running, &running("x"), 1000));
+        assert!(!ls.is_duplicate(&running("x"), 1000));
         std::fs::write(dir.path().join("last-sent.s.7.json"), br#"{"key":{"status":"running"},"sent_at":1}"#).unwrap();
-        assert!(!ls.is_duplicate(Status::Running, &running("x"), 1000), "missing fields → no repeat");
+        assert!(!ls.is_duplicate(&running("x"), 1000), "missing fields → no repeat");
     }
 
     #[test]
@@ -298,7 +297,7 @@ mod tests {
         let ls = LastSent::at(&blocker, "s", 7);
         let key = running("x");
         ls.record(&key, 1000);
-        assert!(!ls.is_duplicate(Status::Running, &key, 1000));
+        assert!(!ls.is_duplicate(&key, 1000));
     }
 
     #[test]

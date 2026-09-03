@@ -56,6 +56,12 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
     if !common.join("objects").is_dir() || !common.join("refs").is_dir() {
         return None; // not what git calls a git directory
     }
+    if common.join("reftable").is_dir() {
+        // reftable-format repos (git ≥ 2.45, `--ref-format=reftable`) keep
+        // HEAD as the placeholder `ref: refs/heads/.invalid`; the real refs
+        // live in the reftable store. Git's call.
+        return None;
+    }
     let branch = branch_from_head(&git_dir)?;
     let repo = repo_name_from_common_dir(common.to_str()?)?;
     Some((repo, branch))
@@ -63,9 +69,11 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
 
 /// Walk up from `start` to the git dir governing it, git's way: at each
 /// level a `.git` entry (directory, or a `gitdir:` file for worktrees and
-/// submodules) wins, then the directory itself if it is a bare git dir;
-/// discovery stops at a filesystem boundary. `None` when nothing is found or
-/// a gitfile cannot be resolved.
+/// submodules) wins; discovery stops at a filesystem boundary. `None` when
+/// nothing is found or a gitfile cannot be resolved. A bare repository (or a
+/// cwd inside a `.git` dir) has no `.git` entry and is left to the spawn
+/// fallback — rare for an agent, and not worth three extra stats per level
+/// on every hook.
 fn discover(start: &Path) -> Option<PathBuf> {
     let mut dir = start;
     loop {
@@ -77,9 +85,6 @@ fn discover(start: &Path) -> Option<PathBuf> {
             if meta.is_file() {
                 return read_gitfile(&dot_git, dir);
             }
-        }
-        if dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir() {
-            return Some(dir.to_path_buf()); // bare repo, or cwd inside a .git dir
         }
         let parent = dir.parent()?;
         if !same_device(dir, parent) {
@@ -339,7 +344,7 @@ mod tests {
             ("worktree root → MAIN repo name, worktree's branch", wt.clone(), Some(("pinky", "fix/x"))),
             ("worktree subdir", wt.join("crates"), Some(("pinky", "fix/x"))),
             ("detached HEAD → empty branch", detached, Some(("detached", ""))),
-            ("bare repo", bare, Some(("acme", "trunk"))),
+            ("bare repo → defer to git (no `.git` entry to find)", bare, None),
             ("symbolic ref outside refs/heads → empty branch", bisecting, Some(("bisect", ""))),
             // Negatives are git's call — the walk declines rather than claiming "not a repo".
             ("not a repo → defer to git", not_repo, None),
@@ -368,6 +373,13 @@ mod tests {
         // HEAD content git would reject.
         let junk = make_repo(root, "junk", "hello\n");
         assert_eq!(native_repo_branch(&junk), None, "unparseable HEAD");
+
+        // A reftable-format repo: HEAD is the `.invalid` placeholder and the
+        // branch lives in the reftable store git alone can read.
+        let reftable = make_repo(root, "reftable", "ref: refs/heads/.invalid\n");
+        fs::create_dir_all(reftable.join(".git/reftable")).unwrap();
+        fs::write(reftable.join(".git/reftable/tables.list"), "").unwrap();
+        assert_eq!(native_repo_branch(&reftable), None, "reftable repo");
 
         // A gitfile pointing nowhere.
         let dangling = root.join("dangling");
@@ -459,13 +471,18 @@ mod tests {
             wt.clone(),
             wt.join("crates"),
             detached,
-            bare,
         ] {
             let cwd_s = cwd.to_str().unwrap();
             let native = native_repo_branch(&cwd).unwrap_or_else(|| panic!("native declined a real repo: {cwd_s}"));
             let spawned = spawn_repo_branch(cwd_s);
             assert_eq!(native, spawned, "cwd={cwd_s}");
         }
+        // A bare repo is deliberately git's call (no `.git` entry to walk to);
+        // the public entry point still answers it, through the spawn.
+        let bare_s = bare.to_str().unwrap();
+        assert_eq!(native_repo_branch(&bare), None, "bare repos defer to git");
+        assert_eq!(repo_branch(bare_s), spawn_repo_branch(bare_s));
+        assert_eq!(repo_branch(bare_s).0, "acme");
         // And the positive cases carry the values the table expects.
         assert_eq!(native_repo_branch(&pinky), Some(("pinky".into(), "main".into())));
         assert_eq!(native_repo_branch(&wt), Some(("pinky".into(), "fix/x".into())));

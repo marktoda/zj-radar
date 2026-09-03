@@ -183,6 +183,9 @@ struct Plugin {
     render: TypedFunc<(i32, i32), ()>,
     stdin: Pipe,
     stdout: Pipe,
+    /// Initial linear memory, in 64 KiB pages — the shadow stack plus data.
+    /// Printed so the build's `-zstack-size` cannot drift unnoticed.
+    initial_pages: u64,
     _cache: tempfile::TempDir,
 }
 
@@ -220,7 +223,10 @@ impl Plugin {
             // Mirrors plugin_loader.rs::create_optimized_store_limits.
             limits: StoreLimitsBuilder::new().instances(1).memories(4).memory_size(16 * 1024 * 1024).tables(16).build(),
             commands: BTreeMap::new(),
-            plugin_id: 7,
+            // The rail pane of tab 0 (see `pane_update`): the plugin learns
+            // which tab it lives in by finding its own plugin id in the
+            // manifest, and snapshot-write ownership follows that tab.
+            plugin_id: 1000,
         };
         let mut store = Store::new(engine, env);
         store.limiter(|env| &mut env.limits);
@@ -250,7 +256,11 @@ impl Plugin {
         let update = export(&store, "update").typed::<(), i32>(&store).unwrap();
         let pipe = export(&store, "pipe").typed::<(), i32>(&store).unwrap();
         let render = export(&store, "render").typed::<(i32, i32), ()>(&store).unwrap();
-        Plugin { store, load, update, pipe, render, stdin, stdout, _cache: cache }
+        let initial_pages = instance
+            .get_memory(&store, "memory")
+            .map(|m| m.ty(&store).minimum())
+            .unwrap_or(0);
+        Plugin { store, load, update, pipe, render, stdin, stdout, initial_pages, _cache: cache }
     }
 
     fn measure<R>(&mut self, call: impl FnOnce(&mut Store<HostEnv>) -> R) -> (R, u64, u128) {
@@ -586,7 +596,16 @@ fn scenario(name: &'static str, shape: &Shape, plugin: &mut Plugin, mut fire: im
 }
 
 /// Drive one wasm through load, grant, steady state, and every scenario.
-fn bench(wasm: &Path, shape: &Shape) -> (Row, Vec<Row>, BTreeMap<i32, u32>) {
+/// One wasm's full run: its `load` row, the scenario rows, the host
+/// commands it issued (by `CommandName`), and its initial memory pages.
+struct Bench {
+    load: Row,
+    rows: Vec<Row>,
+    commands: BTreeMap<i32, u32>,
+    initial_pages: u64,
+}
+
+fn bench(wasm: &Path, shape: &Shape) -> Bench {
     let mut config = Config::default();
     config.consume_fuel(true);
     let engine = Engine::new(&config);
@@ -620,7 +639,11 @@ fn bench(wasm: &Path, shape: &Shape) -> (Row, Vec<Row>, BTreeMap<i32, u32>) {
         scenario("pane_update: focus moved", shape, &mut plugin, |p, i| p.update(&pane_update(shape, (0, (i % shape.panes_per_tab as usize) as u32)))),
         scenario("pipe: identical running re-broadcast", shape, &mut plugin, |p, _| p.pipe(&status_pipe(pane_id(0, 0), "running", "reading render.rs"))),
         scenario("pipe: running relabel", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(0, 0), "running", &format!("editing file {i}.rs")))),
-        scenario("pipe: status edge (running↔done)", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(1, 0), if i % 2 == 0 { "done" } else { "running" }, "turn"))),
+        // Snapshot writes follow pane ownership: this instance is tab 0's
+        // rail, so an edge on a tab-0 pane is its read-merge-write, while
+        // an edge on another tab's pane is that tab's.
+        scenario("pipe: status edge, own tab's pane (writes)", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(0, 2), if i % 2 == 0 { "done" } else { "running" }, "turn"))),
+        scenario("pipe: status edge, other tab's pane", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(1, 0), if i % 2 == 0 { "done" } else { "running" }, "turn"))),
         scenario("command_changed: cargo test start/stop", shape, &mut plugin, |p, i| {
             if i % 2 == 0 { p.update(&command_changed(pane_id(2, 1), &["cargo", "test"], true)) } else { p.update(&command_changed(pane_id(2, 1), &["zsh"], true)) }
         }),
@@ -632,7 +655,8 @@ fn bench(wasm: &Path, shape: &Shape) -> (Row, Vec<Row>, BTreeMap<i32, u32>) {
     plugin.deliver(shape, |p| p.update(&visible(false)));
     rows.push(scenario("timer: fast tick, hidden", shape, &mut plugin, |p, _| p.update(&timer(1.0))));
     rows.push(scenario("pipe: running relabel, hidden", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(0, 0), "running", &format!("hidden edit {i}.rs")))));
-    rows.push(scenario("pipe: status edge, hidden", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(1, 0), if i % 2 == 0 { "done" } else { "running" }, "turn"))));
+    rows.push(scenario("pipe: status edge, own tab's pane, hidden", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(0, 2), if i % 2 == 0 { "done" } else { "running" }, "turn"))));
+    rows.push(scenario("pipe: status edge, other tab's pane, hidden", shape, &mut plugin, |p, i| p.pipe(&status_pipe(pane_id(1, 0), if i % 2 == 0 { "done" } else { "running" }, "turn"))));
     rows.push(scenario("visible: reveal (true) after hidden edits", shape, &mut plugin, |p, i| {
         p.deliver(shape, |q| q.pipe(&status_pipe(pane_id(3, 0), "running", &format!("while hidden {i}"))));
         p.deliver(shape, |q| q.update(&visible(false)));
@@ -640,7 +664,7 @@ fn bench(wasm: &Path, shape: &Shape) -> (Row, Vec<Row>, BTreeMap<i32, u32>) {
     }));
 
     let commands = std::mem::take(&mut plugin.store.data_mut().commands);
-    (load_row, rows, commands)
+    Bench { load: load_row, rows, commands, initial_pages: plugin.initial_pages }
 }
 
 // ── report ───────────────────────────────────────────────────────────────
@@ -673,15 +697,32 @@ fn main() {
         "wasm-fuel · {} tabs × {} panes, rail {}×{}, {} keybinds, median of {}",
         shape.tabs, shape.panes_per_tab, shape.rows, shape.cols, shape.keybinds, shape.iters
     );
-    for (w, (_, _, commands)) in wasms.iter().zip(&results) {
+    for (w, b) in wasms.iter().zip(&results) {
         let size = std::fs::metadata(w).map(|m| m.len()).unwrap_or(0);
-        let calls: u32 = commands.values().sum();
-        println!("  {} ({} bytes, {} host commands during the run)", w.display(), size, calls);
+        let calls: u32 = b.commands.values().sum();
+        println!(
+            "  {} ({} bytes, {} initial memory pages, {} host commands during the run)",
+            w.display(), size, b.initial_pages, calls
+        );
+    }
+    // Two builds driven through identical inputs should ask the host for
+    // identical things; a difference is a behavior change, intended or not.
+    if let [a, b] = results.as_slice() {
+        if a.commands != b.commands {
+            println!("  ! host commands differ (CommandName → count, before → after):");
+            let names: std::collections::BTreeSet<_> = a.commands.keys().chain(b.commands.keys()).collect();
+            for name in names {
+                let (x, y) = (a.commands.get(name).copied().unwrap_or(0), b.commands.get(name).copied().unwrap_or(0));
+                if x != y {
+                    println!("    {name}: {x} → {y}");
+                }
+            }
+        }
     }
     println!();
 
     let compare = results.len() == 2;
-    let name_w = results[0].1.iter().map(|r| r.name.chars().count()).max().unwrap_or(10).max(4);
+    let name_w = results[0].rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(10).max(4);
     print!("{:<name_w$} │ {:>10} {:>8}", "scenario", "call fuel", "µs");
     if compare {
         print!(" {:>10} {:>8} {:>6}", "after", "µs", "Δ");
@@ -693,9 +734,9 @@ fn main() {
     println!();
     println!("{}", "─".repeat(name_w + 26 + if compare { 28 } else { 0 } + 24 + if compare { 29 } else { 0 }));
 
-    let mut all: Vec<Vec<&Row>> = vec![results.iter().map(|(l, _, _)| l).collect()];
-    for i in 0..results[0].1.len() {
-        all.push(results.iter().map(|(_, rows, _)| &rows[i]).collect());
+    let mut all: Vec<Vec<&Row>> = vec![results.iter().map(|b| &b.load).collect()];
+    for i in 0..results[0].rows.len() {
+        all.push(results.iter().map(|b| &b.rows[i]).collect());
     }
     for cols in all {
         let a = cols[0];
@@ -716,7 +757,8 @@ fn main() {
             let d = match (a.render_fuel, b.render_fuel) {
                 (Some(x), Some(y)) => delta(x, y),
                 (None, None) => "—".into(),
-                _ => "±paint".into(),
+                (Some(_), None) => "−paint".into(), // the after build no longer paints here
+                (None, Some(_)) => "+paint".into(), // the after build paints where before did not
             };
             print!(" {:>11} {:>8} {:>6}", bf, bu, d);
         }
