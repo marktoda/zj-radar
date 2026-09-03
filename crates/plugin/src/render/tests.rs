@@ -3679,11 +3679,10 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
     let active_row = TabRow { active: true, ..tab(1, "a", display(Status::Running, 0, 1, None)) };
-    // `render_body` builds the map once per row through `Surfaces::for_row`
-    // (the per-frame rail/agent escapes passed in, the card tint computed
-    // there) and a line's escape is a lookup into it.
+    // `render_body` builds the map once per row (the per-frame rail/agent
+    // escapes plus the row's card tint) and a line's escape is a lookup.
     let agent = tc_bg(theme.surface_agent);
-    let surfaces = Surfaces::for_row(&active_row, &theme, &rail, &agent);
+    let surfaces = Surfaces { rail: &rail, card: card_tint(&active_row, &theme), active_child: &agent };
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.

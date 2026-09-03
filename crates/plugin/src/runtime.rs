@@ -125,14 +125,9 @@ pub(crate) enum Effect {
     RequestPermission,
     SetSelectable(bool),
     SetTimeout(Cadence),
-    /// Write the shared snapshot now — lib.rs reads the existing file,
-    /// merges (`snapshot_json`), and writes it back. Emitted by the ONE
-    /// instance that owns the edge: `RadarChange::snapshot_pane` names the
-    /// pane an edge is about, and `RadarState::persists_edges_for` says
-    /// whether this instance's tab holds it (every instance sees every
-    /// broadcast and holds the same converged stores, so one write per
-    /// edge is the snapshot). Session-wide edges and panes no tab is known
-    /// to hold are written by every instance.
+    /// Write the shared snapshot: lib.rs reads the existing file, merges
+    /// (`snapshot_json`), and writes it back. Emitted only by the edge's
+    /// owner — `RadarState::persists_edges_for`.
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
     RenameTab { tab_id: TabId, name: String },
@@ -409,14 +404,11 @@ pub(crate) struct PluginRuntime {
     /// exactly one thing: the paint (>95% of a tick's interpreter cost, and
     /// nobody sees it). State keeps ticking at full cadence — the stores'
     /// grace clocks count ticks, so a slowed instance would drift from its
-    /// siblings until reveal — and snapshot writes follow pane ownership
-    /// (`Effect::PersistSnapshot`), not visibility: a detached session has
-    /// only hidden instances, and the instances Zellij spawns for the next
-    /// attach seed from that file. `Visible(true)` repaints the skipped
-    /// frame. Belt and braces (`saw_manifest`): `TabUpdate`/`PaneUpdate`
-    /// only ever reach the instances in a client's active tab, so receiving
-    /// one proves this instance visible even if a `Visible(true)` was lost —
-    /// a wrongly-hidden rail would be a stale screen, so the bias is toward
+    /// siblings until reveal. `Visible(true)` repaints the skipped frame.
+    /// Zellij 0.44 routes `TabUpdate`/`PaneUpdate` to the plugins in a
+    /// client's *active* tab only, so receiving one proves this instance
+    /// visible and clears the flag even if a `Visible(true)` was lost — a
+    /// wrongly-hidden rail would be a stale screen, so the bias is toward
     /// visible.
     hidden: bool,
 }
@@ -466,7 +458,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
-        self.saw_manifest();
+        self.hidden = false; // manifests reach the active tab's plugins only (see `hidden`)
         let had_naming_tab = self.radar.has_naming_tab();
         let mut change = self.radar.tabs_changed(tabs);
         // Ownership just resolved: a cwd that arrived before it (bootstrap
@@ -480,18 +472,12 @@ impl PluginRuntime {
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
-        self.saw_manifest();
+        self.hidden = false; // manifests reach the active tab's plugins only (see `hidden`)
         let now = crate::clock::now_epoch_s();
-        // The theme rides the manifest but lives here, not in `RadarState`,
-        // so a manifest the radar treats as a no-op (its fast path) can
-        // still be a repaint when the focused pane's colors moved. The
-        // rows-diff gate keys on the theme, so an unchanged one stays quiet.
-        let theme_changed = update.theme.as_ref().is_some_and(|t| *t != self.theme);
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
-        let mut change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
-        change.render |= theme_changed;
+        let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
         self.project(vec![], change, now)
     }
 
@@ -827,14 +813,6 @@ impl PluginRuntime {
         }
         let change = RadarChange { render: true, force_render: true, ..RadarChange::default() };
         self.project(vec![], change, self.last_now_epoch_s)
-    }
-
-    /// A `TabUpdate`/`PaneUpdate` landed. Zellij 0.44 routes those to the
-    /// plugins in each client's *active* tab only (screen.rs
-    /// `targeted_plugin_ids`), so receiving one is proof this instance is
-    /// on screen — the belt-and-braces behind `hidden`.
-    fn saw_manifest(&mut self) {
-        self.hidden = false;
     }
 
     /// A fresh read of every peer session's presence file, each paired with
@@ -1305,14 +1283,9 @@ impl PluginRuntime {
     fn project(&mut self, mut fx: Vec<Effect>, c: RadarChange, now_epoch_s: u64) -> Outcome {
         self.last_now_epoch_s = now_epoch_s;
         fx.extend(self.effects_from_renames(c.renames));
-        // One writer per edge, not N: every instance holds the same
-        // converged stores, so the instance whose tab holds the edge's pane
-        // writes and the others stay out (`RadarState::persists_edges_for`;
-        // session-wide or unknown-pane edges are written by all). Ownership,
-        // not visibility, so a detached session's hidden instances still
-        // keep the file current for the instances Zellij spawns on the next
-        // attach. A non-owner leaves `snapshot_dirty` alone: it may still
-        // be carrying a deferred write for a pane it does own.
+        // One writer per edge (`RadarState::persists_edges_for`). A non-owner
+        // leaves `snapshot_dirty` alone: it may be carrying a deferred write
+        // for a pane it does own.
         if self.radar.persists_edges_for(c.snapshot_pane) {
             match c.snapshot {
                 SnapshotWrite::Now => {

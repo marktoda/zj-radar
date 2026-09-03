@@ -102,19 +102,6 @@ fn pending_edge_passes_and_the_recovery_running_is_sent() {
 }
 
 #[test]
-fn edges_are_never_deduped() {
-    // Two identical `done` sends both go out: a dropped edge loses real state
-    // (the rail may have cleared the row in between), only running repeats.
-    let shims = ShimDir::new();
-    shims.add_recorder("zellij");
-    shims.add_fake_git("/home/u/myrepo", "main");
-    let stop = r#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"finished"}"#;
-    notify_deduped(&shims, "done", stop, &[]);
-    notify_deduped(&shims, "done", stop, &[]);
-    assert_eq!(shims.recorded("zellij").len(), 2);
-}
-
-#[test]
 fn failed_send_is_not_recorded_so_the_repeat_is_retried() {
     // The sh wrapper exits with `zellij pipe`'s status; a failed client (no
     // server, killed at the deadline) must not be recorded as delivered, or

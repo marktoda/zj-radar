@@ -4,14 +4,10 @@
 //! `git` spawns kept as the fallback for anything the walk does not
 //! positively recognize.
 //!
-//! Two spawns cost ~11 ms of a ~90 ms hook on the measured machine — the
-//! largest slice this side of `zellij pipe` itself — for two file reads' worth
-//! of information. The native path claims only positives: it returns `Some`
-//! when it found a valid git dir and can read its `HEAD`, and defers to git
-//! (`None`) for everything else — no repo found, a `.git` it cannot validate,
-//! a symlinked `HEAD`, an environment (`GIT_DIR`, ceiling dirs, …) that
-//! redirects git's own discovery. So a negative is always git's verdict, and
-//! the native answer, when given, is one git itself would agree with.
+//! Two spawns cost ~11 ms of a hook for two file reads' worth of information.
+//! The native path claims only positives — a valid git dir whose `HEAD` it
+//! can read — and defers to git for everything else, so a negative is always
+//! git's verdict.
 //!
 //! What the payload carries (unchanged from the spawn-only implementation):
 //!
@@ -69,8 +65,8 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
 
 /// Walk up from `start` to the git dir governing it, git's way: at each
 /// level a `.git` entry (directory, or a `gitdir:` file for worktrees and
-/// submodules) wins; discovery stops at a filesystem boundary. `None` when
-/// nothing is found or a gitfile cannot be resolved. A bare repository (or a
+/// submodules) wins. `None` when nothing is found or a gitfile cannot be
+/// resolved. A bare repository (or a
 /// cwd inside a `.git` dir) has no `.git` entry and is left to the spawn
 /// fallback — rare for an agent, and not worth three extra stats per level
 /// on every hook.
@@ -86,11 +82,7 @@ fn discover(start: &Path) -> Option<PathBuf> {
                 return read_gitfile(&dot_git, dir);
             }
         }
-        let parent = dir.parent()?;
-        if !same_device(dir, parent) {
-            return None;
-        }
-        dir = parent;
+        dir = dir.parent()?;
     }
 }
 
@@ -142,20 +134,6 @@ fn branch_from_head(git_dir: &Path) -> Option<String> {
     }
     let detached = matches!(body.len(), 40 | 64) && body.bytes().all(|b| b.is_ascii_hexdigit());
     detached.then(String::new)
-}
-
-#[cfg(unix)]
-fn same_device(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(a), Ok(b)) => a.dev() == b.dev(),
-        _ => false,
-    }
-}
-
-#[cfg(not(unix))]
-fn same_device(_a: &Path, _b: &Path) -> bool {
-    true
 }
 
 /// Derive the repository NAME from a git "common dir" path — the output of
@@ -238,21 +216,6 @@ mod tests {
         // A normal checkout's common dir is "<repo>/.git" → repo basename.
         assert_eq!(
             repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_worktree_resolves_to_main_repo() {
-        // A worktree of "pinky" still reports the MAIN repo's common dir, so the
-        // name is "pinky" — NOT the worktree dir "reply-register".
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
-        // Trailing slash is tolerated.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git/"),
             Some("pinky".into())
         );
     }

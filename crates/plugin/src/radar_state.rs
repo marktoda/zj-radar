@@ -21,22 +21,6 @@ pub(crate) enum Direction {
     Prev,
 }
 
-/// Whether two tab→panes maps agree pane-for-pane on everything but focus
-/// — the allocation-free compare behind `panes_changed`'s fast path (a
-/// plain `!=` on the maps then says whether focus moved). Names every
-/// `TerminalPane` field but `focused_in_tab`; a new rows-visible field must
-/// join it. Pane order within a tab is Zellij's manifest order, stable
-/// between reports of an unchanged layout.
-fn same_panes_ignoring_focus(a: &HashMap<usize, Vec<TerminalPane>>, b: &HashMap<usize, Vec<TerminalPane>>) -> bool {
-    a.len() == b.len()
-        && a.iter().all(|(position, panes)| {
-            b.get(position).is_some_and(|other| {
-                panes.len() == other.len()
-                    && panes.iter().zip(other).all(|(x, y)| x.id == y.id && x.title == y.title)
-            })
-        })
-}
-
 /// Pick the next/previous tab position that needs attention, relative to the
 /// active tab, wrapping at the ends. Pure over `(position, status)` pairs so it
 /// is trivially testable and deterministic — every per-tab plugin instance that
@@ -217,12 +201,8 @@ impl SnapshotWrite {
 pub(crate) struct RadarChange {
     pub render: bool,
     pub snapshot: SnapshotWrite,
-    /// The pane a `snapshot` write is about, when the edge is pane-scoped
-    /// (a broadcast, a prompt-return clear). The runtime asks
-    /// [`RadarState::persists_edges_for`] whether this instance's tab holds
-    /// it, so one instance writes per edge instead of N. `None` — a
-    /// session-wide edge (a prune sweep, a timer promotion, a config
-    /// override) — is written by every instance.
+    /// The pane a `snapshot` write is about, when the edge is pane-scoped;
+    /// `None` for a session-wide edge. See [`RadarState::persists_edges_for`].
     pub snapshot_pane: Option<u32>,
     pub renames: Vec<TabRename>,
     /// Terminal panes whose working directory should be read once (via a
@@ -540,46 +520,10 @@ impl RadarState {
         now_epoch_s: u64,
         naming: config::NamingMode,
     ) -> RadarChange {
-        // Fast path. Zellij reports a manifest on every focus move, resize,
-        // mouse-state change, and bell, so most carry the topology this
-        // instance already holds. Such a manifest can still move three
-        // things — focus (notifier suppression, the focused-pane naming
-        // candidate), the theme (the runtime's, from `update.theme`), and
-        // the cwd-bootstrap retry set — none of which `rows()` reads, so the
-        // memo survives and none of the store/ledger/prune machinery below
-        // needs to run. Each condition rules out one mutation below: no
-        // exits (no Done/Error flip), no grace in flight (a graced pane's
-        // second absence must prune), the same live set (no new pane),
-        // every tracked pane live (a status that arrived for a pane the
-        // manifest does not carry must enter the grace on this report, not
-        // wait for the topology to move), and pane-for-pane identical
-        // topology modulo focus. `exits` is level-triggered on the manifest,
-        // so a tab holding an exited pane takes the slow path on every
-        // report until that pane closes.
-        if update.exits.is_empty()
-            && self.absent_once.is_empty()
-            && self.live_panes.as_ref() == Some(&update.live)
-            && self.all_tracked_live(&update.live)
-            && same_panes_ignoring_focus(&self.tab_panes, &update.tab_panes)
-        {
-            let focus_moved = self.tab_panes != update.tab_panes;
-            self.tab_panes = update.tab_panes;
-            self.note_focus(self.focused_terminal_in_active_tab());
-            return RadarChange {
-                // The focused pane's repo is a naming candidate, so a focus
-                // move can rename; nothing else here can.
-                renames: if focus_moved { self.rename_tabs(naming) } else { Vec::new() },
-                // Cheap, and how a bootstrap batch capped at
-                // `MAX_CWD_BOOTSTRAP_PER_UPDATE` picks up its overflow.
-                cwd_bootstrap: self.cwd_bootstrap_targets(naming),
-                settle: true,
-                ..RadarChange::default()
-            };
-        }
-        // Past the fast path, topology and store mutations are too
-        // interleaved to prove a no-op cheaply — the manifest invalidates the
-        // rows memo. (The runtime's rows-diff render gate still suppresses
-        // the *repaint* when the re-derived rows come out identical.)
+        // Topology and store mutations below are too interleaved to prove a
+        // no-op cheaply — a manifest always invalidates the rows memo. (The
+        // runtime's rows-diff render gate still suppresses the *repaint* when
+        // the re-derived rows come out identical.)
         self.touch();
         // Captured BEFORE `self.tab_panes` is overwritten below: every ledger
         // edge in this method (the exit-displace and both stores' prunes)
@@ -925,14 +869,20 @@ impl RadarState {
         self.rename_tabs(naming)
     }
 
-    /// Whether THIS instance is the one that persists an edge about `pane`
-    /// (`RadarChange::snapshot_pane`): its own tab holds the pane. Every
-    /// instance holds the same converged stores, so one writer per edge is
-    /// the whole snapshot; picking the pane's tab makes that writer
-    /// deterministic with no coordination and no stat. `None` (a
-    /// session-wide edge), an unresolved own tab, or a pane no tab is known
-    /// to hold all answer yes — when the owner cannot be named, everyone
-    /// writes rather than nobody.
+    /// Whether THIS instance persists the snapshot for an edge about `pane`
+    /// (`RadarChange::snapshot_pane`) — the one home of the snapshot
+    /// ownership rule.
+    ///
+    /// Every instance sees every broadcast and holds the same converged
+    /// stores, so one write per edge is the whole snapshot; picking the
+    /// instance whose own tab holds the pane makes that writer deterministic
+    /// with no coordination and no filesystem check. When the owner cannot
+    /// be named — a session-wide edge (`None`: a prune sweep, a timer
+    /// promotion, a config override), an own tab not yet resolved, a pane no
+    /// tab is known to hold — everyone writes rather than nobody. Ownership,
+    /// not visibility, so a detached session (every instance hidden) keeps
+    /// the file current for the fresh instances Zellij spawns on the next
+    /// attach, which seed from it.
     pub(crate) fn persists_edges_for(&self, pane: Option<u32>) -> bool {
         let (Some(pane), Some(own)) = (pane, self.naming_tab_id) else {
             return true;
@@ -942,13 +892,6 @@ impl RadarState {
             Some(tab) => tab.id == own,
             None => true,
         }
-    }
-
-    /// Whether both stores track only panes in `live` — i.e. a manifest
-    /// carrying exactly `live` has nothing to grace or prune.
-    fn all_tracked_live(&self, live: &HashSet<u32>) -> bool {
-        self.status.observations().all(|(id, _)| live.contains(&id))
-            && self.command.tracked_pane_ids().all(|id| live.contains(&id))
     }
 
     /// Track the focused terminal pane, for the notifier's "don't ding the pane

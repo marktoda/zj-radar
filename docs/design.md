@@ -219,23 +219,14 @@ producer blocks on that exit, with a cap + 1 s backstop thread for the corner
 where the watchdog's own fork failed.
 
 **Last-sent dedup.** Claude's PreToolUse and PostToolUse derive identical
-payloads, so half of tool-loop traffic would be a duplicate the plugin's
-intake no-ops — after every rail instance paid the wasmi delivery cost. The
-CLI (`crates/cli/src/dedup.rs`, at the `broadcast` choke point every producer
-path shares) keeps each pane's last confirmed delivery in a small state file
-under `$XDG_RUNTIME_DIR` or the temp dir, keyed by Zellij session and pane
-id, and drops a send only when the status is `running`, `(source, msg, task)`
-match the record, and the record is younger than `DEDUP_TTL_SECS` (10 s — pinned
-below the plugin's stale-Running grace, which any payload cancels, so a
-suppressed heartbeat can never let a live agent's row clear to idle).
-Edges always send — which is what keeps PostToolUse the Pending→Running
-recovery edge: the `pending` overwrites the record, so the `running` after it
-differs. Repo and branch are resolved after the check (a skipped send costs no
-git work) and are not in the key; the TTL bounds how long a rail that dropped
-the row on its own (exit-clear grace, `/clear`, eviction, `✓`) can disagree
-with a busy producer. Only a confirmed delivery is recorded, hence the exit
-status above. `ZJ_RADAR_NO_DEDUP=1` turns it off; the bash fallback has no
-dedup.
+payloads, so half of tool-loop traffic would be a duplicate every rail
+instance pays to receive. The CLI drops an identical `running` re-sent within
+`DEDUP_TTL_SECS` at the `broadcast` choke point, before any git work or spawn;
+edges always send, which is what keeps PostToolUse the Pending→Running
+recovery edge (the `pending` overwrites the record). The TTL is pinned below
+the plugin's stale-Running grace, which any payload cancels, and only a
+confirmed delivery is recorded — hence the wrapper's exit status above. The
+rule, its key, and its bounds: `crates/cli/src/dedup.rs`.
 
 **Newcomer rehydration.** The plugin runs one instance per tab, and a
 broadcast reaches only the instances alive when it is sent. A tab opened after
@@ -249,18 +240,14 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance holds the same converged stores after a broadcast, so one write per
-edge is the whole snapshot, and the writer is chosen deterministically with
-no coordination: the instance whose tab holds the pane the edge is about
-(`RadarChange::snapshot_pane`, `RadarState::persists_edges_for`). Edges with
-no nameable owner — a pane no tab is known to hold yet, a session-wide
-sweep, an instance that has not learned its own tab — are written by every
-instance rather than none. Ownership, not visibility, decides: Zellij spawns
-a fresh instance of every plugin for each client that attaches, seeded from
-this file, while the detached client's instances live on hidden and keep
-receiving broadcasts, so after a detach → agents finish → reattach cycle
-those hidden owners are what keeps the file current. Overlapping writers
-produce identical content, so races are benign. With persistence off, late
-sidebars start empty until the next broadcast.
+edge is the whole snapshot: the instance whose tab holds the edge's pane
+writes, and edges with no nameable owner are written by everyone
+(`RadarState::persists_edges_for`). Ownership rather than visibility, because
+Zellij spawns fresh plugin instances — seeded from this file — for every
+client that attaches, while the detached client's hidden instances are what
+kept it current meanwhile. Overlapping writers produce identical content, so
+races are benign. With persistence off, late sidebars start empty until the
+next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -615,13 +602,11 @@ choice is a flag the consumer projects on, never a fact.
 - Zellij runs one instance per tab per attached client (a detached client's
   instances linger hidden), each under the wasmi interpreter with its own
   linear memory, so per-instance fixed cost is paid N times. The
-  release profile optimizes for size; `crates/plugin/build.rs` shrinks the WASI
-  shadow stack from wasm-ld's 1 MiB default to 256 KiB, which takes the
-  initial memory from 19 to 7 pages (448 KiB) per instance; and the flake
-  runs binaryen's `wasm-opt -Oz` over the release wasm, which measured
-  12–27 % fewer executed instructions on every event class (and ~13 % fewer
-  bytes) than rustc's output alone. Per-event interpreter cost is measured
-  in fuel by `tools/wasm-fuel`
+  release profile optimizes for size, `crates/plugin/build.rs` shrinks the
+  WASI shadow stack (the bulk of initial memory) to 256 KiB, and the flake
+  runs binaryen's `wasm-opt -Oz` over the release wasm, which executes
+  measurably fewer instructions than rustc's output alone. Per-event
+  interpreter cost is measured in fuel by `tools/wasm-fuel`
   ([`CONTRIBUTING.md`](../CONTRIBUTING.md#measuring-plugin-cost)).
 - The dev loop never reloads in place (Zellij does not safely hot-reload
   layout-created plugins); every `just dev` is a fresh sandboxed session

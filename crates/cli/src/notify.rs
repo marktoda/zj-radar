@@ -204,28 +204,18 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// Deliver one wire payload through the self-limiting `zellij pipe` subtree;
 /// true iff the client confirmed delivery (exit 0).
 ///
-/// Bounded send. `zellij pipe` blocks until every loaded plugin instance
-/// consumes the message (CLI-pipe backpressure) — a rail wedged at the
-/// permission prompt blocks it forever, and hooks fire per tool call, so an
-/// unbounded wait leaks one blocked client + two server FDs per call until
-/// the Zellij server EMFILEs and the whole session crashes. The message is
-/// queued server-side the moment it's sent; killing the client past the
-/// deadline retracts nothing and keeps sends sequential (latest-wins holds).
-///
-/// The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
-/// sleep+kill watchdog), not here: hook runners kill their hooks, and this
-/// process dying mid-send must not orphan a blocked client — that leak is
-/// exactly how a wedged session EMFILE-crashed in production despite a
-/// parent-side deadline. The parent blocks in `wait_timeout` (a SIGCHLD
-/// self-pipe, not a poll loop — a 25 ms poll once added ~12 ms to every
-/// healthy send) with cap + 1 s as the backstop for the watchdog-fork-failed
-/// corner: past it the wrapper is killed and reaped — `Child::kill` on a
-/// handle `wait_timeout` just reported alive, so the pid is still ours by
-/// construction — which returns the hook inside the runner's
-/// `timeout >= cap + 2` headroom. Killing the wrapper does not reach the
-/// client in that corner (see `core::pipe`'s accepted residuals); it bounds
-/// the hook, which is what the runner needs. Never panics — a hook must
-/// never see one.
+/// `zellij pipe` blocks until every plugin instance consumes the message, so
+/// a rail wedged at the permission prompt would hold it forever, and at hook
+/// rate that leaks server FDs until the session crashes. The deadline lives
+/// INSIDE the spawned subtree (`self_limiting_pipe_argv`'s watchdog) because
+/// hook runners kill their hooks and a dying producer must not orphan a
+/// blocked client. The parent only waits — `wait_timeout` (a SIGCHLD
+/// self-pipe, no polling) with cap + 1 s as the backstop for the
+/// watchdog-fork-failed corner, inside the runner's `timeout >= cap + 2`
+/// headroom; `Child::kill` on a handle just reported alive makes the pid ours
+/// by construction. Killing the wrapper cannot reach the client in that
+/// corner (`core::pipe`'s accepted residual); it bounds the hook, which is
+/// what the runner needs. Never panics.
 fn send(payload: &str, status: Status) -> bool {
     use wait_timeout::ChildExt;
     let timeout = pipe_send_timeout(status);
@@ -259,9 +249,9 @@ fn send(payload: &str, status: Status) -> bool {
 /// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
 /// the default here (instead of per-entry env prefixes in hooks.json) gives
 /// every producer — claude, codex, opencode, generic — the policy from one seam.
-/// Clamped to an hour: `Instant::now() + Duration::from_secs(u64::MAX)`
-/// overflows and panics, and this module promises the calling hook never
-/// sees a panic.
+/// Clamped to an hour so `timeout + 1 s` (the send's backstop) cannot
+/// overflow `Duration` — this module promises the calling hook never sees
+/// a panic.
 fn pipe_send_timeout(status: Status) -> std::time::Duration {
     parse_pipe_timeout(
         std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
@@ -341,7 +331,7 @@ mod tests {
             crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
         );
         assert_eq!(d.as_secs(), 3600);
-        let _ = std::time::Instant::now() + d; // must not panic
+        let _ = d + std::time::Duration::from_secs(1); // the backstop's add must not overflow
     }
 
     // --- send backstop ---

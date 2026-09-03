@@ -336,31 +336,22 @@ enum LineBg {
     ActiveChild, // active multi-pane child line (surface_agent)
 }
 
-/// The three surface escapes a row's lines can paint onto, resolved once
-/// per row (`card` depends on the row; `rail` and `active_child` once per
-/// frame) so that [`LineBg::escape`] is a lookup, not an allocation per
-/// line per frame.
+/// The three surface escapes a row's lines can paint onto — the row-surface
+/// map's one home. `Card` is the row's own tint (`card_tint`, in priority
+/// order flash, active, agent, idle); `ActiveChild` is `surface_agent`
+/// regardless of the row (the split the `cards_active_more_line_*` drift
+/// guards pin); `Rail` is the panel base. Built once per row (`card`) from
+/// per-frame escapes (`rail`, `active_child`), so [`LineBg::escape`] is a
+/// lookup, not an allocation per line per frame.
 struct Surfaces<'a> {
     rail: &'a str,
     card: String,
     active_child: &'a str,
 }
 
-impl<'a> Surfaces<'a> {
-    /// The row-surface map's one home: which theme color each class paints
-    /// with. `Card` is the row's own tint (`card_tint`: flash > active >
-    /// agent > idle); `ActiveChild` is `surface_agent` regardless of the
-    /// row — the split the `cards_active_more_line_*` drift guards pin.
-    /// `rail` and `active_child` are per-frame escapes the caller already
-    /// holds; only the card tint is computed here, once per row.
-    fn for_row(row: &TabRow, theme: &DerivedColors, rail: &'a str, active_child: &'a str) -> Surfaces<'a> {
-        Surfaces { rail, card: card_tint(row, theme), active_child }
-    }
-}
-
 impl LineBg {
     /// Resolve a line class against its owning row's [`Surfaces`] — a
-    /// lookup, not a computation ([`Surfaces::for_row`] is the map).
+    /// lookup, not a computation.
     /// `render_body`'s per-row `finalize` closure is the caller; the
     /// row-less rail surfaces never come through here — they are all
     /// `LineBg::Rail` by construction and take the one-line identity in
@@ -1665,7 +1656,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // rides inside the value, so Cards finalization cannot forget it when
         // `Line` grows another lockstep field. Outside Cards density nothing
         // paints, so the map is never built at all.
-        let surfaces = cards.then(|| Surfaces::for_row(row, &opts.theme, &rail, &active_child));
+        let surfaces = cards.then(|| Surfaces { rail: &rail, card: card_tint(row, &opts.theme), active_child: &active_child });
         let finalize = |line: Line| -> Line {
             let mut line = match surfaces.as_ref().and_then(|s| line.bg.escape(s)) {
                 Some(esc) => line.painted(width, esc),

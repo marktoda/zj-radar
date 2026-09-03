@@ -193,24 +193,17 @@ fn is_bidi_control(c: char) -> bool {
 /// - Unicode C1 control chars (U+0080–U+009F) — dropped
 /// - Bidi format/override chars (`is_bidi_control`) — dropped (Trojan-Source-style spoofing)
 pub fn sanitize(s: &str, max_chars: usize) -> String {
-    // Fast path: almost every string that reaches here is already clean —
-    // a repo name, a branch, a tool label, a snapshot field this very
-    // sanitizer wrote — and the scrub below is run on every field of every
-    // broadcast, manifest pane, and snapshot record, under the interpreter.
-    // One allocation-free scan settles the common case; anything that needs
-    // rewriting takes the full walk.
-    if s.chars().all(kept) {
-        return match s.char_indices().nth(max_chars) {
-            Some((cut, _)) => s[..cut].to_string(),
-            None => s.to_string(),
-        };
-    }
-    scrub(s, max_chars)
+    let mut out = s.to_string();
+    sanitize_in_place(&mut out, max_chars);
+    out
 }
 
-/// [`sanitize`] for a string the caller already owns: clean input (the
-/// common case) is left in place with no allocation at all, and only over-
-/// long or dirty input is rewritten.
+/// [`sanitize`] for a string the caller already owns. Almost every string
+/// that reaches here is already clean — a repo name, a branch, a tool label,
+/// a snapshot field this very sanitizer wrote — and this runs on every field
+/// of every broadcast, manifest pane, and snapshot record, under the
+/// interpreter: one allocation-free scan settles the common case in place,
+/// and only over-long or dirty input takes the full walk.
 pub fn sanitize_in_place(s: &mut String, max_chars: usize) {
     if s.chars().all(kept) {
         if let Some((cut, _)) = s.char_indices().nth(max_chars) {
