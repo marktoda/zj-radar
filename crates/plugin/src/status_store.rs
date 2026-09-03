@@ -483,7 +483,7 @@ mod tests {
         s.apply(payload(3, Status::Idle), 1, 0);
         let live: HashSet<u32> = HashSet::new();
         let mut dropped = s.prune(&live);
-        dropped.sort_by_key(|(id, _)| *id);
+        dropped.sort_unstable_by_key(|(id, _)| *id);
         // All three come back out: emptiness is the caller's persist signal,
         // and the ledger filters to the completion (pane 2) itself.
         assert_eq!(dropped.len(), 3);

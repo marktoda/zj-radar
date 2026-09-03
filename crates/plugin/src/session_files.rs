@@ -242,8 +242,9 @@ impl SessionFiles {
             out.push(PeerPresenceFile { json, age_secs });
         });
         // Sorted by content, so `sessions::update_presences`'s later-entry-
-        // wins dedup tie-break is deterministic across reads.
-        out.sort_by(|a, b| a.json.cmp(&b.json));
+        // wins dedup tie-break is deterministic across reads. (Unstable is
+        // fine: equal keys are byte-identical files.)
+        out.sort_unstable_by(|a, b| a.json.cmp(&b.json));
         out
     }
 

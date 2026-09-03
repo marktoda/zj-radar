@@ -601,6 +601,13 @@ choice is a flag the consumer projects on, never a fact.
 - Rust, `zellij-tile = "0.44"`, target `wasm32-wasip1`. The artifact is a
   binary crate, not `cdylib`: Zellij loads plugins as WASI command modules and
   calls `_start`, which `register_plugin!`'s generated `main` provides.
+- Zellij runs one instance per tab, each under the wasmi interpreter with
+  its own linear memory, so per-instance fixed cost is paid N times. The
+  release profile optimizes for size; `.cargo/config.toml` shrinks the WASI
+  shadow stack from wasm-ld's 1 MiB default to 256 KiB, which takes the
+  initial memory from 19 to 7 pages (448 KiB) per instance. Per-event
+  interpreter cost is measured in fuel by `tools/wasm-fuel`
+  ([`CONTRIBUTING.md`](../CONTRIBUTING.md#measuring-plugin-cost)).
 - The dev loop never reloads in place (Zellij does not safely hot-reload
   layout-created plugins); every `just dev` is a fresh sandboxed session
   ([`CONTRIBUTING.md`](../CONTRIBUTING.md#dev-loop)).

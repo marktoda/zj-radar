@@ -477,7 +477,7 @@ impl RadarState {
         // (the per-render `rows()` path iterates in stored order instead of
         // paying a clone+sort on every repaint and tick), so the compare must
         // be order-normalized too.
-        tabs.sort_by_key(|t| t.position);
+        tabs.sort_unstable_by_key(|t| t.position);
         // Zellij fires `TabUpdate` far more often than tabs actually change
         // (focus moves, pane-group churn). An identical set is a strict no-op:
         // nothing rows-visible moved, so don't invalidate the memo or repaint.

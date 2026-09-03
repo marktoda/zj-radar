@@ -330,7 +330,10 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
         .env("TMPDIR", shims.dir.path())
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("ZELLIJ_SESSION_NAME")
-        .env("ZJ_RADAR_PIPE_TIMEOUT", "4")
+        // Generous: the guard below invalidates the test if the kill cannot
+        // land before this deadline, and a workspace-wide `cargo test` on a
+        // loaded machine took >4 s just to reach the hung client.
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "8")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -353,7 +356,7 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     // too-slow failure than a false pass.
     let pid = shims.wait_for_hung_pid("zellij", std::time::Duration::from_secs(10));
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
+        started.elapsed() < std::time::Duration::from_secs(8),
         "test invalidated, not failed: machine too loaded to reach the kill \
          before notify's own send deadline — the producer-death regression \
          would be unobservable ({}ms elapsed)",
@@ -363,8 +366,9 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     notify.wait().unwrap();
 
     // The orphaned subtree must still reap the hung client at its own
-    // deadline. Poll with slack for loaded CI rather than sleeping once.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // deadline (up to 8 s after the send began). Poll with slack for loaded
+    // CI rather than sleeping once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
     loop {
         let alive = std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])

@@ -270,7 +270,7 @@ mod tests {
         s.insert(2, sample());
         s.insert(3, TrackedObservation { status: Status::Running, ..sample() });
         let mut dropped = s.prune(&[2].into_iter().collect());
-        dropped.sort_by_key(|(id, _)| *id);
+        dropped.sort_unstable_by_key(|(id, _)| *id);
         assert_eq!(dropped.len(), 2, "every drop comes back out — emptiness is the persist signal");
         assert_eq!((dropped[0].0, dropped[0].1.status), (1, Status::Done));
         assert_eq!((dropped[1].0, dropped[1].1.status), (3, Status::Running), "non-completions included; the ledger sink filters");
