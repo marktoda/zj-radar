@@ -21,19 +21,18 @@ pub(crate) enum Direction {
     Prev,
 }
 
-/// Whether two tab→panes maps agree pane-for-pane under `key` — the
-/// allocation-free compare behind `panes_changed`'s fast path. Pane order
-/// within a tab is Zellij's manifest order, which is stable between
-/// reports of an unchanged layout.
-fn same_topology(
-    a: &HashMap<usize, Vec<TerminalPane>>,
-    b: &HashMap<usize, Vec<TerminalPane>>,
-    same: impl Fn(&TerminalPane, &TerminalPane) -> bool,
-) -> bool {
+/// Whether two tab→panes maps agree pane-for-pane on everything but focus
+/// — the allocation-free compare behind `panes_changed`'s fast path (a
+/// plain `!=` on the maps then says whether focus moved). Names every
+/// `TerminalPane` field but `focused_in_tab`; a new rows-visible field must
+/// join it. Pane order within a tab is Zellij's manifest order, stable
+/// between reports of an unchanged layout.
+fn same_panes_ignoring_focus(a: &HashMap<usize, Vec<TerminalPane>>, b: &HashMap<usize, Vec<TerminalPane>>) -> bool {
     a.len() == b.len()
         && a.iter().all(|(position, panes)| {
             b.get(position).is_some_and(|other| {
-                panes.len() == other.len() && panes.iter().zip(other).all(|(x, y)| same(x, y))
+                panes.len() == other.len()
+                    && panes.iter().zip(other).all(|(x, y)| x.id == y.id && x.title == y.title)
             })
         })
 }
@@ -163,9 +162,11 @@ impl PaneUpdate {
                     focused_colors = Some(c);
                 }
             }
+            let mut title = p.title;
+            payload::sanitize_in_place(&mut title, payload::MAX_TAB_NAME_CHARS);
             tab_panes.entry(p.tab_pos).or_default().push(TerminalPane {
                 id: p.id,
-                title: payload::sanitize(&p.title, payload::MAX_TAB_NAME_CHARS),
+                title,
                 focused_in_tab: p.is_focused,
             });
             live.insert(p.id);
@@ -216,6 +217,13 @@ impl SnapshotWrite {
 pub(crate) struct RadarChange {
     pub render: bool,
     pub snapshot: SnapshotWrite,
+    /// The pane a `snapshot` write is about, when the edge is pane-scoped
+    /// (a broadcast, a prompt-return clear). The runtime asks
+    /// [`RadarState::persists_edges_for`] whether this instance's tab holds
+    /// it, so one instance writes per edge instead of N. `None` — a
+    /// session-wide edge (a prune sweep, a timer promotion, a config
+    /// override) — is written by every instance.
+    pub snapshot_pane: Option<u32>,
     pub renames: Vec<TabRename>,
     /// Terminal panes whose working directory should be read once (via a
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
@@ -309,7 +317,7 @@ pub(crate) struct RadarState {
     /// Wall-clock animation (spinner frames, ages) deliberately does NOT bump
     /// it — those read `now_tick` at render time.
     generation: u64,
-    /// Memo for [`rows`](Self::rows): the last `(generation, flashing tabs)`
+    /// Memo for [`rows`](Self::rows): the last `(generation, lit flashes)`
     /// it was computed at, with its result. Events that consult rows more than once
     /// per intake (the runtime's presence derivation, the render-gate compare,
     /// and the render itself, all under a wasm *interpreter* on the host side)
@@ -320,12 +328,12 @@ pub(crate) struct RadarState {
     rows_memo: std::cell::RefCell<Option<RowsMemo>>,
 }
 
-/// The [`RadarState::rows_memo`] entry: the generation and the set of
-/// mid-flash tabs (`RadarState::flashing_at`, the only thing the tick
+/// The [`RadarState::rows_memo`] entry: the generation and the count of
+/// mid-flash tabs (`RadarState::lit_flashes`, the only thing the tick
 /// changes about a row) the rows were computed at, with the shared result.
 struct RowsMemo {
     generation: u64,
-    flashing: Vec<TabId>,
+    lit_flashes: usize,
     rows: std::rc::Rc<Vec<TabRow>>,
 }
 
@@ -407,41 +415,39 @@ impl RadarState {
 
     /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
     /// sorts at intake, so this render-path call is a plain iteration.
-    /// Memoized on `(generation, flashing tabs)` and shared via `Rc`: one intake
+    /// Memoized on `(generation, lit flashes)` and shared via `Rc`: one intake
     /// event consults rows several times (presence derivation, the render-gate
     /// diff, the render itself), and under Zellij's interpreted-wasm runtime
     /// both the repeat rollups AND per-hit deep clones were a measurable share
     /// of per-event cost.
     pub(crate) fn rows(&self, now_tick: u64) -> std::rc::Rc<Vec<TabRow>> {
         // `now_tick` reaches the rows through exactly one field — `flash` —
-        // so the memo is keyed on which tabs are mid-flash at this tick, not
-        // on the tick itself: a Fast tick with no flash in flight (the
+        // so the memo is keyed on how many tabs are mid-flash at this tick,
+        // not on the tick itself: a Fast tick with no flash in flight (the
         // steady state of an animating rail) is a memo hit, where keying on
         // the tick made every one of them a full re-rollup.
-        let flashing = self.flashing_at(now_tick);
+        let lit_flashes = self.lit_flashes(now_tick);
         if let Some(memo) = self.rows_memo.borrow().as_ref() {
-            if memo.generation == self.generation && memo.flashing == flashing {
+            if memo.generation == self.generation && memo.lit_flashes == lit_flashes {
                 return memo.rows.clone();
             }
         }
         let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
         *self.rows_memo.borrow_mut() =
-            Some(RowsMemo { generation: self.generation, flashing, rows: rows.clone() });
+            Some(RowsMemo { generation: self.generation, lit_flashes, rows: rows.clone() });
         rows
     }
 
-    /// The tabs whose ping flash is lit at `now_tick`, sorted — the only
+    /// How many tabs' ping flash is lit at `now_tick` — the only
     /// tick-dependent input to `rows()`, and so the tick half of its memo
-    /// key. Empty (and allocation-free) whenever nothing is flashing.
-    fn flashing_at(&self, now_tick: u64) -> Vec<TabId> {
-        let mut lit: Vec<TabId> = self
-            .flash_until
-            .iter()
-            .filter(|(_, &until)| now_tick < until)
-            .map(|(&id, _)| id)
-            .collect();
-        lit.sort_unstable();
-        lit
+    /// key. A count identifies the SET within one generation: `flash_until`
+    /// only changes through `touch()`ing paths (the arm in `status_pipe`)
+    /// and the timer's retain of already-unlit entries, so at a fixed
+    /// generation the lit set at tick t is `{id : t < until[id]}`, which
+    /// only ever shrinks as t grows — two ticks with the same count have
+    /// the same set.
+    fn lit_flashes(&self, now_tick: u64) -> usize {
+        self.flash_until.values().filter(|&&until| now_tick < until).count()
     }
 
     fn rows_uncached(&self, now_tick: u64) -> Vec<TabRow> {
@@ -471,7 +477,7 @@ impl RadarState {
         // as pane titles: a raw ESC would inject ANSI into the rail, and a
         // newline would desync the line↔click-target lockstep.
         for t in &mut tabs {
-            t.name = payload::sanitize(&t.name, payload::MAX_TAB_NAME_CHARS);
+            payload::sanitize_in_place(&mut t.name, payload::MAX_TAB_NAME_CHARS);
         }
         // Sort before the no-op compare below — `self.tabs` is stored sorted
         // (the per-render `rows()` path iterates in stored order instead of
@@ -547,22 +553,19 @@ impl RadarState {
         // every tracked pane live (a status that arrived for a pane the
         // manifest does not carry must enter the grace on this report, not
         // wait for the topology to move), and pane-for-pane identical
-        // topology modulo focus. The compare names every `TerminalPane`
-        // field but focus — a new rows-visible field must join it. `exits`
-        // is level-triggered on the manifest, so a tab holding an exited
-        // pane takes the slow path on every report until that pane closes.
+        // topology modulo focus. `exits` is level-triggered on the manifest,
+        // so a tab holding an exited pane takes the slow path on every
+        // report until that pane closes.
         if update.exits.is_empty()
             && self.absent_once.is_empty()
             && self.live_panes.as_ref() == Some(&update.live)
             && self.all_tracked_live(&update.live)
-            && same_topology(&self.tab_panes, &update.tab_panes, |x, y| x.id == y.id && x.title == y.title)
+            && same_panes_ignoring_focus(&self.tab_panes, &update.tab_panes)
         {
-            let focus_moved =
-                !same_topology(&self.tab_panes, &update.tab_panes, |x, y| x.focused_in_tab == y.focused_in_tab);
+            let focus_moved = self.tab_panes != update.tab_panes;
             self.tab_panes = update.tab_panes;
             self.note_focus(self.focused_terminal_in_active_tab());
             return RadarChange {
-                render: false,
                 // The focused pane's repo is a naming candidate, so a focus
                 // move can rename; nothing else here can.
                 renames: if focus_moved { self.rename_tabs(naming) } else { Vec::new() },
@@ -793,6 +796,7 @@ impl RadarState {
             // Persist only when we actually cleared, so a newly-opened tab
             // rehydrates the idle from the snapshot rather than the stale status.
             snapshot: SnapshotWrite::now_if(cleared),
+            snapshot_pane: Some(pane_id),
             ..RadarChange::default()
         }
     }
@@ -865,6 +869,7 @@ impl RadarState {
         Some(RadarChange {
             render: !label_only,
             snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
+            snapshot_pane: Some(pane_id),
             renames: self.rename_tabs(naming),
             settle: false,
             ..RadarChange::default()
@@ -918,6 +923,25 @@ impl RadarState {
 
     pub(crate) fn recompute_renames(&mut self, naming: config::NamingMode) -> Vec<TabRename> {
         self.rename_tabs(naming)
+    }
+
+    /// Whether THIS instance is the one that persists an edge about `pane`
+    /// (`RadarChange::snapshot_pane`): its own tab holds the pane. Every
+    /// instance holds the same converged stores, so one writer per edge is
+    /// the whole snapshot; picking the pane's tab makes that writer
+    /// deterministic with no coordination and no stat. `None` (a
+    /// session-wide edge), an unresolved own tab, or a pane no tab is known
+    /// to hold all answer yes — when the owner cannot be named, everyone
+    /// writes rather than nobody.
+    pub(crate) fn persists_edges_for(&self, pane: Option<u32>) -> bool {
+        let (Some(pane), Some(own)) = (pane, self.naming_tab_id) else {
+            return true;
+        };
+        let holds = |position: usize| self.tab_panes.get(&position).is_some_and(|panes| panes.iter().any(|p| p.id == pane));
+        match self.tabs.iter().find(|t| holds(t.position)) {
+            Some(tab) => tab.id == own,
+            None => true,
+        }
     }
 
     /// Whether both stores track only panes in `live` — i.e. a manifest

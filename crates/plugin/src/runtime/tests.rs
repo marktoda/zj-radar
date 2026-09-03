@@ -50,11 +50,21 @@ fn seed_done_ledger(rt: &mut PluginRuntime, at_epoch_s: u64) {
     });
 }
 
-/// Either presence write: the content-edge `PersistPresence` or the
-/// mtime-refreshing `HeartbeatPresence`. Liveness tests care that the file
-/// gets touched, not which path touched it.
+/// Any presence write — a content edge (`unless_fresher_than: None`) or the
+/// mtime-gated heartbeat. Liveness tests care that the file gets touched,
+/// not which path touched it.
 fn publishes_presence(e: &Effect) -> bool {
-    matches!(e, Effect::PersistPresence | Effect::HeartbeatPresence { .. })
+    matches!(e, Effect::PersistPresence { .. })
+}
+
+/// The unconditional content-edge write specifically.
+fn presence_edge(e: &Effect) -> bool {
+    matches!(e, Effect::PersistPresence { unless_fresher_than: None })
+}
+
+/// The mtime-gated liveness heartbeat specifically.
+fn presence_heartbeat(e: &Effect) -> bool {
+    matches!(e, Effect::PersistPresence { unless_fresher_than: Some(_) })
 }
 
 impl PluginRuntime {
@@ -1009,10 +1019,10 @@ fn status_edge_persists_presence_once_and_not_on_identical_state() {
     drive_tabs_and_panes(&mut rt);
 
     let out = rt.status_pipe(&payload_json(7, "running"));
-    assert!(out.effects.contains(&Effect::PersistPresence), "running-count edge publishes presence, got {:?}", out.effects);
+    assert!(out.effects.iter().any(presence_edge), "running-count edge publishes presence, got {:?}", out.effects);
 
     let again = rt.status_pipe(&payload_json(7, "running"));
-    assert!(!again.effects.contains(&Effect::PersistPresence), "identical state does not re-publish, got {:?}", again.effects);
+    assert!(!again.effects.iter().any(presence_edge), "identical state does not re-publish, got {:?}", again.effects);
 }
 
 #[test]
@@ -1065,7 +1075,7 @@ fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
     drive_tabs_and_panes(&mut rt);
 
     let first = rt.status_pipe(&payload_json(7, "running"));
-    assert!(first.effects.contains(&Effect::PersistPresence), "setup: first edge publishes, got {:?}", first.effects);
+    assert!(first.effects.iter().any(presence_edge), "setup: first edge publishes, got {:?}", first.effects);
 
     // Drive `project` directly (as `project_emits_effects_in_canonical_order`
     // does) with a no-op domain change but a strictly advancing epoch each
@@ -1073,13 +1083,13 @@ fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
     let noop = RadarChange::default();
     let same_epoch_advanced_once = rt.project(vec![], noop.clone(), 1_000);
     assert!(
-        !same_epoch_advanced_once.effects.contains(&Effect::PersistPresence),
+        !same_epoch_advanced_once.effects.iter().any(presence_edge),
         "epoch-only change (unchanged counts) must not republish, got {:?}",
         same_epoch_advanced_once.effects
     );
     let same_epoch_advanced_again = rt.project(vec![], noop, 2_000);
     assert!(
-        !same_epoch_advanced_again.effects.contains(&Effect::PersistPresence),
+        !same_epoch_advanced_again.effects.iter().any(presence_edge),
         "epoch-only change (unchanged counts, again) must not republish, got {:?}",
         same_epoch_advanced_again.effects
     );
@@ -1090,7 +1100,7 @@ fn presence_edge_ignores_timestamp_but_still_reacts_to_content() {
     rt.radar.status_mut().apply(payload_for(7, Status::Pending), rt.tick, 2_000);
     let content_edge = rt.project(vec![], RadarChange::default(), 2_000);
     assert!(
-        content_edge.effects.contains(&Effect::PersistPresence),
+        content_edge.effects.iter().any(presence_edge),
         "a counts change at an unchanged epoch must still publish, got {:?}",
         content_edge.effects
     );
@@ -1105,7 +1115,7 @@ fn presence_withheld_until_own_session_name_is_known() {
     drive_tabs_and_panes(&mut rt);
 
     let out = rt.status_pipe(&payload_json(7, "running"));
-    assert!(!out.effects.contains(&Effect::PersistPresence), "no session name yet, got {:?}", out.effects);
+    assert!(!out.effects.iter().any(presence_edge), "no session name yet, got {:?}", out.effects);
 }
 
 #[test]
@@ -1744,7 +1754,7 @@ fn noop_broadcast_skips_presence_and_notify_work() {
 
     let first = rt.status_pipe(&wire);
     assert!(
-        first.effects.contains(&Effect::PersistPresence),
+        first.effects.iter().any(presence_edge),
         "first Running is a presence content edge, got {:?}",
         first.effects
     );
@@ -1786,8 +1796,8 @@ fn project_emits_effects_in_canonical_order() {
 
     let kind = |e: &Effect| match e {
         Effect::RenameTab { .. } => 0,
-        Effect::PersistSnapshot | Effect::PersistSnapshotIfStale { .. } => 1,
-        Effect::PersistPresence | Effect::HeartbeatPresence { .. } => 2,
+        Effect::PersistSnapshot => 1,
+        Effect::PersistPresence { .. } => 2,
         Effect::ResolveCwd { .. } => 3,
         Effect::SetTimeout(_) => 4,
         Effect::Notify { .. } => 5,
@@ -2195,7 +2205,7 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     let fire_epoch = crate::clock::now_epoch_s() + Cadence::Slow.seconds() as u64;
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), fire_epoch);
     assert!(
-        slow.effects.iter().any(|e| matches!(e, Effect::HeartbeatPresence { .. })),
+        slow.effects.iter().any(presence_heartbeat),
         "the heartbeat refreshes the presence file, got {:?}", slow.effects
     );
     assert!(
@@ -2374,7 +2384,7 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     let heartbeats = due
         .effects
         .iter()
-        .filter(|e| matches!(e, Effect::HeartbeatPresence { unless_fresher_than_s } if *unless_fresher_than_s < PRESENCE_HEARTBEAT_S))
+        .filter(|e| matches!(e, Effect::PersistPresence { unless_fresher_than: Some(w) } if w.as_secs() < PRESENCE_HEARTBEAT_S))
         .count();
     assert_eq!(
         heartbeats, 1,
@@ -2387,7 +2397,7 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     // the very next fire is quiet again.
     let restamped = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
     assert!(
-        !restamped.effects.contains(&Effect::PersistPresence),
+        !restamped.effects.iter().any(presence_edge),
         "the heartbeat write must reset the level trigger, got {:?}", restamped.effects
     );
 }
@@ -3031,44 +3041,77 @@ fn hidden_rail_ticks_its_state_but_never_paints() {
     );
 }
 
+/// Two tabs, the runtime's own rail in tab 0 (pane 7), pane 8 in tab 1.
+fn two_tab_runtime_owning_tab_0() -> PluginRuntime {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "mine", true), tab(1, "theirs", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    rt.radar.set_tab_panes_for_position(1, vec![pane(8)]);
+    rt.own_plugin_tab_changed(Some(0));
+    rt
+}
+
+fn persists(out: &Outcome) -> bool {
+    out.effects.contains(&Effect::PersistSnapshot)
+}
+
 #[test]
-fn hidden_rail_writes_the_snapshot_only_when_no_sibling_just_did() {
-    // A hidden instance holds the same converged stores as its visible
-    // sibling, so its edge write is mtime-gated (one stat) rather than an
-    // unconditional read-merge-write — but it stays a write: a detached
-    // session has only hidden instances, and the fresh instances Zellij
-    // spawns on the next attach seed from this file.
-    let mut rt = painted_runtime();
+fn the_instance_whose_tab_holds_the_pane_writes_the_snapshot_hidden_or_not() {
+    // One writer per edge: every instance holds the same converged stores,
+    // so the pane's own tab writes and the others stay out — visibility
+    // plays no part. A detached session (every instance hidden) therefore
+    // still keeps the file current for the instances Zellij spawns on the
+    // next attach.
+    let mut rt = two_tab_runtime_owning_tab_0();
     rt.visibility_changed(false);
 
-    let edge = rt.status_pipe(&payload_json(7, "done"));
-    assert!(!edge.render, "hidden: no paint on the edge");
-    assert!(
-        !edge.effects.contains(&Effect::PersistSnapshot),
-        "hidden: never the unconditional write, got {:?}",
-        edge.effects
-    );
-    assert!(
-        edge.effects.iter().any(|e| matches!(e, Effect::PersistSnapshotIfStale { unless_fresher_than_s } if *unless_fresher_than_s > 0)),
-        "hidden: the mtime-gated write, got {:?}",
-        edge.effects
-    );
-    assert_eq!(
-        rt.radar.status_store().get(7).map(|o| o.status),
-        Some(Status::Done),
-        "the store took the edge like any instance"
-    );
+    let mine = rt.status_pipe(&payload_json(7, "done"));
+    assert!(!mine.render, "hidden: no paint");
+    assert!(persists(&mine), "own pane's edge is written even while hidden, got {:?}", mine.effects);
+    assert_eq!(rt.radar.status_store().get(7).map(|o| o.status), Some(Status::Done));
 
-    // A deferred label write flushes through the same gate.
+    let theirs = rt.status_pipe(&payload_json(8, "done"));
+    assert!(!persists(&theirs), "another tab's pane is that tab's write, got {:?}", theirs.effects);
+    assert_eq!(rt.radar.status_store().get(8).map(|o| o.status), Some(Status::Done), "the store still took it");
+
+    rt.visibility_changed(true);
+    let theirs_visible = rt.status_pipe(&payload_json(8, "running"));
+    assert!(!persists(&theirs_visible), "visible changes nothing about ownership, got {:?}", theirs_visible.effects);
+}
+
+#[test]
+fn an_edge_on_a_pane_no_tab_holds_is_written_by_everyone() {
+    // A broadcast can precede the manifest that seats its pane; when the
+    // owner cannot be named, every instance writes rather than none.
+    let mut rt = two_tab_runtime_owning_tab_0();
+    let unknown = rt.status_pipe(&payload_json(99, "running"));
+    assert!(persists(&unknown), "unknown pane: everyone writes, got {:?}", unknown.effects);
+
+    // Likewise before this instance has resolved which tab it lives in.
+    let mut unresolved = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut unresolved);
+    let edge = unresolved.status_pipe(&payload_json(7, "running"));
+    assert!(persists(&edge), "unresolved own tab: write, got {:?}", edge.effects);
+}
+
+#[test]
+fn a_foreign_edge_does_not_drop_an_owned_deferred_write() {
+    // Tab 0 owns pane 7 and has a label-only relabel deferred to the next
+    // tick. An edge on tab 1's pane 8 arrives first: it is not this
+    // instance's write, and it must not consume the dirty flag that carries
+    // pane 7's pending write.
+    let mut rt = two_tab_runtime_owning_tab_0();
     rt.status_pipe(&payload_json(7, "running"));
-    rt.snapshot_dirty = true;
+    let relabel = rt.status_pipe(&payload::to_wire(&StatusPayload { msg: "editing".into(), ..payload_for(7, Status::Running) }));
+    assert!(!persists(&relabel) && rt.snapshot_dirty, "label-only defers, got {:?}", relabel.effects);
+
+    let foreign = rt.status_pipe(&payload_json(8, "done"));
+    assert!(!persists(&foreign));
+    assert!(rt.snapshot_dirty, "a non-owner edge leaves the owned deferral armed");
+
     let flush = rt.timer_fast(PermissionProbe::default());
-    assert!(
-        flush.effects.iter().any(|e| matches!(e, Effect::PersistSnapshotIfStale { .. })),
-        "hidden flush is mtime-gated, got {:?}",
-        flush.effects
-    );
-    assert!(!rt.snapshot_dirty, "…and the dirty flag is consumed");
+    assert!(persists(&flush), "the tick flushes the owned deferral, got {:?}", flush.effects);
+    assert!(!rt.snapshot_dirty);
 }
 
 #[test]
@@ -3124,7 +3167,7 @@ fn hidden_rail_still_heartbeats_presence() {
 
     let due = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
     assert!(
-        due.effects.iter().any(|e| matches!(e, Effect::HeartbeatPresence { .. })),
+        due.effects.iter().any(presence_heartbeat),
         "hidden rails heartbeat too, got {:?}",
         due.effects
     );

@@ -124,8 +124,8 @@ change: intake no-ops (an identical re-broadcast reports a default
 `RadarChange`), label-only deferral (a Running→Running relabel on an animating
 row rides the next Fast tick), the rows-diff gate (`project` drops a render
 whose content key equals the last one drawn), and the visibility gate (a rail
-whose tab Zellij reported hidden paints nothing and writes the snapshot only
-when no sibling just did, while its state keeps ticking). The first three rest on
+whose tab Zellij reported hidden paints nothing while its state keeps
+ticking). The first three rest on
 `RadarState::generation` and the `rows()` memo; the fourth on
 `Event::Visible`. A missed `touch()` on a new mutator is a stale-rail bug.
 Detail: design.md → *Render gate*.

@@ -173,60 +173,37 @@ impl SessionFiles {
         let _ = std::fs::write(&paths.permission_lock, b"");
     }
 
-    pub(crate) fn persist_snapshot(&self, json: &str) {
+    /// Write the shared snapshot (`Effect::PersistSnapshot`): the existing
+    /// record, if any, is handed to `json` for the merge (`snapshot::to_json`
+    /// keeps entries another instance persisted), and the result lands via
+    /// tmp+rename. Disabled mode is a no-op.
+    pub(crate) fn persist_snapshot(&self, json: impl FnOnce(Option<&str>) -> String) {
         let Some(paths) = &self.paths else {
             return;
         };
-        write_via_tmp(&paths.snapshot_tmp, &paths.snapshot, json.as_bytes());
-    }
-
-    /// A hidden instance's snapshot write (`Effect::PersistSnapshotIfStale`):
-    /// skip when the file's mtime is younger than `min_age` — a sibling just
-    /// wrote the same converged state — else read the existing record, hand
-    /// it to `json` for the merge, and write. `json` runs only on the write
-    /// path, so a skip costs one stat. A missing file counts as stale.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub(crate) fn persist_snapshot_if_stale(&self, min_age: Duration, json: impl FnOnce(Option<&str>) -> String) {
-        self.persist_snapshot_if_stale_at(min_age, json, SystemTime::now())
-    }
-
-    fn persist_snapshot_if_stale_at(&self, min_age: Duration, json: impl FnOnce(Option<&str>) -> String, now: SystemTime) {
-        let Some(paths) = &self.paths else {
-            return;
-        };
-        if age_of(std::fs::metadata(&paths.snapshot), now).is_some_and(|age| age < min_age) {
-            return;
-        }
         let existing = self.snapshot();
         write_via_tmp(&paths.snapshot_tmp, &paths.snapshot, json(existing.as_deref()).as_bytes());
     }
 
-    /// Publish this session's presence for peer sessions' badges. Same atomic
-    /// tmp+rename discipline as `persist_snapshot`; disabled mode is a no-op.
-    pub(crate) fn persist_presence(&self, json: &str) {
+    /// Publish this session's presence for peer sessions' badges
+    /// (`Effect::PersistPresence`). With `unless_fresher_than`, skip when
+    /// the file's mtime is already younger than that — the liveness
+    /// heartbeat, where a sibling instance's write is proof enough for peers
+    /// and `json` (lazy, so a skip costs one stat) is never run. A missing
+    /// or unreadable file counts as stale. Same tmp+rename discipline as
+    /// `persist_snapshot`; disabled mode is a no-op.
+    pub(crate) fn persist_presence(&self, unless_fresher_than: Option<Duration>, json: impl FnOnce() -> String) {
+        self.persist_presence_at(unless_fresher_than, json, SystemTime::now())
+    }
+
+    fn persist_presence_at(&self, unless_fresher_than: Option<Duration>, json: impl FnOnce() -> String, now: SystemTime) {
         let Some(paths) = &self.paths else {
             return;
         };
-        write_via_tmp(&paths.presence_tmp, &paths.presence, json.as_bytes());
-    }
-
-    /// The liveness heartbeat (`Effect::HeartbeatPresence`): republish the
-    /// presence file unless its mtime is already younger than `min_age` —
-    /// every tab's instance heartbeats the same pid-keyed file on the same
-    /// clock, and one sibling's write is proof enough for peers. `json` is
-    /// lazy so the skipped path costs one stat, not a serialization. A
-    /// missing or unreadable file counts as stale (write).
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub(crate) fn heartbeat_presence(&self, min_age: Duration, json: impl FnOnce() -> String) {
-        self.heartbeat_presence_at(min_age, json, SystemTime::now())
-    }
-
-    fn heartbeat_presence_at(&self, min_age: Duration, json: impl FnOnce() -> String, now: SystemTime) {
-        let Some(paths) = &self.paths else {
-            return;
-        };
-        if age_of(std::fs::metadata(&paths.presence), now).is_some_and(|age| age < min_age) {
-            return;
+        if let Some(min_age) = unless_fresher_than {
+            if age_of(std::fs::metadata(&paths.presence), now).is_some_and(|age| age < min_age) {
+                return;
+            }
         }
         write_via_tmp(&paths.presence_tmp, &paths.presence, json().as_bytes());
     }
@@ -791,7 +768,7 @@ mod tests {
         let dir = TempDir::new("snapshot");
         let opened = open(dir.path(), ids(9, 42));
 
-        opened.files.persist_snapshot(r#"{"v":1}"#);
+        opened.files.persist_snapshot(|_| r#"{"v":1}"#.into());
 
         assert_eq!(
             std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(),
@@ -808,7 +785,7 @@ mod tests {
         std::fs::create_dir(dir.join("zj-radar.42.json.9.tmp")).unwrap();
         let opened = open(dir.path(), ids(9, 42));
 
-        opened.files.persist_snapshot("new");
+        opened.files.persist_snapshot(|_| "new".into());
 
         assert_eq!(
             std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(),
@@ -829,7 +806,7 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        opened.files.persist_snapshot("seed");
+        opened.files.persist_snapshot(|_| "seed".into());
 
         assert!(!broken.join("zj-radar.42.json").exists());
         assert_eq!(
@@ -922,7 +899,7 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        opened.files.persist_snapshot("ignored");
+        opened.files.persist_snapshot(|_| "ignored".into());
         opened
             .files
             .persist_permission_marker(PermissionMarker::Denied);
@@ -1038,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_snapshot_write_skips_a_fresh_file_and_merges_into_a_stale_or_missing_one() {
+    fn persist_snapshot_hands_the_existing_record_to_the_merge() {
         let dir = tempfile::tempdir().unwrap();
         let files = SessionFiles::open_with_roots_at(
             SessionFileIds { plugin_id: 1, zellij_pid: 42 },
@@ -1048,24 +1025,9 @@ mod tests {
         )
         .files;
         let snapshot = dir.path().join("zj-radar.42.json");
-        let min_age = Duration::from_secs(2);
-
-        // Missing: writes, and the merge closure sees no existing record.
-        files.persist_snapshot_if_stale_at(min_age, |existing| { assert!(existing.is_none()); "first".into() }, SystemTime::now());
+        files.persist_snapshot(|existing| { assert!(existing.is_none()); "first".into() });
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first");
-
-        // A sibling just wrote: skipped, and the merge is never even run.
-        files.persist_snapshot_if_stale_at(min_age, |_| unreachable!("fresh snapshot must not be re-merged"), SystemTime::now());
-        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first");
-
-        // Older than the window (a detached session's hidden instance is the
-        // only writer): the existing record is handed to the merge and the
-        // result written.
-        files.persist_snapshot_if_stale_at(
-            min_age,
-            |existing| format!("{}+second", existing.unwrap()),
-            SystemTime::now() + min_age,
-        );
+        files.persist_snapshot(|existing| format!("{}+second", existing.unwrap()));
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first+second");
     }
 
@@ -1083,16 +1045,20 @@ mod tests {
         let min_age = Duration::from_secs(30);
 
         // Missing: a heartbeat writes.
-        files.heartbeat_presence_at(min_age, || "first".into(), SystemTime::now());
+        files.persist_presence_at(Some(min_age), || "first".into(), SystemTime::now());
         assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
 
         // Just written (by this or any sibling instance): skipped, and the
         // JSON closure is never even evaluated.
-        files.heartbeat_presence_at(min_age, || unreachable!("fresh file must not be serialized"), SystemTime::now());
+        files.persist_presence_at(Some(min_age), || unreachable!("fresh file must not be serialized"), SystemTime::now());
         assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
 
+        // A content edge (no window) always writes, fresh or not.
+        files.persist_presence_at(None, || "edge".into(), SystemTime::now());
+        assert_eq!(std::fs::read_to_string(&presence).unwrap(), "edge");
+
         // Older than the skip window: rewritten.
-        files.heartbeat_presence_at(min_age, || "second".into(), SystemTime::now() + min_age);
+        files.persist_presence_at(Some(min_age), || "second".into(), SystemTime::now() + min_age);
         assert_eq!(std::fs::read_to_string(&presence).unwrap(), "second");
     }
 
@@ -1111,8 +1077,8 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        a.files.persist_presence(r#"{"session_name":"alpha"}"#);
-        b.files.persist_presence(r#"{"session_name":"beta"}"#);
+        a.files.persist_presence(None, || r#"{"session_name":"alpha"}"#.into());
+        b.files.persist_presence(None, || r#"{"session_name":"beta"}"#.into());
         // Each session sees the OTHER's presence, never its own.
         let a_json: Vec<String> = a.files.read_peer_presences().into_iter().map(|p| p.json).collect();
         let b_json: Vec<String> = b.files.read_peer_presences().into_iter().map(|p| p.json).collect();
@@ -1134,7 +1100,7 @@ mod tests {
             SNAPSHOT_MAX_AGE,
         );
         assert!(!stale.exists(), "stale presence swept at open");
-        s.files.persist_presence(r#"{"session_name":"me"}"#);
+        s.files.persist_presence(None, || r#"{"session_name":"me"}"#.into());
         let fresh = dir.path().join("zj-radar.presence.100.json");
         assert!(fresh.exists());
     }
@@ -1166,8 +1132,8 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        fresh_peer.files.persist_presence(r#"{"session_name":"fresh"}"#);
-        old_peer.files.persist_presence(r#"{"session_name":"old"}"#);
+        fresh_peer.files.persist_presence(None, || r#"{"session_name":"fresh"}"#.into());
+        old_peer.files.persist_presence(None, || r#"{"session_name":"old"}"#.into());
 
         // Backdate only the "old" peer's file — a dead server's file just
         // sitting there with an old mtime, not something any sweep has
@@ -1228,9 +1194,9 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        alpha_a.files.persist_presence(r#"{"session_name":"alpha","running":1,"attention":0}"#);
-        alpha_b.files.persist_presence(r#"{"session_name":"alpha","running":2,"attention":0}"#);
-        beta.files.persist_presence(r#"{"session_name":"beta","running":1,"attention":0}"#);
+        alpha_a.files.persist_presence(None, || r#"{"session_name":"alpha","running":1,"attention":0}"#.into());
+        alpha_b.files.persist_presence(None, || r#"{"session_name":"alpha","running":2,"attention":0}"#.into());
+        beta.files.persist_presence(None, || r#"{"session_name":"beta","running":1,"attention":0}"#.into());
 
         reader.files.remove_presences_matching(|json| json.contains(r#""alpha""#));
 
@@ -1254,7 +1220,7 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        me.files.persist_presence(r#"{"session_name":"alpha","running":1,"attention":0}"#);
+        me.files.persist_presence(None, || r#"{"session_name":"alpha","running":1,"attention":0}"#.into());
         // A corpse of a previous server incarnation, same name, older pid.
         std::fs::write(
             dir.path().join("zj-radar.presence.99.json"),

@@ -196,16 +196,9 @@ impl State {
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout(cadence) => set_timeout(cadence.seconds()),
-                Effect::PersistSnapshot => {
-                    let existing = self.session_files.snapshot();
-                    let json = self.runtime.snapshot_json(existing.as_deref());
-                    self.session_files.persist_snapshot(&json);
-                }
-                Effect::PersistSnapshotIfStale { unless_fresher_than_s } => {
-                    let min_age = std::time::Duration::from_secs(unless_fresher_than_s);
-                    self.session_files
-                        .persist_snapshot_if_stale(min_age, |existing| self.runtime.snapshot_json(existing))
-                }
+                Effect::PersistSnapshot => self
+                    .session_files
+                    .persist_snapshot(|existing| self.runtime.snapshot_json(existing)),
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }
@@ -229,14 +222,9 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
-                Effect::PersistPresence => {
-                    self.session_files.persist_presence(&self.runtime.presence_json())
-                }
-                Effect::HeartbeatPresence { unless_fresher_than_s } => {
-                    let min_age = std::time::Duration::from_secs(unless_fresher_than_s);
-                    self.session_files
-                        .heartbeat_presence(min_age, || self.runtime.presence_json())
-                }
+                Effect::PersistPresence { unless_fresher_than } => self
+                    .session_files
+                    .persist_presence(unless_fresher_than, || self.runtime.presence_json()),
                 Effect::ReadPresences => {
                     let raw = self
                         .session_files

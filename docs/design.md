@@ -101,10 +101,9 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 └────────────────────────────────────────────────────────────────────────┘
         │ Effects: SwitchTab, ShowPane, RenameTab, RequestPermission,
         │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
-        │ PersistSnapshotIfStale, PersistPermissionMarker,
-        │ HeartbeatPermissionLock, ResolveCwd,
-        │ Notify, PersistPresence, HeartbeatPresence, ReadPresences,
-        │ DismissPresence, SwitchSession, BroadcastStatus, CloseSelf
+        │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd,
+        │ Notify, PersistPresence, ReadPresences, DismissPresence,
+        │ SwitchSession, BroadcastStatus, CloseSelf
         ▼
 ```
 
@@ -249,16 +248,19 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `/tmp/zj-radar`, then persistence off. `/data` is not used: it is scoped per
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
-instance holds the same converged stores after a broadcast, so a visible
-instance writes unconditionally and a hidden one (§9's visibility gate)
-writes only if no sibling wrote within the last two seconds — one stat
-instead of a read-merge-write when a visible sibling exists. The hidden write
-must stay possible: Zellij spawns a fresh instance of every plugin for each
-client that attaches, seeded from this file, while the detached client's
-instances live on hidden and keep receiving broadcasts, so after a
-detach → agents finish → reattach cycle they are the only holders of the
-truth. Overlapping writers produce identical content, so races are benign.
-With persistence off, late sidebars start empty until the next broadcast.
+instance holds the same converged stores after a broadcast, so one write per
+edge is the whole snapshot, and the writer is chosen deterministically with
+no coordination: the instance whose tab holds the pane the edge is about
+(`RadarChange::snapshot_pane`, `RadarState::persists_edges_for`). Edges with
+no nameable owner — a pane no tab is known to hold yet, a session-wide
+sweep, an instance that has not learned its own tab — are written by every
+instance rather than none. Ownership, not visibility, decides: Zellij spawns
+a fresh instance of every plugin for each client that attaches, seeded from
+this file, while the detached client's instances live on hidden and keep
+receiving broadcasts, so after a detach → agents finish → reattach cycle
+those hidden owners are what keeps the file current. Overlapping writers
+produce identical content, so races are benign. With persistence off, late
+sidebars start empty until the next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -421,11 +423,11 @@ keep repaints proportional to change:
    overrides, which change the drawing without changing the key.
 4. **Visibility gate.** `Event::Visible(false)` (tab switch, tab close, layout
    apply, client detach) marks the instance hidden: it paints nothing, ticks
-   included, and turns its snapshot writes into mtime-gated ones (§5), but
-   its state machinery keeps ticking at full cadence — the stores' grace
-   clocks count ticks, so a slowed hidden instance would drift from its
-   siblings until reveal. `Visible(true)`
-   force-renders the skipped frame. Zellij never sends `Visible` at load, so an
+   included. Nothing else changes — state keeps ticking at full cadence (the
+   stores' grace clocks count ticks, so a slowed hidden instance would drift
+   from its siblings until reveal) and snapshot writes follow pane
+   ownership (§5), not visibility. `Visible(true)` force-renders the skipped
+   frame. Zellij never sends `Visible` at load, so an
    instance starts visible, and any manifest it receives (which only reach
    active-tab plugins) also clears the flag — the bias is toward painting,
    since a wrongly hidden rail would be a stale screen. Under the interpreter
@@ -536,9 +538,11 @@ rows, header badge, and footer stay tab-level summaries.
 rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
 in `project` that bypasses the content gate and, unlike the snapshot, the
 visibility gate: a detached session is alive). Every tab's instance runs that
-clock against the one pid-keyed file, so the heartbeat is an
-`Effect::HeartbeatPresence` the host skips when the file's mtime is already
-younger than half the interval — one stat instead of N writes. Content edges
+clock against the one pid-keyed file, so the heartbeat is a
+`PersistPresence` with an `unless_fresher_than` window the host honors by
+stat: a file already younger than a quarter of the interval is left alone —
+one stat instead of N writes, and the quarter keeps the file's worst-case age
+(one period plus one window) under the 90 s stale threshold. Content edges
 write unconditionally. Peers read the directory on every
 Slow (60 s) tick, and on every fifth Fast tick except mid-cycle; the Slow read
 is what lets an idle rail grade a peer at all, since ages are captured at read
@@ -611,7 +615,7 @@ choice is a flag the consumer projects on, never a fact.
 - Zellij runs one instance per tab per attached client (a detached client's
   instances linger hidden), each under the wasmi interpreter with its own
   linear memory, so per-instance fixed cost is paid N times. The
-  release profile optimizes for size; `.cargo/config.toml` shrinks the WASI
+  release profile optimizes for size; `crates/plugin/build.rs` shrinks the WASI
   shadow stack from wasm-ld's 1 MiB default to 256 KiB, which takes the
   initial memory from 19 to 7 pages (448 KiB) per instance; and the flake
   runs binaryen's `wasm-opt -Oz` over the release wasm, which measured
