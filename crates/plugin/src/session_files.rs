@@ -189,6 +189,27 @@ impl SessionFiles {
         write_via_tmp(&paths.presence_tmp, &paths.presence, json.as_bytes());
     }
 
+    /// The liveness heartbeat (`Effect::HeartbeatPresence`): republish the
+    /// presence file unless its mtime is already younger than `min_age` —
+    /// every tab's instance heartbeats the same pid-keyed file on the same
+    /// clock, and one sibling's write is proof enough for peers. `json` is
+    /// lazy so the skipped path costs one stat, not a serialization. A
+    /// missing or unreadable file counts as stale (write).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn heartbeat_presence(&self, min_age: Duration, json: impl FnOnce() -> String) {
+        self.heartbeat_presence_at(min_age, json, SystemTime::now())
+    }
+
+    fn heartbeat_presence_at(&self, min_age: Duration, json: impl FnOnce() -> String, now: SystemTime) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        if age_of(std::fs::metadata(&paths.presence), now).is_some_and(|age| age < min_age) {
+            return;
+        }
+        write_via_tmp(&paths.presence_tmp, &paths.presence, json().as_bytes());
+    }
+
     /// Raw JSON of every OTHER session's presence file (own pid excluded, tmp
     /// files excluded), paired with how long ago its mtime was last touched.
     /// Parsing/validation is the caller's job (`Presence::parse` skips
@@ -992,6 +1013,33 @@ mod tests {
         assert!(dir.join("zj-radar.1.unknown").exists());
         assert!(dir.join("zj-radar.1.json.tmp").exists());
         assert!(dir.join("zj-radar.1.permissions.tmp").exists());
+    }
+
+    #[test]
+    fn heartbeat_presence_skips_a_fresh_file_and_rewrites_a_stale_or_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SessionFiles::open_with_roots_at(
+            SessionFileIds { plugin_id: 1, zellij_pid: 100 },
+            [dir.path().to_path_buf()],
+            SystemTime::now(),
+            SNAPSHOT_MAX_AGE,
+        )
+        .files;
+        let presence = dir.path().join("zj-radar.presence.100.json");
+        let min_age = Duration::from_secs(30);
+
+        // Missing: a heartbeat writes.
+        files.heartbeat_presence_at(min_age, || "first".into(), SystemTime::now());
+        assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
+
+        // Just written (by this or any sibling instance): skipped, and the
+        // JSON closure is never even evaluated.
+        files.heartbeat_presence_at(min_age, || unreachable!("fresh file must not be serialized"), SystemTime::now());
+        assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
+
+        // Older than the skip window: rewritten.
+        files.heartbeat_presence_at(min_age, || "second".into(), SystemTime::now() + min_age);
+        assert_eq!(std::fs::read_to_string(&presence).unwrap(), "second");
     }
 
     #[test]

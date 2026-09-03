@@ -227,6 +227,11 @@ impl State {
                 Effect::PersistPresence => {
                     self.session_files.persist_presence(&self.runtime.presence_json())
                 }
+                Effect::HeartbeatPresence { unless_fresher_than_s } => {
+                    let min_age = std::time::Duration::from_secs(unless_fresher_than_s);
+                    self.session_files
+                        .heartbeat_presence(min_age, || self.runtime.presence_json())
+                }
                 Effect::ReadPresences => {
                     let raw = self
                         .session_files
@@ -353,6 +358,10 @@ impl ZellijPlugin for State {
             // config) through protobuf decode under the interpreter, for a
             // plugin that only reads `session_name` off it.
             EventType::InitialKeybinds,
+            // Tab shown / hidden (tab switch, close, layout apply, client
+            // detach; never at load). A hidden rail skips its paints and
+            // snapshot writes — `PluginRuntime::hidden` has the contract.
+            EventType::Visible,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
@@ -462,6 +471,10 @@ impl ZellijPlugin for State {
             }
             Event::ModeUpdate(mode_info) => {
                 let outcome = self.runtime.session_name_changed(mode_info.session_name);
+                self.handle_outcome(outcome)
+            }
+            Event::Visible(visible) => {
+                let outcome = self.runtime.visibility_changed(visible);
                 self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {

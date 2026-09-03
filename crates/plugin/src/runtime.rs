@@ -148,10 +148,18 @@ pub(crate) enum Effect {
     Notify { key: String, title: String, body: String },
     /// Publish this session's own [`Presence`] for peer rails to read —
     /// lib.rs does `files.persist_presence(&runtime.presence_json())`.
-    /// Decided in one place, `project`: on a content edge, or as the
-    /// level-triggered liveness heartbeat ([`PRESENCE_HEARTBEAT_S`]) that
-    /// keeps the file's mtime moving between content edges.
+    /// Emitted by `project` on a presence *content* edge (a count moved,
+    /// the name was learned); the liveness heartbeat between edges is
+    /// [`HeartbeatPresence`](Self::HeartbeatPresence).
     PersistPresence,
+    /// The level-triggered liveness heartbeat ([`PRESENCE_HEARTBEAT_S`]):
+    /// refresh the presence file's mtime — the fresh/stale/dead signal peers
+    /// read — unless it is already younger than `unless_fresher_than_s`.
+    /// Every tab's instance runs the same clock and would otherwise rewrite
+    /// the same pid-keyed file N times per minute; a sibling's write already
+    /// proved this session alive, so the host checks the mtime (one stat)
+    /// before paying the write. Content edges never take this path.
+    HeartbeatPresence { unless_fresher_than_s: u64 },
     /// Re-read every peer session's presence file and feed the result back
     /// through `presences_changed` — mirrors `ResolveCwd`'s
     /// request/read-back pattern, except the read is gated on cadence (see
@@ -376,10 +384,26 @@ pub(crate) struct PluginRuntime {
     /// ledger lines, badge, theme. Stamped by `render`, consulted by
     /// `project`'s render gate — a change whose re-derived key equals what is
     /// already on screen requests no repaint (`RadarChange::force_render`
-    /// bypasses, for tick-driven frames). Zellij delivers every broadcast and
-    /// topology event to EVERY tab's instance, so vetoing identical repaints
-    /// here is the single biggest lever on session-wide plugin CPU.
+    /// bypasses, for tick-driven frames). Zellij delivers every broadcast
+    /// and every `CommandChanged` to EVERY tab's instance, so vetoing
+    /// identical repaints here is one of the two big levers on session-wide
+    /// plugin CPU; the other is `hidden`.
     last_render_key: Option<RenderKey>,
+    /// Zellij told this instance its tab is off-screen (`Event::Visible(false)`
+    /// — sent on tab switch, tab close, layout apply, and client detach;
+    /// never at load, so a fresh instance counts as visible). A hidden rail
+    /// keeps its state machinery ticking — the stores' grace clocks count
+    /// ticks, so a slowed hidden instance would drift from its siblings
+    /// until reveal — but it neither paints (the paint is >95% of a tick's
+    /// interpreter cost, and nobody sees it) nor persists the snapshot (the
+    /// visible sibling holds the same converged state and writes it once
+    /// instead of N times). `Visible(true)` repaints the frame that was
+    /// skipped. Belt and braces: `TabUpdate`/`PaneUpdate` only ever reach
+    /// the instances in a client's active tab, so receiving one proves this
+    /// instance visible and clears the flag even if a `Visible(true)` was
+    /// lost — the failure mode of a wrongly-hidden rail is a stale screen,
+    /// so the bias is toward visible.
+    hidden: bool,
 }
 
 /// See [`PluginRuntime::last_render_key`].
@@ -427,6 +451,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn tabs_changed(&mut self, tabs: Vec<RadarTab>) -> Outcome {
+        self.hidden = false; // manifests reach active-tab instances only
         let had_naming_tab = self.radar.has_naming_tab();
         let mut change = self.radar.tabs_changed(tabs);
         // Ownership just resolved: a cwd that arrived before it (bootstrap
@@ -440,6 +465,7 @@ impl PluginRuntime {
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
+        self.hidden = false; // manifests reach active-tab instances only
         let now = crate::clock::now_epoch_s();
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
@@ -766,6 +792,23 @@ impl PluginRuntime {
         }
         self.own_session_name = name;
         self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
+    }
+
+    /// `Event::Visible`: Zellij's word on whether this instance's tab is on
+    /// some client's screen. See the `hidden` field for what a hidden rail
+    /// skips. A reveal repaints once, force-rendered: the rows-diff gate
+    /// would otherwise veto it (the key may equal what was drawn before the
+    /// tab went dark, while the frames in between were never painted).
+    pub(crate) fn visibility_changed(&mut self, visible: bool) -> Outcome {
+        if self.hidden == !visible {
+            return Outcome::none();
+        }
+        self.hidden = !visible;
+        if self.hidden {
+            return Outcome::none();
+        }
+        let change = RadarChange { render: true, force_render: true, ..RadarChange::default() };
+        self.project(vec![], change, self.last_now_epoch_s)
     }
 
     /// A fresh read of every peer session's presence file, each paired with
@@ -1238,7 +1281,18 @@ impl PluginRuntime {
         fx.extend(self.effects_from_renames(c.renames));
         match c.snapshot {
             SnapshotWrite::Now => {
-                fx.push(Effect::PersistSnapshot);
+                // One writer per edge, not N: every instance holds the same
+                // converged stores, so the visible one's write is the
+                // snapshot. A hidden instance drops the write outright (no
+                // deferral — its visible sibling already wrote). The one
+                // gap is a session with no visible instance at all (every
+                // client detached): the snapshot then ages until reattach,
+                // which only matters to a tab created from the CLI while
+                // detached, and that tab converges on the next broadcast
+                // like any late instance.
+                if !self.hidden {
+                    fx.push(Effect::PersistSnapshot);
+                }
                 // An inline write covers anything a pending deferral would
                 // have flushed — clear it so the next tick doesn't repeat
                 // the exact read-merge-write this state exists to avoid.
@@ -1271,43 +1325,57 @@ impl PluginRuntime {
                 content_moved = true;
             }
         }
-        // The ONE decision point for `Effect::PersistPresence`: write on a
-        // real content edge (`content_moved`, the compare-and-cache above —
-        // `PersistSnapshot`'s "write on edges only" rule), OR whenever the
-        // last write has aged past `PRESENCE_HEARTBEAT_S` — the liveness
-        // heartbeat that keeps the file's mtime (the fresh/stale/dead signal
-        // peers read — `sessions::STALE_AFTER_SECS`/`DEAD_AFTER_SECS`)
-        // moving between content edges. Level-triggered on wall-clock age
-        // and entry-point-blind by design: a session pinned at Fast by a
-        // long-Running agent sees no Slow fire, and one whose content stops
-        // moving sees no edge, but every path funnels through here, so
-        // whichever event lands first past the threshold re-publishes.
-        // Deliberately OUTSIDE the generation gate above — the heartbeat
-        // must fire on unchanged content, the exact case the gate skips.
-        // The stamp records intent-to-write, not a confirmed write: lib.rs's
-        // persist is best-effort, and a failed one self-heals within the
-        // 90s staleness window (the next overdue pass re-publishes).
-        if !self.own_session_name.is_empty()
-            && (content_moved
-                || now_epoch_s.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S)
-        {
-            fx.push(Effect::PersistPresence);
-            self.last_presence_write_epoch_s = now_epoch_s;
+        // The ONE decision point for publishing presence: write on a real
+        // content edge (`content_moved`, the compare-and-cache above —
+        // `PersistSnapshot`'s "write on edges only" rule), OR heartbeat
+        // whenever the last write has aged past `PRESENCE_HEARTBEAT_S` —
+        // the liveness signal that keeps the file's mtime (the
+        // fresh/stale/dead grade peers read — `sessions::STALE_AFTER_SECS`/
+        // `DEAD_AFTER_SECS`) moving between content edges. Level-triggered
+        // on wall-clock age and entry-point-blind by design: a session
+        // pinned at Fast by a long-Running agent sees no Slow fire, and one
+        // whose content stops moving sees no edge, but every path funnels
+        // through here, so whichever event lands first past the threshold
+        // re-publishes. Deliberately OUTSIDE the generation gate above — the
+        // heartbeat must fire on unchanged content, the exact case the gate
+        // skips — and NOT gated on `hidden`: a detached session is alive,
+        // and a frozen mtime would get it dimmed and then reaped from every
+        // peer's badge. The heartbeat is instead deduplicated host-side by
+        // mtime (`Effect::HeartbeatPresence`), since all N instances run
+        // this same clock against one pid-keyed file. The stamp records
+        // intent-to-write, not a confirmed write: lib.rs's persist is
+        // best-effort, and a failed one self-heals within the 90s staleness
+        // window (the next overdue pass re-publishes).
+        if !self.own_session_name.is_empty() {
+            if content_moved {
+                fx.push(Effect::PersistPresence);
+                self.last_presence_write_epoch_s = now_epoch_s;
+            } else if now_epoch_s.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S {
+                fx.push(Effect::HeartbeatPresence { unless_fresher_than_s: PRESENCE_HEARTBEAT_S / 2 });
+                self.last_presence_write_epoch_s = now_epoch_s;
+            }
         }
-        // Rows-diff render gate: Zellij delivers every broadcast and topology
-        // event to every tab's instance, and most deliveries change nothing
-        // this instance would DRAW differently. When the content-derived
-        // render inputs match what the last `render()` actually drew
-        // (`last_render_key`), drop the repaint request. `force_render`
-        // bypasses — tick-driven frames and config overrides change the
-        // drawing without changing the key's content. Gate only ever
-        // downgrades a requested render; it never invents one.
+        // Rows-diff render gate: Zellij delivers every broadcast and every
+        // `CommandChanged` to every tab's instance, and most deliveries
+        // change nothing this instance would DRAW differently. When the
+        // content-derived render inputs match what the last `render()`
+        // actually drew (`last_render_key`), drop the repaint request.
+        // `force_render` bypasses — tick-driven frames and config overrides
+        // change the drawing without changing the key's content. Gate only
+        // ever downgrades a requested render; it never invents one.
         if render && !c.force_render {
             if let Some(last) = &self.last_render_key {
                 if *last == self.current_render_key() {
                     render = false;
                 }
             }
+        }
+        // Visibility gate, after the rows-diff gate and above `force_render`:
+        // a hidden tab's rail paints nothing, ticks included — the paint is
+        // the bulk of a tick's interpreter cost and no one can see it.
+        // `visibility_changed(true)` repaints on reveal.
+        if self.hidden {
+            render = false;
         }
         if !c.cwd_bootstrap.is_empty() {
             fx.push(Effect::ResolveCwd { pane_ids: c.cwd_bootstrap });

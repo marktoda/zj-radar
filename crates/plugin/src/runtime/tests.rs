@@ -50,6 +50,13 @@ fn seed_done_ledger(rt: &mut PluginRuntime, at_epoch_s: u64) {
     });
 }
 
+/// Either presence write: the content-edge `PersistPresence` or the
+/// mtime-refreshing `HeartbeatPresence`. Liveness tests care that the file
+/// gets touched, not which path touched it.
+fn publishes_presence(e: &Effect) -> bool {
+    matches!(e, Effect::PersistPresence | Effect::HeartbeatPresence { .. })
+}
+
 impl PluginRuntime {
     /// Test shorthand: deliver a timer fire "now" (a real wall-clock
     /// capture) with the given elapsed. The sites that still pass an
@@ -2188,7 +2195,7 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     let fire_epoch = crate::clock::now_epoch_s() + Cadence::Slow.seconds() as u64;
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), fire_epoch);
     assert!(
-        slow.effects.contains(&Effect::PersistPresence),
+        slow.effects.iter().any(|e| matches!(e, Effect::HeartbeatPresence { .. })),
         "the heartbeat refreshes the presence file, got {:?}", slow.effects
     );
     assert!(
@@ -2350,12 +2357,12 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     rt.last_presence_write_epoch_s = now;
     let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
     assert!(
-        !fast.effects.contains(&Effect::PersistPresence),
+        !fast.effects.iter().any(publishes_presence),
         "a fast fire inside the heartbeat window must not republish, got {:?}", fast.effects
     );
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), now);
     assert!(
-        !slow.effects.contains(&Effect::PersistPresence),
+        !slow.effects.iter().any(publishes_presence),
         "a slow fire inside the heartbeat window must not churn the file, got {:?}", slow.effects
     );
 
@@ -2364,11 +2371,16 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     // that is the starving case the level trigger exists for.
     rt.last_presence_write_epoch_s = now.saturating_sub(PRESENCE_HEARTBEAT_S);
     let due = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
-    let persists = due.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    let heartbeats = due
+        .effects
+        .iter()
+        .filter(|e| matches!(e, Effect::HeartbeatPresence { unless_fresher_than_s } if *unless_fresher_than_s < PRESENCE_HEARTBEAT_S))
+        .count();
     assert_eq!(
-        persists, 1,
+        heartbeats, 1,
         "an overdue fast fire must refresh the presence file's mtime, exactly \
-         once, got {:?}", due.effects
+         once, as a heartbeat whose skip window is shorter than the heartbeat \
+         itself, got {:?}", due.effects
     );
 
     // The emit restamped the write clock (`project`'s single stamp point):
@@ -2420,7 +2432,7 @@ fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
     // push AND whose own tick promotes pending -> Running, landing a genuine
     // content edge on the same pass.
     let tick = rt.timer_slow(PermissionProbe::default());
-    let persists = tick.effects.iter().filter(|e| matches!(e, Effect::PersistPresence)).count();
+    let persists = tick.effects.iter().filter(|e| publishes_presence(e)).count();
     assert_eq!(
         persists, 1,
         "a Slow heartbeat coinciding with a real content edge must still \
@@ -2680,7 +2692,7 @@ fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64
         if out == Outcome::none() {
             continue;
         }
-        if out.effects.contains(&Effect::PersistPresence) {
+        if out.effects.iter().any(publishes_presence) {
             heartbeats += 1;
             last_write_ms = sim.now_ms;
         }
@@ -2952,7 +2964,7 @@ mod timer_chain_fuzz {
                 let Some(elapsed) = sim.pop() else { break };
                 let out = rt.timer(PermissionProbe::default(), elapsed, sim.now_epoch_s());
                 sim.schedule_from(&out.effects);
-                if elapsed > STALE_FIRE_ELAPSED_S && out.effects.contains(&Effect::PersistPresence) {
+                if elapsed > STALE_FIRE_ELAPSED_S && out.effects.iter().any(publishes_presence) {
                     settled = true;
                     break;
                 }
@@ -2966,4 +2978,145 @@ mod timer_chain_fuzz {
             );
         }
     }
+}
+
+// ── Visibility gate ─────────────────────────────────────────────────────
+
+/// A granted, named runtime with one tab, one tracked pane (7) running, and
+/// a first frame drawn — the steady state every hidden-rail test starts from.
+fn painted_runtime() -> PluginRuntime {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+    rt.status_pipe(&payload_json(7, "running"));
+    let _ = rt.render(30, 40);
+    rt
+}
+
+/// A one-tab, one-pane manifest: pane 7 in tab 0, no exits, default theme.
+fn manifest_with_pane_7() -> PaneUpdate {
+    PaneUpdate {
+        tab_panes: HashMap::from([(0, vec![pane(7)])]),
+        live: HashSet::from([7]),
+        theme: None,
+        exits: Vec::new(),
+    }
+}
+
+#[test]
+fn hidden_rail_ticks_its_state_but_never_paints() {
+    // Every tick still runs the stores' tick-domain clocks (debounce
+    // promotion, Done TTL, stale-Running grace) so a hidden instance stays
+    // in lockstep with its visible siblings — it just does not paint the
+    // frame nobody can see.
+    let mut rt = painted_runtime();
+    let argv: Vec<String> = vec!["cargo".into(), "test".into()];
+    rt.command_changed(9, &argv, true);
+
+    let hide = rt.visibility_changed(false);
+    assert_eq!(hide, Outcome::none(), "going dark is silent: nothing to paint, nothing to write");
+
+    for _ in 0..DEBOUNCE_TICKS {
+        let tick = rt.timer_fast(PermissionProbe::default());
+        assert!(!tick.render, "a hidden rail never paints a tick frame");
+        assert!(
+            tick.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+            "…but keeps the Fast chain alive for the animating row, got {:?}",
+            tick.effects
+        );
+    }
+    assert_eq!(
+        rt.radar.command_store().get(9).map(|o| o.status),
+        Some(Status::Running),
+        "the debounce promotion landed on schedule while hidden"
+    );
+}
+
+#[test]
+fn hidden_rail_leaves_snapshot_writes_to_its_visible_sibling() {
+    let mut rt = painted_runtime();
+    rt.visibility_changed(false);
+
+    let edge = rt.status_pipe(&payload_json(7, "done"));
+    assert!(!edge.render, "hidden: no paint on the edge");
+    assert!(
+        !edge.effects.contains(&Effect::PersistSnapshot),
+        "hidden: the visible instance holds the same state and writes it once, got {:?}",
+        edge.effects
+    );
+    assert_eq!(
+        rt.radar.status_store().get(7).map(|o| o.status),
+        Some(Status::Done),
+        "the store still took the edge — only the write was skipped"
+    );
+
+    // A deferred label write pending from before the tab went dark is
+    // dropped at its flush too, not written late by the wrong instance.
+    rt.status_pipe(&payload_json(7, "running"));
+    rt.snapshot_dirty = true;
+    let flush = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !flush.effects.contains(&Effect::PersistSnapshot),
+        "hidden flush is dropped, got {:?}",
+        flush.effects
+    );
+    assert!(!rt.snapshot_dirty, "…and the dirty flag is consumed, not left to fire on reveal");
+}
+
+#[test]
+fn reveal_repaints_once_even_when_the_rows_did_not_change() {
+    // While hidden the instance painted nothing, so whatever the rows-diff
+    // gate remembers as "on screen" is what was there BEFORE the tab went
+    // dark. A reveal must paint regardless of the key compare.
+    let mut rt = painted_runtime();
+    rt.visibility_changed(false);
+    assert!(!rt.timer_fast(PermissionProbe::default()).render);
+
+    let reveal = rt.visibility_changed(true);
+    assert!(reveal.render, "reveal repaints the frame that was skipped");
+
+    let again = rt.visibility_changed(true);
+    assert_eq!(again, Outcome::none(), "a repeated Visible(true) is a no-op");
+    assert!(rt.timer_fast(PermissionProbe::default()).render, "visible again: tick frames paint as before");
+    let edge = rt.status_pipe(&payload_json(7, "done"));
+    assert!(
+        edge.effects.contains(&Effect::PersistSnapshot),
+        "visible again: this instance writes, got {:?}",
+        edge.effects
+    );
+}
+
+#[test]
+fn a_manifest_proves_the_rail_visible() {
+    // Zellij routes TabUpdate/PaneUpdate to the active tab's plugins only,
+    // so receiving one is proof of visibility — the belt-and-braces for a
+    // lost Visible(true), whose failure mode would be a rail that never
+    // paints again.
+    let mut rt = painted_runtime();
+    rt.visibility_changed(false);
+    assert!(!rt.timer_fast(PermissionProbe::default()).render);
+
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    assert!(rt.timer_fast(PermissionProbe::default()).render, "a TabUpdate un-hides the rail");
+
+    rt.visibility_changed(false);
+    rt.panes_changed(manifest_with_pane_7());
+    assert!(rt.timer_fast(PermissionProbe::default()).render, "a PaneUpdate un-hides the rail");
+}
+
+#[test]
+fn hidden_rail_still_heartbeats_presence() {
+    // A detached session (every tab hidden) is alive; its presence mtime
+    // must keep moving or peers dim and then reap it. The heartbeat is
+    // deduplicated by mtime host-side, never gated on visibility here.
+    let mut rt = painted_runtime();
+    rt.visibility_changed(false);
+    let now = crate::clock::now_epoch_s();
+    rt.last_presence_write_epoch_s = now.saturating_sub(PRESENCE_HEARTBEAT_S);
+
+    let due = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
+    assert!(
+        due.effects.iter().any(|e| matches!(e, Effect::HeartbeatPresence { .. })),
+        "hidden rails heartbeat too, got {:?}",
+        due.effects
+    );
 }

@@ -119,13 +119,16 @@ design.md → *Timer and cadence*.
 
 ## Render gate
 
-Why an event repaints, or does not. Three layers keep repaints proportional to
+Why an event repaints, or does not. Four layers keep repaints proportional to
 change: intake no-ops (an identical re-broadcast reports a default
 `RadarChange`), label-only deferral (a Running→Running relabel on an animating
-row rides the next Fast tick), and the rows-diff gate (`project` drops a
-render whose content key equals the last one drawn). All three rest on
-`RadarState::generation` and the `rows()` memo. A missed `touch()` on a new
-mutator is a stale-rail bug. Detail: design.md → *Render gate*.
+row rides the next Fast tick), the rows-diff gate (`project` drops a render
+whose content key equals the last one drawn), and the visibility gate (a rail
+whose tab Zellij reported hidden paints nothing and writes no snapshot until
+revealed, while its state keeps ticking). The first three rest on
+`RadarState::generation` and the `rows()` memo; the fourth on
+`Event::Visible`. A missed `touch()` on a new mutator is a stale-rail bug.
+Detail: design.md → *Render gate*.
 
 ## Ledger
 

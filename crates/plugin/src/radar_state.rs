@@ -517,9 +517,12 @@ impl RadarState {
 
         // Persist only on the recede edges below (mirroring `command_changed`'s
         // "persist only when we actually cleared"): a plain PaneUpdate is
-        // resize/title/focus churn, and Zellij sends one to EVERY tab's
-        // instance — persisting unconditionally made each of them read-merge-
-        // write the shared /cache file per churn event. Topology itself isn't
+        // resize/title/focus churn, and Zellij sends one to every visible
+        // rail on every layout change — persisting unconditionally made each
+        // of them read-merge-write the shared /cache file per churn event.
+        // (Zellij 0.44 routes manifests to the active tab's plugins only;
+        // hidden rails converge from the manifest their reveal brings.)
+        // Topology itself isn't
         // persisted, and an exit that merely flips a command to Done/Error
         // (displacing nothing) is safe to skip too: exits ride the
         // level-triggered pane manifest, so a late-spawned instance re-derives
@@ -844,7 +847,9 @@ impl RadarState {
     /// you're looking at" suppression only. Focus **no longer drives any rail
     /// state**: `done`/`error`/`pending` rows clear only via a new broadcast, the
     /// return-to-shell exit-clear (`command_changed`), or prune — all *shared*
-    /// inputs Zellij delivers to every tab's instance. So the rail renders
+    /// inputs: broadcasts and `CommandChanged` reach every tab's instance at
+    /// once, and the manifest-borne prune reaches a hidden rail with the
+    /// manifest its reveal brings. So the rail renders
     /// identically on every tab regardless of which pane is focused (focus is
     /// per-client and is NOT delivered to background instances — deriving rail
     /// state from it was the source of the cross-tab desync).
