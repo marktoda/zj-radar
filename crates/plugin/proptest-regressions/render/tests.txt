@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f7835f1b35cee95fa1f393ae4b3322d4726c87ac8e9524a1e7ee7d44c1673ed5 # shrinks to rows = [TabRow { number: 1, name: "", active: false, has_bell: false, flash: false, display: TabDisplay { status: Idle, progress: ProgressCounts { done: 0, total: 0, pending: 0 }, detail: None, panes: [], animating: false } }], width = 1, height = 5, ledger = []
+cc ac1e25f4cbdc7361fa7c72233ba94bdb7e2b64a9274872fb678f277d38e30bcb # shrinks to rows = [TabRow { number: 1, name: "", active: false, has_bell: false, flash: false, display: TabDisplay { status: Idle, progress: ProgressCounts { done: 0, total: 0, pending: 0 }, detail: None, panes: [], animating: false } }], width = 1, height = 9, ledger = [LedgerLine { at_epoch_s: 0, error: false, tab_name: "", label: "", tab_position: None }]

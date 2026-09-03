@@ -37,10 +37,6 @@
         src = ./.;
         filter = path: type:
           (craneLib.filterCargoSources path type)
-          # The wasm target's linker flags (shadow-stack size, docs/design.md
-          # §15) — without this the hermetic build silently ships a plugin
-          # with a different memory profile from the local one.
-          || (pkgs.lib.hasSuffix "/.cargo/config.toml" path)
           # Pulled in at compile time via include_str! in src/reference_tests.rs.
           || (pkgs.lib.hasSuffix "/docs/rail-reference.md" path)
           # include_str!'d by the CLI's `run` command (crates/cli/src/run.rs).
@@ -103,8 +99,11 @@
           # (`tools/wasm-fuel`, docs/design.md §15) plus ~13 % fewer bytes,
           # over rustc's own opt-level "z". The `--enable-*` set is exactly
           # what rustc emits for wasm32-wasip1 (`rustc --print cfg --target
-          # wasm32-wasip1 | grep target_feature`); `--all-features` would let
-          # binaryen introduce encodings wasmi 0.51 rejects. Dev builds
+          # wasm32-wasip1 | grep target_feature`, as of rustc 1.97); the
+          # release wasm is stripped, so binaryen cannot detect them itself,
+          # and `--all-features` would let it introduce encodings wasmi 0.51
+          # rejects. Drift fails closed: a feature the list lacks makes
+          # wasm-opt reject the module rather than mis-optimize. Dev builds
           # (`just dev`, E2E) stay unoptimized — the pass is behavior-
           # preserving and the release funnel exercises the shipped file.
           installPhaseCommand = ''

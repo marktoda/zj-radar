@@ -1219,20 +1219,34 @@ fn child_prefix(active: bool, tab_status: Status, branch: Branch, conn_color: &s
 
 /// Measure visible (display) width of a string that may contain ANSI SGR escapes.
 fn visible_width(s: &str) -> usize {
-    let mut width = 0usize;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                for inner in chars.by_ref() {
-                    if inner == 'm' {
-                        break;
-                    }
-                }
-            }
+    // Measured chunk-wise with the string API, as `truncate` measures — the
+    // per-char sum it replaced disagreed on ZWJ/VS16 emoji sequences (which
+    // the string API folds and the sanitizer keeps), so a label could fit
+    // per `truncate` yet under-pad its card band. ASCII, the common case,
+    // is its own length.
+    fn text_width(text: &str) -> usize {
+        if text.is_ascii() {
+            // Printable ASCII is one column each; the line's trailing `\n`
+            // (or any other control) is zero.
+            text.bytes().filter(|b| !b.is_ascii_control()).count()
         } else {
-            width += UnicodeWidthChar::width(c).unwrap_or(0);
+            // `unicode-width`'s str width charges a column per control
+            // character, so measure the printable runs between them —
+            // sequences (ZWJ, VS16) never span a control, so folding is
+            // preserved.
+            text.split(char::is_control).map(UnicodeWidthStr::width).sum()
         }
+    }
+    let mut parts = s.split('\x1b');
+    let mut width = text_width(parts.next().unwrap_or_default());
+    for part in parts {
+        // This rail emits SGR only: `ESC [ … m`. A stray ESC contributes
+        // nothing; its tail is text.
+        let text = match part.strip_prefix('[') {
+            Some(body) => body.split_once('m').map_or("", |(_, rest)| rest),
+            None => part,
+        };
+        width += text_width(text);
     }
     width
 }
@@ -1284,14 +1298,12 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
     // Measured on the unpainted text: `bg` and `RESET` are SGR sequences,
     // which `visible_width` skips, so re-arming cannot move the width.
     let pad = width.saturating_sub(visible_width(bare));
-    let resets = bare.matches(RESET).count();
 
-    // One buffer, sized up front — this runs once per Cards line per frame
+    // One buffer, sized for the common shape (a line re-arms once or twice;
+    // a busier one grows once) — this runs once per Cards line per frame
     // under the interpreter, where the old replace + repeat + format chain
     // was four allocations and three copies of the line.
-    let mut out = String::with_capacity(
-        bare.len() + bg.len() * (resets + 1) + pad + BG_RESET.len() + RESET.len() + 1,
-    );
+    let mut out = String::with_capacity(bare.len() + 3 * bg.len() + pad + BG_RESET.len() + RESET.len() + 1);
     out.push_str(bg);
     // Re-arm bg after every reset token inside the line.
     let mut parts = bare.split(RESET);

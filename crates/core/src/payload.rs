@@ -198,15 +198,40 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
     // sanitizer wrote — and the scrub below is run on every field of every
     // broadcast, manifest pane, and snapshot record, under the interpreter.
     // One allocation-free scan settles the common case; anything that needs
-    // rewriting takes the full walk. `is_control` covers every byte the
-    // slow path rewrites or drops (C0 incl. `\n`/`\t`/`\r`, ESC, DEL, C1).
-    if s.chars().all(|c| !c.is_control() && !is_bidi_control(c)) {
+    // rewriting takes the full walk.
+    if s.chars().all(kept) {
         return match s.char_indices().nth(max_chars) {
             Some((cut, _)) => s[..cut].to_string(),
             None => s.to_string(),
         };
     }
     scrub(s, max_chars)
+}
+
+/// [`sanitize`] for a string the caller already owns: clean input (the
+/// common case) is left in place with no allocation at all, and only over-
+/// long or dirty input is rewritten.
+pub fn sanitize_in_place(s: &mut String, max_chars: usize) {
+    if s.chars().all(kept) {
+        if let Some((cut, _)) = s.char_indices().nth(max_chars) {
+            s.truncate(cut);
+        }
+        return;
+    }
+    *s = scrub(s, max_chars);
+}
+
+/// Whether the sanitizer passes `c` through unchanged — THE predicate both
+/// the fast path and [`scrub`] share, so the two cannot disagree: C0
+/// controls (ESC, `\n`/`\t`/`\r` included — `scrub` folds those three to a
+/// space, still a rewrite), DEL, C1, and the bidi format characters are the
+/// only things `scrub` drops or rewrites. ASCII takes the cheap range test.
+fn kept(c: char) -> bool {
+    if c.is_ascii() {
+        !c.is_ascii_control()
+    } else {
+        !c.is_control() && !is_bidi_control(c)
+    }
 }
 
 /// The full sanitizer walk (see [`sanitize`], whose fast path skips it for
@@ -299,7 +324,7 @@ fn scrub(s: &str, max_chars: usize) -> String {
             // reorder or hide rail text (Trojan-Source-style spoofing).
             match s.get(i..) {
                 Some(remaining) => match remaining.chars().next() {
-                    Some(c) if !c.is_control() && !is_bidi_control(c) => {
+                    Some(c) if kept(c) => {
                         cleaned.push(c);
                         i += c.len_utf8();
                     }
@@ -765,6 +790,9 @@ mod tests {
             max in 1usize..120,
         ) {
             prop_assert_eq!(sanitize(&input, max), scrub(&input, max));
+            let mut in_place = input.clone();
+            sanitize_in_place(&mut in_place, max);
+            prop_assert_eq!(in_place, scrub(&input, max));
         }
 
         #[test]

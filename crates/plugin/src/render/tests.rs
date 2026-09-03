@@ -3698,6 +3698,25 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
 }
 
 #[test]
+fn visible_width_skips_sgr_and_controls_and_agrees_with_truncate_on_sequences() {
+    // Both measurement paths — the ASCII fast path and the string API — treat
+    // SGR and the trailing newline as zero width…
+    assert_eq!(visible_width("abc\n"), 3);
+    assert_eq!(visible_width("\x1b[38;2;1;2;3m─\x1b[0m\n"), 1);
+    assert_eq!(visible_width("…\n"), 1);
+    assert_eq!(visible_width("\x1b[1mbold\x1b[0m and \x1b[31mred\x1b[0m"), 12);
+    assert_eq!(visible_width(""), 0);
+    // …a stray ESC contributes nothing and its tail stays text…
+    assert_eq!(visible_width("a\x1bb"), 2);
+    // …and an emoji ZWJ sequence measures as `truncate` measures it (one
+    // glyph, two columns), so a label that fits per `truncate` pads its card
+    // band correctly. The per-char sum this replaced said four.
+    let family = "👨\u{200d}💻";
+    assert_eq!(visible_width(family), UnicodeWidthStr::width(family));
+    assert_eq!(visible_width(&format!("\x1b[1m{family}\x1b[0m x")), UnicodeWidthStr::width(family) + 2);
+}
+
+#[test]
 fn paint_if_cards_paints_rail_lines_under_cards_only() {
     // The row-less surfaces (header, badge, idle strip, bottom region) are
     // all `LineBg::Rail`; `paint_if_cards` is that one identity — paint the
