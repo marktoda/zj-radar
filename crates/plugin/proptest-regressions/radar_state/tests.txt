@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 099b2a6bd9dd75e013326464073898d97dd5b4f500bbe1969b63edd00797bbe5 # shrinks to ops = [Status(2, Idle), Panes([], [], None)]
+cc de3bd168f5bdea94453cbcbc5a600f52b52b82a77e5c6a9974668017961abbba # shrinks to ops = [Panes([], [], None), Status(1, Idle), Panes([], [], None)]

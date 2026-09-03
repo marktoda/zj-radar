@@ -320,11 +320,12 @@ pub(crate) struct RadarState {
     rows_memo: std::cell::RefCell<Option<RowsMemo>>,
 }
 
-/// The [`RadarState::rows_memo`] entry: the `(generation, now_tick)` the rows
-/// were computed at, with the shared result.
+/// The [`RadarState::rows_memo`] entry: the generation and the set of
+/// mid-flash tabs (`RadarState::flashing_at`, the only thing the tick
+/// changes about a row) the rows were computed at, with the shared result.
 struct RowsMemo {
     generation: u64,
-    tick: u64,
+    flashing: Vec<TabId>,
     rows: std::rc::Rc<Vec<TabRow>>,
 }
 
@@ -412,15 +413,35 @@ impl RadarState {
     /// both the repeat rollups AND per-hit deep clones were a measurable share
     /// of per-event cost.
     pub(crate) fn rows(&self, now_tick: u64) -> std::rc::Rc<Vec<TabRow>> {
+        // `now_tick` reaches the rows through exactly one field — `flash` —
+        // so the memo is keyed on which tabs are mid-flash at this tick, not
+        // on the tick itself: a Fast tick with no flash in flight (the
+        // steady state of an animating rail) is a memo hit, where keying on
+        // the tick made every one of them a full re-rollup.
+        let flashing = self.flashing_at(now_tick);
         if let Some(memo) = self.rows_memo.borrow().as_ref() {
-            if memo.generation == self.generation && memo.tick == now_tick {
+            if memo.generation == self.generation && memo.flashing == flashing {
                 return memo.rows.clone();
             }
         }
         let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
         *self.rows_memo.borrow_mut() =
-            Some(RowsMemo { generation: self.generation, tick: now_tick, rows: rows.clone() });
+            Some(RowsMemo { generation: self.generation, flashing, rows: rows.clone() });
         rows
+    }
+
+    /// The tabs whose ping flash is lit at `now_tick`, sorted — the only
+    /// tick-dependent input to `rows()`, and so the tick half of its memo
+    /// key. Empty (and allocation-free) whenever nothing is flashing.
+    fn flashing_at(&self, now_tick: u64) -> Vec<TabId> {
+        let mut lit: Vec<TabId> = self
+            .flash_until
+            .iter()
+            .filter(|(_, &until)| now_tick < until)
+            .map(|(&id, _)| id)
+            .collect();
+        lit.sort_unstable();
+        lit
     }
 
     fn rows_uncached(&self, now_tick: u64) -> Vec<TabRow> {
@@ -522,11 +543,15 @@ impl RadarState {
         // memo survives and none of the store/ledger/prune machinery below
         // needs to run. Each condition rules out one mutation below: no
         // exits (no Done/Error flip), no grace in flight (a graced pane's
-        // second absence must prune), the same live set (no prune, no new
-        // pane), and pane-for-pane identical topology modulo focus.
+        // second absence must prune), the same live set (no new pane),
+        // every tracked pane live (a status that arrived for a pane the
+        // manifest does not carry must enter the grace on this report, not
+        // wait for the topology to move), and pane-for-pane identical
+        // topology modulo focus.
         if update.exits.is_empty()
             && self.absent_once.is_empty()
             && self.live_panes.as_ref() == Some(&update.live)
+            && self.all_tracked_live(&update.live)
             && same_topology(&self.tab_panes, &update.tab_panes, |x, y| x.id == y.id && x.title == y.title)
         {
             let focus_moved =
@@ -890,6 +915,13 @@ impl RadarState {
 
     pub(crate) fn recompute_renames(&mut self, naming: config::NamingMode) -> Vec<TabRename> {
         self.rename_tabs(naming)
+    }
+
+    /// Whether both stores track only panes in `live` — i.e. a manifest
+    /// carrying exactly `live` has nothing to grace or prune.
+    fn all_tracked_live(&self, live: &HashSet<u32>) -> bool {
+        self.status.observations().all(|(id, _)| live.contains(&id))
+            && self.command.tracked_pane_ids().all(|id| live.contains(&id))
     }
 
     /// Track the focused terminal pane, for the notifier's "don't ding the pane

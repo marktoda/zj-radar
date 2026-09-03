@@ -426,6 +426,28 @@ fn focus_only_manifest_still_renames_by_the_focused_pane_repo() {
 }
 
 #[test]
+fn identical_manifest_still_graces_a_status_for_a_pane_it_does_not_carry() {
+    // A broadcast can land for a pane the manifest never listed (a pane
+    // that closed between hook and report, or a producer's stale pane id).
+    // The very next manifest — identical to the last one — must start the
+    // one-manifest grace for it, and the one after must prune; the fast
+    // path may not skip a report the stores have something to say about.
+    // (Found by `radar_state_invariants_hold_after_any_event_sequence`.)
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.panes_changed(two_pane_manifest(7), 1, 0, config::NamingMode::Off);
+    radar.status_pipe(&payload::to_wire(&payload_in_repo(99, Status::Running, "r")), 2, 0, config::NamingMode::Off);
+
+    radar.panes_changed(two_pane_manifest(7), 3, 0, config::NamingMode::Off);
+    assert!(radar.graced_pane_ids().contains(&99), "first absence: graced");
+    assert!(radar.status_store().get(99).is_some());
+
+    radar.panes_changed(two_pane_manifest(7), 4, 0, config::NamingMode::Off);
+    assert!(radar.status_store().get(99).is_none(), "second absence: pruned");
+    assert!(radar.graced_pane_ids().is_empty());
+}
+
+#[test]
 fn a_title_change_or_new_pane_takes_the_full_path() {
     // Titles are rows-visible (single-pane detail lines) and a new pane
     // changes the live set: both must bump the generation like before.
