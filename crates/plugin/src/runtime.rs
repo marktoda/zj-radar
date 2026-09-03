@@ -359,8 +359,10 @@ pub(crate) struct PluginRuntime {
     /// reads as "long overdue" the moment a name is known.
     last_presence_write_epoch_s: u64,
     /// The tick of the last peer-presence directory scan (`None` = never) —
-    /// the decimation gate in [`timer`](Self::timer) measures from here, so
-    /// the first Fast fire always scans.
+    /// the Fast decimation gate in [`timer`](Self::timer) measures from
+    /// here, so a fresh instance's first Fast fire always scans. Stamped by
+    /// Slow scans too, so a Fast fire landing right after one waits out the
+    /// interval rather than re-reading a roster graded seconds ago.
     last_presence_scan: Option<u64>,
     /// The `radar.generation()` the own-`Presence` in `last_presence` was
     /// derived at. Presence counts are a pure function of radar state, so an
@@ -503,9 +505,9 @@ impl PluginRuntime {
         // read per instance (N tabs × N sessions of wasi stat+read) bought
         // nothing — except mid-cycle (`wants_fast_cadence`), where the Alt+[/]
         // selection UI wants the freshest roster every tick. Measured from the
-        // LAST scan (`last_presence_scan`), not the absolute tick, so the very
-        // first Fast fire always seeds the badge — a fresh instance must not
-        // sit blank for up to a full interval on an arbitrary tick phase.
+        // LAST scan (`last_presence_scan`), not the absolute tick, so a fresh
+        // instance's very first Fast fire always seeds the badge — it must
+        // not sit blank for up to a full interval on an arbitrary tick phase.
         let scan_due = is_slow_fire
             || self.sessions.wants_fast_cadence()
             || self.last_presence_scan
@@ -530,8 +532,9 @@ impl PluginRuntime {
             || awaiting_permission
             || store_changed
             || self.timer_should_continue()
-            // A Slow fire exists precisely to repaint ledger ages — even
-            // when nothing else changed, `format_age` output may have moved.
+            // A Slow fire exists to repaint ledger ages — even when nothing
+            // else changed, `format_age` output may have moved — and, since
+            // the peer scan rides it, to re-grade the badge.
             // Keyed on the fire that actually landed, not `desired_cadence`:
             // the desire can have moved on (in either direction) between the
             // arm and the fire.
@@ -1109,10 +1112,11 @@ impl PluginRuntime {
             // known.
             || !self.own_session_name.is_empty()
         {
-            // Slow ticks exist to advance minute-granular ages: ledger rows'
-            // relative ages and pending rows' `· Nm` wait tags. Both freeze
-            // at 1h+ (saturation) — which, before the name is learned, is
-            // what lets the timer disarm fully.
+            // Slow ticks advance minute-granular ages (ledger rows' relative
+            // ages, pending rows' `· Nm` wait tags — both freeze at 1h+
+            // saturation, which, before the name is learned, is what lets the
+            // timer disarm fully) and carry the peer-presence scan, an idle
+            // rail's only way to grade a peer stale or dead.
             Some(Cadence::Slow)
         } else {
             None

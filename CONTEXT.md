@@ -153,8 +153,9 @@ plugin pane, resolved to a stable `TabId`. The once-per-pane cwd bootstrap
 
 How one session's rail learns another's counts without asking Zellij. Each
 plugin writes `zj-radar.presence.<zellij_pid>.json` into the shared `/cache`
-root (`session_files.rs`); peers read the directory on Fast ticks and feed
-`Sessions` (`sessions.rs`), pure state that derives the badge on demand.
+root (`session_files.rs`); peers read the directory on every Slow tick and on
+decimated Fast ticks, and feed `Sessions` (`sessions.rs`), pure state that
+derives the badge on demand.
 Liveness is the file's mtime, graded fresh (≤ 90 s) → stale (dimmed, skipped
 by cycling) → dead (≥ 300 s, reaped and unlinked). Badge order and cycling
 order come from one `ordered()`. The `✕` glyph is the manual dismiss. Detail:

@@ -481,11 +481,10 @@ rows, header badge, and footer stay tab-level summaries.
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
 rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
 in `project` that bypasses the content gate). Peers read the directory on every
-Slow (60 s) tick, and on every fifth Fast tick except mid-cycle. The Slow read
-is what lets an idle rail notice a peer's death at all; without it the badge
-froze at its last Fast-era read and killed sessions stayed listed until the
-rail went Fast again. `Sessions::update_presences`
-grades each file's age: fresh (≤ 90 s), stale (90–300 s: dimmed, unreachable
+Slow (60 s) tick, and on every fifth Fast tick except mid-cycle; the Slow read
+is what lets an idle rail grade a peer at all, since ages are captured at read
+time. `Sessions::update_presences` grades each file's age: fresh (≤ 90 s),
+stale (90–300 s: dimmed, unreachable
 by cycling since switching onto a dead session would have Zellij resurrect it
 as an empty zombie), dead (≥ 300 s, five missed heartbeats: reaped and the
 file unlinked via `Effect::DismissPresence`). Dimming stays twitchy because it

@@ -2694,6 +2694,68 @@ fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64
 }
 
 #[test]
+fn idle_slow_chain_keeps_scanning_peers_for_half_an_hour() {
+    // The read side's companion to `assert_heartbeats_for`'s write side, and
+    // the counterpart to `read_presences_rides_every_slow_fire_and_decimated_fast_fires`:
+    // that test hands `timer` one hand-made Slow `elapsed_s`, which proves
+    // the gate but not that the CHAIN keeps delivering. Here the fires come
+    // only from the runtime's own `SetTimeout` effects through `FireSim`, so
+    // a scan that stops arriving — a starved chain, a decay that loses the
+    // arm, a gate that only fires once — shows up as a gap or a starvation
+    // panic rather than passing unnoticed.
+    //
+    // The bound that matters is the gap, not the count: a corpse is graded
+    // dead off its mtime age, so as long as consecutive scans stay well
+    // inside `DEAD_AFTER_SECS` an idle rail cannot leave one listed past the
+    // horizon (which is the whole field bug).
+    let mut rt = granted_runtime();
+    let mut sim = FireSim::new();
+    let named = rt.session_name_changed(Some("work".into()));
+    sim.schedule_from(&named.effects);
+    drive_tabs_and_panes(&mut rt);
+    drain_to_settled_slow(&mut rt, &mut sim);
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: an idle named rail rides Slow");
+
+    let deadline_ms = sim.now_ms + 30 * 60_000;
+    let mut scans = 0u64;
+    let mut last_scan_ms = sim.now_ms;
+    let mut worst_gap_ms = 0u64;
+    while sim.now_ms < deadline_ms {
+        let Some(elapsed) = sim.pop() else {
+            panic!(
+                "TimerChain starved at virtual t={:.1}s (armed={:?}) — an idle rail with no \
+                 chain never scans again",
+                sim.now_ms as f64 / 1000.0,
+                rt.timer_chain.armed(),
+            );
+        };
+        let out = rt.timer(PermissionProbe::default(), elapsed, sim.now_epoch_s());
+        sim.schedule_from(&out.effects);
+        if out.effects.contains(&Effect::ReadPresences) {
+            scans += 1;
+            worst_gap_ms = worst_gap_ms.max(sim.now_ms - last_scan_ms);
+            last_scan_ms = sim.now_ms;
+        }
+    }
+
+    let horizon_ms = crate::sessions::DEAD_AFTER_SECS * 1000;
+    assert!(
+        worst_gap_ms < horizon_ms,
+        "worst gap between peer scans was {worst_gap_ms}ms, which must stay under the \
+         {horizon_ms}ms dead horizon or an idle rail can leave a corpse listed"
+    );
+    assert!(
+        scans >= 25,
+        "expected ~one scan per Slow fire over 30 virtual minutes, got {scans}"
+    );
+    assert_eq!(
+        rt.timer_chain.armed(),
+        Some(Cadence::Slow),
+        "the rail must ride out the run on Slow, still armed to scan again"
+    );
+}
+
+#[test]
 fn slow_heartbeat_survives_a_long_sustained_busy_period() {
     // Variant where the original stale Slow fire's 60s deadline actually
     // elapses WHILE Fast activity is still ongoing (not right at the
