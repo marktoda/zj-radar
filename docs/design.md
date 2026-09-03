@@ -213,7 +213,27 @@ client even if the caller is killed mid-send. Deadlines are status-keyed:
 `DEFAULT_PIPE_TIMEOUT_SECS` (5 s) for once-per-turn edges,
 `RUNNING_PIPE_TIMEOUT_SECS` (2 s) for `running` heartbeats. The bundled hooks'
 `timeout` values must clear the cap plus 2 s (welded by
-`hooks_manifest_tests.rs`).
+`hooks_manifest_tests.rs`). The subtree exits with the client's status, so a
+caller can tell a delivered send from one killed at the deadline; the CLI
+producer blocks on that exit, with a cap + 1 s backstop thread for the corner
+where the watchdog's own fork failed.
+
+**Last-sent dedup.** Claude's PreToolUse and PostToolUse derive identical
+payloads, so half of tool-loop traffic would be a duplicate the plugin's
+intake no-ops — after every rail instance paid the wasmi delivery cost. The
+CLI (`crates/cli/src/dedup.rs`, at the `broadcast` choke point every producer
+path shares) keeps each pane's last confirmed delivery in a small state file
+under `$XDG_RUNTIME_DIR` or the temp dir, keyed by Zellij session and pane
+id, and drops a send only when the status is `running`, `(source, msg, task)`
+match the record, and the record is younger than `DEDUP_TTL_SECS` (30 s).
+Edges always send — which is what keeps PostToolUse the Pending→Running
+recovery edge: the `pending` overwrites the record, so the `running` after it
+differs. Repo and branch are resolved after the check (a skipped send costs no
+git work) and are not in the key; the TTL bounds how long a rail that dropped
+the row on its own (exit-clear grace, `/clear`, eviction, `✓`) can disagree
+with a busy producer. Only a confirmed delivery is recorded, hence the exit
+status above. `ZJ_RADAR_NO_DEDUP=1` turns it off; the bash fallback has no
+dedup.
 
 **Newcomer rehydration.** The plugin runs one instance per tab, and a
 broadcast reaches only the instances alive when it is sent. A tab opened after
