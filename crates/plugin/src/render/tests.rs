@@ -3679,18 +3679,17 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
     let active_row = TabRow { active: true, ..tab(1, "a", display(Status::Running, 0, 1, None)) };
-    // `render_body` resolves these once per row (card) / per frame (the
-    // other two) and hands the map borrowed strings, so a line's escape is
-    // a lookup with no allocation of its own.
-    let card = card_tint(&active_row, &theme);
+    // `render_body` builds the map once per row through `Surfaces::for_row`
+    // (the per-frame rail/agent escapes passed in, the card tint computed
+    // there) and a line's escape is a lookup into it.
     let agent = tc_bg(theme.surface_agent);
-    let surfaces = Surfaces { rail: &rail, card: &card, active_child: &agent };
+    let surfaces = Surfaces::for_row(&active_row, &theme, &rail, &agent);
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
     assert_eq!(LineBg::None.escape(&surfaces), None);
     assert_eq!(LineBg::Rail.escape(&surfaces), Some(rail.as_str()));
-    assert_eq!(LineBg::Card.escape(&surfaces), Some(card.as_str()));
+    assert_eq!(LineBg::Card.escape(&surfaces), Some(card_tint(&active_row, &theme).as_str()));
     assert_eq!(LineBg::ActiveChild.escape(&surfaces), Some(agent.as_str()));
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the

@@ -63,11 +63,13 @@ impl Shape {
         let mut shape = Shape { tabs: 8, panes_per_tab: 3, rows: 40, cols: 30, iters: 15, keybinds: 141 };
         let mut i = 0;
         while i < args.len() {
+            let flag = args[i].clone();
             let take = |args: &mut Vec<String>, i: usize| -> u32 {
-                args.remove(i);
-                args.remove(i).parse().expect("numeric flag value")
+                let value = args.get(i + 1).unwrap_or_else(|| panic!("{flag} needs a numeric value")).clone();
+                args.drain(i..=i + 1);
+                value.parse().unwrap_or_else(|_| panic!("{flag} needs a numeric value, got {value:?}"))
             };
-            match args[i].as_str() {
+            match flag.as_str() {
                 "--tabs" => shape.tabs = take(args, i),
                 "--panes" => shape.panes_per_tab = take(args, i),
                 "--rows" => shape.rows = take(args, i) as i32,
@@ -77,6 +79,7 @@ impl Shape {
                 _ => i += 1,
             }
         }
+        assert!(shape.iters >= 1, "--iters must be at least 1");
         shape
     }
 }
@@ -142,10 +145,14 @@ struct HostEnv {
 /// and swallow everything else, as a host with no screen would.
 fn host_run_plugin_command(mut caller: Caller<'_, HostEnv>) {
     let env = caller.data_mut();
+    // Zellij's `wasi_read_bytes` parses EVERYTHING the plugin has printed
+    // as one JSON byte array — a stray byte before the command makes the
+    // host drop it. Parse the whole buffer the same way, so a plugin Zellij
+    // would mis-run fails loudly here instead of being measured.
     let printed = env.stdout.drain_string();
-    let Some(line) = printed.lines().rev().find(|l| !l.trim().is_empty()) else { return };
-    let bytes: Vec<u8> = serde_json::from_str(line)
-        .unwrap_or_else(|e| panic!("plugin command is not a JSON byte array ({e}); stdout held {:?}", &printed[..printed.len().min(120)]));
+    let bytes: Vec<u8> = serde_json::from_str(printed.trim()).unwrap_or_else(|e| {
+        panic!("plugin command is not a lone JSON byte array ({e}); stdout held {:?}", &printed[..printed.len().min(120)])
+    });
     let head = command::Head::decode(bytes.as_slice()).expect("plugin command protobuf");
     *env.commands.entry(head.name).or_default() += 1;
     match head.name {

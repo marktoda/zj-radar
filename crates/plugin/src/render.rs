@@ -342,24 +342,35 @@ enum LineBg {
 /// line per frame.
 struct Surfaces<'a> {
     rail: &'a str,
-    card: &'a str,
+    card: String,
     active_child: &'a str,
 }
 
+impl<'a> Surfaces<'a> {
+    /// The row-surface map's one home: which theme color each class paints
+    /// with. `Card` is the row's own tint (`card_tint`: flash > active >
+    /// agent > idle); `ActiveChild` is `surface_agent` regardless of the
+    /// row — the split the `cards_active_more_line_*` drift guards pin.
+    /// `rail` and `active_child` are per-frame escapes the caller already
+    /// holds; only the card tint is computed here, once per row.
+    fn for_row(row: &TabRow, theme: &DerivedColors, rail: &'a str, active_child: &'a str) -> Surfaces<'a> {
+        Surfaces { rail, card: card_tint(row, theme), active_child }
+    }
+}
+
 impl LineBg {
-    /// The one home for the row-surface map — how a line class resolves
-    /// against its owning row's [`Surfaces`] (the `ActiveChild` vs `Card`
-    /// split the `cards_active_more_line_*` drift guards pin).
+    /// Resolve a line class against its owning row's [`Surfaces`] — a
+    /// lookup, not a computation ([`Surfaces::for_row`] is the map).
     /// `render_body`'s per-row `finalize` closure is the caller; the
     /// row-less rail surfaces never come through here — they are all
     /// `LineBg::Rail` by construction and take the one-line identity in
     /// [`paint_if_cards`] instead. `None` out means the line is never
     /// painted.
-    fn escape<'a>(self, surfaces: &Surfaces<'a>) -> Option<&'a str> {
+    fn escape<'s>(self, surfaces: &'s Surfaces<'_>) -> Option<&'s str> {
         match self {
             LineBg::None => Option::None,
             LineBg::Rail => Some(surfaces.rail),
-            LineBg::Card => Some(surfaces.card),
+            LineBg::Card => Some(&surfaces.card),
             LineBg::ActiveChild => Some(surfaces.active_child),
         }
     }
@@ -1637,22 +1648,16 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     gap.bg = LineBg::None;
     for &(i, budget) in &plan {
         let row = &rows[i];
-        let card = if cards { card_tint(row, &opts.theme) } else { String::new() };
-        let surfaces = Surfaces { rail: &rail, card: &card, active_child: &active_child };
-
-        // Resolve a raw line's surface through the one `LineBg::escape` map by
+        // Resolve a raw line's surface through the one `Surfaces` map by
         // consuming the complete `Line`. Metadata such as targets and hotspots
         // rides inside the value, so Cards finalization cannot forget it when
         // `Line` grows another lockstep field. Outside Cards density nothing
-        // paints, so the map is never consulted at all.
+        // paints, so the map is never built at all.
+        let surfaces = cards.then(|| Surfaces::for_row(row, &opts.theme, &rail, &active_child));
         let finalize = |line: Line| -> Line {
-            let mut line = if cards {
-                match line.bg.escape(&surfaces) {
-                    Some(esc) => line.painted(width, esc),
-                    None => line,
-                }
-            } else {
-                line
+            let mut line = match surfaces.as_ref().and_then(|s| line.bg.escape(s)) {
+                Some(esc) => line.painted(width, esc),
+                None => line,
             };
             line.bg = LineBg::None;
             line
