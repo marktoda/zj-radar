@@ -8,6 +8,13 @@ use support::ShimDir;
 // Since the JSON payload may contain spaces, `ShimDir::sole_pipe_argv` joins the
 // args back into one string the assertions search.
 
+// Every invocation pins the last-sent dedup state dir inside the shim tempdir
+// (`TMPDIR`; `XDG_RUNTIME_DIR` would win on a Linux desktop) and drops the
+// developer's own `ZELLIJ_SESSION_NAME`: `cargo test` from inside a Zellij
+// pane would otherwise share one real record between parallel tests — and
+// dedup the very sends these tests count. Tests that WANT dedup armed set a
+// session name of their own (`notify_deduped`).
+
 /// Run `zj-radar notify <agent>` under the shims with `hook` piped to stdin,
 /// pane id 7 — the shared invocation every broadcast test starts from.
 fn notify(shims: &ShimDir, agent: &str, hook: &str) {
@@ -17,6 +24,9 @@ fn notify(shims: &ShimDir, agent: &str, hook: &str) {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         .write_stdin(hook)
         .assert()
         .success();
@@ -177,6 +187,13 @@ fn claude_posttooluse_edit_broadcasts_editing_activity() {
         argv.contains("editing auth.rs"),
         "payload missing activity string: {argv}"
     );
+    // The hook's cwd does not exist on this machine, so the native .git walk
+    // declines and repo/branch come from the git fallback — the fake here.
+    // Pins that the spawn path stays wired behind the native one.
+    assert!(
+        argv.contains("\"repo\":\"myrepo\"") && argv.contains("\"branch\":\"main\""),
+        "repo/branch must come from the git fallback for an unresolvable cwd: {argv}"
+    );
 }
 
 #[test]
@@ -231,6 +248,9 @@ fn no_zellij_env_exits_clean_without_broadcast() {
         .env("PATH", shims.path_env())
         .env_remove("ZELLIJ")
         .env_remove("ZELLIJ_PANE_ID")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         .write_stdin(r#"{"hook_event_name":"Stop","cwd":"/tmp"}"#)
         .assert()
         .success();
@@ -265,6 +285,9 @@ fn hung_zellij_pipe_is_killed_at_the_send_deadline() {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         // 3s, not 1: the shim must exec and write its log line BEFORE the
         // deadline kill, or the recorded-broadcast assertion below races the
         // reaper. Under full-parallel test load (nix check builds) a 1s
@@ -304,6 +327,9 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         .env("ZJ_RADAR_PIPE_TIMEOUT", "4")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
