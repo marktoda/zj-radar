@@ -30,6 +30,14 @@ The plugin is a no-op outside Zellij, so it is safe to leave enabled. Hook
 details and the event-to-status table are in
 [`plugins/zj-radar-claude/README.md`](../plugins/zj-radar-claude/README.md).
 
+With the `zj-radar` CLI installed, a `running` update identical to the one the
+pane last delivered (same message and task) within 10 seconds is not re-sent:
+Claude fires a hook before and after every tool call with the same content,
+and the second would only cost every sidebar instance a no-op. Any other
+status always goes out, and so does a `running` that changes anything or
+arrives after the 10 seconds. `ZJ_RADAR_NO_DEDUP=1` in the agent's
+environment disables this; the bash fallback never dedups.
+
 ## Codex
 
 ```sh
@@ -198,7 +206,9 @@ Three rules keep you safe:
    `zellij pipe` client is orphaned forever. Run the pipe under a shell
    alongside a detached `sleep <deadline>; kill` watchdog, inside the subtree
    you spawn. `zj-radar-core` exports this as `self_limiting_pipe_argv`, with
-   `DEFAULT_PIPE_TIMEOUT_SECS` and `RUNNING_PIPE_TIMEOUT_SECS`.
+   `DEFAULT_PIPE_TIMEOUT_SECS` and `RUNNING_PIPE_TIMEOUT_SECS`. The subtree
+   exits with `zellij pipe`'s own status (non-zero when the watchdog killed
+   it), so you can tell a delivered send from an expired one.
 3. **Give the hook runner headroom.** If your runner has its own per-hook
    timeout, set it at least 2 seconds above your send deadline so the
    graceful path finishes before the runner kills it. The bundled Claude hooks

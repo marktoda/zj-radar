@@ -55,6 +55,13 @@ EOF
   # every timing property this suite pins (watchdog kills, ordering-guard
   # skew). Tests that need an override set their own.
   unset ZJ_RADAR_PIPE_TIMEOUT
+  # The CLI's last-sent dedup (crates/cli/src/dedup.rs) is keyed on the
+  # inherited ZELLIJ_SESSION_NAME and a real state dir: run from inside a
+  # Zellij pane, a second identical `running` within 30 s would be dropped and
+  # a parity case would read "rust produced no payload". This suite is about
+  # payload shape, not send policy (the Rust integration tests own that), so
+  # dedup is off here.
+  export ZJ_RADAR_NO_DEDUP=1
 }
 
 teardown_fakes() { rm -rf "$FAKEBIN"; }

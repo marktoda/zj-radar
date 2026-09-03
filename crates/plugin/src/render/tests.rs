@@ -3679,37 +3679,40 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
     let active_row = TabRow { active: true, ..tab(1, "a", display(Status::Running, 0, 1, None)) };
+    // `render_body` builds the map once per row (the per-frame rail/agent
+    // escapes plus the row's card tint) and a line's escape is a lookup.
+    let agent = tc_bg(theme.surface_agent);
+    let surfaces = Surfaces { rail: &rail, card: card_tint(&active_row, &theme), active_child: &agent };
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
-    assert_eq!(LineBg::None.escape(&active_row, &theme, &rail), None);
-    assert_eq!(
-        LineBg::Rail.escape(&active_row, &theme, &rail).as_deref(),
-        Some(rail.as_str()),
-    );
-    // Rail resolves by borrowing the caller's precomputed escape — the
-    // per-separator-line allocation this map used to pay is gone.
-    assert!(matches!(
-        LineBg::Rail.escape(&active_row, &theme, &rail),
-        Some(std::borrow::Cow::Borrowed(_)),
-    ));
-    let card = card_tint(&active_row, &theme);
-    assert_eq!(
-        LineBg::Card.escape(&active_row, &theme, &rail).as_deref(),
-        Some(card.as_str()),
-    );
-    let agent = tc_bg(theme.surface_agent);
-    assert_eq!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail).as_deref(),
-        Some(agent.as_str()),
-    );
+    assert_eq!(LineBg::None.escape(&surfaces), None);
+    assert_eq!(LineBg::Rail.escape(&surfaces), Some(rail.as_str()));
+    assert_eq!(LineBg::Card.escape(&surfaces), Some(card_tint(&active_row, &theme).as_str()));
+    assert_eq!(LineBg::ActiveChild.escape(&surfaces), Some(agent.as_str()));
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
     // card tint (surface_active). One resolver makes that structural.
-    assert_ne!(
-        LineBg::ActiveChild.escape(&active_row, &theme, &rail),
-        LineBg::Card.escape(&active_row, &theme, &rail),
-    );
+    assert_ne!(LineBg::ActiveChild.escape(&surfaces), LineBg::Card.escape(&surfaces));
+}
+
+#[test]
+fn visible_width_skips_sgr_and_controls_and_agrees_with_truncate_on_sequences() {
+    // Both measurement paths — the ASCII fast path and the string API — treat
+    // SGR and the trailing newline as zero width…
+    assert_eq!(visible_width("abc\n"), 3);
+    assert_eq!(visible_width("\x1b[38;2;1;2;3m─\x1b[0m\n"), 1);
+    assert_eq!(visible_width("…\n"), 1);
+    assert_eq!(visible_width("\x1b[1mbold\x1b[0m and \x1b[31mred\x1b[0m"), 12);
+    assert_eq!(visible_width(""), 0);
+    // …a stray ESC contributes nothing and its tail stays text…
+    assert_eq!(visible_width("a\x1bb"), 2);
+    // …and an emoji ZWJ sequence measures as `truncate` measures it (one
+    // glyph, two columns), so a label that fits per `truncate` pads its card
+    // band correctly. The per-char sum this replaced said four.
+    let family = "👨\u{200d}💻";
+    assert_eq!(visible_width(family), UnicodeWidthStr::width(family));
+    assert_eq!(visible_width(&format!("\x1b[1m{family}\x1b[0m x")), UnicodeWidthStr::width(family) + 2);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
 use crate::kind::Kind;
-use crate::payload::{sanitize, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS};
+use crate::payload::{sanitize_in_place, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS};
 use crate::status::Status;
 use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
@@ -117,10 +117,10 @@ impl TrackedObservation {
     /// hand-edited snapshot) may have persisted raw control characters that
     /// would otherwise flow straight into the rendered grid.
     pub fn sanitized(mut self) -> Self {
-        self.repo = sanitize(&self.repo, MAX_REPO_CHARS);
-        self.branch = sanitize(&self.branch, MAX_BRANCH_CHARS);
-        self.msg = sanitize(&self.msg, MAX_MSG_CHARS);
-        self.task = sanitize(&self.task, MAX_TASK_CHARS);
+        sanitize_in_place(&mut self.repo, MAX_REPO_CHARS);
+        sanitize_in_place(&mut self.branch, MAX_BRANCH_CHARS);
+        sanitize_in_place(&mut self.msg, MAX_MSG_CHARS);
+        sanitize_in_place(&mut self.task, MAX_TASK_CHARS);
         self
     }
 }
@@ -270,7 +270,7 @@ mod tests {
         s.insert(2, sample());
         s.insert(3, TrackedObservation { status: Status::Running, ..sample() });
         let mut dropped = s.prune(&[2].into_iter().collect());
-        dropped.sort_by_key(|(id, _)| *id);
+        dropped.sort_unstable_by_key(|(id, _)| *id);
         assert_eq!(dropped.len(), 2, "every drop comes back out — emptiness is the persist signal");
         assert_eq!((dropped[0].0, dropped[0].1.status), (1, Status::Done));
         assert_eq!((dropped[1].0, dropped[1].1.status), (3, Status::Running), "non-completions included; the ledger sink filters");

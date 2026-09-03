@@ -8,13 +8,12 @@ use crate::status::Status;
 use std::collections::{HashMap, HashSet};
 
 /// Ticks a `Running` pane may sit at a shell prompt before its pushed status is
-/// declared stale and cleared to idle (~seconds at the Fast cadence, which the
-/// armed clock itself keeps alive — `needs_ticks` counts live suspect clocks,
-/// since a Running *service* row no longer arms it). Long enough that a mid-turn foreground
-/// flicker — which re-asserts the agent's foreground or a fresh hook payload
-/// well inside the window — never trips it; short enough that killing an agent
-/// mid-turn doesn't leave a "working" row spinning forever.
-pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = 15;
+/// declared stale and cleared to idle — Fast-cadence ticks, one per second,
+/// which the armed clock itself keeps alive (`needs_ticks` counts live suspect
+/// clocks, since a Running *service* row no longer arms it). The number is
+/// `core::pipe`'s producer ↔ plugin contract in seconds: the CLI's heartbeat
+/// dedup must stay quiet for less than this, and pins that at compile time.
+pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = zj_radar_core::pipe::RUNNING_QUIET_MAX_SECS;
 
 /// Upper bound on tracked status observations across distinct pane ids. The
 /// per-payload defenses (size cap, sanitize) don't bound the number of
@@ -483,7 +482,7 @@ mod tests {
         s.apply(payload(3, Status::Idle), 1, 0);
         let live: HashSet<u32> = HashSet::new();
         let mut dropped = s.prune(&live);
-        dropped.sort_by_key(|(id, _)| *id);
+        dropped.sort_unstable_by_key(|(id, _)| *id);
         // All three come back out: emptiness is the caller's persist signal,
         // and the ledger filters to the completion (pane 2) itself.
         assert_eq!(dropped.len(), 3);

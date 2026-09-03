@@ -211,7 +211,7 @@ impl Sessions {
                 !p.dead()
             })
             .collect();
-        dead.sort();
+        dead.sort_unstable();
         PresenceUpdate { changed: self.badge() != before, dead }
     }
 

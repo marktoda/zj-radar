@@ -12,6 +12,10 @@ test:
 test-bash:
     cargo build -p zj-radar
     shellcheck plugins/zj-radar-claude/scripts/notify.sh scripts/install.sh scripts/funnel.sh demo/record.sh demo/agent.sh demo/banner.sh demo/demorc.sh
+    # notify.sh's head runs under /bin/sh (dash on Debian/Ubuntu) before it
+    # re-execs bash for the fallback; the file-level directive lints it as
+    # bash, so lint the dispatcher section as POSIX sh on its own.
+    sed -n '3,/^# ---- bash/p' plugins/zj-radar-claude/scripts/notify.sh | shellcheck -s sh -
     bats plugins/zj-radar-claude/tests scripts/tests
 
 # Live E2E (L5): builds the wasm plugin, drives a real Zellij in a PTY.
@@ -62,6 +66,15 @@ dev-build:
     cargo build -p zj-radar
     @echo "cli:  target/debug/zj-radar"
     @echo "wasm: target/wasm32-wasip1/release/zj_radar.wasm"
+
+# Interpreter cost of one Zellij event, in wasmi fuel (executed instructions,
+# the unit that predicts server CPU under Zellij's interpreter). Builds the
+# wasm, then drives it through a steady state and every event class the rail
+# sees. Pass two wasm paths to compare builds side by side:
+#   just bench-wasm old.wasm new.wasm
+bench-wasm *ARGS:
+    cargo build --release --target wasm32-wasip1 -p zj-radar-plugin
+    cargo run --release --quiet --manifest-path tools/wasm-fuel/Cargo.toml -- {{ARGS}}
 
 # Wasm plugin compile check (matches CI's "wasm plugin compiles" step, so a
 # wasm-glue-only breakage fails locally too, not just in CI).

@@ -146,9 +146,11 @@ impl PaneUpdate {
                     focused_colors = Some(c);
                 }
             }
+            let mut title = p.title;
+            payload::sanitize_in_place(&mut title, payload::MAX_TAB_NAME_CHARS);
             tab_panes.entry(p.tab_pos).or_default().push(TerminalPane {
                 id: p.id,
-                title: payload::sanitize(&p.title, payload::MAX_TAB_NAME_CHARS),
+                title,
                 focused_in_tab: p.is_focused,
             });
             live.insert(p.id);
@@ -199,6 +201,9 @@ impl SnapshotWrite {
 pub(crate) struct RadarChange {
     pub render: bool,
     pub snapshot: SnapshotWrite,
+    /// The pane a `snapshot` write is about, when the edge is pane-scoped;
+    /// `None` for a session-wide edge. See [`RadarState::persists_edges_for`].
+    pub snapshot_pane: Option<u32>,
     pub renames: Vec<TabRename>,
     /// Terminal panes whose working directory should be read once (via a
     /// blocking `get_pane_cwd` host call in the wasm glue) to bootstrap a name
@@ -292,8 +297,8 @@ pub(crate) struct RadarState {
     /// Wall-clock animation (spinner frames, ages) deliberately does NOT bump
     /// it — those read `now_tick` at render time.
     generation: u64,
-    /// Memo for [`rows`](Self::rows): the last `(generation, now_tick)` it was
-    /// computed at, with its result. Events that consult rows more than once
+    /// Memo for [`rows`](Self::rows): the last `(generation, lit flashes)`
+    /// it was computed at, with its result. Events that consult rows more than once
     /// per intake (the runtime's presence derivation, the render-gate compare,
     /// and the render itself, all under a wasm *interpreter* on the host side)
     /// pay the rollup once — and the `Rc` makes each hit a refcount bump, not
@@ -303,11 +308,12 @@ pub(crate) struct RadarState {
     rows_memo: std::cell::RefCell<Option<RowsMemo>>,
 }
 
-/// The [`RadarState::rows_memo`] entry: the `(generation, now_tick)` the rows
-/// were computed at, with the shared result.
+/// The [`RadarState::rows_memo`] entry: the generation and the count of
+/// mid-flash tabs (`RadarState::lit_flashes`, the only thing the tick
+/// changes about a row) the rows were computed at, with the shared result.
 struct RowsMemo {
     generation: u64,
-    tick: u64,
+    lit_flashes: usize,
     rows: std::rc::Rc<Vec<TabRow>>,
 }
 
@@ -389,21 +395,39 @@ impl RadarState {
 
     /// Rows in position order — `tabs_changed` (the only writer of `self.tabs`)
     /// sorts at intake, so this render-path call is a plain iteration.
-    /// Memoized on `(generation, now_tick)` and shared via `Rc`: one intake
+    /// Memoized on `(generation, lit flashes)` and shared via `Rc`: one intake
     /// event consults rows several times (presence derivation, the render-gate
     /// diff, the render itself), and under Zellij's interpreted-wasm runtime
     /// both the repeat rollups AND per-hit deep clones were a measurable share
     /// of per-event cost.
     pub(crate) fn rows(&self, now_tick: u64) -> std::rc::Rc<Vec<TabRow>> {
+        // `now_tick` reaches the rows through exactly one field — `flash` —
+        // so the memo is keyed on how many tabs are mid-flash at this tick,
+        // not on the tick itself: a Fast tick with no flash in flight (the
+        // steady state of an animating rail) is a memo hit, where keying on
+        // the tick made every one of them a full re-rollup.
+        let lit_flashes = self.lit_flashes(now_tick);
         if let Some(memo) = self.rows_memo.borrow().as_ref() {
-            if memo.generation == self.generation && memo.tick == now_tick {
+            if memo.generation == self.generation && memo.lit_flashes == lit_flashes {
                 return memo.rows.clone();
             }
         }
         let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
         *self.rows_memo.borrow_mut() =
-            Some(RowsMemo { generation: self.generation, tick: now_tick, rows: rows.clone() });
+            Some(RowsMemo { generation: self.generation, lit_flashes, rows: rows.clone() });
         rows
+    }
+
+    /// How many tabs' ping flash is lit at `now_tick` — the only
+    /// tick-dependent input to `rows()`, and so the tick half of its memo
+    /// key. A count identifies the SET within one generation: `flash_until`
+    /// only changes through `touch()`ing paths (the arm in `status_pipe`)
+    /// and the timer's retain of already-unlit entries, so at a fixed
+    /// generation the lit set at tick t is `{id : t < until[id]}`, which
+    /// only ever shrinks as t grows — two ticks with the same count have
+    /// the same set.
+    fn lit_flashes(&self, now_tick: u64) -> usize {
+        self.flash_until.values().filter(|&&until| now_tick < until).count()
     }
 
     fn rows_uncached(&self, now_tick: u64) -> Vec<TabRow> {
@@ -433,13 +457,13 @@ impl RadarState {
         // as pane titles: a raw ESC would inject ANSI into the rail, and a
         // newline would desync the line↔click-target lockstep.
         for t in &mut tabs {
-            t.name = payload::sanitize(&t.name, payload::MAX_TAB_NAME_CHARS);
+            payload::sanitize_in_place(&mut t.name, payload::MAX_TAB_NAME_CHARS);
         }
         // Sort before the no-op compare below — `self.tabs` is stored sorted
         // (the per-render `rows()` path iterates in stored order instead of
         // paying a clone+sort on every repaint and tick), so the compare must
         // be order-normalized too.
-        tabs.sort_by_key(|t| t.position);
+        tabs.sort_unstable_by_key(|t| t.position);
         // Zellij fires `TabUpdate` far more often than tabs actually change
         // (focus moves, pane-group churn). An identical set is a strict no-op:
         // nothing rows-visible moved, so don't invalidate the memo or repaint.
@@ -517,9 +541,12 @@ impl RadarState {
 
         // Persist only on the recede edges below (mirroring `command_changed`'s
         // "persist only when we actually cleared"): a plain PaneUpdate is
-        // resize/title/focus churn, and Zellij sends one to EVERY tab's
-        // instance — persisting unconditionally made each of them read-merge-
-        // write the shared /cache file per churn event. Topology itself isn't
+        // resize/title/focus churn, and Zellij sends one to every visible
+        // rail on every layout change — persisting unconditionally made each
+        // of them read-merge-write the shared /cache file per churn event.
+        // (Zellij 0.44 routes manifests to the active tab's plugins only;
+        // hidden rails converge from the manifest their reveal brings.)
+        // Topology itself isn't
         // persisted, and an exit that merely flips a command to Done/Error
         // (displacing nothing) is safe to skip too: exits ride the
         // level-triggered pane manifest, so a late-spawned instance re-derives
@@ -713,6 +740,7 @@ impl RadarState {
             // Persist only when we actually cleared, so a newly-opened tab
             // rehydrates the idle from the snapshot rather than the stale status.
             snapshot: SnapshotWrite::now_if(cleared),
+            snapshot_pane: Some(pane_id),
             ..RadarChange::default()
         }
     }
@@ -785,6 +813,7 @@ impl RadarState {
         Some(RadarChange {
             render: !label_only,
             snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
+            snapshot_pane: Some(pane_id),
             renames: self.rename_tabs(naming),
             settle: false,
             ..RadarChange::default()
@@ -840,11 +869,38 @@ impl RadarState {
         self.rename_tabs(naming)
     }
 
+    /// Whether THIS instance persists the snapshot for an edge about `pane`
+    /// (`RadarChange::snapshot_pane`) — the one home of the snapshot
+    /// ownership rule.
+    ///
+    /// Every instance sees every broadcast and holds the same converged
+    /// stores, so one write per edge is the whole snapshot; picking the
+    /// instance whose own tab holds the pane makes that writer deterministic
+    /// with no coordination and no filesystem check. When the owner cannot
+    /// be named — a session-wide edge (`None`: a prune sweep, a timer
+    /// promotion, a config override), an own tab not yet resolved, a pane no
+    /// tab is known to hold — everyone writes rather than nobody. Ownership,
+    /// not visibility, so a detached session (every instance hidden) keeps
+    /// the file current for the fresh instances Zellij spawns on the next
+    /// attach, which seed from it.
+    pub(crate) fn persists_edges_for(&self, pane: Option<u32>) -> bool {
+        let (Some(pane), Some(own)) = (pane, self.naming_tab_id) else {
+            return true;
+        };
+        let holds = |position: usize| self.tab_panes.get(&position).is_some_and(|panes| panes.iter().any(|p| p.id == pane));
+        match self.tabs.iter().find(|t| holds(t.position)) {
+            Some(tab) => tab.id == own,
+            None => true,
+        }
+    }
+
     /// Track the focused terminal pane, for the notifier's "don't ding the pane
     /// you're looking at" suppression only. Focus **no longer drives any rail
     /// state**: `done`/`error`/`pending` rows clear only via a new broadcast, the
     /// return-to-shell exit-clear (`command_changed`), or prune — all *shared*
-    /// inputs Zellij delivers to every tab's instance. So the rail renders
+    /// inputs: broadcasts and `CommandChanged` reach every tab's instance at
+    /// once, and the manifest-borne prune reaches a hidden rail with the
+    /// manifest its reveal brings. So the rail renders
     /// identically on every tab regardless of which pane is focused (focus is
     /// per-client and is NOT delivered to background instances — deriving rail
     /// state from it was the source of the cross-tab desync).

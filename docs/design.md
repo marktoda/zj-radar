@@ -118,7 +118,7 @@ seam is the versioned pipe payload.
 
 | Source event | Status |
 |---|---|
-| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse` and the plugin no-ops identical re-broadcasts, but it is the Pending → Running recovery edge after a mid-turn permission answer, so it stays registered. |
+| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going) |
 | Claude `Stop` | `done`, except a Stop whose last assistant message ends in a question maps to `pending`; the question becomes the message |
@@ -213,7 +213,20 @@ client even if the caller is killed mid-send. Deadlines are status-keyed:
 `DEFAULT_PIPE_TIMEOUT_SECS` (5 s) for once-per-turn edges,
 `RUNNING_PIPE_TIMEOUT_SECS` (2 s) for `running` heartbeats. The bundled hooks'
 `timeout` values must clear the cap plus 2 s (welded by
-`hooks_manifest_tests.rs`).
+`hooks_manifest_tests.rs`). The subtree exits with the client's status, so a
+caller can tell a delivered send from one killed at the deadline; the CLI
+producer blocks on that exit, with a cap + 1 s backstop thread for the corner
+where the watchdog's own fork failed.
+
+**Last-sent dedup.** Claude's PreToolUse and PostToolUse derive identical
+payloads, so half of tool-loop traffic would be a duplicate every rail
+instance pays to receive. The CLI drops an identical `running` re-sent within
+`DEDUP_TTL_SECS` at the `broadcast` choke point, before any git work or spawn;
+edges always send, which is what keeps PostToolUse the Pending→Running
+recovery edge (the `pending` overwrites the record). The TTL is pinned below
+the plugin's stale-Running grace, which any payload cancels, and only a
+confirmed delivery is recorded — hence the wrapper's exit status above. The
+rule, its key, and its bounds: `crates/cli/src/dedup.rs`.
 
 **Newcomer rehydration.** The plugin runs one instance per tab, and a
 broadcast reaches only the instances alive when it is sent. A tab opened after
@@ -226,8 +239,15 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `/tmp/zj-radar`, then persistence off. `/data` is not used: it is scoped per
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
-instance writes identical content after a broadcast, so races are benign. With
-persistence off, late sidebars start empty until the next broadcast.
+instance holds the same converged stores after a broadcast, so one write per
+edge is the whole snapshot: the instance whose tab holds the edge's pane
+writes, and edges with no nameable owner are written by everyone
+(`RadarState::persists_edges_for`). Ownership rather than visibility, because
+Zellij spawns fresh plugin instances — seeded from this file — for every
+client that attaches, while the detached client's hidden instances are what
+kept it current meanwhile. Overlapping writers produce identical content, so
+races are benign. With persistence off, late sidebars start empty until the
+next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 
@@ -248,7 +268,10 @@ to every instance prompting. `setup zellij` normally pre-seeds the grant into
 
 **Subscriptions.** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`,
 `Timer`, `Mouse`, `PermissionRequestResult`, `ModeUpdate` (carries
-`ModeInfo.session_name`, the session-name source §13 depends on).
+`ModeInfo.session_name`, the session-name source §13 depends on), and
+`InitialKeybinds`, which is never handled: subscribing to it is Zellij's
+opt-out that strips the full keybinding table from every `ModeUpdate`, so the
+per-instance protobuf decode of each mode change stays small.
 
 **Tab index footgun.** `TabInfo.position` is 0-indexed; `switch_tab_to` is
 1-indexed. `display_tab_number = position + 1` is used for both rendering and
@@ -362,10 +385,13 @@ is terminal: once its one-shot settle has run it does not keep Fast alive.
 
 ## 9. Render gate
 
-Zellij delivers every broadcast and topology event to every tab's instance,
-each running under a wasm interpreter, so one chatty producer multiplies
-across N tabs at interpreter prices. Three layers keep repaints proportional
-to change:
+Zellij delivers every broadcast, `CommandChanged`, and `CwdChanged` to every
+tab's instance, each running under a wasm interpreter, so one chatty producer
+multiplies across N tabs at interpreter prices. (`TabUpdate`, `PaneUpdate`,
+and `ModeUpdate` are different: Zellij 0.44 routes them to the plugins in
+each client's *active* tab only, so a hidden rail sees no manifest until its
+tab is revealed, at which point it converges from the fresh one.) Four layers
+keep repaints proportional to change:
 
 1. **Intake no-ops.** An intake that changed nothing rows-visible reports a
    default `RadarChange`: an identical status re-broadcast (producers
@@ -382,11 +408,26 @@ to change:
    (rows, ledger lines, badge, theme) equals what the last `render()` drew
    (`last_render_key`). `force_render` bypasses it for timer frames and config
    overrides, which change the drawing without changing the key.
+4. **Visibility gate.** `Event::Visible(false)` (tab switch, tab close, layout
+   apply, client detach) marks the instance hidden: it paints nothing, ticks
+   included. Nothing else changes — state keeps ticking at full cadence (the
+   stores' grace clocks count ticks, so a slowed hidden instance would drift
+   from its siblings until reveal) and snapshot writes follow pane
+   ownership (§5), not visibility. `Visible(true)` force-renders the skipped
+   frame. Zellij never sends `Visible` at load, so an
+   instance starts visible, and any manifest it receives (which only reach
+   active-tab plugins) also clears the flag — the bias is toward painting,
+   since a wrongly hidden rail would be a stale screen. Under the interpreter
+   the paint is over 95 % of a tick's cost, so this is what makes N tabs cost
+   about one.
 
-Underneath all three: `RadarState::generation` (bumped by every mutator of
-anything `rows()` reads) and the `rows()` memo keyed on `(generation, tick)`.
+Underneath all four: `RadarState::generation` (bumped by every mutator of
+anything `rows()` reads) and the `rows()` memo keyed on `(generation, the
+tabs mid-flash)` — the tick reaches a row only through the ping flash.
 One roll-up per event, shared by the presence derive, the gate compare, and
 the render. A missed `touch()` is a stale-rail bug, not a slow one.
+`tools/wasm-fuel` measures every layer in the interpreter's own unit
+(`CONTRIBUTING.md` → *Measuring plugin cost*).
 
 ## 10. Running exit grace (producer death)
 
@@ -411,7 +452,9 @@ alive; `exited` means dead. Three paths converge:
   agent-rooted pane (`zellij run -- claude`) never shows a shell prompt, so
   `StatusStore::clear_on_exit` clears even a `Running` immediately.
 
-All three ride shared signals, so every instance clears in lockstep.
+All three ride shared signals, so every instance clears: the broadcast and
+`CommandChanged` reach every rail at once, and the manifest-borne `exited`
+flag reaches a hidden rail with the manifest its reveal brings.
 
 ## 11. Tab naming
 
@@ -480,7 +523,14 @@ rows, header badge, and footer stay tab-level summaries.
 
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
 rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
-in `project` that bypasses the content gate). Peers read the directory on every
+in `project` that bypasses the content gate and, unlike the snapshot, the
+visibility gate: a detached session is alive). Every tab's instance runs that
+clock against the one pid-keyed file, so the heartbeat is a
+`PersistPresence` with an `unless_fresher_than` window the host honors by
+stat: a file already younger than a quarter of the interval is left alone —
+one stat instead of N writes, and the quarter keeps the file's worst-case age
+(one period plus one window) under the 90 s stale threshold. Content edges
+write unconditionally. Peers read the directory on every
 Slow (60 s) tick, and on every fifth Fast tick except mid-cycle; the Slow read
 is what lets an idle rail grade a peer at all, since ages are captured at read
 time. `Sessions::update_presences` grades each file's age: fresh (≤ 90 s),
@@ -549,6 +599,15 @@ choice is a flag the consumer projects on, never a fact.
 - Rust, `zellij-tile = "0.44"`, target `wasm32-wasip1`. The artifact is a
   binary crate, not `cdylib`: Zellij loads plugins as WASI command modules and
   calls `_start`, which `register_plugin!`'s generated `main` provides.
+- Zellij runs one instance per tab per attached client (a detached client's
+  instances linger hidden), each under the wasmi interpreter with its own
+  linear memory, so per-instance fixed cost is paid N times. The
+  release profile optimizes for size, `crates/plugin/build.rs` shrinks the
+  WASI shadow stack (the bulk of initial memory) to 256 KiB, and the flake
+  runs binaryen's `wasm-opt -Oz` over the release wasm, which executes
+  measurably fewer instructions than rustc's output alone. Per-event
+  interpreter cost is measured in fuel by `tools/wasm-fuel`
+  ([`CONTRIBUTING.md`](../CONTRIBUTING.md#measuring-plugin-cost)).
 - The dev loop never reloads in place (Zellij does not safely hot-reload
   layout-created plugins); every `just dev` is a fresh sandboxed session
   ([`CONTRIBUTING.md`](../CONTRIBUTING.md#dev-loop)).

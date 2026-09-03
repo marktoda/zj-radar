@@ -1,9 +1,11 @@
 //! `zj-radar notify <agent>` — the host shell: read the hook payload, derive an
 //! update behind the agent-intake seam, resolve repo/branch, broadcast.
 //! All agent-specific decisions live in `agents/`; this file is agent-agnostic
-//! plumbing plus the genuinely host-bound helpers (env, git, stdin).
+//! plumbing plus the genuinely host-bound helpers (env, stdin). Repo/branch
+//! resolution is `git.rs`; the last-sent dedup is `dedup.rs`.
 
 use super::agents::{Agent, AgentUpdate, Intake};
+use crate::dedup::{LastSent, SentKey};
 use crate::payload::{to_wire, StatusPayload};
 use crate::status::Status;
 use std::io::Read;
@@ -30,73 +32,6 @@ fn pane_id_or_dry_run_hint(dry_run: bool) -> Option<u32> {
         eprintln!("zj-radar: not inside Zellij (no ZELLIJ/ZELLIJ_PANE_ID) — nothing would be broadcast");
     }
     pane_id
-}
-
-/// Derive the repository NAME from a git "common dir" path — the output of
-/// `git rev-parse --git-common-dir` made absolute. The common dir always points
-/// at the MAIN repo's git dir, even from inside a linked worktree, so this yields
-/// the repo name (e.g. `pinky`) rather than the worktree's own directory name
-/// (e.g. `reply-register`, which is what `--show-toplevel` returns in a worktree).
-///
-///   /Users/m/dev/pinky/.git        → "pinky"      (normal checkout or any worktree of it)
-///   /Users/m/dev/pinky/.git/       → "pinky"
-///   /Users/m/dev/acme.git          → "acme"       (bare repo)
-///   .git                           → None         (relative — caller falls back)
-fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
-    let trimmed = common_dir.trim().trim_end_matches('/');
-    // git < 2.31 doesn't know `--path-format`; rev-parse ECHOES the unknown
-    // flag to stdout (exit 0), so the captured "dir" is the flag text plus a
-    // relative `.git` on a second line. Require a single-line absolute path —
-    // anything else falls back to `--show-toplevel` in the caller.
-    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.contains('\n') {
-        return None;
-    }
-    let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
-    if base == ".git" {
-        // Repo root is the parent of the ".git" dir.
-        let parent = trimmed[..trimmed.len() - base.len()].trim_end_matches('/');
-        parent.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
-    } else if let Some(stripped) = base.strip_suffix(".git") {
-        // Bare repo "name.git".
-        (!stripped.is_empty()).then(|| stripped.to_string())
-    } else {
-        // Unusual: a common dir not ending in .git — use its basename.
-        Some(base.to_string())
-    }
-}
-
-/// Run `git -C <cwd> <args…>` and return its trimmed stdout, or `None` when git
-/// can't be spawned, exits non-zero, or produces only whitespace. The single
-/// shape behind every git probe here, so the success/trim/empty handling can't
-/// drift across calls (and treating empty output as "absent" matches what every
-/// caller wanted: two filtered it explicitly, the third used `unwrap_or_default`).
-fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
-    let trimmed = Command::new("git")
-        .args(["-C", cwd])
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-    (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn git_repo_branch(cwd: &str) -> (String, String) {
-    // Resolve the repo name from the COMMON git dir so worktrees report the main
-    // repo, not the worktree directory. Fall back to `--show-toplevel`'s basename
-    // for git versions without `--path-format` (added in 2.31).
-    let repo = git_output(
-        cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .and_then(|d| repo_name_from_common_dir(&d))
-    .or_else(|| {
-        git_output(cwd, &["rev-parse", "--show-toplevel"])
-            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
-    })
-    .unwrap_or_default();
-    let branch = git_output(cwd, &["branch", "--show-current"]).unwrap_or_default();
-    (repo, branch)
 }
 
 fn read_stdin() -> String {
@@ -212,15 +147,29 @@ fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -
     })
 }
 
-/// The shared broadcast tail: resolve cwd → repo/branch, cap the message,
-/// build the wire payload, `zellij pipe` it (or print it under `--dry-run`).
+/// The shared broadcast tail, the choke point every producer path (`run`,
+/// `run_generic`, hence claude/codex/opencode/generic) funnels through: drop
+/// a redundant `running` repeat, resolve cwd → repo/branch, build the wire
+/// payload, `zellij pipe` it (or print it under `--dry-run`), and on a
+/// confirmed delivery record it as this pane's last-sent.
 fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
+    let task = update.task.unwrap_or_default();
+    // Dedup BEFORE the git probes so a skipped send costs no spawn at all.
+    // Repo/branch are therefore not in the key (see `dedup`). A dry run is a
+    // debugging tool: it neither consults nor touches the record.
+    let key = SentKey::new(update.status, source, &update.msg, &task);
+    let now = crate::dedup::unix_now();
+    let last_sent = if dry_run { None } else { LastSent::from_env(pane_id) };
+    if last_sent.as_ref().is_some_and(|l| l.is_duplicate(&key, now)) {
+        return;
+    }
+
     let cwd = update
         .cwd
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("PWD").ok())
         .unwrap_or_else(|| ".".to_string());
-    let (repo, branch) = git_repo_branch(&cwd);
+    let (repo, branch) = crate::git::repo_branch(&cwd);
     // No client-side length caps here: `to_wire` bounds every free-text field
     // at MAX_WIRE_FIELD_CHARS — the single seam every producer path (adapter
     // msg, `notify generic --task`, repo/branch) already flows through — so a
@@ -232,7 +181,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         repo,
         branch,
         msg: update.msg,
-        task: update.task.unwrap_or_default(),
+        task,
         source: source.to_string(),
         ack: false,
     });
@@ -243,23 +192,34 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         println!("{payload}");
         return;
     }
-    // Bounded send. `zellij pipe` blocks until every loaded plugin instance
-    // consumes the message (CLI-pipe backpressure) — a rail wedged at the
-    // permission prompt blocks it forever, and hooks fire per tool call, so an
-    // unbounded wait leaks one blocked client + two server FDs per call until
-    // the Zellij server EMFILEs and the whole session crashes. The message is
-    // queued server-side the moment it's sent; killing the client past the
-    // deadline retracts nothing and keeps sends sequential (latest-wins holds).
-    //
-    // The deadline rides INSIDE the spawned subtree (`self_limiting_pipe_argv`'s
-    // sleep+kill watchdog), not just here: hook runners kill their hooks, and
-    // this process dying mid-send must not orphan a blocked client — that leak
-    // is exactly how a wedged session EMFILE-crashed in production despite the
-    // parent-side deadline below. The parent loop stays as the reaper on the
-    // normal path (and as a backstop), padded past the watchdog so the subtree
-    // ordinarily wins.
-    let timeout = pipe_send_timeout(update.status);
-    let argv = crate::pipe::self_limiting_pipe_argv(&payload, timeout.as_secs());
+    // Only a confirmed delivery is worth recording as this pane's last-sent
+    // (the wrapper's status is `zellij pipe`'s — core::pipe).
+    if send(&payload, update.status) {
+        if let Some(last_sent) = last_sent {
+            last_sent.record(&key, now);
+        }
+    }
+}
+
+/// Deliver one wire payload through the self-limiting `zellij pipe` subtree;
+/// true iff the client confirmed delivery (exit 0).
+///
+/// `zellij pipe` blocks until every plugin instance consumes the message, so
+/// a rail wedged at the permission prompt would hold it forever, and at hook
+/// rate that leaks server FDs until the session crashes. The deadline lives
+/// INSIDE the spawned subtree (`self_limiting_pipe_argv`'s watchdog) because
+/// hook runners kill their hooks and a dying producer must not orphan a
+/// blocked client. The parent only waits — `wait_timeout` (a SIGCHLD
+/// self-pipe, no polling) with cap + 1 s as the backstop for the
+/// watchdog-fork-failed corner, inside the runner's `timeout >= cap + 2`
+/// headroom; `Child::kill` on a handle just reported alive makes the pid ours
+/// by construction. Killing the wrapper cannot reach the client in that
+/// corner (`core::pipe`'s accepted residual); it bounds the hook, which is
+/// what the runner needs. Never panics.
+fn send(payload: &str, status: Status) -> bool {
+    use wait_timeout::ChildExt;
+    let timeout = pipe_send_timeout(status);
+    let argv = crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs());
     let Ok(mut child) = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(std::process::Stdio::null())
@@ -267,20 +227,17 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         .stderr(std::process::Stdio::null())
         .spawn()
     else {
-        return; // sh missing/unspawnable — same silent no-op as before
+        return false; // sh missing/unspawnable — same silent no-op as before
     };
-    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(1);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return, // sent (or zellij errored) — done either way
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            _ => break, // deadline hit, or wait itself failed
+    match child.wait_timeout(timeout + std::time::Duration::from_secs(1)) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait(); // reap — a kill without a wait leaves a zombie per hook
+            false
         }
+        Err(_) => false,
     }
-    let _ = child.kill();
-    let _ = child.wait(); // reap — kill without wait leaves a zombie per hook
 }
 
 /// Send deadline for the status broadcast. `ZJ_RADAR_PIPE_TIMEOUT` (integer
@@ -292,9 +249,9 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
 /// the default here (instead of per-entry env prefixes in hooks.json) gives
 /// every producer — claude, codex, opencode, generic — the policy from one seam.
-/// Clamped to an hour: `Instant::now() + Duration::from_secs(u64::MAX)`
-/// overflows and panics, and this module promises the calling hook never
-/// sees a panic.
+/// Clamped to an hour so `timeout + 1 s` (the send's backstop) cannot
+/// overflow `Duration` — this module promises the calling hook never sees
+/// a panic.
 fn pipe_send_timeout(status: Status) -> std::time::Duration {
     parse_pipe_timeout(
         std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
@@ -374,64 +331,60 @@ mod tests {
             crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
         );
         assert_eq!(d.as_secs(), 3600);
-        let _ = std::time::Instant::now() + d; // must not panic
+        let _ = d + std::time::Duration::from_secs(1); // the backstop's add must not overflow
     }
 
-    // --- repo_name_from_common_dir tests ---
+    // --- send backstop ---
 
+    /// `send` against a hanging `zellij` shim returns at the backstop, not
+    /// with the child, and reports the send as not delivered.
     #[test]
-    fn common_dir_normal_checkout_is_repo_name() {
-        // A normal checkout's common dir is "<repo>/.git" → repo basename.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
+    fn send_returns_undelivered_at_the_backstop_when_the_wrapper_hangs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shim = dir.path().join("sh");
+        // A `sh` that ignores its argv and sleeps: models the wrapper whose
+        // in-subtree watchdog failed to fork, so nothing else bounds it.
+        std::fs::write(&shim, "#!/bin/sh
+exec sleep 30
+").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut path = dir.path().as_os_str().to_owned();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        // `sh` resolves through PATH inside `send` (the argv's program is
+        // `sh`), so a shim dir first on PATH intercepts it. Cap 1 s → the
+        // backstop fires at 2 s.
+        let start = std::time::Instant::now();
+        let delivered = temp_env(&[("PATH", path.to_str().unwrap()), ("ZJ_RADAR_PIPE_TIMEOUT", "1")], || {
+            send("{}", Status::Running)
+        });
+        assert!(!delivered, "a hung wrapper is not a delivery");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "send rode the child instead of the backstop ({}ms)",
+            start.elapsed().as_millis()
         );
     }
 
-    #[test]
-    fn common_dir_worktree_resolves_to_main_repo() {
-        // A worktree of "pinky" still reports the MAIN repo's common dir, so the
-        // name is "pinky" — NOT the worktree dir "reply-register".
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
-        // Trailing slash is tolerated.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git/"),
-            Some("pinky".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_bare_repo_strips_dot_git() {
-        assert_eq!(
-            repo_name_from_common_dir("/srv/git/acme.git"),
-            Some("acme".into())
-        );
-    }
-
-    #[test]
-    fn common_dir_relative_or_empty_is_none() {
-        // Relative ".git" has no resolvable parent → None (caller falls back).
-        assert_eq!(repo_name_from_common_dir(".git"), None);
-        assert_eq!(repo_name_from_common_dir(""), None);
-        assert_eq!(repo_name_from_common_dir("   "), None);
-    }
-
-    #[test]
-    fn common_dir_old_git_flag_echo_is_none() {
-        // git < 2.31 doesn't know `--path-format`: rev-parse ECHOES the unknown
-        // flag to stdout and exits 0, so this exact string is what git_output
-        // hands us. It must be rejected (→ --show-toplevel fallback), not
-        // surfaced as a repo named "--path-format=absolute".
-        assert_eq!(
-            repo_name_from_common_dir("--path-format=absolute\n.git"),
-            None
-        );
-        // And any other multi-line or non-absolute output is equally untrusted.
-        assert_eq!(repo_name_from_common_dir("/a/.git\n/b/.git"), None);
-        assert_eq!(repo_name_from_common_dir("relative/.git"), None);
+    /// Run `f` with the given environment variables set, restoring the
+    /// previous values afterwards (tests in this module are the only
+    /// writers, and cargo runs them in one process).
+    fn temp_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+        let saved: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var_os(k))).collect();
+        for (k, v) in vars {
+            std::env::set_var(k, v);
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        out
     }
 
     // --- generic producer ---

@@ -53,8 +53,13 @@ nothing about the [producer](producers.md). In order:
    just updated it.
 3. **Producer prerequisites.** The agent must run inside the Zellij session;
    the hooks no-op without `$ZELLIJ_PANE_ID`. The Claude plugin's bash
-   fallback needs `jq`; installing the `zj-radar` CLI removes that dependency.
-4. **Zellij too old.** The floor is 0.44.3; `--check` flags it.
+   fallback needs `bash` and `jq`; installing the `zj-radar` CLI removes that
+   dependency.
+4. **Repeated test sends.** The CLI does not re-send a `running` identical to
+   the pane's last one within 10 seconds ([producers](producers.md#claude-code)).
+   When probing by hand, change the message between sends or set
+   `ZJ_RADAR_NO_DEDUP=1`.
+5. **Zellij too old.** The floor is 0.44.3; `--check` flags it.
 
 ## An editor, pager, or TUI shows a spinning "Running" row
 

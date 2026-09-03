@@ -33,7 +33,9 @@ unicode-width = { workspace = true }
 # of host builds. Pinned exact: this pin IS the supported-version floor — Zellij
 # keeps compiled plugins working on newer hosts, so the doctor gate only checks
 # a minimum, and the `doctor_version_gate_matches_the_zellij_tile_pin` guard
-# test welds that floor to this line. Bump deliberately, alongside the docs.
+# test welds that floor to this line. Bump deliberately, alongside the docs
+# and `tools/wasm-fuel/src/proto/` (the benchmark harness's protobuf schema,
+# vendored from the matching zellij-utils release).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 zellij-tile = "=0.44.3"
 

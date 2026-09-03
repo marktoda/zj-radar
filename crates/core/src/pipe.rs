@@ -43,6 +43,21 @@ pub const RUNNING_PIPE_TIMEOUT_SECS: u64 = 2;
 // heartbeat deadline must stay below the once-per-turn edge deadline.
 const _: () = assert!(RUNNING_PIPE_TIMEOUT_SECS < DEFAULT_PIPE_TIMEOUT_SECS);
 
+/// Seconds a `Running` pane may sit at a shell prompt before the plugin
+/// declares its pushed status stale and clears it to idle (the plugin counts
+/// them as Fast-cadence ticks, one per second). Long enough that a mid-turn
+/// foreground flicker — which re-asserts the agent's foreground or a fresh
+/// hook payload well inside the window — never trips it; short enough that
+/// killing an agent mid-turn doesn't leave a "working" row spinning forever.
+///
+/// Lives here, not in the plugin's status store, because it is half of a
+/// producer ↔ plugin contract: ANY payload for the pane cancels the clock,
+/// so a producer that suppresses identical `running` heartbeats
+/// (`crates/cli/src/dedup.rs`) must go quiet for strictly less than this,
+/// or a live agent's row clears to idle while it works. The CLI pins that
+/// ordering at compile time against this constant.
+pub const RUNNING_QUIET_MAX_SECS: u64 = 15;
+
 /// Cap on hook stdin read by a producer before JSON parsing — the shared
 /// contract between the CLI producer's bounded read and the bash fallback's
 /// `head -c`. Hook payloads are small JSON (well under a megabyte); the cap
@@ -73,10 +88,17 @@ pub const MAX_STDIN_BYTES: u64 = 8 * 1024 * 1024;
 //    failure corner. The total fix — spawning the subtree in its own process
 //    group and group-killing from the producer's backstop — isn't worth the
 //    platform surface yet.
+//
+// The wrapper exits with the CLIENT's status (`wait "$p"` yields it: 0 on a
+// delivered send, non-zero when zellij failed, 128+SIGTERM when the watchdog
+// killed it). The CLI producer keys its last-sent dedup on that: only a
+// confirmed delivery may be recorded, or a killed-at-deadline `running` would
+// suppress its own retries for the dedup TTL. Callers that don't care (the
+// plugin's ack echo via `run_command`) ignore it.
 const SELF_LIMITING_SEND: &str = concat!(
     "zellij pipe --name \"$2\" -- \"$3\" >/dev/null 2>&1 & p=$!; ",
     "( sleep \"$1\"; kill \"$p\" ) >/dev/null 2>&1 & w=$!; ",
-    "wait \"$p\" 2>/dev/null; kill \"$w\" 2>/dev/null; exit 0",
+    "wait \"$p\" 2>/dev/null; s=$?; kill \"$w\" 2>/dev/null; exit \"$s\"",
 );
 
 /// Argv for one self-limiting status broadcast: spawn it and the subtree
@@ -159,6 +181,59 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(2),
             "wrapper rode the watchdog instead of exiting with the send ({}ms)",
+            start.elapsed().as_millis()
+        );
+    }
+
+    /// Spawn the argv with a shim dir prepended to PATH and return the
+    /// wrapper's exit status. Shared by the exit-status tests below.
+    fn run_wrapper(shim_dir: &std::path::Path, timeout_secs: u64) -> std::process::ExitStatus {
+        let argv = self_limiting_pipe_argv("{}", timeout_secs);
+        let mut path = shim_dir.as_os_str().to_owned();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("PATH", path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+    }
+
+    fn install_shim(dir: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let shim = dir.join("zellij");
+        std::fs::write(&shim, body).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The wrapper's exit status IS `zellij pipe`'s: the CLI producer records
+    /// a send as delivered (for its last-sent dedup) only on success, so a
+    /// client that failed — no server, bad session — must not read as sent.
+    #[test]
+    fn wrapper_propagates_the_clients_exit_status() {
+        let dir = tempfile::TempDir::new().unwrap();
+        install_shim(dir.path(), "#!/bin/sh\nexit 3\n");
+        let status = run_wrapper(dir.path(), DEFAULT_PIPE_TIMEOUT_SECS);
+        assert_eq!(status.code(), Some(3), "wrapper must exit with the client's status");
+    }
+
+    /// A client killed by the watchdog at the deadline was never confirmed
+    /// delivered (the message is queued server-side, but the producer cannot
+    /// know that), so the wrapper must exit non-zero — never a silent `exit 0`
+    /// that would let the producer record the payload as sent.
+    #[test]
+    fn wrapper_exits_nonzero_when_the_watchdog_kills_the_client() {
+        let dir = tempfile::TempDir::new().unwrap();
+        install_shim(dir.path(), "#!/bin/sh\nexec sleep 60\n");
+        let start = std::time::Instant::now();
+        let status = run_wrapper(dir.path(), 1);
+        assert!(!status.success(), "a deadline-killed send must not exit 0");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(8),
+            "wrapper must return at the 1s deadline, not the 60s hang ({}ms)",
             start.elapsed().as_millis()
         );
     }

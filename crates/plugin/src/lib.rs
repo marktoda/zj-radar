@@ -196,11 +196,9 @@ impl State {
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout(cadence) => set_timeout(cadence.seconds()),
-                Effect::PersistSnapshot => {
-                    let existing = self.session_files.snapshot();
-                    let json = self.runtime.snapshot_json(existing.as_deref());
-                    self.session_files.persist_snapshot(&json);
-                }
+                Effect::PersistSnapshot => self
+                    .session_files
+                    .persist_snapshot(|existing| self.runtime.snapshot_json(existing)),
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }
@@ -224,9 +222,9 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
-                Effect::PersistPresence => {
-                    self.session_files.persist_presence(&self.runtime.presence_json())
-                }
+                Effect::PersistPresence { unless_fresher_than } => self
+                    .session_files
+                    .persist_presence(unless_fresher_than, || self.runtime.presence_json()),
                 Effect::ReadPresences => {
                     let raw = self
                         .session_files
@@ -343,6 +341,20 @@ impl ZellijPlugin for State {
             // `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
             // reaped past `sessions::DEAD_AFTER_SECS` (300s).
             EventType::ModeUpdate,
+            // Never handled (falls to `update`'s `_ => false`), subscribed
+            // purely as an opt-out: Zellij ≥0.44 treats a plugin subscribed
+            // to `InitialKeybinds` as one that caches its keybinds, and
+            // sends every later `ModeUpdate` with `keybinds` EMPTY
+            // (`wasm_bridge.rs::apply_event_to_plugin`). Without it each
+            // `ModeUpdate` — every mode change, in every tab's instance —
+            // carries the whole keybinding table (141 binds in the stock
+            // config) through protobuf decode under the interpreter, for a
+            // plugin that only reads `session_name` off it.
+            EventType::InitialKeybinds,
+            // Tab shown / hidden (tab switch, close, layout apply, client
+            // detach; never at load). A hidden rail skips its paints and
+            // snapshot writes — `PluginRuntime::hidden` has the contract.
+            EventType::Visible,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
@@ -452,6 +464,10 @@ impl ZellijPlugin for State {
             }
             Event::ModeUpdate(mode_info) => {
                 let outcome = self.runtime.session_name_changed(mode_info.session_name);
+                self.handle_outcome(outcome)
+            }
+            Event::Visible(visible) => {
+                let outcome = self.runtime.visibility_changed(visible);
                 self.handle_outcome(outcome)
             }
             Event::CwdChanged(pane_id, path, _clients) => {

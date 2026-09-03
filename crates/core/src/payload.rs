@@ -193,6 +193,44 @@ fn is_bidi_control(c: char) -> bool {
 /// - Unicode C1 control chars (U+0080–U+009F) — dropped
 /// - Bidi format/override chars (`is_bidi_control`) — dropped (Trojan-Source-style spoofing)
 pub fn sanitize(s: &str, max_chars: usize) -> String {
+    let mut out = s.to_string();
+    sanitize_in_place(&mut out, max_chars);
+    out
+}
+
+/// [`sanitize`] for a string the caller already owns. Almost every string
+/// that reaches here is already clean — a repo name, a branch, a tool label,
+/// a snapshot field this very sanitizer wrote — and this runs on every field
+/// of every broadcast, manifest pane, and snapshot record, under the
+/// interpreter: one allocation-free scan settles the common case in place,
+/// and only over-long or dirty input takes the full walk.
+pub fn sanitize_in_place(s: &mut String, max_chars: usize) {
+    if s.chars().all(kept) {
+        if let Some((cut, _)) = s.char_indices().nth(max_chars) {
+            s.truncate(cut);
+        }
+        return;
+    }
+    *s = scrub(s, max_chars);
+}
+
+/// Whether the sanitizer passes `c` through unchanged — THE predicate both
+/// the fast path and [`scrub`] share, so the two cannot disagree: C0
+/// controls (ESC, `\n`/`\t`/`\r` included — `scrub` folds those three to a
+/// space, still a rewrite), DEL, C1, and the bidi format characters are the
+/// only things `scrub` drops or rewrites. ASCII takes the cheap range test.
+fn kept(c: char) -> bool {
+    if c.is_ascii() {
+        !c.is_ascii_control()
+    } else {
+        !c.is_control() && !is_bidi_control(c)
+    }
+}
+
+/// The full sanitizer walk (see [`sanitize`], whose fast path skips it for
+/// already-clean input). Kept separate so the property test can pin the
+/// fast path to this reference on arbitrary input.
+fn scrub(s: &str, max_chars: usize) -> String {
     let mut cleaned = String::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -279,7 +317,7 @@ pub fn sanitize(s: &str, max_chars: usize) -> String {
             // reorder or hide rail text (Trojan-Source-style spoofing).
             match s.get(i..) {
                 Some(remaining) => match remaining.chars().next() {
-                    Some(c) if !c.is_control() && !is_bidi_control(c) => {
+                    Some(c) if kept(c) => {
                         cleaned.push(c);
                         i += c.len_utf8();
                     }
@@ -734,6 +772,20 @@ mod tests {
                 prop_assert!(ch != '\x1b', "ESC leaked");
                 prop_assert!(!ch.is_control(), "control char leaked: {:?}", ch);
             }
+        }
+
+        /// The clean-input fast path must be indistinguishable from the full
+        /// scrub — on arbitrary input, including strings that mix clean text
+        /// with the bidi/control/ESC cases that force the slow walk.
+        #[test]
+        fn sanitize_fast_path_matches_the_scrub(
+            input in "(.|\\x1b\\[[0-9;]*m|\\u{202e}|\\x07|\\t){0,80}",
+            max in 1usize..120,
+        ) {
+            prop_assert_eq!(sanitize(&input, max), scrub(&input, max));
+            let mut in_place = input.clone();
+            sanitize_in_place(&mut in_place, max);
+            prop_assert_eq!(in_place, scrub(&input, max));
         }
 
         #[test]

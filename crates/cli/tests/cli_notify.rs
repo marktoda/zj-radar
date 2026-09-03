@@ -8,6 +8,13 @@ use support::ShimDir;
 // Since the JSON payload may contain spaces, `ShimDir::sole_pipe_argv` joins the
 // args back into one string the assertions search.
 
+// Every invocation pins the last-sent dedup state dir inside the shim tempdir
+// (`TMPDIR`; `XDG_RUNTIME_DIR` would win on a Linux desktop) and drops the
+// developer's own `ZELLIJ_SESSION_NAME`: `cargo test` from inside a Zellij
+// pane would otherwise share one real record between parallel tests — and
+// dedup the very sends these tests count. Tests that WANT dedup armed set a
+// session name of their own (`notify_deduped`).
+
 /// Run `zj-radar notify <agent>` under the shims with `hook` piped to stdin,
 /// pane id 7 — the shared invocation every broadcast test starts from.
 fn notify(shims: &ShimDir, agent: &str, hook: &str) {
@@ -17,9 +24,132 @@ fn notify(shims: &ShimDir, agent: &str, hook: &str) {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         .write_stdin(hook)
         .assert()
         .success();
+}
+
+/// `notify claude --status <status>` with the last-sent dedup ARMED: a session
+/// identity (dedup is keyed per session × pane) and the state dir pinned
+/// inside the shim tempdir (`TMPDIR`, with `XDG_RUNTIME_DIR` — which would
+/// win on a Linux desktop — removed) so tests never touch the real one.
+fn notify_deduped(shims: &ShimDir, status: &str, hook: &str, extra_env: &[(&str, &str)]) {
+    let mut cmd = Command::cargo_bin("zj-radar").unwrap();
+    cmd.args(["notify", "claude", "--status", status])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("ZELLIJ_SESSION_NAME", "dedup-test")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZJ_RADAR_NO_DEDUP");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.write_stdin(hook).assert().success();
+}
+
+const PRE_EDIT: &str = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
+const POST_EDIT: &str = r#"{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
+
+#[test]
+fn identical_pre_and_post_running_payloads_send_once() {
+    // PreToolUse and PostToolUse derive byte-identical wire payloads; the
+    // second is a duplicate the rail would no-op anyway, so the producer
+    // drops it before spending a git probe or a `zellij pipe` fan-out.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 1, "the Post repeat must be deduped");
+
+    // A different activity is a different payload — sent.
+    let read = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Read","tool_input":{"file_path":"/home/u/myrepo/README.md"}}"#;
+    notify_deduped(&shims, "running", read, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2);
+}
+
+#[test]
+fn pending_edge_passes_and_the_recovery_running_is_sent() {
+    // The Pending→Running recovery edge (the reason PostToolUse stays
+    // registered): Notification→pending is never skipped and overwrites the
+    // record, so the PostToolUse→running that follows differs and goes out —
+    // an answered permission prompt must clear "needs you" at once.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+
+    let pending = r#"{"hook_event_name":"Notification","cwd":"/home/u/myrepo","message":"Claude needs your permission to use Edit"}"#;
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "pending", pending, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    let sent: Vec<String> = shims
+        .recorded("zellij")
+        .iter()
+        .map(|c| c.args.join(" "))
+        .collect();
+    assert_eq!(sent.len(), 3, "running, pending, recovery running: {sent:?}");
+    assert!(sent[1].contains("\"status\":\"pending\""), "{sent:?}");
+    assert!(sent[2].contains("\"status\":\"running\""), "{sent:?}");
+    // …and only the recovery's own repeat collapses.
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 3);
+}
+
+#[test]
+fn failed_send_is_not_recorded_so_the_repeat_is_retried() {
+    // The sh wrapper exits with `zellij pipe`'s status; a failed client (no
+    // server, killed at the deadline) must not be recorded as delivered, or
+    // the pane would suppress its own retry for the dedup TTL.
+    let shims = ShimDir::new();
+    shims.add_recorder_exiting("zellij", 1);
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2, "an unconfirmed send must be retried");
+}
+
+#[test]
+fn no_dedup_env_disables_the_skip() {
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[("ZJ_RADAR_NO_DEDUP", "1")]);
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZJ_RADAR_NO_DEDUP", "1")]);
+    assert_eq!(shims.recorded("zellij").len(), 2);
+}
+
+#[test]
+fn dedup_state_is_scoped_per_pane_and_session() {
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    // Same payload from another pane: its own record, so it is sent.
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_PANE_ID", "terminal_8")]);
+    // Same pane id in another session: also its own record.
+    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_SESSION_NAME", "other")]);
+    assert_eq!(shims.recorded("zellij").len(), 3);
+    // The state files landed under the injected TMPDIR, not the real one.
+    let state = shims.dir.path().join("zj-radar-dedup");
+    let mut names: Vec<_> = std::fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "last-sent.dedup-test.7.json",
+            "last-sent.dedup-test.8.json",
+            "last-sent.other.7.json"
+        ]
+    );
 }
 
 #[test]
@@ -43,6 +173,13 @@ fn claude_posttooluse_edit_broadcasts_editing_activity() {
     assert!(
         argv.contains("editing auth.rs"),
         "payload missing activity string: {argv}"
+    );
+    // The hook's cwd does not exist on this machine, so the native .git walk
+    // declines and repo/branch come from the git fallback — the fake here.
+    // Pins that the spawn path stays wired behind the native one.
+    assert!(
+        argv.contains("\"repo\":\"myrepo\"") && argv.contains("\"branch\":\"main\""),
+        "repo/branch must come from the git fallback for an unresolvable cwd: {argv}"
     );
 }
 
@@ -98,6 +235,9 @@ fn no_zellij_env_exits_clean_without_broadcast() {
         .env("PATH", shims.path_env())
         .env_remove("ZELLIJ")
         .env_remove("ZELLIJ_PANE_ID")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         .write_stdin(r#"{"hook_event_name":"Stop","cwd":"/tmp"}"#)
         .assert()
         .success();
@@ -132,6 +272,9 @@ fn hung_zellij_pipe_is_killed_at_the_send_deadline() {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
         // 3s, not 1: the shim must exec and write its log line BEFORE the
         // deadline kill, or the recorded-broadcast assertion below races the
         // reaper. Under full-parallel test load (nix check builds) a 1s
@@ -171,7 +314,13 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "1")
         .env("ZELLIJ_PANE_ID", "terminal_7")
-        .env("ZJ_RADAR_PIPE_TIMEOUT", "4")
+        .env("TMPDIR", shims.dir.path())
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("ZELLIJ_SESSION_NAME")
+        // Generous: the guard below invalidates the test if the kill cannot
+        // land before this deadline, and a workspace-wide `cargo test` on a
+        // loaded machine took >4 s just to reach the hung client.
+        .env("ZJ_RADAR_PIPE_TIMEOUT", "8")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -194,7 +343,7 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     // too-slow failure than a false pass.
     let pid = shims.wait_for_hung_pid("zellij", std::time::Duration::from_secs(10));
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
+        started.elapsed() < std::time::Duration::from_secs(8),
         "test invalidated, not failed: machine too loaded to reach the kill \
          before notify's own send deadline — the producer-death regression \
          would be unobservable ({}ms elapsed)",
@@ -204,8 +353,9 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     notify.wait().unwrap();
 
     // The orphaned subtree must still reap the hung client at its own
-    // deadline. Poll with slack for loaded CI rather than sleeping once.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // deadline (up to 8 s after the send began). Poll with slack for loaded
+    // CI rather than sleeping once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
     loop {
         let alive = std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
@@ -227,4 +377,84 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     // Reaped — and the broadcast was still attempted: the payload reached
     // zellij's argv before the hang, so killing the client lost nothing.
     assert_eq!(shims.recorded("zellij").len(), 1);
+}
+
+/// A `.git` directory git itself would accept: `objects/`, `refs/`, and a
+/// symbolic HEAD — enough for the native walk in `cli/git.rs` to answer
+/// without spawning git.
+fn make_git_fixture(root: &std::path::Path, name: &str, head: &str) -> std::path::PathBuf {
+    let repo = root.join(name);
+    std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(repo.join(".git/refs/heads")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), head).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    repo
+}
+
+#[test]
+fn repo_and_branch_are_resolved_natively_without_spawning_git() {
+    // End to end through the binary: a real `.git` at the hook's cwd is
+    // answered by the file walk, and the `git` on PATH is never run (a
+    // recording shim that would answer nothing — so a fallback would ALSO
+    // show up as an empty repo in the payload).
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_recorder("git");
+    let repo = make_git_fixture(shims.dir.path(), "pinky", "ref: refs/heads/feat/x\n");
+    let hook = format!(
+        r#"{{"hook_event_name":"Stop","cwd":"{}","last_assistant_message":"done."}}"#,
+        repo.join("src").display()
+    );
+    notify(&shims, "claude", &hook);
+
+    let sent = shims.recorded("zellij");
+    assert_eq!(sent.len(), 1);
+    let argv = sent[0].args.join(" ");
+    assert!(argv.contains(r#""repo":"pinky""#), "payload: {argv}");
+    assert!(argv.contains(r#""branch":"feat/x""#), "payload: {argv}");
+    assert!(shims.recorded("git").is_empty(), "git must not be spawned for a walkable repo");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dedup_state_prefers_xdg_runtime_dir_over_tmpdir() {
+    // `dirs::runtime_dir` honors XDG_RUNTIME_DIR on Linux only (macOS has no
+    // runtime dir and falls back to TMPDIR), so the precedence is a Linux
+    // contract.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    let xdg = tempfile::tempdir().unwrap();
+    notify_deduped(&shims, "running", PRE_EDIT, &[("XDG_RUNTIME_DIR", xdg.path().to_str().unwrap())]);
+    assert!(xdg.path().join("zj-radar-dedup").is_dir(), "state under XDG_RUNTIME_DIR");
+    assert!(!shims.dir.path().join("zj-radar-dedup").exists(), "…and not under TMPDIR");
+}
+
+#[test]
+fn a_notify_invocation_clap_rejects_still_exits_zero_and_sends_nothing() {
+    // The hook execs the CLI directly, and Claude Code treats a non-zero
+    // hook exit as a blocking error with stderr discarded. A stale binary
+    // that rejects a flag the installed hook passes must be a logged no-op.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["notify", "claude", "--status", "running", "--no-such-flag"])
+        .env("PATH", shims.path_env())
+        .env("ZELLIJ", "1")
+        .env("ZELLIJ_PANE_ID", "terminal_7")
+        .write_stdin(PRE_EDIT)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "a malformed notify must exit 0, got {:?}", out.status);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ignoring this notify invocation"), "stderr: {stderr}");
+    assert!(shims.recorded("zellij").is_empty());
+
+    // Every other subcommand keeps clap's contract: usage on stderr, exit 2.
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "--no-such-flag"])
+        .assert()
+        .code(2);
 }

@@ -1,0 +1,26 @@
+# Interpreter-cost benchmark for the wasm plugin. A standalone crate, NOT a
+# workspace member: it pulls wasmi + WASI + prost, none of which the shipped
+# tree needs, and `cargo build` at the root must stay lean. Run it via
+# `just bench-wasm` (see the recipe) or
+# `cargo run --release --manifest-path tools/wasm-fuel/Cargo.toml -- <wasm>...`.
+[package]
+name = "wasm-fuel"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Measures zj_radar.wasm per-event cost in wasmi fuel — the interpreter's own unit."
+
+[workspace]
+
+[dependencies]
+# Pinned to the wasmi line Zellij 0.44 embeds (zellij-server/Cargo.toml), so
+# fuel numbers reflect the interpreter users actually run.
+wasmi = "0.51"
+wasmi_wasi = "0.51"
+# prost 0.11 matches the vendored generated code under src/proto/.
+prost = "0.11"
+serde_json = "1"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3

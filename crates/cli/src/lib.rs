@@ -29,7 +29,9 @@ use std::path::PathBuf;
 pub(crate) const WASM_FILE_NAME: &str = "zj_radar.wasm";
 
 mod agents;
+mod dedup;
 mod fsutil;
+mod git;
 pub(crate) mod layout;
 mod notify;
 mod producers;
@@ -174,7 +176,10 @@ enum Command {
 /// CLI entry point (called by `src/main.rs`). Returns the process exit code:
 /// failure when any orchestrator flagged a refusal/error via [`exit::fail_report`].
 pub fn run() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => return parse_failure(err),
+    };
     match cli.command {
         Command::Run { name, print_cmd } => {
             run::run(run::RunOptions { name, print_cmd });
@@ -248,4 +253,22 @@ pub fn run() -> std::process::ExitCode {
     } else {
         std::process::ExitCode::SUCCESS
     }
+}
+
+/// clap's own behaviour for a bad command line — usage on stderr, exit 2;
+/// `--help`/`--version` print and exit 0 — except for `notify`, which agent
+/// hooks exec directly. Claude Code treats a non-zero hook exit as a
+/// blocking error (a PreToolUse hook blocks the tool call, and the hook's
+/// stderr is discarded), so a `zj-radar` on PATH that rejects a flag the
+/// installed hook passes (version skew) must degrade to a logged no-op:
+/// hint, exit 0, send nothing. Detected by the first argument, since a
+/// parse failure has no `Command` to match on.
+fn parse_failure(err: clap::Error) -> std::process::ExitCode {
+    let is_notify = std::env::args().nth(1).is_some_and(|arg| arg == "notify");
+    if is_notify && err.use_stderr() {
+        eprintln!("zj-radar: {err}");
+        eprintln!("zj-radar: ignoring this notify invocation — a hook must never fail its agent");
+        return std::process::ExitCode::SUCCESS;
+    }
+    err.exit()
 }
