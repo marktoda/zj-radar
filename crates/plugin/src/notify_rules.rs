@@ -4,6 +4,7 @@
 //! tested; the wasm side only dispatches the resulting argv via `run_command`.
 
 use crate::config::Config;
+use crate::kind::Kind;
 use crate::observation::TrackedObservation;
 use crate::status::Status;
 use std::collections::BTreeMap;
@@ -39,22 +40,32 @@ fn fnv1a(title: &str, body: &str) -> u32 {
 }
 
 /// User-facing phrase per attention status. `Pending` reads as "needs input"
-/// (cmux parity); non-attention statuses have no phrase and never notify.
-fn phrase(status: Status) -> Option<&'static str> {
-    match status {
-        Status::Done => Some("done"),
-        Status::Error => Some("error"),
-        Status::Pending => Some("needs input"),
-        Status::Running | Status::Idle => None,
+/// (cmux parity); a completed *remote* session phrases as a disconnect rather
+/// than a routine "done"/"error" — the whole point of the `Remote` class is
+/// that its ending is news, not a quiet completion row. Non-attention
+/// statuses have no phrase and never notify.
+fn phrase(status: Status, kind: Kind) -> Option<&'static str> {
+    match (status, kind) {
+        (Status::Done, k) if k.is_remote() => Some("disconnected"),
+        (Status::Error, k) if k.is_remote() => Some("connection lost"),
+        (Status::Done, _) => Some("done"),
+        (Status::Error, _) => Some("error"),
+        (Status::Pending, _) => Some("needs input"),
+        (Status::Running | Status::Idle, _) => None,
     }
 }
 
-/// Whether this status's per-status toggle (and the master switch) is enabled.
-fn enabled(status: Status, cfg: &Config) -> bool {
+/// Whether this status's per-status toggle (and the master switch) is
+/// enabled. A remote disconnect notifies independently of `notify_done` /
+/// `notify_error` via `notify_remote`, OR'd in: someone who silenced routine
+/// completions still wants to know a connection dropped — folding it under
+/// `notify_done` would make the master switch for "a build finished" also the
+/// switch for "your session to prod died".
+fn enabled(status: Status, kind: Kind, cfg: &Config) -> bool {
     cfg.notify
         && match status {
-            Status::Done => cfg.notify_done,
-            Status::Error => cfg.notify_error,
+            Status::Done => (kind.is_remote() && cfg.notify_remote) || cfg.notify_done,
+            Status::Error => (kind.is_remote() && cfg.notify_remote) || cfg.notify_error,
             Status::Pending => cfg.notify_pending,
             Status::Running | Status::Idle => false,
         }
@@ -66,7 +77,7 @@ fn build(pane_id: u32, o: &TrackedObservation, status: Status) -> Notification {
     } else {
         format!("{} · {}", o.repo, o.branch)
     };
-    let phrase = phrase(status).unwrap_or("");
+    let phrase = phrase(status, o.kind).unwrap_or("");
     let body = if o.msg.is_empty() {
         phrase.to_string()
     } else {
@@ -99,7 +110,7 @@ pub fn diff(
         if !new.needs_attention() || new == was {
             continue;
         }
-        if !enabled(new, cfg) {
+        if !enabled(new, o.kind, cfg) {
             continue;
         }
         if focused == Some(pane_id) && !cfg.notify_when_focused {
@@ -285,6 +296,57 @@ mod tests {
         let n = diff(&prev, &cur, None, &Config::default());
         assert_eq!(n[0].title, "pinky");
         assert_eq!(n[0].body, "needs input");
+    }
+
+    #[test]
+    fn remote_disconnect_phrases_as_disconnected_not_done() {
+        let mut o = obs(Status::Done, "prod", "", "ssh prod-db");
+        o.kind = crate::kind::Kind::Remote;
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let n = diff(&prev, &cur, None, &Config::default());
+        assert_eq!(n[0].body, "disconnected — ssh prod-db");
+    }
+
+    #[test]
+    fn remote_connection_lost_phrases_distinctly_from_a_plain_error() {
+        let mut o = obs(Status::Error, "prod", "", "ssh prod-db");
+        o.kind = crate::kind::Kind::Remote;
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let n = diff(&prev, &cur, None, &Config::default());
+        assert_eq!(n[0].body, "connection lost — ssh prod-db");
+    }
+
+    #[test]
+    fn notify_remote_ors_with_notify_done() {
+        // notify_remote is an ADDITIONAL enable, not an independent veto:
+        // either flag alone still notifies a disconnect, only both off
+        // silences it. A non-remote completion ignores notify_remote entirely.
+        let mut remote = obs(Status::Done, "prod", "", "ssh prod-db");
+        remote.kind = crate::kind::Kind::Remote;
+        let plain = obs(Status::Done, "prod", "", "cargo build");
+        let prev = BTreeMap::from([(7, Status::Running)]);
+
+        for (notify_remote, notify_done, remote_fires, plain_fires) in
+            [(true, true, true, true), (true, false, true, false), (false, true, true, true), (false, false, false, false)]
+        {
+            let cfg = Config { notify_remote, notify_done, ..Config::default() };
+            let remote_pairs = [(7, &remote)];
+            assert_eq!(
+                !diff(&prev, &current(&remote_pairs), None, &cfg).is_empty(),
+                remote_fires,
+                "remote: notify_remote={notify_remote} notify_done={notify_done}"
+            );
+            let plain_pairs = [(7, &plain)];
+            assert_eq!(
+                !diff(&prev, &current(&plain_pairs), None, &cfg).is_empty(),
+                plain_fires,
+                "plain: notify_remote={notify_remote} notify_done={notify_done}"
+            );
+        }
     }
 
     #[test]

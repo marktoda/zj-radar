@@ -82,7 +82,9 @@ Anything that produces a per-pane observation. Two modalities:
 - **Observed**: uninstrumented commands (`cargo test`) the plugin watches via
   `CommandChanged`, classified by `crates/core/src/command.rs::classify`.
   Interactive commands (`DEFAULT_INTERACTIVE` plus the `interactive_commands`
-  option) are observed but never earn a Running row
+  option) are observed but never earn a Running row; remote-session launchers
+  (`DEFAULT_REMOTE` plus the `remote_commands` option — `ssh`, `mosh`, …) earn
+  a Running row that renders steady, like a service, rather than spinning
   ([`docs/activity-model.md`](docs/activity-model.md)).
 
 The two meet at exit in the **producer-death model**: an agent's pane
@@ -95,7 +97,7 @@ grace clock; the agent's argv reappearing cancels it; the pane manifest's
 Per-pane to per-tab aggregation: `rollup::roll_up(panes, resolve, quiet) ->
 TabDisplay` in `crates/plugin/src/rollup.rs`. Severity is `error > pending >
 running > done > idle`; the highest-severity pane supplies the detail line,
-with a bounded job outranking a service on ties. `roll_up` owns its output
+with a bounded job outranking a steady row (service or remote) on ties. `roll_up` owns its output
 vocabulary (`TabDisplay`, `PaneDisplay`, `PrimaryDetail`, `ProgressCounts`,
 `ExitOutcome`) and never learns there are two stores; `resolve` and `quiet`
 are closures `RadarState` hands it. Tab status is never derived from tab
@@ -114,8 +116,8 @@ flag; `project` fires `notify_effects` on it.
 How often the one-shot timer re-fires (`PluginRuntime::desired_cadence`):
 Fast (1 Hz) while there is tick-windowed work, Slow (once a minute) while only
 minute-granular ages change or a presence heartbeat is owed, and disarmed
-otherwise. Service rows and interactive rows never pin Fast. Trigger lists:
-design.md → *Timer and cadence*.
+otherwise. Service rows, remote rows, and interactive rows never pin Fast.
+Trigger lists: design.md → *Timer and cadence*.
 
 ## Render gate
 

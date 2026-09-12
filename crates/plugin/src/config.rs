@@ -154,10 +154,20 @@ pub struct Config {
     /// seeded defaults here instead would let one configured entry silently
     /// *replace* them (`config_fields!` assigns wholesale).
     pub interactive_commands: BTreeSet<String>,
+    /// The user's EXTRA remote-session launcher names (`docs/activity-model.md`
+    /// §4). Extras only, default empty, exactly like `interactive_commands`:
+    /// the effective set composes as `command::DEFAULT_REMOTE ∪ extras` in
+    /// `CommandStore::set_remote_extras`.
+    pub remote_commands: BTreeSet<String>,
     pub notify: bool,
     pub notify_done: bool,
     pub notify_error: bool,
     pub notify_pending: bool,
+    /// Whether a remote session's disconnect (`Kind::is_remote`, Running →
+    /// Done/Error) notifies. OR'd into the per-status gate alongside
+    /// `notify_done`/`notify_error` rather than folded under them: someone who
+    /// silenced routine completions still wants to know a connection dropped.
+    pub notify_remote: bool,
     pub notify_when_focused: bool,
 }
 
@@ -173,10 +183,12 @@ impl Default for Config {
             jump_hint: JumpHint::default(),
             defer_permission: false,
             interactive_commands: BTreeSet::new(),
+            remote_commands: BTreeSet::new(),
             notify: true,
             notify_done: true,
             notify_error: true,
             notify_pending: true,
+            notify_remote: true,
             notify_when_focused: false,
         }
     }
@@ -262,10 +274,12 @@ config_fields! {
     header:              "header"              => parse_bool,
     defer_permission:    "defer_permission"    => parse_bool,
     interactive_commands: "interactive_commands" => parse_name_set,
+    remote_commands:      "remote_commands"      => parse_name_set,
     notify:              "notify"              => parse_bool,
     notify_done:         "notify_done"         => parse_bool,
     notify_error:        "notify_error"        => parse_bool,
     notify_pending:      "notify_pending"      => parse_bool,
+    notify_remote:       "notify_remote"       => parse_bool,
     notify_when_focused: "notify_when_focused" => parse_bool,
 }
 
@@ -632,6 +646,7 @@ mod tests {
         assert!(c.notify_done);
         assert!(c.notify_error);
         assert!(c.notify_pending);
+        assert!(c.notify_remote);
         assert!(!c.notify_when_focused);
     }
 
@@ -642,12 +657,14 @@ mod tests {
             ("notify_done", "false"),
             ("notify_error", "0"),
             ("notify_pending", "no"),
+            ("notify_remote", "off"),
             ("notify_when_focused", "true"),
         ]));
         assert!(!c.notify);
         assert!(!c.notify_done);
         assert!(!c.notify_error);
         assert!(!c.notify_pending);
+        assert!(!c.notify_remote);
         assert!(c.notify_when_focused);
     }
 
@@ -683,5 +700,28 @@ mod tests {
         assert!(!c.interactive_commands.is_empty());
         c.apply_overrides(&map(&[("interactive_commands", "")]));
         assert!(c.interactive_commands.is_empty());
+    }
+
+    #[test]
+    fn remote_commands_default_is_empty_extras() {
+        // Extras ONLY — the built-in set lives in core and is composed in
+        // `CommandStore::set_remote_extras`, exactly like `interactive_commands`.
+        assert!(Config::default().remote_commands.is_empty());
+        assert!(Config::from_map(&map(&[])).remote_commands.is_empty());
+    }
+
+    #[test]
+    fn remote_commands_parses_commas_spaces_and_dashes() {
+        let c = Config::from_map(&map(&[("remote_commands", "distrobox, rsh  -sshpass,")]));
+        let got: Vec<&str> = c.remote_commands.iter().map(String::as_str).collect();
+        assert_eq!(got, ["distrobox", "rsh", "sshpass"], "split on commas/spaces, dash-stripped, empties dropped");
+    }
+
+    #[test]
+    fn remote_commands_live_override_can_clear() {
+        let mut c = Config::from_map(&map(&[("remote_commands", "distrobox")]));
+        assert!(!c.remote_commands.is_empty());
+        c.apply_overrides(&map(&[("remote_commands", "")]));
+        assert!(c.remote_commands.is_empty());
     }
 }

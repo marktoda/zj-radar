@@ -62,20 +62,23 @@ const MAX_PANE_LINES: usize = 6;
 /// aligned across all child lines (see `child_prefix`'s doc).
 const TREE_PREFIX_COLS: usize = 3;
 
-/// The steady mark for a Running *service* (`Kind::is_service`) — a dev
-/// server is up, not progressing, so nothing animates (`docs/activity-model.md`
-/// §3: a spinner promises bounded work). The steadiness is also what lets the
-/// timer stand down around an all-service rail (to Slow once the session name
-/// is known — the presence heartbeat, see `desired_cadence` — or fully
-/// pre-name): identical rows across ticks fall to the render gate, and the
-/// cadence predicates count only `TrackedObservation::animating` rows.
+/// The steady mark for a Running *steady* row (`Kind::is_steady` — a service
+/// or a connected remote session) — a dev server is up, an ssh session is
+/// connected, neither is progressing, so nothing animates
+/// (`docs/activity-model.md` §3: a spinner promises bounded work). The
+/// steadiness is also what lets the timer stand down around an all-steady
+/// rail (to Slow once the session name is known — the presence heartbeat, see
+/// `desired_cadence` — or fully pre-name): identical rows across ticks fall to
+/// the render gate, and the cadence predicates count only
+/// `TrackedObservation::animating` rows.
 const SERVICE_GLYPH: char = '▸';
 
-/// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
-/// (easing to a slow blink — see [`spin_glyph`]). The single owner of the
-/// service/job glyph split, shared by the tab header and the pane lines.
+/// Status glyph for a Running row: steady rows (services, remote sessions)
+/// hold [`SERVICE_GLYPH`], jobs spin (easing to a slow blink — see
+/// [`spin_glyph`]). The single owner of the steady/job glyph split, shared by
+/// the tab header and the pane lines.
 fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
-    if kind.is_service() {
+    if kind.is_steady() {
         SERVICE_GLYPH
     } else {
         spin_glyph(now_tick, since_tick)
@@ -670,11 +673,13 @@ fn wait_tag(status: Status, pending_epoch_s: Option<u64>, now_epoch_s: u64) -> O
 /// The `· 4m` elapsed tag for a long-running bounded *job* — whole minutes
 /// since the run's true start (`since_tick` survives re-promotions of the same
 /// command, `command.rs`), same band as the wait tag. Jobs only
-/// (`docs/activity-model.md` §3): agents label their own turns and services
-/// never complete, so neither wears a stopwatch. Ticks read as seconds because
-/// an animated Running row is exactly what holds the 1 Hz cadence armed.
+/// (`docs/activity-model.md` §3): agents label their own turns, and steady
+/// rows (services, remote sessions) never complete, so neither wears a
+/// stopwatch — a connection does not wear a stopwatch, for the same reason a
+/// dev server does not. Ticks read as seconds because an animated Running row
+/// is exactly what holds the 1 Hz cadence armed.
 fn run_tag(status: Status, kind: Kind, since_tick: Option<u64>, now_tick: u64) -> Option<String> {
-    if status != Status::Running || kind.is_agent() || kind.is_service() {
+    if status != Status::Running || kind.is_agent() || kind.is_steady() {
         return None;
     }
     minute_tag(now_tick.saturating_sub(since_tick?))
@@ -753,28 +758,41 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // Trailing sp after num only if it fits.
     let has_trailing_sp = bare_min + num_w < width;
     let prefix_len = bare_min + num_w + if has_trailing_sp { 1 } else { 0 };
-    // Trailing bell marker (⚑ + space, 2 cols). The prefix
-    // clamp only guarantees the prefix itself fits `width`; suppress the bell at
-    // extreme-narrow widths where it wouldn't fit beside the prefix, or it would
-    // be emitted past the column edge — breaking the "no line exceeds width"
-    // invariant and the card-padding math (name_budget would still saturate to 0).
-    const BELL_W: usize = 2; // ⚑ + trailing space
-    // Bell and action are independent signals. The action slot has already
-    // reduced `width`, so both fit whenever the bell fits this content budget.
-    let show_bell = row.has_bell && prefix_len + BELL_W <= width;
-    let bell_len = if show_bell { BELL_W } else { 0 };
-    let bell = if show_bell {
-        format!("{} ", Seg::new(&hue(Role::Working), "⚑"))
+    // Trailing marker slot: right-aligned `⇄` (a connected remote session,
+    // priority order) then `⚑` (unread bell) — both present renders `⇄⚑` in a
+    // 3-column slot (2 glyphs + trailing space). The prefix clamp only
+    // guarantees the prefix itself fits `width`; suppress the slot at
+    // extreme-narrow widths where it wouldn't fit beside the prefix, or it
+    // would be emitted past the column edge — breaking the "no line exceeds
+    // width" invariant and the card-padding math (name_budget would still
+    // saturate to 0).
+    let marker_glyphs = usize::from(row.display.remote) + usize::from(row.has_bell);
+    let marker_w = if marker_glyphs > 0 { marker_glyphs + 1 } else { 0 }; // glyphs + trailing space
+    // The marker and the action slot are independent signals. The action slot
+    // has already reduced `width`, so both fit whenever the marker fits this
+    // content budget.
+    let show_marker = marker_glyphs > 0 && prefix_len + marker_w <= width;
+    let marker_len = if show_marker { marker_w } else { 0 };
+    let marker = if show_marker {
+        let mut s = String::new();
+        if row.display.remote {
+            s.push_str(&Seg::new(&hue(Role::Accent), "⇄").to_string());
+        }
+        if row.has_bell {
+            s.push_str(&Seg::new(&hue(Role::Working), "⚑").to_string());
+        }
+        s.push(' ');
+        s
     } else {
         String::new()
     };
     // At extreme-narrow widths name_budget saturates to 0 → name = ""; no
     // .max(1) so we never force an extra `…` that would push past `width`.
-    let name_budget = width.saturating_sub(prefix_len + bell_len);
+    let name_budget = width.saturating_sub(prefix_len + marker_len);
     let name = truncate(&row.name, name_budget);
 
     // gap can be 0 at extreme-narrow widths; saturating_sub prevents underflow.
-    let used = prefix_len + UnicodeWidthStr::width(&*name) + bell_len;
+    let used = prefix_len + UnicodeWidthStr::width(&*name) + marker_len;
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
     let label_text = format!("{glyph_char} {num}{sp_after_num}{name}");
@@ -784,7 +802,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         text: label_text.into(),
     };
     let line = Line::new(
-        format!("{}{}{}{}\n", bar, label, " ".repeat(gap), bell),
+        format!("{}{}{}{}\n", bar, label, " ".repeat(gap), marker),
         Some(tab_target.clone()),
         LineBg::Card,
     );

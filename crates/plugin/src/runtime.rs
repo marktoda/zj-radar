@@ -441,6 +441,9 @@ impl PluginRuntime {
         // fires no further CommandChanged until it exits, so this is the only
         // edge that can catch it (`docs/activity-model.md` §5).
         self.radar.set_interactive_commands(&self.config.interactive_commands);
+        // Same level-triggered treatment for the remote set: a rehydrated
+        // remote_commands extra re-kinds an already-promoted row immediately.
+        self.radar.set_remote_commands(&self.config.remote_commands);
         // Seed the notification baseline from the restored snapshot so that
         // pre-existing completions never fire a spurious Notify effect.
         self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
@@ -956,6 +959,10 @@ impl PluginRuntime {
         // never fire another CommandChanged until it exits. A sweep that changed
         // state persists, so instances spawned later rehydrate the demotion.
         let swept = self.radar.set_interactive_commands(&self.config.interactive_commands);
+        // Same for the remote set: a live `remote_commands` override re-kinds
+        // an already-promoted row (e.g. a `distrobox enter` pane) without
+        // waiting for it to exit.
+        let swept = swept | self.radar.set_remote_commands(&self.config.remote_commands);
         let renames = self.radar.recompute_renames(self.config.naming);
         let change = RadarChange {
             render: true,

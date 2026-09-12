@@ -105,6 +105,15 @@ pub const DEFAULT_INTERACTIVE: &[&str] = &[
     "fzf", "ranger", "yazi", "nnn", "lf", "mc",
 ];
 
+/// Remote-session launchers: "this pane's shell is on another machine"
+/// (`Kind::Remote`, `docs/activity-model.md` §3). Consulted by `classify` for
+/// the Kind and the host-extracting display (`display_remote`), and by intake
+/// for the `remote_commands` extras override. The fourth "three lists, three
+/// contracts" table beside `IGNORE_NAMES`/`AGENT_NAMES`/`DEFAULT_INTERACTIVE` —
+/// must stay disjoint from all three (pinned by
+/// `interactive_set_disjoint_from_prompt_and_agent_names`).
+pub const DEFAULT_REMOTE: &[&str] = &["ssh", "mosh", "mosh-client", "autossh", "et", "tmate"];
+
 /// A pending foreground command awaiting debounce promotion — or, for an
 /// interactive command (`promotable: false`), a *quiet* pending: identity
 /// recorded for exit labeling and the muted pane label, but never promoted to
@@ -147,6 +156,10 @@ pub struct CommandStore {
     /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
     /// Matched on the peeled program name at intake.
     interactive: HashSet<String>,
+    /// The effective remote set: [`DEFAULT_REMOTE`] ∪ the user's
+    /// `remote_commands` extras (composed in [`Self::set_remote_extras`]).
+    /// Matched on the peeled program name at intake — see `on_command_changed`.
+    remote: HashSet<String>,
 }
 
 impl Default for CommandStore {
@@ -157,6 +170,7 @@ impl Default for CommandStore {
             pending_done: HashMap::new(),
             exited: HashMap::new(),
             interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
+            remote: DEFAULT_REMOTE.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -405,6 +419,67 @@ fn display_python(exe: &str, args: &[String]) -> String {
     }
 }
 
+/// ssh's value-taking short options: the value is a SEPARATED token (`-p
+/// 2222`) rather than baked into the same argv element (`-p2222`,
+/// `-oProxyJump=x`). Shared by ssh, autossh, tmate, et — all ssh-alike argv
+/// shapes.
+const SSH_VALUE_OPTS: &[char] = &[
+    'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R', 'S',
+    'W', 'w',
+];
+
+/// mosh long options that take a following value (`--predict adaptive`), as
+/// opposed to `--foo=bar`'s self-contained form.
+const MOSH_VALUE_LONG_OPTS: &[&str] = &["--ssh", "--server", "--predict", "--port"];
+
+/// Strip a `user@` prefix and, for the `ssh://user@host:port` URI form, the
+/// scheme/port/path — keeping only the host, the identity a user recognizes.
+fn remote_destination(token: &str) -> String {
+    let token = token.strip_prefix("ssh://").unwrap_or(token);
+    let token = token.rsplit_once('@').map_or(token, |(_, host)| host);
+    let token = token.split('/').next().unwrap_or(token);
+    token.split(':').next().unwrap_or(token).to_string()
+}
+
+/// Compact an `ssh`/`mosh`-family invocation into `"<exe> <destination>"` and
+/// report whether a remote command follows the destination —
+/// `ssh box cargo build` is bounded work (a `Job`, still a Command), while a
+/// bare `ssh box` is a live session (the `Remote` class). ssh's argv doesn't
+/// fit `ToolRule`'s columns: `first_non_option` would surface `2222` from
+/// `ssh -p 2222 prod-db`, since ssh's value-taking short options aren't
+/// modelled by that generic scan.
+fn display_remote(exe: &str, args: &[String]) -> (String, bool) {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "-" {
+            i += 1;
+            continue;
+        }
+        if arg.starts_with("--") {
+            i += if MOSH_VALUE_LONG_OPTS.contains(&arg) { 2 } else { 1 };
+            continue;
+        }
+        if is_option_arg(arg) {
+            let rest = &arg[1..];
+            let takes_value =
+                rest.len() == 1 && SSH_VALUE_OPTS.contains(&rest.chars().next().unwrap());
+            i += if takes_value { 2 } else { 1 };
+            continue;
+        }
+        // First surviving non-option token: the destination.
+        let dest = remote_destination(arg);
+        // `mosh-client <ip> <port>` is the only two-positional-arg shape any
+        // DEFAULT_REMOTE exe takes: its second token is the port (the AES key
+        // rides an env var, never argv), never a remote command — so it never
+        // earns the Job treatment the way `ssh box cargo build`'s trailing
+        // words do.
+        let has_remote_cmd = exe != "mosh-client" && i + 1 < args.len();
+        return (raw_display(&[exe, &dest]), has_remote_cmd);
+    }
+    (exe.to_string(), false)
+}
+
 /// Classify a (peeled) foreground argv in one pass: the compacted,
 /// rail-friendly activity string AND the `Kind` that owns the pane. The
 /// display keeps useful verbs/subcommands (`cargo test`, `npm run build`)
@@ -433,6 +508,22 @@ fn classify(command: &[String]) -> (String, Kind) {
     let identity = Kind::from_source(exe);
     if identity.is_agent() {
         return (sanitize(exe, MAX_MSG_CHARS), identity);
+    }
+
+    // ssh/mosh-family launchers have their own display shape (see
+    // `display_remote`) and their own Kind, decided by whether a remote
+    // command follows the destination — routed before the python check since
+    // neither vocabulary overlaps.
+    if DEFAULT_REMOTE.contains(&exe) {
+        let (raw, has_remote_cmd) = display_remote(exe, args);
+        // `ssh box cargo build` is bounded work you are waiting on — a Job,
+        // and it keeps today's spinner. Only a session with no trailing
+        // command is the Remote class (an interactive login, or a `-N -L`
+        // tunnel). A raw display that collapsed to the bare exe found no
+        // destination at all (`ssh` bare, `ssh -V`) — an ordinary command,
+        // not a session.
+        let kind = if raw == exe || has_remote_cmd { Kind::Command } else { Kind::Remote };
+        return (sanitize(&raw, MAX_MSG_CHARS), kind);
     }
 
     // `python -m <module>` has its own display shape (see display_python), and
@@ -575,6 +666,38 @@ impl CommandStore {
                 // would ever re-arm it, sticking the row Running forever).
                 return;
             }
+            // `remote_commands` extras get the Remote *presentation*; a
+            // DEFAULT_REMOTE name is excluded because `classify`'s dedicated
+            // branch above already decided its Kind (Remote, or Command for a
+            // trailing remote command) — applying the override there too would
+            // clobber that distinction back to Remote unconditionally. Mirrors
+            // how `interactive_commands` extras get the behaviour but not a
+            // bespoke display.
+            let kind = if !DEFAULT_REMOTE.contains(&name) && self.remote.contains(name) {
+                Kind::Remote
+            } else {
+                kind
+            };
+            // The mosh relabel: mosh execs a bootstrap `ssh` and then
+            // `mosh-client <ip> <port>`, so the pane reports three argvs in
+            // about a second and the final label would be an IP, losing the
+            // hostname. If the pane's existing pending-or-observation is
+            // already Remote, keep its msg instead of overwriting with the IP.
+            let cmd_string = if kind.is_remote() {
+                self.pending
+                    .get(&pane_id)
+                    .filter(|p| p.kind.is_remote())
+                    .map(|p| p.command.clone())
+                    .or_else(|| {
+                        self.store
+                            .get(pane_id)
+                            .filter(|s| s.kind.is_remote() && s.status == Status::Running)
+                            .map(|s| s.msg.clone())
+                    })
+                    .unwrap_or(cmd_string)
+            } else {
+                cmd_string
+            };
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -904,8 +1027,9 @@ impl CommandStore {
     }
 
     /// True while this store has tick-driven work: an animated Running row
-    /// ([`TrackedObservation::animating`] — services hold the steady mark and
-    /// are excluded), a promotable pending awaiting its debounce promotion, or
+    /// ([`TrackedObservation::animating`] — steady rows, services and remote
+    /// sessions, hold the steady mark and are excluded), a promotable pending
+    /// awaiting its debounce promotion, or
     /// a tentative-Done awaiting its debounce confirm. Used (alongside
     /// `StatusStore::needs_ticks`) to keep the timer armed; a finished command
     /// is terminal and needs no further ticking.
@@ -1012,6 +1136,55 @@ impl CommandStore {
             .get(&pane_id)
             .filter(|p| !p.promotable)
             .map(|p| (p.command.as_str(), p.kind))
+    }
+
+    /// Compose the effective remote set (`DEFAULT_REMOTE` ∪ `extras`) and apply
+    /// it **level-triggered**, mirroring [`Self::set_interactive_extras`].
+    /// Simpler than its sibling: remote rows are never suppressed, so nothing
+    /// demotes to Idle. It only re-stamps `kind` on command-origin
+    /// observations whose display's first token moved into or out of the set,
+    /// and re-judges pendings on their intake-stamped `program`. A
+    /// `DEFAULT_REMOTE` name is skipped in both sweeps for the same reason the
+    /// intake override skips it: `classify`'s dedicated branch already owns
+    /// its Kind, extras-only. Returns whether anything observable changed
+    /// (the caller's render/persist trigger).
+    pub fn set_remote_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
+        self.remote = DEFAULT_REMOTE
+            .iter()
+            .copied()
+            .chain(extras)
+            .map(str::to_string)
+            .collect();
+        let mut changed = false;
+        for p in self.pending.values_mut() {
+            if DEFAULT_REMOTE.contains(&p.program.as_str()) {
+                continue;
+            }
+            let want = if self.remote.contains(&p.program) { Kind::Remote } else { Kind::Command };
+            if p.kind != want {
+                p.kind = want;
+                changed = true;
+            }
+        }
+        let to_rekind: Vec<(u32, Kind)> = self
+            .store
+            .observations()
+            .filter_map(|(id, s)| {
+                let token = first_token(&s.msg)?;
+                if DEFAULT_REMOTE.contains(&token) {
+                    return None;
+                }
+                let want = if self.remote.contains(token) { Kind::Remote } else { Kind::Command };
+                (s.kind != want).then_some((id, want))
+            })
+            .collect();
+        for (pane_id, want) in to_rekind {
+            if let Some(s) = self.store.get_mut(pane_id) {
+                s.kind = want;
+                changed = true;
+            }
+        }
+        changed
     }
 }
 

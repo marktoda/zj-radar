@@ -37,8 +37,10 @@ the field as it was, so a typo never resets a setting.
 | `notify_done` | `true` · `false` | `true` | Notify on transition to `done`. |
 | `notify_error` | `true` · `false` | `true` | Notify on transition to `error`. |
 | `notify_pending` | `true` · `false` | `true` | Notify on transition to `pending`. |
+| `notify_remote` | `true` · `false` | `true` | Notify when a remote session disconnects (`done`/`error` for a `Kind::Remote` pane). OR'd with `notify_done`/`notify_error`, not gated by them: turning those off still leaves a dropped connection notifying. |
 | `notify_when_focused` | `true` · `false` | `false` | Also notify for the focused pane. |
 | `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra programs to treat as interactive: never a spinning row, only a muted label. Extends the built-in set of editors, pagers, and TUIs. Applies live. See [`activity-model.md`](activity-model.md). |
+| `remote_commands` | comma/space-separated exe names | *(empty)* | Extra programs to treat as remote-session launchers (steady mark, tab `⇄` marker, disconnect notification). Extends the built-in set (`ssh`, `mosh`, `mosh-client`, `autossh`, `et`, `tmate`). Applies live. See [`activity-model.md`](activity-model.md). |
 
 Notes:
 

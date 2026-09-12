@@ -28,12 +28,23 @@ fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
         Some("1h+"),
         "frozen at 1h+ — the display never changes again"
     );
-    // Agents label their own turns; services never complete: neither is timed.
+    // Agents label their own turns; steady rows (services, remote sessions)
+    // never complete: none of them is timed.
     assert_eq!(run_tag(Status::Running, Kind::Claude, Some(0), 9_999), None);
     assert_eq!(run_tag(Status::Running, Kind::Server, Some(0), 9_999), None);
+    assert_eq!(run_tag(Status::Running, Kind::Remote, Some(0), 9_999), None, "a connection does not wear a stopwatch");
     // Non-Running statuses and unstamped panes (untracked): no tag.
     assert_eq!(run_tag(Status::Done, Kind::Build, Some(0), 9_999), None);
     assert_eq!(run_tag(Status::Running, Kind::Build, None, 9_999), None);
+}
+
+#[test]
+fn running_glyph_holds_steady_for_service_and_remote() {
+    // The steady mark, not a spinner, for both members of the Service ∪
+    // Remote (`is_steady`) union — an ordinary job still spins.
+    assert_eq!(running_glyph(Kind::Server, 5, 0), '▸');
+    assert_eq!(running_glyph(Kind::Remote, 5, 0), '▸');
+    assert_ne!(running_glyph(Kind::Build, 5, 0), '▸');
 }
 
 #[test]
@@ -80,11 +91,13 @@ fn display(
             }]
         })
         .unwrap_or_default();
-    // Mirror `roll_up`: a Running tab animates unless the work is a service
-    // (steady mark, no fast cadence). A detail-less Running fixture animates —
-    // in production a Running status implies an animating observation existed.
+    // Mirror `roll_up`: a Running tab animates unless the work is steady
+    // (service/remote — steady mark, no fast cadence). A detail-less Running
+    // fixture animates — in production a Running status implies an animating
+    // observation existed.
     let animating =
-        status == Status::Running && detail.as_ref().is_none_or(|d| !d.kind.is_service());
+        status == Status::Running && detail.as_ref().is_none_or(|d| !d.kind.is_steady());
+    let remote = status == Status::Running && detail.as_ref().is_some_and(|d| d.kind.is_remote());
     TabDisplay {
         status,
         progress: ProgressCounts {
@@ -95,6 +108,7 @@ fn display(
         detail,
         panes,
         animating,
+        remote,
     }
 }
 
@@ -313,6 +327,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 pe(11, Kind::Claude, Status::Running, "tests"),
             ],
             animating: true,
+            remote: false,
         }),
         tab(2, "plain", display(Status::Idle, 0, 0, None)),
     ];
@@ -609,6 +624,76 @@ fn no_bell_no_marker() {
     assert!(!render(&rows, &ro(24, 0)).contains('⚑'));
 }
 
+/// `d` with its `remote` field forced — the marker slot doesn't derive
+/// `remote` from `detail` the way `display()`'s `animating` mirror does, so
+/// tests reach it directly through struct update.
+fn with_remote(remote: bool, d: TabDisplay) -> TabDisplay {
+    TabDisplay { remote, ..d }
+}
+
+#[test]
+fn remote_renders_marker() {
+    let d = with_remote(true, display(Status::Idle, 0, 0, None));
+    let rows = vec![tab(1, "t", d)];
+    assert!(render(&rows, &ro(24, 0)).contains('⇄'));
+}
+
+#[test]
+fn no_remote_no_marker() {
+    let rows = vec![tab(1, "t", display(Status::Idle, 0, 0, None))];
+    assert!(!render(&rows, &ro(24, 0)).contains('⇄'));
+}
+
+#[test]
+fn remote_and_bell_coexist_as_two_glyphs() {
+    // Both present renders `⇄⚑` in priority order, in a 3-column slot.
+    let d = with_remote(true, display(Status::Idle, 0, 0, None));
+    let rows = vec![TabRow { has_bell: true, ..tab(1, "t", d) }];
+    let s = render(&rows, &ro(24, 0));
+    assert!(s.contains('⇄'), "remote marker present: {s:?}");
+    assert!(s.contains('⚑'), "bell marker present: {s:?}");
+    let row_line = strip_sgr(s.lines().nth(2).unwrap_or(""));
+    let remote_pos = row_line.find('⇄');
+    let bell_pos = row_line.find('⚑');
+    assert!(remote_pos < bell_pos, "remote precedes bell: {row_line:?}");
+}
+
+#[test]
+fn remote_row_never_exceeds_width_even_when_extremely_narrow() {
+    // Mirror of `bell_row_never_exceeds_width_even_when_extremely_narrow`: the
+    // marker slot must suppress itself rather than spill past the column edge.
+    for active in [true, false] {
+        let d = with_remote(true, display(Status::Running, 0, 1, None));
+        let rows = vec![TabRow { active, ..tab(7, "infra", d) }];
+        for width in 4usize..=16 {
+            let s = render(&rows, &ro(width, 3));
+            for line in s.lines() {
+                assert!(
+                    visible_width(line) <= width,
+                    "remote row exceeds width {} (active={}): {:?} (visible {})",
+                    width,
+                    active,
+                    line,
+                    visible_width(line)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn name_truncates_before_the_marker_slot() {
+    // Under width pressure the name absorbs the squeeze first, keeping the
+    // marker slot intact (documented priority: overflow marker > badge >
+    // census — the tab name is lower priority still).
+    let d = with_remote(true, display(Status::Idle, 0, 0, None));
+    let rows = vec![TabRow { has_bell: true, ..tab(1, "a-very-long-tab-name", d) }];
+    let s = render(&rows, &ro(16, 0));
+    let row_line = strip_sgr(s.lines().nth(2).unwrap_or(""));
+    assert!(visible_width(&row_line) <= 16, "row fits: {row_line:?}");
+    assert!(row_line.contains('⇄'), "marker survives the squeeze: {row_line:?}");
+}
+
 #[test]
 fn error_word_narrows_when_tight() {
     // Right slot is now empty; verify "failed"/"err" do not appear.
@@ -819,6 +904,7 @@ fn multi_pending_detail_never_exceeds_width() {
         detail: Some(detail),
         panes: vec![],
         animating: false,
+        remote: false,
     })];
     for width in [14usize, 16, 17, 20, 24] {
         let s = render(&rows, &ro(width, 0));
@@ -1182,10 +1268,16 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             ..pd("r", "b", msg.clone(), *pane_status) }),
         _ => None,
     });
-    // Mirror `roll_up`: any Running non-service pane animates the tab.
+    // Mirror `roll_up`: any Running non-steady pane animates the tab.
     let animating = panes.iter().any(|p| match p {
         PaneDisplay::Tracked { kind, status, .. } => {
-            *status == Status::Running && !kind.is_service()
+            *status == Status::Running && !kind.is_steady()
+        }
+        _ => false,
+    });
+    let remote = panes.iter().any(|p| match p {
+        PaneDisplay::Tracked { kind, status, .. } => {
+            *status == Status::Running && kind.is_remote()
         }
         _ => false,
     });
@@ -1199,6 +1291,7 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         detail,
         panes,
         animating,
+        remote,
     }
 }
 
@@ -1298,6 +1391,7 @@ fn multi_pane_untracked_only_summary_names_panes() {
             PaneDisplay::untracked(2, "logs"),
         ],
         animating: false,
+        remote: false,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -1325,6 +1419,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
             PaneDisplay::untracked(2, "shell"),
         ],
         animating: true,
+        remote: false,
     });
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
@@ -3805,6 +3900,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
         ],
         animating: true,
+        remote: false,
     });
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper

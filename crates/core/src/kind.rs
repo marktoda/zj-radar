@@ -78,6 +78,7 @@ kinds! {
     Build    => "build",    '⚙', '⚙';
     Deploy   => "deploy",   '⇡', '⇡';
     Server   => "server",   '❯', '❯';
+    Remote   => "remote",   '⇄', '⇄';
 }
 
 impl Kind {
@@ -91,7 +92,7 @@ impl Kind {
         match self {
             Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini => true,
             Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy
-            | Kind::Server => false,
+            | Kind::Server | Kind::Remote => false,
         }
     }
 
@@ -105,8 +106,28 @@ impl Kind {
         match self {
             Kind::Server => true,
             Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini | Kind::Command
-            | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy => false,
+            | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Remote => false,
         }
+    }
+
+    /// Whether this kind is a live connection to another machine — the `Remote`
+    /// class in docs/activity-model.md §3. Its consumers are the tab marker, the
+    /// disconnect phrasing in `notify_rules`, and the intake kind override for
+    /// `remote_commands` extras.
+    pub fn is_remote(self) -> bool {
+        match self {
+            Kind::Remote => true,
+            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini | Kind::Command
+            | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Server => false,
+        }
+    }
+
+    /// Unending by design: a Running row renders a steady mark instead of a
+    /// spinner and never arms the fast cadence. The union of the `Service` and
+    /// `Remote` classes — a dev server is up, an ssh session is connected, and
+    /// neither is progressing toward a completion the user is waiting on.
+    pub fn is_steady(self) -> bool {
+        self.is_service() || self.is_remote()
     }
 }
 
@@ -137,6 +158,7 @@ mod tests {
         assert_eq!(Kind::from_source("build"), Kind::Build);
         assert_eq!(Kind::from_source("deploy"), Kind::Deploy);
         assert_eq!(Kind::from_source("server"), Kind::Server);
+        assert_eq!(Kind::from_source("remote"), Kind::Remote);
     }
 
     #[test]
@@ -171,6 +193,7 @@ mod tests {
         assert_eq!(Kind::Build.mark(Plain), '⚙');
         assert_eq!(Kind::Deploy.mark(Plain), '⇡');
         assert_eq!(Kind::Server.mark(Plain), '❯');
+        assert_eq!(Kind::Remote.mark(Plain), '⇄');
     }
 
     #[test]
@@ -184,6 +207,28 @@ mod tests {
         // Task marks are shared across sets.
         assert_eq!(Kind::Build.mark(Nerd), '⚙');
         assert_eq!(Kind::Command.mark(Nerd), '$');
+    }
+
+    #[test]
+    fn is_remote_only_for_remote() {
+        for &k in Kind::ALL {
+            assert_eq!(k.is_remote(), k == Kind::Remote, "{k:?}");
+        }
+        // Remote sits on neither the agent nor the service side of those
+        // (unrelated) predicates — it is a third, distinct axis value.
+        assert!(!Kind::Remote.is_agent());
+        assert!(!Kind::Remote.is_service());
+    }
+
+    #[test]
+    fn is_steady_is_service_or_remote() {
+        for &k in Kind::ALL {
+            assert_eq!(k.is_steady(), k.is_service() || k.is_remote(), "{k:?}");
+        }
+        assert!(Kind::Server.is_steady());
+        assert!(Kind::Remote.is_steady());
+        assert!(!Kind::Command.is_steady());
+        assert!(!Kind::Claude.is_steady());
     }
 
     #[test]
@@ -203,7 +248,7 @@ mod tests {
     fn all_enumerates_every_variant() {
         // `ALL` drives the exhaustiveness of the other tests; pin its size so a
         // dropped table row is caught here instead of silently shrinking coverage.
-        assert_eq!(Kind::ALL.len(), 10);
+        assert_eq!(Kind::ALL.len(), 11);
         assert_eq!(Kind::Other.as_source(), "other");
     }
 

@@ -131,6 +131,7 @@ seam is the versioned pipe payload.
 | Codex legacy `agent-turn-complete` | `done` |
 | Opencode events | see §7 |
 | Observed command exiting nonzero | `error` |
+| Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
 | Agent pane's root process exits (manifest `exited`) | `idle` immediately, no grace (§10) |
 
@@ -151,8 +152,9 @@ pane → tab map.
 - **Counts:** `total` is the panes in the tab that have ever reported a
   non-idle state and still exist; `done` is those currently `done`.
 - **Primary detail:** the highest-severity pane. On ties a bounded job
-  outranks a service (a spinning build beats a merely-up dev server,
-  `activity-model.md` §3), then the most recent change wins.
+  outranks a steady row — a service or a remote session (a spinning build
+  beats a merely-up dev server or ssh session, `activity-model.md` §3), then
+  the most recent change wins.
 - **Prune grace.** A pane absent from a manifest is not pruned on its first
   absence (`absent_once`). Zellij's break-pane family reports session state
   while a moved pane is extracted and in no tab, so one absence cannot

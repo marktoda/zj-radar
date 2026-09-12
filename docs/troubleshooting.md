@@ -72,6 +72,26 @@ the built-in set.
 ([configuration](configuration.md)). It applies live; the spinning row demotes
 to a muted label at once.
 
+## An ssh/mosh session's disconnect notification fires for a clean logout too
+
+**Symptom:** a plain `exit`/`logout` from a remote session notifies
+"disconnected", the same as an actual dropped connection.
+
+**Why:** this is an honest, documented limitation of the observed-only
+`Remote` class ([`activity-model.md`](activity-model.md) §7): Zellij reports
+no exit code for a command run inside an ordinary shell pane (only held
+panes, `zellij run`/`close_on_exit false`, get one), so a clean logout and a
+dropped link are the same event to the plugin. Distinguishing them needs a
+pushed producer (a future `zj-radar ssh` wrapper reporting the real exit
+code) — out of scope for this change.
+
+**Related:** a *hung* ssh (a network partition with no clean exit) shows as
+connected until the connection itself gives up — there is no termios/
+heartbeat signal available to detect a stalled link sooner. Add
+`ServerAliveInterval 15` and `ServerAliveCountMax 3` to `~/.ssh/config` so a
+dead link surfaces (and the pane's row updates) within about a minute instead
+of hanging indefinitely.
+
 ## A command row is stuck "Running" forever
 
 **Symptom:** a shell command's row keeps spinning after the pane is back at its

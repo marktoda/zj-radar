@@ -101,14 +101,17 @@ impl TrackedObservation {
     }
 
     /// Running work that draws an *animated* glyph — the one observation state
-    /// that needs per-second ticks. Running services are excluded: they render
-    /// the steady `▸` mark, so nothing about them animates
-    /// (`docs/activity-model.md` §3). THE shared term of both stores' cadence
-    /// predicates (`StatusStore::needs_ticks`,
-    /// `CommandStore::needs_ticks`), so the service exclusion can
-    /// never half-apply.
+    /// that needs per-second ticks. Running steady rows (services, remote
+    /// sessions) are excluded: they render a steady mark, so nothing about them
+    /// animates (`docs/activity-model.md` §3). THE shared term of both stores'
+    /// cadence predicates (`StatusStore::needs_ticks`,
+    /// `CommandStore::needs_ticks`), so the steady exclusion can never
+    /// half-apply. This is the "never poll" guarantee for a live remote
+    /// session: without it, an ssh connection left open overnight would pin
+    /// the 1 Hz Fast cadence in every tab's plugin instance
+    /// (`AGENTS.md` non-negotiables, `docs/smart-tabs-postmortem.md`).
     pub fn animating(&self) -> bool {
-        self.status == Status::Running && !self.kind.is_service()
+        self.status == Status::Running && !self.kind.is_steady()
     }
 
     /// Re-scrub the free-text fields with the same sanitizer and caps live

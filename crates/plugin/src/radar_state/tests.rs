@@ -2012,3 +2012,42 @@ fn snapshot_load_never_flashes() {
         "a snapshot-loaded Pending must never flash"
     );
 }
+
+#[test]
+fn remote_disconnect_via_shell_return_flashes_the_tab() {
+    // A Running-remote → completion edge is the in-rail half of "make the
+    // user aware" (docs/design.md §4.1's disconnect entry): it flashes the
+    // tab exactly like a live not-Pending → Pending flip does, mirroring
+    // `pipe_flip_to_pending_flashes_for_two_ticks`.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    radar.command_changed(7, &["ssh".into(), "prod-db".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0); // promotes to Running
+    assert_eq!(radar.command(7).unwrap().status, Status::Running);
+    assert_eq!(radar.command(7).unwrap().kind, Kind::Remote);
+
+    radar.command_changed(7, &["zsh".into()], true, 3); // returns to the shell prompt
+    radar.timer(3 + DEBOUNCE_TICKS, 0); // confirms Done at tick 5
+    assert_eq!(radar.command(7).unwrap().status, Status::Done);
+    assert!(radar.rows(5)[0].flash, "a Running-remote → completion edge flashes the tab");
+    assert!(!radar.rows(7)[0].flash, "the window (tick+2) has elapsed");
+}
+
+#[test]
+fn set_remote_commands_sweep_rekinds_an_already_promoted_row() {
+    // Mirrors the interactive sweep's level-triggered contract: a
+    // `remote_commands` extra re-kinds an already-promoted row immediately,
+    // without waiting for it to exit.
+    let mut radar = RadarState::default();
+    radar.command_changed(1, &["distrobox".into(), "enter".into(), "dev".into()], true, 0);
+    radar.timer(DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(1).unwrap().kind, Kind::Command);
+
+    let extras: std::collections::BTreeSet<String> =
+        ["distrobox".to_string()].into_iter().collect();
+    let changed = radar.set_remote_commands(&extras);
+    assert!(changed);
+    assert_eq!(radar.command(1).unwrap().kind, Kind::Remote, "already-promoted row re-kinds live");
+}

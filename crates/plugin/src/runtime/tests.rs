@@ -2071,6 +2071,46 @@ fn command_done_keeps_fast_timer_armed_until_ttl_recede() {
 }
 
 #[test]
+fn remote_running_never_arms_fast_cadence() {
+    // The regression this feature could most easily cause: a live ssh session
+    // must render steady, not spin — and steady means it must never pin the
+    // 1 Hz Fast cadence (`AGENTS.md`'s "never poll" rule,
+    // `docs/smart-tabs-postmortem.md`). Mirrors
+    // `command_done_keeps_fast_timer_armed_until_ttl_recede`'s shape, but a
+    // Remote Running row should NEVER need Fast — not even transiently after
+    // promotion, unlike a Job.
+    let mut rt = runtime_with_config(config());
+    let pending = rt.command_changed(7, &["ssh".into(), "prod-db".into()], true);
+    assert_eq!(
+        pending.effects,
+        vec![Effect::SetTimeout(Cadence::Fast)],
+        "the pending debounce promotion still needs a tick"
+    );
+    rt.timer_fast(PermissionProbe::default()); // debounce tick 1
+    rt.timer_fast(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
+    assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Running);
+    assert_eq!(rt.radar.command_store().get(7).unwrap().kind, crate::kind::Kind::Remote);
+    // The promoting tick itself still arms Fast: the notify baseline lags one
+    // tick behind cadence arming (`arm_timer_if_needed` runs before
+    // `notify_effects`), so `has_unsettled_notifications` is unavoidably true
+    // on the very tick a status first changes — true for a Job too, and
+    // orthogonal to the steady exclusion this test targets. One more tick
+    // lets that baseline catch up; only then does the row's own steadiness
+    // decide cadence.
+    let settled = rt.timer_fast(PermissionProbe::default());
+    assert!(
+        !settled.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+        "a steady remote session must not keep arming Fast cadence, got {:?}",
+        settled.effects
+    );
+    assert_ne!(
+        rt.timer_chain.armed(),
+        Some(Cadence::Fast),
+        "steady — nothing here is tick-windowed, unlike a Done awaiting its TTL"
+    );
+}
+
+#[test]
 fn command_ttl_recede_rearms_slow_not_fast_when_ledgered() {
     // The subtle Fast→Slow handoff: when the LAST fast-worthy signal (a
     // Done awaiting its TTL) finally recedes, `arm_timer_if_needed`

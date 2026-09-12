@@ -553,9 +553,19 @@ impl RadarState {
         // them from its own first PaneUpdate rather than the snapshot.
         let mut displaced_any = false;
         for (pane_id, exit_status) in update.exits {
+            // Captured BEFORE `on_exit` mutates: a Running remote session
+            // ending is the disconnect edge the tab flash announces — see
+            // `arm_flash`'s doc.
+            let was_remote_running = self
+                .command
+                .get(pane_id)
+                .is_some_and(|o| o.kind.is_remote() && o.status == Status::Running);
             if let Some(displaced) = self.command.on_exit(pane_id, exit_status, Tick(tick), EpochSecs(now_epoch_s)) {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
                 displaced_any = true;
+            }
+            if was_remote_running {
+                self.arm_flash(pane_id, tick);
             }
             // A dead pane root is definitive producer death for the pushed
             // status too — the agent-rooted pane (`zellij run -- claude`)
@@ -646,12 +656,32 @@ impl RadarState {
         // entry was already invisible at this tick and stays so at every later
         // one, so the removal can never make a memoized rows() result stale.
         self.flash_until.retain(|_, &mut u| tick < u);
+        // Captured BEFORE `on_timer` mutates: the debounced Running→Done
+        // confirm (a shell-return edge) never appears in `report.receded`
+        // (that vec is TTL-recede/promotion-displacement only), so a
+        // Running-remote → completion edge is detected by diffing before and
+        // after — see `arm_flash`'s doc.
+        let remote_running_before: Vec<u32> = self
+            .command
+            .observations()
+            .filter(|(_, o)| o.kind.is_remote() && o.status == Status::Running)
+            .map(|(id, _)| id)
+            .collect();
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence
         // and `status_tracked_pane_ids`'s doc.
         self.ledger_recede_now(report.receded);
+        for pane_id in remote_running_before {
+            let still_running = self
+                .command
+                .get(pane_id)
+                .is_some_and(|o| o.status == Status::Running);
+            if !still_running {
+                self.arm_flash(pane_id, tick);
+            }
+        }
         // Stale-Running expiry: an agent killed mid-turn sends no clearing
         // broadcast; its prompt-return grace clock (see `clear_on_prompt_return`)
         // runs out here. Running is not a completion — nothing to ledger — but
@@ -784,9 +814,7 @@ impl RadarState {
         let now_status = self.status.get(pane_id).map(|o| o.status);
         self.touch();
         if flips_to_pending {
-            if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
-                self.flash_until.insert(*tab_id, tick + FLASH_TICKS);
-            }
+            self.arm_flash(pane_id, tick);
         }
         // A Running→Running update (new activity label / task / repo, same
         // status) is the tool-hook firehose's steady state. The Fast (1 Hz)
@@ -851,6 +879,23 @@ impl RadarState {
         let changed = self
             .command
             .set_interactive_extras(extras.iter().map(String::as_str));
+        if changed {
+            self.touch();
+        }
+        changed
+    }
+
+    /// Apply the user's `remote_commands` extras to the command store
+    /// (level-triggered — see `CommandStore::set_remote_extras`). Called after
+    /// snapshot load and on every `config.v1` override, mirroring
+    /// `set_interactive_commands`. Returns whether observable state changed.
+    pub(crate) fn set_remote_commands(
+        &mut self,
+        extras: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        let changed = self
+            .command
+            .set_remote_extras(extras.iter().map(String::as_str));
         if changed {
             self.touch();
         }
@@ -998,6 +1043,17 @@ impl RadarState {
     /// as of *before* a mutation (`panes_changed`'s prune edges) must capture
     /// this BEFORE applying that mutation — the index itself is always just a
     /// snapshot of current `self` state.
+    /// Arm the tab-level ping flash for the tab holding `pane_id`, if it is
+    /// still seated in one. Shared by `status_pipe`'s live not-Pending →
+    /// Pending edge and a Running-remote → completion edge (`timer`,
+    /// `panes_changed`'s exit handling) — both are "make the user aware"
+    /// edges that fire whether or not a desktop notification also does.
+    fn arm_flash(&mut self, pane_id: u32, tick: u64) {
+        if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
+            self.flash_until.insert(*tab_id, tick + FLASH_TICKS);
+        }
+    }
+
     fn pane_tab_index(&self) -> HashMap<u32, (TabId, String)> {
         let mut index = HashMap::new();
         for tab in &self.tabs {

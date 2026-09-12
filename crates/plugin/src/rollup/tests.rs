@@ -429,6 +429,41 @@ fn primary_detail_tie_break_prefers_a_job_over_a_service() {
 }
 
 #[test]
+fn primary_detail_tie_break_prefers_a_job_over_a_remote_session() {
+    // Same tie-break, remote flavor: a spinning build outranks a connected
+    // ssh session for the tab's primary detail (docs/activity-model.md §3).
+    let mut map = HashMap::new();
+    let build = TrackedObservation { kind: Kind::Build, ..obs(ObservationOrigin::Command, Status::Running, 1) };
+    let remote = TrackedObservation { kind: Kind::Remote, ..obs(ObservationOrigin::Command, Status::Running, 9) };
+    map.insert(1, build);
+    map.insert(2, remote);
+    let panes = [pane(1, "build"), pane(2, "ssh")];
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert_eq!(display.detail.unwrap().kind, Kind::Build);
+}
+
+#[test]
+fn remote_field_set_only_while_a_remote_pane_is_running() {
+    // `TabDisplay.remote` is a *connected* fact, independent of the severity
+    // roll-up: a spinning job can win the primary detail while the remote
+    // marker still shows a live ssh session in the same tab.
+    let mut map = HashMap::new();
+    let job = obs(ObservationOrigin::Command, Status::Running, 1);
+    let remote = TrackedObservation { kind: Kind::Remote, ..obs(ObservationOrigin::Command, Status::Running, 2) };
+    map.insert(1, job);
+    map.insert(2, remote);
+    let panes = [pane(1, "build"), pane(2, "ssh")];
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert!(display.remote, "a connected remote pane sets the tab-level fact");
+    assert_eq!(display.detail.unwrap().kind, Kind::Build, "severity winner is unaffected");
+
+    // Not merely "was remote": a Done remote session clears it.
+    map.get_mut(&2).unwrap().status = Status::Done;
+    let display = roll_up(&panes, resolver(&map), |_| None);
+    assert!(!display.remote, "a disconnected session clears the tab marker");
+}
+
+#[test]
 fn interactive_earns_a_pane_line_but_is_not_tracked() {
     let d = PaneDisplay::Interactive { pane_id: 7, kind: Kind::Command, msg: "nvim".into() };
     assert!(d.earns_pane_line());

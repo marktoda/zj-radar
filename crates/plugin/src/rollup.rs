@@ -216,11 +216,18 @@ pub(crate) struct TabDisplay {
     pub panes: Vec<PaneDisplay>,
     /// Any pane in this tab holds tick-driven motion —
     /// [`TrackedObservation::animating`], the same canonical term both stores'
-    /// cadence predicates use, so the service exclusion can never half-apply
+    /// cadence predicates use, so the steady exclusion can never half-apply
     /// between cadence and paint. Render reads this for the header sweep
     /// instead of re-deriving it from `detail` (which would lean on the
-    /// job-over-service tie-break for correctness).
+    /// job-over-steady tie-break for correctness).
     pub animating: bool,
+    /// Any pane in this tab is a *connected* remote session
+    /// (`kind.is_remote() && status == Status::Running`) — not merely "was
+    /// remote". Independent of the severity roll-up on purpose: a tab with a
+    /// spinning agent and a live ssh session must show both, and the severity
+    /// winner (`detail`) can only be one of them. Drives the tab's right-aligned
+    /// `⇄` marker.
+    pub remote: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -256,6 +263,7 @@ pub(crate) fn roll_up<'a, 'q>(
     let mut total = 0usize;
     let mut pending = 0usize;
     let mut animating = false;
+    let mut remote = false;
     let mut pane_displays = Vec::with_capacity(panes.len());
 
     let interactive = |pane_id: u32| {
@@ -308,17 +316,19 @@ pub(crate) fn roll_up<'a, 'q>(
             pane_displays.push(display);
         }
         animating = animating || s.animating();
+        remote = remote || (s.kind.is_remote() && s.status == Status::Running);
         // Most-urgent active pane wins; on equal severity a bounded *job*
-        // outranks a *service* (a spinning build summarizes the tab better
-        // than a dev server that is merely up — `docs/activity-model.md` §3);
-        // remaining ties break by most-recent change. `Status: Ord` ranks
-        // severity, so this is a single lexicographic `(status, job, tick)`
-        // compare — `>=` keeps the last pane on a full tie.
+        // outranks a *steady* row (a spinning build summarizes the tab better
+        // than a dev server or an ssh session that is merely up —
+        // `docs/activity-model.md` §3); remaining ties break by most-recent
+        // change. `Status: Ord` ranks severity, so this is a single
+        // lexicographic `(status, job, tick)` compare — `>=` keeps the last
+        // pane on a full tie.
         if s.status.is_active() {
-            let key = (s.status, !s.kind.is_service(), s.last_change_tick);
+            let key = (s.status, !s.kind.is_steady(), s.last_change_tick);
             let wins = best
                 .as_ref()
-                .is_none_or(|d| key >= (d.status, !d.kind.is_service(), d.since_tick));
+                .is_none_or(|d| key >= (d.status, !d.kind.is_steady(), d.since_tick));
             if wins {
                 best = Some(PrimaryDetail {
                     repo: s.repo.clone(),
@@ -345,6 +355,7 @@ pub(crate) fn roll_up<'a, 'q>(
         detail: best,
         panes: pane_displays,
         animating,
+        remote,
     }
 }
 

@@ -42,10 +42,10 @@
 ## Vocabulary
 
 **Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏; a running
-**server** holds a steady `▸` instead — services don't spin)* · `◆` needs-you ·
-`●` done · `✗` error.
+**server** or a connected **remote** session holds a steady `▸` instead —
+neither spins)* · `◆` needs-you · `●` done · `✗` error.
 **Kind marks:** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini · `$` command · `⚙` build ·
-`⚗` test · `⇡` deploy · `❯` server · `⦿` other.
+`⚗` test · `⇡` deploy · `❯` server · `⇄` remote · `⦿` other.
 
 **Width ruler (32):**
 
@@ -453,6 +453,10 @@ tab 1 "cjk"
 ## R. Bell marker in tab line
 
 **Author-from-intent.** A tab with `bell` renders `⚑` at the right side of the tab line (2-col slot: `⚑` + trailing space, which is trimmed). For `"alerts"` (6 chars) at width=32: prefix=5 (col-0 spine/space + glyph + sp + num + sp), bell_len=2, name_budget=25, gap=32-5-6-2=19 → ` ○ 1 alerts` + 19 spaces + `⚑`.
+
+The slot is a marker *string*, not just the bell: a connected remote session
+contributes a right-aligned `⇄` in the same slot, ahead of the bell —
+`⇄⚑` when both apply, in a 3-column slot (2 glyphs + trailing space). See AF.
 
 ```rail-input
 width 32
@@ -932,6 +936,48 @@ tab 1 "dev"
  └ ▸ ❯ npm run dev
 ```
 
+## AF. Remote session — steady mark and the tab marker
+
+A tab whose agent is spinning *and* which holds a live connection: the tab
+marker is what makes the connection visible when the severity roll-up is won
+by something else (here, the agent's Running row outranks the remote's
+steady one on the child lines, but the `⇄` on the tab line survives
+independently — `rollup::TabDisplay.remote` is set whenever any pane resolves
+to `kind.is_remote() && status == Running`, regardless of which pane wins the
+primary detail).
+
+```rail-input
+width 32
+tab 1 "web"
+  claude running "editing api.ts"
+  remote running "ssh prod-db"
+```
+```rail-expect
+ RADAR                        ·1
+◆═══════════════════════════════
+ ⠋ 1 web                      ⇄
+ ├ ⠋ ✳ editing api.ts
+ └ ▸ ⇄ ssh prod-db
+```
+
+## AG. Disconnected — the marker clears, the row does not
+
+`remote done` keeps the identity label so the user can see *which* connection
+went away; the tab marker is gone because nothing is connected any more (the
+`remote` fact is *connected*, not *was remote*).
+
+```rail-input
+width 32
+tab 1 "web"
+  remote done "ssh prod-db"
+```
+```rail-expect
+ RADAR                        ·1
+════════════════════════════════
+ ● 1 web
+ └ ● ⇄ ssh prod-db
+```
+
 ---
 
 ## Open decisions
@@ -968,7 +1014,7 @@ tab <pos> "<name>" [active]
   ...
 ```
 
-- `kind` ∈ claude·codex·opencode·gemini·command·build·test·deploy·server·other
+- `kind` ∈ claude·codex·opencode·gemini·command·build·test·deploy·server·remote·other
 - `status` ∈ running·pending·done·error·idle
 - `waiting <N>m` backdates the pane's waiting-on-you edge by N minutes so the
   `· Nm` wait tag renders (pending panes only; without it the pane applied
