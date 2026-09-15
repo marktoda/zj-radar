@@ -1524,9 +1524,13 @@
         // `--` ends options: what follows is the destination, then the command.
         assert_eq!(classify(&argv(&["ssh", "--", "prod-db"])), ("ssh prod-db".into(), Kind::Remote));
         assert_eq!(classify(&argv(&["ssh", "prod-db", "--", "cargo", "build"])), ("ssh prod-db".into(), Kind::Command));
-        // A bundled cluster takes a value iff its LAST flag does.
+        // getopt cluster semantics: the first value-taking letter either
+        // owns the rest of the token or, when last, the next token.
         assert_eq!(display(&argv(&["ssh", "-4p", "2222", "prod-db"])), "ssh prod-db");
         assert_eq!(display(&argv(&["ssh", "-4C", "prod-db"])), "ssh prod-db");
+        assert_eq!(display(&argv(&["ssh", "-lbob", "prod-db"])), "ssh prod-db", "attached value ending in a value letter");
+        assert_eq!(display(&argv(&["ssh", "-Clbob", "prod-db"])), "ssh prod-db");
+        assert_eq!(display(&argv(&["ssh", "-oBatchMode=yes", "prod-db"])), "ssh prod-db");
     }
 
     #[test]

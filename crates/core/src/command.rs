@@ -503,13 +503,17 @@ fn display_remote(exe: &str, args: &[String]) -> (String, bool) {
             continue;
         }
         if is_option_arg(arg) {
-            // A flag cluster (`-4p 2222`) takes a separated value iff its LAST
-            // flag does; an attached value (`-p2222`, `-oProxyJump=x`) is not a
-            // pure flag cluster and has already consumed its value.
+            // getopt semantics for a short-option cluster: the FIRST
+            // value-taking letter ends the cluster — the rest of the token is
+            // its value (`-p2222`, `-lbob`, `-oProxyJump=x`), or, when that
+            // letter is last (`-p`, `-4p`), the NEXT token is. Letters before
+            // it (`-4`, `-C`) are plain flags.
             let rest = &arg[1..];
-            let takes_value = rest.chars().all(|c| c.is_ascii_alphanumeric())
-                && rest.chars().last().is_some_and(|c| SSH_VALUE_OPTS.contains(&c));
-            i += if takes_value { 2 } else { 1 };
+            let takes_next = rest
+                .char_indices()
+                .find(|(_, c)| SSH_VALUE_OPTS.contains(c))
+                .is_some_and(|(idx, c)| idx + c.len_utf8() == rest.len());
+            i += if takes_next { 2 } else { 1 };
             continue;
         }
         match dest {
