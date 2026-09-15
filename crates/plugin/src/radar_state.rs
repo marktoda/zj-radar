@@ -919,11 +919,20 @@ impl RadarState {
         let (Some(pane), Some(own)) = (pane, self.naming_tab_id) else {
             return true;
         };
-        let holds = |position: usize| self.tab_panes.get(&position).is_some_and(|panes| panes.iter().any(|p| p.id == pane));
-        match self.tabs.iter().find(|t| holds(t.position)) {
-            Some(tab) => tab.id == own,
-            None => true,
-        }
+        self.tab_of_pane(pane).is_none_or(|tab_id| tab_id == own)
+    }
+
+    /// The tab currently seating `pane_id`, by the `tabs × tab_panes` position
+    /// join — a single-tab lookup with no allocation, for edge paths;
+    /// `pane_tab_index` is the same join materialized for whole-topology
+    /// captures. `None` when the pane is in no tab (mid break-pane, or gone).
+    fn tab_of_pane(&self, pane_id: u32) -> Option<TabId> {
+        self.tabs.iter().find_map(|tab| {
+            self.tab_panes
+                .get(&tab.position)
+                .is_some_and(|panes| panes.iter().any(|p| p.id == pane_id))
+                .then_some(tab.id)
+        })
     }
 
     /// Track the focused terminal pane, for the notifier's "don't ding the pane
@@ -1029,18 +1038,9 @@ impl RadarState {
     /// still seated in one. Shared by `status_pipe`'s live not-Pending →
     /// Pending edge and a Running-remote → completion edge (`timer`,
     /// `panes_changed`'s exit handling) — both are "make the user aware"
-    /// edges that fire whether or not a desktop notification also does. A
-    /// direct scan for the one tab, not `pane_tab_index()`: this runs on
-    /// event edges and must not allocate the whole pane→tab map to look up a
-    /// single pane.
+    /// edges that fire whether or not a desktop notification also does.
     fn arm_flash(&mut self, pane_id: u32, tick: u64) {
-        let tab_id = self.tabs.iter().find_map(|tab| {
-            self.tab_panes
-                .get(&tab.position)
-                .is_some_and(|panes| panes.iter().any(|p| p.id == pane_id))
-                .then_some(tab.id)
-        });
-        if let Some(tab_id) = tab_id {
+        if let Some(tab_id) = self.tab_of_pane(pane_id) {
             self.flash_until.insert(tab_id, tick + FLASH_TICKS);
         }
     }

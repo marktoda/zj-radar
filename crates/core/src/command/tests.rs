@@ -1546,6 +1546,26 @@
             classify(&argv(&["mosh-client", "::1", "60001"])),
             ("mosh-client ::1".into(), Kind::Remote)
         );
+        // et's non-URI `host:port` still strips (one colon), and a bracketed
+        // IPv6 literal with a port unwraps outside the URI form too.
+        assert_eq!(display(&argv(&["et", "user@prod-db:2022"])), "et prod-db");
+        assert_eq!(display(&argv(&["et", "[::1]:2022"])), "et ::1");
+    }
+
+    #[test]
+    fn display_remote_uses_per_tool_option_tables() {
+        // autossh's `-M <port>` is its defining option and takes a value; for
+        // plain ssh `-M` is a bare flag — so the short-option table is per exe.
+        assert_eq!(classify(&argv(&["autossh", "-M", "0", "prod-db"])), ("autossh prod-db".into(), Kind::Remote));
+        assert_eq!(classify(&argv(&["ssh", "-M", "prod-db"])), ("ssh prod-db".into(), Kind::Remote));
+        // et's and mosh's separated-value long options are skipped with their
+        // value, so the real host is still the destination.
+        assert_eq!(classify(&argv(&["et", "--jumphost", "bastion", "prod-db"])), ("et prod-db".into(), Kind::Remote));
+        assert_eq!(display(&argv(&["et", "--jport", "2022", "prod-db:2022"])), "et prod-db");
+        assert_eq!(classify(&argv(&["mosh", "--family", "inet", "prod-db"])), ("mosh prod-db".into(), Kind::Remote));
+        // `--` alone, and `--` before both destination and command.
+        assert_eq!(classify(&argv(&["ssh", "--"])), ("ssh".into(), Kind::Command));
+        assert_eq!(classify(&argv(&["ssh", "--", "prod-db", "-p"])), ("ssh prod-db".into(), Kind::Command));
     }
 
     #[test]

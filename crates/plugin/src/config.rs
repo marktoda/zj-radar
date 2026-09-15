@@ -164,9 +164,10 @@ pub struct Config {
     pub notify_error: bool,
     pub notify_pending: bool,
     /// Whether a remote session's disconnect (`Kind::is_remote`, Running →
-    /// Done/Error) notifies. OR'd into the per-status gate alongside
-    /// `notify_done`/`notify_error` rather than folded under them: someone who
-    /// silenced routine completions still wants to know a connection dropped.
+    /// Done/Error) notifies. The sole gate for that edge — `notify_done` /
+    /// `notify_error` neither add to nor veto it — so silencing routine
+    /// completions keeps disconnects, and turning this off silences exactly
+    /// disconnects (`notify_rules::enabled`).
     pub notify_remote: bool,
     pub notify_when_focused: bool,
 }

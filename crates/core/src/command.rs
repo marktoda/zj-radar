@@ -116,11 +116,14 @@ pub const DEFAULT_INTERACTIVE: &[&str] = &[
 /// contracts" table beside `IGNORE_NAMES`/`AGENT_NAMES`/`DEFAULT_INTERACTIVE` —
 /// must stay disjoint from all three (pinned by
 /// `interactive_set_disjoint_from_prompt_and_agent_names`). Every name here
-/// takes ssh-shaped argv (`[options] destination [command]`); a launcher that
-/// is a session with NO destination (`tmate` bare) does not belong, since a
-/// destination-less argv classifies as an ordinary command. `mosh` itself is
-/// a perl script (Zellij reports its argv as `perl …/mosh host`), so in
-/// practice a mosh session is observed as its `mosh-client <ip> <port>` leaf.
+/// takes `[options] destination [command]` argv, parsed by `display_remote`
+/// with per-tool option tables; a launcher that is a session with NO
+/// destination (`tmate` bare) does not belong, since a destination-less argv
+/// classifies as an ordinary command. `mosh` itself is a perl script, so
+/// where Zellij reports the interpreter's argv (`perl …/mosh host`) the name
+/// never matches and the bootstrap window renders as an ordinary command
+/// until `mosh-client <ip> <port>` execs — that leaf is the session the rail
+/// then tracks. The entry stays for compiled/wrapped `mosh` binaries.
 pub const DEFAULT_REMOTE: &[&str] = &["ssh", "mosh", "mosh-client", "autossh", "et"];
 
 /// A pending foreground command awaiting debounce promotion — or, for an
@@ -165,10 +168,12 @@ pub struct CommandStore {
     /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
     /// Matched on the peeled program name at intake.
     interactive: HashSet<String>,
-    /// The effective remote set: [`DEFAULT_REMOTE`] ∪ the user's
-    /// `remote_commands` extras (composed in [`Self::set_remote_extras`]).
-    /// Matched on the peeled program name at intake — see `on_command_changed`.
-    remote: HashSet<String>,
+    /// The user's `remote_commands` extras — EXTRAS ONLY, with any
+    /// [`DEFAULT_REMOTE`] name filtered out at set time, because the two are
+    /// different contracts: a default name's Kind comes from `classify`'s argv
+    /// shape (Remote, or Command for `ssh box cargo build`), while an extra is
+    /// Remote by name alone. [`Self::is_remote_extra`] is the one reader.
+    remote_extras: HashSet<String>,
 }
 
 impl Default for CommandStore {
@@ -179,7 +184,7 @@ impl Default for CommandStore {
             pending_done: HashMap::new(),
             exited: HashMap::new(),
             interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
-            remote: DEFAULT_REMOTE.iter().map(|s| s.to_string()).collect(),
+            remote_extras: HashSet::new(),
         }
     }
 }
@@ -437,30 +442,45 @@ const SSH_VALUE_OPTS: &[char] = &[
     'W', 'w',
 ];
 
-/// mosh long options that take a following value (`--predict adaptive`), as
-/// opposed to `--foo=bar`'s self-contained form.
-const MOSH_VALUE_LONG_OPTS: &[&str] = &["--ssh", "--server", "--predict", "--port"];
+/// autossh's additions to ssh's set: `-M <monitor-port>` is its defining
+/// option, and for plain ssh `-M` is the no-value ControlMaster flag — so the
+/// table is per exe, not shared.
+const AUTOSSH_VALUE_OPTS: &[char] = &[
+    'M', 'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R',
+    'S', 'W', 'w',
+];
 
-/// Strip a `user@` prefix and, for the `ssh://user@host:port/` URI form, the
-/// scheme, port and path — keeping only the host, the identity a user
-/// recognizes. A bracketed IPv6 literal (`[::1]`, the URI spelling) unwraps to
-/// the address; a bare one (`ssh ::1`, `mosh-client ::1 60001`) passes through
-/// whole — the `:port` strip applies only to the URI form, where the grammar
-/// disambiguates a colon.
+/// Long options that take a FOLLOWING value (`--predict adaptive`), as opposed
+/// to `--foo=bar`'s self-contained form — the union across mosh (Getopt::Long)
+/// and et (cxxopts). One list, not per exe: no name here is a bare flag in
+/// the other tool, so a union cannot misparse either.
+const REMOTE_VALUE_LONG_OPTS: &[&str] = &[
+    // mosh
+    "--ssh", "--server", "--predict", "--port", "--family", "--client", "--bind-server",
+    "--experimental-remote-ip", "--local",
+    // et
+    "--jumphost", "--jport", "--tunnel", "--reversetunnel", "--username", "--user",
+    "--command", "--ssh-option", "--sshoptions", "--ssh-socket", "--terminal-path",
+    "--keepalive", "--serverfifo", "--logtostdout",
+];
+
+/// Strip a `user@` prefix and any `:port`/path suffix, keeping only the host —
+/// the identity a user recognizes — across every destination spelling the
+/// DEFAULT_REMOTE launchers take: `host`, `user@host`, et's `host:2022`, the
+/// `ssh://user@host:2222/` URI, and IPv6 as `[::1]` or bare `::1`. The port
+/// strip fires only on exactly one colon: a bracketed literal unwraps first,
+/// and a bare IPv6 literal always carries two or more.
 fn remote_destination(token: &str) -> String {
-    let (uri, token) = match token.strip_prefix("ssh://") {
-        Some(rest) => (true, rest),
-        None => (false, token),
-    };
+    let token = token.strip_prefix("ssh://").unwrap_or(token);
     let token = token.rsplit_once('@').map_or(token, |(_, host)| host);
+    let token = token.split_once('/').map_or(token, |(host, _)| host);
     if let Some(inner) = token.strip_prefix('[') {
-        return inner.split(']').next().unwrap_or(inner).to_string();
+        return inner.split_once(']').map_or(inner, |(host, _)| host).to_string();
     }
-    if !uri {
-        return token.to_string();
+    match token.split_once(':') {
+        Some((host, port)) if !port.contains(':') => host.to_string(),
+        _ => token.to_string(),
     }
-    let token = token.split('/').next().unwrap_or(token);
-    token.split(':').next().unwrap_or(token).to_string()
 }
 
 /// Compact an `ssh`/`mosh`-family invocation into `"<exe> <destination>"` and
@@ -473,48 +493,48 @@ fn remote_destination(token: &str) -> String {
 /// destination (OpenSSH re-enters getopt past the host; mosh's Getopt::Long
 /// accepts options anywhere), so `ssh prod-db -p 2222` is still a session:
 /// only the first post-destination non-option token starts the remote
-/// command, and `--` ends option parsing outright.
+/// command, and `--` ends option parsing outright (everything after it is
+/// positional).
 fn display_remote(exe: &str, args: &[String]) -> (String, bool) {
     // `mosh-client <ip> <port>` is the only two-positional-arg shape any
     // DEFAULT_REMOTE exe takes: its second token is the port (the AES key rides
     // an env var, never argv), never a remote command — so it never earns the
     // Job treatment the way `ssh box cargo build`'s trailing words do.
     let trailing_is_cmd = exe != "mosh-client";
+    let value_opts = if exe == "autossh" { AUTOSSH_VALUE_OPTS } else { SSH_VALUE_OPTS };
     let mut dest: Option<String> = None;
+    let mut positional_only = false;
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
-        if arg == "--" {
-            // End of options: what follows is the destination (if none yet),
-            // then the remote command.
-            let rest = &args[i + 1..];
-            return match (dest, rest.first()) {
-                (Some(d), rest_first) => (raw_display(&[exe, &d]), rest_first.is_some() && trailing_is_cmd),
-                (None, Some(d)) => (raw_display(&[exe, &remote_destination(d)]), rest.len() > 1 && trailing_is_cmd),
-                (None, None) => (exe.to_string(), false),
-            };
-        }
-        if arg == "-" {
-            i += 1;
-            continue;
-        }
-        if arg.starts_with("--") {
-            i += if MOSH_VALUE_LONG_OPTS.contains(&arg) { 2 } else { 1 };
-            continue;
-        }
-        if is_option_arg(arg) {
-            // getopt semantics for a short-option cluster: the FIRST
-            // value-taking letter ends the cluster — the rest of the token is
-            // its value (`-p2222`, `-lbob`, `-oProxyJump=x`), or, when that
-            // letter is last (`-p`, `-4p`), the NEXT token is. Letters before
-            // it (`-4`, `-C`) are plain flags.
-            let rest = &arg[1..];
-            let takes_next = rest
-                .char_indices()
-                .find(|(_, c)| SSH_VALUE_OPTS.contains(c))
-                .is_some_and(|(idx, c)| idx + c.len_utf8() == rest.len());
-            i += if takes_next { 2 } else { 1 };
-            continue;
+        if !positional_only {
+            if arg == "--" {
+                positional_only = true;
+                i += 1;
+                continue;
+            }
+            if arg == "-" {
+                i += 1;
+                continue;
+            }
+            if arg.starts_with("--") {
+                i += if REMOTE_VALUE_LONG_OPTS.contains(&arg) { 2 } else { 1 };
+                continue;
+            }
+            if is_option_arg(arg) {
+                // getopt semantics for a short-option cluster: the FIRST
+                // value-taking letter ends the cluster — the rest of the token
+                // is its value (`-p2222`, `-lbob`, `-oProxyJump=x`), or, when
+                // that letter is last (`-p`, `-4p`), the NEXT token is. Letters
+                // before it (`-4`, `-C`) are plain flags.
+                let rest = &arg[1..];
+                let takes_next = rest
+                    .char_indices()
+                    .find(|(_, c)| value_opts.contains(c))
+                    .is_some_and(|(idx, c)| idx + c.len_utf8() == rest.len());
+                i += if takes_next { 2 } else { 1 };
+                continue;
+            }
         }
         match dest {
             // First surviving non-option token: the destination.
@@ -722,16 +742,10 @@ impl CommandStore {
             // name alone — arguments are not consulted, exactly like
             // `interactive_commands` (an extra is a session launcher, period;
             // `kubectl` as an extra makes `kubectl exec` and `kubectl get`
-            // both Remote, and that is the user's call). A DEFAULT_REMOTE name
-            // is excluded because `classify`'s dedicated branch above already
-            // decided its Kind from the argv shape (Remote, or Command for a
-            // trailing remote command) — applying the override there too would
-            // clobber that distinction back to Remote unconditionally.
-            let kind = if !DEFAULT_REMOTE.contains(&name) && self.remote.contains(name) {
-                Kind::Remote
-            } else {
-                kind
-            };
+            // both Remote, and that is the user's call). DEFAULT_REMOTE names
+            // never reach here (`is_remote_extra`): `classify`'s dedicated
+            // branch above already decided their Kind from the argv shape.
+            let kind = if self.is_remote_extra(name) { Kind::Remote } else { kind };
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -1174,46 +1188,44 @@ impl CommandStore {
             .map(|p| (p.command.as_str(), p.kind))
     }
 
-    /// Compose the effective remote set (`DEFAULT_REMOTE` ∪ `extras`) and apply
-    /// it **level-triggered**, mirroring [`Self::set_interactive_extras`].
+    /// Whether `name` (a peeled exe basename) is a user-configured remote
+    /// launcher — the `remote_commands` extras contract, never a
+    /// `DEFAULT_REMOTE` name (those are filtered at set time).
+    fn is_remote_extra(&self, name: &str) -> bool {
+        self.remote_extras.contains(name)
+    }
+
+    /// Store the user's `remote_commands` extras and apply them
+    /// **level-triggered**, mirroring [`Self::set_interactive_extras`].
     /// Simpler than its sibling: remote rows are never suppressed, so nothing
     /// demotes to Idle. It is a strict Remote↔non-Remote flip: a row whose
-    /// name entered the set becomes Remote, a Remote row whose name left it
-    /// reverts to Command — and every other row is untouched. It runs after
-    /// every snapshot load and every config override, so it must never
+    /// name entered the extras becomes Remote, a Remote row whose name left
+    /// them reverts to Command — and every other row is untouched. It runs
+    /// after every snapshot load and every config override, so it must never
     /// re-stamp classify's Server/Test/Build kinds (that would turn a steady
     /// dev-server row into a spinning Job that pins Fast cadence).
     /// Observations match on the display's first token, pendings on their
-    /// intake-stamped `program`. A `DEFAULT_REMOTE` name is skipped in both
-    /// sweeps for the same reason the intake override skips it: `classify`'s
-    /// dedicated branch already owns its Kind, extras-only. Returns whether
-    /// anything observable changed (the caller's render/persist trigger).
+    /// intake-stamped `program`; `DEFAULT_REMOTE` names are outside the extras
+    /// by construction, so `classify`'s argv-shape Kind is never overridden.
+    /// Returns whether anything observable changed (the caller's
+    /// render/persist trigger).
     pub fn set_remote_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
-        self.remote = DEFAULT_REMOTE
-            .iter()
-            .copied()
-            .chain(extras)
+        self.remote_extras = extras
+            .into_iter()
+            .filter(|name| !DEFAULT_REMOTE.contains(name))
             .map(str::to_string)
             .collect();
         // The flip, or `None` to leave the row alone.
         let rekind = |name: &str, kind: Kind| -> Option<Kind> {
-            if DEFAULT_REMOTE.contains(&name) {
-                return None;
-            }
-            match (self.remote.contains(name), kind.is_remote()) {
+            match (self.remote_extras.contains(name), kind.is_remote()) {
                 (true, false) => Some(Kind::Remote),
-                (false, true) => Some(Kind::Command),
+                (false, true) if !DEFAULT_REMOTE.contains(&name) => Some(Kind::Command),
                 _ => None,
             }
         };
         let mut changed = false;
-        let pending_rekinds: Vec<(u32, Kind)> = self
-            .pending
-            .iter()
-            .filter_map(|(&id, p)| rekind(&p.program, p.kind).map(|k| (id, k)))
-            .collect();
-        for (pane_id, want) in pending_rekinds {
-            if let Some(p) = self.pending.get_mut(&pane_id) {
+        for p in self.pending.values_mut() {
+            if let Some(want) = rekind(&p.program, p.kind) {
                 p.kind = want;
                 changed = true;
             }
