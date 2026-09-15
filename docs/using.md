@@ -37,14 +37,18 @@ waiting on you adds a `↳` line with the question. A tab shows at most six pane
 lines; the rest fold into `+N more`.
 
 **Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini ·
-`$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⦿` other.
+`$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
+`⦿` other.
 
 **Time tags.** Time appears only where it costs you something: a pending pane
 shows how long it has waited (`· 4m`), and a long-running build or test shows
 how long it has run. Both are whole minutes, frozen at `1h+`.
 
 **Shell commands.** Builds, tests, and deploys spin like agents. A dev server
-holds a steady `▸` instead, because it never finishes. Editors, pagers, and
+holds a steady `▸` instead, because it never finishes. So does a connected
+remote session (`ssh`, `mosh`); while it is connected, its tab line also
+carries a right-aligned `⇄`, and its ending reads "disconnected" rather than
+"done". Editors, pagers, and
 other interactive programs never spin; the pane shows a muted label such as
 `○ $ nvim README.md`. Add your own to the quiet set with the
 `interactive_commands` option. Why each class looks the way it does is in
@@ -125,4 +129,5 @@ or `pending`. Defaults:
   silently skipped and everything else works.
 
 Turn them off with `notify false`, or per status with `notify_done`,
-`notify_error`, and `notify_pending`. See [`configuration.md`](configuration.md).
+`notify_error`, and `notify_pending`. A remote session's disconnect has its
+own switch, `notify_remote`. See [`configuration.md`](configuration.md).

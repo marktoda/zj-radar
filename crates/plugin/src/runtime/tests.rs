@@ -3212,3 +3212,22 @@ fn hidden_rail_still_heartbeats_presence() {
         due.effects
     );
 }
+
+#[test]
+fn rehydrated_server_row_keeps_its_kind_across_the_remote_sweep() {
+    // `load` runs the remote_commands sweep after every snapshot restore. A
+    // Server row must come back a Server — steady, zero ticks — not a plain
+    // Command that spins and pins Fast cadence (the regression the first
+    // sweep shipped with).
+    let mut seeded = crate::radar_state::RadarState::default();
+    seeded.command_changed(7, &["npm".into(), "run".into(), "dev".into()], true, 0);
+    seeded.timer(DEBOUNCE_TICKS, 0);
+    assert_eq!(seeded.command(7).unwrap().kind, crate::kind::Kind::Server);
+    let snapshot = seeded.snapshot_json(None, DEBOUNCE_TICKS);
+
+    let mut rt = runtime_with_config(config());
+    rt.load(config(), Some(&snapshot), PermissionProbe::default());
+    let obs = rt.radar.command_store().get(7).unwrap();
+    assert_eq!(obs.kind, crate::kind::Kind::Server, "rehydrated server row keeps its kind");
+    assert!(!obs.animating(), "and stays steady");
+}

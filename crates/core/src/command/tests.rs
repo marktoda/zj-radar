@@ -1449,19 +1449,99 @@
     }
 
     #[test]
-    fn mosh_relabel_keeps_the_hostname_through_the_bootstrap_argvs() {
-        // mosh execs a bootstrap `ssh`, then `mosh-client <ip> <port>` — the
-        // final label would be a bare IP, losing the hostname the user typed.
-        // Once a pane's Remote identity is set, later Remote argvs on the
-        // same pane must not overwrite the label.
+    fn mosh_bootstrap_lands_on_the_client_label() {
+        // Real mosh: a perl script whose bootstrap ssh carries a trailing
+        // `-- mosh-server new …` (a Job, so the Remote pending is replaced),
+        // then `mosh-client <ip> <port>`. There is no hostname to carry over —
+        // the final label is honestly the client's IP, and it is Remote.
         let mut s = CommandStore::default();
         s.on_command_changed(1, &argv(&["mosh", "prod-db"]), true, None, 0);
-        assert_eq!(s.quiet_identity(1), None, "promotable, not quiet");
-        s.on_command_changed(1, &argv(&["ssh", "-p", "60000", "prod-db"]), true, None, 1);
+        s.on_command_changed(
+            1,
+            &argv(&["ssh", "-n", "-tt", "prod-db", "--", "mosh-server", "new", "-c", "256"]),
+            true, None, 1,
+        );
         s.on_command_changed(1, &argv(&["mosh-client", "1.2.3.4", "60001"]), true, None, 1);
         s.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(100));
         let obs = s.get(1).unwrap();
-        assert_eq!((obs.msg.as_str(), obs.kind), ("mosh prod-db", Kind::Remote));
+        assert_eq!((obs.msg.as_str(), obs.kind), ("mosh-client 1.2.3.4", Kind::Remote));
+    }
+
+    #[test]
+    fn a_new_remote_session_never_inherits_the_previous_label() {
+        // `ssh boxA` returns to the shell; `ssh boxB` starts inside the
+        // tentative-Done window. boxB must wear its own name — label
+        // inheritance across sessions would misattribute boxB's eventual
+        // disconnect to boxA.
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["ssh", "boxA"]), true, None, 0);
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        s.on_command_changed(1, &argv(&["zsh"]), true, None, 3);
+        s.on_command_changed(1, &argv(&["ssh", "boxB"]), true, None, 4);
+        s.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(1).unwrap().msg, "ssh boxB");
+    }
+
+    #[test]
+    fn set_remote_extras_leaves_non_remote_kinds_alone() {
+        // The sweep runs on every load and every config override, so it must
+        // be a strict Remote↔non-Remote flip for names moving in or out of
+        // the set — never a re-stamp of classify's Server/Test/Build kinds
+        // (which would turn a steady dev-server row into a spinning Job).
+        let mut s = CommandStore::default();
+        s.on_command_changed(1, &argv(&["npm", "run", "dev"]), true, None, 0);
+        s.on_command_changed(2, &argv(&["cargo", "test"]), true, None, 0);
+        s.on_command_changed(3, &argv(&["cargo", "build"]), true, None, 0);
+        s.on_command_changed(4, &argv(&["pytest"]), true, None, 0); // stays pending
+        s.on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(100));
+        s.on_command_changed(4, &argv(&["pytest"]), true, None, DEBOUNCE_TICKS);
+        assert!(!s.set_remote_extras([]), "empty extras: nothing observable changes");
+        assert!(!s.set_remote_extras(["distrobox"]), "an extra no row uses: still nothing");
+        assert_eq!(s.get(1).unwrap().kind, Kind::Server);
+        assert_eq!(s.get(2).unwrap().kind, Kind::Test);
+        assert_eq!(s.get(3).unwrap().kind, Kind::Build);
+        assert!(!s.get(1).unwrap().animating(), "the dev server stays steady");
+        s.on_timer(Tick(2 * DEBOUNCE_TICKS), EpochSecs(100));
+        assert_eq!(s.get(4).unwrap().kind, Kind::Test, "a pending's kind survives the sweep");
+    }
+
+    #[test]
+    fn display_remote_keeps_scanning_options_after_the_destination() {
+        // OpenSSH re-enters option parsing after the host, and mosh's
+        // Getopt::Long accepts options anywhere — so post-destination options
+        // are still a session, and only the first non-option token after the
+        // destination starts a remote command.
+        assert_eq!(classify(&argv(&["ssh", "prod-db", "-p", "2222"])), ("ssh prod-db".into(), Kind::Remote));
+        assert_eq!(
+            classify(&argv(&["ssh", "prod-db", "-N", "-L", "8080:localhost:80"])),
+            ("ssh prod-db".into(), Kind::Remote)
+        );
+        assert_eq!(
+            classify(&argv(&["mosh", "prod-db", "--predict", "adaptive"])),
+            ("mosh prod-db".into(), Kind::Remote)
+        );
+        assert_eq!(classify(&argv(&["ssh", "prod-db", "-t", "htop"])), ("ssh prod-db".into(), Kind::Command));
+        // `--` ends options: what follows is the destination, then the command.
+        assert_eq!(classify(&argv(&["ssh", "--", "prod-db"])), ("ssh prod-db".into(), Kind::Remote));
+        assert_eq!(classify(&argv(&["ssh", "prod-db", "--", "cargo", "build"])), ("ssh prod-db".into(), Kind::Command));
+        // A bundled cluster takes a value iff its LAST flag does.
+        assert_eq!(display(&argv(&["ssh", "-4p", "2222", "prod-db"])), "ssh prod-db");
+        assert_eq!(display(&argv(&["ssh", "-4C", "prod-db"])), "ssh prod-db");
+    }
+
+    #[test]
+    fn remote_destination_keeps_ipv6_literals_whole() {
+        // The `:port` strip belongs to the URI grammar only; a bare IPv6
+        // literal has no port to strip and must survive intact.
+        assert_eq!(classify(&argv(&["ssh", "::1"])), ("ssh ::1".into(), Kind::Remote));
+        assert_eq!(display(&argv(&["ssh", "2001:db8::1"])), "ssh 2001:db8::1");
+        assert_eq!(display(&argv(&["ssh", "user@[::1]"])), "ssh ::1");
+        assert_eq!(display(&argv(&["ssh", "ssh://user@[::1]:2222/"])), "ssh ::1");
+        assert_eq!(display(&argv(&["ssh", "ssh://prod-db:2222"])), "ssh prod-db");
+        assert_eq!(
+            classify(&argv(&["mosh-client", "::1", "60001"])),
+            ("mosh-client ::1".into(), Kind::Remote)
+        );
     }
 
     #[test]

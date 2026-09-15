@@ -131,7 +131,9 @@ never knows how the classification was made.
    (`display_remote`, routed ahead of the table since ssh's value-taking
    short options don't fit `ToolRule`'s columns) — `Remote` when the
    destination has no trailing command, `Command` (still a Job) when it does
-   (`ssh box cargo build`).
+   (`ssh box cargo build`). `remote_commands` extras are a different, simpler
+   contract: matched by program name alone, arguments ignored, exactly like
+   `interactive_commands` — an extra is a session launcher, period.
 3. **Interactive names** (the issue-#13 fix): a conservative built-in set of
    unambiguous TUIs — editors, pagers, `man`, monitors, git TUIs, file
    managers, `fzf`; the authoritative list is `DEFAULT_INTERACTIVE` in

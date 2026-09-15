@@ -381,8 +381,8 @@ speeds or not at all (`PluginRuntime::desired_cadence`):
   session name and every age has saturated) and denied (a permission-denied
   rail disarms unconditionally, since no clearing event will ever arrive).
 
-Service and interactive rows never pin Fast. A dev server or an editor left
-open overnight costs zero ticks. A backgrounded `done`/`error`/`pending` row
+Service, remote, and interactive rows never pin Fast. A dev server, an ssh
+session, or an editor left open overnight costs zero ticks. A backgrounded `done`/`error`/`pending` row
 is terminal: once its one-shot settle has run it does not keep Fast alive.
 
 ## 9. Render gate

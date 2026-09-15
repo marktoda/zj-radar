@@ -766,8 +766,12 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // would be emitted past the column edge — breaking the "no line exceeds
     // width" invariant and the card-padding math (name_budget would still
     // saturate to 0).
+    // The remote glyph is the Remote kind mark (one owner: the `kinds!` table,
+    // shared with the pane lines), measured rather than assumed 1-col.
+    let remote_mark = Kind::Remote.mark(opts.glyphs);
+    let remote_w = if row.display.remote { UnicodeWidthChar::width(remote_mark).unwrap_or(1) } else { 0 };
     let marker_glyphs = usize::from(row.display.remote) + usize::from(row.has_bell);
-    let marker_w = if marker_glyphs > 0 { marker_glyphs + 1 } else { 0 }; // glyphs + trailing space
+    let marker_w = if marker_glyphs > 0 { remote_w + usize::from(row.has_bell) + 1 } else { 0 }; // glyphs + trailing space
     // The marker and the action slot are independent signals. The action slot
     // has already reduced `width`, so both fit whenever the marker fits this
     // content budget.
@@ -776,7 +780,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let marker = if show_marker {
         let mut s = String::new();
         if row.display.remote {
-            s.push_str(&Seg::new(&hue(Role::Accent), "⇄").to_string());
+            s.push_str(&Seg::new(&hue(Role::Accent), remote_mark.to_string()).to_string());
         }
         if row.has_bell {
             s.push_str(&Seg::new(&hue(Role::Working), "⚑").to_string());

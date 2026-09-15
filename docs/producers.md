@@ -120,8 +120,10 @@ zj-radar notify generic --status done --msg "deploy finished" --source deploy
 - `--msg`: the activity line. `running` without one shows `working`.
 - `--task`: the sticky task label. Empty keeps the stored one.
 - `--source`: the kind mark. `test` ⚗ · `build` ⚙ · `deploy` ⇡ · `server` ❯ ·
-  `command` `$`, or an agent token (`claude` ✳ · `codex` ❉ · `opencode` ✺ ·
-  `gemini` ✦). Anything else, including the default `generic`, renders `⦿`.
+  `remote` ⇄ · `command` `$`, or an agent token (`claude` ✳ · `codex` ❉ ·
+  `opencode` ✺ · `gemini` ✦). `server` and `remote` rows hold a steady `▸`
+  instead of spinning; a `remote` completion notifies as a disconnect.
+  Anything else, including the default `generic`, renders `⦿`.
 - Repo and branch come from `git` in the calling directory; the pane id from
   `$ZELLIJ_PANE_ID`. Outside Zellij it is a silent no-op. `--dry-run` prints
   the payload instead of sending.

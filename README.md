@@ -114,8 +114,10 @@ plugins {
         notify_done true        // per-status toggles (done · error · pending)
         notify_error true
         notify_pending true
+        notify_remote true         // a remote session (ssh, mosh) disconnecting
         notify_when_focused false  // suppress when the pane is focused
         interactive_commands ""    // extra editors/pagers/TUIs to keep quiet
+        remote_commands ""         // extra remote-session launchers
     }
 }
 ```

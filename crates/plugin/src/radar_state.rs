@@ -656,29 +656,16 @@ impl RadarState {
         // entry was already invisible at this tick and stays so at every later
         // one, so the removal can never make a memoized rows() result stale.
         self.flash_until.retain(|_, &mut u| tick < u);
-        // Captured BEFORE `on_timer` mutates: the debounced Running→Done
-        // confirm (a shell-return edge) never appears in `report.receded`
-        // (that vec is TTL-recede/promotion-displacement only), so a
-        // Running-remote → completion edge is detected by diffing before and
-        // after — see `arm_flash`'s doc.
-        let remote_running_before: Vec<u32> = self
-            .command
-            .observations()
-            .filter(|(_, o)| o.kind.is_remote() && o.status == Status::Running)
-            .map(|(id, _)| id)
-            .collect();
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence
         // and `status_tracked_pane_ids`'s doc.
         self.ledger_recede_now(report.receded);
-        for pane_id in remote_running_before {
-            let still_running = self
-                .command
-                .get(pane_id)
-                .is_some_and(|o| o.status == Status::Running);
-            if !still_running {
+        // A remote session's Running→Done confirm is the disconnect edge the
+        // tab flash announces — see `arm_flash`'s doc.
+        for (pane_id, kind) in report.completed {
+            if kind.is_remote() {
                 self.arm_flash(pane_id, tick);
             }
         }
@@ -1038,22 +1025,31 @@ impl RadarState {
         self.ledger.is_empty()
     }
 
+    /// Arm the tab-level ping flash for the tab holding `pane_id`, if it is
+    /// still seated in one. Shared by `status_pipe`'s live not-Pending →
+    /// Pending edge and a Running-remote → completion edge (`timer`,
+    /// `panes_changed`'s exit handling) — both are "make the user aware"
+    /// edges that fire whether or not a desktop notification also does. A
+    /// direct scan for the one tab, not `pane_tab_index()`: this runs on
+    /// event edges and must not allocate the whole pane→tab map to look up a
+    /// single pane.
+    fn arm_flash(&mut self, pane_id: u32, tick: u64) {
+        let tab_id = self.tabs.iter().find_map(|tab| {
+            self.tab_panes
+                .get(&tab.position)
+                .is_some_and(|panes| panes.iter().any(|p| p.id == pane_id))
+                .then_some(tab.id)
+        });
+        if let Some(tab_id) = tab_id {
+            self.flash_until.insert(tab_id, tick + FLASH_TICKS);
+        }
+    }
+
     /// Pane → (tab id, tab name) for every pane currently in `self.tab_panes`,
     /// joined against `self.tabs` for the name. Callers that need the topology
     /// as of *before* a mutation (`panes_changed`'s prune edges) must capture
     /// this BEFORE applying that mutation — the index itself is always just a
     /// snapshot of current `self` state.
-    /// Arm the tab-level ping flash for the tab holding `pane_id`, if it is
-    /// still seated in one. Shared by `status_pipe`'s live not-Pending →
-    /// Pending edge and a Running-remote → completion edge (`timer`,
-    /// `panes_changed`'s exit handling) — both are "make the user aware"
-    /// edges that fire whether or not a desktop notification also does.
-    fn arm_flash(&mut self, pane_id: u32, tick: u64) {
-        if let Some((tab_id, _)) = self.pane_tab_index().get(&pane_id) {
-            self.flash_until.insert(*tab_id, tick + FLASH_TICKS);
-        }
-    }
-
     fn pane_tab_index(&self) -> HashMap<u32, (TabId, String)> {
         let mut index = HashMap::new();
         for tab in &self.tabs {

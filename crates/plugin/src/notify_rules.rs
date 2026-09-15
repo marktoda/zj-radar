@@ -56,16 +56,17 @@ fn phrase(status: Status, kind: Kind) -> Option<&'static str> {
 }
 
 /// Whether this status's per-status toggle (and the master switch) is
-/// enabled. A remote disconnect notifies independently of `notify_done` /
-/// `notify_error` via `notify_remote`, OR'd in: someone who silenced routine
-/// completions still wants to know a connection dropped — folding it under
-/// `notify_done` would make the master switch for "a build finished" also the
-/// switch for "your session to prod died".
+/// enabled. A remote disconnect answers to `notify_remote` alone, not to
+/// `notify_done`/`notify_error`: someone who silenced routine completions
+/// still wants to know a connection dropped, and someone who silenced
+/// disconnects must actually get silence — each toggle turns off exactly the
+/// thing it names.
 fn enabled(status: Status, kind: Kind, cfg: &Config) -> bool {
     cfg.notify
         && match status {
-            Status::Done => (kind.is_remote() && cfg.notify_remote) || cfg.notify_done,
-            Status::Error => (kind.is_remote() && cfg.notify_remote) || cfg.notify_error,
+            Status::Done | Status::Error if kind.is_remote() => cfg.notify_remote,
+            Status::Done => cfg.notify_done,
+            Status::Error => cfg.notify_error,
             Status::Pending => cfg.notify_pending,
             Status::Running | Status::Idle => false,
         }
@@ -321,29 +322,27 @@ mod tests {
     }
 
     #[test]
-    fn notify_remote_ors_with_notify_done() {
-        // notify_remote is an ADDITIONAL enable, not an independent veto:
-        // either flag alone still notifies a disconnect, only both off
-        // silences it. A non-remote completion ignores notify_remote entirely.
+    fn notify_remote_alone_gates_a_disconnect() {
+        // A remote completion answers to `notify_remote` and nothing else; a
+        // plain completion answers to `notify_done` and ignores `notify_remote`.
+        // Each toggle turns off exactly the thing it names.
         let mut remote = obs(Status::Done, "prod", "", "ssh prod-db");
         remote.kind = crate::kind::Kind::Remote;
         let plain = obs(Status::Done, "prod", "", "cargo build");
         let prev = BTreeMap::from([(7, Status::Running)]);
 
-        for (notify_remote, notify_done, remote_fires, plain_fires) in
-            [(true, true, true, true), (true, false, true, false), (false, true, true, true), (false, false, false, false)]
-        {
+        for (notify_remote, notify_done) in [(true, true), (true, false), (false, true), (false, false)] {
             let cfg = Config { notify_remote, notify_done, ..Config::default() };
             let remote_pairs = [(7, &remote)];
             assert_eq!(
                 !diff(&prev, &current(&remote_pairs), None, &cfg).is_empty(),
-                remote_fires,
+                notify_remote,
                 "remote: notify_remote={notify_remote} notify_done={notify_done}"
             );
             let plain_pairs = [(7, &plain)];
             assert_eq!(
                 !diff(&prev, &current(&plain_pairs), None, &cfg).is_empty(),
-                plain_fires,
+                notify_done,
                 "plain: notify_remote={notify_remote} notify_done={notify_done}"
             );
         }
