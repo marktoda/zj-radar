@@ -257,9 +257,21 @@ next broadcast.
 `ChangeApplicationState` (switch tab/pane/session, rename tabs, close the grant
 float), and `RunCommands` (desktop notifications via `osascript` /
 `notify-send`, and the ack re-broadcast). Without `RunCommands`, `run_command`
-is a silent no-op. The pane stays selectable only until
-`PermissionRequestResult` arrives, then `set_selectable(false)` so it never
-steals focus.
+is a silent no-op.
+
+**Selectability.** One level rule, `PluginRuntime::desired_selectable`: the
+rail pane is selectable while its own permission request is in flight
+(Zellij's y/n prompt is tied to the requesting pane) and until a `PaneUpdate`
+shows a terminal pane sharing its tab; then `set_selectable(false)` so it never
+steals focus. `SetSelectable` is emitted on change only, from the permission
+transitions and `panes_changed`. The terminal-neighbor half exists because
+Zellij closes any tab with no selectable tiled pane: a rail that went passive
+at load in a tab holding only plugins closed that tab — and, as the last tab,
+the session ([#46](https://github.com/marktoda/zj-radar/issues/46); see
+[`troubleshooting.md`](troubleshooting.md#tab-opens-with-only-the-rail-or-the-session-exits-at-once)).
+A rail that never sees a manifest (denied permission, a tab never activated)
+simply stays selectable. When a tab's last shell exits, Zellij closes the tab
+before any manifest reaches the rail, so that behavior is unchanged.
 
 **Per-tab prompt coordination.** On an uncached first run, `SessionFiles` uses
 a session-scoped lock to elect one instance to call `request_permission()`;
@@ -301,17 +313,25 @@ per-layout snippet is path-free.
 ```kdl
 default_tab_template {                       // layout-defined tabs fill `children`
     pane split_direction="vertical" {
-        pane size=32 borderless=true { plugin location="radar" }
+        pane size=32 borderless=true {
+            plugin location="radar"
+        }
         children
     }
-    pane size=2 borderless=true { plugin location="zellij:status-bar" }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
 }
 new_tab_template {                           // runtime tabs need a CONCRETE pane
     pane split_direction="vertical" {
-        pane size=32 borderless=true { plugin location="radar" }
+        pane size=32 borderless=true {
+            plugin location="radar"
+        }
         pane focus=true
     }
-    pane size=2 borderless=true { plugin location="zellij:status-bar" }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
 }
 ```
 
@@ -319,7 +339,14 @@ new_tab_template {                           // runtime tabs need a CONCRETE pan
 `default_tab_template` and drops a `children` nested inside a split
 ([zellij#3247](https://github.com/zellij-org/zellij/issues/3247)); the new tab
 then has no focusable terminal. A top-level `children` (the stock compact
-layout) is unaffected; only the nested case is.
+layout) is unaffected; only the nested case is. The same nesting has a second
+edge: a `tab` node whose body declares no pane fills the nested `children`
+with nothing, so Zellij spawns no terminal for it
+([zellij#5618](https://github.com/zellij-org/zellij/issues/5618)) — the tab
+opens with the rail alone (*Selectability* above is what keeps such a tab,
+and the session, alive). `layout::empty_tab_bodies` names those tabs for the
+doctor and `--inject`. Plugin nodes stay on their own lines: Zellij 0.44's KDL
+parser rejects a one-line `{ plugin location="radar" }` without a trailing `;`.
 
 ## 7. Agent adapters
 

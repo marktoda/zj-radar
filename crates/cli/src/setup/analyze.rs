@@ -67,6 +67,10 @@ pub(crate) struct ZellijFacts {
     pub alias_is_store_path:     bool,
     pub wasm_present:            bool,
     pub has_rail:                Option<bool>,
+    /// Body-less `tab` nodes in the inspected layout (`layout::empty_tab_bodies`),
+    /// by name or ordinal. Meaningful only alongside `has_rail == Some(true)`:
+    /// inside the rail's split such a tab opens with the rail alone.
+    pub empty_tab_bodies:        Vec<String>,
     pub granted:                 Option<bool>,
     /// The wired producers, in `Agent::ALL` order — empty means none, which
     /// is what the doctor's pass/fail and `setup zellij`'s hint gate on; the
@@ -160,6 +164,11 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         *in_plugins && is_unmanaged_radar_alias_line(l) && l.contains("/nix/store/")
     });
     let has_rail = env.layout_text.as_deref().map(|t| crate::layout::analyze(t).has_rail);
+    let empty_tab_bodies = env
+        .layout_text
+        .as_deref()
+        .map(crate::layout::empty_tab_bodies)
+        .unwrap_or_default();
     let granted = env
         .permissions_text
         .as_deref()
@@ -170,6 +179,7 @@ pub(crate) fn analyze_zellij(env: &ZellijEnv) -> ZellijFacts {
         alias_is_store_path,
         wasm_present: env.wasm_present,
         has_rail,
+        empty_tab_bodies,
         granted,
         producers: env.producers.wired(),
         config_managed: env.config_managed,

@@ -737,6 +737,7 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                     layout_path.display()
                 );
                 print_swap_advisory_if_needed(facts);
+                print_empty_tab_advisory_if_needed(&new_text);
                 return;
             }
             // Back up then atomically write (shared setup helper).
@@ -748,6 +749,7 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
                         path_with_suffix(layout_path, BACKUP_SUFFIX).display()
                     );
                     print_swap_advisory_if_needed(facts);
+                    print_empty_tab_advisory_if_needed(&new_text);
                 }
                 Err(e) => crate::exit::fail_report("zellij", format!("write failed — {e}")),
             }
@@ -764,6 +766,27 @@ fn do_inject(layout_path: &Path, text: &str, facts: &crate::layout::LayoutFacts,
             let snippet = crate::layout::tailored_snippet(facts);
             println!("\n{snippet}");
         }
+    }
+}
+
+/// After a successful inject, name any `tab` whose body declares no pane: the
+/// wrap just nested that tab's `children` inside the rail split, and Zellij
+/// spawns no terminal for a nested placeholder with nothing to fill it
+/// (zellij#5618) — the tab opens with the rail alone. The rail keeps it alive
+/// (issue #46), but a user who reads "rail injected" and finds an empty tab
+/// deserves to be told why up front. Same fact the doctor's "tab bodies" item
+/// reports (`layout::empty_tab_bodies`).
+fn print_empty_tab_advisory_if_needed(injected: &str) {
+    let empty = crate::layout::empty_tab_bodies(injected);
+    if !empty.is_empty() {
+        println!(
+            "zellij: note — {} ({}) declare{} no pane in the body. Inside the rail's split \
+             Zellij spawns no terminal for an empty tab, so it opens with only the rail; \
+             add `pane` to each body — see docs/troubleshooting.md → \"Tab opens with only the rail\".",
+            if empty.len() == 1 { "this tab" } else { "these tabs" },
+            empty.join(", "),
+            if empty.len() == 1 { "s" } else { "" },
+        );
     }
 }
 

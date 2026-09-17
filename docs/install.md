@@ -125,19 +125,27 @@ By hand, add this to any layout file:
 // Tabs defined in the layout file get their panes via `children`.
 default_tab_template {
     pane split_direction="vertical" {
-        pane size=32 borderless=true { plugin location="radar" }   // ← alias
+        pane size=32 borderless=true {
+            plugin location="radar"   // ← alias
+        }
         children
     }
-    pane size=2 borderless=true { plugin location="zellij:status-bar" }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
 }
 
 // Tabs created at runtime (Ctrl+t n) get a CONCRETE focused pane, not `children`.
 new_tab_template {
     pane split_direction="vertical" {
-        pane size=32 borderless=true { plugin location="radar" }
+        pane size=32 borderless=true {
+            plugin location="radar"
+        }
         pane focus=true
     }
-    pane size=2 borderless=true { plugin location="zellij:status-bar" }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
 }
 ```
 
@@ -145,6 +153,13 @@ Both templates are required. Zellij derives `new_tab_template` from
 `default_tab_template` when you omit it and drops a `children` nested inside a
 split, leaving new tabs with no focusable pane. See
 [Can't open a new tab](troubleshooting.md#cant-open-a-new-tab-the-two-template-rule).
+
+If the layout also declares `tab` nodes, give each one a pane in its body
+(`tab focus=true { pane }`): a nested `children` is filled by the tab body, and
+an empty body yields a tab with nothing but the rail — see
+[Tab opens with only the rail](troubleshooting.md#tab-opens-with-only-the-rail-or-the-session-exits-at-once).
+Keep the plugin nodes on their own lines as above: Zellij 0.44's KDL parser
+rejects the one-line form `{ plugin location="radar" }` unless it ends in `;`.
 
 Any custom layout also discards Zellij's built-in swap layouts, so `Alt+[` /
 `Alt+]` cycling stops working. The injected rail and the example layout below
