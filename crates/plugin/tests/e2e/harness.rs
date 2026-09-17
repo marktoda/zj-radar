@@ -320,6 +320,14 @@ impl ZellijSession {
         self.isolated.home()
     }
 
+    /// Whether the client process this PTY drives is still running. A Zellij
+    /// session that exits takes the client with it ("Bye from Zellij!"), so
+    /// this is the direct test for "the session is still up" — as opposed to
+    /// screen text, which lingers in the PTY buffer after death.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self._child.try_wait(), Ok(None))
+    }
+
     /// Poll the PTY buffer until the plugin's " RADAR" header appears, indicating
     /// the plugin has loaded, received permissions, and rendered its first frame.
     /// Gives up after 30 seconds.
@@ -1036,6 +1044,35 @@ pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
     tab name="two" {{
         pane focus=true cwd="/tmp"
     }}
+}}"#
+    )
+}
+
+/// The issue #46 shape: the rail split in `default_tab_template` and a `tab`
+/// with NO body. Zellij spawns no terminal for a `children` nested inside a
+/// split when nothing fills it (zellij#5618), so the tab opens with the rail as
+/// its only pane — and a rail that goes non-selectable at load closes it, and
+/// the session with it ("Bye from Zellij!"). Also what a status-bar-only
+/// `default_tab_template` plus a plain `tab` looks like after `--inject`.
+pub fn rail_only_tab_layout(plugin_wasm: &Path) -> String {
+    let wasm_abs = plugin_wasm
+        .canonicalize()
+        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let w = wasm_abs.display();
+    format!(
+        r#"layout {{
+    default_tab_template {{
+        pane size=2 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
+        pane split_direction="vertical" {{
+            pane size=32 borderless=true {{
+                plugin location="file:{w}"
+            }}
+            children
+        }}
+    }}
+    tab focus=true
 }}"#
     )
 }

@@ -117,6 +117,61 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
+/// Issue #46: a rail whose tab holds no terminal pane must not take the
+/// session down. Zellij closes any tab with no selectable tiled pane
+/// (`Screen::render` → `tabs_to_close`), and a `children` nested inside the
+/// rail's split spawns no terminal when the tab body is empty (zellij#5618) —
+/// so the pre-fix rail's load-time `set_selectable(false)` closed the only
+/// tab, and the client printed "Bye from Zellij!" within ~50ms of the plugin
+/// loading. The rail now stays selectable until a terminal shares its tab;
+/// this drives the exact reporter layout, proves the session survives, then
+/// opens a pane and proves the rail hands focus to it (goes passive).
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn rail_only_tab_keeps_the_session_alive() {
+    let wasm = plugin_wasm_path();
+    assert!(wasm.exists(), "Plugin wasm not found at {:?}", wasm);
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_railonly_{}", std::process::id());
+    let layout = rail_only_tab_layout(&wasm);
+    eprintln!("[e2e] starting rail-only session '{session_name}' with layout:\n{layout}");
+    // `start` already waits for the rail's header, so the plugin has loaded
+    // and rendered by the time this returns — the pre-fix crash landed within
+    // ~50ms of that, so the steady-state check below is the assertion that
+    // matters, not the start itself.
+    let mut session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+
+    // A non-event ("the session stays up") can only be asserted by waiting it
+    // out; 3s dwarfs the ~50-400ms the reporter and the local repro measured.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let text = session.pty_text();
+    assert!(
+        session.is_alive() && !text.contains("Bye from Zellij"),
+        "session died with only the rail in its tab; PTY tail:\n{}",
+        text.chars().rev().take(400).collect::<String>().chars().rev().collect::<String>()
+    );
+
+    // Recovery path: opening a pane splits the (still selectable, focused)
+    // rail; the manifest then shows a terminal neighbor, the rail goes passive
+    // and Zellij moves focus out of it — so typed input must reach the shell.
+    // `$((1+1))` makes the echoed OUTPUT distinguishable from the echoed
+    // keystrokes; a rail that kept focus would swallow the keystrokes instead.
+    session.run_action_checked(&["new-pane"]);
+    let reached_shell = session.wait_until(std::time::Duration::from_secs(10), |s| {
+        s.run_action(&["write-chars", "echo RAILONLY_$((1+1))"]);
+        s.run_action(&["write", "13"]);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        s.pty_text().contains("RAILONLY_2")
+    });
+    assert!(
+        reached_shell,
+        "keystrokes never reached a shell after `new-pane` — the rail kept focus?\nscreen:\n{}",
+        screen_text(&session.screen())
+    );
+    assert!(session.is_alive(), "session died after the pane joined the rail's tab");
+    eprintln!("[e2e] PASS: rail-only tab survived and handed focus to the new pane");
+}
+
 /// A real left click on the exact, one-based screen coordinate of the pending
 /// glyph acknowledges through Zellij's mouse routing and the plugin's pipe
 /// echo. This is the layer that the unreachable right-click implementation

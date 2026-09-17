@@ -411,6 +411,22 @@ pub(crate) struct PluginRuntime {
     /// wrongly-hidden rail would be a stale screen, so the bias is toward
     /// visible.
     hidden: bool,
+    /// The tab position the latest manifest located this plugin's own pane
+    /// in (`None` until one has). Refreshed by `own_plugin_tab_changed` on
+    /// every `PaneUpdate`, so — unlike `RadarState`'s naming ownership, which
+    /// freezes to a `TabId` — it tracks the tab as positions shift.
+    own_tab_position: Option<usize>,
+    /// Whether at least one terminal pane shares the rail's tab, per the
+    /// latest manifest (`None` = no manifest has located the rail yet). The
+    /// evidence [`desired_selectable`](Self::desired_selectable) needs: Zellij
+    /// closes a tab whose tiled panes are all non-selectable, so a rail that
+    /// goes passive with no terminal neighbor closes its own tab — and, as
+    /// the last tab, the session (issue #46).
+    own_tab_has_terminal: Option<bool>,
+    /// The last `SetSelectable` value emitted (`None` = never). `sync_selectable`
+    /// emits on change only — the first sync always emits, declaring the
+    /// initial state explicitly rather than trusting the host's default.
+    selectable_sent: Option<bool>,
 }
 
 /// See [`PluginRuntime::last_render_key`].
@@ -455,8 +471,39 @@ impl PluginRuntime {
     }
 
     pub(crate) fn own_plugin_tab_changed(&mut self, position: Option<usize>) {
+        self.own_tab_position = position;
         if self.config.role == config::Role::Sidebar {
             self.radar.own_plugin_tab_changed(position);
+        }
+    }
+
+    /// Whether the rail pane should be selectable right now — THE rule, as a
+    /// pure function of state. Selectable while our own permission request is
+    /// in flight (Zellij's y/n prompt is tied to the requesting pane) and
+    /// until a manifest proves a terminal pane shares the tab: a passive pane
+    /// is one Zellij won't focus, and a tab with nothing focusable is a tab
+    /// Zellij closes (`Screen::render` → `tabs_to_close`). A `children`
+    /// placeholder nested in a split spawns no terminal when the tab body is
+    /// empty (zellij#5618, #3247) — the rail must never be what turns that
+    /// layout quirk into a dead session. Once a terminal neighbor exists the
+    /// rail goes passive so it never steals focus from the shell; it comes
+    /// back only if the neighbors vanish while the tab lives on. Rails that
+    /// never see a manifest — denied permission, a tab never activated —
+    /// simply stay selectable, the harmless side.
+    fn desired_selectable(&self) -> bool {
+        self.permission.is_requesting() || self.own_tab_has_terminal != Some(true)
+    }
+
+    /// Emit `SetSelectable` when [`desired_selectable`](Self::desired_selectable)
+    /// differs from the last value sent (always on the first call). Called
+    /// from exactly the entry points that can move the rule's inputs — the
+    /// permission transitions and `panes_changed` — not from `project`, so an
+    /// unrelated broadcast never grows a spurious host call.
+    fn sync_selectable(&mut self, effects: &mut Vec<Effect>) {
+        let want = self.desired_selectable();
+        if self.selectable_sent != Some(want) {
+            self.selectable_sent = Some(want);
+            effects.push(Effect::SetSelectable(want));
         }
     }
 
@@ -480,8 +527,15 @@ impl PluginRuntime {
         if let Some(theme) = update.theme.clone() {
             self.theme = theme;
         }
+        // `PaneUpdate::from_raw` already dropped plugin panes, so a non-empty
+        // entry for our own tab position IS a terminal neighbor.
+        self.own_tab_has_terminal = self
+            .own_tab_position
+            .map(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
+        let mut effects = Vec::new();
+        self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
-        self.project(vec![], change, now)
+        self.project(effects, change, now)
     }
 
     /// `elapsed_s` is the duration Zellij reports on `Event::Timer` — the
@@ -908,11 +962,11 @@ impl PluginRuntime {
             } else {
                 PermissionMarker::Denied
             }),
-            // Selectable exactly while our own request is in flight — the
-            // pane must be reachable for the user to answer Zellij's y/n
-            // prompt, and must return to passive the moment it resolves.
-            Effect::SetSelectable(self.permission.is_requesting()),
         ];
+        // The prompt just resolved, so the rail may go passive — IF a
+        // terminal neighbor is known (`desired_selectable`); a rail-only tab
+        // keeps it reachable.
+        self.sync_selectable(&mut effects);
         // The onboarding pane exists only to host the grant prompt. Once granted
         // — and the grant is cached by plugin URL, so the rail inherits it — it
         // removes itself, leaving the user with just the rail.
@@ -1096,8 +1150,10 @@ impl PluginRuntime {
         // is the capture `load` (this fn's sole caller) took at entry — not a
         // second clock read, so the whole load event sees a single "now".
         self.arm_timer_if_needed(self.last_now_epoch_s, &mut effects);
-        // Load always initializes the sidebar's selectability, every arm.
-        effects.push(Effect::SetSelectable(self.permission.is_requesting()));
+        // Load always declares the sidebar's selectability, every arm — and
+        // before any manifest it can only be *selectable*: going passive here
+        // is what closed a rail-only tab (`desired_selectable`).
+        self.sync_selectable(&mut effects);
         Outcome::with_effects(false, effects)
     }
 
@@ -1115,7 +1171,7 @@ impl PluginRuntime {
             Transition::Resolved { .. } => {}
             Transition::NoChange | Transition::StillWaiting => return false,
         }
-        effects.push(Effect::SetSelectable(self.permission.is_requesting()));
+        self.sync_selectable(effects);
         true
     }
 
