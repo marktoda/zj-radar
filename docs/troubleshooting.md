@@ -118,6 +118,47 @@ left column is exactly that shape.
 **Fix:** declare `new_tab_template` with a concrete `pane focus=true`, as in
 the [layout snippet](install.md#add-the-sidebar-to-a-layout).
 
+## Tab opens with only the rail (or the session exits at once)
+
+**Symptom:** a tab declared in the layout file opens with the sidebar and
+status bar but no terminal. Before the fix for #46 the session instead died
+the moment the plugins loaded — `Bye from Zellij!` within a few hundred
+milliseconds, every attach — and `zellij --debug`'s log showed
+`Failed to resize horizontally/vertically` at `ApplyLayout`, then
+`failed to send message to screen` panics in `wasm_bridge.rs`
+([#46](https://github.com/marktoda/zj-radar/issues/46)).
+
+**Why:** the layout has a `tab` whose body declares no pane — `tab focus=true`
+with nothing inside, or a plain `tab` — beneath a `default_tab_template` that
+nests `children` inside the rail's vertical split. A top-level `children`
+fills such a tab with a default pane; a nested one gets **nothing** — Zellij
+logs `spawn_terminals_for_layout: 0 tiled + 0 floating panes` and emits the
+resize warnings ([zellij#5618](https://github.com/zellij-org/zellij/issues/5618)).
+The tab's only panes are plugins. Zellij closes any tab with no *selectable*
+pane, so when the rail made itself non-selectable at load (as every status-bar
+style plugin does), the tab closed — and, as the last tab, the session with
+it. The `wasm_bridge` panics in the log are shutdown noise, not the cause.
+
+Since that fix the rail stays selectable until a terminal pane shares its tab,
+so the tab survives with the rail focused; open a pane (`Ctrl+p n`) and the
+rail hands focus to it and goes passive as usual. The rail is also the
+*first* pane in the split, so an empty tab lands with it focused: keystrokes
+go nowhere until that pane exists.
+
+**Fix:** give every declared `tab` a pane in its body:
+
+```kdl
+tab focus=true {
+    pane
+}
+```
+
+`zj-radar setup zellij --check` reports such tabs as a `tab bodies` warning,
+and `--inject` notes them after writing. A layout with **no** `tab` nodes at
+all is fine as long as `new_tab_template` is declared (Zellij builds the
+first tab from it) — which is why the [two-template rule](#cant-open-a-new-tab-the-two-template-rule)
+above matters here too.
+
 ## Alt+] hides the rail (or stops cycling)
 
 **Symptom:** `Alt+[` / `Alt+]` (cycle swap layouts) either makes the sidebar
@@ -227,7 +268,8 @@ release. If it reports the wasm as a symlink managed by Nix or home-manager,
 plugin pane.
 
 **Why:** Zellij's reload actions misbehave for a plugin created by a layout
-that has made itself non-selectable, as the sidebar does after permissions.
+that has made itself non-selectable, as the sidebar does once a terminal pane
+shares its tab.
 
 **Fix:** `just dev` never reloads in place; each iteration is a fresh
 `zj-radar-dev-<hhmmss>` session. See [Dev loop in

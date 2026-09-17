@@ -459,6 +459,41 @@ fn find_children_anchor(block: &kdl::KdlDocument) -> Option<&kdl::KdlNode> {
     })
 }
 
+/// The `tab` nodes declared directly under `layout` whose body holds no node
+/// at all (`tab focus=true`, `tab name="x"`, `tab {}`), labelled by name or
+/// ordinal (`tab #N`, 1-based). A top-level `children` fills such a tab with
+/// a default pane, but the rail's split nests `children` — and Zellij spawns
+/// NO terminal for a nested placeholder with nothing to fill it
+/// ([zellij#5618](https://github.com/zellij-org/zellij/issues/5618)), so the
+/// tab opens with the rail alone. The doctor and `--inject` warn on these
+/// (`docs/troubleshooting.md` → "Tab opens with only the rail"). Fail-safe:
+/// an unparseable layout, or one without a `layout` node, reports none —
+/// this is advice, not a gate. Only body-less tabs count: a body with any
+/// node (a pane, a pane template, `floating_panes`) is the user's business.
+pub(crate) fn empty_tab_bodies(layout: &str) -> Vec<String> {
+    let Ok(doc) = layout.parse::<kdl::KdlDocument>() else { return Vec::new() };
+    let Some(body) = doc
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "layout")
+        .and_then(|n| n.children())
+    else {
+        return Vec::new();
+    };
+    body.nodes()
+        .iter()
+        .filter(|n| n.name().value() == "tab")
+        .enumerate()
+        .filter(|(_, tab)| tab.children().is_none_or(|c| c.nodes().is_empty()))
+        .map(|(i, tab)| {
+            tab.get("name")
+                .and_then(|v| v.as_string())
+                .map(|name| format!("\"{name}\""))
+                .unwrap_or_else(|| format!("tab #{}", i + 1))
+        })
+        .collect()
+}
+
 /// The leading whitespace (spaces/tabs) on the line containing `offset`.
 fn line_indent(src: &str, offset: usize) -> String {
     let line_start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
@@ -567,6 +602,22 @@ mod tests {
 
         let injected = format!("layout {{\n{}\n{}\n{}\n}}\n", super::BLOCK_BEGIN, super::RAIL_UI_TEMPLATE, super::BLOCK_END);
         assert!(analyze(&injected).has_rail);
+    }
+
+    /// The issue #46 shape: a `tab` with no body next to a rail split. Zellij
+    /// spawns no terminal for it, so the doctor must name it; a tab with any
+    /// body node is left alone, and garbage reports nothing (advice, not a gate).
+    #[test]
+    fn empty_tab_bodies_names_body_less_tabs_only() {
+        let reporter = "layout {\n    default_tab_template {\n        children\n    }\n    tab focus=true\n}\n";
+        assert_eq!(empty_tab_bodies(reporter), vec!["tab #1"]);
+
+        let mixed = "layout {\n    tab name=\"work\" {\n        pane\n    }\n    tab name=\"scratch\"\n    tab {}\n    tab {\n        ui\n    }\n}\n";
+        assert_eq!(empty_tab_bodies(mixed), vec!["\"scratch\"", "tab #3"]);
+
+        assert!(empty_tab_bodies(&full_layout()).is_empty(), "our own starter tab has a pane");
+        assert!(empty_tab_bodies("layout {\n    tab focus=true").is_empty(), "unparseable → no advice");
+        assert!(empty_tab_bodies("tab focus=true\n").is_empty(), "no `layout` node → no advice");
     }
 
     #[test]

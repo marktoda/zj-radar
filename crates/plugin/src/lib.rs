@@ -829,8 +829,9 @@ mod tests {
         // Zellij's permission prompt for a visible status/sidebar plugin is
         // tied to the pane that called `request_permission` — the pane must
         // stay selectable while the y/n answer is pending (`is_requesting`
-        // drives every `SetSelectable`), and peer sidebars that never asked
-        // stay passive.
+        // is one of the two inputs to `PluginRuntime::desired_selectable`;
+        // the other is a terminal neighbor in the rail's tab), and peer
+        // sidebars that never asked go passive once a manifest shows one.
         let mut s = State::default();
         assert!(
             !s.runtime.permission.is_requesting(),
@@ -853,7 +854,7 @@ mod tests {
         s.record_permission_result(false);
         assert!(
             !s.runtime.permission.is_requesting(),
-            "after permissions are denied the prompt is gone, so the rail is passive"
+            "after permissions are denied the prompt is gone (the rail stays selectable: no manifest ever shows it a terminal neighbor)"
         );
     }
 

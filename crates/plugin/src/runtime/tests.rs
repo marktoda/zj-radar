@@ -200,11 +200,13 @@ fn load_denied_marker_records_denial_without_requesting_permission() {
 
     assert!(!runtime.permission.granted());
     assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
+    // A denied rail never receives a manifest, so it never learns of a
+    // terminal neighbor and stays selectable (see `desired_selectable`).
     assert_eq!(
         outcome,
         Outcome {
             render: false,
-            effects: vec![Effect::SetSelectable(false)],
+            effects: vec![Effect::SetSelectable(true)],
         }
     );
 }
@@ -312,9 +314,10 @@ fn peer_waits_then_requests_after_granted_marker() {
         },
     );
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
+    // Selectable, not passive: no manifest has shown a terminal neighbor yet.
     assert_eq!(
         load.effects,
-        vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(false)]
+        vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]
     );
 
     let timer = runtime.timer_fast(PermissionProbe {
@@ -328,11 +331,12 @@ fn peer_waits_then_requests_after_granted_marker() {
     // The promoted peer is now an owner with an in-flight request, so it also
     // arms the needs_permission heartbeat until the user answers — and
     // immediately starts heartbeating the lock it now effectively owns.
+    // No `SetSelectable`: the rail was declared selectable at load and the
+    // promotion keeps it so — the sync emits on change only.
     assert_eq!(
         timer.effects,
         vec![
             Effect::RequestPermission,
-            Effect::SetSelectable(true),
             Effect::HeartbeatPermissionLock,
             // The FIRST Fast fire always seeds the peer scan (the decimation
             // interval measures from the last scan, and there is none yet).
@@ -520,13 +524,16 @@ fn permission_result_persists_marker_and_updates_selectability() {
 
     assert!(runtime.permission.granted());
     assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
+    // The first sync declares the state explicitly — and with no manifest
+    // yet, that state is selectable. The flip to passive is the manifest's
+    // job (`rail_turns_passive_only_once_a_terminal_pane_shares_its_tab`).
     assert_eq!(
         outcome,
         Outcome {
             render: true,
             effects: vec![
                 Effect::PersistPermissionMarker(PermissionMarker::Granted),
-                Effect::SetSelectable(false),
+                Effect::SetSelectable(true),
             ],
         }
     );
@@ -3230,4 +3237,129 @@ fn rehydrated_server_row_keeps_its_kind_across_the_remote_sweep() {
     let obs = rt.radar.command_store().get(7).unwrap();
     assert_eq!(obs.kind, crate::kind::Kind::Server, "rehydrated server row keeps its kind");
     assert!(!obs.animating(), "and stays steady");
+}
+
+// ── Selectability: the rail is passive only once it has a terminal neighbor ──
+//
+// Zellij closes any tab whose tiled panes are all non-selectable
+// (`Screen::render` → `tabs_to_close`), and a `children` placeholder nested in
+// a split spawns NO terminal when the tab body is empty (zellij#5618, #3247).
+// A rail that went `SetSelectable(false)` at load therefore closed the tab —
+// and, as the last tab, the whole session ("Bye from Zellij!", issue #46). The
+// runtime now flips to passive only after a `PaneUpdate` shows a terminal pane
+// sharing its tab — a latch (`own_tab_saw_terminal`), emitted on change only.
+
+fn selectable_effects(outcome: &Outcome) -> Vec<bool> {
+    outcome
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SetSelectable(v) => Some(*v),
+            _ => None,
+        })
+        .collect()
+}
+
+fn manifest(tab_panes: HashMap<usize, Vec<TerminalPane>>) -> PaneUpdate {
+    let live = tab_panes.values().flatten().map(|p| p.id).collect();
+    PaneUpdate {
+        tab_panes,
+        live,
+        theme: None,
+        exits: Vec::new(),
+    }
+}
+
+#[test]
+fn load_declares_the_rail_selectable_before_any_manifest_arrives() {
+    // A peer holds the prompt, so this instance has no request in flight —
+    // the OLD code emitted `SetSelectable(false)` right here, which is
+    // exactly what closed a rail-only tab. Load must declare the pane
+    // selectable and wait for evidence of a terminal neighbor.
+    let mut runtime = PluginRuntime::default();
+    let outcome = runtime.load(
+        config(),
+        None,
+        PermissionProbe {
+            marker: None,
+            lock_acquired: false,
+        },
+    );
+    assert!(runtime.permission.is_waiting());
+    assert_eq!(selectable_effects(&outcome), vec![true]);
+}
+
+#[test]
+fn rail_turns_passive_only_once_a_terminal_pane_shares_its_tab() {
+    // Declared selectable at load (peer-waiting arm), then granted out of
+    // band — the steady state of every rail after first-run coordination.
+    let mut runtime = PluginRuntime::default();
+    runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
+    runtime.permission = PermissionState::Resolved { granted: true };
+    runtime.tabs_changed(vec![tab(0, "Tab #1", true)]);
+    runtime.own_plugin_tab_changed(Some(0));
+
+    // Rail-only tab (the issue #46 layout): no terminal in tab 0 — stay
+    // selectable so Zellij keeps the tab (and the session) alive. Terminals
+    // in OTHER tabs don't count.
+    let alone = runtime.panes_changed(manifest(HashMap::from([(0, vec![]), (1, vec![pane(9)])])));
+    assert_eq!(selectable_effects(&alone), Vec::<bool>::new(), "already selectable: no edge");
+
+    // A terminal appears in the rail's own tab → passive, so it never steals
+    // focus from the shell.
+    let joined = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])])));
+    assert_eq!(selectable_effects(&joined), vec![false]);
+
+    // Steady state: identical manifests emit nothing (emit on change only).
+    let again = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])])));
+    assert_eq!(selectable_effects(&again), Vec::<bool>::new());
+
+    // The tab's terminals vanish (its last shell exited): the rail must STAY
+    // passive. Zellij's `ClosePane` arm reports this manifest before its
+    // deferred render closes the now-terminal-less tab; a rail that flipped
+    // back to selectable here would beat that render and keep a dead tab —
+    // and the session — alive (verified live). Latch, not level.
+    let emptied = runtime.panes_changed(manifest(HashMap::from([(0, vec![]), (1, vec![pane(9)])])));
+    assert_eq!(selectable_effects(&emptied), Vec::<bool>::new());
+}
+
+#[test]
+fn rail_without_a_known_tab_stays_selectable() {
+    // The manifest never located this plugin's pane (`own_plugin_tab_changed(None)`):
+    // with no evidence of a terminal neighbor, the safe side is selectable.
+    let mut runtime = granted_runtime();
+    runtime.own_plugin_tab_changed(None);
+    let outcome = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)])])));
+    assert_eq!(selectable_effects(&outcome), vec![true], "first sync declares the state explicitly");
+}
+
+#[test]
+fn requesting_rail_stays_selectable_despite_a_terminal_neighbor() {
+    // Zellij's y/n prompt is tied to the requesting pane — it must remain
+    // focusable until the answer lands, terminal neighbor or not.
+    let mut runtime = PluginRuntime::default();
+    let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: true });
+    assert!(runtime.permission.is_requesting());
+    assert_eq!(selectable_effects(&load), vec![true]);
+
+    runtime.own_plugin_tab_changed(Some(0));
+    let with_terminal = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)])])));
+    assert_eq!(selectable_effects(&with_terminal), Vec::<bool>::new(), "prompt pending: stay selectable");
+
+    // Grant lands: the prompt is gone AND a terminal neighbor is known → passive.
+    let granted = runtime.permission_result(true);
+    assert_eq!(selectable_effects(&granted), vec![false]);
+}
+
+#[test]
+fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
+    // The grant resolves while the rail is still the tab's only pane: the
+    // prompt is gone, but there is still nothing else to focus — no flip.
+    let mut runtime = PluginRuntime::default();
+    runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: true });
+    runtime.own_plugin_tab_changed(Some(0));
+    runtime.panes_changed(manifest(HashMap::from([(0, vec![])])));
+
+    let granted = runtime.permission_result(true);
+    assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
 }

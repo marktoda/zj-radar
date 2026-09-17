@@ -129,6 +129,25 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts, layout_name: &str) -> Vec<Chec
         ),
     });
 
+    // 3b. tab bodies — only meaningful with the rail present: its split nests
+    // `children`, and Zellij spawns no terminal for a nested placeholder with
+    // nothing to fill it (zellij#5618), so a body-less `tab` opens with the
+    // rail alone. The rail keeps that tab alive (it stays selectable until a
+    // terminal joins — issue #46), but the user still has to open a pane.
+    if f.has_rail == Some(true) && !f.empty_tab_bodies.is_empty() {
+        items.push(CheckItem::warn(
+            "tab bodies",
+            format!(
+                "`{layout_name}` declares {} {} with no pane in the body ({}) — Zellij spawns no \
+                 terminal for an empty tab inside the rail's split, so it opens with only the \
+                 rail; add `pane` to each body (docs/troubleshooting.md → \"Tab opens with only the rail\")",
+                f.empty_tab_bodies.len(),
+                if f.empty_tab_bodies.len() == 1 { "tab" } else { "tabs" },
+                f.empty_tab_bodies.join(", "),
+            ),
+        ));
+    }
+
     // 4. grant
     items.push(match f.granted {
         None => CheckItem::warn("grant", "no permissions.kdl found — run `zj-radar setup zellij -y` to pre-authorize"),
@@ -499,6 +518,7 @@ mod tests {
             alias_is_store_path:     false,
             wasm_present:            true,
             has_rail:                Some(true),
+            empty_tab_bodies:        vec![],
             granted:                 Some(true),
             producers:               vec![crate::agents::Agent::Codex],
             config_managed:          false,
@@ -701,6 +721,32 @@ mod tests {
                 layout_item.detail
             );
         }
+    }
+
+    #[test]
+    fn zellij_check_warns_on_body_less_tabs_only_when_the_rail_is_present() {
+        // Issue #46's layout: a rail split plus `tab focus=true` with no body.
+        // Zellij spawns no terminal for that tab, so the doctor must say which
+        // tab (by the label `layout::empty_tab_bodies` produced) — as a warn,
+        // not a failure: the rail keeps the tab alive, the user opens a pane.
+        let f = ZellijFacts { empty_tab_bodies: vec!["tab #1".into()], ..all_good_facts() };
+        let items = zellij_check_items(&f, "mine");
+        let item = items.iter().find(|i| i.name == "tab bodies").expect("tab bodies item");
+        assert_eq!(item.level, CheckLevel::Warn);
+        assert!(item.detail.contains("`mine` declares 1 tab") && item.detail.contains("tab #1"), "{}", item.detail);
+
+        let two = ZellijFacts { empty_tab_bodies: vec!["\"a\"".into(), "tab #2".into()], ..all_good_facts() };
+        let items = zellij_check_items(&two, "mine");
+        let detail = &items.iter().find(|i| i.name == "tab bodies").unwrap().detail;
+        assert!(detail.contains("2 tabs") && detail.contains("\"a\", tab #2"), "{detail}");
+
+        // Without the rail a body-less tab is fine — a top-level `children`
+        // fills it — so the item must not appear at all.
+        for has_rail in [Some(false), None] {
+            let f = ZellijFacts { has_rail, empty_tab_bodies: vec!["tab #1".into()], ..all_good_facts() };
+            assert!(zellij_check_items(&f, "mine").iter().all(|i| i.name != "tab bodies"));
+        }
+        assert!(all_good_check_items().iter().all(|i| i.name != "tab bodies"));
     }
 
     #[test]
