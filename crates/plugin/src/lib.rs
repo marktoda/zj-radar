@@ -854,7 +854,7 @@ mod tests {
         s.record_permission_result(false);
         assert!(
             !s.runtime.permission.is_requesting(),
-            "after permissions are denied the prompt is gone, so the rail is passive"
+            "after permissions are denied the prompt is gone (the rail stays selectable: no manifest ever shows it a terminal neighbor)"
         );
     }
 

@@ -371,7 +371,10 @@ mod tests {
     #[test]
     fn analyze_zellij_derives_has_rail_and_grant_from_text() {
         let wasm_path = "/home/user/.config/zellij/plugins/zj_radar.wasm";
-        let layout = "layout {\n    plugin location=\"radar\"\n}\n";
+        // The body-less `tab` rides along so the derivation of
+        // `empty_tab_bodies` (the doctor's "tab bodies" input) is pinned here
+        // too — `layout::empty_tab_bodies` itself is tested in `layout.rs`.
+        let layout = "layout {\n    plugin location=\"radar\"\n    tab focus=true\n}\n";
         let perms = format!(
             "\"{wasm_path}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n"
         );
@@ -387,6 +390,7 @@ mod tests {
         };
         let f = analyze_zellij(&env);
         assert_eq!(f.has_rail, Some(true), "layout text with radar plugin has rail");
+        assert_eq!(f.empty_tab_bodies, vec!["tab #1"], "body-less tab is named for the doctor");
         assert_eq!(f.granted, Some(true), "permissions naming the wasm path is granted");
         assert!(f.wasm_present);
     }

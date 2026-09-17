@@ -3247,7 +3247,7 @@ fn rehydrated_server_row_keeps_its_kind_across_the_remote_sweep() {
 // A rail that went `SetSelectable(false)` at load therefore closed the tab —
 // and, as the last tab, the whole session ("Bye from Zellij!", issue #46). The
 // runtime now flips to passive only after a `PaneUpdate` shows a terminal pane
-// sharing its tab, level-triggered and emitted on change only.
+// sharing its tab — a latch (`own_tab_saw_terminal`), emitted on change only.
 
 fn selectable_effects(outcome: &Outcome) -> Vec<bool> {
     outcome
@@ -3310,14 +3310,17 @@ fn rail_turns_passive_only_once_a_terminal_pane_shares_its_tab() {
     let joined = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])])));
     assert_eq!(selectable_effects(&joined), vec![false]);
 
-    // Steady state: identical manifests emit nothing (level-triggered).
+    // Steady state: identical manifests emit nothing (emit on change only).
     let again = runtime.panes_changed(manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])])));
     assert_eq!(selectable_effects(&again), Vec::<bool>::new());
 
-    // The tab's terminals vanish while the tab stays alive → the rail must be
-    // reachable again, else nothing in the tab is focusable.
+    // The tab's terminals vanish (its last shell exited): the rail must STAY
+    // passive. Zellij's `ClosePane` arm reports this manifest before its
+    // deferred render closes the now-terminal-less tab; a rail that flipped
+    // back to selectable here would beat that render and keep a dead tab —
+    // and the session — alive (verified live). Latch, not level.
     let emptied = runtime.panes_changed(manifest(HashMap::from([(0, vec![]), (1, vec![pane(9)])])));
-    assert_eq!(selectable_effects(&emptied), vec![true]);
+    assert_eq!(selectable_effects(&emptied), Vec::<bool>::new());
 }
 
 #[test]

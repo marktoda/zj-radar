@@ -268,7 +268,8 @@ release. If it reports the wasm as a symlink managed by Nix or home-manager,
 plugin pane.
 
 **Why:** Zellij's reload actions misbehave for a plugin created by a layout
-that has made itself non-selectable, as the sidebar does after permissions.
+that has made itself non-selectable, as the sidebar does once a terminal pane
+shares its tab.
 
 **Fix:** `just dev` never reloads in place; each iteration is a fresh
 `zj-radar-dev-<hhmmss>` session. See [Dev loop in

@@ -270,8 +270,13 @@ at load in a tab holding only plugins closed that tab — and, as the last tab,
 the session ([#46](https://github.com/marktoda/zj-radar/issues/46); see
 [`troubleshooting.md`](troubleshooting.md#tab-opens-with-only-the-rail-or-the-session-exits-at-once)).
 A rail that never sees a manifest (denied permission, a tab never activated)
-simply stays selectable. When a tab's last shell exits, Zellij closes the tab
-before any manifest reaches the rail, so that behavior is unchanged.
+simply stays selectable. The terminal-neighbor evidence is a **latch**, not a
+level: once a terminal has shared the tab the rail stays passive even when the
+manifest later shows none. Zellij's `ClosePane` arm reports that manifest to
+plugins synchronously and defers the tab-closing render, so a rail that flipped
+back to selectable on "no terminals left" would beat the render and keep a dead
+tab — and the session — alive. With the latch, `exit` in a tab's last shell
+closes the tab exactly as before.
 
 **Per-tab prompt coordination.** On an uncached first run, `SessionFiles` uses
 a session-scoped lock to elect one instance to call `request_permission()`;

@@ -152,10 +152,9 @@ fn rail_only_tab_keeps_the_session_alive() {
     );
 
     // Recovery path: opening a pane splits the (still selectable, focused)
-    // rail; the manifest then shows a terminal neighbor, the rail goes passive
-    // and Zellij moves focus out of it — so typed input must reach the shell.
-    // `$((1+1))` makes the echoed OUTPUT distinguishable from the echoed
-    // keystrokes; a rail that kept focus would swallow the keystrokes instead.
+    // rail. `new-pane` focuses the new pane itself, so this first probe only
+    // proves a shell exists and the session still works. `$((1+1))` makes the
+    // echoed OUTPUT distinguishable from the echoed keystrokes.
     session.run_action_checked(&["new-pane"]);
     let reached_shell = session.wait_until(std::time::Duration::from_secs(10), |s| {
         s.run_action(&["write-chars", "echo RAILONLY_$((1+1))"]);
@@ -165,11 +164,44 @@ fn rail_only_tab_keeps_the_session_alive() {
     });
     assert!(
         reached_shell,
-        "keystrokes never reached a shell after `new-pane` — the rail kept focus?\nscreen:\n{}",
+        "keystrokes never reached a shell after `new-pane`\nscreen:\n{}",
         screen_text(&session.screen())
     );
-    assert!(session.is_alive(), "session died after the pane joined the rail's tab");
-    eprintln!("[e2e] PASS: rail-only tab survived and handed focus to the new pane");
+
+    // Passivity: the manifest has now shown the rail a terminal neighbor, so
+    // it must have gone non-selectable. The rail is the LEFT pane of the
+    // split; `move-focus left` would land on it if it were still selectable
+    // and swallow the next probe. A passive pane refuses focus, so the shell
+    // keeps it and echoes.
+    session.run_action_checked(&["move-focus", "left"]);
+    let rail_refused_focus = session.wait_until(std::time::Duration::from_secs(10), |s| {
+        s.run_action(&["write-chars", "echo RAILONLY_$((2+2))"]);
+        s.run_action(&["write", "13"]);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        s.pty_text().contains("RAILONLY_4")
+    });
+    assert!(
+        rail_refused_focus,
+        "after `move-focus left` keystrokes stopped reaching the shell — the rail is still selectable\nscreen:\n{}",
+        screen_text(&session.screen())
+    );
+
+    // And the pre-fix contract holds: `exit` in the tab's LAST shell closes
+    // the tab, and with it the only tab — the session ends. This is the arm a
+    // level rule broke (rail flipped back to selectable on the emptied
+    // manifest and out-raced Zellij's deferred tab-closing render); the latch
+    // keeps the rail passive so Zellij's close wins.
+    session.run_action(&["write-chars", "exit"]);
+    session.run_action(&["write", "13"]);
+    let ended = session.wait_until(std::time::Duration::from_secs(10), |s| {
+        s.pty_text().contains("Bye from Zellij")
+    });
+    assert!(
+        ended && !session.is_alive(),
+        "`exit` in the tab's last shell must end the single-tab session; it is still alive\nscreen:\n{}",
+        screen_text(&session.screen())
+    );
+    eprintln!("[e2e] PASS: rail-only tab survived, went passive once a shell joined, and `exit` still closed it");
 }
 
 /// A real left click on the exact, one-based screen coordinate of the pending

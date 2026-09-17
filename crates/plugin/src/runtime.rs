@@ -416,13 +416,19 @@ pub(crate) struct PluginRuntime {
     /// every `PaneUpdate`, so — unlike `RadarState`'s naming ownership, which
     /// freezes to a `TabId` — it tracks the tab as positions shift.
     own_tab_position: Option<usize>,
-    /// Whether at least one terminal pane shares the rail's tab, per the
-    /// latest manifest (`None` = no manifest has located the rail yet). The
-    /// evidence [`desired_selectable`](Self::desired_selectable) needs: Zellij
-    /// closes a tab whose tiled panes are all non-selectable, so a rail that
-    /// goes passive with no terminal neighbor closes its own tab — and, as
-    /// the last tab, the session (issue #46).
-    own_tab_has_terminal: Option<bool>,
+    /// Latched once any manifest has shown a terminal pane sharing the rail's
+    /// tab; never cleared. The evidence
+    /// [`desired_selectable`](Self::desired_selectable) needs: Zellij closes a
+    /// tab whose tiled panes are all non-selectable, so a rail that goes
+    /// passive with no terminal neighbor closes its own tab — and, as the last
+    /// tab, the session (issue #46). A LATCH, not a level, on purpose: when the
+    /// tab's last shell exits, Zellij's `ClosePane` arm reports the new
+    /// manifest to plugins synchronously and defers the tab-closing render
+    /// (debounced), so a rail that flipped back to selectable on "no terminals
+    /// left" would beat that render and keep a dead tab alive — verified
+    /// live: `exit` in the only shell left a rail-only session running.
+    /// Once a terminal has lived here, the tab's fate on emptying is Zellij's.
+    own_tab_saw_terminal: bool,
     /// The last `SetSelectable` value emitted (`None` = never). `sync_selectable`
     /// emits on change only — the first sync always emits, declaring the
     /// initial state explicitly rather than trusting the host's default.
@@ -485,13 +491,14 @@ impl PluginRuntime {
     /// Zellij closes (`Screen::render` → `tabs_to_close`). A `children`
     /// placeholder nested in a split spawns no terminal when the tab body is
     /// empty (zellij#5618, #3247) — the rail must never be what turns that
-    /// layout quirk into a dead session. Once a terminal neighbor exists the
-    /// rail goes passive so it never steals focus from the shell; it comes
-    /// back only if the neighbors vanish while the tab lives on. Rails that
-    /// never see a manifest — denied permission, a tab never activated —
-    /// simply stay selectable, the harmless side.
+    /// layout quirk into a dead session. Once a terminal neighbor has been
+    /// seen the rail goes passive so it never steals focus from the shell,
+    /// and stays passive (see `own_tab_saw_terminal` for why it must not come
+    /// back when the neighbors vanish). Rails that never see a manifest —
+    /// denied permission, a tab never activated — simply stay selectable,
+    /// the harmless side.
     fn desired_selectable(&self) -> bool {
-        self.permission.is_requesting() || self.own_tab_has_terminal != Some(true)
+        self.permission.is_requesting() || !self.own_tab_saw_terminal
     }
 
     /// Emit `SetSelectable` when [`desired_selectable`](Self::desired_selectable)
@@ -528,10 +535,10 @@ impl PluginRuntime {
             self.theme = theme;
         }
         // `PaneUpdate::from_raw` already dropped plugin panes, so a non-empty
-        // entry for our own tab position IS a terminal neighbor.
-        self.own_tab_has_terminal = self
+        // entry for our own tab position IS a terminal neighbor. Latch only.
+        self.own_tab_saw_terminal |= self
             .own_tab_position
-            .map(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
+            .is_some_and(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
         let mut effects = Vec::new();
         self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
