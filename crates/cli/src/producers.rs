@@ -22,17 +22,22 @@ pub(crate) struct ProducerTexts {
     pub codex_hooks:     Option<String>,
     /// Claude Code's `installed_plugins.json`; wired when it names our plugin.
     pub claude_plugins:  Option<String>,
-    /// opencode's vendored bridge plugin; wired when it carries our header marker.
+    /// opencode's vendored 1.x bridge plugin; wired when it carries our header marker.
     pub opencode_plugin: Option<String>,
+    /// opencode's vendored 2.x TUI bridge plugin; same marker test. Either
+    /// bridge being ours counts as wired — which one opencode loads is its
+    /// version's business, not ours.
+    pub opencode_tui_plugin: Option<String>,
 }
 
 impl ProducerTexts {
     /// The one IO point: read every producer's evidence from its home.
     pub(crate) fn read() -> Self {
         ProducerTexts {
-            codex_hooks:     crate::setup::codex_hooks_text(),
-            claude_plugins:  crate::setup::claude_installed_plugins_text(),
-            opencode_plugin: crate::setup::opencode_plugin_text(),
+            codex_hooks:         crate::setup::codex_hooks_text(),
+            claude_plugins:      crate::setup::claude_installed_plugins_text(),
+            opencode_plugin:     crate::setup::opencode_plugin_text(),
+            opencode_tui_plugin: crate::setup::opencode_tui_plugin_text(),
         }
     }
 
@@ -48,10 +53,9 @@ impl ProducerTexts {
         match agent {
             Agent::Codex => self.codex_hooks.as_deref().is_some_and(|h| h.contains(CODEX_HOOK_MARKER)),
             Agent::Claude => self.claude_plugins.as_deref().is_some_and(|p| p.contains(CLAUDE_PLUGIN)),
-            Agent::Opencode => self
-                .opencode_plugin
-                .as_deref()
-                .is_some_and(crate::setup::detect::opencode_plugin_is_ours),
+            Agent::Opencode => [&self.opencode_plugin, &self.opencode_tui_plugin]
+                .into_iter()
+                .any(|text| text.as_deref().is_some_and(crate::setup::detect::opencode_plugin_is_ours)),
         }
     }
 }
@@ -69,14 +73,32 @@ pub(crate) fn names(agents: &[Agent]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::OPENCODE_PLUGIN_MARKER;
+    use crate::setup::{OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER};
 
     fn texts(codex: bool, claude: bool, opencode: bool) -> ProducerTexts {
         ProducerTexts {
-            codex_hooks:     codex.then(|| format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
-            claude_plugins:  claude.then(|| format!("{{\"plugins\":[\"{CLAUDE_PLUGIN}\"]}}")),
-            opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            codex_hooks:         codex.then(|| format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
+            claude_plugins:      claude.then(|| format!("{{\"plugins\":[\"{CLAUDE_PLUGIN}\"]}}")),
+            opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            opencode_tui_plugin: None,
         }
+    }
+
+    #[test]
+    fn opencode_is_wired_by_either_bridge_file() {
+        // A 2.x-only install (the TUI plugin dir, no 1.x file) is wired.
+        let tui_only = ProducerTexts {
+            opencode_tui_plugin: Some(format!("// {OPENCODE_TUI_PLUGIN_MARKER}\n")),
+            ..ProducerTexts::default()
+        };
+        assert_eq!(tui_only.wired(), vec![Agent::Opencode]);
+        // A foreign TUI plugin beside our 1.x file: still wired, by the 1.x file.
+        let mixed = ProducerTexts {
+            opencode_plugin:     Some(format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            opencode_tui_plugin: Some("export default { id: \"other\", setup() {} };\n".to_string()),
+            ..ProducerTexts::default()
+        };
+        assert_eq!(mixed.wired(), vec![Agent::Opencode]);
     }
 
     #[test]
@@ -89,9 +111,10 @@ mod tests {
     #[test]
     fn each_route_keys_on_its_marker_not_on_file_presence() {
         let foreign = ProducerTexts {
-            codex_hooks:     Some("{\"command\": \"/other/notifier\"}".to_string()),
-            claude_plugins:  Some("{\"plugins\":[\"someone-else\"]}".to_string()),
-            opencode_plugin: Some("// some other plugin\n".to_string()),
+            codex_hooks:         Some("{\"command\": \"/other/notifier\"}".to_string()),
+            claude_plugins:      Some("{\"plugins\":[\"someone-else\"]}".to_string()),
+            opencode_plugin:     Some("// some other plugin\n".to_string()),
+            opencode_tui_plugin: Some("export default { id: \"other\", setup() {} };\n".to_string()),
         };
         assert!(foreign.wired().is_empty(), "present-but-foreign files are not wired");
         assert!(ProducerTexts::default().wired().is_empty(), "absent files are not wired");

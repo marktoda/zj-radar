@@ -363,21 +363,29 @@ parser rejects a one-line `{ plugin location="radar" }` without a trailing `;`.
   `hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
   maps it. The legacy single-slot `config.toml` `notify` path stays behind
   `--legacy-notify` and can only emit `done`.
-- **Opencode**: `zj-radar setup opencode` drops a marker-owned JS bridge into
-  opencode's auto-loaded plugins dir. The bridge picks the status class (it
-  knows which event fired) and spawns `zj-radar notify opencode --status <s>`
-  with the payload on stdin; the Rust adapter owns every refinement (tool
-  activity, task capture, the trailing-question remap, the blank-permission
-  backstop), so the JS never grows a second classifier. Bridge behavior:
-  events from subagent (task-tool) sessions are ignored; the user's own prompt
-  text is never mistaken for assistant text; sends are async only (the bridge
-  runs in opencode's process and must not freeze the TUI), one child at a
-  time, with a hard ~10 s kill timer per child; status edges are strictly
-  FIFO while `running` refreshes coalesce to the latest unsent one. The
-  `ZJ_RADAR_OPENCODE_PLUGIN=v1` header marker is what idempotency,
-  `--uninstall`, and `--check` key on; a foreign plugin file is refused
-  unless `--force`. Because opencode is an instrumented agent (`AGENT_NAMES`),
-  its panes are never command-tracked; without the bridge they show nothing.
+- **Opencode**: `zj-radar setup opencode` drops two marker-owned JS bridges
+  into opencode's auto-loaded plugins dir: a 1.x server plugin file
+  (`zj-radar.js`) and a 2.x TUI plugin directory (`zj-radar/tui.js`). Each
+  line ignores the other's shape. Both pick the status class (they know which
+  event fired) and spawn `zj-radar notify opencode --status <s>` with the
+  payload on stdin, using one shared `event` vocabulary; the Rust adapter owns
+  every refinement (tool activity, task capture, the trailing-question remap,
+  the blank-permission backstop), so the JS never grows a second classifier
+  and an opencode API change lands in JS only. Bridge behavior: events from
+  subagent (task-tool) sessions are ignored; the user's own prompt text is
+  never mistaken for assistant text; sends are async only (the bridge runs in
+  opencode's process and must not freeze the TUI), one child at a time, with
+  a hard ~10 s kill timer per child; status edges are strictly FIFO while
+  `running` refreshes coalesce to the latest unsent one. The 2.x bridge is a
+  *TUI* plugin on purpose: 2.x runs one shared, detached background server per
+  machine whose environment is the first launching pane's, so a server plugin
+  would pin every session to one stale `$ZELLIJ_PANE_ID`; the TUI process is
+  the pane, knows which sessions it shows (router + tabs), and dies with it.
+  The `ZJ_RADAR_OPENCODE_PLUGIN=<v>` header marker family is what
+  idempotency, `--uninstall`, and `--check` key on; a foreign plugin file is
+  refused unless `--force`. Because opencode is an instrumented agent
+  (`AGENT_NAMES`), its panes are never command-tracked; without the bridge
+  they show nothing.
 
 **Two install surfaces, two answers.** Claude Code has a plugin system that
 bundles hooks, so a plugin is the right shape: one install command, clean

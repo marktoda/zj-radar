@@ -281,31 +281,37 @@ fn codex_hooks_disabled_in_config(existing: &str) -> Result<bool, String> {
 }
 
 /// Raw, already-read environment for opencode setup. The only IO layer.
+/// Two bridge files: `plugin_text` is the 1.x server plugin
+/// (`plugins/zj-radar.js`), `tui_plugin_text` the 2.x TUI plugin
+/// (`plugins/zj-radar/tui.js`). `None` = absent.
 pub(crate) struct OpencodeEnv {
     pub opencode_on_path:   bool,
     pub zj_radar_on_path:   bool,
     pub plugin_text:        Option<String>,
+    pub tui_plugin_text:    Option<String>,
 }
 
-/// Every derived fact about opencode setup state. `plugin_is_ours` is the
-/// single home for "is the installed plugin ours?" — read by the install/
+/// Every derived fact about opencode setup state. The two `*_is_ours` are the
+/// single home for "is the installed bridge ours?" — read by the install/
 /// uninstall gating, the doctor, and `run`'s detection (via
 /// `opencode_plugin_is_ours` in `detect.rs`).
 pub(crate) struct OpencodeFacts {
-    pub opencode_on_path: bool,
-    pub zj_radar_on_path: bool,
-    /// `None` = plugin file absent; `Some(true)` = ours (marker present);
-    /// `Some(false)` = foreign (file present, marker absent).
-    pub plugin_is_ours:   Option<bool>,
+    pub opencode_on_path:   bool,
+    pub zj_radar_on_path:   bool,
+    /// The 1.x bridge file. `None` = absent; `Some(true)` = ours (marker
+    /// present); `Some(false)` = foreign (file present, marker absent).
+    pub plugin_is_ours:     Option<bool>,
+    /// The 2.x TUI bridge file, same three states.
+    pub tui_plugin_is_ours: Option<bool>,
 }
 
 /// Pure: derive every opencode setup fact from already-read inputs. No I/O.
 pub(crate) fn analyze_opencode(env: &OpencodeEnv) -> OpencodeFacts {
-    let plugin_is_ours = env.plugin_text.as_deref().map(opencode_plugin_is_ours);
     OpencodeFacts {
-        opencode_on_path: env.opencode_on_path,
-        zj_radar_on_path: env.zj_radar_on_path,
-        plugin_is_ours,
+        opencode_on_path:   env.opencode_on_path,
+        zj_radar_on_path:   env.zj_radar_on_path,
+        plugin_is_ours:     env.plugin_text.as_deref().map(opencode_plugin_is_ours),
+        tui_plugin_is_ours: env.tui_plugin_text.as_deref().map(opencode_plugin_is_ours),
     }
 }
 

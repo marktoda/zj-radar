@@ -69,37 +69,59 @@ foreign notifier unless you also pass `--force`.
 zj-radar setup opencode
 ```
 
-This writes a bridge plugin to `$XDG_CONFIG_HOME/opencode/plugins/zj-radar.js`
-(default `~/.config/opencode/plugins/`). Opencode auto-loads it; no
-`opencode.json` edit. The bridge forwards each hook and bus event to
-`zj-radar notify opencode`, which does the classification.
+This writes two bridge plugins under `$XDG_CONFIG_HOME/opencode/plugins/`
+(default `~/.config/opencode/plugins/`), one per opencode line. Opencode
+auto-loads them; no `opencode.json` edit. Whichever bridge your version loads
+forwards each event to `zj-radar notify opencode`, which does the
+classification.
 
-| Opencode event | Status |
+| Opencode | Bridge | Runs in |
+|---|---|---|
+| 2.x | `plugins/zj-radar/tui.js` (a TUI plugin directory) | the TUI process of the pane |
+| 1.18.29+ | `plugins/zj-radar.js` (a server plugin file) | the TUI's in-process server |
+
+Each line ignores the other's shape: 2.x's TUI discovers plugin
+*directories*, 1.x loads plugin *files*. Under 2.x the 1.x file loads as an
+inert stub so it never shows as a failed plugin.
+
+| Opencode 2.x event | Status |
 |---|---|
-| `chat.message`, `tool.execute.before` / `after` | `running` (with task and tool activity) |
-| `permission.asked`, `question.asked` | `pending`; their `replied` / `rejected` edges return to `running` |
-| `session.idle` | `done`, or `pending` when the last message ends in a question |
-| `session.error` | `error` (your own Esc interrupt is not an error) |
+| a submitted prompt (`session.inbox.enqueued`), `session.execution.started`, `session.tool.*` | `running` (with task and tool activity) |
+| `permission.asked`, `form.created` (the `question` tool asks through a form) | `pending`; `permission.replied`, `form.replied` / `cancelled` return to `running` |
+| `session.execution.succeeded` | `done`, or `pending` when the last message ends in a question |
+| `session.execution.failed` | `error` |
+| `session.execution.interrupted` | `done` for your own Esc; `idle` for a shutdown |
 | `session.created`, `session.deleted` | `idle` |
+
+The 1.x bridge maps the older names the same way (`chat.message` and
+`tool.execute.*` → `running`, `permission.asked` / `question.asked` →
+`pending`, `session.idle` → `done`, `session.error` → `error`).
 
 Things to know:
 
-- **Restart opencode after installing.** Plugins load once at startup.
+- **Restart opencode after installing.** 1.x loads plugins once at startup;
+  2.x hot-reloads local TUI plugins, but a restart is the safe advice on both.
 - **The binary is required.** Unlike Claude, there is no script fallback.
 - **An unwired opencode pane shows nothing.** Because opencode is an
   instrumented agent, the sidebar does not command-track its panes; without
   the bridge (not installed, or opencode started with `--pure`) the pane has
-  no row at all. `setup --check` reports the missing bridge when `opencode` is
-  on `PATH`. Upgrading from a release before opencode support has the same
-  effect: run `setup opencode` and restart opencode.
-- **Status lands where the server runs.** The default TUI hosts its server
-  in-process. With `opencode serve` plus `opencode attach`, status is
-  attributed to the server's pane, or dropped when the server is not under
-  Zellij.
+  no row at all. `setup --check` reports each missing bridge when `opencode`
+  is on `PATH`. Upgrading from a release before 2.x support has the same
+  effect on 2.x: run `setup opencode` again (it adds the TUI bridge beside the
+  existing file) and restart opencode.
+- **2.x: status follows the pane, not the server.** Opencode 2.x runs one
+  shared background server per machine, started by whichever `opencode`
+  launched first and outliving it. A server-side plugin there would see one
+  stale pane forever, so the 2.x bridge runs in the TUI, reports the sessions
+  that TUI is showing, and dies with the pane. `opencode run` (no TUI) is not
+  reported. Under 1.x the default TUI hosts its server in-process; with
+  `opencode serve` plus `opencode attach`, status is attributed to the
+  server's pane, or dropped when the server is not under Zellij.
 - **Slash commands label the task with their expansion.** Opencode expands
   `/command` templates before the bridge sees the prompt.
-- Minimum verified opencode version: 1.18.x. The bridge is vendored per
-  release; re-running `setup opencode` updates it in place.
+- Minimum verified versions: 2.0.12 and 1.18.31 (1.18.29 is the floor for the
+  dual-line 1.x file). The bridges are vendored per release; re-running
+  `setup opencode` updates them in place.
 
 Bridge internals (event coalescing, subagent filtering, the marker) are in
 [`design.md`](design.md#7-agent-adapters).

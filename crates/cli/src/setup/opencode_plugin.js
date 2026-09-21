@@ -1,8 +1,11 @@
 // ZJ_RADAR_OPENCODE_PLUGIN=v1
 //
-// zj-radar bridge plugin for opencode. vendored by `zj-radar setup opencode`
-// into opencode's auto-loaded global plugins dir (~/.config/opencode/plugins/),
-// so no `opencode.json` edit is needed and a clean uninstall is one file delete.
+// zj-radar bridge plugin for opencode 1.x (the server-plugin API). vendored by
+// `zj-radar setup opencode` into opencode's auto-loaded global plugins dir
+// (~/.config/opencode/plugins/zj-radar.js), so no `opencode.json` edit is
+// needed and a clean uninstall is one file delete. opencode 2.x loads this
+// file as an inert stub and is served by the TUI plugin beside it — see the
+// default export at the bottom and `opencode_tui_plugin.js`.
 //
 // Spawn discipline (load-bearing, see CONTEXT.md → Status contract / Bounded
 // sends): this bridge spawns `zj-radar notify opencode --status <s>` per event
@@ -306,4 +309,16 @@ export const ZjRadarPlugin = async ({ directory, client }) => {
   };
 };
 
-export default ZjRadarPlugin;
+// Dual-line default export (opencode ≥ 1.18.29 reads `server`; 2.x reads
+// `id` + `setup` and ignores `server`). Under 2.x this file is deliberately
+// INERT: 2.x runs one shared, detached background server whose environment
+// is whatever pane launched it first, so a server-side bridge would pin every
+// opencode pane to one stale `$ZELLIJ_PANE_ID`. The 2.x bridge is the TUI
+// plugin `setup opencode` installs beside this file (`zj-radar/tui.js`),
+// which runs in the pane's own process. The stub exists only so 2.x loads
+// this file cleanly instead of listing a failed plugin.
+export default {
+  id: "zj-radar-server",
+  setup() {},
+  server: ZjRadarPlugin,
+};

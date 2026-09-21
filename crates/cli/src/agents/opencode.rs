@@ -1,15 +1,18 @@
 //! Opencode plugin bridge → Radar status update.
 //!
-//! The opencode producer is a thin JS bridge (see
-//! `setup/opencode_plugin.js`) that serializes each hook/bus-event payload and
-//! spawns `zj-radar notify opencode --status <s>` with JSON on stdin. The
-//! bridge picks the status class (it knows the event); this adapter owns the
+//! The opencode producer is a thin JS bridge — `setup/opencode_plugin.js` for
+//! opencode 1.x (a server plugin), `setup/opencode_tui_plugin.js` for 2.x (a
+//! TUI plugin) — that serializes each hook/bus-event payload and spawns
+//! `zj-radar notify opencode --status <s>` with JSON on stdin. The bridge
+//! picks the status class (it knows the event); this adapter owns the
 //! refinements keyed off the payload's `event` field: the pending backstop,
 //! the running baseline, tool-activity substitution (opencode tool names/args
 //! normalized into the shared `tool_activity` vocabulary), the sticky task
 //! capture, and the trailing-question Done→Pending remap. Returns `None` for a
-//! no-op. `session.error` maps to `Status::Error` — a real failure signal
-//! Claude's hook model deliberately lacks (see the claude.rs header comment).
+//! no-op. The `event` names are zj-radar's own wire vocabulary, shared by both
+//! bridges, so an opencode API change lands in JS only. `session.error` maps
+//! to `Status::Error` — a real failure signal Claude's hook model deliberately
+//! lacks (see the claude.rs header comment).
 
 use super::{string_field, tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
@@ -19,7 +22,7 @@ use serde_json::Value;
 /// bridge always passes `--status`, so this is the robustness/test path).
 fn status_from_event(event: &str) -> Option<Status> {
     match event {
-        "chat.message" | "tool.execute" | "needs_you.replied" => Some(Status::Running),
+        "chat.message" | "tool.execute" | "needs_you.replied" | "session.execution" => Some(Status::Running),
         "permission.ask" | "question.ask" => Some(Status::Pending),
         "session.idle" => Some(Status::Done),
         "session.error" => Some(Status::Error),
@@ -107,21 +110,23 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     })
 }
 
-/// Map opencode's built-in tool ids (`packages/opencode/src/tool/registry.ts`,
-/// all lowercase) to the shared `tool_activity` vocabulary. Anything else —
-/// including MCP tools, which opencode keys `<server>_<tool>` — passes through
-/// and falls to `tool_activity`'s `_` arm: `None` → the `working` baseline.
+/// Map opencode's built-in tool ids (all lowercase; 1.x
+/// `packages/opencode/src/tool/registry.ts`, 2.x `packages/core/src/tool/`
+/// where `bash` became `shell` and `task` became `subagent`) to the shared
+/// `tool_activity` vocabulary. Anything else — including MCP tools, which
+/// opencode keys `<server>_<tool>` — passes through and falls to
+/// `tool_activity`'s `_` arm: `None` → the `working` baseline.
 fn normalize_tool_name(raw: &str) -> &str {
     match raw {
         "read" => "Read",
         "write" => "Write",
         "edit" => "Edit",
-        "bash" => "Bash",
+        "bash" | "shell" => "Bash",
         "grep" => "Grep",
         "glob" => "Glob",
         "webfetch" => "WebFetch",
         "websearch" => "WebSearch",
-        "task" => "Task",
+        "task" | "subagent" => "Task",
         "todowrite" => "TodoWrite",
         _ => raw,
     }
@@ -202,6 +207,21 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(u.msg, "pushing");
+
+        // opencode 2.x renamed `bash` → `shell` (and `task` → `subagent`);
+        // both spellings land on the same shared activity.
+        let u = derive(&intake(
+            r#"{"event":"tool.execute","tool":"shell","tool_input":{"command":"git push origin main"}}"#,
+            Some("running"),
+        ))
+        .unwrap();
+        assert_eq!(u.msg, "pushing");
+        assert_eq!(normalize_tool_name("subagent"), "Task");
+
+        // The 2.x bridge's bare run-started refresh: running, baseline msg.
+        let u = derive(&intake(r#"{"event":"session.execution"}"#, None)).unwrap();
+        assert_eq!(u.status, Status::Running);
+        assert_eq!(u.msg, "working");
 
         // `edit` + `filePath`.
         let u = derive(&intake(
