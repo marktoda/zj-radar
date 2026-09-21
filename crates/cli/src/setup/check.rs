@@ -232,6 +232,7 @@ pub(crate) fn check_opencode() -> bool {
         opencode_on_path:   which("opencode"),
         zj_radar_on_path:   which("zj-radar"),
         plugin_text:        opencode_plugin_text(),
+        tui_plugin_text:    opencode_tui_plugin_text(),
     };
     let items = opencode_check_items(&analyze_opencode(&env));
     println!("opencode:");
@@ -250,21 +251,29 @@ pub(crate) fn opencode_check_items(f: &OpencodeFacts) -> Vec<CheckItem> {
         } else {
             CheckItem::missing("zj-radar binary", "not found on PATH")
         },
-        match f.plugin_is_ours {
-            // `opencode` is in `AGENT_NAMES`, so an uninstrumented pane is
-            // suppressed from command-tracking: without the bridge its row is
-            // dark, not merely un-enriched — say so, it's the reason to act.
-            None => CheckItem::missing(
-                "plugin",
-                "zj-radar bridge plugin not installed — opencode panes stay dark until it is; run `zj-radar setup opencode` and restart opencode",
-            ),
-            Some(true) => CheckItem::ok("plugin", "zj-radar bridge plugin installed"),
-            Some(false) => CheckItem::warn(
-                "plugin",
-                "plugin file present but not ours (no marker) — re-run `zj-radar setup opencode --force` to replace it",
-            ),
-        },
+        // One item per bridge: opencode 1.x loads the plugin file, 2.x the TUI
+        // plugin directory. Both are installed together, so a missing one
+        // means a stale install (a release before the 2.x bridge existed).
+        opencode_bridge_item("plugin (opencode 1.x)", f.plugin_is_ours),
+        opencode_bridge_item("plugin (opencode 2.x)", f.tui_plugin_is_ours),
     ]
+}
+
+fn opencode_bridge_item(name: &'static str, is_ours: Option<bool>) -> CheckItem {
+    match is_ours {
+        // `opencode` is in `AGENT_NAMES`, so an uninstrumented pane is
+        // suppressed from command-tracking: without the bridge its row is
+        // dark, not merely un-enriched — say so, it's the reason to act.
+        None => CheckItem::missing(
+            name,
+            "zj-radar bridge plugin not installed — opencode panes stay dark until it is; run `zj-radar setup opencode` and restart opencode",
+        ),
+        Some(true) => CheckItem::ok(name, "zj-radar bridge plugin installed"),
+        Some(false) => CheckItem::warn(
+            name,
+            "plugin file present but not ours (no marker) — re-run `zj-radar setup opencode --force` to replace it",
+        ),
+    }
 }
 
 /// Returns true when any item is `Missing` — see [`check_codex`].
@@ -780,20 +789,22 @@ mod tests {
         );
     }
 
-    fn opencode_facts(on_path: bool, plugin_text: Option<&str>) -> OpencodeFacts {
+    fn opencode_facts(on_path: bool, plugin_text: Option<&str>, tui_plugin_text: Option<&str>) -> OpencodeFacts {
         analyze_opencode(&OpencodeEnv {
             opencode_on_path:   on_path,
             zj_radar_on_path:   true,
             plugin_text:        plugin_text.map(str::to_string),
+            tui_plugin_text:    tui_plugin_text.map(str::to_string),
         })
     }
 
     #[test]
-    fn opencode_check_reports_ready_when_bridge_is_ours() {
-        let items = opencode_check_items(&opencode_facts(true, Some(OPENCODE_PLUGIN_JS)));
+    fn opencode_check_reports_ready_when_both_bridges_are_ours() {
+        let items = opencode_check_items(&opencode_facts(true, Some(OPENCODE_PLUGIN_JS), Some(OPENCODE_TUI_PLUGIN_JS)));
         assert!(items.contains(&CheckItem::ok("opencode binary", "found on PATH")));
         assert!(items.contains(&CheckItem::ok("zj-radar binary", "found on PATH")));
-        assert!(items.contains(&CheckItem::ok("plugin", "zj-radar bridge plugin installed")));
+        assert!(items.contains(&CheckItem::ok("plugin (opencode 1.x)", "zj-radar bridge plugin installed")));
+        assert!(items.contains(&CheckItem::ok("plugin (opencode 2.x)", "zj-radar bridge plugin installed")));
         assert!(items.iter().all(|i| i.level == CheckLevel::Ok), "{items:?}");
     }
 
@@ -802,19 +813,33 @@ mod tests {
         // `opencode` is in AGENT_NAMES, so an uninstrumented pane is suppressed
         // from command-tracking: the doctor must say the row goes dark, not
         // merely "not installed" — that consequence is the whole reason to act.
-        let items = opencode_check_items(&opencode_facts(true, None));
-        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
-        assert_eq!(plugin.level, CheckLevel::Missing);
-        assert!(plugin.detail.contains("dark"), "must name the dark-row consequence: {}", plugin.detail);
-        assert!(plugin.detail.contains("`zj-radar setup opencode`"), "{}", plugin.detail);
+        let items = opencode_check_items(&opencode_facts(true, None, None));
+        for name in ["plugin (opencode 1.x)", "plugin (opencode 2.x)"] {
+            let plugin = items.iter().find(|i| i.name == name).expect("plugin item");
+            assert_eq!(plugin.level, CheckLevel::Missing);
+            assert!(plugin.detail.contains("dark"), "must name the dark-row consequence: {}", plugin.detail);
+            assert!(plugin.detail.contains("`zj-radar setup opencode`"), "{}", plugin.detail);
+        }
+    }
+
+    #[test]
+    fn opencode_check_flags_a_pre_2x_install_as_missing_the_tui_bridge() {
+        // An install from a release before the 2.x bridge: 1.x file ours, no
+        // TUI dir. The doctor must point at re-running setup, per bridge.
+        let items = opencode_check_items(&opencode_facts(true, Some(OPENCODE_PLUGIN_JS), None));
+        assert!(items.contains(&CheckItem::ok("plugin (opencode 1.x)", "zj-radar bridge plugin installed")));
+        let tui = items.iter().find(|i| i.name == "plugin (opencode 2.x)").expect("tui item");
+        assert_eq!(tui.level, CheckLevel::Missing);
     }
 
     #[test]
     fn opencode_check_warns_on_foreign_plugin_file() {
-        let items = opencode_check_items(&opencode_facts(true, Some("// not ours\n")));
-        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
-        assert_eq!(plugin.level, CheckLevel::Warn);
-        assert!(plugin.detail.contains("--force"), "{}", plugin.detail);
+        let items = opencode_check_items(&opencode_facts(true, Some("// not ours\n"), Some("// not ours\n")));
+        for name in ["plugin (opencode 1.x)", "plugin (opencode 2.x)"] {
+            let plugin = items.iter().find(|i| i.name == name).expect("plugin item");
+            assert_eq!(plugin.level, CheckLevel::Warn);
+            assert!(plugin.detail.contains("--force"), "{}", plugin.detail);
+        }
         assert!(!items.iter().any(|i| i.level == CheckLevel::Missing), "a foreign file is a warn, not a fail");
     }
 
@@ -853,11 +878,13 @@ mod tests {
                 opencode_on_path:   false,
                 zj_radar_on_path:   false,
                 plugin_text:        None,
+                tui_plugin_text:    None,
             })),
             opencode_check_items(&analyze_opencode(&OpencodeEnv {
                 opencode_on_path:   true,
                 zj_radar_on_path:   true,
                 plugin_text:        Some("// someone else's plugin\n".to_string()),
+                tui_plugin_text:    Some("// someone else's plugin\n".to_string()),
             })),
         ] {
             details.extend(items.into_iter().map(|i| i.detail));

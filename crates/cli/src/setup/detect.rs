@@ -27,13 +27,15 @@ pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
             .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
 }
 
-/// True iff the opencode plugin file's text carries our ownership marker. The
-/// single reader behind `analyze_opencode`, the install/uninstall gating, the
-/// doctor, and producer detection (`crate::producers`; the `CODEX_HOOK_MARKER`
-/// precedent: one shared source of truth so detection can't drift). A foreign
-/// plugin file (no marker) is never mistaken for ours.
+/// True iff an opencode plugin file's text carries our ownership marker (any
+/// version: `ZJ_RADAR_OPENCODE_PLUGIN=v1`, `=v2`, …). The single reader
+/// behind `analyze_opencode`, the install/uninstall gating, the doctor, and
+/// producer detection (`crate::producers`; the `CODEX_HOOK_MARKER` precedent:
+/// one shared source of truth so detection can't drift). Prefix-keyed so a
+/// bridge written by an older release is still ours to rewrite or remove; a
+/// foreign plugin file (no marker) is never mistaken for ours.
 pub(crate) fn opencode_plugin_is_ours(plugin_text: &str) -> bool {
-    plugin_text.contains(OPENCODE_PLUGIN_MARKER)
+    plugin_text.contains(OPENCODE_PLUGIN_MARKER_PREFIX)
 }
 
 /// The layout name a `config.kdl` selects via `default_layout "name"`, or

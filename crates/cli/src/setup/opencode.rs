@@ -1,21 +1,43 @@
+//! `zj-radar setup opencode` — vendor the two bridge plugins into opencode's
+//! auto-loaded global plugins dir. opencode 1.x loads the *file*
+//! `plugins/zj-radar.js` (a server plugin); opencode 2.x's TUI discovers the
+//! *directory* `plugins/zj-radar/` and runs `tui.js` inside it. Each line
+//! ignores the other's shape, so both install side by side and the user's
+//! opencode version picks its bridge. Install, uninstall, `--check` and
+//! `run`'s detection all key on the header marker (`detect.rs`).
+
 use super::*;
 use super::detect::opencode_plugin_is_ours;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// The 1.x bridge file: `<config>/plugins/zj-radar.js`.
 pub(crate) fn opencode_plugin_path() -> Option<PathBuf> {
     opencode_plugins_dir().map(|d| d.join(OPENCODE_PLUGIN_FILE_NAME))
 }
 
-/// Read the vendored plugin file for producer *detection* (`run`'s advisory,
-/// `setup zellij`'s epilogue hint, `--check`). Routed through
-/// [`opencode_plugin_path`] so `$XDG_CONFIG_HOME` is honored on the read side
-/// exactly as `setup opencode` honors it on the write side — a hand-rolled
+/// The 2.x TUI bridge file: `<config>/plugins/zj-radar/tui.js`.
+pub(crate) fn opencode_tui_plugin_path() -> Option<PathBuf> {
+    opencode_tui_plugin_dir().map(|d| d.join(OPENCODE_TUI_PLUGIN_FILE_NAME))
+}
+
+fn opencode_tui_plugin_dir() -> Option<PathBuf> {
+    opencode_plugins_dir().map(|d| d.join(OPENCODE_TUI_PLUGIN_DIR_NAME))
+}
+
+/// Read a vendored plugin file for producer *detection* (`run`'s advisory,
+/// `setup zellij`'s epilogue hint, `--check`). Routed through the path
+/// resolvers so `$XDG_CONFIG_HOME` is honored on the read side exactly as
+/// `setup opencode` honors it on the write side — a hand-rolled
 /// `~/.config/opencode` probe here would tell an `XDG_CONFIG_HOME` user their
 /// correctly-installed plugin is missing.
 pub(crate) fn opencode_plugin_text() -> Option<String> {
     opencode_plugin_path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+pub(crate) fn opencode_tui_plugin_text() -> Option<String> {
+    opencode_tui_plugin_path().and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 fn opencode_plugins_dir() -> Option<PathBuf> {
@@ -45,22 +67,22 @@ fn opencode_installed(opencode_on_path: bool) -> bool {
     opencode_installed_from(
         opencode_on_path,
         opencode_config_dir().is_some_and(|d| d.is_dir()),
-        opencode_plugin_path().is_some_and(|p| p.exists()),
+        opencode_plugin_path().is_some_and(|p| p.exists()) || opencode_tui_plugin_path().is_some_and(|p| p.exists()),
     )
 }
 
 /// Pure: is opencode present on this machine? The binary on PATH, or a
 /// populated `~/.config/opencode/` (opencode.json, auth — a Nix/bun-run user
-/// may have no `opencode` on PATH), or our plugin already dropped there.
+/// may have no `opencode` on PATH), or one of our plugins already dropped there.
 fn opencode_installed_from(on_path: bool, config_dir_exists: bool, plugin_exists: bool) -> bool {
     on_path || config_dir_exists || plugin_exists
 }
 
-/// What `setup opencode` found at the plugin path. Three-state on purpose:
+/// What `setup opencode` found at a plugin path. Three-state on purpose:
 /// `Absent` must never collapse into `Text("")` — the foreign-file refusal
 /// gate and the `--uninstall` report both key on the difference — and a file
-/// that is present but unreadable (non-UTF8, permissions) is not ours to
-/// overwrite either.
+/// that is present but unreadable (non-UTF8, permissions, a directory where
+/// a file should be) is not ours to overwrite either.
 pub(crate) enum Existing {
     Absent,
     Text(String),
@@ -96,17 +118,18 @@ pub(crate) enum InstallPlan {
     Write,
 }
 
-/// Pure: the install decision. The embedded JS is the single source of truth,
-/// so "already up to date" is a byte-identical compare; a foreign file (no
-/// marker) is refused unless `force`, mirroring the codex notify-slot rule.
-pub(crate) fn plan_install(existing: &Existing, force: bool) -> InstallPlan {
+/// Pure: the install decision for one bridge file. The embedded JS is the
+/// single source of truth, so "already up to date" is a byte-identical
+/// compare; a foreign file (no marker) is refused unless `force`, mirroring
+/// the codex notify-slot rule.
+pub(crate) fn plan_install(existing: &Existing, embedded: &str, force: bool) -> InstallPlan {
     match existing {
         Existing::Absent => InstallPlan::Write,
         Existing::Unreadable(_) if force => InstallPlan::Write,
         Existing::Unreadable(_) => InstallPlan::RefuseForeign,
         Existing::Text(text) => {
             let ours = opencode_plugin_is_ours(text);
-            if ours && text == OPENCODE_PLUGIN_JS {
+            if ours && text == embedded {
                 InstallPlan::UpToDate
             } else if !text.is_empty() && !ours && !force {
                 InstallPlan::RefuseForeign
@@ -135,6 +158,28 @@ pub(crate) fn plan_uninstall(existing: &Existing) -> UninstallPlan {
     }
 }
 
+/// One vendored bridge: where it lives, what it must contain, what it is for.
+struct Bridge {
+    /// "opencode 1.x" / "opencode 2.x" — for the user-facing lines.
+    line:     &'static str,
+    path:     PathBuf,
+    embedded: &'static str,
+    existing: Existing,
+}
+
+fn bridges() -> Option<Vec<Bridge>> {
+    let plugin = opencode_plugin_path()?;
+    let tui = opencode_tui_plugin_path()?;
+    Some(vec![
+        Bridge { line: "opencode 1.x", existing: read_existing(&plugin), path: plugin, embedded: OPENCODE_PLUGIN_JS },
+        Bridge { line: "opencode 2.x", existing: read_existing(&tui), path: tui, embedded: OPENCODE_TUI_PLUGIN_JS },
+    ])
+}
+
+fn paths_list(paths: impl Iterator<Item = PathBuf>) -> String {
+    paths.map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and ")
+}
+
 pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
     if opencode_config_dir().is_none() {
         crate::exit::fail_report(
@@ -143,89 +188,137 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         );
         return;
     }
-    // The plugins dir may not exist yet on a fresh opencode install; the
-    // atomic write below creates it (and parents) — after consent, so a
-    // declined install leaves nothing behind.
-    let Some(path) = opencode_plugin_path() else { return };
+    // The plugins dir (and the 2.x plugin dir inside it) may not exist yet on
+    // a fresh opencode install; the atomic write below creates them — after
+    // consent, so a declined install leaves nothing behind.
+    let Some(bridges) = bridges() else { return };
     let opencode_on_path = which("opencode");
     if !uninstall && !opencode_installed(opencode_on_path) {
         println!("opencode: skipped (binary/config not found)");
         return;
     }
-    let existing = read_existing(&path);
     let env = OpencodeEnv {
         opencode_on_path,
         zj_radar_on_path: which("zj-radar"),
-        plugin_text: existing.text().map(str::to_string),
+        plugin_text: bridges[0].existing.text().map(str::to_string),
+        tui_plugin_text: bridges[1].existing.text().map(str::to_string),
     };
     let facts = analyze_opencode(&env);
 
     if uninstall {
-        match plan_uninstall(&existing) {
-            UninstallPlan::Absent => {
-                println!("opencode: plugin not installed ({})", path.display());
-                return;
-            }
-            UninstallPlan::NotOurs => {
-                println!("opencode: plugin not ours (marker absent) — leaving {}", path.display());
-                return;
-            }
-            UninstallPlan::Remove => {}
-        }
-        if opts.dry_run {
-            println!("--- would remove {} (dry-run) ---", path.display());
-            return;
-        }
-        // Same consent step as every other setup write/remove: a non-tty run
-        // without -y skips rather than deleting unasked.
-        if !confirm(&format!("Remove {}?", path.display()), opts.yes, opts.is_tty) {
-            println!("opencode: skipped (declined)");
-            return;
-        }
-        if let Err(e) = std::fs::remove_file(&path) {
-            crate::exit::fail_report("opencode", format!("remove failed — {e}"));
-        }
-        // The rewrite path's restore point is ours too: a clean uninstall leaves
-        // nothing of zj-radar in opencode's plugins dir.
-        let _ = std::fs::remove_file(path_with_suffix(&path, BACKUP_SUFFIX));
-        println!("opencode: plugin removed ({})", path.display());
+        uninstall_opencode(&bridges, &opts);
         return;
     }
 
-    match plan_install(&existing, opts.force) {
-        InstallPlan::UpToDate => {
-            println!("opencode: plugin already up to date ({})", path.display());
-            print_opencode_guidance(&facts, false);
-            return;
-        }
-        InstallPlan::RefuseForeign => {
-            let why = match &existing {
-                Existing::Unreadable(e) => format!("could not be read ({e})"),
-                _ => "is not ours (no marker)".to_string(),
-            };
-            crate::exit::fail_report(
-                "opencode",
-                format!(
-                    "{} already exists and {why}. Refusing to overwrite it.\n\
-                     Re-run with --force to replace it.",
-                    path.display()
-                ),
-            );
-            return;
-        }
-        InstallPlan::Write => {}
+    let plans: Vec<InstallPlan> = bridges.iter().map(|b| plan_install(&b.existing, b.embedded, opts.force)).collect();
+    // Refuse as a unit: a foreign file at either path is a stop, even when the
+    // other would write cleanly — a half-installed pair is harder to reason
+    // about than "nothing changed, here is why".
+    let foreign: Vec<&Bridge> = bridges
+        .iter()
+        .zip(&plans)
+        .filter(|(_, p)| **p == InstallPlan::RefuseForeign)
+        .map(|(b, _)| b)
+        .collect();
+    if !foreign.is_empty() {
+        let why = foreign
+            .iter()
+            .map(|b| match &b.existing {
+                Existing::Unreadable(e) => format!("{} could not be read ({e})", b.path.display()),
+                _ => format!("{} is not ours (no marker)", b.path.display()),
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        crate::exit::fail_report(
+            "opencode",
+            format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."),
+        );
+        return;
+    }
+    let to_write: Vec<&Bridge> = bridges
+        .iter()
+        .zip(&plans)
+        .filter(|(_, p)| **p == InstallPlan::Write)
+        .map(|(b, _)| b)
+        .collect();
+    if to_write.is_empty() {
+        println!(
+            "opencode: plugins already up to date ({})",
+            paths_list(bridges.iter().map(|b| b.path.clone()))
+        );
+        print_opencode_guidance(&facts, false);
+        return;
     }
     if opts.dry_run {
-        println!("--- {} (dry-run) ---\n{OPENCODE_PLUGIN_JS}", path.display());
+        for b in &to_write {
+            println!("--- {} (dry-run) ---\n{}", b.path.display(), b.embedded);
+        }
         print_opencode_guidance(&facts, true);
         return;
     }
-    let prompt = format!("Write {}?", path.display());
-    if !confirm_and_write("opencode", &path, OPENCODE_PLUGIN_JS, opts.yes, opts.is_tty, &prompt, || Ok(())) {
+    // One consent step for the pair (the same `confirm` every other setup
+    // write goes through): a non-tty run without -y skips rather than writing
+    // unasked.
+    let prompt = format!("Write {}?", paths_list(to_write.iter().map(|b| b.path.clone())));
+    if !confirm(&prompt, opts.yes, opts.is_tty) {
+        println!("opencode: skipped (declined)");
         return;
     }
-    println!("opencode: plugin installed ({})", path.display());
+    for b in &to_write {
+        if let Err(e) = backup_then_write(&b.path, b.embedded) {
+            crate::exit::fail_report("opencode", format!("write failed — {e}"));
+            return;
+        }
+        println!("opencode: plugin installed ({}, {})", b.path.display(), b.line);
+    }
     print_opencode_guidance(&facts, true);
+}
+
+fn uninstall_opencode(bridges: &[Bridge], opts: &OpencodeSetupOpts) {
+    let mut to_remove: Vec<&Bridge> = Vec::new();
+    for b in bridges {
+        match plan_uninstall(&b.existing) {
+            UninstallPlan::Absent => {}
+            UninstallPlan::NotOurs => {
+                println!("opencode: plugin not ours (marker absent) — leaving {}", b.path.display());
+            }
+            UninstallPlan::Remove => to_remove.push(b),
+        }
+    }
+    if to_remove.is_empty() {
+        if bridges.iter().all(|b| matches!(plan_uninstall(&b.existing), UninstallPlan::Absent)) {
+            println!("opencode: plugin not installed ({})", paths_list(bridges.iter().map(|b| b.path.clone())));
+        }
+        return;
+    }
+    let listed = paths_list(to_remove.iter().map(|b| b.path.clone()));
+    if opts.dry_run {
+        println!("--- would remove {listed} (dry-run) ---");
+        return;
+    }
+    // Same consent step as every other setup write/remove: a non-tty run
+    // without -y skips rather than deleting unasked.
+    if !confirm(&format!("Remove {listed}?"), opts.yes, opts.is_tty) {
+        println!("opencode: skipped (declined)");
+        return;
+    }
+    for b in &to_remove {
+        if let Err(e) = std::fs::remove_file(&b.path) {
+            crate::exit::fail_report("opencode", format!("remove failed — {e}"));
+            continue;
+        }
+        // The rewrite path's restore point is ours too: a clean uninstall
+        // leaves nothing of zj-radar in opencode's plugins dir.
+        let _ = std::fs::remove_file(path_with_suffix(&b.path, BACKUP_SUFFIX));
+        println!("opencode: plugin removed ({})", b.path.display());
+        // The 2.x plugin directory is ours only while it held our file and
+        // now holds nothing; `remove_dir` refuses a non-empty dir, which is
+        // exactly the "someone else put something here" case where we must
+        // leave it. An empty `zj-radar/` dir we never wrote into stays too.
+        if let Some(dir) = b.path.parent().filter(|d| d.file_name().is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME)) {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
 }
 
 fn print_opencode_guidance(facts: &OpencodeFacts, wrote: bool) {
@@ -235,8 +328,8 @@ fn print_opencode_guidance(facts: &OpencodeFacts, wrote: bool) {
              so status won't broadcast until it's installed"
         );
     }
-    // Plugins load once at opencode startup, so a write mid-session needs a
-    // restart — but an already-current file needs nothing.
+    // 1.x loads plugins once at startup; 2.x hot-reloads local TUI plugins,
+    // but a restart is the advice that is right on both lines.
     if wrote {
         println!("opencode: restart opencode (or reload plugins) for the bridge to take effect.");
     }
@@ -244,7 +337,10 @@ fn print_opencode_guidance(facts: &OpencodeFacts, wrote: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER};
+    use super::super::{
+        OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER, OPENCODE_PLUGIN_MARKER_PREFIX, OPENCODE_TUI_PLUGIN_JS,
+        OPENCODE_TUI_PLUGIN_MARKER,
+    };
     use super::{opencode_config_dir_from, opencode_installed_from, plan_install, plan_uninstall, Existing, InstallPlan, UninstallPlan};
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -298,32 +394,45 @@ mod tests {
 
     #[test]
     fn plan_install_writes_when_absent_or_empty() {
-        assert_eq!(plan_install(&Existing::Absent, false), InstallPlan::Write);
+        assert_eq!(plan_install(&Existing::Absent, OPENCODE_PLUGIN_JS, false), InstallPlan::Write);
         // An empty file is nobody's plugin — write over it without --force.
-        assert_eq!(plan_install(&Existing::Text(String::new()), false), InstallPlan::Write);
+        assert_eq!(plan_install(&Existing::Text(String::new()), OPENCODE_PLUGIN_JS, false), InstallPlan::Write);
     }
 
     #[test]
     fn plan_install_is_up_to_date_only_when_byte_identical() {
-        assert_eq!(plan_install(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), false), InstallPlan::UpToDate);
+        assert_eq!(
+            plan_install(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), OPENCODE_PLUGIN_JS, false),
+            InstallPlan::UpToDate
+        );
+        assert_eq!(
+            plan_install(&Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string()), OPENCODE_TUI_PLUGIN_JS, false),
+            InstallPlan::UpToDate
+        );
         // Ours (marker present) but stale → rewrite, no --force needed.
         let stale = format!("// {OPENCODE_PLUGIN_MARKER}\n// older bridge\n");
-        assert_eq!(plan_install(&Existing::Text(stale), false), InstallPlan::Write);
+        assert_eq!(plan_install(&Existing::Text(stale), OPENCODE_PLUGIN_JS, false), InstallPlan::Write);
+        // The two bridges are never interchangeable: the 1.x text at the 2.x
+        // path is ours, but stale.
+        assert_eq!(
+            plan_install(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), OPENCODE_TUI_PLUGIN_JS, false),
+            InstallPlan::Write
+        );
     }
 
     #[test]
     fn plan_install_refuses_foreign_plugin_without_force() {
         let foreign = Existing::Text("export const Other = async () => ({});\n".to_string());
-        assert_eq!(plan_install(&foreign, false), InstallPlan::RefuseForeign);
-        assert_eq!(plan_install(&foreign, true), InstallPlan::Write);
+        assert_eq!(plan_install(&foreign, OPENCODE_PLUGIN_JS, false), InstallPlan::RefuseForeign);
+        assert_eq!(plan_install(&foreign, OPENCODE_PLUGIN_JS, true), InstallPlan::Write);
     }
 
     #[test]
     fn plan_install_treats_unreadable_file_as_foreign() {
         // A present-but-unreadable file (non-UTF8, permissions) must NOT read as
         // absent — that would skip the refusal gate and overwrite it silently.
-        assert_eq!(plan_install(&unreadable(), false), InstallPlan::RefuseForeign);
-        assert_eq!(plan_install(&unreadable(), true), InstallPlan::Write);
+        assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, false), InstallPlan::RefuseForeign);
+        assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, true), InstallPlan::Write);
     }
 
     #[test]
@@ -332,29 +441,56 @@ mod tests {
         assert_eq!(plan_uninstall(&Existing::Text("// not ours\n".to_string())), UninstallPlan::NotOurs);
         assert_eq!(plan_uninstall(&unreadable()), UninstallPlan::NotOurs);
         assert_eq!(plan_uninstall(&Existing::Text(OPENCODE_PLUGIN_JS.to_string())), UninstallPlan::Remove);
+        assert_eq!(plan_uninstall(&Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string())), UninstallPlan::Remove);
     }
 
-    /// Weld: the embedded plugin carries the marker and the spawn contract the
-    /// install path, the doctor, and `run`'s detection all key off. A stale
-    /// `include_str!` target (renamed file, dropped marker, a `spawnSync` that
-    /// would freeze the TUI) is caught here rather than at runtime.
+    /// Weld: both embedded bridges carry a marker from the one family the
+    /// install path, the doctor, and `run`'s detection key off, and the spawn
+    /// contract. A stale `include_str!` target (renamed file, dropped marker,
+    /// a `spawnSync` that would freeze the TUI) is caught here rather than at
+    /// runtime.
     #[test]
-    fn embedded_plugin_carries_marker_and_contract() {
+    fn embedded_plugins_carry_marker_and_contract() {
+        assert!(OPENCODE_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
+        assert!(OPENCODE_TUI_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
+        assert_ne!(OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER);
+        for (js, marker) in [(OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER), (OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER)] {
+            assert!(
+                js.lines().next().is_some_and(|l| l.contains(marker)),
+                "the vendored plugin must carry the {marker} marker in its header line"
+            );
+            assert!(js.contains("notify opencode"), "the bridge must spawn `zj-radar notify opencode`");
+            assert!(
+                !js.contains("spawnSync"),
+                "the bridge must never use spawnSync — it runs in opencode's process and would freeze the TUI"
+            );
+            assert!(js.contains("ZELLIJ"), "the bridge must gate on $ZELLIJ (skip spawn when not under Zellij)");
+        }
+    }
+
+    /// Weld: the 2.x TUI bridge is a bare file opencode imports from its
+    /// plugins dir — no `node_modules` beside it, so it must not `import`
+    /// anything (`Plugin.define` is an identity, the object literal is the
+    /// contract), and it must be the `{ id, setup }` shape the TUI's module
+    /// validator accepts.
+    #[test]
+    fn embedded_tui_plugin_is_a_self_contained_v2_tui_definition() {
         assert!(
-            OPENCODE_PLUGIN_JS.contains(OPENCODE_PLUGIN_MARKER),
-            "the vendored plugin must carry the {OPENCODE_PLUGIN_MARKER} marker in its header"
+            !OPENCODE_TUI_PLUGIN_JS.lines().any(|l| l.starts_with("import ")),
+            "the TUI bridge must not import: nothing resolves beside a bare plugins-dir file"
         );
-        assert!(
-            OPENCODE_PLUGIN_JS.contains("notify opencode"),
-            "the bridge must spawn `zj-radar notify opencode`"
-        );
-        assert!(
-            !OPENCODE_PLUGIN_JS.contains("spawnSync"),
-            "the bridge must never use spawnSync — it runs in opencode's process and would freeze the TUI"
-        );
-        assert!(
-            OPENCODE_PLUGIN_JS.contains("ZELLIJ"),
-            "the bridge must gate on $ZELLIJ (skip spawn when not under Zellij)"
-        );
+        assert!(OPENCODE_TUI_PLUGIN_JS.contains("export default {"));
+        assert!(OPENCODE_TUI_PLUGIN_JS.contains("id: \"zj-radar\""));
+        assert!(OPENCODE_TUI_PLUGIN_JS.contains("setup(ctx)"));
+    }
+
+    /// Weld: the 1.x file must load cleanly under 2.x too — as an inert
+    /// `{ id, setup }` stub with the 1.x factory on `server` — so a 2.x user
+    /// never sees a failed plugin for the file their version doesn't use.
+    #[test]
+    fn embedded_v1_plugin_is_dual_line() {
+        assert!(OPENCODE_PLUGIN_JS.contains("server: ZjRadarPlugin"));
+        assert!(OPENCODE_PLUGIN_JS.contains("setup() {}"));
+        assert!(OPENCODE_PLUGIN_JS.contains("id: \"zj-radar-server\""));
     }
 }
