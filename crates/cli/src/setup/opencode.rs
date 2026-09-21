@@ -311,12 +311,13 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &OpencodeSetupOpts) {
         // leaves nothing of zj-radar in opencode's plugins dir.
         let _ = std::fs::remove_file(path_with_suffix(&b.path, BACKUP_SUFFIX));
         println!("opencode: plugin removed ({})", b.path.display());
-    }
-    // The 2.x plugin directory is ours only while it holds nothing but our
-    // file; `remove_dir` refuses a non-empty dir, which is exactly the
-    // "someone else put something here" case where we must leave it.
-    if let Some(dir) = opencode_tui_plugin_dir() {
-        let _ = std::fs::remove_dir(&dir);
+        // The 2.x plugin directory is ours only while it held our file and
+        // now holds nothing; `remove_dir` refuses a non-empty dir, which is
+        // exactly the "someone else put something here" case where we must
+        // leave it. An empty `zj-radar/` dir we never wrote into stays too.
+        if let Some(dir) = b.path.parent().filter(|d| d.file_name().is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME)) {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 }
 

@@ -38,11 +38,14 @@
 // repo/branch without a host probe). Resolved once at setup.
 let CWD = "";
 
-// Root sessions this TUI has shown (router route or an open tab). On the
-// shared server every pane's events arrive here, so only events whose root
-// session this pane has displayed may paint this pane's row. Sticky on
-// purpose: a session started here keeps reporting here after the user
-// switches away — this pane launched it.
+// Root sessions this pane created or prompted. On the shared server every
+// pane's events arrive here, so an event may paint this pane's row only if
+// its root session is one this TUI is *showing right now* (router route or
+// an open tab — recomputed per event) or one it *owns*: created or prompted
+// from here. Owned roots stay owned until deleted, so a run the user
+// switched away from (or backgrounded) keeps reporting to the pane that
+// launched it; a session merely browsed via the picker reports only while
+// it is on screen, and never hijacks this pane's row afterwards.
 const ownedRoots = new Set();
 
 // The last assistant text per root session, so a `session.execution.succeeded`
@@ -50,12 +53,17 @@ const ownedRoots = new Set();
 // adapter's trailing-question Done→Pending remap.
 const lastAssistantText = new Map();
 
-// Tool call id → tool name. Only `session.tool.input.started` carries the
-// name; `called` (which carries the input) and `success`/`failed` carry just
-// the call `id`. `success`/`failed` are load-bearing: a permission is asked
-// inside the tool, between called and success, so success is what brings a
-// ◆ back to running.
+// Tool call id → { name, root }. Only `session.tool.input.started` carries
+// the name; `called` (which carries the input) and `success`/`failed` carry
+// just the call `id`. `success`/`failed` are load-bearing: a permission is
+// asked inside the tool, between called and success, so success is what
+// brings a ◆ back to running. `root` lets a turn's end drop the calls that
+// never settled (an interrupted turn), so the map cannot grow unbounded.
 const toolNames = new Map();
+
+// `Bun.which` is a PATH scan; probe once and re-probe only while missing, so
+// an install that lands mid-session is picked up without a per-event scan.
+let zjRadarOnPath = false;
 
 // Queue: edges FIFO, one droppable slot for the latest tool-activity running.
 let pendingRunning = null;
@@ -103,7 +111,8 @@ function notify(status, payload) {
   // missing from PATH (a partial install must not throw inside the TUI).
   if (typeof Bun === "undefined") return Promise.resolve();
   if (!process.env.ZELLIJ) return Promise.resolve();
-  if (!Bun.which("zj-radar")) return Promise.resolve();
+  if (!zjRadarOnPath) zjRadarOnPath = Boolean(Bun.which("zj-radar"));
+  if (!zjRadarOnPath) return Promise.resolve();
 
   const data = JSON.stringify({ ...payload, cwd: CWD });
   let child;
@@ -141,7 +150,9 @@ function permissionMessage(data) {
 // `form.created`: the built-in `question` tool asks through a Form titled
 // "Questions" whose fields carry the question text in `description` (the
 // header in `title`). Other forms (MCP elicitation, auth) fall back to the
-// form title.
+// form title. An MCP elicitation owned by no session carries the `"global"`
+// sentinel as its sessionID; it is not any pane's, so it is dropped by the
+// ownership filter rather than painted on every pane.
 function formMessage(form) {
   if (!form) return "question";
   const fields = Array.isArray(form.fields) ? form.fields : [];
@@ -167,24 +178,33 @@ export default {
       return sessionID;
     }
 
-    // Refresh the owned set from what the TUI is showing right now, then test.
-    function owned(root) {
+    // Is `root` on screen right now (the router's session, or an open tab)?
+    function showing(root) {
       try {
         const route = ctx.ui.router.current();
-        if (route && route.type === "session" && typeof route.sessionID === "string") {
-          ownedRoots.add(rootOf(route.sessionID));
+        if (route && route.type === "session" && typeof route.sessionID === "string" && rootOf(route.sessionID) === root) {
+          return true;
         }
       } catch {}
       try {
         for (const tab of ctx.ui.tabs.list()) {
-          if (tab && typeof tab.sessionID === "string") ownedRoots.add(rootOf(tab.sessionID));
+          if (tab && typeof tab.sessionID === "string" && rootOf(tab.sessionID) === root) return true;
         }
       } catch {}
-      return ownedRoots.has(root);
+      return false;
+    }
+
+    // May this event paint this pane's row? Owned (created/prompted here) or
+    // currently showing.
+    function concerns(root) {
+      return ownedRoots.has(root) || showing(root);
     }
 
     function endTurn(root) {
       lastAssistantText.delete(root);
+      for (const [id, call] of toolNames) {
+        if (call.root === root) toolNames.delete(id);
+      }
     }
 
     // Classify one bus event into a (status, payload) send, or nothing.
@@ -194,8 +214,15 @@ export default {
       const sessionID = typeof data.sessionID === "string" ? data.sessionID : (data.form && data.form.sessionID);
       if (typeof sessionID !== "string" || !sessionID) return;
       const root = rootOf(sessionID);
-      if (!owned(root)) return;
       const isChild = sessionID !== root;
+      // Claim a root this pane created or prompted: the TUI navigates to a new
+      // session optimistically before the create round-trip, so its
+      // `session.created` arrives while the route already points at it; a
+      // prompt submitted here arrives as an inbox item while it is on screen.
+      if (!isChild && (type === "session.created" || (type === "session.inbox.enqueued" && data.item && data.item.type === "user")) && showing(root)) {
+        ownedRoots.add(root);
+      }
+      if (!concerns(root)) return;
 
       switch (type) {
         // Needs-you prompts block this TUI whichever session in the family
@@ -238,16 +265,18 @@ export default {
 
         // Tool activity → running, with the live tool action.
         case "session.tool.input.started":
-          if (typeof data.id === "string" && typeof data.name === "string") toolNames.set(data.id, data.name);
+          if (typeof data.id === "string" && typeof data.name === "string") toolNames.set(data.id, { name: data.name, root });
           return;
-        case "session.tool.called":
-          enqueue("running", { event: "tool.execute", tool: toolNames.get(data.id), tool_input: data.input });
+        case "session.tool.called": {
+          const call = toolNames.get(data.id);
+          enqueue("running", { event: "tool.execute", tool: call && call.name, tool_input: data.input });
           return;
+        }
         case "session.tool.success":
         case "session.tool.failed": {
-          const tool = toolNames.get(data.id);
+          const call = toolNames.get(data.id);
           toolNames.delete(data.id);
-          enqueue("running", { event: "tool.execute", tool });
+          enqueue("running", { event: "tool.execute", tool: call && call.name });
           return;
         }
 

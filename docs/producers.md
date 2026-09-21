@@ -78,7 +78,7 @@ classification.
 | Opencode | Bridge | Runs in |
 |---|---|---|
 | 2.x | `plugins/zj-radar/tui.js` (a TUI plugin directory) | the TUI process of the pane |
-| 1.18.29+ | `plugins/zj-radar.js` (a server plugin file) | the TUI's in-process server |
+| 1.18.x | `plugins/zj-radar.js` (a server plugin file) | the TUI's in-process server |
 
 Each line ignores the other's shape: 2.x's TUI discovers plugin
 *directories*, 1.x loads plugin *files*. Under 2.x the 1.x file loads as an
@@ -90,7 +90,7 @@ inert stub so it never shows as a failed plugin.
 | `permission.asked`, `form.created` (the `question` tool asks through a form) | `pending`; `permission.replied`, `form.replied` / `cancelled` return to `running` |
 | `session.execution.succeeded` | `done`, or `pending` when the last message ends in a question |
 | `session.execution.failed` | `error` |
-| `session.execution.interrupted` | `done` for your own Esc; `idle` for a shutdown |
+| `session.execution.interrupted` | `done` when the reason is `user` (your own Esc); `idle` for `shutdown` / `inactivity`; nothing for `superseded` (the replacing prompt's `running` follows) |
 | `session.created`, `session.deleted` | `idle` |
 
 The 1.x bridge maps the older names the same way (`chat.message` and
@@ -119,9 +119,11 @@ Things to know:
   server's pane, or dropped when the server is not under Zellij.
 - **Slash commands label the task with their expansion.** Opencode expands
   `/command` templates before the bridge sees the prompt.
-- Minimum verified versions: 2.0.12 and 1.18.31 (1.18.29 is the floor for the
-  dual-line 1.x file). The bridges are vendored per release; re-running
-  `setup opencode` updates them in place.
+- Verified versions: 2.0.12 live; the 1.x loader that accepts the dual-line
+  file is present in 1.18.27 through 1.18.31 (checked in source; opencode's
+  own docs date the dual export to 1.18.29). Older 1.18 releases may reject
+  the object default export. The bridges are vendored per release;
+  re-running `setup opencode` updates them in place.
 
 Bridge internals (event coalescing, subagent filtering, the marker) are in
 [`design.md`](design.md#7-agent-adapters).
