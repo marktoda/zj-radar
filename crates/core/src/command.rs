@@ -86,6 +86,7 @@ const IGNORE_NAMES: &[&str] = &[
 /// pins the two sets. Agents without an adapter (e.g. Gemini today) are
 /// deliberately absent: they fall through to ordinary command-tracking, which
 /// still surfaces a Running/Done lifecycle under their own `Kind`.
+/// Matched on the peeled program — including a node/bun-hosted agent script.
 pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode", "pi"];
 
 /// Interactive programs — editors, pagers, monitors, git TUIs, file managers —
@@ -240,6 +241,17 @@ fn raw_display(parts: &[&str]) -> String {
 /// Launcher exes that prefix the *real* command (`sudo make`, `time cargo
 /// build`, `env FOO=1 pytest`). Classification should see through them.
 const WRAPPERS: &[&str] = &["sudo", "doas", "env", "time", "nice", "command", "exec"];
+
+/// JS runtimes that can host a push agent's entry script. A node-shebang
+/// agent (pi, npm-installed Codex) is reported by the OS as
+/// `node …/bin/<agent>` until — and, under bun, even after — it retitles
+/// itself, so the peel below names the script as the program when (and only
+/// when) its basename is an `AGENT_NAMES` member. `node server.js` is
+/// untouched.
+const JS_RUNTIMES: &[&str] = &["node", "bun"];
+
+/// JS script extensions stripped before the agent-name match (`codex.js`).
+const JS_SCRIPT_EXTS: &[&str] = &[".js", ".mjs", ".cjs"];
 
 /// Is `s` a leading `KEY=VAL` environment assignment (e.g. `RUST_LOG=debug`)?
 /// Requires a non-empty key of `[A-Za-z0-9_]` before the `=`, so flags like
@@ -657,10 +669,28 @@ pub fn contains_word(haystack: &str, word: &str) -> bool {
 /// the prompt check, the agent check, and command intake — all three must
 /// classify the same real command, and routing them through one helper makes
 /// that structural rather than comment-held ("peels like `is_shell_prompt`").
+/// A JS runtime hosting an agent script (`node …/bin/pi`) names the agent (see `JS_RUNTIMES`).
 fn effective_program(command: &[String]) -> (&[String], &str) {
     let command = effective_command(command);
     let name = command.first().map(|s| program_name(s)).unwrap_or("");
+    if JS_RUNTIMES.contains(&name) {
+        if let Some((at, agent)) = js_hosted_agent(command) {
+            return (&command[at..], agent);
+        }
+    }
     (command, name)
+}
+
+/// For `node|bun [flags] <script> …`: the script's index and agent name, when
+/// the first non-option arg's basename (minus a JS extension) is a push agent.
+/// Only the first non-option arg is considered — a value-taking flag we don't
+/// model (`node -r x …`) makes its value the candidate, which is not an agent,
+/// so the peel stays conservative.
+fn js_hosted_agent(command: &[String]) -> Option<(usize, &'static str)> {
+    let at = command.iter().skip(1).position(|t| !is_option_arg(t))? + 1;
+    let base = basename(&command[at]);
+    let stem = JS_SCRIPT_EXTS.iter().find_map(|ext| base.strip_suffix(ext)).unwrap_or(base);
+    AGENT_NAMES.iter().copied().find(|a| *a == stem).map(|a| (at, a))
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
