@@ -17,6 +17,7 @@ mod edit;
 mod opencode;
 mod pi;
 mod preseed;
+mod vendored;
 mod zellij;
 pub(crate) use analyze::*;
 pub(crate) use check::*;
