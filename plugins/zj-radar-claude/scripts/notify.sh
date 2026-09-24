@@ -192,7 +192,7 @@ if [[ "$status" == "running" ]]; then
             WebFetch|WebSearch)
                 tool_activity="searching web"
                 ;;
-            Task)
+            Task|Agent)
                 tool_activity="delegating"
                 ;;
             TodoWrite)
@@ -279,6 +279,33 @@ if [[ "$status" == "done" && -n "$msg" ]]; then
             msg="$last_line"
             ;;
     esac
+fi
+
+# The turn ended but work it backgrounded is still running and will wake the
+# model when it finishes: stay running with a "waiting on …" msg. Parity with
+# holds_agent/waiting_msg in agents/claude.rs — running subagents, workflows
+# and teammates hold; shells hold unless a service phrase matches (the list is
+# agents.rs's SERVICE_PHRASES, welded by parity.bats); anything else doesn't.
+# jq's `test` is Oniguruma, so the phrases stay regex-metachar-free.
+SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|serve|tail -f|compose up"
+if [[ "$status" == "done" ]]; then
+    waiting="$(jq -r --arg re "(^|[^a-z0-9])($SERVICE_PHRASES)([^a-z0-9]|$)" '
+        [ (.background_tasks // empty) | arrays | .[] | objects
+          | select(.status == "running")
+          | select(.type == "subagent" or .type == "workflow" or .type == "teammate"
+                   or (.type == "shell"
+                       and ((.command | if type == "string" then . else "" end
+                             | ascii_downcase | test($re)) | not))) ]
+        | if length == 0 then empty
+          elif length == 1 then
+            (.[0].description | if type == "string" then . else "" end
+             | gsub("^\\s+|\\s+$"; "")) as $d
+            | if $d == "" then "waiting on 1 task" else "waiting on " + $d end
+          else "waiting on \(length) tasks" end' <<<"$input" 2>/dev/null || true)"
+    if [[ -n "$waiting" ]]; then
+        status="running"
+        msg="$waiting"
+    fi
 fi
 
 # idle means "no activity" — never carry a message (drops any stale message the

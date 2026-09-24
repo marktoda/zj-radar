@@ -102,7 +102,9 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
         }
         "Grep" | "Glob" => Some("searching".to_string()),
         "WebFetch" | "WebSearch" => Some("searching web".to_string()),
-        "Task" => Some("delegating".to_string()),
+        // `Agent` is current Claude Code's name for the subagent tool; `Task`
+        // is the older one (and opencode's `task`, mapped in its adapter).
+        "Task" | "Agent" => Some("delegating".to_string()),
         "TodoWrite" => Some("planning".to_string()),
         "apply_patch" => Some("editing files".to_string()),
         "Bash" => bash_activity(tool_input),
@@ -190,6 +192,25 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
         return None;
     }
     path.rsplit('/').next().filter(|base| !base.is_empty())
+}
+
+/// Shell phrases that mark a backgrounded command as a long-lived service (a
+/// dev server, a followed log) rather than bounded work. Matched whole-word on
+/// the lowercased command line. Deliberately narrow: a miss only means the row
+/// keeps spinning until the next `Stop` or `SessionEnd`, while a false hit
+/// paints "done" over work still running. `watch` is absent on purpose —
+/// `gh run watch` and `--watch` checks end. Mirrored in notify.sh's
+/// `SERVICE_RE`; keep the phrases ERE-metachar-free (the parity suite pins it).
+pub(crate) const SERVICE_PHRASES: &[&str] = &[
+    "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
+    "pnpm dev", "yarn dev", "bun dev", "next dev", "serve", "tail -f", "compose up",
+];
+
+/// Is this backgrounded shell command a service — something that may never
+/// exit on its own, so the agent must not be held "running" on it?
+pub(crate) fn shell_is_service(cmd: &str) -> bool {
+    let cmd_lower = cmd.to_lowercase();
+    SERVICE_PHRASES.iter().any(|p| contains_word(&cmd_lower, p))
 }
 
 fn bash_activity(tool_input: &Value) -> Option<String> {

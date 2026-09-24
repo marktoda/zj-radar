@@ -31,7 +31,7 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 |------|----------------|
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStop` | `running` |
 | `Notification` (`permission_prompt` / `elicitation_dialog` matchers) | `pending` |
-| `Stop` | `done` (clears when the pane returns to its shell prompt, or on the next broadcast) |
+| `Stop` | `done` (clears when the pane returns to its shell prompt, or on the next broadcast); stays `running` ("waiting on …") while backgrounded tests, builds or subagents are still running |
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
 | `SessionEnd` | `idle` (clears the row when the Claude session exits) |
 
