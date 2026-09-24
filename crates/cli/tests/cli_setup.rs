@@ -1922,6 +1922,25 @@ fn setup_pi_honors_pi_coding_agent_dir_with_tilde() {
 }
 
 #[test]
+fn setup_pi_honors_an_explicit_override_before_its_dir_exists() {
+    // No ~/.pi/agent, no `pi` on PATH, and the override points at a directory
+    // that doesn't exist yet — the explicit env var itself is the "pi is
+    // present" signal, so this must still install rather than skip.
+    let home = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    let fresh = home.path().join("fresh-pi");
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "pi", "--yes"])
+        .env("HOME", home.path())
+        .env("PI_CODING_AGENT_DIR", &fresh)
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+    assert!(fresh.join("extensions/zj-radar.js").exists());
+}
+
+#[test]
 fn setup_pi_skips_when_pi_is_absent() {
     let home = TempDir::new().unwrap(); // no ~/.pi/agent, no pi on PATH
     let out = pi_cmd(&home, &["--yes"]).success().get_output().clone();

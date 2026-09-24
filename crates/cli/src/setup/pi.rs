@@ -45,10 +45,13 @@ fn pi_agent_dir_from(override_dir: Option<OsString>, home: Option<OsString>) -> 
     home.map(|h| h.join(".pi").join("agent"))
 }
 
-/// Pure: is pi present? The binary on PATH, or an existing agent dir (a
-/// bun/Nix-run user may have no `pi` on PATH), or our bridge already there.
-fn pi_installed_from(on_path: bool, agent_dir_exists: bool, extension_exists: bool) -> bool {
-    on_path || agent_dir_exists || extension_exists
+/// Pure: is pi present? The binary on PATH, an explicitly set
+/// `$PI_CODING_AGENT_DIR` (the user told us where pi's agent dir is — that is
+/// itself evidence pi is configured here, even before the dir exists on
+/// disk), an existing agent dir (a bun/Nix-run user may have no `pi` on
+/// PATH), or our bridge already there.
+fn pi_installed_from(on_path: bool, override_set: bool, agent_dir_exists: bool, extension_exists: bool) -> bool {
+    on_path || override_set || agent_dir_exists || extension_exists
 }
 
 pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
@@ -58,19 +61,9 @@ pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
     };
     let existing = read_existing(&path);
     let pi_on_path = which("pi");
-    // A `$PI_CODING_AGENT_DIR` override only redirects where OUR bridge is
-    // written; it says nothing about whether pi itself is on this machine, so
-    // the presence check also probes pi's own default `~/.pi/agent` — the one
-    // pi always creates — rather than only the (possibly not-yet-existing)
-    // overridden path.
-    let default_agent_dir_exists =
-        pi_agent_dir_from(None, std::env::var_os("HOME")).is_some_and(|d| d.is_dir());
+    let override_set = std::env::var_os("PI_CODING_AGENT_DIR").is_some_and(|d| !d.is_empty());
     if !uninstall
-        && !pi_installed_from(
-            pi_on_path,
-            agent_dir.is_dir() || default_agent_dir_exists,
-            !matches!(existing, Existing::Absent),
-        )
+        && !pi_installed_from(pi_on_path, override_set, agent_dir.is_dir(), !matches!(existing, Existing::Absent))
     {
         println!("pi: skipped (binary/agent dir not found)");
         return;
@@ -172,12 +165,15 @@ mod tests {
 
     #[test]
     fn pi_counts_as_installed_via_binary_agent_dir_or_extension() {
-        assert!(pi_installed_from(true, false, false));
+        assert!(pi_installed_from(true, false, false, false));
+        // An explicitly set `$PI_CODING_AGENT_DIR` is itself evidence pi is
+        // configured here, even before that dir exists on disk.
+        assert!(pi_installed_from(false, true, false, false));
         // A populated ~/.pi/agent with no binary on PATH (Nix/bun-run users)
         // must not make an explicit `setup pi` silently skip.
-        assert!(pi_installed_from(false, true, false));
-        assert!(pi_installed_from(false, false, true));
-        assert!(!pi_installed_from(false, false, false));
+        assert!(pi_installed_from(false, false, true, false));
+        assert!(pi_installed_from(false, false, false, true));
+        assert!(!pi_installed_from(false, false, false, false));
     }
 
     /// Weld: the embedded bridge carries the marker the install path, doctor
