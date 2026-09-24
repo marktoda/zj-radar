@@ -12,6 +12,7 @@
 mod claude;
 mod codex;
 mod opencode;
+mod pi;
 
 use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
@@ -55,13 +56,14 @@ pub enum Agent {
     Claude,
     Codex,
     Opencode,
+    Pi,
 }
 
 impl Agent {
     /// Every push-reporter agent, in declaration order. Lets the coherence
     /// guards iterate the variants without re-typing the list (mirrors
     /// `Kind::ALL`).
-    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex, Agent::Opencode];
+    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex, Agent::Opencode, Agent::Pi];
 
     /// Parse the `notify <agent>` CLI argument. Inverse of [`Agent::source`].
     pub fn from_cli(s: &str) -> Option<Agent> {
@@ -75,6 +77,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Opencode => "opencode",
+            Agent::Pi => "pi",
         }
     }
 
@@ -84,6 +87,7 @@ impl Agent {
             Agent::Claude => claude::derive(intake),
             Agent::Codex => codex::derive(intake),
             Agent::Opencode => opencode::derive(intake),
+            Agent::Pi => pi::derive(intake),
         }
     }
 }
@@ -269,6 +273,7 @@ mod tests {
                 Agent::Claude => Kind::Claude,
                 Agent::Codex => Kind::Codex,
                 Agent::Opencode => Kind::Opencode,
+                Agent::Pi => Kind::Pi,
             };
             assert_eq!(
                 Kind::from_source(agent.source()),
@@ -316,10 +321,10 @@ mod tests {
     fn all_lists_every_variant() {
         for &a in Agent::ALL {
             match a {
-                Agent::Claude | Agent::Codex | Agent::Opencode => {}
+                Agent::Claude | Agent::Codex | Agent::Opencode | Agent::Pi => {}
             }
         }
-        assert_eq!(Agent::ALL.len(), 3, "a variant is missing from Agent::ALL");
+        assert_eq!(Agent::ALL.len(), 4, "a variant is missing from Agent::ALL");
     }
 
     /// The clap doc-comment on the `agent` arg (lib.rs) cannot be dynamic. This

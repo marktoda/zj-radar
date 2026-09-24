@@ -15,6 +15,7 @@ pub(crate) mod detect;
 mod download;
 mod edit;
 mod opencode;
+mod pi;
 mod preseed;
 mod zellij;
 pub(crate) use analyze::*;
@@ -24,6 +25,7 @@ pub(crate) use codex::*;
 pub(crate) use download::*;
 pub(crate) use edit::*;
 pub(crate) use opencode::*;
+pub(crate) use pi::*;
 pub(crate) use zellij::*;
 
 use std::path::{Path, PathBuf};
@@ -107,6 +109,16 @@ pub(crate) const OPENCODE_TUI_PLUGIN_FILE_NAME: &str = "tui.js";
 /// these non-Rust `include_str!` inputs for the hermetic build.
 pub(crate) const OPENCODE_PLUGIN_JS: &str = include_str!("opencode_plugin.js");
 pub(crate) const OPENCODE_TUI_PLUGIN_JS: &str = include_str!("opencode_tui_plugin.js");
+
+/// The ownership marker stamped into the vendored pi bridge's header line
+/// (`// ZJ_RADAR_PI_EXTENSION=<version>`). Shared by `setup pi`'s
+/// install/uninstall gating, the doctor, and producer detection. Ownership
+/// keys on the prefix so a bridge from any release is ours to rewrite.
+pub(crate) const PI_EXTENSION_MARKER_PREFIX: &str = "ZJ_RADAR_PI_EXTENSION=";
+#[cfg(test)]
+pub(crate) const PI_EXTENSION_MARKER: &str = "ZJ_RADAR_PI_EXTENSION=v1";
+/// The file pi auto-loads from its global extensions dir.
+pub(crate) const PI_EXTENSION_FILE_NAME: &str = "zj-radar.js";
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],

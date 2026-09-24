@@ -5,10 +5,10 @@
 //!   agent's hook payload and broadcasts a `zj_radar.status.v1` update. Each
 //!   agent is a peer adapter behind the [`agents::Agent::derive`] seam, so
 //!   `notify` stays agent-agnostic.
-//! - `setup [codex|opencode|zellij]` ([`setup`]) — idempotent wiring: manage
-//!   Codex notify/`hooks.json`, drop the opencode JS bridge plugin into its
-//!   auto-loaded plugins dir, install the wasm plugin, and inject the rail
-//!   into a Zellij layout ([`layout`]).
+//! - `setup [claude|codex|opencode|pi|zellij]` ([`setup`]) — idempotent
+//!   wiring: manage Codex notify/`hooks.json`, drop the opencode JS bridge
+//!   plugin and the pi bridge extension into their auto-loaded dirs, install
+//!   the wasm plugin, and inject the rail into a Zellij layout ([`layout`]).
 //! - `run` ([`run`]) — turnkey launch of a Zellij session that owns its own
 //!   config with the rail preinstalled.
 //! - `update` ([`update`]) — move the CLI and the sidebar wasm to a newer
@@ -82,11 +82,11 @@ struct Cli {
 enum Command {
     /// Broadcast one agent's status to the sidebar (called from an agent hook).
     Notify {
-        /// Which agent is reporting: `claude`, `codex`, `opencode`, or
+        /// Which agent is reporting: `claude`, `codex`, `opencode`, `pi`, or
         /// `generic` (any script — pass explicit `--status`/`--msg`/`--task`
         /// flags, no hook payload needed).
         agent: String,
-        /// Hook payload as a trailing argument (codex). Claude and opencode pass it on stdin instead.
+        /// Hook payload as a trailing argument (codex). Claude, opencode and pi pass it on stdin instead.
         input: Option<String>,
         /// Explicit status (claude hooks pass this; required for `generic`):
         /// running | pending | done | error | idle.
@@ -117,7 +117,7 @@ enum Command {
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
-        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, zellij.
+        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, pi, zellij.
         targets: Vec<String>,
         /// Wasm artifact to install when setting up Zellij.
         #[arg(long, value_name = "PATH")]

@@ -52,6 +52,7 @@
         assert!(is_agent_command(&argv(&["claude"])));
         assert!(is_agent_command(&argv(&["codex"])));
         assert!(is_agent_command(&argv(&["opencode"])));
+        assert!(is_agent_command(&argv(&["pi"])));
         // Env/wrapper prefixes are peeled, mirroring is_shell_prompt.
         assert!(is_agent_command(&argv(&["env", "FOO=1", "claude"])));
         // Shells, ordinary commands, and nothing don't vouch.
