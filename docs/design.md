@@ -121,7 +121,7 @@ seam is the versioned pipe payload.
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going) |
-| Claude `Stop` | `done`, except a Stop whose last assistant message ends in a question maps to `pending`; the question becomes the message |
+| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `tail -f`, …) and unknown task types don't hold the row. |
 | Claude `SessionStart` (`source: "clear"`) | `idle` (resets the row on `/clear`) |
 | Claude `SessionEnd` | `idle` |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |

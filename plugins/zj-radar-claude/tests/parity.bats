@@ -272,6 +272,56 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
 }
 
+@test "parity: Stop with running background work stays running" {
+  # Tests backgrounded by the turn are still running: both producers hold the
+  # row running with a "waiting on …" msg instead of painting it done.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"started","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"  Run the test suite ","command":"cargo nextest run"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the test suite" ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"started","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"pytest"},{"id":"a1","type":"subagent","status":"running","description":"Explore"}]}' done
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on 2 tasks" ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"w1","type":"workflow","status":"running","description":42}]}' done
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on 1 task" ]
+}
+
+@test "parity: services, finished and unknown tasks leave the Stop done" {
+  local tasks='[{"id":"b1","type":"shell","status":"running","command":"cd web && PNPM run dev"},{"id":"b2","type":"shell","status":"running","command":"tail -F x.log"},{"id":"b3","type":"shell","status":"running","command":"mkdocs serve"},{"id":"m1","type":"monitor","status":"running"},{"id":"x1","type":"new_kind","status":"running"},{"id":"b4","type":"shell","status":"completed","command":"cargo test"},"junk"]'
+  parity_payloads "{\"hook_event_name\":\"Stop\",\"cwd\":\"/home/u/myrepo\",\"last_assistant_message\":\"started\",\"background_tasks\":$tasks}" done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  local bad
+  for bad in '[]' 'null' '"oops"'; do
+    parity_payloads "{\"hook_event_name\":\"Stop\",\"cwd\":\"/home/u/myrepo\",\"last_assistant_message\":\"ok\",\"background_tasks\":$bad}" done
+    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  done
+}
+
+@test "parity: a trailing question outranks background work" {
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"Tests running.\nBump the version too?","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = pending ]
+}
+
+@test "service phrases are welded between the producers" {
+  # agents.rs SERVICE_PHRASES and notify.sh SERVICE_PHRASES must list the same
+  # phrases, each ERE/Oniguruma-metachar-free (both are interpolated or
+  # matched literally on opposite sides).
+  local rust bash_list
+  rust="$(sed -n '/SERVICE_PHRASES: &\[&str\] = &\[/,/^];/p' "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
+    | grep -o '"[^"]*"' | tr -d '"' | sort)"
+  bash_list="$(grep -m1 '^SERVICE_PHRASES=' "$SCRIPT" | sed 's/^SERVICE_PHRASES="//; s/"$//' | tr '|' '\n' | sort)"
+  [ -n "$rust" ] || { echo "extraction from agents.rs broke"; return 1; }
+  echo "rust=[$rust]"; echo "bash=[$bash_list]"
+  [ "$rust" = "$bash_list" ]
+  local p
+  while IFS= read -r p; do
+    case "$p" in *[!a-z0-9\ -]*) echo "phrase [$p] has a regex-unsafe char"; return 1;; esac
+  done <<<"$rust"
+}
+
+@test "parity: Agent tool reads as delegating" {
+  parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Agent","tool_input":{"prompt":"x"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = delegating ]
+}
+
 @test "parity: idle clears the message in both producers" {
   # idle is intentionally blank: both producers must agree on status=idle AND
   # an empty msg, even when a stale message rides in on the SessionStart payload.
