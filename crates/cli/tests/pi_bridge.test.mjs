@@ -190,14 +190,21 @@ test("dialog while idle after an error restores the error", async () => {
 test("/new mid-turn keeps cross-runtime ordering", async () => {
   behavior = "slow";
   const a = await loadRuntime();
+  // Pre-load b's module before scheduling any of a's (slow) spawns, so
+  // nothing below the next block depends on module-load wall-clock timing.
+  const b = await loadRuntime();
   a.emit("session_start", { reason: "startup" });
   a.emit("agent_start");
   a.emit("message_end", assistant("partial", { stopReason: "aborted" }));
   a.emit("agent_settled");
-  await a.emit("session_shutdown", { reason: "new" });
-  const b = await loadRuntime();
+  // Fire the shutdown and the next runtime's session_start back-to-back with
+  // NO await between them: a's `done:settled` is still sitting in the queue
+  // (its slow spawn hasn't resolved) when b's `session.new` is pushed right
+  // behind it. A per-module (non-shared) queue would let b's item cut the
+  // line — the shared queue must keep it FIFO regardless.
+  a.emit("session_shutdown", { reason: "new" });
   b.emit("session_start", { reason: "new" });
-  await settle();
+  await new Promise((r) => setTimeout(r, 40));
   assert.deepEqual(events(), ["running:prompt", "done:settled", "idle:session.new"]);
 });
 
