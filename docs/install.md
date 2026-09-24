@@ -226,8 +226,8 @@ Items are `ok`, `warn`, or `missing`:
 - **wasm**: file present at the stable path.
 - **layout**: the default layout contains the rail.
 - **grant**: `permissions.kdl` grants the wasm path.
-- **producer**: which of the Claude plugin, Codex hooks, and Opencode bridge
-  are wired.
+- **producer**: which of the Claude plugin, Codex hooks, Opencode bridge, and
+  pi extension are wired.
 - **managed config** (only when `config.kdl` is a symlink, as under
   home-manager): direct edits may be overwritten.
 - **config env** (only when `$ZELLIJ_CONFIG_FILE` points elsewhere): Zellij
@@ -250,8 +250,8 @@ zj-radar update --check    # report only; exit 1 when an update is available
    `~/.config/zellij/plugins/zj_radar.wasm` comes from the same release. The
    file is rewritten only when its bytes differ.
 3. Runs `setup` for the producers already wired (Codex hooks, Opencode
-   bridge), never for one you have not set up. The Claude Code plugin updates
-   from inside Claude: `/plugin update zj-radar-claude@zj-radar`.
+   bridge, pi extension), never for one you have not set up. The Claude Code
+   plugin updates from inside Claude: `/plugin update zj-radar-claude@zj-radar`.
 4. Runs the doctor (`setup --check`).
 
 Restart Zellij, or open a new session, to load the new sidebar. A running
@@ -349,6 +349,7 @@ config-dir entries with them.
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
 | `zj-radar-claude` plugin + `zj-radar` marketplace entry in Claude Code's plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; marketplace entry stays: `claude plugin marketplace remove zj-radar` |
 | `$XDG_CONFIG_HOME/opencode/plugins/zj-radar.js` (or `~/.config/opencode/plugins/zj-radar.js`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (only when the marker is present) |
+| `~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/zj-radar.js`) | `setup pi` | **reversed** by `setup pi --uninstall` (only when the marker is present) |
 
 Complete removal:
 
@@ -357,6 +358,7 @@ zj-radar setup zellij --uninstall
 zj-radar setup claude --uninstall && claude plugin marketplace remove zj-radar
 zj-radar setup codex --uninstall
 zj-radar setup opencode --uninstall
+zj-radar setup pi --uninstall
 ```
 
 then delete the wasm, the `run` data dir, the grant block, and the binary.

@@ -1,7 +1,7 @@
 # Producers: sending agent status to the sidebar
 
 The sidebar only displays. A **producer** is whatever broadcasts agent status
-to it. zj-radar ships producers for Claude Code, Codex, and Opencode, a
+to it. zj-radar ships producers for Claude Code, Codex, Opencode, and pi, a
 `notify generic` command for any script, and documents the wire format so you
 can write your own.
 
@@ -138,6 +138,31 @@ Things to know:
 Bridge internals (event coalescing, subagent filtering, the marker) are in
 [`design.md`](design.md#7-agent-adapters).
 
+## pi
+
+`zj-radar setup pi` vendors a bridge extension to
+`~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/`).
+pi auto-loads it; restart pi or run `/reload`. Requires pi ≥ 0.80.4
+(`@earendil-works/pi-coding-agent`; the older `@mariozechner/…` package is
+deprecated). Extension-dialog "needs you" requires ≥ 0.84.4.
+
+| pi event | rail |
+|---|---|
+| `agent_start` (after `input`) | running, task label from the prompt |
+| `input` while streaming (steer / follow-up) | running, task label |
+| `tool_execution_start` | running, tool activity |
+| `ui_prompt_start` / `ui_prompt_end` | pending (dialog title) / back to running, or to the last settled state when idle |
+| `agent_settled` | done (trailing question → pending), error when the last assistant message errored, done with no message on Esc |
+| `session_start{new}` / `session_shutdown{quit}` | idle |
+
+pi has no built-in permission prompts, so "needs you" appears only when an
+extension opens a dialog (`permission-gate`, `question`, …) or pi's final
+message ends with a question. The bridge reports only in the interactive TUI
+(`ctx.mode === "tui"`) under Zellij. `pi --no-extensions` disables it; a
+project-local `.pi/extensions/zj-radar.js` copy would double-report — keep the
+bridge global. `npx pi` / `pnpm dlx pi` launches are not recognized as pi (the
+launcher is the pane's command).
+
 ## Any script: `zj-radar notify generic`
 
 Deploy scripts, cron jobs, and homegrown loops can put a row on the radar
@@ -155,7 +180,7 @@ zj-radar notify generic --status done --msg "deploy finished" --source deploy
 - `--task`: the sticky task label. Empty keeps the stored one.
 - `--source`: the kind mark. `test` ⚗ · `build` ⚙ · `deploy` ⇡ · `server` ❯ ·
   `remote` ⇄ · `command` `$`, or an agent token (`claude` ✳ · `codex` ❉ ·
-  `opencode` ✺ · `gemini` ✦). `server` and `remote` rows hold a steady `▸`
+  `opencode` ✺ · `pi` ✴ · `gemini` ✦). `server` and `remote` rows hold a steady `▸`
   instead of spinning; a `remote` completion notifies as a disconnect.
   Anything else, including the default `generic`, renders `⦿`.
 - Repo and branch come from `git` in the calling directory; the pane id from
