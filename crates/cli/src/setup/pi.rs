@@ -4,9 +4,8 @@
 //! and producer detection all key on the header marker (`detect.rs`).
 
 use super::*;
-// Task 5 adds, when it appends setup_pi below:
-// use super::detect::pi_extension_is_ours;
-// use super::vendored::{plan_install, plan_uninstall, read_existing, Existing, InstallPlan, UninstallPlan};
+use super::detect::pi_extension_is_ours;
+use super::vendored::{plan_install, plan_uninstall, read_existing, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -46,6 +45,107 @@ fn pi_agent_dir_from(override_dir: Option<OsString>, home: Option<OsString>) -> 
     home.map(|h| h.join(".pi").join("agent"))
 }
 
+/// Pure: is pi present? The binary on PATH, or an existing agent dir (a
+/// bun/Nix-run user may have no `pi` on PATH), or our bridge already there.
+fn pi_installed_from(on_path: bool, agent_dir_exists: bool, extension_exists: bool) -> bool {
+    on_path || agent_dir_exists || extension_exists
+}
+
+pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
+    let (Some(agent_dir), Some(path)) = (pi_agent_dir(), pi_extension_path()) else {
+        crate::exit::fail_report("pi", "skipped — set $HOME or $PI_CODING_AGENT_DIR so pi's agent dir can be resolved");
+        return;
+    };
+    let existing = read_existing(&path);
+    let pi_on_path = which("pi");
+    // A `$PI_CODING_AGENT_DIR` override only redirects where OUR bridge is
+    // written; it says nothing about whether pi itself is on this machine, so
+    // the presence check also probes pi's own default `~/.pi/agent` — the one
+    // pi always creates — rather than only the (possibly not-yet-existing)
+    // overridden path.
+    let default_agent_dir_exists =
+        pi_agent_dir_from(None, std::env::var_os("HOME")).is_some_and(|d| d.is_dir());
+    if !uninstall
+        && !pi_installed_from(
+            pi_on_path,
+            agent_dir.is_dir() || default_agent_dir_exists,
+            !matches!(existing, Existing::Absent),
+        )
+    {
+        println!("pi: skipped (binary/agent dir not found)");
+        return;
+    }
+    let facts = analyze_pi(&PiEnv {
+        pi_on_path,
+        zj_radar_on_path: which("zj-radar"),
+        extension_text:   existing.text().map(str::to_string),
+        pi_version:       None,
+    });
+
+    if uninstall {
+        match plan_uninstall(&existing, pi_extension_is_ours) {
+            UninstallPlan::Absent => println!("pi: extension not installed ({})", path.display()),
+            UninstallPlan::NotOurs => println!("pi: extension not ours (marker absent) — leaving {}", path.display()),
+            UninstallPlan::Remove if opts.dry_run => println!("--- would remove {} (dry-run) ---", path.display()),
+            UninstallPlan::Remove => {
+                if !confirm(&format!("Remove {}?", path.display()), opts.yes, opts.is_tty) {
+                    println!("pi: skipped (declined)");
+                    return;
+                }
+                if let Err(e) = std::fs::remove_file(&path) {
+                    crate::exit::fail_report("pi", format!("remove failed — {e}"));
+                    return;
+                }
+                let _ = std::fs::remove_file(path_with_suffix(&path, BACKUP_SUFFIX));
+                println!("pi: extension removed ({})", path.display());
+            }
+        }
+        return;
+    }
+
+    match plan_install(&existing, PI_EXTENSION_JS, opts.force, pi_extension_is_ours) {
+        InstallPlan::RefuseForeign => {
+            let why = match &existing {
+                Existing::Unreadable(e) => format!("{} could not be read ({e})", path.display()),
+                _ => format!("{} is not ours (no marker)", path.display()),
+            };
+            crate::exit::fail_report("pi", format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."));
+        }
+        InstallPlan::UpToDate => {
+            println!("pi: extension already up to date ({})", path.display());
+            print_pi_guidance(&facts, false);
+        }
+        InstallPlan::Write if opts.dry_run => {
+            println!("--- {} (dry-run) ---\n{}", path.display(), PI_EXTENSION_JS);
+            print_pi_guidance(&facts, true);
+        }
+        InstallPlan::Write => {
+            if !confirm(&format!("Write {}?", path.display()), opts.yes, opts.is_tty) {
+                println!("pi: skipped (declined)");
+                return;
+            }
+            if let Err(e) = backup_then_write(&path, PI_EXTENSION_JS) {
+                crate::exit::fail_report("pi", format!("write failed — {e}"));
+                return;
+            }
+            println!("pi: extension installed ({})", path.display());
+            print_pi_guidance(&facts, true);
+        }
+    }
+}
+
+fn print_pi_guidance(facts: &PiFacts, wrote: bool) {
+    if !facts.zj_radar_on_path {
+        eprintln!(
+            "pi: warning — `zj-radar` not found on PATH; the bridge spawns it per event, \
+             so status won't broadcast until it's installed"
+        );
+    }
+    if wrote {
+        println!("pi: restart pi (or run /reload) for the bridge to take effect.");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +168,16 @@ mod tests {
         assert_eq!(pi_agent_dir_from(Some(OsString::new()), Some(os("/home/u"))), Some(PathBuf::from("/home/u/.pi/agent")));
         assert_eq!(pi_agent_dir_from(None, Some(OsString::new())), None);
         assert_eq!(pi_agent_dir_from(None, None), None);
+    }
+
+    #[test]
+    fn pi_counts_as_installed_via_binary_agent_dir_or_extension() {
+        assert!(pi_installed_from(true, false, false));
+        // A populated ~/.pi/agent with no binary on PATH (Nix/bun-run users)
+        // must not make an explicit `setup pi` silently skip.
+        assert!(pi_installed_from(false, true, false));
+        assert!(pi_installed_from(false, false, true));
+        assert!(!pi_installed_from(false, false, false));
     }
 
     /// Weld: the embedded bridge carries the marker the install path, doctor

@@ -2,7 +2,7 @@ use super::*;
 
 use crate::agents::Agent;
 use crate::producers::ProducerTexts;
-use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, opencode_plugin_is_ours, strip_managed_zellij_alias};
+use crate::setup::detect::{codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours, opencode_plugin_is_ours, pi_extension_is_ours, strip_managed_zellij_alias};
 
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
@@ -315,6 +315,46 @@ pub(crate) fn analyze_opencode(env: &OpencodeEnv) -> OpencodeFacts {
     }
 }
 
+/// Raw, already-read environment for pi setup. The only IO layer.
+/// `pi_version` is `pi --version`'s stdout (doctor only; `None` elsewhere).
+pub(crate) struct PiEnv {
+    pub pi_on_path:       bool,
+    pub zj_radar_on_path: bool,
+    pub extension_text:   Option<String>,
+    pub pi_version:       Option<String>,
+}
+
+pub(crate) struct PiFacts {
+    pub pi_on_path:       bool,
+    pub zj_radar_on_path: bool,
+    /// `None` = absent; `Some(true)` = ours; `Some(false)` = foreign.
+    pub extension_is_ours: Option<bool>,
+    /// Parsed `major.minor.patch`, when `pi --version` ran and parsed.
+    pub pi_version:       Option<(u32, u32, u32)>,
+}
+
+/// The oldest pi whose events the bridge needs (`agent_settled`).
+pub(crate) const PI_MIN_VERSION: (u32, u32, u32) = (0, 80, 4);
+
+pub(crate) fn analyze_pi(env: &PiEnv) -> PiFacts {
+    PiFacts {
+        pi_on_path:        env.pi_on_path,
+        zj_radar_on_path:  env.zj_radar_on_path,
+        extension_is_ours: env.extension_text.as_deref().map(pi_extension_is_ours),
+        pi_version:        env.pi_version.as_deref().and_then(parse_semver),
+    }
+}
+
+/// The first whitespace token of `text` that reads as `[v]X.Y.Z[-pre]`.
+fn parse_semver(text: &str) -> Option<(u32, u32, u32)> {
+    text.split_whitespace().find_map(|tok| {
+        let tok = tok.trim_start_matches('v');
+        let core = tok.split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|p| p.parse::<u32>().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +524,13 @@ mod tests {
         });
         assert!(matches!(f.hooks_feature, CodexHooksFeature::Disabled));
         assert!(f.owned_hook_events.is_none(), "no hooks.json -> None");
+    }
+
+    #[test]
+    fn parse_semver_reads_pi_version_output() {
+        assert_eq!(parse_semver("0.87.1\n"), Some((0, 87, 1)));
+        assert_eq!(parse_semver("pi v0.80.4"), Some((0, 80, 4)));
+        assert_eq!(parse_semver("0.88.0-beta.1"), Some((0, 88, 0)));
+        assert_eq!(parse_semver("unknown"), None);
     }
 }

@@ -277,6 +277,59 @@ fn opencode_bridge_item(name: &'static str, is_ours: Option<bool>) -> CheckItem 
 }
 
 /// Returns true when any item is `Missing` — see [`check_codex`].
+pub(crate) fn check_pi() -> bool {
+    let pi_on_path = which("pi");
+    let pi_version = pi_on_path
+        .then(|| std::process::Command::new("pi").arg("--version").stdin(std::process::Stdio::null()).output().ok())
+        .flatten()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let env = PiEnv {
+        pi_on_path,
+        zj_radar_on_path: which("zj-radar"),
+        extension_text:   pi_extension_text(),
+        pi_version,
+    };
+    let items = pi_check_items(&analyze_pi(&env));
+    println!("pi:");
+    print_check_items(&items)
+}
+
+pub(crate) fn pi_check_items(f: &PiFacts) -> Vec<CheckItem> {
+    let mut items = vec![
+        if f.pi_on_path {
+            CheckItem::ok("pi binary", "found on PATH")
+        } else {
+            CheckItem::missing("pi binary", "not found on PATH")
+        },
+        if f.zj_radar_on_path {
+            CheckItem::ok("zj-radar binary", "found on PATH")
+        } else {
+            CheckItem::missing("zj-radar binary", "not found on PATH")
+        },
+        match f.extension_is_ours {
+            // `pi` is in `AGENT_NAMES`: without the bridge its pane is dark.
+            None => CheckItem::missing(
+                "extension",
+                "zj-radar bridge extension not installed — pi panes stay dark until it is; run `zj-radar setup pi` and restart pi",
+            ),
+            Some(true) => CheckItem::ok("extension", "zj-radar bridge extension installed"),
+            Some(false) => CheckItem::warn(
+                "extension",
+                "zj-radar.js present but not ours (no marker) — re-run `zj-radar setup pi --force` to replace it",
+            ),
+        },
+    ];
+    if let Some(v) = f.pi_version.filter(|v| *v < PI_MIN_VERSION) {
+        items.push(CheckItem::warn(
+            "pi version",
+            format!("pi {}.{}.{} is older than 0.80.4 — the rail never shows Done; upgrade pi", v.0, v.1, v.2),
+        ));
+    }
+    items
+}
+
+/// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
     let Some(config_dir) = zellij_config_dir_or_report() else { return true };
@@ -843,6 +896,16 @@ mod tests {
         assert!(!items.iter().any(|i| i.level == CheckLevel::Missing), "a foreign file is a warn, not a fail");
     }
 
+    #[test]
+    fn pi_check_warns_below_the_version_floor_only() {
+        let facts = |v| PiFacts { pi_on_path: true, zj_radar_on_path: true, extension_is_ours: Some(true), pi_version: v };
+        assert_eq!(pi_check_items(&facts(Some((0, 87, 1)))).len(), 3);
+        assert_eq!(pi_check_items(&facts(None)).len(), 3);
+        let old = pi_check_items(&facts(Some((0, 79, 0))));
+        assert_eq!(old.len(), 4);
+        assert_eq!(old[3].level, CheckLevel::Warn);
+    }
+
     /// Every backtick-quoted `zj-radar …` invocation the doctor prints as a
     /// remedy must parse as a real CLI invocation — a hint that clap rejects
     /// sends the user into a usage error instead of a fix.
@@ -885,6 +948,18 @@ mod tests {
                 zj_radar_on_path:   true,
                 plugin_text:        Some("// someone else's plugin\n".to_string()),
                 tui_plugin_text:    Some("// someone else's plugin\n".to_string()),
+            })),
+            pi_check_items(&analyze_pi(&PiEnv {
+                pi_on_path:       false,
+                zj_radar_on_path: false,
+                extension_text:   None,
+                pi_version:       None,
+            })),
+            pi_check_items(&analyze_pi(&PiEnv {
+                pi_on_path:       true,
+                zj_radar_on_path: true,
+                extension_text:   Some("// someone else's extension\n".to_string()),
+                pi_version:       None,
             })),
         ] {
             details.extend(items.into_iter().map(|i| i.detail));

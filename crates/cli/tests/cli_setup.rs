@@ -1865,6 +1865,115 @@ fn setup_opencode_check_reports_the_bridge_state() {
     assert!(stdout.contains("ok plugin (opencode 2.x): zj-radar bridge plugin installed"), "stdout:\n{stdout}");
 }
 
+// ── pi: the vendored bridge extension under $PI_CODING_AGENT_DIR/extensions ──
+//
+// `pi_installed()` accepts an existing agent dir, so an empty
+// `<home>/.pi/agent/` stands in for the binary.
+
+const PI_MARKER: &str = "ZJ_RADAR_PI_EXTENSION=v1";
+
+fn isolated_pi_home() -> (TempDir, std::path::PathBuf) {
+    let home = TempDir::new().unwrap();
+    fs::create_dir_all(home.path().join(".pi/agent")).unwrap();
+    let ext = home.path().join(".pi/agent/extensions/zj-radar.js");
+    (home, ext)
+}
+
+fn pi_cmd(home: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
+    let empty_path = TempDir::new().unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "pi"])
+        .args(args)
+        .env("HOME", home.path())
+        .env_remove("PI_CODING_AGENT_DIR")
+        .env("PATH", empty_path.path())
+        .assert()
+}
+
+#[test]
+fn setup_pi_installs_the_marked_extension_and_is_idempotent() {
+    let (home, ext) = isolated_pi_home();
+    pi_cmd(&home, &["--yes"]).success();
+    let first = fs::read_to_string(&ext).unwrap();
+    assert!(first.lines().next().unwrap().contains(PI_MARKER), "{first:?}");
+
+    let out = pi_cmd(&home, &["--yes"]).success().get_output().clone();
+    assert_eq!(fs::read_to_string(&ext).unwrap(), first, "second run must be a no-op");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("already up to date"), "stdout:\n{stdout}");
+    assert!(!stdout.contains("restart pi"), "nothing written, so no restart hint:\n{stdout}");
+}
+
+#[test]
+fn setup_pi_honors_pi_coding_agent_dir_with_tilde() {
+    let (home, default_ext) = isolated_pi_home();
+    let empty_path = TempDir::new().unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "pi", "--yes"])
+        .env("HOME", home.path())
+        .env("PI_CODING_AGENT_DIR", "~/custom-pi")
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+    assert!(home.path().join("custom-pi/extensions/zj-radar.js").exists());
+    assert!(!default_ext.exists(), "the override replaces the default dir");
+}
+
+#[test]
+fn setup_pi_skips_when_pi_is_absent() {
+    let home = TempDir::new().unwrap(); // no ~/.pi/agent, no pi on PATH
+    let out = pi_cmd(&home, &["--yes"]).success().get_output().clone();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("pi: skipped"));
+    assert!(!home.path().join(".pi").exists());
+}
+
+#[test]
+fn setup_pi_refuses_a_foreign_file_unless_forced() {
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    fs::write(&ext, "export default function (pi) {}\n").unwrap();
+
+    pi_cmd(&home, &["--yes"]).failure();
+    assert!(!fs::read_to_string(&ext).unwrap().contains(PI_MARKER), "refused: file untouched");
+
+    pi_cmd(&home, &["--yes", "--force"]).success();
+    assert!(fs::read_to_string(&ext).unwrap().contains(PI_MARKER));
+    assert!(ext.with_file_name("zj-radar.js.zj-radar.bak").exists(), "--force keeps a restore point");
+}
+
+#[test]
+fn setup_pi_uninstall_removes_only_ours_and_its_backup() {
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    fs::write(&ext, format!("// {PI_MARKER}\n// stale ours\n")).unwrap();
+    pi_cmd(&home, &["--yes"]).success(); // stale-ours rewrite leaves a .bak
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+    assert!(bak.exists());
+
+    pi_cmd(&home, &["--uninstall", "--yes"]).success();
+    assert!(!ext.exists());
+    assert!(!bak.exists());
+    assert!(ext.parent().unwrap().exists(), "pi's own extensions dir is not ours to remove");
+
+    fs::write(&ext, "export default function (pi) {}\n").unwrap();
+    pi_cmd(&home, &["--uninstall", "--yes"]).success();
+    assert!(ext.exists(), "a foreign file is never removed");
+}
+
+#[test]
+fn setup_pi_check_reports_missing_then_ok() {
+    let (home, _ext) = isolated_pi_home();
+    let out = pi_cmd(&home, &["--check"]).failure().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("pi:"), "{stdout}");
+    assert!(stdout.contains("bridge extension not installed"), "{stdout}");
+    pi_cmd(&home, &["--yes"]).success();
+    let out = pi_cmd(&home, &["--check"]).get_output().clone();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("zj-radar bridge extension installed"));
+}
+
 // ── re-running setup zellij with a new wasm refreshes the installed file ────
 //
 // The alias in config.kdl is already managed on every machine that ran setup
