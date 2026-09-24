@@ -63,6 +63,7 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
                 msg: question.to_string(),
                 cwd,
                 task: None,
+                tasks: None,
             });
         }
     }
@@ -107,6 +108,7 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         msg: out_msg,
         cwd,
         task,
+        tasks: None,
     })
 }
 

@@ -818,8 +818,13 @@ impl RadarState {
         // Running *service* row holds the steady mark and does NOT arm the
         // Fast tick, so deferring its label to "the next tick" would mean the
         // Slow heartbeat (≤60s) — render and persist those immediately.
+        // A background-task change (a start, an outcome, a turn-end snapshot)
+        // is rare, real state — not firehose — so it renders and persists now,
+        // like any edge: a tab opened this second must rehydrate it.
+        let tasks_changed = prev.as_ref().map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
         let label_only = prev.as_ref().map(|o| o.status) == now_status
             && now_status == Some(Status::Running)
+            && !tasks_changed
             && self.status.get(pane_id).is_some_and(TrackedObservation::animating);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new

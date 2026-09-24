@@ -239,6 +239,7 @@ mod tests {
             completed_epoch_s,
             pending_epoch_s: None,
             acknowledged: false,
+            tasks: Default::default(),
         }
     }
 

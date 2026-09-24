@@ -3,6 +3,7 @@
 use crate::kind::Kind;
 use crate::payload::{sanitize_in_place, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS};
 use crate::status::Status;
+use crate::task::BgTasks;
 use crate::wire::wire_enum;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -75,6 +76,11 @@ pub struct TrackedObservation {
     /// so pre-ack snapshots still load.
     #[serde(default)]
     pub acknowledged: bool,
+    /// Background tasks the agent started, and whether it is waiting on them
+    /// (`crate::task`). Status-pipe only; folded by `BgTasks::apply` from
+    /// `StatusStore::apply`. Serde-defaulted so pre-task snapshots load.
+    #[serde(default, skip_serializing_if = "BgTasks::is_empty_default")]
+    pub tasks: BgTasks,
 }
 
 impl TrackedObservation {
@@ -97,6 +103,7 @@ impl TrackedObservation {
             completed_epoch_s: None,
             pending_epoch_s: None,
             acknowledged: false,
+            tasks: BgTasks::default(),
         }
     }
 
@@ -124,6 +131,7 @@ impl TrackedObservation {
         sanitize_in_place(&mut self.branch, MAX_BRANCH_CHARS);
         sanitize_in_place(&mut self.msg, MAX_MSG_CHARS);
         sanitize_in_place(&mut self.task, MAX_TASK_CHARS);
+        self.tasks.sanitize();
         self
     }
 }
@@ -239,6 +247,7 @@ mod tests {
             completed_epoch_s: None,
             pending_epoch_s: None,
             acknowledged: false,
+            tasks: BgTasks::default(),
         }
     }
 
@@ -262,6 +271,26 @@ mod tests {
         let json = serde_json::to_string(&obs).unwrap();
         assert!(json.contains(r#""acknowledged":true"#), "ack persists: {json}");
         assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+    }
+
+    #[test]
+    fn background_tasks_ride_the_snapshot_and_task_less_records_are_unchanged() {
+        use crate::task::{TaskBatch, TaskState, TaskUpdate};
+        // A task-less record serializes exactly as before (no `tasks` key), so
+        // old instances and old snapshots see nothing new.
+        let json = serde_json::to_string(&sample()).unwrap();
+        assert!(!json.contains("tasks"), "{json}");
+        let mut obs = TrackedObservation { status: Status::Running, ..sample() };
+        let batch = TaskBatch {
+            snapshot: true,
+            items: vec![TaskUpdate { id: "b1".into(), state: TaskState::Running, label: "tests".into(), holds: true }],
+        };
+        obs.tasks.apply(Some(&batch), Some(Status::Running), Status::Running, false, 42);
+        let json = serde_json::to_string(&obs).unwrap();
+        let back: TrackedObservation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, obs);
+        assert!(back.tasks.waiting);
+        assert_eq!(back.tasks.items[0].started_epoch_s, 42, "wall-clock age survives rehydration");
     }
 
     #[test]

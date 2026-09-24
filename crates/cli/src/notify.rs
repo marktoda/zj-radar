@@ -144,6 +144,7 @@ fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -
         msg,
         cwd: None,
         task: task.map(str::to_string).filter(|t| !t.trim().is_empty()),
+        tasks: None,
     })
 }
 
@@ -154,13 +155,17 @@ fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -
 /// confirmed delivery record it as this pane's last-sent.
 fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     let task = update.task.unwrap_or_default();
+    // A payload carrying background tasks is an edge whatever its status: a
+    // task start or outcome, or a turn-end snapshot, is state the rail cannot
+    // get again — never dedup-skipped, and sent on the full edge deadline.
+    let edge = update.tasks.is_some();
     // Dedup BEFORE the git probes so a skipped send costs no spawn at all.
     // Repo/branch are therefore not in the key (see `dedup`). A dry run is a
     // debugging tool: it neither consults nor touches the record.
     let key = SentKey::new(update.status, source, &update.msg, &task);
     let now = crate::dedup::unix_now();
     let last_sent = if dry_run { None } else { LastSent::from_env(pane_id) };
-    if last_sent.as_ref().is_some_and(|l| l.is_duplicate(&key, now)) {
+    if !edge && last_sent.as_ref().is_some_and(|l| l.is_duplicate(&key, now)) {
         return;
     }
 
@@ -184,6 +189,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         task,
         source: source.to_string(),
         ack: false,
+        tasks: update.tasks,
     });
 
     if dry_run {
@@ -194,7 +200,7 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     }
     // Only a confirmed delivery is worth recording as this pane's last-sent
     // (the wrapper's status is `zellij pipe`'s — core::pipe).
-    if send(&payload, update.status) {
+    if send(&payload, update.status, edge) {
         if let Some(last_sent) = last_sent {
             last_sent.record(&key, now);
         }
@@ -216,9 +222,9 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// by construction. Killing the wrapper cannot reach the client in that
 /// corner (`core::pipe`'s accepted residual); it bounds the hook, which is
 /// what the runner needs. Never panics.
-fn send(payload: &str, status: Status) -> bool {
+fn send(payload: &str, status: Status, edge: bool) -> bool {
     use wait_timeout::ChildExt;
-    let timeout = pipe_send_timeout(status);
+    let timeout = pipe_send_timeout(status, edge);
     let argv = crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs());
     let Ok(mut child) = Command::new(&argv[0])
         .args(&argv[1..])
@@ -252,19 +258,20 @@ fn send(payload: &str, status: Status) -> bool {
 /// Clamped to an hour so `timeout + 1 s` (the send's backstop) cannot
 /// overflow `Duration` — this module promises the calling hook never sees
 /// a panic.
-fn pipe_send_timeout(status: Status) -> std::time::Duration {
+fn pipe_send_timeout(status: Status, edge: bool) -> std::time::Duration {
     parse_pipe_timeout(
         std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
-        default_pipe_timeout_secs(status),
+        default_pipe_timeout_secs(status, edge),
     )
 }
 
 /// The status-keyed half of `pipe_send_timeout`, split out (like
 /// `parse_pipe_timeout`) so it is testable without racing on process-global
-/// env.
-fn default_pipe_timeout_secs(status: Status) -> u64 {
+/// env. `edge` promotes a `running` that carries real state (a background-
+/// task batch, see `broadcast`) to the edge deadline.
+fn default_pipe_timeout_secs(status: Status, edge: bool) -> u64 {
     match status {
-        Status::Running => crate::pipe::RUNNING_PIPE_TIMEOUT_SECS,
+        Status::Running if !edge => crate::pipe::RUNNING_PIPE_TIMEOUT_SECS,
         _ => crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
     }
 }
@@ -310,16 +317,22 @@ mod tests {
         // beats both. Pinned to the core constants so notify.sh's mirrored
         // literals and the hooks.json headroom guard share one source.
         assert_eq!(
-            default_pipe_timeout_secs(Status::Running),
+            default_pipe_timeout_secs(Status::Running, false),
             crate::pipe::RUNNING_PIPE_TIMEOUT_SECS
         );
         for edge in [Status::Done, Status::Pending, Status::Idle] {
             assert_eq!(
-                default_pipe_timeout_secs(edge),
+                default_pipe_timeout_secs(edge, false),
                 crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "status={edge:?}"
             );
         }
+        // A running that carries background tasks is real state, not a
+        // heartbeat: it gets the edge deadline.
+        assert_eq!(
+            default_pipe_timeout_secs(Status::Running, true),
+            crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS
+        );
     }
 
     #[test]
@@ -359,7 +372,7 @@ exec sleep 30
         // backstop fires at 2 s.
         let start = std::time::Instant::now();
         let delivered = temp_env(&[("PATH", path.to_str().unwrap()), ("ZJ_RADAR_PIPE_TIMEOUT", "1")], || {
-            send("{}", Status::Running)
+            send("{}", Status::Running, false)
         });
         assert!(!delivered, "a hung wrapper is not a delivery");
         assert!(

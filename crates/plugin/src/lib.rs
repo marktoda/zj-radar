@@ -26,7 +26,7 @@
 
 // Re-export the shared core so the plugin glue and modules keep addressing these
 // as `crate::status`, `crate::payload`, … with no per-reference churn.
-pub(crate) use zj_radar_core::{command, kind, observation, payload, status};
+pub(crate) use zj_radar_core::{command, kind, observation, payload, status, task};
 // `pipe` is consumed only by the wasm glue (`Effect::BroadcastStatus`), which
 // is cfg'd off host builds — an unconditional import would warn there.
 #[cfg(target_arch = "wasm32")]

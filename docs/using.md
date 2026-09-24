@@ -36,6 +36,25 @@ agent's current task when one is known, otherwise its latest activity. A pane
 waiting on you adds a `↳` line with the question. A tab shows at most six pane
 lines; the rest fold into `+N more`.
 
+**Background tasks.** Work an agent started and left running (a
+backgrounded test run, a background subagent, a dev server) gets its own
+lines under the agent's pane row, on a dashed `┊` guide:
+
+```
+▌└ ⋯ ✳ fix the flaky e2e retries   ← agent waiting on its background work
+▌  ┊ ⠋ Run the test suite · 4m     ← still running
+▌  ┊ ✗ lint · 2m                   ← failed
+▌  ┊ ▸ npm run dev                 ← a service; never finishes
+```
+
+A spinner means bounded work the agent is waiting on. When the agent's turn
+is over and only that work remains, the agent's own glyph turns to a steady
+`⋯`. Finished tasks read `●` completed, `✗` failed, `○` killed, or a muted `·`
+when the outcome is unknown, and stay listed until your next prompt. At most
+three lines show per pane (the rest fold into `┊ +N more`); on a short or
+narrow rail they fold into a `+N` count on the pane row. Claude only, for
+now.
+
 **Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini ·
 `$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
 `⦿` other.

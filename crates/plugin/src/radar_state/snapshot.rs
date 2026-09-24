@@ -181,6 +181,7 @@ fn load_legacy_status(snapshot: LegacyStatusSnapshot) -> Option<LoadedSnapshot> 
                     completed_epoch_s: None,
                     pending_epoch_s: None,
                     acknowledged: false,
+                    tasks: Default::default(),
                 }
                 // v1 records predate the sanitizer entirely, so their free
                 // text is always suspect.

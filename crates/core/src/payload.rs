@@ -1,6 +1,7 @@
 //! Parse + sanitize the zj_radar.status.v1 pipe payload. No zellij-tile dependency.
 
 use crate::status::Status;
+use crate::task::{TaskBatch, TaskState, TaskUpdate, MAX_TASKS, MAX_TASK_ID_CHARS, MAX_TASK_LABEL_CHARS};
 use serde::Deserialize;
 
 /// Public-contract limit: payloads larger than this are rejected outright by
@@ -38,7 +39,15 @@ pub const MAX_WIRE_FIELD_CHARS: usize = 512;
 // `Wire` carries (`source`/`repo`/`branch`/`msg`/`task`) — bump it in step 7
 // of the field-addition checklist so the proof stays honest.
 const WIRE_FREE_TEXT_FIELDS: usize = 5;
-const _: () = assert!(WIRE_FREE_TEXT_FIELDS * MAX_WIRE_FIELD_CHARS * 6 < MAX_PAYLOAD_BYTES / 2);
+// The optional `tasks` batch rides its own per-item caps (`to_wire` truncates
+// the list to `MAX_TASKS` and each id/label to its cap), plus a fixed
+// allowance per item for its keys, state token, and punctuation.
+const WIRE_TASK_ITEM_OVERHEAD_BYTES: usize = 96;
+const WIRE_TASKS_MAX_BYTES: usize =
+    MAX_TASKS * ((MAX_TASK_ID_CHARS + MAX_TASK_LABEL_CHARS) * 6 + WIRE_TASK_ITEM_OVERHEAD_BYTES);
+const _: () = assert!(
+    WIRE_FREE_TEXT_FIELDS * MAX_WIRE_FIELD_CHARS * 6 + WIRE_TASKS_MAX_BYTES < MAX_PAYLOAD_BYTES / 2
+);
 
 /// The versioned pipe name that binds every producer to the plugin — the one
 /// string that must never drift between them. The pipe *name* carries the
@@ -126,6 +135,14 @@ pub struct StatusPayload {
     /// `done` echo must not itself pop a notification); producers reporting
     /// real events leave it absent. Optional; absent on the wire when `false`.
     pub ack: bool,
+    /// Background tasks the agent started (`crate::task`): a batch of upserts
+    /// by id, optionally an authoritative running-set snapshot. Wire shape
+    /// `"tasks":{"snapshot":bool,"items":[{"id","state","label"?,"holds"?}]}`.
+    /// `None` = absent = leave the stored tasks alone. Lenient per item: a
+    /// malformed item (unknown `state` included) is skipped, never failing
+    /// the payload. Capped at `MAX_TASKS` items, ids at `MAX_TASK_ID_CHARS`,
+    /// labels at `MAX_TASK_LABEL_CHARS`; an item with an empty id is dropped.
+    pub tasks: Option<TaskBatch>,
 }
 
 #[derive(Deserialize)]
@@ -154,6 +171,46 @@ struct Raw {
     source: String,
     #[serde(default)]
     ack: bool,
+    // Kept as raw JSON so a malformed batch or item degrades per item
+    // (`parse_tasks`) instead of failing the whole payload.
+    #[serde(default)]
+    tasks: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RawTask {
+    id: String,
+    state: TaskState,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    holds: bool,
+}
+
+/// The lenient half of the `tasks` contract: anything that isn't an object is
+/// absent; each item parses on its own and a bad one is skipped.
+fn parse_tasks(raw: Option<serde_json::Value>) -> Option<TaskBatch> {
+    let serde_json::Value::Object(mut obj) = raw? else { return None };
+    let snapshot = obj.get("snapshot").and_then(|v| v.as_bool()).unwrap_or(false);
+    let items = match obj.remove("items") {
+        Some(serde_json::Value::Array(items)) => items,
+        _ => Vec::new(),
+    };
+    let items = items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<RawTask>(item).ok())
+        .filter_map(|t| {
+            let id = sanitize(&t.id, MAX_TASK_ID_CHARS);
+            (!id.is_empty()).then(|| TaskUpdate {
+                id,
+                state: t.state,
+                label: sanitize(&t.label, MAX_TASK_LABEL_CHARS),
+                holds: t.holds,
+            })
+        })
+        .take(MAX_TASKS)
+        .collect();
+    Some(TaskBatch { items, snapshot })
 }
 // Note: the retired clear-on-focus hint key is silently ignored (serde drops
 // unknown fields) — no longer consumed, kept tolerated on the wire for back-compat
@@ -359,6 +416,7 @@ pub fn parse(raw: &str) -> Option<StatusPayload> {
         task: sanitize(&r.task, MAX_TASK_CHARS),
         source: sanitize(&r.source, MAX_SOURCE_CHARS),
         ack: r.ack,
+        tasks: parse_tasks(r.tasks),
     })
 }
 
@@ -379,6 +437,24 @@ struct Wire<'a> {
     // event) — so the pinned wire bytes and existing consumers see no change.
     #[serde(skip_serializing_if = "is_false")]
     ack: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tasks: Option<WireTasks<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct WireTasks<'a> {
+    snapshot: bool,
+    items: Vec<WireTask<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct WireTask<'a> {
+    id: &'a str,
+    state: TaskState,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    label: &'a str,
+    #[serde(skip_serializing_if = "is_false")]
+    holds: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -428,6 +504,20 @@ pub fn to_wire(p: &StatusPayload) -> String {
         msg: cap_chars(&p.msg, MAX_WIRE_FIELD_CHARS),
         task: cap_chars(&p.task, MAX_WIRE_FIELD_CHARS),
         ack: p.ack,
+        tasks: p.tasks.as_ref().map(|b| WireTasks {
+            snapshot: b.snapshot,
+            items: b
+                .items
+                .iter()
+                .take(MAX_TASKS)
+                .map(|t| WireTask {
+                    id: cap_chars(&t.id, MAX_TASK_ID_CHARS),
+                    state: t.state,
+                    label: cap_chars(&t.label, MAX_TASK_LABEL_CHARS),
+                    holds: t.holds,
+                })
+                .collect(),
+        }),
     })
     .expect("status payload of plain fields always serializes")
 }
@@ -664,6 +754,7 @@ mod tests {
             task: "fix flaky e2e".into(),
             source: "claude".into(),
             ack: false,
+            tasks: None,
         });
         let got = parse(&json).expect("to_wire output must parse");
         assert_eq!(got.task, "fix flaky e2e");
@@ -693,6 +784,7 @@ mod tests {
             task: "".into(),
             source: "claude".into(),
             ack: false,
+            tasks: None,
         });
         let got = parse(&json).expect("to_wire output must parse");
         assert_eq!(got.pane_id, 12);
@@ -719,6 +811,7 @@ mod tests {
             task: "fix flaky e2e".into(),
             source: "claude".into(),
             ack: false,
+            tasks: None,
         });
         assert_eq!(
             json,
@@ -763,6 +856,68 @@ mod tests {
         assert_eq!(got.task.chars().count(), MAX_TASK_CHARS);
     }
 
+    #[test]
+    fn tasks_ride_the_wire_and_are_absent_by_default() {
+        let json = to_wire(&StatusPayload {
+            pane_id: 4,
+            status: Status::Running,
+            tasks: Some(TaskBatch {
+                snapshot: true,
+                items: vec![TaskUpdate { id: "b1".into(), state: TaskState::Running, label: "Run tests".into(), holds: true }],
+            }),
+            ..Default::default()
+        });
+        assert!(
+            json.ends_with(r#""tasks":{"snapshot":true,"items":[{"id":"b1","state":"running","label":"Run tests","holds":true}]}}"#),
+            "{json}"
+        );
+        let got = parse(&json).unwrap().tasks.unwrap();
+        assert!(got.snapshot);
+        assert_eq!(got.items[0].id, "b1");
+        let absent = p(r#"{"pane":{"type":"terminal","id":3},"status":"done"}"#).unwrap();
+        assert_eq!(absent.tasks, None);
+    }
+
+    #[test]
+    fn a_malformed_task_item_is_skipped_not_fatal() {
+        // Unknown state (strict), missing id, empty id, wrong types, and a
+        // non-object batch all degrade — the rest of the payload survives.
+        let got = p(r#"{"pane":{"type":"terminal","id":1},"status":"running","msg":"m","tasks":{"items":[
+            {"id":"ok","state":"completed"},{"id":"x","state":"event"},{"state":"running"},
+            {"id":"","state":"running"},{"id":7,"state":"running"},"junk",{"id":"k","state":"killed","holds":"yes"}]}}"#).unwrap();
+        assert_eq!(got.msg, "m");
+        let items = got.tasks.unwrap().items;
+        assert_eq!(items.len(), 1);
+        assert_eq!((items[0].id.as_str(), items[0].state), ("ok", TaskState::Completed));
+        for bad in [r#""oops""#, "[]", "3", "null"] {
+            let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","tasks":{bad}}}"#);
+            assert_eq!(p(&raw).unwrap().tasks, None, "tasks = {bad}");
+        }
+    }
+
+    #[test]
+    fn task_fields_are_capped_on_both_sides() {
+        let big = TaskUpdate {
+            id: "i".repeat(200),
+            state: TaskState::Running,
+            label: "\u{1b}[31m".to_string() + &"l".repeat(500),
+            holds: true,
+        };
+        let json = to_wire(&StatusPayload {
+            pane_id: 1,
+            status: Status::Running,
+            msg: "m".repeat(2 * MAX_PAYLOAD_BYTES),
+            tasks: Some(TaskBatch { snapshot: true, items: vec![big; 3 * MAX_TASKS] }),
+            ..Default::default()
+        });
+        assert!(json.len() <= MAX_PAYLOAD_BYTES, "payload is {} bytes", json.len());
+        let items = parse(&json).unwrap().tasks.unwrap().items;
+        assert_eq!(items.len(), MAX_TASKS);
+        assert_eq!(items[0].id.chars().count(), MAX_TASK_ID_CHARS);
+        assert!(items[0].label.chars().count() <= MAX_TASK_LABEL_CHARS);
+        assert!(!items[0].label.contains('\u{1b}'));
+    }
+
     proptest::proptest! {
         #[test]
         fn sanitize_never_emits_control_or_overlong(input in ".{0,500}", max in 1usize..120) {
@@ -798,6 +953,15 @@ mod tests {
             task in "[a-zA-Z0-9 ]{0,40}",
             source in "[a-z]{0,12}",
             ack in proptest::bool::ANY,
+            tasks in proptest::option::of((
+                proptest::collection::vec((
+                    "[a-z0-9]{1,20}",
+                    proptest::sample::select(TaskState::ALL.to_vec()),
+                    "[a-zA-Z0-9 ]{0,40}",
+                    proptest::bool::ANY,
+                ).prop_map(|(id, state, label, holds)| TaskUpdate { id, state, label, holds }), 0..MAX_TASKS),
+                proptest::bool::ANY,
+            ).prop_map(|(items, snapshot)| TaskBatch { items, snapshot })),
         ) {
             // to_wire and parse must be inverses: a round-trip through the wire
             // format must preserve EVERY field parse surfaces — across all statuses,
@@ -805,7 +969,7 @@ mod tests {
             // silently dropped). Only printable ASCII within each field's cap is
             // generated, so sanitize does not alter any field and whole-struct
             // equality is the exact inverse law.
-            let p = StatusPayload { pane_id: pane, status, repo, branch, msg, task, source, ack };
+            let p = StatusPayload { pane_id: pane, status, repo, branch, msg, task, source, ack, tasks };
             let got = parse(&to_wire(&p)).expect("our own wire output must parse");
             prop_assert_eq!(got, p);
         }

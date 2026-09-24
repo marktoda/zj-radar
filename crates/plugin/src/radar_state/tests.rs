@@ -1176,6 +1176,31 @@ fn running_label_update_defers_render_and_persist_to_the_tick() {
 }
 
 #[test]
+fn a_running_update_that_changes_background_tasks_renders_and_persists_now() {
+    // Task starts/outcomes are rare real state, not firehose: a tab opened
+    // this second must rehydrate them, so they skip the label-only deferral.
+    use crate::task::{TaskBatch, TaskState, TaskUpdate};
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(1)]);
+    let with_tasks = |state: TaskState| {
+        payload::to_wire(&StatusPayload {
+            msg: "working".into(),
+            tasks: Some(TaskBatch {
+                snapshot: false,
+                items: vec![TaskUpdate { id: "b1".into(), state, label: "tests".into(), holds: true }],
+            }),
+            ..payload_in_repo(1, Status::Running, "repo")
+        })
+    };
+    radar.status_pipe(&with_tasks(TaskState::Running), 1, 100, config::NamingMode::Off);
+    let outcome = radar.status_pipe(&with_tasks(TaskState::Failed), 2, 200, config::NamingMode::Off).unwrap();
+    assert!(outcome.render && outcome.snapshot == SnapshotWrite::Now, "{outcome:?}");
+    assert_eq!(radar.status(1).unwrap().tasks.items[0].state, TaskState::Failed);
+    assert_eq!(radar.status(1).unwrap().tasks.items[0].started_epoch_s, 100, "real start kept");
+}
+
+#[test]
 fn pending_question_rewrite_renders_immediately() {
     // Same-status msg changes defer ONLY while Running: a new Pending question
     // is a needs-you fact the user is waiting on, and Pending does not pin the

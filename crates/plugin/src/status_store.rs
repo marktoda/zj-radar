@@ -62,6 +62,9 @@ impl StatusStore {
             prev.map(|s| s.last_change_tick).unwrap_or(tick)
         };
         let ever_active = p.status.is_active() || prev.is_some_and(|s| s.ever_active);
+        // A fresh sticky label only rides a human prompt: the new-batch cue
+        // for background tasks (read before `task` below takes the string).
+        let prompted = !p.task.is_empty();
         // Sticky task label: a new prompt replaces it, taskless events (the
         // overwhelming majority — every tool hook) carry it forward, and idle
         // (`/clear`) resets it along with the msg.
@@ -85,6 +88,10 @@ impl StatusStore {
             Status::Pending => Some(now_epoch_s),
             _ => None,
         };
+        // Background tasks: one merge rule, owned by `core::task` — upserts,
+        // snapshots, terminal outcomes, the new-batch clear, and `waiting`.
+        let mut tasks = prev.map(|s| s.tasks.clone()).unwrap_or_default();
+        tasks.apply(p.tasks.as_ref(), prev.map(|s| s.status), p.status, prompted, now_epoch_s);
         let was_completion = prev.is_some_and(|s| s.status.is_completion());
         let displaced = self.store.insert(
             p.pane_id,
@@ -104,6 +111,7 @@ impl StatusStore {
                 completed_epoch_s,
                 pending_epoch_s,
                 acknowledged: p.ack,
+                tasks,
             },
         );
         self.evict_over_cap();
@@ -240,6 +248,7 @@ impl StatusStore {
                 completed_epoch_s: None,
                 pending_epoch_s: None,
                 acknowledged: false,
+                tasks: Default::default(),
             },
         );
         Some(old)
@@ -304,6 +313,7 @@ mod tests {
             task: String::new(),
             source: "test".into(),
             ack: false,
+            tasks: None,
         }
     }
 

@@ -24,6 +24,7 @@ use crate::rollup::{ExitOutcome, LedgerLine, PaneDisplay, TabDisplay, TabRow};
 use crate::sessions::BadgeEntry;
 pub use crate::status::GlyphSet;
 use crate::status::{Role, Status};
+use crate::task::{BgTask, BgTasks, TaskState};
 use crate::theme::{DerivedColors, Rgb};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -72,6 +73,29 @@ const TREE_PREFIX_COLS: usize = 3;
 /// the render gate, and the cadence predicates count only
 /// `TrackedObservation::animating` rows.
 const SERVICE_GLYPH: char = '▸';
+
+/// The agent line's glyph while its turn is over and it waits on background
+/// work it started (`BgTasks::waiting`): steady, because the agent itself is
+/// not progressing — the spinner moves down to the task lines that are.
+fn waiting_glyph(set: GlyphSet) -> char {
+    match set {
+        GlyphSet::Plain => '⋯',
+        GlyphSet::Nerd => '\u{f252}', // nf-fa-hourglass_half
+    }
+}
+
+/// The dashed guide at the head of every background-task line — dashed
+/// because the work is detached from the agent, where the solid `│├└` tree
+/// marks panes.
+const TASK_GUIDE: char = '┊';
+
+/// At most this many background-task lines under one pane; past it, the
+/// first `MAX_TASK_LINES - 1` render and a `┊ +N more` line closes the list.
+const MAX_TASK_LINES: usize = 3;
+
+/// Below this width task lines are dropped for the agent line's `+N` tag:
+/// the 5-col prefix + glyph + space leaves too little for a readable label.
+const TASK_LINES_MIN_WIDTH: usize = 20;
 
 /// Status glyph for a Running row: steady rows (services, remote sessions)
 /// hold [`SERVICE_GLYPH`], jobs spin (easing to a slow blink — see
@@ -879,7 +903,20 @@ impl HotspotSlot {
 /// [`tab_header_line`]). PrimaryDetail/roster lines are emitted in priority
 /// order. Returns the full untruncated set of lines; caller applies
 /// `.take(max_lines)` for overflow.
+#[cfg(test)]
 fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
+    render_row_form(row, opts, false).0
+}
+
+/// [`render_row`] in either card form, plus how many of the lines are
+/// background-task lines. The **full** form draws them; the **compact** form
+/// (`compact`, chosen by `plan_overflow` when the rail is short, and always
+/// below [`TASK_LINES_MIN_WIDTH`]) folds each pane's tasks into a `+N` tag on
+/// its identity line, so the planner can drop task lines before it squeezes
+/// anything the card owns.
+fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>, usize) {
+    let compact = compact || opts.width < TASK_LINES_MIN_WIDTH;
+    let task_line_count = std::cell::Cell::new(0usize);
     let mut lines: Vec<Line> = Vec::new();
     let width = opts.width;
     let st = row.display.status;
@@ -912,7 +949,8 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
         let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
         if skip_silent {
             let says_something = !identity.trim().is_empty()
-                || pane.outcome().is_some_and(|o| o.renders_tag());
+                || pane.outcome().is_some_and(|o| o.renders_tag())
+                || pane.tasks().is_some();
             // `status()` (not `render_status()`) is the gate on purpose: an
             // *observation* resting at Idle is silent, while an Interactive
             // pane has no observation-status at all — its muted label IS its
@@ -928,12 +966,15 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             wait_tag(pane_status, pane.pending_epoch_s(), opts.now_epoch_s)
                 .or_else(|| run_tag(pane_status, pane.kind(), pane.since_tick(), opts.now_tick)),
         );
+        // Compact form: the pane's background tasks survive as a count,
+        // reserved on the line so the identity absorbs any truncation.
+        let tasks_tag = pane.tasks().filter(|_| compact).map(|t| format!("+{}", t.items.len()));
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
         let hotspot = HotspotSlot::new(opts.width, PANE_LINE_HOTSPOT_MIN, hotspot);
         let content_width = hotspot.content_width();
-        let text = emit_pane_line(pane, &identity, detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
+        let text = emit_pane_line(pane, &identity, tasks_tag.as_deref(), detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
         // the subordinate `↳ question` line below, targeting the SAME pane —
         // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
@@ -944,7 +985,23 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             let text = emit_pane_detail_line(
                 q, row.active, st, pane_status, branch, &idle_color, width,
             );
-            out.push(Line::new(text, Some(pane_target), child_bg));
+            out.push(Line::new(text, Some(pane_target.clone()), child_bg));
+        }
+        if let Some(tasks) = pane.tasks().filter(|_| !compact) {
+            let ctx = TaskLineCtx {
+                opts,
+                tab_active: row.active,
+                tab_status: st,
+                branch,
+                guide_color: &idle_color,
+                label_color: &dim_strong,
+                since_tick: pane.since_tick().unwrap_or(opts.now_tick),
+                animating: pane_status == Status::Running,
+            };
+            for text in emit_task_lines(tasks, &ctx) {
+                task_line_count.set(task_line_count.get() + 1);
+                out.push(Line::new(text, Some(pane_target.clone()), child_bg));
+            }
         }
         out
     };
@@ -988,7 +1045,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
             );
             lines.push(Line::new(text, Some(tab_target), child_bg));
         }
-        return lines;
+        return (lines, task_line_count.get());
     }
 
     // ── Single-pane pane line (chunk 1) ──────────────────────────────────────
@@ -1010,7 +1067,130 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     if let Some(pane) = row.display.panes.iter().find(|p| p.earns_pane_line()) {
         lines.extend(pane_lines(pane, Branch::Elbow, true));
     }
-    lines
+    (lines, task_line_count.get())
+}
+
+/// Render context shared by one pane's background-task lines.
+struct TaskLineCtx<'a> {
+    opts: &'a RenderOpts,
+    tab_active: bool,
+    tab_status: Status,
+    /// The parent pane line's connector: `├` parents carry `│` down column 1.
+    branch: Branch,
+    guide_color: &'a str,
+    label_color: &'a str,
+    /// The pane's last status change — drives the spinner's long-runner ease.
+    since_tick: u64,
+    /// Whether the row holds the Fast cadence (it is Running). A holding task
+    /// under a Pending row (a turn that ended on a question) gets no ticks, so
+    /// it draws a fixed frame rather than a spinner caught mid-turn.
+    animating: bool,
+}
+
+/// Display order: running work the agent waits on (oldest first), then
+/// failures (news — they must not hide behind `+N more`), then running
+/// services, then every other finished task; finished ones most recently
+/// ended first.
+fn ordered_tasks(tasks: &BgTasks) -> Vec<&BgTask> {
+    let mut v: Vec<&BgTask> = tasks.items.iter().collect();
+    v.sort_by_key(|t| {
+        let rank = match (t.state, t.holds) {
+            (TaskState::Running, true) => 0,
+            (TaskState::Failed, _) => 1,
+            (TaskState::Running, false) => 2,
+            _ => 3,
+        };
+        let order = match t.state {
+            TaskState::Running => t.started_epoch_s,
+            _ => u64::MAX - t.ended_epoch_s.unwrap_or(0),
+        };
+        (rank, order)
+    });
+    v
+}
+
+/// One pane's background-task lines: up to [`MAX_TASK_LINES`], or
+/// `MAX_TASK_LINES - 1` plus a closing `┊ +N more`.
+fn emit_task_lines(tasks: &BgTasks, ctx: &TaskLineCtx) -> Vec<String> {
+    let ordered = ordered_tasks(tasks);
+    let show = if ordered.len() > MAX_TASK_LINES { MAX_TASK_LINES - 1 } else { ordered.len() };
+    let mut out: Vec<String> = ordered.iter().take(show).map(|t| emit_task_line(t, ctx)).collect();
+    if ordered.len() > show {
+        let more = format!("+{} more", ordered.len() - show);
+        out.push(task_prefixed_line(ctx, &more, |avail| Seg::new(ctx.guide_color, truncate(&more, avail)).to_string()));
+    }
+    out
+}
+
+/// The shared 5-col task-line prefix — spine/space + connector continuation +
+/// space + `┊` + space. With the glyph and its space that is 7 columns, the
+/// `↳` line's span, so a task's glyph sits under the agent's mark and its
+/// label under the agent's text.
+fn task_prefixed_line(ctx: &TaskLineCtx, plain_tail: &str, styled_tail: impl FnOnce(usize) -> String) -> String {
+    let cont = match ctx.branch {
+        Branch::Tee => "│",
+        Branch::Elbow => " ",
+    };
+    const PREFIX_VIS: usize = TREE_PREFIX_COLS + 2;
+    prefixed_line(
+        ctx.opts.width,
+        PREFIX_VIS,
+        || {
+            let spine = if ctx.tab_active { "▌" } else { " " };
+            format!("{spine}{cont} {TASK_GUIDE} {plain_tail}")
+        },
+        |avail| {
+            format!(
+                "{}{} {} {}",
+                spine_seg(ctx.tab_active, ctx.tab_status),
+                Seg::new(ctx.guide_color, cont),
+                Seg::new(ctx.guide_color, TASK_GUIDE.to_string()),
+                styled_tail(avail),
+            )
+        },
+    )
+}
+
+/// One background-task line: `┊ ⠋ Run the test suite · 4m`. The glyph reads
+/// the task's state in the status vocabulary's hues (a spinner only for
+/// running work the agent waits on — a service holds the steady `▸`); the age
+/// tag is reserved first so the label absorbs any truncation.
+fn emit_task_line(task: &BgTask, ctx: &TaskLineCtx) -> String {
+    let opts = ctx.opts;
+    let (glyph, role) = match (task.state, task.holds) {
+        (TaskState::Running, true) if ctx.animating => (spin_glyph(opts.now_tick, ctx.since_tick), Role::Working),
+        (TaskState::Running, true) => (crate::status::working_spin(0), Role::Working),
+        (TaskState::Running, false) => (SERVICE_GLYPH, Role::Working),
+        (TaskState::Completed, _) => (Status::Done.glyph_for(opts.glyphs), Role::Success),
+        (TaskState::Failed, _) => (Status::Error.glyph_for(opts.glyphs), Role::Error),
+        (TaskState::Killed, _) => (Status::Idle.glyph_for(opts.glyphs), Role::Muted),
+        (TaskState::Ended, _) => ('·', Role::Muted),
+    };
+    let label = if task.label.trim().is_empty() { "task" } else { task.label.as_str() };
+    // Running services never complete, so — like a dev server row — they wear
+    // no stopwatch; everything else shows its (frozen, once ended) duration.
+    let age = match task.state {
+        TaskState::Running if !task.holds => None,
+        TaskState::Running => minute_tag(opts.now_epoch_s.saturating_sub(task.started_epoch_s)),
+        _ => minute_tag(task.ended_epoch_s.unwrap_or(task.started_epoch_s).saturating_sub(task.started_epoch_s)),
+    };
+    let tag = age.map(|a| format!(" · {a}")).unwrap_or_default();
+    let label_color = if task.state == TaskState::Running { ctx.label_color } else { ctx.guide_color };
+    let glyph_w = UnicodeWidthChar::width(glyph).unwrap_or(1);
+    let plain = format!("{glyph} {label}{tag}");
+    task_prefixed_line(ctx, &plain, |avail| {
+        let tag_w = UnicodeWidthStr::width(tag.as_str());
+        let fixed = glyph_w + 1;
+        // Too narrow for glyph + tag + a label column: drop the tag first.
+        let (tag, tag_w) = if fixed + tag_w < avail { (tag.as_str(), tag_w) } else { ("", 0) };
+        let label_budget = avail.saturating_sub(fixed + tag_w);
+        format!(
+            "{} {}{}",
+            Seg { color: role.ansi(), bold: task.state == TaskState::Running, text: glyph.to_string().into() },
+            Seg::new(label_color, truncate(label, label_budget)),
+            if tag.is_empty() { String::new() } else { Seg::new(ctx.guide_color, tag).to_string() },
+        )
+    })
 }
 
 /// Compose the styled activity segment for a detail/pane line: the command text
@@ -1100,6 +1280,7 @@ fn prefixed_line(
 fn emit_pane_line(
     pane: &PaneDisplay,
     identity: &str,
+    tasks_tag: Option<&str>,
     has_detail: bool,
     opts: &RenderOpts,
     width: usize,
@@ -1112,7 +1293,9 @@ fn emit_pane_line(
     let mark = pane.kind().mark(opts.glyphs);
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
-    let glyph = if status == Status::Running {
+    let glyph = if pane.is_waiting() {
+        waiting_glyph(opts.glyphs)
+    } else if status == Status::Running {
         let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
         running_glyph(pane.kind(), opts.now_tick, since_tick)
     } else {
@@ -1138,7 +1321,19 @@ fn emit_pane_line(
             } else {
                 dim_strong.to_string()
             };
-            let activity = compose_activity(identity, pane.outcome(), avail, &cmd_color);
+            // The compact form's `+N` task count is reserved first (like the
+            // outcome tag inside `compose_activity`), dropped only when not
+            // even one identity column would remain beside it.
+            let tag_w = tasks_tag.map_or(0, |t| UnicodeWidthStr::width(t) + 1);
+            let (tasks_tag, tag_w) = match tasks_tag {
+                Some(t) if tag_w < avail => (Some(t), tag_w),
+                _ => (None, 0),
+            };
+            let mut activity = compose_activity(identity, pane.outcome(), avail - tag_w, &cmd_color);
+            if let Some(t) = tasks_tag {
+                activity.push(' ');
+                activity.push_str(&Seg::new(conn_color, t).to_string());
+            }
             // The glyph carries the status color (bold on non-idle, matching line 1); the
             // mark is the vendor-neutral stronger dim, always bold.
             let glyph_seg = Seg {
@@ -1624,10 +1819,18 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // the footer/last row rather than the folding math accounting for it.
     let badge_lines = render_session_badge(&opts.badge, opts);
 
-    let mut blocks: Vec<Vec<Line>> = rows.iter().map(|r| render_row(r, opts)).collect();
-    let metas: Vec<RowMeta> = rows.iter().zip(&blocks)
-        .map(|(r, b)| RowMeta { status: r.display.status, full_lines: b.len() })
-        .collect();
+    let (mut blocks, metas): (Vec<Vec<Line>>, Vec<RowMeta>) = rows
+        .iter()
+        .map(|r| {
+            let (block, task_lines) = render_row_form(r, opts, false);
+            let meta = RowMeta {
+                status: r.display.status,
+                full_lines: block.len(),
+                compact_lines: block.len() - task_lines,
+            };
+            (block, meta)
+        })
+        .unzip();
     let body_budget = opts
         .height
         .saturating_sub(header_lines(opts.header, opts.density, has_content))
@@ -1688,6 +1891,14 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
             line
         };
 
+        // A card planned below its full height with task lines to shed takes
+        // its compact form (tasks folded into a `+N` tag) before any further
+        // squeeze; the planner counted exactly its `compact_lines`.
+        if budget < metas[i].full_lines && metas[i].compact_lines < metas[i].full_lines {
+            let (compact, task_lines) = render_row_form(row, opts, true);
+            debug_assert_eq!((compact.len(), task_lines), (metas[i].compact_lines, 0));
+            blocks[i] = compact;
+        }
         // content (truncated to the planned budget == today's compression).
         // Each block is consumed exactly once — `plan` indexes are unique.
         for line in std::mem::take(&mut blocks[i]).into_iter().take(budget) {

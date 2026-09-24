@@ -57,7 +57,7 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
     } else {
         None
     };
-    Some(AgentUpdate { status, msg, cwd, task })
+    Some(AgentUpdate { status, msg, cwd, task, tasks: None })
 }
 
 fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
@@ -73,6 +73,7 @@ fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
             .unwrap_or("")
             .to_string(),
         cwd: string_field(v, "cwd"),
+        tasks: None,
         task: None,
     })
 }

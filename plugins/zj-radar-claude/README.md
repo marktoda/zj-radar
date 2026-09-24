@@ -35,6 +35,11 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
 | `SessionEnd` | `idle` (clears the row when the Claude session exits) |
 
+Background work (`run_in_background` shells, background subagents) also gets
+its own `┊` lines under the pane: a spinner while it runs, `●`/`✗` when it
+finishes. Starts ride the `PostToolUse` that launched them, outcomes the
+`<task-notification>` wake, and the full running set every `Stop`.
+
 Each fires a `zellij pipe --name zj_radar.status.v1` broadcast. It is a **no-op
 outside Zellij**, so it's safe to leave enabled everywhere.
 

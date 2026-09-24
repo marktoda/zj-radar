@@ -83,6 +83,9 @@ if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
 fi
 set -euo pipefail
+# The status the hook asked for, before any remap below: a `done` is a Stop.
+initial_status="$status"
+tasks_json=""
 
 # Read the hook payload once: the fallback re-parses the same buffer
 # repeatedly. Cap the read at 8 MiB (parity with the Rust CLI's
@@ -281,31 +284,80 @@ if [[ "$status" == "done" && -n "$msg" ]]; then
     esac
 fi
 
-# The turn ended but work it backgrounded is still running and will wake the
-# model when it finishes: stay running with a "waiting on …" msg. Parity with
-# holds_agent/waiting_msg in agents/claude.rs — running subagents, workflows
-# and teammates hold; shells hold unless a service phrase matches (the list is
-# agents.rs's SERVICE_PHRASES, welded by parity.bats); anything else doesn't.
-# jq's `test` is Oniguruma, so the phrases stay regex-metachar-free.
+# Background tasks (parity with agents/claude/background.rs; parity.bats pins
+# identical JSON). Three hook moments, each self-contained: a PostToolUse that
+# launched background work (start), a <task-notification> wake prompt
+# (outcomes), and every Stop (the turn-end snapshot of what still runs). A
+# running shell holds the agent unless a service phrase matches (the list is
+# agents.rs's SERVICE_PHRASES, welded by parity.bats); subagents, workflows and
+# teammates hold; anything else is listed but never holds. jq's `test` is
+# Oniguruma, so the phrases stay regex-metachar-free; everything here sticks to
+# jq 1.6 (no regex flags) for stock distro jq.
 SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|serve|tail -f|compose up"
-if [[ "$status" == "done" ]]; then
-    waiting="$(jq -r --arg re "(^|[^a-z0-9])($SERVICE_PHRASES)([^a-z0-9]|$)" '
+# shellcheck disable=SC2016 # jq variables, expanded by jq, not the shell
+TASK_JQ_DEFS='
+  def str: if type == "string" then . else "" end;
+  def service: str | ascii_downcase | test($re);
+  def task_label($d; $c):
+    ($d | str | gsub("^\\s+|\\s+$"; "")) as $t
+    | if $t != "" then $t
+      else ([$c | str | splits("\\s+") | select(. != "")] | .[0] // "" | split("/") | last // "")
+      end;
+  def wire: {id: .id[0:32], state: .state}
+    + (if (.label // "") != "" then {label: .label[0:64]} else {} end)
+    + (if .holds then {holds: true} else {} end);
+'
+service_re="(^|[^a-z0-9])($SERVICE_PHRASES)([^a-z0-9]|$)"
+if [[ "$initial_status" == "done" ]]; then
+    # {tasks, waiting}: the snapshot is sent on every Stop, whatever status the
+    # turn resolves to; `waiting` is the msg when bounded work still runs.
+    turn_end="$(jq -c --arg re "$service_re" "$TASK_JQ_DEFS"'
         [ (.background_tasks // empty) | arrays | .[] | objects
           | select(.status == "running")
-          | select(.type == "subagent" or .type == "workflow" or .type == "teammate"
-                   or (.type == "shell"
-                       and ((.command | if type == "string" then . else "" end
-                             | ascii_downcase | test($re)) | not))) ]
-        | if length == 0 then empty
-          elif length == 1 then
-            (.[0].description | if type == "string" then . else "" end
-             | gsub("^\\s+|\\s+$"; "")) as $d
-            | if $d == "" then "waiting on 1 task" else "waiting on " + $d end
-          else "waiting on \(length) tasks" end' <<<"$input" 2>/dev/null || true)"
-    if [[ -n "$waiting" ]]; then
+          | select((.id | str) != "")
+          | {id, state: "running", label: task_label(.description; .command),
+             holds: (if .type == "subagent" or .type == "workflow" or .type == "teammate" then true
+                     elif .type == "shell" then (.command | service | not)
+                     else false end)} ] as $items
+        | ([$items[] | select(.holds)]) as $holding
+        | {tasks: {snapshot: true, items: [$items[:16][] | wire]},
+           waiting: (if ($holding | length) == 0 then null
+                     elif ($holding | length) == 1 then
+                       (if $holding[0].label != "" then "waiting on " + $holding[0].label else "waiting on 1 task" end)
+                     else "waiting on \($holding | length) tasks" end)}' <<<"$input" 2>/dev/null || true)"
+    [[ -n "$turn_end" ]] || turn_end='{"tasks":{"snapshot":true,"items":[]},"waiting":null}'
+    tasks_json="$(jq -c '.tasks' <<<"$turn_end")"
+    waiting="$(jq -r '.waiting // empty' <<<"$turn_end")"
+    if [[ "$status" == "done" && -n "$waiting" ]]; then
         status="running"
         msg="$waiting"
     fi
+elif [[ "${hook_event:-}" == "PostToolUse" ]]; then
+    tasks_json="$(jq -c --arg re "$service_re" "$TASK_JQ_DEFS"'
+        (.tool_response | objects) as $r
+        | (.tool_input | if type == "object" then . else {} end) as $i
+        | if ($r.backgroundTaskId | str) != "" then
+            {id: $r.backgroundTaskId, state: "running", label: task_label($i.description; $i.command),
+             holds: ($i.command | service | not)}
+          elif $r.status == "async_launched" and ($r.agentId | str) != "" then
+            {id: $r.agentId, state: "running", label: task_label($i.description; null), holds: true}
+          else empty end
+        | {snapshot: false, items: [wire]}' <<<"$input" 2>/dev/null || true)"
+elif [[ "${hook_event:-}" == "UserPromptSubmit" ]]; then
+    # Tag bodies match `[^<]*` (jq 1.6 has no regex flags for a lazy `.*?`
+    # across newlines), where Rust takes everything up to the closing tag — the
+    # two differ only for a task id or status containing `<`, which Claude
+    # never emits.
+    tasks_json="$(jq -c --arg re "" "$TASK_JQ_DEFS"'
+        .prompt | str | select(test("^\\s*<task-notification>"))
+        | [ splits("<task-notification>") ] | .[1:]
+        | [ .[]
+            | { id: ((capture("<task-id>(?<v>[^<]*)</task-id>") | .v) // "" | gsub("^\\s+|\\s+$"; "")),
+                state: ((capture("<status>(?<v>[^<]*)</status>") | .v) // "" | gsub("^\\s+|\\s+$"; "")) }
+            | select(.id != "" and (.state == "completed" or .state == "failed" or .state == "killed"))
+            | wire ]
+        | select(length > 0)
+        | {snapshot: false, items: .}' <<<"$input" 2>/dev/null || true)"
 fi
 
 # idle means "no activity" — never carry a message (drops any stale message the
@@ -346,8 +398,10 @@ payload="$(jq -nc \
     --arg branch "$branch" \
     --arg msg "$msg" \
     --arg task "$task" \
+    --argjson tasks "${tasks_json:-null}" \
     '{v: 1, source: "claude", pane: {type: "terminal", id: $id},
-      status: $status, repo: $repo, branch: $branch, msg: $msg, task: $task}')"
+      status: $status, repo: $repo, branch: $branch, msg: $msg, task: $task}
+     + (if $tasks == null then {} else {tasks: $tasks} end)')"
 
 if [[ "${ZJ_RADAR_DEBUG:-}" == "1" ]]; then
     printf 'zj-radar payload: %s\n' "$payload" >&2
@@ -375,7 +429,9 @@ fi
 # status, after the done→pending question remap above, so a remapped edge
 # keeps the edge deadline.
 default_deadline=5
-[[ "$status" == "running" ]] && default_deadline=2
+# A running that carries background tasks is real state, not a heartbeat
+# (parity with default_pipe_timeout_secs's `edge`): it keeps the edge deadline.
+[[ "$status" == "running" && -z "$tasks_json" ]] && default_deadline=2
 pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-$default_deadline}"
 # Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
 # so a value `sleep` rejects would kill it before the `kill` line runs and the

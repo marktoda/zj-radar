@@ -32,6 +32,9 @@ pub(crate) fn card_spacing(d: Density) -> CardSpacing {
 pub(crate) struct RowMeta {
     pub(crate) status: Status,
     pub(crate) full_lines: usize,
+    /// The card's line count in its compact form — background-task lines
+    /// folded into a `+N` tag. Equal to `full_lines` for a card with none.
+    pub(crate) compact_lines: usize,
 }
 
 /// Single source of truth for a card's full vertical footprint (top→bottom:
@@ -108,6 +111,22 @@ pub(crate) fn plan_overflow(rows: &[RowMeta], body_budget: usize) -> (Vec<(usize
 
     if used + strip_used <= body_budget {
         return (planned, strip_folded);
+    }
+
+    // Step 2b: switch cards with background-task lines to their compact form
+    // (the tasks fold into a `+N` tag), lowest-idx first — task lines are the
+    // most expendable lines a card owns, so they go before any card is
+    // squeezed.
+    for entry in planned.iter_mut() {
+        let (idx, ref mut lines) = *entry;
+        let compact = rows[idx].compact_lines;
+        if compact < *lines {
+            used -= *lines - compact;
+            *lines = compact;
+            if used + strip_used <= body_budget {
+                return (planned, strip_folded);
+            }
+        }
     }
 
     // Step 3: compress calm rows (Done/Running) to 1 line, lowest-idx first.

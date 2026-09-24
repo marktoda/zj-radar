@@ -75,6 +75,26 @@ fn identical_pre_and_post_running_payloads_send_once() {
 }
 
 #[test]
+fn a_running_that_carries_background_tasks_is_never_deduped() {
+    // Two back-to-back task-notification wakes derive the same running /
+    // "working" payload shape — but each carries a different task outcome the
+    // rail can't get again, so both must go out.
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    let wake = |id: &str| {
+        format!(
+            r#"{{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"}}"#
+        )
+    };
+    notify_deduped(&shims, "running", &wake("b1"), &[]);
+    notify_deduped(&shims, "running", &wake("b2"), &[]);
+    let sent: Vec<String> = shims.recorded("zellij").iter().map(|c| c.args.join(" ")).collect();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[1].contains(r#""id":"b2""#), "{sent:?}");
+}
+
+#[test]
 fn pending_edge_passes_and_the_recovery_running_is_sent() {
     // The Pending→Running recovery edge (the reason PostToolUse stays
     // registered): Notification→pending is never skipped and overwrites the

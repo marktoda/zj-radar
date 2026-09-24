@@ -300,6 +300,51 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = pending ]
 }
 
+@test "parity: every Stop carries the same turn-end task snapshot" {
+  # The full `tasks` object must match byte-for-byte after jq -S: labels
+  # (description, else command basename), holds, omitted empty label / false
+  # holds, dropped non-running / id-less / junk entries.
+  local tasks='[{"id":"b1","type":"shell","status":"running","description":"  Run the suite ","command":"cargo nextest run"},{"id":"b2","type":"shell","status":"running","command":"/usr/bin/make -j4"},{"id":"d1","type":"shell","status":"running","command":"cd web && pnpm run dev"},{"id":"a1","type":"subagent","status":"running","description":"Explore"},{"id":"m1","type":"monitor","status":"running"},{"id":"x","type":"shell","status":"completed","command":"true"},{"type":"shell","status":"running"},{"id":7,"type":"shell","status":"running"},"junk"]'
+  parity_payloads "{\"hook_event_name\":\"Stop\",\"cwd\":\"/home/u/myrepo\",\"last_assistant_message\":\"started\",\"background_tasks\":$tasks}" done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on 3 tasks" ]
+  [ "$(jq -c '[.tasks.items[].id]' <<<"$BASH_PAYLOAD")" = '["b1","b2","d1","a1","m1"]' ]
+  # No field at all → an empty snapshot, status unchanged.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"ok"}' done
+  [ "$(jq -c '.tasks' <<<"$BASH_PAYLOAD")" = '{"snapshot":true,"items":[]}' ]
+  # A question still wins, and still carries the snapshot.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"Ship it?","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"pytest"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = pending ]
+  [ "$(jq -r '.tasks.items[0].id' <<<"$BASH_PAYLOAD")" = b1 ]
+}
+
+@test "parity: a background launch reports its start" {
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"sleep 25; echo hi","description":"Background sleep","run_in_background":true},"tool_response":{"stdout":"","backgroundTaskId":"bks7"}}' running
+  [ "$(jq -c '.tasks' <<<"$BASH_PAYLOAD")" = '{"snapshot":false,"items":[{"id":"bks7","state":"running","label":"Background sleep","holds":true}]}' ]
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Agent","tool_input":{"prompt":"x","description":"Explore rail","run_in_background":true},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"a7c6"}}' running
+  [ "$(jq -r '.tasks.items[0].id' <<<"$BASH_PAYLOAD")" = a7c6 ]
+  # A dev server launch is a service; an ordinary tool result carries nothing.
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"npm run dev"},"tool_response":{"backgroundTaskId":"d1"}}' running
+  [ "$(jq -c '.tasks.items[0] | has("holds")' <<<"$BASH_PAYLOAD")" = false ]
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":"a"}}' running
+  [ "$(jq -c 'has("tasks")' <<<"$BASH_PAYLOAD")" = false ]
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":"text"}' running
+  [ "$(jq -c 'has("tasks")' <<<"$BASH_PAYLOAD")" = false ]
+  # A non-object tool_input still reports the start (unlabeled, holding).
+  parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":"x","tool_response":{"backgroundTaskId":"b9"}}' running
+  [ "$(jq -c '.tasks.items' <<<"$BASH_PAYLOAD")" = '[{"id":"b9","state":"running","holds":true}]' ]
+}
+
+@test "parity: a task-notification wake reports every outcome block" {
+  local prompt='<task-notification>\n<task-id>b9</task-id>\n<status>failed</status>\n<summary>Background command \"x\" failed with exit code 3</summary>\n</task-notification>\n<task-notification>\n<task-id> b3 </task-id>\n<status>completed</status>\n</task-notification>\n<task-notification>\n<task-id>m1</task-id>\n<status>event</status>\n</task-notification>'
+  parity_payloads "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"/home/u/myrepo\",\"prompt\":\"$prompt\"}" running
+  [ "$(jq -c '.tasks' <<<"$BASH_PAYLOAD")" = '{"snapshot":false,"items":[{"id":"b9","state":"failed"},{"id":"b3","state":"completed"}]}' ]
+  [ "$(jq -r '.task' <<<"$BASH_PAYLOAD")" = "" ]
+  # A human prompt mentioning the tag is not a wake.
+  parity_payloads '{"hook_event_name":"UserPromptSubmit","cwd":"/home/u/myrepo","prompt":"fix the <task-notification> parser"}' running
+  [ "$(jq -c 'has("tasks")' <<<"$BASH_PAYLOAD")" = false ]
+}
+
 @test "service phrases are welded between the producers" {
   # agents.rs SERVICE_PHRASES and notify.sh SERVICE_PHRASES must list the same
   # phrases, each ERE/Oniguruma-metachar-free (both are interpolated or

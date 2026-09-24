@@ -36,7 +36,16 @@ Claude fires a hook before and after every tool call with the same content,
 and the second would only cost every sidebar instance a no-op. Any other
 status always goes out, and so does a `running` that changes anything or
 arrives after the 10 seconds. `ZJ_RADAR_NO_DEDUP=1` in the agent's
-environment disables this; the bash fallback never dedups.
+environment disables this; the bash fallback never dedups. An update that
+carries background tasks (below) is never deduped and always gets the full
+send deadline: a task start or outcome can't be recovered later.
+
+Background work shows up under the pane as its own lines. Claude reports a
+task when a tool call backgrounds it (`run_in_background`, a background
+subagent), each outcome when Claude Code wakes the model with a
+`<task-notification>`, and the full running set on every `Stop`. A turn that
+ends while bounded work still runs stays `running` ("waiting on …") until the
+last of it finishes.
 
 ## Codex
 
@@ -190,6 +199,27 @@ Field rules:
 - `ack` (optional, default `false`): "the user has already seen this". State
   converges as usual but no desktop notification fires. The rail's `✓` gesture
   sets it; producers reporting real events should leave it out.
+- `tasks` (optional): background tasks the agent started (a backgrounded
+  test run, a background subagent, a dev server), drawn as `┊` lines under
+  the pane's row. Shape:
+  `{"snapshot": bool, "items": [{"id", "state", "label"?, "holds"?}]}`.
+  Items are upserts by `id`. `state` is `running`, `completed`, `failed`,
+  `killed`, or `ended` (finished, outcome unknown); an item with any other
+  state, an empty id, or the wrong shape is skipped, never failing the
+  payload. `holds: true` marks bounded work the agent is waiting on (it
+  spins); a running item without it is a service (steady `▸`).
+  `completed`, `failed`, and `killed` are final; `ended` yields only to one
+  of them (an outcome arriving after the snapshot); nothing returns to
+  `running`. With `snapshot: true` the
+  items are the complete running set, and every stored running task left out
+  becomes `ended`. A `running` payload whose snapshot has a holding item means
+  the agent's turn is over and it is waiting on that work (steady `⋯` on the
+  pane line). Absent leaves the stored tasks alone; `idle` clears them;
+  finished ones also clear on the next `running` with no `tasks` that either
+  comes from `done`/`error` or carries a non-empty `task` (a new prompt; a
+  bare `pending` → `running` doesn't, since a permission answer lands
+  mid-turn). At most 16 items, ids 32 chars,
+  labels 64. Only Claude sends this today.
 - Unknown fields are ignored, so extras are safe.
 
 The plugin defends itself at parse time: it strips ANSI, control, and bidi

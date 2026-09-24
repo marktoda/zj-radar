@@ -793,6 +793,7 @@ impl PluginRuntime {
             task: String::new(),
             source: obs.kind.as_source().to_string(),
             ack: true,
+            tasks: None,
         }))
     }
 
