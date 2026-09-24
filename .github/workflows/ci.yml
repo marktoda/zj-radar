@@ -59,6 +59,8 @@ jobs:
         run: nix develop -c cargo build --target wasm32-wasip1 -p zj-radar-plugin
       - name: bash hook tests (L3, runs shellcheck + bats)
         run: nix develop -c just test-bash
+      - name: pi bridge harness (node --test)
+        run: nix develop -c just test-js
 
   # ── macOS platform coverage ────────────────────────────────────────────────
   test-macos:

@@ -119,6 +119,9 @@ pub(crate) const PI_EXTENSION_MARKER_PREFIX: &str = "ZJ_RADAR_PI_EXTENSION=";
 pub(crate) const PI_EXTENSION_MARKER: &str = "ZJ_RADAR_PI_EXTENSION=v1";
 /// The file pi auto-loads from its global extensions dir.
 pub(crate) const PI_EXTENSION_FILE_NAME: &str = "zj-radar.js";
+/// The vendored pi bridge extension (see `flake.nix`'s filter for the
+/// hermetic build's copy of this non-Rust `include_str!` input).
+pub(crate) const PI_EXTENSION_JS: &str = include_str!("pi_extension.js");
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],

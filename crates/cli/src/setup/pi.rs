@@ -69,4 +69,22 @@ mod tests {
         assert_eq!(pi_agent_dir_from(None, Some(OsString::new())), None);
         assert_eq!(pi_agent_dir_from(None, None), None);
     }
+
+    /// Weld: the embedded bridge carries the marker the install path, doctor
+    /// and producer detection key on, speaks the spawn contract, and imports
+    /// only node builtins (a bare extensions-dir file has no node_modules).
+    #[test]
+    fn embedded_extension_carries_marker_and_contract() {
+        let js = super::super::PI_EXTENSION_JS;
+        assert!(super::super::PI_EXTENSION_MARKER.starts_with(super::super::PI_EXTENSION_MARKER_PREFIX));
+        assert!(js.lines().next().is_some_and(|l| l.contains(super::super::PI_EXTENSION_MARKER)));
+        assert!(js.contains("\"notify\", \"pi\", \"--status\""));
+        assert!(!js.contains("spawnSync") && !js.contains("execSync"), "never block pi's event loop");
+        assert!(js.contains("ZELLIJ"), "must gate on $ZELLIJ");
+        assert!(js.contains("\"ignore\", \"ignore\""), "child stdout/stderr must never reach pi's TUI");
+        for line in js.lines().filter(|l| l.starts_with("import ")) {
+            assert!(line.contains("from \"node:"), "only node: builtins may be imported: {line}");
+        }
+        assert!(js.contains("export default function"));
+    }
 }
