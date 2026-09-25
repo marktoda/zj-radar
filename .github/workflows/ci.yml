@@ -87,6 +87,10 @@ jobs:
       # bash suite, and the mirror-image platform bug would need this.
       - name: bash hook + installer tests (L3)
         run: nix develop -c just test-bash
+      # The bridge runs inside pi on real macOS machines; its real-spawn tests
+      # exercise the platform's pipe/EPIPE behavior (node is in the devshell).
+      - name: pi bridge harness (node --test)
+        run: nix develop -c just test-js
 
   # ── MSRV honesty check ─────────────────────────────────────────────────────
   # `rust-version` in Cargo.toml is a published claim, but dev and the jobs
