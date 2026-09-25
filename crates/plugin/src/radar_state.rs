@@ -8,7 +8,7 @@ use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::rollup::{self, LedgerLine, TabDisplay, TabRow, TerminalPane};
 use crate::status::Status;
-use crate::status_store::StatusStore;
+use crate::status_store::{Replaced, StatusStore};
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
 use serde::{Deserialize, Serialize};
@@ -805,34 +805,31 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         let pane_id = p.pane_id;
-        // Captured BEFORE `apply` overwrites the store — two uses: the ping
-        // flash fires only on a LIVE not-Pending → Pending edge, never on a
-        // re-broadcast of an already-Pending status (spec's "flip", not "is";
-        // snapshot load never touches the flash map, so a restored Pending
-        // never flashes) — and the no-op/label-only classification below
-        // compares the whole observation across the apply.
-        let prev = self.status.get(pane_id).cloned();
-        let flips_to_pending =
-            p.status == Status::Pending && prev.as_ref().map(|o| o.status) != Some(Status::Pending);
-        // A Done/Error that recedes on overwrite (a new broadcast for the same
-        // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
-        if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
-            // Status-origin recede: never suppressed (see `command_changed`'s
-            // matching call site).
-            self.ledger_recede_now(vec![(pane_id, displaced)]);
-        }
+        // `replace` hands back the overwritten observation (by move — no
+        // pre-apply clone), for two uses: the ping flash fires only on a LIVE
+        // not-Pending → Pending edge, never on a re-broadcast of an
+        // already-Pending status (spec's "flip", not "is"; snapshot load never
+        // touches the flash map, so a restored Pending never flashes) — and
+        // the no-op/label-only classification below compares the whole
+        // observation across the apply.
+        let incoming = p.status;
+        let Replaced { prev, recedes } = self.status.replace(p, tick, now_epoch_s);
         // Producers re-assert liberally (the Claude plugin broadcasts on every
         // tool hook, and Pre/PostToolUse derive the SAME activity string), so
         // an identical re-broadcast is the single hottest payload this method
-        // sees. `apply` already treats it as a store no-op (no epoch re-stamp,
+        // sees. `replace` already treats it as a store no-op (no epoch re-stamp,
         // no ledger edge); reporting a full-work change for it made every rail
         // instance re-render and re-persist for nothing — measured at ~0.5s of
         // host CPU per message across an 8-tab session under Zellij's wasm
         // interpreter. Nothing changed ⇒ nothing to render, persist, or rename.
+        // (An identical payload never recedes, so returning here drops no
+        // ledger edge.)
         if prev.as_ref() == self.status.get(pane_id) {
             return Some(RadarChange::default());
         }
+        let prev_status = prev.as_ref().map(|o| o.status);
         let now_status = self.status.get(pane_id).map(|o| o.status);
+        let flips_to_pending = incoming == Status::Pending && prev_status != Some(Status::Pending);
         self.touch();
         if flips_to_pending {
             self.arm_flash(pane_id, tick);
@@ -864,7 +861,15 @@ impl RadarState {
             o.map(|o| o.repo.as_str()).filter(|r| !r.is_empty())
         }
         let repo_changed = naming_repo(prev.as_ref()) != naming_repo(self.status.get(pane_id));
-        let label_only = prev.as_ref().map(|o| o.status) == now_status
+        // A Done/Error that recedes on overwrite (a new broadcast for the same
+        // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here —
+        // last, so the comparisons above could borrow `prev` first.
+        // Status-origin recede: never suppressed (see `command_changed`'s
+        // matching call site).
+        if let Some(displaced) = prev.filter(|_| recedes) {
+            self.ledger_recede_now(vec![(pane_id, displaced)]);
+        }
+        let label_only = prev_status == now_status
             && now_status == Some(Status::Running)
             && !tasks_changed
             && self.status.get(pane_id).is_some_and(TrackedObservation::animating);

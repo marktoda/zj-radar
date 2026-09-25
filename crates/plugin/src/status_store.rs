@@ -27,6 +27,14 @@ pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = zj_radar_core::pipe::RUNNING_QUIET_
 /// that introduces its pane, so unknown ids must stay accepted.
 pub const MAX_TRACKED_PANES: usize = 256;
 
+/// What [`StatusStore::replace`] overwrote: the pane's previous observation,
+/// and whether it is a completion that recedes to the ledger (the `apply`
+/// rule — a real edge over a `Done`/`Error`).
+pub struct Replaced {
+    pub prev: Option<TrackedObservation>,
+    pub recedes: bool,
+}
+
 #[derive(Default)]
 pub struct StatusStore {
     store: ObservationStore,
@@ -50,6 +58,15 @@ impl StatusStore {
     /// original wall-clock stamp survives repeated re-broadcasts of the same
     /// turn (spec §4.2/§4.3).
     pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Option<TrackedObservation> {
+        let Replaced { prev, recedes } = self.replace(p, tick, now_epoch_s);
+        prev.filter(|_| recedes)
+    }
+
+    /// [`apply`](Self::apply), handing back the pane's previous observation
+    /// whether or not it recedes — so a caller that compares before/after
+    /// (`RadarState::status_pipe`) gets the old value by move instead of
+    /// cloning it (tasks and all) ahead of the apply.
+    pub fn replace(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Replaced {
         // Any payload is proof the producer is alive — cancel a pending
         // stale-Running grace clock before it can misfire.
         self.suspect_running.remove(&p.pane_id);
@@ -93,7 +110,7 @@ impl StatusStore {
         let mut tasks = prev.map(|s| s.tasks.clone()).unwrap_or_default();
         tasks.apply(p.tasks.as_ref(), prev.map(|s| s.status), p.status, prompted, now_epoch_s);
         let was_completion = prev.is_some_and(|s| s.status.is_completion());
-        let displaced = self.store.insert(
+        let prev = self.store.insert(
             p.pane_id,
             TrackedObservation {
                 origin: ObservationOrigin::StatusPipe,
@@ -115,11 +132,7 @@ impl StatusStore {
             },
         );
         self.evict_over_cap();
-        if identical || !was_completion {
-            None
-        } else {
-            displaced
-        }
+        Replaced { prev, recedes: !identical && was_completion }
     }
 
     /// Enforce [`MAX_TRACKED_PANES`] after an intake insert: while over the
