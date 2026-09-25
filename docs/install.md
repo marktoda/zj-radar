@@ -227,11 +227,17 @@ Items are `ok`, `warn`, or `missing`:
 - **layout**: the default layout contains the rail.
 - **grant**: `permissions.kdl` grants the wasm path.
 - **producer**: which of the Claude plugin, Codex hooks, Opencode bridge, and
-  pi extension are wired.
+  pi extension are wired. The Claude plugin is found under
+  `$CLAUDE_CONFIG_DIR` (default `~/.claude`).
 - **managed config** (only when `config.kdl` is a symlink, as under
   home-manager): direct edits may be overwritten.
 - **config env** (only when `$ZELLIJ_CONFIG_FILE` points elsewhere): Zellij
   reads that file, not the one setup edits.
+
+`zj-radar setup <agent> --check` checks one producer's wiring. Bare
+`zj-radar setup --check` checks the sidebar plus every agent it detects, so an
+agent you don't use never fails it. A pi or opencode binary missing from
+`PATH` while our bridge is installed is a `warn`, not a `missing`.
 
 ## Upgrade (`zj-radar update`)
 
