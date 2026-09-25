@@ -425,7 +425,7 @@ teardown() { teardown_fakes; }
   echo "$bg" | "$CLI" notify claude --status running
   [ -s "$RECORD" ]
   echo "$launch" | "$CLI" notify claude --status running
-  local f; for f in "$FAKEBIN"/state/zj-radar-dedup/bg-agents.*; do
+  local f; for f in "$FAKEBIN"/state/zj-radar-dedup-*/bg-agents.*; do
     [ -f "$f" ] || { echo "no record written under the test state dir"; return 1; }
     printf 'junk' >"$f"
   done
