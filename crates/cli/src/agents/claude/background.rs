@@ -46,7 +46,9 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The turn-end snapshot from a `Stop` payload: every *running* task, holding
 /// or not. Holding = bounded work whose end will wake the agent: subagents,
-/// workflows, teammates, and shells that don't look like a service. Monitors,
+/// workflows, teammates, and shells whose command or description doesn't
+/// look like a service (`shell_is_service`; a shell with neither doesn't
+/// hold, and the plugin never re-raises a stored `holds: false`). Monitors,
 /// crons, services and unknown types are listed but never hold — a row must
 /// not spin forever on work that may never end. Uncapped here: `to_wire`
 /// keeps the first `MAX_TASKS`, so past 16 live tasks the rail ends the rest
@@ -62,16 +64,16 @@ pub(super) fn turn_end(v: &Value) -> TaskBatch {
                 .filter(|t| str_field(t, "status") == Some("running"))
                 .filter_map(|t| {
                     let id = str_field(t, "id").filter(|id| !id.is_empty())?;
-                    let command = str_field(t, "command");
+                    let (command, description) = (str_field(t, "command"), str_field(t, "description"));
                     let holds = match str_field(t, "type") {
                         Some("subagent" | "workflow" | "teammate") => true,
-                        Some("shell") => !shell_is_service(command.unwrap_or("")),
+                        Some("shell") => !shell_is_service(command, description),
                         _ => false,
                     };
                     Some(TaskUpdate {
                         id: id.to_string(),
                         state: TaskState::Running,
-                        label: label(str_field(t, "description"), command),
+                        label: label(description, command),
                         holds,
                     })
                 })
@@ -103,7 +105,7 @@ pub(super) fn started(v: &Value) -> Option<TaskBatch> {
             id: id.to_string(),
             state: TaskState::Running,
             label: label(description, command),
-            holds: !shell_is_service(command.unwrap_or("")),
+            holds: !shell_is_service(command, description),
         }
     } else if str_field(response, "status") == Some("async_launched") {
         TaskUpdate {
@@ -192,6 +194,56 @@ mod tests {
         assert_eq!(waiting_msg(&unnamed).as_deref(), Some("waiting on 1 task"));
         let services = turn_end(&json(r#"{"background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#));
         assert_eq!(waiting_msg(&services), None);
+    }
+
+    fn shell_holds(command: Option<&str>, description: Option<&str>) -> bool {
+        let mut t = serde_json::json!({"id": "b", "type": "shell", "status": "running"});
+        if let Some(c) = command {
+            t["command"] = c.into();
+        }
+        if let Some(d) = description {
+            t["description"] = d.into();
+        }
+        turn_end(&serde_json::json!({ "background_tasks": [t] })).items[0].holds
+    }
+
+    #[test]
+    fn long_running_servers_watchers_and_tunnels_never_hold() {
+        for cmd in [
+            "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
+            "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
+            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
+            "bundle exec jekyll serve", "make server",
+        ] {
+            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
+        }
+    }
+
+    #[test]
+    fn the_description_can_mark_a_service_but_server_alone_does_not() {
+        // An unlisted command whose description gives it away.
+        assert!(!shell_holds(Some("./bin/app --port 3000"), Some("Start the dev server")));
+        assert!(!shell_holds(Some("./run.sh"), Some("Watch for changes and rebuild")));
+        // Bounded work that merely mentions a server holds.
+        for (cmd, desc) in [
+            ("cargo test -p server", "Run the server tests"),
+            ("go build ./cmd/server", "Build the server"),
+            ("pytest tests/test_watcher.py", "Test the file watcher"),
+            ("vitest run", "Run unit tests"),
+            ("./observe.sh", "Observe results"),
+        ] {
+            assert!(shell_holds(Some(cmd), Some(desc)), "{cmd} / {desc} is bounded");
+        }
+    }
+
+    #[test]
+    fn a_shell_without_a_command_falls_back_to_its_description() {
+        assert!(shell_holds(None, Some("Run the test suite")));
+        assert!(shell_holds(Some("  "), Some("Run the test suite")));
+        assert!(!shell_holds(None, Some("Start the dev server")));
+        // Nothing says it's bounded: don't hold.
+        assert!(!shell_holds(None, None));
+        assert!(!shell_holds(Some(""), Some(" ")));
     }
 
     #[test]

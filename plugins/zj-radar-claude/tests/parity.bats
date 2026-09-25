@@ -334,9 +334,10 @@ teardown() { teardown_fakes; }
   [ "$(jq -c 'has("tasks")' <<<"$RUST_PAYLOAD")" = false ]
   parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":"text"}' running
   [ "$(jq -c 'has("tasks")' <<<"$RUST_PAYLOAD")" = false ]
-  # A non-object tool_input still reports the start (unlabeled, holding).
+  # A non-object tool_input still reports the start (unlabeled, and not
+  # holding: nothing says the work is bounded).
   parity_payloads '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Bash","tool_input":"x","tool_response":{"backgroundTaskId":"b9"}}' running
-  [ "$(jq -c '.tasks.items' <<<"$RUST_PAYLOAD")" = '[{"id":"b9","state":"running","holds":true}]' ]
+  [ "$(jq -c '.tasks.items' <<<"$RUST_PAYLOAD")" = '[{"id":"b9","state":"running"}]' ]
 }
 
 @test "cli: a task-notification wake reports every outcome block (bash matches everything else)" {
@@ -351,8 +352,8 @@ teardown() { teardown_fakes; }
 
 @test "service phrases are welded between the producers" {
   # agents.rs SERVICE_PHRASES and notify.sh SERVICE_PHRASES must list the same
-  # phrases, each ERE/Oniguruma-metachar-free (both are interpolated or
-  # matched literally on opposite sides).
+  # phrases, each ERE/Oniguruma-metachar-free but for `.` (which notify.sh
+  # escapes) — both are interpolated or matched literally on opposite sides.
   local rust bash_list
   rust="$(sed -n '/SERVICE_PHRASES: &\[&str\] = &\[/,/^];/p' "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
     | grep -o '"[^"]*"' | tr -d '"' | sort)"
@@ -362,8 +363,31 @@ teardown() { teardown_fakes; }
   [ "$rust" = "$bash_list" ]
   local p
   while IFS= read -r p; do
-    case "$p" in *[!a-z0-9\ -]*) echo "phrase [$p] has a regex-unsafe char"; return 1;; esac
+    case "$p" in *[!a-z0-9\ .-]*) echo "phrase [$p] has a regex-unsafe char"; return 1;; esac
   done <<<"$rust"
+}
+
+@test "parity: servers, watchers and described services leave the Stop done" {
+  local c
+  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'kubectl port-forward svc/db 5432' 'nodemon index.js'; do
+    parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
+    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ] || { echo "[$c] held the row"; return 1; }
+  done
+  # The `.` is literal in both: `httpXserver` is not `http.server`.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"./httpxserver"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
+  # The description marks a service; "server" alone doesn't.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"./bin/app","description":"Start the dev server"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test -p server","description":"Run the server tests"}]}' done
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the server tests" ]
+  # No command: the description decides; neither → no hold.
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Run the suite"}]}' done
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the suite" ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Serve the docs"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"ok","background_tasks":[{"id":"b1","type":"shell","status":"running","command":" "}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
 }
 
 @test "parity: a subagent's own tool hooks send nothing in both" {

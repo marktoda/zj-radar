@@ -202,23 +202,45 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|base| !base.is_empty())
 }
 
-/// Shell phrases that mark a backgrounded command as a long-lived service (a
-/// dev server, a followed log) rather than bounded work. Matched whole-word on
-/// the lowercased command line. Deliberately narrow: a miss only means the row
-/// keeps spinning until the next `Stop` or `SessionEnd`, while a false hit
-/// paints "done" over work still running. `watch` is absent on purpose —
-/// `gh run watch` and `--watch` checks end. Mirrored in notify.sh's
-/// `SERVICE_RE`; keep the phrases ERE-metachar-free (the parity suite pins it).
+/// Phrases that mark a backgrounded shell as a long-lived service (a dev
+/// server, a watcher, a followed log, a tunnel) rather than bounded work.
+/// Matched whole-word on the lowercased command line AND the model-written
+/// task description ("Start the dev server"). Errs toward "service": Claude
+/// wakes the model when any background shell ends, whatever we call it, so a
+/// false hit only shows the row done early (the wake flips it back — e.g.
+/// `gh run watch`, `vite build`), while a miss holds the row "waiting on …"
+/// forever. `server` alone is absent on purpose: "run the server tests" and
+/// `cargo test -p server` end. Aligned with `core::command`'s `Kind::Server`
+/// words (`serve`, and npm/make/just `dev`/`start`/`server`). Mirrored in
+/// notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]` (the parity
+/// suite pins both — the fallback escapes the `.`).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
     "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
-    "pnpm dev", "yarn dev", "bun dev", "next dev", "serve", "tail -f", "compose up",
+    "pnpm dev", "yarn dev", "bun dev", "next dev", "make dev", "just dev",
+    "make server", "just server", "serve", "http.server", "runserver", "rails s",
+    "rails server", "flask run", "uvicorn", "gunicorn", "vite", "nodemon", "watch",
+    "port-forward", "tail -f", "compose up", "dev server", "start server",
+    "start the server",
 ];
 
-/// Is this backgrounded shell command a service — something that may never
-/// exit on its own, so the agent must not be held "running" on it?
-pub(crate) fn shell_is_service(cmd: &str) -> bool {
-    let cmd_lower = cmd.to_lowercase();
-    SERVICE_PHRASES.iter().any(|p| contains_word(&cmd_lower, p))
+/// Is this backgrounded shell a service — something that may never exit on
+/// its own, so the agent must not be held "running" on it? Either text
+/// matching a [`SERVICE_PHRASES`] entry makes it one. With no command, the
+/// description decides alone; with neither, nothing says the work is
+/// bounded, so it is treated as a service (never spin on the unknowable).
+pub(crate) fn shell_is_service(command: Option<&str>, description: Option<&str>) -> bool {
+    fn nonblank(s: Option<&str>) -> Option<&str> {
+        s.filter(|s| !s.trim().is_empty())
+    }
+    let matches = |s: &str| {
+        let lower = s.to_lowercase();
+        SERVICE_PHRASES.iter().any(|p| contains_word(&lower, p))
+    };
+    match (nonblank(command), nonblank(description)) {
+        (Some(cmd), desc) => matches(cmd) || desc.is_some_and(matches),
+        (None, Some(desc)) => matches(desc),
+        (None, None) => true,
+    }
 }
 
 /// The basename of a command line's first whitespace-separated token
