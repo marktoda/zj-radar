@@ -297,11 +297,13 @@ fi
 # - A command decides alone. It splits into segments on `& | ; ( ) \``,
 #   newline and CR; each segment into tokens on space, tab and quotes. A
 #   segment's head is its first token that isn't an env assignment, a
-#   SERVICE_WRAPPERS word or a flag; its command word follows from the head
-#   past SERVICE_RUNNERS and flags (SERVICE_VALUE_FLAGS skip their value).
+#   SERVICE_WRAPPERS word, a flag or a number; its command word follows from
+#   the head past SERVICE_RUNNERS and flags (SERVICE_VALUE_FLAGS skip their
+#   value), or is X in `python -m X`. Phrase tokens compare by basename.
 #   A segment is a service when a SERVICE_PHRASES entry's tokens start at the
 #   head or the command word (first token by basename, `@version` dropped),
-#   the command word is a `dev`/`start` script reached through a runner, the
+#   the command word is a `dev`/`start` script right after a runner word or
+#   runner-flag value, `kubectl … port-forward`, the
 #   command word is `vite` with no `build` argument, `docker compose up`
 #   / `docker-compose up` starts there without `-d`/`--detach`/
 #   `--abort-on-container-exit`/`--exit-code-from`, or a `--watch`/
@@ -325,8 +327,8 @@ fi
 # (agents/claude/bg_agents.rs): it needs per-pane markers of launched agent
 # ids, so this stateless fallback reports them, and they can overwrite
 # "waiting on …".
-SERVICE_PHRASES="run dev|run start|run serve|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|next start|make dev|just dev|make server|just server|serve|http-server|mkdocs serve|jekyll serve|hugo server|hugo serve|ng serve|php artisan serve|python -m http.server|python3 -m http.server|manage.py runserver|python manage.py runserver|python3 manage.py runserver|rails s|rails server|flask run|uvicorn|gunicorn|nodemon|cargo watch|watchexec|kubectl port-forward|tail -f"
-SERVICE_WRAPPERS="env|nohup|exec|sudo|time|command|bash|sh|zsh"
+SERVICE_PHRASES="run dev|run start|run serve|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|next start|make dev|just dev|make server|just server|serve|http-server|mkdocs serve|jekyll serve|hugo server|hugo serve|ng serve|php artisan serve|python -m http.server|python3 -m http.server|manage.py runserver|python manage.py runserver|python3 manage.py runserver|http.server|rails s|rails server|flask run|uvicorn|gunicorn|nodemon|cargo watch|watchexec|kubectl port-forward|tail -f"
+SERVICE_WRAPPERS="env|nohup|exec|sudo|time|timeout|nice|xargs|command|bash|sh|zsh"
 SERVICE_RUNNERS="npx|bunx|pnpm|yarn|bun|npm|exec|x|dlx|bundle|uv|poetry|pipenv|run"
 SERVICE_VALUE_FLAGS="-p|--package|--prefix|--dir|--cwd|--filter|--workspace"
 SERVICE_DESCRIPTION_PHRASES="dev server|development server|start server|start the server|watch mode"
@@ -346,17 +348,21 @@ if [[ "$status" == "done" ]]; then
               elif ($t[$i] | among($vflags)) then ($i + 2 | cwalk($t))
               elif ($t[$i] | among($runners) or startswith("-")) then ($i + 1 | cwalk($t))
               else $i end;
-        def at($t; $i; $p): all(range(0; $p | length); ($t[$i + .] // null) as $x
-            | (if . == 0 then ($x // "" | word) else $x end) == $p[.]);
+        def at($t; $i; $p): all(range(0; $p | length); (($t[$i + .] // null) | if . == null then null else word end) == $p[.]);
         def segsvc: [splits($tokre) | select(. != "")] as $t
             | ([range(0; $t | length) | select($t[.]
-                | (test("^[a-z_][a-z0-9_]*=") or among($wrappers) or startswith("-")) | not)] | first) as $h
+                | (test("^[a-z_][a-z0-9_]*=") or among($wrappers) or startswith("-")
+                   or test("^[0-9][0-9.]*[smhd]?$")) | not)] | first) as $h
             | if $h == null then false else
-              ($h | cwalk($t)) as $c
+              ($h | cwalk($t)) as $c0
+              | (if (($t[$c0] // "") | word | startswith("python")) and $t[$c0 + 1] == "-m"
+                 then $c0 + 2 else $c0 end) as $c
               | (($t[$c] // "") | word) as $cmd
               | def starts($p): at($t; $h; $p) or at($t; $c; $p);
               any($phrases | split("|")[] | split(" "); starts(.))
-              or ($c > $h and ($cmd == "dev" or $cmd == "start"))
+              or ($c > $h and ($cmd == "dev" or $cmd == "start")
+                  and (($t[$c - 1] | among($runners)) or ($c >= 2 and ($t[$c - 2] | among($vflags)))))
+              or ((($t[$h] // "") | word) == "kubectl" and any($t[]; . == "port-forward"))
               or ($cmd == "vite" and (any($t[$c + 1:][]; . == "build") | not))
               or ((starts(["docker", "compose", "up"]) or starts(["docker-compose", "up"]))
                   and (any($t[]; . == "-d" or . == "--detach" or . == "--abort-on-container-exit"

@@ -42,8 +42,18 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
     let config_path = zellij_config_path(config_dir);
     let wasm_dest = zellij_wasm_dest(config_dir);
     let config_text = std::fs::read_to_string(&config_path).ok();
+    // A relative PATH given as `--layout` resolves against the current dir,
+    // like Zellij's own `--layout`; relative paths from `config.kdl` resolve
+    // against the config dir (`resolve_layout_path_from`).
+    let cli_layout = layout_name.map(|name| {
+        let relative_path = name.contains('/') && !name.starts_with('~') && !Path::new(name).is_absolute();
+        match std::env::current_dir() {
+            Ok(cwd) if relative_path => cwd.join(name).to_string_lossy().into_owned(),
+            _ => name.to_string(),
+        }
+    });
     let layout_name =
-        crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref());
+        crate::setup::detect::resolve_layout_name(cli_layout.as_deref(), config_text.as_deref());
     let layout_path = crate::setup::detect::resolve_layout_path(config_dir, &layout_name, config_text.as_deref());
     let env = ZellijEnv {
         layout_text:            std::fs::read_to_string(&layout_path).ok(),

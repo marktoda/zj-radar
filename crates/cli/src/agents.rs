@@ -319,7 +319,7 @@ pub(crate) const SERVICE_PHRASES: &[&str] = &[
     "make server", "just server", "serve", "http-server", "mkdocs serve", "jekyll serve",
     "hugo server", "hugo serve", "ng serve", "php artisan serve", "python -m http.server",
     "python3 -m http.server", "manage.py runserver", "python manage.py runserver",
-    "python3 manage.py runserver", "rails s", "rails server", "flask run", "uvicorn", "gunicorn",
+    "python3 manage.py runserver", "http.server", "rails s", "rails server", "flask run", "uvicorn", "gunicorn",
     "nodemon", "cargo watch", "watchexec", "kubectl port-forward", "tail -f",
 ];
 
@@ -327,7 +327,7 @@ pub(crate) const SERVICE_PHRASES: &[&str] = &[
 /// `bash -c "vite"`): skipped, with any flags, to find a segment's head.
 /// Mirrored in notify.sh's `SERVICE_WRAPPERS`.
 pub(crate) const SERVICE_WRAPPERS: &[&str] = &[
-    "env", "nohup", "exec", "sudo", "time", "command", "bash", "sh", "zsh",
+    "env", "nohup", "exec", "sudo", "time", "timeout", "nice", "xargs", "command", "bash", "sh", "zsh",
 ];
 
 /// Package and script runners, skipped with their flags from a segment's head
@@ -369,13 +369,17 @@ const TOKEN_SEPARATORS: &[char] = &[' ', '\t', '"', '\''];
 /// read at two command positions only:
 ///
 /// - the **head**: the first token that isn't an env assignment (`foo=1`), a
-///   [`SERVICE_WRAPPERS`] word or a flag;
+///   [`SERVICE_WRAPPERS`] word, a flag or a number (`timeout 60`);
 /// - the **command word**: from the head, past [`SERVICE_RUNNERS`] and their
-///   flags ([`SERVICE_VALUE_FLAGS`] skip their value too).
+///   flags ([`SERVICE_VALUE_FLAGS`] skip their value too); for `python -m X`,
+///   the module `X`.
+///
+/// Phrase tokens compare by basename (`backend/manage.py runserver`).
 ///
 /// A service is a [`SERVICE_PHRASES`] entry at either position; a `dev` or
-/// `start` script reached through a runner (`npm run dev`, `pnpm --filter web
-/// dev`, `yarn start`); a `vite`
+/// `start` script right after a runner word or runner-flag value (`npm run
+/// dev`, `pnpm --filter web dev`, `yarn start`); `kubectl … port-forward`; a
+/// `vite`
 /// command word without a `build` argument; `docker compose up` /
 /// `docker-compose up` at either position without `-d`, `--detach`,
 /// `--abort-on-container-exit` or `--exit-code-from` (those end); or a
@@ -395,8 +399,15 @@ fn segment_is_service(segment: &str) -> bool {
                 && name.chars().all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit())
         })
     }
+    // A wrapper's numeric argument (`timeout 60`, `nice -n 10`) is no head.
+    fn number(token: &str) -> bool {
+        let digits = token.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(token);
+        digits.starts_with(|c: char| c.is_ascii_digit()) && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    }
     let t: Vec<&str> = segment.split(TOKEN_SEPARATORS).filter(|s| !s.is_empty()).collect();
-    let Some(head) = t.iter().position(|s| !(assignment(s) || SERVICE_WRAPPERS.contains(s) || s.starts_with('-')))
+    let Some(head) = t
+        .iter()
+        .position(|s| !(assignment(s) || SERVICE_WRAPPERS.contains(s) || s.starts_with('-') || number(s)))
     else {
         return false;
     };
@@ -410,25 +421,36 @@ fn segment_is_service(segment: &str) -> bool {
             break;
         }
     }
+    // `python -m uvicorn`: the module is the command word.
+    if t.get(cw).is_some_and(|s| word(s).starts_with("python")) && t.get(cw + 1) == Some(&"-m") {
+        cw += 2;
+    }
     let command = t.get(cw).map_or("", |s| word(s));
     let at = |i: usize, phrase: &[&str]| {
-        phrase.iter().enumerate().all(|(k, p)| t.get(i + k).map(|s| if k == 0 { word(s) } else { s }) == Some(p))
+        phrase.iter().enumerate().all(|(k, p)| t.get(i + k).map(|s| word(s)) == Some(p))
     };
     let starts = |phrase: &[&str]| at(head, phrase) || at(cw, phrase);
     let phrase = SERVICE_PHRASES.iter().any(|p| starts(&p.split(' ').collect::<Vec<_>>()));
-    let script = cw > head && matches!(command, "dev" | "start");
+    // A `dev`/`start` script only right after a runner word or a runner
+    // flag's value (`pnpm --filter web dev`) — never the value of an unknown
+    // flag (`uv run --extra dev pytest`).
+    let via_runner = cw > head
+        && (SERVICE_RUNNERS.contains(&t[cw - 1]) || (cw >= 2 && SERVICE_VALUE_FLAGS.contains(&t[cw - 2])));
+    let script = via_runner && matches!(command, "dev" | "start");
     let vite = command == "vite" && !t[cw + 1..].contains(&"build");
     let compose = (starts(&["docker", "compose", "up"]) || starts(&["docker-compose", "up"]))
         && !t.iter().any(|s| {
             matches!(*s, "-d" | "--detach" | "--abort-on-container-exit") || s.starts_with("--exit-code-from")
         });
+    // `kubectl -n prod port-forward …`: flags may precede the verb.
+    let port_forward = word(t[head]) == "kubectl" && t.contains(&"port-forward");
     let rollout_status = t.windows(2).any(|w| w == ["rollout", "status"]);
     let bounded_watch = command == "gh" || (command == "kubectl" && rollout_status);
     let watch = !bounded_watch && t.iter().enumerate().any(|(i, s)| {
         let (flag, value) = s.split_once('=').map_or((*s, t.get(i + 1).copied()), |(f, v)| (f, Some(v)));
         matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
     });
-    phrase || script || vite || compose || watch
+    phrase || script || port_forward || vite || compose || watch
 }
 
 /// Is this backgrounded shell a service — something that may never exit on

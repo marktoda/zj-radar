@@ -155,7 +155,6 @@ bounded		Run tests and watch for failures
 service
 # Scripts through a runner: `dev`/`start` are services, other scripts end.
 service	pnpm --filter web dev
-service	pnpm -r --parallel dev
 service	uv run uvicorn app:app
 service	poetry run uvicorn app:app
 service	npm run start
@@ -164,8 +163,27 @@ bounded	poetry run pytest
 bounded	uv run pytest -q
 bounded	yarn run build
 bounded	npm run dev:migrate
+# Runner-flag values are not scripts; python -m, wrappers, flagged verbs.
+bounded	uv run --extra dev pytest
+bounded	uv run --group dev pytest -x
+bounded	uv run --only-group dev ruff check
+bounded	poetry run --directory dev pytest
+bounded	pnpm -F dev build
+bounded	npm -w dev run build
+service	python -m uvicorn app:app --reload
+service	python -m flask run
+service	python3 -m gunicorn app:app
+service	python3.12 -m http.server
+bounded	python -m pytest -q
+bounded	python3 -m build
+service	python backend/manage.py runserver
+service	timeout 600 npm run dev
+service	nice -n 10 uvicorn app:app
+bounded	timeout 60 npm test
+service	kubectl -n prod port-forward svc/db 5432
+bounded	kubectl -n prod get pods
 # ── Known misses (a miss only holds "waiting on …" until the next Stop) ──
 bounded	docker compose -f dev.yml up
 bounded	yarn workspace web start
-bounded	kubectl -n prod port-forward svc/db 5432
+bounded	pnpm -r --parallel dev
 "#;
