@@ -183,7 +183,10 @@ fn zellij_alias_lines(location: &str, indent: &str) -> Vec<String> {
     ]
 }
 
-fn kdl_string(s: &str) -> String {
+/// Escape `s` for the inside of a KDL double-quoted string. Shared by the
+/// managed alias block and `run`'s owned-config template, so a wasm path with
+/// a `"` or `\\` can't break out of either `location="…"`.
+pub(crate) fn kdl_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
