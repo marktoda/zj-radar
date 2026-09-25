@@ -285,8 +285,9 @@ fi
 # model when it finishes: stay running with a "waiting on …" msg (parity with
 # waiting_msg in agents/claude/background.rs). Running subagents, workflows
 # and teammates hold; shells hold unless their command is a service (a
-# SERVICE_PHRASES entry, or service_tokens' rules: a `vite` token not followed
-# by `build`, a `--watch`/`--watchall` flag not `=false`/`=0`) or their
+# SERVICE_PHRASES entry, or service_tokens' rules per `&`/`|`/`;` segment: a
+# `vite` command word (past package runners and flags) not followed by
+# `build`, a `--watch`/`--watchall` flag not `=false`/`=0`) or their
 # description has a SERVICE_DESCRIPTION_PHRASES entry — both lists are
 # agents.rs's, welded by parity.bats, as are shell_is_service's rules: no
 # command → the description alone decides, neither → no hold. Anything else
@@ -312,12 +313,15 @@ if [[ "$status" == "done" ]]; then
         --arg dre "(^|[^a-z0-9])(${SERVICE_DESCRIPTION_PHRASES//./\\.})([^a-z0-9]|$)" '
         def str: if type == "string" then . else "" end;
         def toks: [splits("\\s+") | select(. != "")];
+        def runner: . as $x | any(("npx","bunx","pnpm","yarn","bun","npm","exec","x","dlx"); . == $x);
         def vite: toks as $t
-            | any(range(0; $t | length); ($t[.] | split("/") | last) == "vite" and $t[. + 1] != "build");
+            | ([range(0; $t | length) | select($t[.] | (startswith("-") or runner) | not)] | first) as $i
+            | $i != null and ($t[$i] | split("/") | last | split("@") | first) == "vite" and $t[$i + 1] != "build";
         def watchflag: toks | any(.[]; split("=") as $p
             | ($p[0] == "--watch" or $p[0] == "--watchall")
               and (($p | length) == 1 or (($p[1:] | join("=")) as $v | $v != "false" and $v != "0")));
-        def svc: ascii_downcase | (test($re) or vite or watchflag);
+        def segsvc: any(splits("[&|;]"); vite or watchflag);
+        def svc: ascii_downcase | (test($re) or segsvc);
         def dsvc: ascii_downcase | test($dre);
         def blank: test("\\S") | not;
         [ (.background_tasks // empty) | arrays | .[] | objects

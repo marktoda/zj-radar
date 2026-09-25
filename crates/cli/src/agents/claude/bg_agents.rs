@@ -86,9 +86,13 @@ impl BgAgents {
         Some(BgAgents::at(&state_dir()?, &session, pane_id))
     }
 
-    /// The markers for (`session`, `pane_id`) under `dir`.
+    /// The markers for (`session`, `pane_id`) under `dir`. `.` is the field
+    /// separator, so the session part folds it to `_`: otherwise session `a`
+    /// pane 1's prefix `bg-agents.a.1.` would also match session `a.1`'s
+    /// markers, and its sweep would delete them.
     pub fn at(dir: &Path, session: &str, pane_id: u32) -> BgAgents {
-        BgAgents { dir: dir.to_path_buf(), prefix: format!("bg-agents.{}.{pane_id}.", sanitize(session)) }
+        let session = sanitize(session).replace('.', "_");
+        BgAgents { dir: dir.to_path_buf(), prefix: format!("bg-agents.{session}.{pane_id}.") }
     }
 
     fn marker(&self, id: &str) -> Option<PathBuf> {
@@ -274,6 +278,18 @@ mod tests {
         age(&t, "old", TTL_SECS + 60);
         t.intake(&with_id(LAUNCH, "new"), now);
         assert_eq!(markers(&t), vec!["bg-agents.my_session.7.new"]);
+    }
+
+    #[test]
+    fn a_session_whose_name_extends_anothers_keeps_its_markers() {
+        // Session `a` pane 1 must not sweep session `a.1` pane 5's markers.
+        let dir = tempfile::tempdir().unwrap();
+        let (a, a1) = (BgAgents::at(dir.path(), "a", 1), BgAgents::at(dir.path(), "a.1", 5));
+        a.intake(LAUNCH, now());
+        a1.intake(LAUNCH, now());
+        a.intake(r#"{"hook_event_name":"SessionEnd"}"#, now());
+        assert!(!a.intake(BG_TOOL, now()), "a:1 cleared");
+        assert!(a1.intake(BG_TOOL, now()), "a.1:5 kept its marker");
     }
 
     #[test]

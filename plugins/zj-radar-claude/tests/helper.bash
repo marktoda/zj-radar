@@ -62,10 +62,10 @@ EOF
   # payload shape, not send policy (the Rust integration tests own that), so
   # dedup is off here.
   export ZJ_RADAR_NO_DEDUP=1
-  # The CLI's background-subagent record (agents/claude/bg_agents.rs) is keyed
-  # the same way: without a session there is no record, so an inherited name
-  # can't make a parity case depend on a real state dir. Tests of that record
-  # set their own session and state dir.
+  # The CLI's background-subagent markers (agents/claude/bg_agents.rs) are
+  # keyed the same way: without a session there are no markers, so an inherited
+  # name can't make a parity case depend on a real state dir. Tests of those
+  # markers set their own session and state dir.
   unset ZELLIJ_SESSION_NAME
 }
 

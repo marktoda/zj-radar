@@ -371,12 +371,12 @@ teardown() { teardown_fakes; }
 
 @test "parity: servers, watchers and described services leave the Stop done" {
   local c
-  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js'; do
+  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
     [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ] || { echo "[$c] held the row"; return 1; }
   done
   # Single service words only count in the right position: these hold.
-  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run'; do
+  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run' 'npm install vite' 'pnpm add -D vite' 'ls node_modules/vite' 'cd packages/vite && pnpm test' 'vite build&&echo ok'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
     [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ] || { echo "[$c] read as a service"; return 1; }
   done
