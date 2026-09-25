@@ -63,8 +63,10 @@ const NOTIFY_SH: &str = include_str!("../../../plugins/zj-radar-claude/scripts/n
 #[test]
 fn bash_producer_deadline_literals_match_the_pipe_constants() {
     let default_line = format!("default_deadline={DEFAULT_PIPE_TIMEOUT_SECS}");
-    // The fallback never sends background tasks (they need the CLI), so every
-    // `running` it sends is a heartbeat on the short cap.
+    // The fallback never sends background tasks (they need the CLI), so a
+    // `running` it sends is a heartbeat on the short cap — except the
+    // waiting-on-background Stop remap, which restores the edge cap after
+    // this line.
     let running_line =
         format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
     assert!(

@@ -473,13 +473,13 @@
 
         store.on_command_changed(1, &cmd, true, Some("/w/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        assert!(store.on_timer(Tick(promote_tick), EpochSecs(0)).changed, "debounced promotion mutates the store");
+        assert_eq!(store.on_timer(Tick(promote_tick), EpochSecs(0)).changed_panes, [1], "debounced promotion names its pane");
         assert!(!store.on_timer(Tick(promote_tick + 1), EpochSecs(0)).changed, "already Running: quiet tick");
 
         let leave_tick = promote_tick + 2;
         store.on_command_changed(1, &[], false, None, leave_tick); // leaves foreground
         let done_tick = leave_tick + DEBOUNCE_TICKS;
-        assert!(store.on_timer(Tick(done_tick), EpochSecs(0)).changed, "confirmed Done-flip mutates the store");
+        assert_eq!(store.on_timer(Tick(done_tick), EpochSecs(0)).changed_panes, [1], "confirmed Done-flip names its pane");
         assert!(!store.on_timer(Tick(done_tick + 1), EpochSecs(0)).changed, "terminal Done: quiet tick");
     }
 

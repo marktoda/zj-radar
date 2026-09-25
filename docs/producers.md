@@ -116,7 +116,7 @@ Things to know:
   instrumented agent, the sidebar does not command-track its panes; without
   the bridge (not installed, or opencode started with `--pure`) the pane has
   no row at all. `setup --check` reports each missing bridge when `opencode`
-  is on `PATH`. Upgrading from a release before 2.x support has the same
+  is on `PATH` or one of our bridges is already installed. Upgrading from a release before 2.x support has the same
   effect on 2.x: run `setup opencode` again (it adds the TUI bridge beside the
   existing file) and restart opencode.
 - **2.x: status follows the pane, not the server.** Opencode 2.x runs one

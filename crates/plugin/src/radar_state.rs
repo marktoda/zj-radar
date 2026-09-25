@@ -675,19 +675,7 @@ impl RadarState {
         self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
         // The panes this tick changed, for the snapshot-ownership decision.
-        // `on_timer` stamps `last_change_tick = tick` on every observation it
-        // promotes, confirms Done, or recedes (the `receded`/`completed` ids
-        // are a subset), so the stamp names them without widening the store's
-        // report. Collected only on a change — the quiet tick pays nothing.
-        let mut changed_panes: Vec<u32> = Vec::new();
-        if report.changed {
-            changed_panes.extend(
-                self.command
-                    .observations()
-                    .filter(|(_, o)| o.last_change_tick == tick)
-                    .map(|(id, _)| id),
-            );
-        }
+        let mut changed_panes = report.changed_panes;
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence
@@ -713,12 +701,8 @@ impl RadarState {
         // One writer per edge, exactly as for pushed edges: the instance whose
         // tab holds a changed pane writes (`persists_edges_for`). Without
         // this every instance read-merge-wrote the shared file for every
-        // promotion/confirm/expiry. A change the stamp cannot attribute to any
-        // pane (a re-promotion that carried its start tick over but changed
-        // repo/kind) falls back to "everyone writes", like any unnamed owner.
-        let persist = changed
-            && (changed_panes.is_empty()
-                || changed_panes.iter().any(|&id| self.persists_edges_for(Some(id))));
+        // promotion/confirm/expiry.
+        let persist = changed_panes.iter().any(|&id| self.persists_edges_for(Some(id)));
         TimerChange { changed, persist }
     }
 
