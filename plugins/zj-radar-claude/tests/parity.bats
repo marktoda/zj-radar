@@ -350,13 +350,13 @@ teardown() { teardown_fakes; }
   [ "$(jq -c 'has("tasks")' <<<"$RUST_PAYLOAD")" = false ]
 }
 
-@test "service phrases are welded between the producers" {
-  # agents.rs and notify.sh must list the same SERVICE_PHRASES and the same
-  # SERVICE_DESCRIPTION_PHRASES, each ERE/Oniguruma-metachar-free but for `.`
-  # (which notify.sh escapes) — both are interpolated or matched literally on
-  # opposite sides.
+@test "service word lists are welded between the producers" {
+  # agents.rs and notify.sh must list the same service phrases, wrappers,
+  # runners, value flags and description phrases, each ERE/Oniguruma-
+  # metachar-free but for `.` (notify.sh escapes it in the description regex;
+  # the command lists are compared as tokens, never as regex).
   local name rust bash_list p
-  for name in SERVICE_PHRASES SERVICE_DESCRIPTION_PHRASES; do
+  for name in SERVICE_PHRASES SERVICE_WRAPPERS SERVICE_RUNNERS SERVICE_VALUE_FLAGS SERVICE_DESCRIPTION_PHRASES; do
     rust="$(sed -n "/ $name: &\[&str\] = &\[/,/^];/p" "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
       | grep -o '"[^"]*"' | tr -d '"' | sort)"
     bash_list="$(grep -m1 "^$name=" "$SCRIPT" | sed "s/^$name=\"//; s/\"\$//" | tr '|' '\n' | sort)"
@@ -369,36 +369,44 @@ teardown() { teardown_fakes; }
   done
 }
 
-@test "parity: servers, watchers and described services leave the Stop done" {
-  local c
-  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'kubectl get pods --watch' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest' \
-           'tail -f log' 'docker compose up' 'bundle exec jekyll serve' 'npm run dev' 'npm run dev|tee log' 'bash -c "npm run dev"' "sh -c 'npm run dev'" '(npm run dev)' 'echo `npm start`' './venv/bin/uvicorn app:app' $'npm run dev\techo' \
-           'gh pr checks 57 && tsc --watch' 'npx tsc --watch'; do
-    parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
-    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ] || { echo "[$c] held the row"; return 1; }
-  done
-  # Single service words only count in the right position: these hold.
-  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run' 'npm install vite' 'pnpm add -D vite' 'ls node_modules/vite' 'cd packages/vite && pnpm test' 'vite build&&echo ok' \
-           'gh pr checks 57 --watch' 'gh pr checks 57 --watch && gh pr merge' '/usr/bin/gh run list --watch' 'kubectl rollout status deploy/x --watch' 'kubectl rollout status deploy/x --watch=true' \
-           'pytest tests/test_serve.py' 'go test ./serve/...' 'make dev-deps' 'just dev-setup' 'npm run dev:migrate' 'pytest tests/test_uvicorn_app.py' 'ls serve.d' 'cat .serve'; do
-    parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
-    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ] || { echo "[$c] read as a service"; return 1; }
-  done
-  # The `.` is literal in both: `httpXserver` is not `http.server`.
-  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"./httpxserver"}]}' done
-  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
-  # The description marks a service; "server" alone doesn't.
-  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"./bin/app","description":"Start the dev server"}]}' done
-  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+@test "parity: the shared service corpus classifies alike in both producers" {
+  # The same lines agents.rs's shell_is_service_matches_the_shared_corpus
+  # reads (crates/cli/src/agents/service_cases.rs), each run as a one-shell
+  # Stop snapshot through BOTH producers: a service leaves the Stop done, a
+  # bounded shell holds it running.
+  local corpus="$BATS_TEST_DIRNAME/../../../crates/cli/src/agents/service_cases.rs"
+  local cases line expect json want n=0
+  cases="$(sed -n '/^pub(crate) const SERVICE_CASES: &str = r#"$/,/^"#;$/p' "$corpus" | sed '1d;$d' \
+    | grep -v -e '^$' -e '^#' \
+    | jq -Rr 'split("\t") as $f
+        | ($f[1] // "" | gsub("\\\\t"; "\t") | gsub("\\\\n"; "\n")) as $c
+        | ($f[2] // "") as $d
+        | {id: "b1", type: "shell", status: "running"}
+          + (if $c != "" then {command: $c} else {} end)
+          + (if $d != "" then {description: $d} else {} end)
+        | "\($f[0])\t" + ({hook_event_name: "Stop", cwd: "/home/u/myrepo",
+                           last_assistant_message: "started", background_tasks: [.]} | tojson)')"
+  while IFS= read -r line; do
+    expect="${line%%$'\t'*}"
+    json="${line#*$'\t'}"
+    case "$expect" in
+      service) want=done ;;
+      bounded) want=running ;;
+      *) echo "bad expectation [$expect] in the corpus"; return 1 ;;
+    esac
+    parity_payloads "$json" done
+    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = "$want" ] || { echo "[$json] is not $expect"; return 1; }
+    n=$((n + 1))
+  done <<<"$cases"
+  [ "$n" -gt 100 ] || { echo "corpus extraction broke: $n cases"; return 1; }
+}
+
+@test "parity: a held shell is labelled by its description, else its command" {
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test -p server","description":"Run the server tests"}]}' done
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the server tests" ]
-  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test","description":"Run tests and watch for failures"}]}' done
-  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
-  # No command: the description decides; neither → no hold.
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Run the suite"}]}' done
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the suite" ]
-  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Run the docs dev server"}]}' done
-  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
+  # A blank command is no command: no description either → no hold.
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"ok","background_tasks":[{"id":"b1","type":"shell","status":"running","command":" "}]}' done
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
 }

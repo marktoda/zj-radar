@@ -25,8 +25,8 @@
 //!
 //! Task lines are CLI-only: notify.sh's bash fallback sends no `tasks`, and
 //! mirrors only the resulting waiting status (the "waiting on …" Running of a
-//! turn end); parity.bats pins that status, and `SERVICE_PHRASES`, between
-//! the two.
+//! turn end); parity.bats pins that status, the service word lists and the
+//! shared service corpus (`agents/service_cases.rs`) between the two.
 
 use crate::agents::{command_basename, shell_is_service};
 use serde_json::Value;
@@ -48,8 +48,8 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The turn-end snapshot from a `Stop` payload: every *running* task, holding
 /// or not. Holding = bounded work whose end will wake the agent: subagents,
-/// workflows, teammates, and shells whose command or description doesn't
-/// look like a service (`shell_is_service`; a shell with neither doesn't
+/// workflows, teammates, and shells whose command (or, without one, its
+/// description) doesn't look like a service (`shell_is_service`; a shell with neither doesn't
 /// hold, and the plugin never re-raises a stored `holds: false`). Monitors,
 /// crons, services and unknown types are listed but never hold — a row must
 /// not spin forever on work that may never end. Uncapped here: `to_wire`
@@ -209,81 +209,16 @@ mod tests {
         turn_end(&serde_json::json!({ "background_tasks": [t] })).items[0].holds
     }
 
+    // The classifier's cases live in the shared corpus
+    // (`agents/service_cases.rs`, run by agents.rs's test and parity.bats);
+    // here only the wiring.
     #[test]
-    fn long_running_servers_watchers_and_tunnels_never_hold() {
-        for cmd in [
-            "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
-            "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
-            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "kubectl get pods --watch",
-            "nodemon index.js",
-            "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
-            "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
-            "cd web && vite", "cd web&&vite", "pnpm exec vite --host", "bun x vite@latest", "npm run build; vite",
-        ] {
-            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
-        }
-    }
-
-    #[test]
-    fn bounded_uses_of_single_service_words_hold() {
-        // A false service is permanent (`holds` only drops) and may notify
-        // "finished" early, so these single words need the right position.
-        for cmd in [
-            "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
-            "./watch.sh", "vitest run", "npm run watch-docs-check", "npm install vite", "pnpm add -D vite",
-            "ls node_modules/vite", "cd packages/vite && pnpm test", "vite build&&echo ok",
-            // A gh / kubectl rollout status `--watch` waits on something that ends.
-            "gh pr checks 57 --watch", "gh pr checks 57 --watch && gh pr merge", "/usr/bin/gh run list --watch",
-            "kubectl rollout status deploy/x --watch", "kubectl rollout status deploy/x --watch=true",
-        ] {
-            assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
-        }
-    }
-
-    #[test]
-    fn the_gh_kubectl_watch_exemption_is_per_segment() {
-        // Only the segment whose command word is gh/kubectl is exempt.
-        for cmd in ["gh pr checks 57 && tsc --watch", "tsc --watch; gh pr view", "npx tsc --watch"] {
-            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
-        }
-    }
-
-    #[test]
-    fn service_phrases_need_shell_word_edges() {
-        // A phrase glued to `_ - . : /` on its right, or `_ - . :` on its
-        // left, is part of a longer name, not the service.
-        for cmd in [
-            "pytest tests/test_serve.py", "go test ./serve/...", "make dev-deps", "just dev-setup",
-            "npm run dev:migrate", "pytest tests/test_uvicorn_app.py", "ls serve.d", "cat .serve",
-        ] {
-            assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
-        }
-        // `/` on the left and shell punctuation on either side still match.
-        for cmd in [
-            "npm run dev|tee log", "bash -c \"npm run dev\"", "sh -c 'npm run dev'", "(npm run dev)",
-            "echo `npm start`", "./venv/bin/uvicorn app:app", "docker compose up", "tail -f log",
-        ] {
-            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
-        }
-    }
-
-    #[test]
-    fn the_description_can_mark_a_service_but_single_words_do_not() {
-        // An unlisted command whose description gives it away.
-        assert!(!shell_holds(Some("./bin/app --port 3000"), Some("Start the dev server")));
-        assert!(!shell_holds(Some("./run.sh"), Some("Rebuild in watch mode")));
-        // Bounded work whose description mentions a service word in passing.
-        for (cmd, desc) in [
-            ("cargo test -p server", "Run the server tests"),
-            ("go build ./cmd/server", "Build the server"),
-            ("pytest tests/test_watcher.py", "Test the file watcher"),
-            ("cargo test", "Run tests and watch for failures"),
-            ("npm test", "Serve up the test report"),
-            ("vitest run", "Run unit tests"),
-            ("./observe.sh", "Observe results"),
-        ] {
-            assert!(shell_holds(Some(cmd), Some(desc)), "{cmd} / {desc} is bounded");
-        }
+    fn a_shell_holds_unless_its_command_is_a_service() {
+        assert!(!shell_holds(Some("cd web && pnpm run dev"), None));
+        assert!(shell_holds(Some("npx vite build"), None));
+        // The command decides alone, whatever the description says.
+        assert!(shell_holds(Some("./bin/app --port 3000"), Some("Start the dev server")));
+        assert!(!shell_holds(Some("npm run dev"), Some("Run the test suite")));
     }
 
     #[test]
