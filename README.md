@@ -85,7 +85,7 @@ manual setup, and the full removal list are in
 - Background work an agent started (a backgrounded test run, a subagent, a
   dev server) gets its own lines under the agent's row. Claude Code only for
   now, and it needs the `zj-radar` CLI on `PATH`.
-- Desktop notifications when a background agent finishes or needs you.
+- Desktop notifications when an agent in another tab or pane finishes or needs you.
 - Running several Zellij sessions? Each rail lists the others with live counts
   and click-to-switch.
 

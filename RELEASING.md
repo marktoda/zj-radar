@@ -10,6 +10,8 @@ step below gates the next.
 1. **Sync versions.** Three places must agree: `[workspace.package] version`,
    the exact core pin (`zj-radar-core = { …, version = "=X.Y.Z" }`) in the
    root `Cargo.toml`, and `plugins/zj-radar-claude/.claude-plugin/plugin.json`.
+   Commit the regenerated `Cargo.lock` with them (`cargo build`): the release
+   and MSRV builds run `--locked`, so a stale lockfile turns the tag red.
    `workspace_core_pin_and_claude_plugin_versions_agree`
    (`crates/plugin/src/hooks_manifest_tests.rs`, so `just ci`) fails unless all
    three match; `release.yml` also rejects a tag that does not match
@@ -62,7 +64,8 @@ step below gates the next.
 
    `release.yml` builds the wasm (nix) and portable CLI tarballs, checksums
    them, and creates the release. The builds run in parallel with the gates
-   (the deterministic and bash suites, plus live E2E on both OSes), but the
+   (the deterministic, bash and pi-bridge JS suites, plus live E2E on both
+   OSes), but the
    publish job waits on all of them. A red gate publishes nothing: fix, delete
    the tag, re-tag.
 

@@ -250,14 +250,17 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance holds the same converged stores after a broadcast, so one write per
-edge is the whole snapshot: the instance whose tab holds the edge's pane
-writes, and edges with no nameable owner are written by everyone
-(`RadarState::persists_edges_for`). Ownership rather than visibility, because
-Zellij spawns fresh plugin instances — seeded from this file — for every
-client that attaches, while the detached client's hidden instances are what
-kept it current meanwhile. Overlapping writers produce identical content, so
-races are benign. With persistence off, late sidebars start empty until the
-next broadcast.
+edge is the whole snapshot. For a pushed edge the instance whose tab holds
+the edge's pane writes, and edges with no nameable owner are written by
+everyone (`RadarState::persists_edges_for`). Ownership rather than visibility,
+because Zellij spawns fresh plugin instances — seeded from this file — for
+every client that attaches, while the detached client's hidden instances are
+what kept it current meanwhile. Timer edges (debounced promotion, Done
+confirm, TTL recede, stale-Running expiry) are the exception: every instance
+writes them. Instances tick on unaligned phases, so a lagging sibling's
+own-pane write can briefly put pre-confirm state back in the file; its own
+timer write repairs it (`RadarState::timer`). With persistence off, late
+sidebars start empty until the next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 

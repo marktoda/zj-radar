@@ -125,6 +125,8 @@ fn a_lagging_siblings_stale_write_is_repaired_by_its_own_timer_write() {
     // unaligned phases: B confirms pane 8's Done and writes; A, a tick
     // behind, writes an own-pane edge that still carries pane 8 Running.
     // A's own confirm must write too, or a late tab rehydrates a spinner.
+    // This pins the merge outcome; that the runtime actually persists a
+    // foreign timer edge is `timer_driven_edges_are_written_by_every_instance`.
     let two_tabs = |own_position: usize| {
         let mut radar = RadarState::default();
         radar.tabs_changed(vec![tab(10, 0, "a", true), tab(20, 1, "b", false)]);

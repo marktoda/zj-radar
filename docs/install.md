@@ -236,8 +236,9 @@ Items are `ok`, `warn`, or `missing`:
 
 `zj-radar setup <agent> --check` checks one producer's wiring. Bare
 `zj-radar setup --check` checks the sidebar plus every agent it detects, so an
-agent you don't use never fails it. A pi or opencode binary missing from
-`PATH` while our bridge is installed is a `warn`, not a `missing`.
+agent you don't use never fails it. An agent binary missing from `PATH` while
+zj-radar is wired for it (the Claude plugin installed; our Codex hooks or
+notify slot; our opencode or pi bridge) is a `warn`, not a `missing`.
 
 ## Upgrade (`zj-radar update`)
 
@@ -352,6 +353,7 @@ config-dir entries with them.
 | `permissions.kdl` grant entry (macOS `~/Library/Caches/org.Zellij-Contributors.Zellij/`, Linux `~/.cache/zellij/`) | `setup zellij` with your consent, or Zellij when you answer `y` | left in place (Zellij also writes this file); delete the `zj_radar.wasm` block |
 | `run`'s config dir (macOS `~/Library/Application Support/zj-radar/`, Linux `~/.local/share/zj-radar/`) | `zj-radar run` | not touched by `setup`; `rm -r` it, it holds only re-materializable assets and session markers |
 | Per-session plugin state under Zellij's cache, `/tmp/zj-radar` fallback | the running plugin | self-pruning after 24 h; safe to delete anytime |
+| `zj-radar-dedup-<uid>/` under `$XDG_RUNTIME_DIR` (else `$TMPDIR`/`/tmp`): send-dedup records and background-subagent markers | `zj-radar notify` | self-expiring; safe to delete anytime (0.7.x left a `zj-radar-dedup/` there too) |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
 | `zj-radar-claude` plugin + `zj-radar` marketplace entry in Claude Code's plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; marketplace entry stays: `claude plugin marketplace remove zj-radar` |
 | `plugins/zj-radar.js` (1.x) and `plugins/zj-radar/tui.js` (2.x) under `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (each only when the marker is present), along with its `.zj-radar.bak` when that backup is ours (a backup of the foreign file `--force` replaced is left for you, with the `mv` that restores it; `--dry-run` names which) and the emptied `zj-radar/` dir |
@@ -360,11 +362,11 @@ config-dir entries with them.
 Complete removal:
 
 ```sh
-zj-radar setup zellij --uninstall
-zj-radar setup claude --uninstall && claude plugin marketplace remove zj-radar
-zj-radar setup codex --uninstall
-zj-radar setup opencode --uninstall
-zj-radar setup pi --uninstall
+zj-radar setup zellij --uninstall -y
+zj-radar setup claude --uninstall -y && claude plugin marketplace remove zj-radar
+zj-radar setup codex --uninstall -y
+zj-radar setup opencode --uninstall -y
+zj-radar setup pi --uninstall -y
 ```
 
 then delete the wasm, the `run` data dir, the grant block, and the binary.
