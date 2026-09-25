@@ -131,6 +131,21 @@ test("tool_input is trimmed to the keys the Rust adapter reads", async () => {
   assert.ok(!("content" in sent[1].payload.tool_input));
 });
 
+test("kept tool args are capped at the head, surrogate-safe", async () => {
+  const rt = await loadRuntime();
+  rt.emit("session_start", { reason: "startup" });
+  rt.emit("agent_start");
+  const command = "cat <<'EOF' > big.txt\n" + "y".repeat(2_000_000) + "\nEOF";
+  const path = "a".repeat(4095) + "😀".repeat(10);
+  rt.emit("tool_execution_start", { toolName: "bash", args: { command, path } });
+  await settle();
+  const input = sent[1].payload.tool_input;
+  assert.ok(input.command.length <= 4096, `command ${input.command.length}`);
+  assert.ok(input.command.startsWith("cat <<'EOF' > big.txt\n"), "the head bash_activity reads survives");
+  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  assert.ok(input.path.length <= 4096 && !lone.test(input.path), "path is capped without a lone surrogate");
+});
+
 test("session_start on startup/resume/fork/reload sends nothing", async () => {
   const rt = await loadRuntime();
   for (const reason of ["startup", "resume", "fork", "reload"]) rt.emit("session_start", { reason });
@@ -429,13 +444,14 @@ test("real child that exits without reading a large stdin: no crash, queue keeps
   // The stub logs its --status and exits 0 without touching stdin. A 1 MB
   // payload overflows the pipe buffer, so the write outlives the child and
   // fails EPIPE asynchronously on child.stdin — the regression this guards.
-  // (`tool_input.command` is the one uncapped free-text field that can carry
-  // a payload this size; the prompt/message caps would shrink it.)
+  // (Every free-text field is capped, so the oversized payload rides on
+  // `cwd`, the one field taken verbatim from pi's ctx.)
   await withRealSpawn('#!/bin/sh\necho "$4" >> "$LOG"\nexit 0\n', async (log) => {
     const rt = await loadRuntime();
+    rt.ctx.cwd = "/" + "x".repeat(1_000_000);
     rt.emit("session_start", { reason: "startup" });
     rt.emit("agent_start");
-    rt.emit("tool_execution_start", { toolName: "bash", args: { command: "x".repeat(1_000_000) } });
+    rt.emit("tool_execution_start", { toolName: "bash", args: { command: "ls" } });
     rt.emit("agent_settled");
     await settle();
     assert.deepEqual(log(), ["running", "running", "done"]);

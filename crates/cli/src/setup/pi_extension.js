@@ -41,18 +41,21 @@ const DRAIN_BOUND_MS = 1_500;
 const TOOL_INPUT_KEYS = ["path", "file_path", "notebook_path", "command"];
 
 // Trim a tool call's args down to the keys the Rust adapter reads, dropping
-// everything else (large payload fields, non-string values). Non-object args
-// (or none) become `undefined` so the field is omitted entirely.
+// everything else (large payload fields, non-string values), and cap each
+// kept value like the free text below — a heredoc `command` can be as large
+// as a `write`'s content, and its readers only look at the head. Non-object
+// args (or none) become `undefined` so the field is omitted entirely.
 function trimToolInput(args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
   const out = {};
   for (const key of TOOL_INPUT_KEYS) {
-    if (typeof args[key] === "string") out[key] = args[key];
+    if (typeof args[key] === "string") out[key] = capHead(args[key]);
   }
   return out;
 }
 
-// Free-text cap for `prompt`/`message` before they are serialized and piped.
+// Free-text cap for `prompt`/`message` (and each kept tool arg) before they
+// are serialized and piped.
 // The Rust side bounds every wire field at MAX_WIRE_FIELD_CHARS (512) anyway;
 // this only stops a 20 MB paste from being stringified and written to a child
 // on every event. Generous so neither reader loses what it looks at.
