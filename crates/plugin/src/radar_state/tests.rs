@@ -1142,6 +1142,31 @@ fn identical_status_rebroadcast_is_a_strict_noop() {
 }
 
 #[test]
+fn status_payload_renames_only_when_the_naming_repo_changes() {
+    // `repo` is the only status field tab naming reads, so the tool-hook
+    // firehose (same repo, new label) must skip naming entirely. Leaving the
+    // tab un-echoed ("Tab #1") makes the difference observable: a recompute
+    // would re-emit "alpha" on every payload.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
+    radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+    let running = |msg: &str, repo: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Running, repo) })
+    };
+    let rename_to = |name: &str| vec![TabRename { id: TabId::new(10), name: name.into() }];
+
+    let first = radar.status_pipe(&running("editing", "alpha"), 1, 100, config::NamingMode::Managed).unwrap();
+    assert_eq!(first.renames, rename_to("alpha"), "a new repo names the tab");
+
+    let label = radar.status_pipe(&running("testing", "alpha"), 2, 200, config::NamingMode::Managed).unwrap();
+    assert!(label.renames.is_empty(), "same repo, new label: naming is skipped");
+
+    let moved = radar.status_pipe(&running("testing", "beta"), 3, 300, config::NamingMode::Managed).unwrap();
+    assert_eq!(moved.renames, rename_to("beta"), "a repo change still renames");
+}
+
+#[test]
 fn running_label_update_defers_render_and_persist_to_the_tick() {
     // Running→Running with a new activity label: the Fast tick (armed while
     // anything is Running) repaints and flushes within a second, so the

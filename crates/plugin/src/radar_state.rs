@@ -822,6 +822,14 @@ impl RadarState {
         // is rare, real state — not firehose — so it renders and persists now,
         // like any edge: a tab opened this second must rehydrate it.
         let tasks_changed = prev.as_ref().map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
+        // `repo` is the only status field tab naming reads (`tab_facts`), and
+        // the namer filters an empty repo to "none" — so a payload that leaves
+        // the effective repo alone cannot change this tab's name, and the
+        // per-tool-hook firehose skips the fact-building entirely.
+        fn naming_repo(o: Option<&TrackedObservation>) -> Option<&str> {
+            o.map(|o| o.repo.as_str()).filter(|r| !r.is_empty())
+        }
+        let repo_changed = naming_repo(prev.as_ref()) != naming_repo(self.status.get(pane_id));
         let label_only = prev.as_ref().map(|o| o.status) == now_status
             && now_status == Some(Status::Running)
             && !tasks_changed
@@ -834,7 +842,7 @@ impl RadarState {
             render: !label_only,
             snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
             snapshot_pane: Some(pane_id),
-            renames: self.rename_tabs(naming),
+            renames: if repo_changed { self.rename_tabs(naming) } else { Vec::new() },
             settle: false,
             ..RadarChange::default()
         })
@@ -1279,40 +1287,37 @@ impl RadarState {
         let Some(naming_tab_id) = self.naming_tab_id else {
             return Vec::new();
         };
-        let facts: Vec<TabFacts> = self
-            .name_facts()
-            .into_iter()
-            .filter(|tab| tab.id == naming_tab_id)
-            .collect();
+        // Only this instance's own tab: each instance names just the tab it
+        // lives in, so building facts for every other tab (cloning names,
+        // titles, cwds, repos) only to discard them was pure per-event waste
+        // multiplied across instances.
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == naming_tab_id) else {
+            return Vec::new();
+        };
+        let facts = [self.tab_facts(tab)];
         self.namer.rename(&facts, naming_mode)
     }
 
-    /// Join this state's tabs, pane topology, status observations, and known
-    /// cwds into the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is
-    /// sourced from the *status* store only (commands carry no repo); the raw
-    /// `cwd`/`title` are processed inside the namer. Iterates `self.tabs` in
-    /// stored order.
-    fn name_facts(&self) -> Vec<TabFacts> {
-        self.tabs
-            .iter()
-            .map(|tab| {
-                let empty = Vec::new();
-                let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
-                TabFacts {
-                    id: tab.id,
-                    name: tab.name.clone(),
-                    panes: panes
-                        .iter()
-                        .map(|p| PaneFacts {
-                            repo: self.status.get(p.id).map(|s| s.repo.clone()),
-                            cwd: self.pane_cwd.get(&p.id).cloned(),
-                            title: p.title.clone(),
-                            focused: p.focused_in_tab,
-                        })
-                        .collect(),
-                }
-            })
-            .collect()
+    /// Join one tab's pane topology, status observations, and known cwds into
+    /// the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is sourced
+    /// from the *status* store only (commands carry no repo); the raw
+    /// `cwd`/`title` are processed inside the namer.
+    fn tab_facts(&self, tab: &RadarTab) -> TabFacts {
+        let empty = Vec::new();
+        let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
+        TabFacts {
+            id: tab.id,
+            name: tab.name.clone(),
+            panes: panes
+                .iter()
+                .map(|p| PaneFacts {
+                    repo: self.status.get(p.id).map(|s| s.repo.clone()),
+                    cwd: self.pane_cwd.get(&p.id).cloned(),
+                    title: p.title.clone(),
+                    focused: p.focused_in_tab,
+                })
+                .collect(),
+        }
     }
 
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over
