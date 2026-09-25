@@ -815,7 +815,7 @@
         // The set of suppressed agents is exactly the push adapters (see the
         // `agent_names_match_push_adapter_sources` guard); Gemini is NOT one —
         // see `gemini_foreground_command_is_tracked`.
-        for agent in &["claude", "codex", "opencode"] {
+        for agent in &["claude", "codex", "opencode", "pi"] {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &[agent.to_string()], true, Some("/work/repo"), 1);
             assert!(
@@ -832,8 +832,8 @@
 
     #[test]
     fn gemini_foreground_command_is_tracked() {
-        // Gemini has no push adapter (the shipped scope is Claude, Codex, and
-        // Opencode), so unlike them it is *observed* via command-tracking
+        // Gemini has no push adapter (the shipped scope is Claude, Codex,
+        // Opencode, and pi), so unlike them it is *observed* via command-tracking
         // rather than suppressed — otherwise its panes would show nothing at
         // all. It carries its own `Kind::Gemini` source so it renders with the
         // gemini mark.
