@@ -40,8 +40,10 @@ fn entries() -> Vec<(String, u64)> {
 /// the short `RUNNING_PIPE_TIMEOUT_SECS`, but one carrying background tasks
 /// (a `PostToolUse` launch, a `<task-notification>` wake) is an edge and keeps
 /// the full cap (`default_pipe_timeout_secs(_, edge)` in
-/// crates/cli/src/notify.rs, and notify.sh's `tasks_json` guard). Budgeting
+/// crates/cli/src/notify.rs). Budgeting
 /// the hook for the heartbeat would let the runner kill a task edge mid-send.
+/// (Only the CLI sends tasks; notify.sh's fallback keeps every `running` on
+/// the short cap, which the full-cap budget covers too.)
 fn send_cap(command: &str) -> u64 {
     if let Some(rest) = command.split("ZJ_RADAR_PIPE_TIMEOUT=").nth(1) {
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -61,11 +63,10 @@ const NOTIFY_SH: &str = include_str!("../../../plugins/zj-radar-claude/scripts/n
 #[test]
 fn bash_producer_deadline_literals_match_the_pipe_constants() {
     let default_line = format!("default_deadline={DEFAULT_PIPE_TIMEOUT_SECS}");
-    // A running that carries background tasks keeps the edge deadline (parity
-    // with the CLI's `default_pipe_timeout_secs(_, edge)`), hence the guard.
-    let running_line = format!(
-        "[[ \"$status\" == \"running\" && -z \"$tasks_json\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}"
-    );
+    // The fallback never sends background tasks (they need the CLI), so every
+    // `running` it sends is a heartbeat on the short cap.
+    let running_line =
+        format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
     assert!(
         NOTIFY_SH.contains(&default_line),
         "notify.sh must set `{default_line}` (core::pipe::DEFAULT_PIPE_TIMEOUT_SECS) — \

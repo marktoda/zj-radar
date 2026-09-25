@@ -36,7 +36,8 @@ Claude fires a hook before and after every tool call with the same content,
 and the second would only cost every sidebar instance a no-op. Any other
 status always goes out, and so does a `running` that changes anything or
 arrives after the 10 seconds. `ZJ_RADAR_NO_DEDUP=1` in the agent's
-environment disables this; the bash fallback never dedups. An update that
+environment disables this; the bash fallback never dedups (and never sends
+background tasks — task lines need the CLI). An update that
 carries background tasks (below) is never deduped and always gets the full
 send deadline: a task start or outcome can't be recovered later.
 
@@ -219,7 +220,9 @@ Field rules:
   comes from `done`/`error` or carries a non-empty `task` (a new prompt; a
   bare `pending` → `running` doesn't, since a permission answer lands
   mid-turn). At most 16 items, ids 32 chars,
-  labels 64. Only Claude sends this today.
+  labels 64. Only Claude sends this today, and only through the `zj-radar`
+  CLI (the Claude plugin's bash fallback keeps the waiting status but draws
+  no task lines).
 - Unknown fields are ignored, so extras are safe.
 
 The plugin defends itself at parse time: it strips ANSI, control, and bidi

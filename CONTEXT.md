@@ -83,7 +83,8 @@ reported outcome is final; a task a snapshot drops with no outcome is `Ended`
 snapshot still has holding work means the turn is over and the agent waits.
 Rendered as `┊` sub-lines under the pane line (`render::emit_task_lines`);
 never feeds the roll-up, counts, or notifications. Only Claude reports tasks
-today (`crates/cli/src/agents/claude/background.rs`). Not the activity
+today, and only through the CLI (`crates/cli/src/agents/claude/background.rs`;
+the bash fallback mirrors the waiting status but not the tasks). Not the activity
 model's *Job*, which is a class of observed command.
 
 ## Information source

@@ -53,7 +53,7 @@ is over and only that work remains, the agent's own glyph turns to a steady
 when the outcome is unknown, and stay listed until your next prompt. At most
 three lines show per pane (the rest fold into `┊ +N more`); on a short or
 narrow rail they fold into a `+N` count on the pane row. Claude only, for
-now.
+now, and it needs the `zj-radar` CLI installed.
 
 **Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini ·
 `$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
