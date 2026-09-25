@@ -5,7 +5,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { copyFileSync, mkdtempSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -70,7 +70,19 @@ function fakeSpawn(cmd, args) {
   return child;
 }
 
-const settle = () => new Promise((r) => setTimeout(r, 20));
+// Poll `pred` until true or `ms` elapses (then fail loudly): no fixed sleeps,
+// so a loaded CI box only makes a test slower, never flaky.
+async function until(pred, ms = 5000) {
+  const t0 = Date.now();
+  while (!pred()) {
+    if (Date.now() - t0 > ms) throw new Error(`condition not met within ${ms}ms`);
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+// Every handler enqueues synchronously, so "settled" is exactly "the shared
+// queue has drained" (processQueue nulls `processing` after the last exit;
+// it is unset if nothing was ever sent).
+const settle = () => until(() => !globalThis[KEY].processing);
 const events = () => sent.map((s) => `${s.status}:${s.payload.event}`);
 
 beforeEach(() => {
@@ -233,7 +245,7 @@ test("/new mid-turn keeps cross-runtime ordering", async () => {
   // line — the shared queue must keep it FIFO regardless.
   a.emit("session_shutdown", { reason: "new" });
   b.emit("session_start", { reason: "new" });
-  await new Promise((r) => setTimeout(r, 40));
+  await settle();
   assert.deepEqual(events(), ["running:prompt", "done:settled", "idle:session.new"]);
 });
 
@@ -323,4 +335,121 @@ test("coalesces tool refreshes but never drops edges", async () => {
   assert.equal(ev[0], "running:prompt");
   assert.equal(ev.at(-1), "done:settled");
   assert.ok(ev.filter((e) => e === "running:tool").length <= 2, ev.join(","));
+});
+
+test("resume/fork forget the last settled state; reload keeps it", async () => {
+  for (const [reason, want] of [["resume", "idle"], ["fork", "idle"], ["reload", "error"]]) {
+    sent = [];
+    const rt = await loadRuntime();
+    rt.emit("session_start", { reason: "startup" });
+    rt.emit("agent_start");
+    rt.emit("message_end", assistant("", { stopReason: "error", errorMessage: "boom" }));
+    rt.emit("agent_settled");
+    const next = await loadRuntime();
+    next.emit("session_start", { reason });
+    next.emit("ui_prompt_start", { reason: "ui_prompt", kind: "select", title: "Pick a model" });
+    next.emit("ui_prompt_end", { reason: "ui_prompt", kind: "select" });
+    await settle();
+    assert.equal(events().at(-1), `${want}:ui_prompt.end`, reason);
+    assert.equal(sent.at(-1).payload.message, want === "error" ? "boom" : "", reason);
+  }
+});
+
+test("prompt keeps its head and message keeps both ends under the cap", async () => {
+  const rt = await loadRuntime();
+  rt.emit("session_start", { reason: "startup" });
+  const prompt = "fix the flaky test\n" + "p".repeat(3_000_000);
+  rt.emit("input", { text: prompt, source: "interactive" });
+  rt.emit("agent_start");
+  const body = "All green.\n" + "m".repeat(3_000_000) + "\nShall I push?";
+  rt.emit("message_end", assistant(body));
+  rt.emit("agent_settled");
+  await settle();
+  const p = sent[0].payload.prompt;
+  const m = sent[1].payload.message;
+  assert.ok(p.length <= 4096 && p.startsWith("fix the flaky test\n"), `prompt ${p.length}`);
+  assert.ok(m.length <= 4096 + 3, `message ${m.length}`);
+  assert.ok(m.startsWith("All green.\n"), "the rail's msg (head) survives");
+  assert.ok(m.endsWith("\nShall I push?"), "the trailing question (tail) survives");
+  // Short text is untouched.
+  rt.emit("agent_start");
+  rt.emit("message_end", assistant("short"));
+  rt.emit("agent_settled");
+  await settle();
+  assert.equal(sent.at(-1).payload.message, "short");
+});
+
+test("the cap never splits a surrogate pair", async () => {
+  const rt = await loadRuntime();
+  rt.emit("session_start", { reason: "startup" });
+  // 4095 ASCII chars put an emoji's high surrogate exactly at the head cut;
+  // the message's odd-length runs do the same at both of its cuts.
+  rt.emit("input", { text: "a".repeat(4095) + "😀".repeat(10), source: "interactive" });
+  rt.emit("agent_start");
+  rt.emit("message_end", assistant("b".repeat(2047) + "😀".repeat(3000) + "c".repeat(2047)));
+  rt.emit("agent_settled");
+  await settle();
+  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  for (const s of [sent[0].payload.prompt, sent[1].payload.message]) {
+    assert.ok(!lone.test(s), "no lone surrogate may reach JSON.stringify");
+  }
+});
+
+// ── Real child processes ───────────────────────────────────────────────────
+// Everything above drives a fake spawn; the EPIPE crash was only ever found
+// by hand. These spawn real `zj-radar` stubs off a temp PATH.
+async function withRealSpawn(stub, fn) {
+  const bin = mkdtempSync(join(DIR, "bin-"));
+  const log = join(bin, "log");
+  if (stub !== null) {
+    const path = join(bin, "zj-radar");
+    writeFileSync(path, stub.replaceAll("$LOG", log));
+    chmodSync(path, 0o755);
+  }
+  const savedPath = process.env.PATH;
+  const uncaught = [];
+  const onUncaught = (e) => uncaught.push(e);
+  process.on("uncaughtException", onUncaught);
+  globalThis[KEY] = {}; // no seam: the bridge's own node:child_process spawn
+  process.env.PATH = bin;
+  try {
+    await fn(() => {
+      try { return readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return []; }
+    });
+    // Give any late async stdin `error` a turn to surface.
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    process.env.PATH = savedPath;
+    process.off("uncaughtException", onUncaught);
+  }
+  assert.deepEqual(uncaught, [], "no uncaught exception may escape into pi");
+}
+
+test("real child that exits without reading a large stdin: no crash, queue keeps moving", async () => {
+  // The stub logs its --status and exits 0 without touching stdin. A 1 MB
+  // payload overflows the pipe buffer, so the write outlives the child and
+  // fails EPIPE asynchronously on child.stdin — the regression this guards.
+  // (`tool_input.command` is the one uncapped free-text field that can carry
+  // a payload this size; the prompt/message caps would shrink it.)
+  await withRealSpawn('#!/bin/sh\necho "$4" >> "$LOG"\nexit 0\n', async (log) => {
+    const rt = await loadRuntime();
+    rt.emit("session_start", { reason: "startup" });
+    rt.emit("agent_start");
+    rt.emit("tool_execution_start", { toolName: "bash", args: { command: "x".repeat(1_000_000) } });
+    rt.emit("agent_settled");
+    await settle();
+    assert.deepEqual(log(), ["running", "running", "done"]);
+  });
+});
+
+test("real spawn with no zj-radar on PATH: no crash, queue drains", async () => {
+  await withRealSpawn(null, async (log) => {
+    const rt = await loadRuntime();
+    rt.emit("session_start", { reason: "startup" });
+    rt.emit("input", { text: "x".repeat(100_000), source: "interactive" });
+    rt.emit("agent_start");
+    rt.emit("agent_settled");
+    await settle();
+    assert.deepEqual(log(), []);
+  });
 });

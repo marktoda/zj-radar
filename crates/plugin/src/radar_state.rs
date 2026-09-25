@@ -222,6 +222,15 @@ pub(crate) struct RadarChange {
     pub force_render: bool,
 }
 
+/// What a [`RadarState::timer`] tick did: whether any observation changed (the
+/// runtime renders on it) and whether this instance owes the snapshot write
+/// for it (see [`RadarState::persists_edges_for`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TimerChange {
+    pub changed: bool,
+    pub persist: bool,
+}
+
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
 /// `PaneUpdate`. Each read is a blocking host round-trip, so we cap a single
 /// update's fan-out (e.g. a session restore surfacing many panes at once),
@@ -306,6 +315,12 @@ pub(crate) struct RadarState {
     /// render paths; the plugin is single-threaded by construction (one wasm
     /// instance per tab).
     rows_memo: std::cell::RefCell<Option<RowsMemo>>,
+    /// Memo for [`ledger_lines`](Self::ledger_lines), keyed on `generation`
+    /// alone: its inputs are the ledger (every push bumps the generation —
+    /// see `ledger_receded`; a snapshot load touches) and `tabs` (for the
+    /// live tab-position lookup). The render gate consults it on every
+    /// render-requesting event in every instance.
+    ledger_memo: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<LedgerLine>>)>>,
 }
 
 /// The [`RadarState::rows_memo`] entry: the generation and the count of
@@ -323,7 +338,8 @@ impl RadarState {
     /// that mutates something `rows()` reads must call this (the memo makes a
     /// missed call a *stale rail* bug, not just a slow one — keep the call
     /// sites audited against `rows`'s inputs: `tabs`, `tab_panes`,
-    /// `flash_until`, and both stores).
+    /// `flash_until`, and both stores — plus the ledger, for the
+    /// [`ledger_lines`](Self::ledger_lines) memo).
     fn touch(&mut self) {
         self.generation += 1;
     }
@@ -642,12 +658,13 @@ impl RadarState {
         }
     }
 
-    /// Timer tick. Returns whether an observation changed (a debounced
-    /// promotion or Done-flip) — the runtime persists the snapshot on it so
-    /// timer-driven mutations reach late-spawned instances too. Every
-    /// completion the tick receded (TTL recede, or a promotion displacing a
-    /// still-lit Done/Error) hands off to the ledger.
-    pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
+    /// Timer tick. Reports whether an observation changed (a debounced
+    /// promotion, a Done confirm, a TTL recede, a stale-Running expiry) — the
+    /// runtime renders on it — and whether THIS instance owes the snapshot
+    /// write for it, so timer-driven mutations reach late-spawned instances
+    /// too. Every completion the tick receded (TTL recede, or a promotion
+    /// displacing a still-lit Done/Error) hands off to the ledger.
+    pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> TimerChange {
         // Lazy expiry: `rows`/`has_active_flash` stay `&self` (read paths), so
         // the map itself is only ever pruned here, on the one `&mut self` tick
         // that already runs regardless of flash state.
@@ -657,6 +674,8 @@ impl RadarState {
         // one, so the removal can never make a memoized rows() result stale.
         self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
+        // The panes this tick changed, for the snapshot-ownership decision.
+        let mut changed_panes = report.changed_panes;
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence
@@ -673,12 +692,18 @@ impl RadarState {
         // broadcast; its prompt-return grace clock (see `clear_on_prompt_return`)
         // runs out here. Running is not a completion — nothing to ledger — but
         // the clear must render and persist like any other store change.
-        let stale_cleared = !self.status.expire_stale_running(tick).is_empty();
-        let changed = report.changed || stale_cleared;
+        let stale_cleared = self.status.expire_stale_running(tick);
+        let changed = report.changed || !stale_cleared.is_empty();
+        changed_panes.extend(stale_cleared);
         if changed {
             self.touch();
         }
-        changed
+        // One writer per edge, exactly as for pushed edges: the instance whose
+        // tab holds a changed pane writes (`persists_edges_for`). Without
+        // this every instance read-merge-wrote the shared file for every
+        // promotion/confirm/expiry.
+        let persist = changed_panes.iter().any(|&id| self.persists_edges_for(Some(id)));
+        TimerChange { changed, persist }
     }
 
     pub(crate) fn cwd_changed(
@@ -771,22 +796,16 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         let pane_id = p.pane_id;
-        // Captured BEFORE `apply` overwrites the store — two uses: the ping
-        // flash fires only on a LIVE not-Pending → Pending edge, never on a
-        // re-broadcast of an already-Pending status (spec's "flip", not "is";
-        // snapshot load never touches the flash map, so a restored Pending
-        // never flashes) — and the no-op/label-only classification below
-        // compares the whole observation across the apply.
-        let prev = self.status.get(pane_id).cloned();
-        let flips_to_pending =
-            p.status == Status::Pending && prev.as_ref().map(|o| o.status) != Some(Status::Pending);
-        // A Done/Error that recedes on overwrite (a new broadcast for the same
-        // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here.
-        if let Some(displaced) = self.status.apply(p, tick, now_epoch_s) {
-            // Status-origin recede: never suppressed (see `command_changed`'s
-            // matching call site).
-            self.ledger_recede_now(vec![(pane_id, displaced)]);
-        }
+        // `apply` hands back the overwritten observation (by move — no
+        // pre-apply clone), for two uses: the ping flash fires only on a LIVE
+        // not-Pending → Pending edge, never on a re-broadcast of an
+        // already-Pending status (spec's "flip", not "is"; snapshot load never
+        // touches the flash map, so a restored Pending never flashes) — and
+        // the no-op/label-only classification below compares the whole
+        // observation across the apply.
+        let incoming = p.status;
+        let replaced = self.status.apply(p, tick, now_epoch_s);
+        let prev = replaced.prev.as_ref();
         // Producers re-assert liberally (the Claude plugin broadcasts on every
         // tool hook, and Pre/PostToolUse derive the SAME activity string), so
         // an identical re-broadcast is the single hottest payload this method
@@ -795,10 +814,14 @@ impl RadarState {
         // instance re-render and re-persist for nothing — measured at ~0.5s of
         // host CPU per message across an 8-tab session under Zellij's wasm
         // interpreter. Nothing changed ⇒ nothing to render, persist, or rename.
-        if prev.as_ref() == self.status.get(pane_id) {
+        // (An identical payload never recedes, so returning here drops no
+        // ledger edge.)
+        if prev == self.status.get(pane_id) {
             return Some(RadarChange::default());
         }
+        let prev_status = prev.map(|o| o.status);
         let now_status = self.status.get(pane_id).map(|o| o.status);
+        let flips_to_pending = incoming == Status::Pending && prev_status != Some(Status::Pending);
         self.touch();
         if flips_to_pending {
             self.arm_flash(pane_id, tick);
@@ -821,8 +844,24 @@ impl RadarState {
         // A background-task change (a start, an outcome, a turn-end snapshot)
         // is rare, real state — not firehose — so it renders and persists now,
         // like any edge: a tab opened this second must rehydrate it.
-        let tasks_changed = prev.as_ref().map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
-        let label_only = prev.as_ref().map(|o| o.status) == now_status
+        let tasks_changed = prev.map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
+        // `repo` is the only status field tab naming reads (`tab_facts`), and
+        // the namer filters an empty repo to "none" — so a payload that leaves
+        // the effective repo alone cannot change this tab's name, and the
+        // per-tool-hook firehose skips the fact-building entirely.
+        fn naming_repo(o: Option<&TrackedObservation>) -> Option<&str> {
+            o.map(|o| o.repo.as_str()).filter(|r| !r.is_empty())
+        }
+        let repo_changed = naming_repo(prev) != naming_repo(self.status.get(pane_id));
+        // A Done/Error that recedes on overwrite (a new broadcast for the same
+        // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here —
+        // last, so the comparisons above could borrow `prev` first.
+        // Status-origin recede: never suppressed (see `command_changed`'s
+        // matching call site).
+        if let Some(displaced) = replaced.receded() {
+            self.ledger_recede_now(vec![(pane_id, displaced)]);
+        }
+        let label_only = prev_status == now_status
             && now_status == Some(Status::Running)
             && !tasks_changed
             && self.status.get(pane_id).is_some_and(TrackedObservation::animating);
@@ -834,7 +873,7 @@ impl RadarState {
             render: !label_only,
             snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
             snapshot_pane: Some(pane_id),
-            renames: self.rename_tabs(naming),
+            renames: if repo_changed { self.rename_tabs(naming) } else { Vec::new() },
             settle: false,
             ..RadarChange::default()
         })
@@ -914,8 +953,8 @@ impl RadarState {
     /// stores, so one write per edge is the whole snapshot; picking the
     /// instance whose own tab holds the pane makes that writer deterministic
     /// with no coordination and no filesystem check. When the owner cannot
-    /// be named — a session-wide edge (`None`: a prune sweep, a timer
-    /// promotion, a config override), an own tab not yet resolved, a pane no
+    /// be named — a session-wide edge (`None`: a prune sweep, a config
+    /// override, the deferred-write flush), an own tab not yet resolved, a pane no
     /// tab is known to hold — everyone writes rather than nobody. Ownership,
     /// not visibility, so a detached session (every instance hidden) keeps
     /// the file current for the fresh instances Zellij spawns on the next
@@ -995,18 +1034,27 @@ impl RadarState {
     /// position is a *live* lookup of the stored `tab_id` against `self.tabs`
     /// — `None` once that tab has closed, which the renderer reads as
     /// click-inert (the ledger itself never forgets an entry just because its
-    /// tab went away).
-    pub(crate) fn ledger_lines(&self) -> Vec<LedgerLine> {
-        self.ledger
-            .entries()
-            .map(|e| LedgerLine {
-                at_epoch_s: e.at_epoch_s,
-                error: e.outcome == LedgerOutcome::Error,
-                tab_name: e.tab_name.clone(),
-                label: e.label.clone(),
-                tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
-            })
-            .collect()
+    /// tab went away). Memoized on the generation, like [`rows`](Self::rows).
+    pub(crate) fn ledger_lines(&self) -> std::rc::Rc<Vec<LedgerLine>> {
+        if let Some((generation, lines)) = self.ledger_memo.borrow().as_ref() {
+            if *generation == self.generation {
+                return lines.clone();
+            }
+        }
+        let lines: std::rc::Rc<Vec<LedgerLine>> = std::rc::Rc::new(
+            self.ledger
+                .entries()
+                .map(|e| LedgerLine {
+                    at_epoch_s: e.at_epoch_s,
+                    error: e.outcome == LedgerOutcome::Error,
+                    tab_name: e.tab_name.clone(),
+                    label: e.label.clone(),
+                    tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
+                })
+                .collect(),
+        );
+        *self.ledger_memo.borrow_mut() = Some((self.generation, lines.clone()));
+        lines
     }
 
     /// Any ledger entry still younger than the saturate window — drives the
@@ -1142,7 +1190,12 @@ impl RadarState {
                 continue;
             };
             if let Some(entry) = LedgerEntry::from_observation(pane_id, &obs, *tab_id, tab_name) {
-                self.ledger.push(entry);
+                // The `ledger_lines` memo keys on the generation; a recede
+                // edge almost always touches anyway, but the memo must not
+                // depend on that.
+                if self.ledger.push(entry) {
+                    self.touch();
+                }
             }
         }
     }
@@ -1279,40 +1332,37 @@ impl RadarState {
         let Some(naming_tab_id) = self.naming_tab_id else {
             return Vec::new();
         };
-        let facts: Vec<TabFacts> = self
-            .name_facts()
-            .into_iter()
-            .filter(|tab| tab.id == naming_tab_id)
-            .collect();
+        // Only this instance's own tab: each instance names just the tab it
+        // lives in, so building facts for every other tab (cloning names,
+        // titles, cwds, repos) only to discard them was pure per-event waste
+        // multiplied across instances.
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == naming_tab_id) else {
+            return Vec::new();
+        };
+        let facts = [self.tab_facts(tab)];
         self.namer.rename(&facts, naming_mode)
     }
 
-    /// Join this state's tabs, pane topology, status observations, and known
-    /// cwds into the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is
-    /// sourced from the *status* store only (commands carry no repo); the raw
-    /// `cwd`/`title` are processed inside the namer. Iterates `self.tabs` in
-    /// stored order.
-    fn name_facts(&self) -> Vec<TabFacts> {
-        self.tabs
-            .iter()
-            .map(|tab| {
-                let empty = Vec::new();
-                let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
-                TabFacts {
-                    id: tab.id,
-                    name: tab.name.clone(),
-                    panes: panes
-                        .iter()
-                        .map(|p| PaneFacts {
-                            repo: self.status.get(p.id).map(|s| s.repo.clone()),
-                            cwd: self.pane_cwd.get(&p.id).cloned(),
-                            title: p.title.clone(),
-                            focused: p.focused_in_tab,
-                        })
-                        .collect(),
-                }
-            })
-            .collect()
+    /// Join one tab's pane topology, status observations, and known cwds into
+    /// the resolved [`TabFacts`] the [`TabNamer`] consumes. `repo` is sourced
+    /// from the *status* store only (commands carry no repo); the raw
+    /// `cwd`/`title` are processed inside the namer.
+    fn tab_facts(&self, tab: &RadarTab) -> TabFacts {
+        let empty = Vec::new();
+        let panes = self.tab_panes.get(&tab.position).unwrap_or(&empty);
+        TabFacts {
+            id: tab.id,
+            name: tab.name.clone(),
+            panes: panes
+                .iter()
+                .map(|p| PaneFacts {
+                    repo: self.status.get(p.id).map(|s| s.repo.clone()),
+                    cwd: self.pane_cwd.get(&p.id).cloned(),
+                    title: p.title.clone(),
+                    focused: p.focused_in_tab,
+                })
+                .collect(),
+        }
     }
 
     /// Roll this tab's panes up into a `TabDisplay`. The "status wins over

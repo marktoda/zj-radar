@@ -31,6 +31,32 @@ impl Existing {
             Existing::Absent | Existing::Unreadable(_) => None,
         }
     }
+
+    /// Why `path` (holding `self`) is refused under [`InstallPlan::RefuseForeign`]
+    /// — the one wording every vendored-bridge target reports.
+    pub(crate) fn refusal_reason(&self, path: &std::path::Path) -> String {
+        match self {
+            Existing::Unreadable(e) => format!("{} could not be read ({e})", path.display()),
+            Existing::Absent | Existing::Text(_) => format!("{} is not ours (no marker)", path.display()),
+        }
+    }
+}
+
+/// After an uninstall removed the bridge at `path`, remove its `.bak` restore
+/// point too — but only when that backup carries our marker (a stale-ours
+/// rewrite). After `--force` over a foreign file the backup IS the user's
+/// only copy of it, so it stays. Returns the backup's path when one was left
+/// behind, for the caller to mention.
+pub(crate) fn remove_backup_if_ours(path: &std::path::Path, is_ours: fn(&str) -> bool) -> Option<std::path::PathBuf> {
+    let bak = super::path_with_suffix(path, super::BACKUP_SUFFIX);
+    match plan_uninstall(&read_existing(&bak), is_ours) {
+        UninstallPlan::Absent => None,
+        UninstallPlan::Remove => {
+            let _ = std::fs::remove_file(&bak);
+            None
+        }
+        UninstallPlan::NotOurs => Some(bak),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -138,6 +164,31 @@ mod tests {
         // absent — that would skip the refusal gate and overwrite it silently.
         assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours), InstallPlan::RefuseForeign);
         assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, true, opencode_plugin_is_ours), InstallPlan::Write);
+    }
+
+    #[test]
+    fn remove_backup_if_ours_keeps_a_foreign_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zj-radar.js");
+        let bak = super::super::path_with_suffix(&path, super::super::BACKUP_SUFFIX);
+
+        assert_eq!(remove_backup_if_ours(&path, opencode_plugin_is_ours), None, "no backup: nothing to do");
+
+        std::fs::write(&bak, OPENCODE_PLUGIN_JS).unwrap();
+        assert_eq!(remove_backup_if_ours(&path, opencode_plugin_is_ours), None);
+        assert!(!bak.exists(), "a marker-bearing backup is ours to remove");
+
+        // `--force` over a foreign file: the backup is the user's only copy.
+        std::fs::write(&bak, "export const Theirs = async () => ({});\n").unwrap();
+        assert_eq!(remove_backup_if_ours(&path, opencode_plugin_is_ours), Some(bak.clone()));
+        assert!(bak.exists(), "a foreign backup must survive uninstall");
+    }
+
+    #[test]
+    fn refusal_reason_names_unreadable_and_foreign_files() {
+        let p = std::path::Path::new("/x/zj-radar.js");
+        assert_eq!(Existing::Text("x".into()).refusal_reason(p), "/x/zj-radar.js is not ours (no marker)");
+        assert!(unreadable().refusal_reason(p).starts_with("/x/zj-radar.js could not be read ("));
     }
 
     #[test]

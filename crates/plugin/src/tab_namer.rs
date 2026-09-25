@@ -44,9 +44,9 @@ pub(crate) struct TabFacts {
 /// by stable `TabId`, never position: facts are joined from a `PaneUpdate` and
 /// the *previous* `TabUpdate`, so a position computed here can point at a
 /// neighbour for one event after a tab closes or moves — an id cannot. (The
-/// pane join in `name_facts` is still position-keyed — Zellij's manifest is —
-/// so the *name* can be a neighbour's for that one event; the next pane/cwd
-/// event re-picks.)
+/// pane join in `RadarState::tab_facts` is still position-keyed — Zellij's
+/// manifest is — so the *name* can be a neighbour's for that one event; the
+/// next pane/cwd event re-picks.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabRename {
     pub id: TabId,

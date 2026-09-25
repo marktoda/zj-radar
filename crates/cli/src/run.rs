@@ -319,7 +319,9 @@ pub(crate) fn materialize(
         return Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path });
     }
 
-    let config = assets.config_template.replace("@WASM@", &wasm_path.to_string_lossy());
+    // The token sits inside a KDL string (`location="file:@WASM@"`), so the
+    // path is escaped — a `"` in a data-dir path must not end the string.
+    let config = assets.config_template.replace("@WASM@", &crate::setup::kdl_string(&wasm_path.to_string_lossy()));
     // Write the embedded wasm if we have it; otherwise leave wasm_path for the
     // caller to populate (download). The `up_to_date` check above already gates
     // on wasm_path.exists(), so a not-yet-downloaded wasm never short-circuits.
@@ -1020,6 +1022,24 @@ mod tests {
     }
 
     #[test]
+    fn materialize_escapes_the_wasm_path_inside_the_kdl_string() {
+        // A `"` in the data dir must not terminate `location="file:…"` early:
+        // the written config must parse, and decode back to the real path.
+        let d = tempdir().unwrap();
+        let dir = d.path().join("we\"ird").join("zellij");
+        let m = materialize(&dir, "0.1.0", &test_assets()).unwrap();
+        let cfg = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
+        let doc: kdl::KdlDocument = cfg.parse().unwrap_or_else(|e| panic!("config must parse ({e}):\n{cfg}"));
+        let radar = doc
+            .get("plugins")
+            .and_then(|p| p.children())
+            .and_then(|c| c.get("radar"))
+            .expect("radar alias");
+        let location = radar.get("location").and_then(|v| v.as_string()).expect("location string");
+        assert_eq!(location, format!("file:{}", m.wasm_path.display()));
+    }
+
+    #[test]
     fn materialize_is_noop_on_matching_version_and_assets() {
         // The up-to-date probe is the marker (version + asset hash) plus file
         // presence — it never re-reads file CONTENTS. So a sentinel scribbled
@@ -1175,7 +1195,9 @@ mod tests {
 
     // ── plan_run decision matrix ──
     // `granted`/`codex`/`claude`/`opencode` toggle whether each input signals
-    // "already set up". Defaults: session "proj", does not exist (create path),
+    // "already set up". pi stays unwired in these facts: its bridge is detected
+    // by the same vendored-marker rule as opencode's, which the opencode case
+    // already exercises through `plan_run`. Defaults: session "proj", does not exist (create path),
     // not running, not nested.
     fn facts(granted: bool, codex: bool, claude: bool) -> RunFacts {
         facts4(granted, codex, claude, false)

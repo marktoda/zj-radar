@@ -61,6 +61,33 @@ nothing about the [producer](producers.md). In order:
    `ZJ_RADAR_NO_DEDUP=1`.
 5. **Zellij too old.** The floor is 0.44.3; `--check` flags it.
 
+## A pi pane shows no status
+
+**Symptom:** pi works in a pane, but its row never appears.
+
+**Why:** the bridge extension reports only from pi's interactive TUI running
+under Zellij (`$ZELLIJ` set); print mode and `pi --no-extensions` report
+nothing. pi loads extensions at startup, so a pi that was already running
+when you ran `setup pi` has no bridge yet. A pi started through `npx pi` or
+`pnpm dlx pi` is not recognized as pi, because the launcher is the pane's
+command.
+
+**Fix:** run `zj-radar setup pi --check`, then restart pi or run `/reload`.
+Launch the installed `pi` binary rather than a package runner. Details in
+[producers](producers.md#pi).
+
+## No background-task lines under a Claude pane
+
+**Symptom:** Claude backgrounds a test run or a subagent, and the pane shows
+`waiting on …` but no `┊` lines under it.
+
+**Why:** task lines need the `zj-radar` CLI on the `PATH` Claude Code's hooks
+see. Without it the plugin's bash fallback runs: it keeps the waiting status
+but sends no tasks.
+
+**Fix:** install the CLI ([install](install.md)) and make sure it is on the
+`PATH` Claude Code starts with. The next hook picks it up.
+
 ## An editor, pager, or TUI shows a spinning "Running" row
 
 **Symptom:** opening an interactive program makes its pane spin forever.

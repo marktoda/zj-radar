@@ -1,6 +1,7 @@
 //! Claude Code hook payload → Radar status update.
 
 mod background;
+pub(crate) mod bg_agents;
 
 use super::{tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
@@ -420,6 +421,16 @@ mod tests {
         let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/p/x.rs"},"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test"}]}"#;
         let u = derive(&intake(raw, Some("running"))).unwrap();
         assert_eq!(u.msg, "editing x.rs");
+    }
+
+    #[test]
+    fn a_subagents_tool_hooks_still_derive() {
+        // derive is stateless: a (foreground) subagent's tool calls keep
+        // reporting — its PostToolUse is the Pending-recovery edge after a
+        // permission answered inside it. Background subagents are filtered
+        // before derive, by `bg_agents` (it needs per-pane state).
+        let raw = r#"{"hook_event_name":"PostToolUse","agent_id":"a55dd2e69238dcfae","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x.rs"}}"#;
+        assert_eq!(derive(&intake(raw, Some("running"))).unwrap().msg, "reading x.rs");
     }
 
     #[test]

@@ -38,6 +38,10 @@ jobs:
         run: nix develop -c cargo test --workspace --all-features
       - name: bash hook + installer tests
         run: nix develop -c just test-bash
+      # The pi bridge ships embedded in the CLI binary (`include_str!`), so
+      # its harness (incl. the stdin-EPIPE crash regression) gates the tag too.
+      - name: pi bridge harness (node --test)
+        run: nix develop -c just test-js
 
   e2e:
     uses: ./.github/workflows/e2e.yml

@@ -473,13 +473,13 @@
 
         store.on_command_changed(1, &cmd, true, Some("/w/repo"), 1);
         let promote_tick = 1 + DEBOUNCE_TICKS;
-        assert!(store.on_timer(Tick(promote_tick), EpochSecs(0)).changed, "debounced promotion mutates the store");
+        assert_eq!(store.on_timer(Tick(promote_tick), EpochSecs(0)).changed_panes, [1], "debounced promotion names its pane");
         assert!(!store.on_timer(Tick(promote_tick + 1), EpochSecs(0)).changed, "already Running: quiet tick");
 
         let leave_tick = promote_tick + 2;
         store.on_command_changed(1, &[], false, None, leave_tick); // leaves foreground
         let done_tick = leave_tick + DEBOUNCE_TICKS;
-        assert!(store.on_timer(Tick(done_tick), EpochSecs(0)).changed, "confirmed Done-flip mutates the store");
+        assert_eq!(store.on_timer(Tick(done_tick), EpochSecs(0)).changed_panes, [1], "confirmed Done-flip names its pane");
         assert!(!store.on_timer(Tick(done_tick + 1), EpochSecs(0)).changed, "terminal Done: quiet tick");
     }
 
@@ -815,7 +815,7 @@
         // The set of suppressed agents is exactly the push adapters (see the
         // `agent_names_match_push_adapter_sources` guard); Gemini is NOT one —
         // see `gemini_foreground_command_is_tracked`.
-        for agent in &["claude", "codex", "opencode"] {
+        for agent in &["claude", "codex", "opencode", "pi"] {
             let mut store = CommandStore::default();
             store.on_command_changed(1, &[agent.to_string()], true, Some("/work/repo"), 1);
             assert!(
@@ -832,8 +832,8 @@
 
     #[test]
     fn gemini_foreground_command_is_tracked() {
-        // Gemini has no push adapter (the shipped scope is Claude, Codex, and
-        // Opencode), so unlike them it is *observed* via command-tracking
+        // Gemini has no push adapter (the shipped scope is Claude, Codex,
+        // Opencode, and pi), so unlike them it is *observed* via command-tracking
         // rather than suppressed — otherwise its panes would show nothing at
         // all. It carries its own `Kind::Gemini` source so it renders with the
         // gemini mark.

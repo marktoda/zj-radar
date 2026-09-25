@@ -26,14 +26,31 @@ fn claude_marketplace_name(repo_slug: &str) -> &str {
     crate::agents::basename(repo_slug).unwrap_or(repo_slug)
 }
 
+/// The qualified plugin id (`zj-radar-claude@<marketplace>`) for the current
+/// `repo_slug()` — what `claude plugin install` and `/plugin update` take.
+pub(crate) fn claude_plugin_id() -> String {
+    format!("{CLAUDE_PLUGIN}@{}", claude_marketplace_name(&repo_slug()))
+}
+
 /// Read Claude Code's installed-plugins manifest
-/// (`~/.claude/plugins/installed_plugins.json`) for producer *detection* —
+/// (`<config dir>/plugins/installed_plugins.json`) for producer *detection* —
 /// the same three consumers as [`codex_hooks_text`], and the same drift class
 /// it guards against: one reader, so `run`'s advisory, `setup zellij`'s
 /// epilogue hint, and `--check` can never probe different paths.
 pub(crate) fn claude_installed_plugins_text() -> Option<String> {
-    dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".claude/plugins/installed_plugins.json")).ok())
+    claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
+        .and_then(|d| std::fs::read_to_string(d.join("plugins").join("installed_plugins.json")).ok())
+}
+
+/// Resolve Claude Code's config dir: `$CLAUDE_CONFIG_DIR` wins (when
+/// non-empty), else `<home>/.claude`. A hard-coded `~/.claude` told a
+/// `CLAUDE_CONFIG_DIR` user their installed plugin was missing. Pure (env
+/// passed in) so the precedence is unit-tested, like `codex_home_from`.
+fn claude_config_dir_from(config_dir: Option<std::ffi::OsString>, home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    if let Some(d) = config_dir.filter(|d| !d.is_empty()) {
+        return Some(std::path::PathBuf::from(d));
+    }
+    home.filter(|h| !h.as_os_str().is_empty()).map(|h| h.join(".claude"))
 }
 
 pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
@@ -58,7 +75,7 @@ fn install_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
         return;
     }
     let marketplace = repo_slug();
-    let plugin_id = format!("{CLAUDE_PLUGIN}@{}", claude_marketplace_name(&marketplace));
+    let plugin_id = claude_plugin_id();
     if dry_run {
         println!("claude: would run `claude plugin marketplace add {marketplace}` (dry-run)");
         println!("claude: would run `claude plugin install {plugin_id}` (dry-run)");
@@ -150,5 +167,18 @@ mod tests {
         // Trailing slash must not yield an empty name (`zj-radar-claude@` and
         // a dangling `marketplace remove `): fall back to the slug whole.
         assert_eq!(claude_marketplace_name("marktoda/zj-radar/"), "marktoda/zj-radar/");
+    }
+
+    #[test]
+    fn claude_config_dir_prefers_the_env_override_over_home() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+        let home = || Some(PathBuf::from("/home/u"));
+        assert_eq!(claude_config_dir_from(Some(OsString::from("/x/claude")), home()), Some(PathBuf::from("/x/claude")));
+        assert_eq!(claude_config_dir_from(None, home()), Some(PathBuf::from("/home/u/.claude")));
+        // Empty is unset, not the root path.
+        assert_eq!(claude_config_dir_from(Some(OsString::new()), home()), Some(PathBuf::from("/home/u/.claude")));
+        assert_eq!(claude_config_dir_from(None, None), None);
+        assert_eq!(claude_config_dir_from(Some(OsString::from("/x/claude")), None), Some(PathBuf::from("/x/claude")));
     }
 }

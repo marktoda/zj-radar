@@ -42,6 +42,13 @@
 //! deadline is not recorded, so the next identical payload is retried. Any IO
 //! or parse failure fails open: the payload is sent. `ZJ_RADAR_NO_DEDUP=1`
 //! disables the whole mechanism (debugging, tests that count sends).
+//!
+//! A record can only ever *suppress* a send, so the state dir is trusted only
+//! when it is provably ours: a per-user leaf, created 0700, and rejected
+//! (dedup off, every payload sent) if it is a symlink, foreign-owned, or open
+//! to group/other — on Linux without `$XDG_RUNTIME_DIR` it sits in the shared
+//! `/tmp`, where another local user could otherwise pre-create it and plant
+//! future-dated records to mute a pane's heartbeats.
 
 use crate::fsutil::atomic_write;
 use crate::status::Status;
@@ -92,10 +99,14 @@ struct Record {
 /// The pure rule: is `key` (about to be sent) a redundant repeat of `last`,
 /// as of `now`? Only `running` can be redundant; everything else is an edge
 /// and always sends.
+/// A record stamped in the future (the clock stepped back, or a planted file)
+/// is never trusted: it would otherwise read as age 0 for as long as the skew
+/// lasts, muting heartbeats past the TTL.
 fn is_redundant(key: &SentKey, last: &Record, now: u64) -> bool {
     key.status == Status::Running
         && last.key == *key
-        && now.saturating_sub(last.sent_at) < DEDUP_TTL_SECS
+        && last.sent_at <= now
+        && now - last.sent_at < DEDUP_TTL_SECS
 }
 
 /// Handle to one pane's last-sent record. Built by [`LastSent::from_env`] on
@@ -106,15 +117,16 @@ pub struct LastSent {
 
 impl LastSent {
     /// The record for `pane_id` in the current Zellij session, or `None` when
-    /// dedup is off: `ZJ_RADAR_NO_DEDUP` is set, or there is no session
-    /// identity (`ZELLIJ_SESSION_NAME`) to scope the file by. Pane ids are
-    /// per session, so the file is keyed on both.
+    /// dedup is off: `ZJ_RADAR_NO_DEDUP` is set, there is no session identity
+    /// (`ZELLIJ_SESSION_NAME`) to scope the file by, or no state dir that is
+    /// provably ours (see [`state_dir`]). Pane ids are per session, so the
+    /// file is keyed on both.
     pub fn from_env(pane_id: u32) -> Option<LastSent> {
         if std::env::var_os("ZJ_RADAR_NO_DEDUP").is_some_and(|v| !v.is_empty()) {
             return None;
         }
         let session = std::env::var("ZELLIJ_SESSION_NAME").ok().filter(|s| !s.is_empty())?;
-        Some(LastSent::at(&state_dir(), &session, pane_id))
+        Some(LastSent::at(&state_dir()?, &session, pane_id))
     }
 
     /// The record file for (`session`, `pane_id`) under `dir`.
@@ -163,22 +175,48 @@ pub fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Where the per-user state files live. `$XDG_RUNTIME_DIR` when set (per-user,
-/// tmpfs, cleared at logout — the ideal home for a seconds-long cache), else
-/// the process temp dir (`$TMPDIR`, per-user on macOS; `/tmp` on Linux
-/// without XDG, where a foreign dir just makes every write fail open). Its
-/// own leaf, not `zj-radar/`: on Linux that is the plugin's `/tmp/zj-radar`
-/// session-file root, whose presence scans read the directory.
-fn state_dir() -> PathBuf {
-    dirs::runtime_dir()
+/// Where the per-user state files live, or `None` (dedup off) when no dir is
+/// provably ours. `$XDG_RUNTIME_DIR` when set (per-user, tmpfs, cleared at
+/// logout — the ideal home for a seconds-long cache), else the process temp
+/// dir (`$TMPDIR`, per-user on macOS; the shared `/tmp` on Linux without
+/// XDG). The leaf is per user (`zj-radar-dedup-<uid>`) so users sharing `/tmp`
+/// never collide, and [`private_dir`] vets it. Its own leaf, not `zj-radar/`:
+/// on Linux that is the plugin's `/tmp/zj-radar` session-file root, whose
+/// presence scans read the directory.
+pub(crate) fn state_dir() -> Option<PathBuf> {
+    let uid = current_uid()?;
+    let dir = dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("zj-radar-dedup")
+        .join(format!("zj-radar-dedup-{uid}"));
+    private_dir(&dir, uid).then_some(dir)
+}
+
+/// This process's (effective) uid without a libc dependency: `/proc/self` is
+/// owned by it on Linux; without procfs (macOS) the home dir's owner is the
+/// std-only proxy. A wrong answer can only fail into "dedup off" —
+/// [`private_dir`] then rejects the dir as foreign.
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .ok()
+        .or_else(|| std::fs::metadata(dirs::home_dir()?).ok())
+        .map(|m| m.uid())
+}
+
+/// Create `dir` 0700 if absent, then accept it only if it is a real
+/// directory (`lstat`: a symlink is rejected, never followed), owned by
+/// `uid`, with no group/other permission bits. Anything else — including a
+/// dir another user pre-created in a shared `/tmp` — means dedup is off.
+fn private_dir(dir: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
+    std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
 }
 
 /// Zellij session names are free text; fold anything outside a filename-safe
 /// set to `_` and cap the length so the path stays short (macOS `sun_path`
 /// budgets taught this repo to respect short runtime paths).
-fn sanitize(session: &str) -> String {
+pub(crate) fn sanitize(session: &str) -> String {
     session
         .chars()
         .take(64)
@@ -235,11 +273,48 @@ mod tests {
     }
 
     #[test]
-    fn clock_skew_never_panics_and_fails_open() {
-        // A record from the "future" reads as age 0 → still within TTL; the
-        // saturating sub is what keeps the hook from panicking.
+    fn future_dated_record_is_never_redundant() {
+        // The clock stepped back (or a planted record): a future stamp must
+        // not read as age 0 and mute heartbeats for the length of the skew —
+        // and the age subtraction must not panic.
         let key = running("x");
-        assert!(is_redundant(&key, &last(key.clone(), 5000), 1000));
+        assert!(!is_redundant(&key, &last(key.clone(), 5000), 1000));
+        assert!(!is_redundant(&key, &last(key.clone(), u64::MAX), 0));
+    }
+
+    #[test]
+    fn private_dir_is_created_0700_and_reused() {
+        use std::os::unix::fs::MetadataExt;
+        let base = tempfile::tempdir().unwrap();
+        let uid = current_uid().expect("uid resolvable in tests");
+        let dir = base.path().join("zj-radar-dedup-test");
+        assert!(private_dir(&dir, uid));
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        assert!(private_dir(&dir, uid), "an existing private dir is reused");
+    }
+
+    #[test]
+    fn private_dir_rejects_open_foreign_or_symlinked_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let uid = current_uid().unwrap();
+        // Pre-created world-writable: the shared-/tmp squat.
+        let open = base.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!private_dir(&open, uid), "group/other bits → dedup off");
+        // Owned by someone else.
+        let mine = base.path().join("mine");
+        assert!(private_dir(&mine, uid));
+        assert!(!private_dir(&mine, uid.wrapping_add(1)), "foreign owner → dedup off");
+        // A symlink to a perfectly private dir is rejected, not followed.
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&mine, &link).unwrap();
+        assert!(!private_dir(&link, uid), "symlink → dedup off");
+        // A plain file in the way.
+        let file = base.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(!private_dir(&file, uid));
     }
 
     #[test]

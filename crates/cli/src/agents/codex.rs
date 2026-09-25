@@ -38,16 +38,7 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
             Status::Running,
             last_assistant_message(v).unwrap_or_else(|| "delegating".into()),
         ),
-        // A turn that ends by asking the user something is blocked on input,
-        // not finished — remap to Pending with the trailing question as the
-        // message (same rule as the Claude adapter).
-        "Stop" => {
-            let msg = last_assistant_message(v).unwrap_or_default();
-            match super::trailing_question(&msg) {
-                Some(q) => (Status::Pending, q.to_string()),
-                None => (Status::Done, msg),
-            }
-        }
+        "Stop" => turn_end(last_assistant_message(v).unwrap_or_default()),
         _ => return None,
     };
     let task = if event == "UserPromptSubmit" {
@@ -65,17 +56,24 @@ fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
     if ty != "agent-turn-complete" {
         return None;
     }
-    Some(AgentUpdate {
-        status: Status::Done,
-        msg: v
-            .get("last-assistant-message")
+    let (status, msg) = turn_end(
+        v.get("last-assistant-message")
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string(),
-        cwd: string_field(v, "cwd"),
-        tasks: None,
-        task: None,
-    })
+    );
+    Some(AgentUpdate { status, msg, cwd: string_field(v, "cwd"), tasks: None, task: None })
+}
+
+/// A finished turn's status + msg, shared by the hook `Stop` and the legacy
+/// `agent-turn-complete` notify. A turn that ends by asking the user
+/// something is blocked on input, not finished — remap to Pending with the
+/// trailing question as the message (same rule as the other adapters).
+fn turn_end(msg: String) -> (Status, String) {
+    match super::trailing_question(&msg) {
+        Some(q) => (Status::Pending, q.to_string()),
+        None => (Status::Done, msg),
+    }
 }
 
 fn permission_message(v: &Value) -> String {
@@ -265,6 +263,14 @@ mod tests {
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "shipped it");
         assert_eq!(u.cwd.as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn legacy_notify_ending_in_a_question_remaps_to_pending() {
+        // Same rule as the hook path's Stop.
+        let u = update(r#"{"type":"agent-turn-complete","last-assistant-message":"Refactored.\n\nShould I push?"}"#);
+        assert_eq!(u.status, Status::Pending);
+        assert_eq!(u.msg, "Should I push?");
     }
 
     #[test]

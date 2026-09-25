@@ -46,7 +46,9 @@ use crate::control::Verb;
 use crate::config;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
-use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId};
+use crate::radar_state::{
+    Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId, TimerChange,
+};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
@@ -436,7 +438,7 @@ pub(crate) struct PluginRuntime {
 }
 
 /// See [`PluginRuntime::last_render_key`].
-type RenderKey = (std::rc::Rc<Vec<TabRow>>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
+type RenderKey = (std::rc::Rc<Vec<TabRow>>, std::rc::Rc<Vec<LedgerLine>>, Vec<BadgeEntry>, theme::DerivedColors);
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -583,10 +585,12 @@ impl PluginRuntime {
         }
         self.tick += 1;
         // A tick can mutate the command store (debounced promotion to Running,
-        // Running→Done confirm). Persist the snapshot when it does, or a tab
-        // opened in that window would seed a rail missing the change — the same
-        // cross-instance convergence pushed statuses get from `status_pipe`.
-        let store_changed = self.radar.timer(self.tick, now);
+        // Running→Done confirm). The owning instance persists the snapshot
+        // when it does, or a tab opened in that window would seed a rail
+        // missing the change — the same cross-instance convergence (and the
+        // same one-writer rule) pushed statuses get from `status_pipe`.
+        let TimerChange { changed: store_changed, persist: store_persist } =
+            self.radar.timer(self.tick, now);
         // Cross-session peers: re-read the directory on every Slow fire and
         // on decimated Fast fires. The Slow fire is an idle rail's ONLY event
         // source, and this scan is the only thing that ever re-grades a peer
@@ -646,7 +650,10 @@ impl PluginRuntime {
         let change = RadarChange {
             render,
             settle: true,
-            snapshot: SnapshotWrite::now_if(store_changed || flush),
+            // The store half is ownership-scoped inside `RadarState::timer`
+            // (one writer per edge); the deferred flush was already owned
+            // when it was armed, so it stays unconditional.
+            snapshot: SnapshotWrite::now_if(store_persist || flush),
             // Tick-driven frames (spinner, ages) redraw identical rows —
             // exempt from the rows-diff render gate by definition.
             force_render: true,
@@ -1040,8 +1047,8 @@ impl PluginRuntime {
 
     /// The content-derived inputs a `render()` at this instant would draw
     /// from — everything except geometry and the wall-clock animation frame.
-    /// `rows()` is memoized on the radar generation, so consulting this per
-    /// event costs a compare, not a rollup.
+    /// `rows()` and `ledger_lines()` are memoized on the radar generation, so
+    /// consulting this per event costs a compare, not a rollup.
     fn current_render_key(&self) -> RenderKey {
         (
             self.radar.rows(self.tick),

@@ -535,39 +535,29 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                 let wire_running = to_wire(&StatusPayload {
                     pane_id: pane.pane_id,
                     status: Status::Running,
-                    repo: "".into(),
-                    branch: "".into(),
                     msg: pane.msg.clone(),
                     task: pane.task.clone(),
                     source: source.to_string(),
-                    ack: false,
-                    tasks: None,
+                    ..Default::default()
                 });
                 radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
                 let wire_idle = to_wire(&StatusPayload {
                     pane_id: pane.pane_id,
                     status: Status::Idle,
-                    repo: "".into(),
-                    branch: "".into(),
                     msg: pane.msg.clone(),
-                    task: "".into(),
                     source: source.to_string(),
-                    ack: false,
-                    tasks: None,
+                    ..Default::default()
                 });
                 radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
                 let wire = to_wire(&StatusPayload {
                     pane_id: pane.pane_id,
                     status: pane.status,
-                    repo: "".into(),
-                    branch: "".into(),
                     msg: pane.msg.clone(),
                     task: pane.task.clone(),
                     source: source.to_string(),
-                    ack: false,
-                    tasks: None,
+                    ..Default::default()
                 });
                 // Applied "now" relative to the render epoch, backdated by the
                 // `waiting <N>m` trailer — how the doc's pending scenarios earn

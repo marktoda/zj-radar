@@ -5,7 +5,7 @@
 
 use super::*;
 use super::detect::pi_extension_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -20,6 +20,12 @@ pub(crate) fn pi_extension_path() -> Option<PathBuf> {
 /// both sides.
 pub(crate) fn pi_extension_text() -> Option<String> {
     pi_extension_path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+/// Is our bridge extension on disk? The bare doctor's "pi is set up here"
+/// signal for a PATH-less (bun/Nix-run) pi.
+pub(crate) fn pi_extension_is_ours_on_disk() -> bool {
+    pi_extension_text().is_some_and(|t| pi_extension_is_ours(&t))
 }
 
 fn pi_agent_dir() -> Option<PathBuf> {
@@ -54,7 +60,7 @@ fn pi_installed_from(on_path: bool, override_set: bool, agent_dir_exists: bool, 
     on_path || override_set || agent_dir_exists || extension_exists
 }
 
-pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
+pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     let (Some(agent_dir), Some(path)) = (pi_agent_dir(), pi_extension_path()) else {
         crate::exit::fail_report("pi", "skipped — set $HOME or $PI_CODING_AGENT_DIR so pi's agent dir can be resolved");
         return;
@@ -89,8 +95,12 @@ pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
                     crate::exit::fail_report("pi", format!("remove failed — {e}"));
                     return;
                 }
-                let _ = std::fs::remove_file(path_with_suffix(&path, BACKUP_SUFFIX));
                 println!("pi: extension removed ({})", path.display());
+                // Its restore point goes too when ours (a stale-ours rewrite); a
+                // foreign one — what `--force` replaced — is the user's only copy.
+                if let Some(bak) = remove_backup_if_ours(&path, pi_extension_is_ours) {
+                    println!("pi: left {} (not ours — the file `--force` replaced)", bak.display());
+                }
             }
         }
         return;
@@ -98,10 +108,7 @@ pub(crate) fn setup_pi(uninstall: bool, opts: PiSetupOpts) {
 
     match plan_install(&existing, PI_EXTENSION_JS, opts.force, pi_extension_is_ours) {
         InstallPlan::RefuseForeign => {
-            let why = match &existing {
-                Existing::Unreadable(e) => format!("{} could not be read ({e})", path.display()),
-                _ => format!("{} is not ours (no marker)", path.display()),
-            };
+            let why = existing.refusal_reason(&path);
             crate::exit::fail_report("pi", format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."));
         }
         InstallPlan::UpToDate => {

@@ -10,8 +10,10 @@ step below gates the next.
 1. **Sync versions.** Three places must agree: `[workspace.package] version`,
    the exact core pin (`zj-radar-core = { …, version = "=X.Y.Z" }`) in the
    root `Cargo.toml`, and `plugins/zj-radar-claude/.claude-plugin/plugin.json`.
-   `release.yml` rejects a tag that does not match the manifest; nothing
-   checks the other two.
+   `workspace_core_pin_and_claude_plugin_versions_agree`
+   (`crates/plugin/src/hooks_manifest_tests.rs`, so `just ci`) fails unless all
+   three match; `release.yml` also rejects a tag that does not match
+   `Cargo.toml`.
 
    ```sh
    grep -m1 '^version' Cargo.toml
@@ -63,6 +65,11 @@ step below gates the next.
    (the deterministic and bash suites, plus live E2E on both OSes), but the
    publish job waits on all of them. A red gate publishes nothing: fix, delete
    the tag, re-tag.
+
+   The release body is GitHub's auto-generated PR list. Once it exists,
+   prepend a short human summary: highlights, then an **Upgrading** note. When
+   the Claude hooks changed, that note tells users to run
+   `/plugin update zj-radar-claude@zj-radar` in Claude Code.
 
    To dry-run the pipeline, cut an RC. Any tag containing `-` (for example
    `v0.5.0-rc.1`) is marked a prerelease and never becomes `latest`.

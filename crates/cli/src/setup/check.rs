@@ -241,11 +241,11 @@ pub(crate) fn check_opencode() -> bool {
 
 pub(crate) fn opencode_check_items(f: &OpencodeFacts) -> Vec<CheckItem> {
     vec![
-        if f.opencode_on_path {
-            CheckItem::ok("opencode binary", "found on PATH")
-        } else {
-            CheckItem::missing("opencode binary", "not found on PATH")
-        },
+        agent_binary_item(
+            "opencode binary",
+            f.opencode_on_path,
+            f.plugin_is_ours == Some(true) || f.tui_plugin_is_ours == Some(true),
+        ),
         if f.zj_radar_on_path {
             CheckItem::ok("zj-radar binary", "found on PATH")
         } else {
@@ -279,11 +279,7 @@ fn opencode_bridge_item(name: &'static str, is_ours: Option<bool>) -> CheckItem 
 /// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_pi() -> bool {
     let pi_on_path = which("pi");
-    let pi_version = pi_on_path
-        .then(|| std::process::Command::new("pi").arg("--version").stdin(std::process::Stdio::null()).output().ok())
-        .flatten()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let pi_version = pi_on_path.then(|| version_output_bounded("pi", std::time::Duration::from_secs(5))).flatten();
     let env = PiEnv {
         pi_on_path,
         zj_radar_on_path: which("zj-radar"),
@@ -295,13 +291,25 @@ pub(crate) fn check_pi() -> bool {
     print_check_items(&items)
 }
 
+/// The agent-binary item for a vendored-bridge agent. Missing from PATH is
+/// only `Missing` when our bridge isn't installed either: `setup` accepts a
+/// PATH-less (bun/Nix-run) agent, so with our bridge in place a missing binary
+/// is advice, not a broken install — `setup <agent> --check` must not exit 1
+/// for a working setup.
+fn agent_binary_item(name: &'static str, on_path: bool, bridge_is_ours: bool) -> CheckItem {
+    match (on_path, bridge_is_ours) {
+        (true, _) => CheckItem::ok(name, "found on PATH"),
+        (false, true) => CheckItem::warn(
+            name,
+            "not found on PATH — fine if you launch it another way (bun, Nix); the bridge is installed",
+        ),
+        (false, false) => CheckItem::missing(name, "not found on PATH"),
+    }
+}
+
 pub(crate) fn pi_check_items(f: &PiFacts) -> Vec<CheckItem> {
     let mut items = vec![
-        if f.pi_on_path {
-            CheckItem::ok("pi binary", "found on PATH")
-        } else {
-            CheckItem::missing("pi binary", "not found on PATH")
-        },
+        agent_binary_item("pi binary", f.pi_on_path, f.extension_is_ours == Some(true)),
         if f.zj_radar_on_path {
             CheckItem::ok("zj-radar binary", "found on PATH")
         } else {
@@ -320,13 +328,62 @@ pub(crate) fn pi_check_items(f: &PiFacts) -> Vec<CheckItem> {
             ),
         },
     ];
-    if let Some(v) = f.pi_version.filter(|v| *v < PI_MIN_VERSION) {
-        items.push(CheckItem::warn(
-            "pi version",
-            format!("pi {}.{}.{} is older than 0.80.4 — the rail never shows Done; upgrade pi", v.0, v.1, v.2),
-        ));
+    if let Some(v) = f.pi_version {
+        if v < PI_MIN_VERSION {
+            items.push(CheckItem::warn(
+                "pi version",
+                format!(
+                    "pi {} is older than {} — the rail never shows Done; upgrade pi",
+                    semver_display(v),
+                    semver_display(PI_MIN_VERSION)
+                ),
+            ));
+        }
+        if v < PI_DIALOG_MIN_VERSION {
+            items.push(CheckItem::warn(
+                "pi version",
+                format!(
+                    "pi {} is older than {} — extension dialogs won't surface as \"needs you\"; upgrade pi",
+                    semver_display(v),
+                    semver_display(PI_DIALOG_MIN_VERSION)
+                ),
+            ));
+        }
     }
     items
+}
+
+fn semver_display((major, minor, patch): (u32, u32, u32)) -> String {
+    format!("{major}.{minor}.{patch}")
+}
+
+/// `bin --version`'s stdout, with a bounded wait: the doctor must not hang on
+/// an agent binary that blocks at startup (a wedged wrapper, a first-run
+/// prompt). `None` on spawn failure, non-zero exit, or timeout (the child is
+/// killed and reaped).
+fn version_output_bounded(bin: &str, timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    use wait_timeout::ChildExt;
+    let mut child = std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) if status.success() => {
+            let mut out = String::new();
+            child.stdout.take()?.read_to_string(&mut out).ok()?;
+            Some(out)
+        }
+        Ok(Some(_)) => None,
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
 }
 
 /// Returns true when any item is `Missing` — see [`check_codex`].
@@ -901,9 +958,46 @@ mod tests {
         let facts = |v| PiFacts { pi_on_path: true, zj_radar_on_path: true, extension_is_ours: Some(true), pi_version: v };
         assert_eq!(pi_check_items(&facts(Some((0, 87, 1)))).len(), 3);
         assert_eq!(pi_check_items(&facts(None)).len(), 3);
+        assert_eq!(pi_check_items(&facts(Some(PI_DIALOG_MIN_VERSION))).len(), 3);
+        // Below the hard floor: both warns (no Done, and no dialog "needs you").
         let old = pi_check_items(&facts(Some((0, 79, 0))));
-        assert_eq!(old.len(), 4);
-        assert_eq!(old[3].level, CheckLevel::Warn);
+        assert_eq!(old.len(), 5);
+        assert!(old[3..].iter().all(|i| i.level == CheckLevel::Warn && i.name == "pi version"));
+        assert!(old[3].detail.contains("older than 0.80.4"), "{}", old[3].detail);
+        // Between the floors: only the dialog warn, its version formatted from the constant.
+        let mid = pi_check_items(&facts(Some((0, 84, 3))));
+        assert_eq!(mid.len(), 4);
+        assert_eq!(mid[3].level, CheckLevel::Warn);
+        assert!(mid[3].detail.contains("older than 0.84.4") && mid[3].detail.contains("needs you"), "{}", mid[3].detail);
+    }
+
+    #[test]
+    fn bridge_agent_binary_off_path_is_a_warn_once_the_bridge_is_ours() {
+        // `setup pi|opencode` accept a PATH-less (bun/Nix) agent, so a working
+        // install without the binary on PATH must not fail `--check`.
+        let pi = |ext: Option<&str>| {
+            pi_check_items(&analyze_pi(&PiEnv {
+                pi_on_path:       false,
+                zj_radar_on_path: true,
+                extension_text:   ext.map(str::to_string),
+                pi_version:       None,
+            }))
+        };
+        assert_eq!(pi(Some(PI_EXTENSION_JS))[0].level, CheckLevel::Warn);
+        assert!(!pi(Some(PI_EXTENSION_JS)).iter().any(|i| i.level == CheckLevel::Missing));
+        assert_eq!(pi(None)[0].level, CheckLevel::Missing, "no binary AND no bridge is still Missing");
+        assert_eq!(pi(Some("// theirs\n"))[0].level, CheckLevel::Missing, "a foreign file isn't our install");
+
+        let oc = |plugin: Option<&str>, tui: Option<&str>| {
+            opencode_check_items(&analyze_opencode(&OpencodeEnv {
+                opencode_on_path:   false,
+                zj_radar_on_path:   true,
+                plugin_text:        plugin.map(str::to_string),
+                tui_plugin_text:    tui.map(str::to_string),
+            }))
+        };
+        assert_eq!(oc(Some(OPENCODE_PLUGIN_JS), Some(OPENCODE_TUI_PLUGIN_JS))[0].level, CheckLevel::Warn);
+        assert_eq!(oc(None, None)[0].level, CheckLevel::Missing);
     }
 
     /// Every backtick-quoted `zj-radar …` invocation the doctor prints as a

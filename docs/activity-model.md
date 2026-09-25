@@ -93,10 +93,12 @@ and the spinner moves down to the task lines (the tab header keeps spinning:
 the tab as a whole is still working). Task state never feeds the
 roll-up, counts, or notifications: the agent reports its own outcome. At
 most three task lines per pane (two plus `┊ +N more` beyond that, failures
-sorted first after running work); under height pressure, or below 20
-columns, a card drops them for a `+N` count on the pane line (finished
-tasks included) — right after the inter-card gaps go, before any other
-squeeze.
+sorted first after running work). Below 20 columns, or under height
+pressure, a card drops them for a `+N` count on the pane line (running and
+failed tasks only; error-coloured when one failed, absent when all finished
+cleanly). The height squeeze order is:
+inter-card gaps go, idle tabs fold into the strip, the strip line goes, then
+task lines fold, and only then do pane rows compress.
 
 Ties in the tab-level roll-up: on equal severity a bounded job outranks a
 steady row (`Service` or `Remote`) as the tab's primary detail — a spinning

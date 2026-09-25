@@ -37,7 +37,9 @@ fn codex_home_from(codex_home: Option<OsString>, home: Option<OsString>) -> Opti
         .map(|h| PathBuf::from(h).join(".codex"))
 }
 
-fn codex_installed(codex_on_path: bool) -> bool {
+/// Is Codex present? The binary on PATH, or its config/hooks already on disk.
+/// Gates both the codex install and the bare doctor.
+pub(crate) fn codex_installed(codex_on_path: bool) -> bool {
     codex_on_path
         || codex_config_path().is_some_and(|p| p.exists())
         || codex_hooks_path().is_some_and(|p| p.exists())
