@@ -93,7 +93,8 @@ and the spinner moves down to the task lines (the tab header keeps spinning:
 the tab as a whole is still working). Task state never feeds the
 roll-up, counts, or notifications: the agent reports its own outcome. At
 most three task lines per pane (two plus `┊ +N more` beyond that, failures
-sorted first after running work). Below 20 columns, or under height
+sorted first after running work; a fold always keeps the first failure on a
+line, and `+N more` is error-coloured when it hides another). Below 20 columns, or under height
 pressure, a card drops them for a `+N` count on the pane line (running and
 failed tasks only; error-coloured when one failed, absent when all finished
 cleanly). The height squeeze order is:
