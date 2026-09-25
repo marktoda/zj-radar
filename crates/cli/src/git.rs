@@ -5,9 +5,10 @@
 //! positively recognize.
 //!
 //! Two spawns cost ~11 ms of a hook for two file reads' worth of information.
-//! The native path claims only positives — a valid git dir whose `HEAD` it
-//! can read — and defers to git for everything else, so a negative is always
-//! git's verdict.
+//! The native path claims positives — a valid git dir whose `HEAD` it can
+//! read — and exactly one negative: a walk to `/` that met no `.git` entry
+//! and no `HEAD` (so no bare repo either), with no discovery env var set.
+//! Everything else defers to git.
 //!
 //! What the payload carries (unchanged from the spawn-only implementation):
 //!
@@ -37,8 +38,9 @@ const DISCOVERY_ENV: [&str; 6] = [
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 ];
 
-/// The native walk. `Some` only for a positively identified, valid git dir
-/// whose `HEAD` parses; `None` means "ask git".
+/// The native walk. `Some` for a positively identified, valid git dir whose
+/// `HEAD` parses, or for the one negative it can prove (see [`Discovery`]):
+/// empty strings, exactly git's answer. `None` means "ask git".
 fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
     if DISCOVERY_ENV.iter().any(|k| std::env::var_os(k).is_some()) {
         return None;
@@ -47,7 +49,19 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
     // through a symlink must name the repo the link points at. Also resolves
     // a relative cwd against the process cwd, like `git -C`.
     let start = std::fs::canonicalize(cwd).ok()?;
-    let git_dir = discover(&start)?;
+    let git_dir = match discover(&start) {
+        Discovery::Found(git_dir) => git_dir,
+        Discovery::Unresolved => return None,
+        Discovery::Nothing => {
+            // No `.git` anywhere up to `/`. The one repo shape that has no
+            // `.git` entry is a git dir itself (a bare repo, or a cwd inside
+            // one): any ancestor carrying a `HEAD` stays git's call. Absent
+            // that, git would walk the same path and find nothing — skip the
+            // three spawns (~15 ms, every hook in a non-repo cwd).
+            let maybe_git_dir = start.ancestors().any(|d| std::fs::symlink_metadata(d.join("HEAD")).is_ok());
+            return (!maybe_git_dir).then(|| (String::new(), String::new()));
+        }
+    };
     let common = common_dir(&git_dir)?;
     if !common.join("objects").is_dir() || !common.join("refs").is_dir() {
         return None; // not what git calls a git directory
@@ -63,26 +77,39 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
     Some((repo, branch))
 }
 
+/// What the upward walk for a `.git` entry found.
+enum Discovery {
+    /// The git dir governing the start dir.
+    Found(PathBuf),
+    /// A `.git` entry git would act on but the walk can't resolve (a gitfile
+    /// that doesn't parse or points nowhere): git's call.
+    Unresolved,
+    /// No `.git` entry at any level up to `/`.
+    Nothing,
+}
+
 /// Walk up from `start` to the git dir governing it, git's way: at each
 /// level a `.git` entry (directory, or a `gitdir:` file for worktrees and
-/// submodules) wins. `None` when nothing is found or a gitfile cannot be
-/// resolved. A bare repository (or a
-/// cwd inside a `.git` dir) has no `.git` entry and is left to the spawn
-/// fallback — rare for an agent, and not worth three extra stats per level
-/// on every hook.
-fn discover(start: &Path) -> Option<PathBuf> {
+/// submodules) wins. A bare repository (or a cwd inside a `.git` dir) has no
+/// `.git` entry, so the walk reports `Nothing` for it and the caller's
+/// `HEAD` check leaves it to the spawn fallback — rare for an agent, and not
+/// worth three extra stats per level on every hook.
+fn discover(start: &Path) -> Discovery {
     let mut dir = start;
     loop {
         let dot_git = dir.join(".git");
         if let Ok(meta) = std::fs::metadata(&dot_git) {
             if meta.is_dir() {
-                return Some(dot_git);
+                return Discovery::Found(dot_git);
             }
             if meta.is_file() {
-                return read_gitfile(&dot_git, dir);
+                return read_gitfile(&dot_git, dir).map_or(Discovery::Unresolved, Discovery::Found);
             }
         }
-        dir = dir.parent()?;
+        let Some(parent) = dir.parent() else {
+            return Discovery::Nothing;
+        };
+        dir = parent;
     }
 }
 
@@ -299,18 +326,21 @@ mod tests {
         let not_repo = root.join("scratch");
         fs::create_dir_all(&not_repo).unwrap();
         let bisecting = make_repo(root, "bisect", "ref: refs/bisect/bad\n");
+        fs::create_dir_all(bare.join("refs/heads")).unwrap();
 
         type Case<'a> = (&'a str, PathBuf, Option<(&'a str, &'a str)>);
-        let cases: [Case; 9] = [
+        let cases: [Case; 10] = [
             ("repo root", pinky.clone(), Some(("pinky", "main"))),
             ("nested subdir", pinky.join("src/deep"), Some(("pinky", "main"))),
             ("worktree root → MAIN repo name, worktree's branch", wt.clone(), Some(("pinky", "fix/x"))),
             ("worktree subdir", wt.join("crates"), Some(("pinky", "fix/x"))),
             ("detached HEAD → empty branch", detached, Some(("detached", ""))),
-            ("bare repo → defer to git (no `.git` entry to find)", bare, None),
+            ("bare repo → defer to git (no `.git` entry to find)", bare.clone(), None),
+            ("inside a bare repo → defer to git (an ancestor has HEAD)", bare.join("refs/heads"), None),
             ("symbolic ref outside refs/heads → empty branch", bisecting, Some(("bisect", ""))),
-            // Negatives are git's call — the walk declines rather than claiming "not a repo".
-            ("not a repo → defer to git", not_repo, None),
+            // The one negative the walk proves: no `.git` and no `HEAD` up to `/`
+            // — git's own answer, without spawning it.
+            ("not a repo → definite negative", not_repo, Some(("", ""))),
             ("missing cwd → defer to git", root.join("nope"), None),
         ];
         for (label, cwd, want) in cases {
@@ -444,6 +474,12 @@ mod tests {
         // the public entry point still answers it, through the spawn.
         let bare_s = bare.to_str().unwrap();
         assert_eq!(native_repo_branch(&bare), None, "bare repos defer to git");
+        // The native negative agrees with git's.
+        let scratch = root.join("scratch");
+        fs::create_dir_all(&scratch).unwrap();
+        let scratch_s = scratch.to_str().unwrap();
+        assert_eq!(native_repo_branch(&scratch), Some((String::new(), String::new())));
+        assert_eq!(spawn_repo_branch(scratch_s), (String::new(), String::new()));
         assert_eq!(repo_branch(bare_s), spawn_repo_branch(bare_s));
         assert_eq!(repo_branch(bare_s).0, "acme");
         // And the positive cases carry the values the table expects.
