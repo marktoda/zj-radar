@@ -284,28 +284,41 @@ fi
 # The turn ended but work it backgrounded is still running and will wake the
 # model when it finishes: stay running with a "waiting on …" msg (parity with
 # waiting_msg in agents/claude/background.rs). Running subagents, workflows
-# and teammates hold; shells hold unless a service phrase matches (the list is
-# agents.rs's SERVICE_PHRASES, welded by parity.bats); anything else doesn't.
-# The label is the task's description, else its command's first-token
-# basename. jq's `test` is Oniguruma, so the phrases stay regex-metachar-free.
+# and teammates hold; shells hold unless a service phrase matches their
+# command or description (the list is agents.rs's SERVICE_PHRASES, welded by
+# parity.bats; shell_is_service's rules: no command → the description alone
+# decides, neither → no hold); anything else doesn't. The label is the task's
+# description, else its command's first-token basename. jq's `test` is
+# Oniguruma, so the phrases stay regex-metachar-free apart from `.`, which is
+# escaped below.
 #
 # Deliberately NOT here: the background-task *lines* (the wire's `tasks`
 # batch). They need the `zj-radar` CLI — this fallback keeps the waiting
 # status honest, but mirroring the whole task protocol in jq would double
-# every future change to it for a degraded path.
-SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|serve|tail -f|compose up"
+# every future change to it for a degraded path. Likewise the CLI-only
+# drop of a *background* subagent's own tool hooks (agents/claude/
+# bg_agents.rs): it needs a per-pane record of launched agent ids, so this
+# stateless fallback reports them, and they can overwrite "waiting on …".
+SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|make dev|just dev|make server|just server|serve|http.server|runserver|rails s|rails server|flask run|uvicorn|gunicorn|vite|nodemon|watch|port-forward|tail -f|compose up|dev server|start server|start the server"
+waiting=""
 if [[ "$status" == "done" ]]; then
     # shellcheck disable=SC2016 # jq variables, expanded by jq, not the shell
-    waiting="$(jq -r --arg re "(^|[^a-z0-9])($SERVICE_PHRASES)([^a-z0-9]|$)" '
+    waiting="$(jq -r --arg re "(^|[^a-z0-9])(${SERVICE_PHRASES//./\\.})([^a-z0-9]|$)" '
         def str: if type == "string" then . else "" end;
+        def svc: ascii_downcase | test($re);
+        def blank: test("\\S") | not;
         [ (.background_tasks // empty) | arrays | .[] | objects
           | select(.status == "running")
           | select((.id | str) != "")
+          | (.command | str) as $c
+          | (.description | str) as $raw_d
           | select(.type == "subagent" or .type == "workflow" or .type == "teammate"
-                   or (.type == "shell" and ((.command | str | ascii_downcase | test($re)) | not)))
-          | (.description | str | gsub("^\\s+|\\s+$"; "")) as $d
+                   or (.type == "shell"
+                       and (if ($c | blank) then (($raw_d | blank) or ($raw_d | svc)) | not
+                            else (($c | svc) or ($raw_d | svc)) | not end)))
+          | ($raw_d | gsub("^\\s+|\\s+$"; "")) as $d
           | if $d != "" then $d
-            else ([.command | str | splits("\\s+") | select(. != "")] | .[0] // "" | split("/") | last // "")
+            else ([$c | splits("\\s+") | select(. != "")] | .[0] // "" | split("/") | last // "")
             end ]
         | if length == 0 then empty
           elif length == 1 then (if .[0] != "" then "waiting on " + .[0] else "waiting on 1 task" end)
@@ -381,9 +394,13 @@ fi
 # literals in sync with core::pipe's RUNNING/DEFAULT_PIPE_TIMEOUT_SECS):
 # `running` heartbeats are droppable, edges are not. Keyed on the FINAL
 # status, after the done→pending question remap above, so a remapped edge
-# keeps the edge deadline.
+# keeps the edge deadline — and so does the done→running "waiting on …"
+# remap: it is a turn end, not a heartbeat (the CLI sends it on the edge
+# deadline too, as a task-bearing payload).
 default_deadline=5
+edge_deadline="$default_deadline"
 [[ "$status" == "running" ]] && default_deadline=2
+[[ -n "$waiting" ]] && default_deadline="$edge_deadline"
 pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-$default_deadline}"
 # Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
 # so a value `sleep` rejects would kill it before the `kill` line runs and the

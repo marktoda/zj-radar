@@ -155,7 +155,7 @@ impl BgTasks {
     ///   Pending → Running doesn't: it is also the mid-turn recovery edge
     ///   after a permission answer, and a turn in flight keeps its summary.
     /// - A batch upserts by id; a reported outcome is final, and `Ended`
-    ///   yields only to one; a snapshot ends every stored running task it
+    ///   yields only to one; `holds` only ever drops; a snapshot ends every stored running task it
     ///   omits (→ `Ended`).
     /// - Stored items are capped at [`MAX_TASKS`], evicting ended tasks first
     ///   (oldest end first), then the oldest running.
@@ -201,8 +201,12 @@ impl BgTasks {
                 if !update.label.is_empty() {
                     task.label = update.label.clone();
                 }
+                // A running upsert may lower `holds`, never raise it: once a
+                // task is known to be a service, a later report with less to
+                // go on (a snapshot entry missing its command) must not make
+                // the agent wait on it.
                 if update.state == TaskState::Running {
-                    task.holds = update.holds;
+                    task.holds &= update.holds;
                 }
                 // A late outcome for an `Ended` task keeps the end the
                 // snapshot observed — the closer bound on when it finished.
@@ -401,6 +405,22 @@ mod tests {
         t.apply(Some(&delta(vec![blank])), Some(Status::Running), Status::Running, false, 6);
         assert_eq!(t.items[0].label, "b1 label");
         assert!(t.items[0].holds, "an outcome doesn't rewrite holds");
+    }
+
+    #[test]
+    fn a_running_upsert_lowers_holds_but_never_raises_it() {
+        // Started as a dev server (holds=false); a turn-end snapshot that
+        // lost the command must not make the agent wait on it.
+        let mut t = BgTasks::default();
+        t.apply(Some(&delta(vec![up("dev", TaskState::Running, false)])), None, Status::Running, false, 5);
+        t.apply(Some(&snapshot(vec![up("dev", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 6);
+        assert!(!t.items[0].holds);
+        assert!(!t.waiting, "nothing bounded to wait on");
+        // …while a bounded task a later report calls a service stops holding.
+        let mut b = BgTasks::default();
+        b.apply(Some(&delta(vec![up("b1", TaskState::Running, true)])), None, Status::Running, false, 5);
+        b.apply(Some(&snapshot(vec![up("b1", TaskState::Running, false)])), Some(Status::Running), Status::Done, false, 6);
+        assert!(!b.items[0].holds);
     }
 
     #[test]

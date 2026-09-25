@@ -183,7 +183,7 @@ pub fn unix_now() -> u64 {
 /// never collide, and [`private_dir`] vets it. Its own leaf, not `zj-radar/`:
 /// on Linux that is the plugin's `/tmp/zj-radar` session-file root, whose
 /// presence scans read the directory.
-fn state_dir() -> Option<PathBuf> {
+pub(crate) fn state_dir() -> Option<PathBuf> {
     let uid = current_uid()?;
     let dir = dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -216,7 +216,7 @@ fn private_dir(dir: &Path, uid: u32) -> bool {
 /// Zellij session names are free text; fold anything outside a filename-safe
 /// set to `_` and cap the length so the path stays short (macOS `sun_path`
 /// budgets taught this repo to respect short runtime paths).
-fn sanitize(session: &str) -> String {
+pub(crate) fn sanitize(session: &str) -> String {
     session
         .chars()
         .take(64)

@@ -4,19 +4,19 @@
 //! opencode 1.x (a server plugin), `setup/opencode_tui_plugin.js` for 2.x (a
 //! TUI plugin) — that serializes each hook/bus-event payload and spawns
 //! `zj-radar notify opencode --status <s>` with JSON on stdin. The bridge
-//! picks the status class (it knows the event); this adapter owns the
-//! refinements keyed off the payload's `event` field: the pending backstop,
-//! the running baseline, tool-activity substitution (opencode tool names/args
-//! normalized into the shared `tool_activity` vocabulary), the sticky task
-//! capture, and the trailing-question Done→Pending remap. Returns `None` for a
-//! no-op. The `event` names are zj-radar's own wire vocabulary, shared by both
+//! picks the status class (it knows the event); the refinements keyed off
+//! the payload's `event` field — the pending backstop, the running baseline,
+//! tool-activity substitution, the sticky task capture, and the
+//! trailing-question Done→Pending remap — are `agents::derive_bridged`'s,
+//! shared with pi. This module supplies opencode's event names and its tool
+//! names/args for normalizing into the shared `tool_activity` vocabulary.
+//! The `event` names are zj-radar's own wire vocabulary, shared by both
 //! bridges, so an opencode API change lands in JS only. `session.error` maps
 //! to `Status::Error` — a real failure signal Claude's hook model deliberately
 //! lacks (see the claude.rs header comment).
 
-use super::{string_field, tool_activity, AgentUpdate, Intake};
+use super::{AgentUpdate, Bridge, Intake};
 use crate::status::Status;
-use serde_json::Value;
 
 /// Map an opencode event name to a status, used when `--status` is absent (the
 /// bridge always passes `--status`, so this is the robustness/test path).
@@ -31,127 +31,29 @@ fn status_from_event(event: &str) -> Option<Status> {
     }
 }
 
-/// Decide opencode's status + msg + cwd. `status_arg` (the bridge always
-/// passes it) wins; else derive from the `event` field. Applies the pending
-/// backstop, the running baseline, tool-activity substitution for tool events,
-/// the task capture for chat.message, and the trailing-question remap for a
-/// Done that ends by asking. Returns `None` for a no-op.
+/// opencode's half of the shared bridge derivation. Tool ids are opencode's
+/// built-ins (all lowercase; 1.x `packages/opencode/src/tool/registry.ts`,
+/// 2.x `packages/core/src/tool/` where `bash` became `shell` and `task`
+/// became `subagent`); MCP tools, keyed `<server>_<tool>`, pass through to
+/// the `working` baseline. Args use camelCase keys.
+const BRIDGE: Bridge = Bridge {
+    status_from_event,
+    tool_event: "tool.execute",
+    prompt_event: "chat.message",
+    tool_names: &[
+        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("shell", "Bash"),
+        ("grep", "Grep"), ("glob", "Glob"), ("webfetch", "WebFetch"), ("websearch", "WebSearch"),
+        ("task", "Task"), ("subagent", "Task"), ("todowrite", "TodoWrite"),
+    ],
+    arg_keys: &[("filePath", "file_path"), ("notebookPath", "notebook_path")],
+};
+
+/// Decide opencode's status + msg + cwd via `agents::derive_bridged` (the
+/// pending backstop, running baseline, tool activity, task capture on
+/// `chat.message`, and the trailing-question remap of `session.idle`).
+/// Returns `None` for a no-op.
 pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
-    let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
-    let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
-    // `message` carries the event's text (a permission title, the tracked last
-    // assistant text on idle, an error message). The user's submitted prompt
-    // (`prompt`) is task-capture-only below — it must NOT become the running
-    // msg, or the row would show the prompt instead of the "working" baseline.
-    let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
-    let cwd = string_field(&v, "cwd");
-
-    let status = match intake.status_arg {
-        Some(s) => Status::from_wire(s),
-        None => status_from_event(event)?,
-    };
-
-    // A turn that ends by asking the user something is blocked on input, not
-    // finished — opencode's `session.idle` carries no terminal-outcome flag,
-    // so a prose question just surfaces as idle. Remap that Done to Pending
-    // with the trailing question as the message (same rule as the Claude and
-    // Codex adapters' Stop).
-    if status == Status::Done {
-        if let Some(question) = super::trailing_question(msg) {
-            return Some(AgentUpdate {
-                status: Status::Pending,
-                msg: question.to_string(),
-                cwd,
-                task: None,
-                tasks: None,
-            });
-        }
-    }
-
-    // Pending backstop: a permission whose title is blank is not a real
-    // "needs you" — drop it rather than paint a generic pending row.
-    if status == Status::Pending && msg.trim().is_empty() {
-        return None;
-    }
-
-    let mut out_msg = super::baseline_msg(status, msg);
-
-    // An error event with no message still reads as an error via its color/mark,
-    // but a neutral label is friendlier than a blank red row.
-    if status == Status::Error && out_msg.trim().is_empty() {
-        out_msg = "errored".to_string();
-    }
-
-    // For tool events, show the live action instead of the baseline. opencode
-    // tool names are lowercase and args use camelCase keys; normalize both
-    // into the shared `tool_activity` vocabulary before delegating.
-    if status == Status::Running && event == "tool.execute" {
-        let raw_tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("");
-        let raw_input = v.get("tool_input").unwrap_or(&Value::Null);
-        let tool = normalize_tool_name(raw_tool);
-        let tool_input = normalize_tool_args(raw_input);
-        if let Some(activity) = tool_activity(tool, &tool_input) {
-            out_msg = activity;
-        }
-    }
-
-    // The sticky task label rides on chat.message (the user-prompt-submit
-    // event); every other event sends task=None (keep the stored label).
-    let task = if status == Status::Running && event == "chat.message" {
-        v.get("prompt").and_then(|x| x.as_str()).and_then(super::task_from_prompt)
-    } else {
-        None
-    };
-
-    Some(AgentUpdate {
-        status,
-        msg: out_msg,
-        cwd,
-        task,
-        tasks: None,
-    })
-}
-
-/// Map opencode's built-in tool ids (all lowercase; 1.x
-/// `packages/opencode/src/tool/registry.ts`, 2.x `packages/core/src/tool/`
-/// where `bash` became `shell` and `task` became `subagent`) to the shared
-/// `tool_activity` vocabulary. Anything else — including MCP tools, which
-/// opencode keys `<server>_<tool>` — passes through and falls to
-/// `tool_activity`'s `_` arm: `None` → the `working` baseline.
-fn normalize_tool_name(raw: &str) -> &str {
-    match raw {
-        "read" => "Read",
-        "write" => "Write",
-        "edit" => "Edit",
-        "bash" | "shell" => "Bash",
-        "grep" => "Grep",
-        "glob" => "Glob",
-        "webfetch" => "WebFetch",
-        "websearch" => "WebSearch",
-        "task" | "subagent" => "Task",
-        "todowrite" => "TodoWrite",
-        _ => raw,
-    }
-}
-
-/// Rename opencode's camelCase arg keys into the snake_case keys
-/// `tool_activity` reads (`filePath` → `file_path`,
-/// `notebookPath` → `notebook_path`). Other keys pass through unchanged. A
-/// non-object input is returned as-is.
-fn normalize_tool_args(input: &Value) -> Value {
-    let Some(obj) = input.as_object() else {
-        return input.clone();
-    };
-    let mut out = serde_json::Map::with_capacity(obj.len());
-    for (k, v) in obj {
-        let k = match k.as_str() {
-            "filePath" => "file_path",
-            "notebookPath" => "notebook_path",
-            other => other,
-        };
-        out.insert(k.to_string(), v.clone());
-    }
-    Value::Object(out)
+    super::derive_bridged(intake, &BRIDGE)
 }
 
 #[cfg(test)]
@@ -218,7 +120,8 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(u.msg, "pushing");
-        assert_eq!(normalize_tool_name("subagent"), "Task");
+        let u = derive(&intake(r#"{"event":"tool.execute","tool":"subagent","tool_input":{}}"#, Some("running"))).unwrap();
+        assert_eq!(u.msg, "delegating");
 
         // The 2.x bridge's bare run-started refresh: running, baseline msg.
         let u = derive(&intake(r#"{"event":"session.execution"}"#, None)).unwrap();

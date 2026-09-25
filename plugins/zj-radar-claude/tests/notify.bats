@@ -272,6 +272,26 @@ EOF
   (( SECONDS - start < 30 ))  # 5s fallback + slack, nowhere near the 60s hang
 }
 
+@test "a waiting turn end is sent on the edge deadline, not the heartbeat's" {
+  # The done→running "waiting on …" remap is a once-per-turn edge: a slow
+  # (3 s) send must still land, where a real heartbeat is cut at 2 s.
+  cat >"$FAKEBIN/zellij" <<EOF
+#!/usr/bin/env bash
+sleep 3
+printf '%s\t\n' "\$*" >> "$RECORD"
+EOF
+  chmod +x "$FAKEBIN/zellij"
+  rm -f "$RECORD"
+  echo '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test"}]}' \
+    | "$SCRIPT" done
+  [ "$(last_payload | jq -r '.status')" = running ]
+  # Control: a heartbeat under the same slow send is killed first.
+  rm -f "$RECORD"
+  echo '{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Grep","tool_input":{}}' | "$SCRIPT" running
+  sleep 2
+  [ ! -s "$RECORD" ]
+}
+
 @test "native CLI dispatch keeps running→done in order (stuck-spinner guard)" {
   # helper.bash strips every real zj-radar off PATH so the rest of this file
   # exercises the bash fallback; this case pins the OTHER branch — the native

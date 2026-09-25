@@ -14,6 +14,8 @@ mod codex;
 mod opencode;
 mod pi;
 
+pub(crate) use claude::bg_agents::BgAgents;
+
 use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
 use serde_json::Value;
@@ -111,7 +113,8 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
         "Grep" | "Glob" => Some("searching".to_string()),
         "WebFetch" | "WebSearch" => Some("searching web".to_string()),
         // `Agent` is current Claude Code's name for the subagent tool; `Task`
-        // is the older one (and opencode's `task`, mapped in its adapter).
+        // is the older one (and opencode's `task`/`subagent`, mapped by its
+        // bridge table).
         "Task" | "Agent" => Some("delegating".to_string()),
         "TodoWrite" => Some("planning".to_string()),
         "apply_patch" => Some("editing files".to_string()),
@@ -169,9 +172,10 @@ pub fn trailing_question(msg: &str) -> Option<&str> {
     (line.ends_with('?') || line.ends_with('？')).then_some(line)
 }
 
-/// The msg baseline every producer shares (the Claude adapter and `notify
-/// generic`; codex builds per-event and never needs it; the bash fallback
-/// mirrors it in notify.sh): idle always broadcasts a BLANK msg — it means
+/// The msg baseline every producer shares (the Claude adapter, the opencode
+/// and pi bridges via [`derive_bridged`], and `notify generic`; codex builds
+/// per-event and never needs it; the bash fallback mirrors it in notify.sh):
+/// idle always broadcasts a BLANK msg — it means
 /// "no activity", so any stale message the payload rides in on (e.g. a
 /// SessionStart session_title) is dropped and the row recedes cleanly on
 /// `/clear` — and a running row with nothing better to say gets the
@@ -186,8 +190,94 @@ pub fn baseline_msg(status: Status, msg: &str) -> String {
     }
 }
 
+/// The per-agent half of a JS-bridge producer (opencode, pi). The bridge
+/// translates the agent's events into zj-radar's own `event` vocabulary and
+/// spawns `notify <agent> --status <s>` with JSON on stdin, so an agent API
+/// change lands in JS only; [`derive_bridged`] owns every refinement the two
+/// share. Only the event names and tool vocabularies differ.
+pub(crate) struct Bridge {
+    /// `event` → status, used when `--status` is absent (the bridges always
+    /// pass it; this is the robustness/test path).
+    pub status_from_event: fn(&str) -> Option<Status>,
+    /// The event carrying a tool call (`tool` + `tool_input`).
+    pub tool_event: &'static str,
+    /// The event carrying the user's submitted `prompt` (the sticky task).
+    pub prompt_event: &'static str,
+    /// The agent's tool ids → the shared `tool_activity` names. Anything
+    /// unlisted passes through and, unknown there, falls to `working`.
+    pub tool_names: &'static [(&'static str, &'static str)],
+    /// The agent's tool-arg keys → the snake_case keys `tool_activity` reads.
+    pub arg_keys: &'static [(&'static str, &'static str)],
+}
+
+/// Decide a bridged agent's status + msg + cwd. `status_arg` wins; else the
+/// `event` decides. `message` carries the event's text (a permission or
+/// dialog title, the final assistant text on a turn end, an error); the
+/// user's `prompt` is task-capture-only — it must NOT become the running msg.
+/// Applies, in order: the trailing-question Done→Pending remap (a turn end
+/// carries no outcome flag, so a prose question just surfaces as done), the
+/// pending backstop (a blank title is not a real "needs you"), the shared
+/// baseline plus an `errored` label for a blank error, tool-activity
+/// substitution, and the task capture. Returns `None` for a no-op.
+pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUpdate> {
+    let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
+    let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
+    let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+    let cwd = string_field(&v, "cwd");
+
+    let status = match intake.status_arg {
+        Some(s) => Status::from_wire(s),
+        None => (bridge.status_from_event)(event)?,
+    };
+
+    if status == Status::Done {
+        if let Some(question) = trailing_question(msg) {
+            return Some(AgentUpdate { status: Status::Pending, msg: question.to_string(), cwd, task: None, tasks: None });
+        }
+    }
+    if status == Status::Pending && msg.trim().is_empty() {
+        return None;
+    }
+
+    let mut out_msg = baseline_msg(status, msg);
+    if status == Status::Error && out_msg.trim().is_empty() {
+        out_msg = "errored".to_string();
+    }
+    if status == Status::Running && event == bridge.tool_event {
+        let raw_tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("");
+        let tool = bridge.tool_names.iter().find(|&&(from, _)| from == raw_tool).map_or(raw_tool, |&(_, to)| to);
+        let tool_input = rename_keys(v.get("tool_input").unwrap_or(&Value::Null), bridge.arg_keys);
+        if let Some(activity) = tool_activity(tool, &tool_input) {
+            out_msg = activity;
+        }
+    }
+
+    let task = if status == Status::Running && event == bridge.prompt_event {
+        v.get("prompt").and_then(|x| x.as_str()).and_then(task_from_prompt)
+    } else {
+        None
+    };
+
+    // No bridge reports background tasks (Claude-only today): leave them alone.
+    Some(AgentUpdate { status, msg: out_msg, cwd, task, tasks: None })
+}
+
+/// `input` with each object key found in `keys` renamed; other keys pass
+/// through, and a non-object input is returned as-is.
+fn rename_keys(input: &Value, keys: &[(&str, &str)]) -> Value {
+    let Some(obj) = input.as_object() else {
+        return input.clone();
+    };
+    let renamed = obj.iter().map(|(k, v)| {
+        let k = keys.iter().find(|&&(from, _)| from == k).map_or(k.as_str(), |&(_, to)| to);
+        (k.to_string(), v.clone())
+    });
+    Value::Object(renamed.collect())
+}
+
 /// A non-empty string field of a JSON payload, or `None`. Shared by the codex
-/// and opencode adapters (both read `cwd`-style fields off a `serde_json::Value`).
+/// adapter and [`derive_bridged`] (both read `cwd`-style fields off a
+/// `serde_json::Value`).
 pub(crate) fn string_field(v: &serde_json::Value, field: &str) -> Option<String> {
     v.get(field)
         .and_then(|x| x.as_str())
@@ -202,23 +292,45 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|base| !base.is_empty())
 }
 
-/// Shell phrases that mark a backgrounded command as a long-lived service (a
-/// dev server, a followed log) rather than bounded work. Matched whole-word on
-/// the lowercased command line. Deliberately narrow: a miss only means the row
-/// keeps spinning until the next `Stop` or `SessionEnd`, while a false hit
-/// paints "done" over work still running. `watch` is absent on purpose —
-/// `gh run watch` and `--watch` checks end. Mirrored in notify.sh's
-/// `SERVICE_RE`; keep the phrases ERE-metachar-free (the parity suite pins it).
+/// Phrases that mark a backgrounded shell as a long-lived service (a dev
+/// server, a watcher, a followed log, a tunnel) rather than bounded work.
+/// Matched whole-word on the lowercased command line AND the model-written
+/// task description ("Start the dev server"). Errs toward "service": Claude
+/// wakes the model when any background shell ends, whatever we call it, so a
+/// false hit only shows the row done early (the wake flips it back — e.g.
+/// `gh run watch`, `vite build`), while a miss holds the row "waiting on …"
+/// forever. `server` alone is absent on purpose: "run the server tests" and
+/// `cargo test -p server` end. Aligned with `core::command`'s `Kind::Server`
+/// words (`serve`, and npm/make/just `dev`/`start`/`server`). Mirrored in
+/// notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]` (the parity
+/// suite pins both — the fallback escapes the `.`).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
     "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
-    "pnpm dev", "yarn dev", "bun dev", "next dev", "serve", "tail -f", "compose up",
+    "pnpm dev", "yarn dev", "bun dev", "next dev", "make dev", "just dev",
+    "make server", "just server", "serve", "http.server", "runserver", "rails s",
+    "rails server", "flask run", "uvicorn", "gunicorn", "vite", "nodemon", "watch",
+    "port-forward", "tail -f", "compose up", "dev server", "start server",
+    "start the server",
 ];
 
-/// Is this backgrounded shell command a service — something that may never
-/// exit on its own, so the agent must not be held "running" on it?
-pub(crate) fn shell_is_service(cmd: &str) -> bool {
-    let cmd_lower = cmd.to_lowercase();
-    SERVICE_PHRASES.iter().any(|p| contains_word(&cmd_lower, p))
+/// Is this backgrounded shell a service — something that may never exit on
+/// its own, so the agent must not be held "running" on it? Either text
+/// matching a [`SERVICE_PHRASES`] entry makes it one. With no command, the
+/// description decides alone; with neither, nothing says the work is
+/// bounded, so it is treated as a service (never spin on the unknowable).
+pub(crate) fn shell_is_service(command: Option<&str>, description: Option<&str>) -> bool {
+    fn nonblank(s: Option<&str>) -> Option<&str> {
+        s.filter(|s| !s.trim().is_empty())
+    }
+    let matches = |s: &str| {
+        let lower = s.to_lowercase();
+        SERVICE_PHRASES.iter().any(|p| contains_word(&lower, p))
+    };
+    match (nonblank(command), nonblank(description)) {
+        (Some(cmd), desc) => matches(cmd) || desc.is_some_and(matches),
+        (None, Some(desc)) => matches(desc),
+        (None, None) => true,
+    }
 }
 
 /// The basename of a command line's first whitespace-separated token

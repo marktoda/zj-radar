@@ -4,17 +4,17 @@
 //! into pi's auto-loaded extensions dir — that translates pi extension events
 //! into zj-radar's own wire vocabulary and spawns
 //! `zj-radar notify pi --status <s>` with JSON on stdin. The bridge picks the
-//! status class (it knows the event and pi's idle state); this adapter owns
-//! the refinements keyed off the payload's `event` field: the pending
-//! backstop, the running baseline, tool-activity substitution (pi's lowercase
-//! tool names and `path` arg normalized into the shared `tool_activity`
-//! vocabulary), the sticky task capture, and the trailing-question
-//! Done→Pending remap. The event names are zj-radar's, not pi's, so a pi API
-//! change lands in JS only.
+//! status class (it knows the event and pi's idle state); the refinements
+//! keyed off the payload's `event` field — the pending backstop, the running
+//! baseline, tool-activity substitution, the sticky task capture, and the
+//! trailing-question Done→Pending remap — are `agents::derive_bridged`'s,
+//! shared with opencode. This module supplies pi's event names and its
+//! lowercase tool names and `path` arg for the shared `tool_activity`
+//! vocabulary. The event names are zj-radar's, not pi's, so a pi API change
+//! lands in JS only.
 
-use super::{string_field, tool_activity, AgentUpdate, Intake};
+use super::{AgentUpdate, Bridge, Intake};
 use crate::status::Status;
-use serde_json::Value;
 
 /// Map a bridge event to a status, used when `--status` is absent (the bridge
 /// always passes it; this is the robustness/test path). `ui_prompt.end` has
@@ -31,87 +31,27 @@ fn status_from_event(event: &str) -> Option<Status> {
     }
 }
 
-/// Decide pi's status + msg + cwd. `status_arg` wins; else derive from the
-/// `event` field. Returns `None` for a no-op.
+/// pi's half of the shared bridge derivation. Tool names are pi's built-ins
+/// (`dist/core/tools/*.js`, all lowercase); `ls` reads as a search, like
+/// `find`, and extension tools pass through to the `working` baseline. The
+/// file arg is `path`. A dialog with a blank title is a malformed payload —
+/// the bridge substitutes "needs input" for untitled kinds — so the shared
+/// pending backstop drops it.
+const BRIDGE: Bridge = Bridge {
+    status_from_event,
+    tool_event: "tool",
+    prompt_event: "prompt",
+    tool_names: &[
+        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("powershell", "Bash"),
+        ("grep", "Grep"), ("find", "Glob"), ("ls", "Glob"),
+    ],
+    arg_keys: &[("path", "file_path")],
+};
+
+/// Decide pi's status + msg + cwd via `agents::derive_bridged`. Returns
+/// `None` for a no-op.
 pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
-    let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
-    let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
-    // `message` carries the event's text (a dialog title, the final assistant
-    // text on settle, an error message). The user's prompt (`prompt`) is
-    // task-capture-only — it must NOT become the running msg.
-    let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
-    let cwd = string_field(&v, "cwd");
-
-    let status = match intake.status_arg {
-        Some(s) => Status::from_wire(s),
-        None => status_from_event(event)?,
-    };
-
-    // A run that ends by asking the user something is blocked on input, not
-    // finished (same rule as the other adapters' Stop/idle).
-    if status == Status::Done {
-        if let Some(question) = super::trailing_question(msg) {
-            return Some(AgentUpdate { status: Status::Pending, msg: question.to_string(), cwd, task: None, tasks: None });
-        }
-    }
-
-    // Pending backstop: a dialog with no title is not a real "needs you" —
-    // the bridge substitutes "needs input" for untitled kinds, so a blank
-    // here is a malformed payload; drop it rather than paint a generic row.
-    if status == Status::Pending && msg.trim().is_empty() {
-        return None;
-    }
-
-    let mut out_msg = super::baseline_msg(status, msg);
-    if status == Status::Error && out_msg.trim().is_empty() {
-        out_msg = "errored".to_string();
-    }
-
-    if status == Status::Running && event == "tool" {
-        let raw_tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("");
-        let raw_input = v.get("tool_input").unwrap_or(&Value::Null);
-        if let Some(activity) = tool_activity(normalize_tool_name(raw_tool), &normalize_tool_args(raw_input)) {
-            out_msg = activity;
-        }
-    }
-
-    let task = if status == Status::Running && event == "prompt" {
-        v.get("prompt").and_then(|x| x.as_str()).and_then(super::task_from_prompt)
-    } else {
-        None
-    };
-
-    // pi reports no background tasks (Claude-only today): leave them alone.
-    Some(AgentUpdate { status, msg: out_msg, cwd, task, tasks: None })
-}
-
-/// Map pi's built-in tool names (`dist/core/tools/*.js`, all lowercase) to the
-/// shared `tool_activity` vocabulary. `ls` reads as a search, like `find`.
-/// Extension tools pass through and fall to the `working` baseline.
-fn normalize_tool_name(raw: &str) -> &str {
-    match raw {
-        "read" => "Read",
-        "write" => "Write",
-        "edit" => "Edit",
-        "bash" | "powershell" => "Bash",
-        "grep" => "Grep",
-        "find" | "ls" => "Glob",
-        _ => raw,
-    }
-}
-
-/// Rename pi's `path` arg to the `file_path` key `tool_activity` reads. Other
-/// keys pass through; a non-object input is returned as-is.
-fn normalize_tool_args(input: &Value) -> Value {
-    let Some(obj) = input.as_object() else {
-        return input.clone();
-    };
-    let mut out = serde_json::Map::with_capacity(obj.len());
-    for (k, v) in obj {
-        let k = if k == "path" { "file_path" } else { k.as_str() };
-        out.insert(k.to_string(), v.clone());
-    }
-    Value::Object(out)
+    super::derive_bridged(intake, &BRIDGE)
 }
 
 #[cfg(test)]
