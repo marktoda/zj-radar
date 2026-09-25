@@ -186,8 +186,94 @@ pub fn baseline_msg(status: Status, msg: &str) -> String {
     }
 }
 
+/// The per-agent half of a JS-bridge producer (opencode, pi). The bridge
+/// translates the agent's events into zj-radar's own `event` vocabulary and
+/// spawns `notify <agent> --status <s>` with JSON on stdin, so an agent API
+/// change lands in JS only; [`derive_bridged`] owns every refinement the two
+/// share. Only the event names and tool vocabularies differ.
+pub(crate) struct Bridge {
+    /// `event` → status, used when `--status` is absent (the bridges always
+    /// pass it; this is the robustness/test path).
+    pub status_from_event: fn(&str) -> Option<Status>,
+    /// The event carrying a tool call (`tool` + `tool_input`).
+    pub tool_event: &'static str,
+    /// The event carrying the user's submitted `prompt` (the sticky task).
+    pub prompt_event: &'static str,
+    /// The agent's tool ids → the shared `tool_activity` names. Anything
+    /// unlisted passes through and, unknown there, falls to `working`.
+    pub tool_names: &'static [(&'static str, &'static str)],
+    /// The agent's tool-arg keys → the snake_case keys `tool_activity` reads.
+    pub arg_keys: &'static [(&'static str, &'static str)],
+}
+
+/// Decide a bridged agent's status + msg + cwd. `status_arg` wins; else the
+/// `event` decides. `message` carries the event's text (a permission or
+/// dialog title, the final assistant text on a turn end, an error); the
+/// user's `prompt` is task-capture-only — it must NOT become the running msg.
+/// Applies, in order: the trailing-question Done→Pending remap (a turn end
+/// carries no outcome flag, so a prose question just surfaces as done), the
+/// pending backstop (a blank title is not a real "needs you"), the shared
+/// baseline plus an `errored` label for a blank error, tool-activity
+/// substitution, and the task capture. Returns `None` for a no-op.
+pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUpdate> {
+    let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
+    let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
+    let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+    let cwd = string_field(&v, "cwd");
+
+    let status = match intake.status_arg {
+        Some(s) => Status::from_wire(s),
+        None => (bridge.status_from_event)(event)?,
+    };
+
+    if status == Status::Done {
+        if let Some(question) = trailing_question(msg) {
+            return Some(AgentUpdate { status: Status::Pending, msg: question.to_string(), cwd, task: None, tasks: None });
+        }
+    }
+    if status == Status::Pending && msg.trim().is_empty() {
+        return None;
+    }
+
+    let mut out_msg = baseline_msg(status, msg);
+    if status == Status::Error && out_msg.trim().is_empty() {
+        out_msg = "errored".to_string();
+    }
+    if status == Status::Running && event == bridge.tool_event {
+        let raw_tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("");
+        let tool = bridge.tool_names.iter().find(|&&(from, _)| from == raw_tool).map_or(raw_tool, |&(_, to)| to);
+        let tool_input = rename_keys(v.get("tool_input").unwrap_or(&Value::Null), bridge.arg_keys);
+        if let Some(activity) = tool_activity(tool, &tool_input) {
+            out_msg = activity;
+        }
+    }
+
+    let task = if status == Status::Running && event == bridge.prompt_event {
+        v.get("prompt").and_then(|x| x.as_str()).and_then(task_from_prompt)
+    } else {
+        None
+    };
+
+    // No bridge reports background tasks (Claude-only today): leave them alone.
+    Some(AgentUpdate { status, msg: out_msg, cwd, task, tasks: None })
+}
+
+/// `input` with each object key found in `keys` renamed; other keys pass
+/// through, and a non-object input is returned as-is.
+fn rename_keys(input: &Value, keys: &[(&str, &str)]) -> Value {
+    let Some(obj) = input.as_object() else {
+        return input.clone();
+    };
+    let renamed = obj.iter().map(|(k, v)| {
+        let k = keys.iter().find(|&&(from, _)| from == k).map_or(k.as_str(), |&(_, to)| to);
+        (k.to_string(), v.clone())
+    });
+    Value::Object(renamed.collect())
+}
+
 /// A non-empty string field of a JSON payload, or `None`. Shared by the codex
-/// and opencode adapters (both read `cwd`-style fields off a `serde_json::Value`).
+/// adapter and [`derive_bridged`] (both read `cwd`-style fields off a
+/// `serde_json::Value`).
 pub(crate) fn string_field(v: &serde_json::Value, field: &str) -> Option<String> {
     v.get(field)
         .and_then(|x| x.as_str())
