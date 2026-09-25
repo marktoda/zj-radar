@@ -46,7 +46,13 @@ task when a tool call backgrounds it (`run_in_background`, a background
 subagent), each outcome when Claude Code wakes the model with a
 `<task-notification>`, and the full running set on every `Stop`. A turn that
 ends while bounded work still runs stays `running` ("waiting on …") until the
-last of it finishes.
+last of it finishes. A backgrounded shell is bounded unless its command looks
+like a service (a dev server, a watcher, `tail -f`, a tunnel), judged only at
+command positions: each `&`/`|`/`;`/newline segment's first word past env
+assignments and wrappers, or past package runners (`npx`, `pnpm exec`, …) too.
+So `npm run dev`, `cd web && vite` and `tsc --watch` are services, while
+`vite build`, `cd serve && cargo test` and `pytest tests/test_serve.py` are
+bounded. The task's description decides only when it has no command.
 
 ## Codex
 
@@ -61,7 +67,8 @@ hooks, run `/hooks` inside Codex once to review and trust them.
 
 | Codex event | Status |
 |---|---|
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` | `running` |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `running` |
+| `SubagentStart`, `SubagentStop` | `running` ("delegating"; the subagent's report is never the message) |
 | `PermissionRequest` | `pending` |
 | `Stop` | `done` |
 
