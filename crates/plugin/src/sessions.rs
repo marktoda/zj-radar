@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use crate::presence::Presence;
+use crate::presence::{Presence, PresenceTab};
 use crate::radar_state::Direction;
 
 /// How long a peer's presence file may sit unrefreshed before its badge row
@@ -117,6 +117,7 @@ pub(crate) struct BadgeEntry {
     pub is_current: bool,
     pub selected: bool,
     pub stale: bool,
+    pub tabs: Vec<PresenceTab>,
 }
 
 /// Where a committed cycle gesture lands — enough for the runtime to switch
@@ -346,6 +347,7 @@ impl Sessions {
                 is_current: s.is_current,
                 selected: selected_name == Some(s.presence.session_name.as_str()),
                 stale: s.stale,
+                tabs: s.presence.tabs.clone(),
             })
             .collect()
     }
@@ -412,7 +414,7 @@ mod tests {
 
     fn own(name: &str) -> Presence {
         Presence { session_name: name.into(), running: 0, attention: 0,
-                  attention_tab_position: None, updated_epoch_s: 0 }
+                  attention_tab_position: None, updated_epoch_s: 0, tabs: vec![] }
     }
     /// Fresh (age 0) peer presence, the shape most tests want.
     fn presence(name: &str, running: usize, attention: usize) -> (String, u64) {
@@ -429,7 +431,7 @@ mod tests {
         let mut s = Sessions::default();
         s.update_presences(vec![presence("zeta", 1, 2), presence("alpha", 1, 0)]);
         s.set_own(Presence { session_name: "work".into(), running: 3, attention: 0,
-                             attention_tab_position: None, updated_epoch_s: 0 });
+                             attention_tab_position: None, updated_epoch_s: 0, tabs: vec![] });
         // (Bound rather than chained straight off `s.badge()`: the literal
         // brief snippet borrows from a temporary `Vec<BadgeEntry>` that would
         // be dropped at the end of the `let` statement — a compile-mechanics
@@ -584,12 +586,12 @@ mod tests {
     fn set_own_reports_change_only_on_actual_content_change() {
         let mut s = Sessions::default();
         let p = Presence { session_name: "work".into(), running: 3, attention: 0,
-                           attention_tab_position: None, updated_epoch_s: 0 };
+                           attention_tab_position: None, updated_epoch_s: 0, tabs: vec![] };
         assert!(s.set_own(p.clone()), "first own-count report changes the badge");
         // Same badge-relevant fields, different updated_epoch_s (not part of
         // BadgeEntry) — must not register as a change.
         let p2 = Presence { session_name: "work".into(), running: 3, attention: 0,
-                            attention_tab_position: None, updated_epoch_s: 99 };
+                            attention_tab_position: None, updated_epoch_s: 99, tabs: vec![] };
         assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
     }
 
@@ -751,7 +753,7 @@ mod tests {
         // updated_epoch_s and larger counts, and must still lose.
         let mut s = Sessions::default();
         s.set_own(Presence { session_name: "work".into(), running: 3, attention: 0,
-                             attention_tab_position: None, updated_epoch_s: 50 });
+                             attention_tab_position: None, updated_epoch_s: 50, tabs: vec![] });
         s.update_presences(vec![
             (r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(), 0),
         ]);

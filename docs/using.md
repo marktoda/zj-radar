@@ -119,12 +119,18 @@ Bindings for all four, and for changing options from a key, are in
 ## Cross-session badge
 
 Run zj-radar in more than one Zellij session on the same machine and each rail
-grows one line per session: your session first, then sessions that need
-attention, then the rest. Each line shows the session name with its working
-and needs-you agent-pane counts. With a single session the badge is invisible.
+shows a session tree: your session and its local tabs first, then sessions that
+need attention, then the rest. Each session line shows working and needs-you
+agent-pane counts. Peer sessions publish their tab names and agent rows; tabs
+without agents still appear. With a single session the extra session heading
+is hidden.
 
-- **Click a line** to switch to that session, landing on its attention tab if
-  it has one.
+- **Click a session line** to switch to that session, landing on its attention
+  tab if it has one. **Click a peer tab or agent row** to switch to that tab.
+  The agent row does not focus a particular pane inside the peer tab.
+- The tree reserves room for local tabs, so a short rail may omit some peer
+  children. Session lines always remain visible. An older zj-radar instance
+  publishes counts but no tab children until its plugin is reloaded.
 - **`session-next` / `session-prev`** move a highlight through the same order.
   The switch happens about a second after your last tap; landing back on your
   own session cancels.
