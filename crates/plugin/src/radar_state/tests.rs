@@ -95,7 +95,9 @@ fn pending_wait_drives_the_slow_cadence_until_saturation() {
 }
 
 #[test]
-fn stale_running_expiry_is_persisted_by_the_owning_tab_only() {
+fn stale_running_expiry_is_reported_by_every_instance() {
+    // Owner or not, the expiry is a store change the timer reports — the
+    // runtime renders and persists on it (see `RadarState::timer`).
     let expire = |own_position: usize| {
         let mut radar = RadarState::default();
         radar.tabs_changed(vec![tab(10, 0, "mine", true), tab(20, 1, "theirs", false)]);
@@ -106,17 +108,49 @@ fn stale_running_expiry_is_persisted_by_the_owning_tab_only() {
             .status_mut()
             .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
         radar.command_changed(7, &["bash".into()], false, 5);
-        let mut out = TimerChange::default();
+        let mut changed = false;
         for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
-            let tc = radar.timer(t, 0);
-            out.changed |= tc.changed;
-            out.persist |= tc.persist;
+            changed |= radar.timer(t, 0);
         }
         assert_eq!(radar.status(7).unwrap().status, Status::Idle);
-        out
+        changed
     };
-    assert_eq!(expire(0), TimerChange { changed: true, persist: true }, "own pane: render + write");
-    assert_eq!(expire(1), TimerChange { changed: true, persist: false }, "foreign pane: render only");
+    assert!(expire(0), "own pane");
+    assert!(expire(1), "foreign pane");
+}
+
+#[test]
+fn a_lagging_siblings_stale_write_is_repaired_by_its_own_timer_write() {
+    // A owns tab 0 (pane 7), B owns tab 1 (pane 8). Their timers tick on
+    // unaligned phases: B confirms pane 8's Done and writes; A, a tick
+    // behind, writes an own-pane edge that still carries pane 8 Running.
+    // A's own confirm must write too, or a late tab rehydrates a spinner.
+    let two_tabs = |own_position: usize| {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "a", true), tab(20, 1, "b", false)]);
+        radar.set_tab_panes_for_position(0, vec![pane(7)]);
+        radar.set_tab_panes_for_position(1, vec![pane(8)]);
+        own_tab(&mut radar, own_position);
+        radar
+    };
+    let (mut a, mut b) = (two_tabs(0), two_tabs(1));
+    let build = ["cargo".to_string(), "build".to_string()];
+    for r in [&mut a, &mut b] {
+        r.command_changed(8, &build, true, 1);
+        r.timer(1 + DEBOUNCE_TICKS, 100);
+        r.command_changed(8, &["bash".into()], false, 10);
+    }
+    let confirm = 10 + DEBOUNCE_TICKS;
+    assert!(b.timer(confirm, 200), "B confirms Done");
+    let mut file = b.snapshot_json(None, confirm);
+    let wire = payload::to_wire(&payload_in_repo(7, Status::Running, "r"));
+    a.status_pipe(&wire, confirm - 1, 200, config::NamingMode::Off);
+    file = a.snapshot_json(Some(&file), confirm);
+    assert!(a.timer(confirm, 201), "A confirms Done and owes the write");
+    file = a.snapshot_json(Some(&file), confirm);
+    let mut late = RadarState::default();
+    late.load_snapshot(&file).unwrap();
+    assert_eq!(late.command(8).map(|o| o.status), Some(Status::Done));
 }
 
 #[test]
@@ -131,7 +165,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar.command_changed(7, &["bash".into()], false, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
-        changed |= radar.timer(t, 0).changed;
+        changed |= radar.timer(t, 0);
     }
     assert!(changed, "the expiry renders + persists like any store change");
     assert_eq!(radar.status(7).unwrap().status, Status::Idle);

@@ -222,15 +222,6 @@ pub(crate) struct RadarChange {
     pub force_render: bool,
 }
 
-/// What a [`RadarState::timer`] tick did: whether any observation changed (the
-/// runtime renders on it) and whether this instance owes the snapshot write
-/// for it (see [`RadarState::persists_edges_for`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TimerChange {
-    pub changed: bool,
-    pub persist: bool,
-}
-
 /// Upper bound on the number of one-shot `get_pane_cwd` reads requested per
 /// `PaneUpdate`. Each read is a blocking host round-trip, so we cap a single
 /// update's fan-out (e.g. a session restore surfacing many panes at once),
@@ -659,12 +650,19 @@ impl RadarState {
     }
 
     /// Timer tick. Reports whether an observation changed (a debounced
-    /// promotion, a Done confirm, a TTL recede, a stale-Running expiry) — the
-    /// runtime renders on it — and whether THIS instance owes the snapshot
-    /// write for it, so timer-driven mutations reach late-spawned instances
-    /// too. Every completion the tick receded (TTL recede, or a promotion
-    /// displacing a still-lit Done/Error) hands off to the ledger.
-    pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> TimerChange {
+    /// promotion, a Done confirm, a TTL recede, a stale-Running expiry); the
+    /// runtime renders AND persists on it. Every completion the tick receded
+    /// (TTL recede, or a promotion displacing a still-lit Done/Error) hands
+    /// off to the ledger.
+    ///
+    /// Unlike a pushed edge, a timer edge is written by EVERY instance that
+    /// sees it, not just the pane's owner: instances tick on unaligned
+    /// phases, so a lagging non-owner's own-pane write (its store still
+    /// pre-confirm) can land after the owner's and put the stale state back
+    /// in the shared file — only its own later timer write repairs that.
+    /// Timer edges are rare (command lifecycle, expiry), so the extra writes
+    /// are cheap.
+    pub(crate) fn timer(&mut self, tick: u64, now_epoch_s: u64) -> bool {
         // Lazy expiry: `rows`/`has_active_flash` stay `&self` (read paths), so
         // the map itself is only ever pruned here, on the one `&mut self` tick
         // that already runs regardless of flash state.
@@ -674,8 +672,6 @@ impl RadarState {
         // one, so the removal can never make a memoized rows() result stale.
         self.flash_until.retain(|_, &mut u| tick < u);
         let report = self.command.on_timer(Tick(tick), EpochSecs(now_epoch_s));
-        // The panes this tick changed, for the snapshot-ownership decision.
-        let mut changed_panes = report.changed_panes;
         // All-command-origin recedes here; no pruning is in flight on this
         // edge, so the current topology/shadow set `ledger_recede_now`
         // captures IS the "at this moment" set — see `resolve`'s precedence
@@ -692,18 +688,12 @@ impl RadarState {
         // broadcast; its prompt-return grace clock (see `clear_on_prompt_return`)
         // runs out here. Running is not a completion — nothing to ledger — but
         // the clear must render and persist like any other store change.
-        let stale_cleared = self.status.expire_stale_running(tick);
-        let changed = report.changed || !stale_cleared.is_empty();
-        changed_panes.extend(stale_cleared);
+        let stale_cleared = !self.status.expire_stale_running(tick).is_empty();
+        let changed = report.changed || stale_cleared;
         if changed {
             self.touch();
         }
-        // One writer per edge, exactly as for pushed edges: the instance whose
-        // tab holds a changed pane writes (`persists_edges_for`). Without
-        // this every instance read-merge-wrote the shared file for every
-        // promotion/confirm/expiry.
-        let persist = changed_panes.iter().any(|&id| self.persists_edges_for(Some(id)));
-        TimerChange { changed, persist }
+        changed
     }
 
     pub(crate) fn cwd_changed(

@@ -3162,10 +3162,11 @@ fn a_foreign_edge_does_not_drop_an_owned_deferred_write() {
 }
 
 #[test]
-fn timer_driven_edges_are_written_by_the_owning_tab_only() {
-    // A debounce promotion / Done confirm reaches every instance at once;
-    // like a pushed edge, only the instance whose tab holds the pane writes
-    // the shared snapshot — the rest still render the converged change.
+fn timer_driven_edges_are_written_by_every_instance() {
+    // Unlike a pushed edge, a debounce promotion / Done confirm is written by
+    // every instance: timers run on unaligned phases, so an owner-only rule
+    // lets a lagging sibling's own-pane write revert the owner's (see
+    // `RadarState::timer`).
     let run = |pane_id: u32| {
         let mut rt = two_tab_runtime_owning_tab_0();
         rt.command_changed(pane_id, &["cargo".to_string(), "test".to_string()], true);
@@ -3190,8 +3191,8 @@ fn timer_driven_edges_are_written_by_the_owning_tab_only() {
 
     let (promoted, done) = run(8);
     assert!(promoted.render, "a foreign promotion still renders");
-    assert!(!persists(&promoted), "another tab's promotion is that tab's write, got {:?}", promoted.effects);
-    assert!(!persists(&done), "another tab's Done confirm is that tab's write, got {:?}", done.effects);
+    assert!(persists(&promoted), "a foreign promotion is written too, got {:?}", promoted.effects);
+    assert!(persists(&done), "a foreign Done confirm is written too, got {:?}", done.effects);
 }
 
 #[test]
