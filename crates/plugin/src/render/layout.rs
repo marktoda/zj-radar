@@ -56,10 +56,10 @@ fn is_calm(status: Status) -> bool {
 /// Compression order when `sum(full lines of kept rows) > body_budget`:
 ///   1. Fold idle rows into a strip (existing behaviour).
 ///   2. Drop the strip line itself (set `strip_folded_count = 0`) if even the
-///      non-idle rows exceed the budget.
-///   2b. Switch cards with background-task lines to their compact form (the
-///      task lines fold into a `+N` tag on the pane line) — lowest-position
-///      first, one card at a time until it fits.
+///      non-idle rows exceed the budget. Then (step 2b) switch cards with
+///      background-task lines to their compact form (the task lines fold
+///      into a `+N` tag on the pane line) — lowest-position first, one card
+///      at a time until it fits.
 ///   3. Compress calm non-idle rows (Done, Running) to 1 line each —
 ///      lowest-position first, one at a time until it fits.
 ///   4. Compress urgent rows (Pending, Error) toward 1 line — drop msg line
