@@ -48,14 +48,46 @@ impl Existing {
 /// only copy of it, so it stays. Returns the backup's path when one was left
 /// behind, for the caller to mention.
 pub(crate) fn remove_backup_if_ours(path: &std::path::Path, is_ours: fn(&str) -> bool) -> Option<std::path::PathBuf> {
-    let bak = super::path_with_suffix(path, super::BACKUP_SUFFIX);
-    match plan_uninstall(&read_existing(&bak), is_ours) {
+    let (bak, plan) = backup_plan(path, is_ours);
+    match plan {
         UninstallPlan::Absent => None,
         UninstallPlan::Remove => {
             let _ = std::fs::remove_file(&bak);
             None
         }
         UninstallPlan::NotOurs => Some(bak),
+    }
+}
+
+/// The `.bak` beside `path` and what an uninstall does with it — the same
+/// marker rule as the bridge itself.
+fn backup_plan(path: &std::path::Path, is_ours: fn(&str) -> bool) -> (std::path::PathBuf, UninstallPlan) {
+    let bak = super::path_with_suffix(path, super::BACKUP_SUFFIX);
+    let plan = plan_uninstall(&read_existing(&bak), is_ours);
+    (bak, plan)
+}
+
+/// The line reporting a foreign `.bak` an uninstall left (or, `dry_run`,
+/// would leave) beside `path`, with the command that restores it.
+pub(crate) fn kept_backup_line(label: &str, bak: &std::path::Path, path: &std::path::Path, dry_run: bool) -> String {
+    let restore = crate::run::shell_join(&[
+        "mv".to_string(),
+        bak.display().to_string(),
+        path.display().to_string(),
+    ]);
+    let verb = if dry_run { "would leave" } else { "left" };
+    format!("{label}: {verb} {} (not ours — the file `--force` replaced); `{restore}` to restore it", bak.display())
+}
+
+/// `--uninstall --dry-run`'s account of the `.bak` beside `path`: removed with
+/// the bridge when ours, left (with a restore hint) when not. `None` when
+/// there is no backup.
+pub(crate) fn dry_run_backup_line(label: &str, path: &std::path::Path, is_ours: fn(&str) -> bool) -> Option<String> {
+    let (bak, plan) = backup_plan(path, is_ours);
+    match plan {
+        UninstallPlan::Absent => None,
+        UninstallPlan::Remove => Some(format!("--- would remove {} (dry-run) ---", bak.display())),
+        UninstallPlan::NotOurs => Some(kept_backup_line(label, &bak, path, true)),
     }
 }
 
@@ -203,6 +235,19 @@ mod tests {
         std::fs::write(&bak, "export const Theirs = async () => ({});\n").unwrap();
         assert_eq!(remove_backup_if_ours(&path, opencode_plugin_is_ours), Some(bak.clone()));
         assert!(bak.exists(), "a foreign backup must survive uninstall");
+    }
+
+    #[test]
+    fn kept_backup_line_spells_a_pasteable_restore_command() {
+        let path = std::path::Path::new("/Users/m/My Config/zj-radar.js");
+        let bak = super::super::path_with_suffix(path, super::super::BACKUP_SUFFIX);
+        let line = kept_backup_line("pi", &bak, path, false);
+        assert!(line.starts_with("pi: left /Users/m/My Config/zj-radar.js.zj-radar.bak (not ours"), "{line}");
+        assert!(
+            line.ends_with("`mv '/Users/m/My Config/zj-radar.js.zj-radar.bak' '/Users/m/My Config/zj-radar.js'` to restore it"),
+            "{line}"
+        );
+        assert!(kept_backup_line("pi", &bak, path, true).starts_with("pi: would leave "));
     }
 
     #[test]

@@ -1867,13 +1867,20 @@ fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
     assert!(bak.exists(), "--force over a foreign file keeps a restore point");
     assert!(opencode_tui_plugin(&xdg).exists());
 
+    // The dry run already names the backup it would leave.
+    let out = opencode_cmd(&xdg, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would leave {}", bak.display())), "stdout:\n{stdout}");
+
     // Uninstall removes our bridges, but that restore point is the user's only
-    // copy of their plugin — it must survive, and be mentioned.
+    // copy of their plugin — it must survive, and be mentioned with its
+    // restore command.
     let out = opencode_cmd(&xdg, &["--uninstall", "--yes"]).success().get_output().clone();
     assert!(!plugin.exists());
     assert_eq!(fs::read_to_string(&bak).unwrap(), "export const Other = async () => ({});\n");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(&format!("left {}", bak.display())), "stdout:\n{stdout}");
+    assert!(stdout.contains(&format!("`mv {} {}` to restore it", bak.display(), plugin.display())), "stdout:\n{stdout}");
 }
 
 #[test]
@@ -2097,11 +2104,33 @@ fn setup_pi_uninstall_keeps_the_backup_of_a_forced_over_foreign_file() {
     pi_cmd(&home, &["--yes", "--force"]).success();
     let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
 
+    // The dry run names the backup it would leave, and how to restore it.
+    let out = pi_cmd(&home, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would leave {}", bak.display())), "stdout:\n{stdout}");
+    assert!(ext.exists(), "dry-run removes nothing");
+
     let out = pi_cmd(&home, &["--uninstall", "--yes"]).success().get_output().clone();
     assert!(!ext.exists(), "our bridge is removed");
     assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the foreign backup survives");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(&format!("left {}", bak.display())), "the kept backup is mentioned:\n{stdout}");
+    let restore = format!("`mv {} {}` to restore it", bak.display(), ext.display());
+    assert!(stdout.contains(&restore), "the restore command is spelled out:\n{stdout}");
+}
+
+#[test]
+fn setup_pi_uninstall_dry_run_names_our_backup_it_would_remove() {
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    fs::write(&ext, format!("// {PI_MARKER}\n// stale ours\n")).unwrap();
+    pi_cmd(&home, &["--yes"]).success(); // stale-ours rewrite leaves our .bak
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+
+    let out = pi_cmd(&home, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would remove {} (dry-run)", bak.display())), "stdout:\n{stdout}");
+    assert!(bak.exists(), "dry-run removes nothing");
 }
 
 #[test]
