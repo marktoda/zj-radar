@@ -4,7 +4,7 @@
 //! plumbing plus the genuinely host-bound helpers (env, stdin). Repo/branch
 //! resolution is `git.rs`; the last-sent dedup is `dedup.rs`.
 
-use super::agents::{Agent, AgentUpdate, BgAgents, Intake};
+use super::agents::{bg_agents_relevant, Agent, AgentUpdate, BgAgents, Intake};
 use crate::dedup::{LastSent, SentKey};
 use crate::payload::{to_wire, StatusPayload};
 use crate::status::Status;
@@ -85,11 +85,15 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     // Uniform input sourcing: argv `input` if present (Codex's legacy notify),
     // else stdin (Claude and modern Codex hooks). The adapter parses it.
     let raw = input.map(str::to_owned).unwrap_or_else(read_stdin);
-    // A background subagent's own tool hooks send nothing (they would
-    // clobber the parent's row); the only per-pane state an adapter needs,
-    // so it lives out here and derive stays pure. See `agents::BgAgents`.
+    // A background subagent's own hooks send nothing (they would clobber the
+    // parent's row); the only per-pane state an adapter needs, so it lives
+    // out here and derive stays pure. See `agents::BgAgents`. The payload
+    // pre-filter runs first so ordinary hooks never touch the state dir, and
+    // a dry run neither consults nor touches the markers (as with dedup).
     if agent == Agent::Claude
-        && BgAgents::from_env(pane_id).is_some_and(|t| t.intake(&raw, crate::dedup::unix_now(), dry_run))
+        && !dry_run
+        && bg_agents_relevant(&raw)
+        && BgAgents::from_env(pane_id).is_some_and(|t| t.intake(&raw, crate::dedup::unix_now()))
     {
         return;
     }

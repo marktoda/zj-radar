@@ -215,22 +215,37 @@ mod tests {
             "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
             "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
             "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
-            "bundle exec jekyll serve", "make server",
+            "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
+            "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
         ] {
             assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
         }
     }
 
     #[test]
-    fn the_description_can_mark_a_service_but_server_alone_does_not() {
+    fn bounded_uses_of_single_service_words_hold() {
+        // A false service is permanent (`holds` only drops) and may notify
+        // "finished" early, so these single words need the right position.
+        for cmd in [
+            "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
+            "./watch.sh", "vitest run", "npm run watch-docs-check",
+        ] {
+            assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
+        }
+    }
+
+    #[test]
+    fn the_description_can_mark_a_service_but_single_words_do_not() {
         // An unlisted command whose description gives it away.
         assert!(!shell_holds(Some("./bin/app --port 3000"), Some("Start the dev server")));
-        assert!(!shell_holds(Some("./run.sh"), Some("Watch for changes and rebuild")));
-        // Bounded work that merely mentions a server holds.
+        assert!(!shell_holds(Some("./run.sh"), Some("Rebuild in watch mode")));
+        // Bounded work whose description mentions a service word in passing.
         for (cmd, desc) in [
             ("cargo test -p server", "Run the server tests"),
             ("go build ./cmd/server", "Build the server"),
             ("pytest tests/test_watcher.py", "Test the file watcher"),
+            ("cargo test", "Run tests and watch for failures"),
+            ("npm test", "Serve up the test report"),
             ("vitest run", "Run unit tests"),
             ("./observe.sh", "Observe results"),
         ] {

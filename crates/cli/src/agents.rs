@@ -14,7 +14,7 @@ mod codex;
 mod opencode;
 mod pi;
 
-pub(crate) use claude::bg_agents::BgAgents;
+pub(crate) use claude::bg_agents::{relevant as bg_agents_relevant, BgAgents};
 
 use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
@@ -292,43 +292,70 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|base| !base.is_empty())
 }
 
-/// Phrases that mark a backgrounded shell as a long-lived service (a dev
-/// server, a watcher, a followed log, a tunnel) rather than bounded work.
-/// Matched whole-word on the lowercased command line AND the model-written
-/// task description ("Start the dev server"). Errs toward "service": Claude
-/// wakes the model when any background shell ends, whatever we call it, so a
-/// false hit only shows the row done early (the wake flips it back — e.g.
-/// `gh run watch`, `vite build`), while a miss holds the row "waiting on …"
-/// forever. `server` alone is absent on purpose: "run the server tests" and
-/// `cargo test -p server` end. Aligned with `core::command`'s `Kind::Server`
-/// words (`serve`, and npm/make/just `dev`/`start`/`server`). Mirrored in
-/// notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]` (the parity
-/// suite pins both — the fallback escapes the `.`).
+/// Command-line phrases that mark a backgrounded shell as a long-lived
+/// service (a dev server, a watcher, a followed log, a tunnel) rather than
+/// bounded work, matched whole-word on the lowercased command. A false hit
+/// is costly: a task's `holds` only ever drops (`core::task`), so it
+/// permanently shows the row done early and may fire an early "finished"
+/// notification; a miss holds the row "waiting on …" until the next `Stop`.
+/// So every entry is specific: `server` alone is absent ("run the server
+/// tests", `cargo test -p server` end), and the single words that are
+/// services only in some positions — `vite`, `--watch` — are token rules in
+/// [`shell_is_service`], not phrases. Aligned with `core::command`'s
+/// `Kind::Server` words (`serve`, and npm/make/just `dev`/`start`/`server`).
+/// Mirrored in notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]`
+/// (the parity suite pins both — the fallback escapes the `.`).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
     "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
     "pnpm dev", "yarn dev", "bun dev", "next dev", "make dev", "just dev",
     "make server", "just server", "serve", "http.server", "runserver", "rails s",
-    "rails server", "flask run", "uvicorn", "gunicorn", "vite", "nodemon", "watch",
-    "port-forward", "tail -f", "compose up", "dev server", "start server",
-    "start the server",
+    "rails server", "flask run", "uvicorn", "gunicorn", "nodemon", "cargo watch",
+    "watchexec", "port-forward", "tail -f", "compose up",
 ];
 
+/// Phrases that mark a service by the model-written task description
+/// ("Start the dev server"). Multi-word only: prose mentions single words
+/// in passing ("Run tests and watch for failures"). Mirrored in notify.sh's
+/// `SERVICE_DESCRIPTION_PHRASES`, same rules as [`SERVICE_PHRASES`].
+pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
+    "dev server", "development server", "start server", "start the server", "watch mode",
+];
+
+/// The token rules for words that are services only in some positions: a
+/// `vite` command token (any path) unless its next token is `build`, and a
+/// `--watch`/`--watchall` flag unless set `=false`/`=0` (`gh run watch`
+/// ends; `jest --watch=false` ends). `cmd` is lowercased.
+fn service_tokens(cmd: &str) -> bool {
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let vite = tokens.iter().enumerate().any(|(i, t)| {
+        basename(t) == Some("vite") && tokens.get(i + 1) != Some(&"build")
+    });
+    let watch = tokens.iter().any(|t| {
+        let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
+        matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
+    });
+    vite || watch
+}
+
 /// Is this backgrounded shell a service — something that may never exit on
-/// its own, so the agent must not be held "running" on it? Either text
-/// matching a [`SERVICE_PHRASES`] entry makes it one. With no command, the
-/// description decides alone; with neither, nothing says the work is
-/// bounded, so it is treated as a service (never spin on the unknowable).
+/// its own, so the agent must not be held "running" on it? Its command
+/// matching a [`SERVICE_PHRASES`] entry or [`service_tokens`], or its
+/// description a [`SERVICE_DESCRIPTION_PHRASES`] entry, makes it one. With
+/// no command, the description decides alone; with neither, nothing says the
+/// work is bounded, so it is treated as a service (never spin on the
+/// unknowable).
 pub(crate) fn shell_is_service(command: Option<&str>, description: Option<&str>) -> bool {
     fn nonblank(s: Option<&str>) -> Option<&str> {
         s.filter(|s| !s.trim().is_empty())
     }
-    let matches = |s: &str| {
-        let lower = s.to_lowercase();
-        SERVICE_PHRASES.iter().any(|p| contains_word(&lower, p))
-    };
+    let any_phrase = |s: &str, phrases: &[&str]| phrases.iter().any(|p| contains_word(s, p));
+    let described = |d: &str| any_phrase(&d.to_lowercase(), SERVICE_DESCRIPTION_PHRASES);
     match (nonblank(command), nonblank(description)) {
-        (Some(cmd), desc) => matches(cmd) || desc.is_some_and(matches),
-        (None, Some(desc)) => matches(desc),
+        (Some(cmd), desc) => {
+            let cmd = cmd.to_lowercase();
+            any_phrase(&cmd, SERVICE_PHRASES) || service_tokens(&cmd) || desc.is_some_and(described)
+        }
+        (None, Some(desc)) => described(desc),
         (None, None) => true,
     }
 }

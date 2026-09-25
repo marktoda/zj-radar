@@ -351,27 +351,34 @@ teardown() { teardown_fakes; }
 }
 
 @test "service phrases are welded between the producers" {
-  # agents.rs SERVICE_PHRASES and notify.sh SERVICE_PHRASES must list the same
-  # phrases, each ERE/Oniguruma-metachar-free but for `.` (which notify.sh
-  # escapes) — both are interpolated or matched literally on opposite sides.
-  local rust bash_list
-  rust="$(sed -n '/SERVICE_PHRASES: &\[&str\] = &\[/,/^];/p' "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
-    | grep -o '"[^"]*"' | tr -d '"' | sort)"
-  bash_list="$(grep -m1 '^SERVICE_PHRASES=' "$SCRIPT" | sed 's/^SERVICE_PHRASES="//; s/"$//' | tr '|' '\n' | sort)"
-  [ -n "$rust" ] || { echo "extraction from agents.rs broke"; return 1; }
-  echo "rust=[$rust]"; echo "bash=[$bash_list]"
-  [ "$rust" = "$bash_list" ]
-  local p
-  while IFS= read -r p; do
-    case "$p" in *[!a-z0-9\ .-]*) echo "phrase [$p] has a regex-unsafe char"; return 1;; esac
-  done <<<"$rust"
+  # agents.rs and notify.sh must list the same SERVICE_PHRASES and the same
+  # SERVICE_DESCRIPTION_PHRASES, each ERE/Oniguruma-metachar-free but for `.`
+  # (which notify.sh escapes) — both are interpolated or matched literally on
+  # opposite sides.
+  local name rust bash_list p
+  for name in SERVICE_PHRASES SERVICE_DESCRIPTION_PHRASES; do
+    rust="$(sed -n "/ $name: &\[&str\] = &\[/,/^];/p" "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
+      | grep -o '"[^"]*"' | tr -d '"' | sort)"
+    bash_list="$(grep -m1 "^$name=" "$SCRIPT" | sed "s/^$name=\"//; s/\"\$//" | tr '|' '\n' | sort)"
+    [ -n "$rust" ] || { echo "extraction of $name from agents.rs broke"; return 1; }
+    echo "$name rust=[$rust]"; echo "$name bash=[$bash_list]"
+    [ "$rust" = "$bash_list" ]
+    while IFS= read -r p; do
+      case "$p" in *[!a-z0-9\ .-]*) echo "phrase [$p] has a regex-unsafe char"; return 1;; esac
+    done <<<"$rust"
+  done
 }
 
 @test "parity: servers, watchers and described services leave the Stop done" {
   local c
-  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'kubectl port-forward svc/db 5432' 'nodemon index.js'; do
+  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
     [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ] || { echo "[$c] held the row"; return 1; }
+  done
+  # Single service words only count in the right position: these hold.
+  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run'; do
+    parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
+    [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ] || { echo "[$c] read as a service"; return 1; }
   done
   # The `.` is literal in both: `httpXserver` is not `http.server`.
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"./httpxserver"}]}' done
@@ -381,10 +388,12 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test -p server","description":"Run the server tests"}]}' done
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the server tests" ]
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test","description":"Run tests and watch for failures"}]}' done
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
   # No command: the description decides; neither → no hold.
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Run the suite"}]}' done
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "waiting on Run the suite" ]
-  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Serve the docs"}]}' done
+  parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"Run the docs dev server"}]}' done
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
   parity_payloads '{"hook_event_name":"Stop","cwd":"/home/u/myrepo","last_assistant_message":"ok","background_tasks":[{"id":"b1","type":"shell","status":"running","command":" "}]}' done
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
@@ -401,8 +410,9 @@ teardown() { teardown_fakes; }
 
 @test "cli: a background subagent's own tool hooks send nothing (bash fallback diverges)" {
   # CLI-only by design (notify.sh documents it next to the tasks note): the
-  # CLI records the parent's async_launched agentId per (session, pane) and
-  # drops that agent's Pre/PostToolUse; the stateless fallback reports them.
+  # CLI leaves a marker per async_launched agentId per (session, pane) and
+  # drops that agent's Pre/PostToolUse and SubagentStop; the stateless
+  # fallback reports them.
   export ZELLIJ_SESSION_NAME="bats-session" XDG_RUNTIME_DIR="$FAKEBIN/state" TMPDIR="$FAKEBIN/state"
   mkdir -p "$FAKEBIN/state"
   local launch='{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Agent","tool_input":{"run_in_background":true},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"a1139"}}'
@@ -417,19 +427,18 @@ teardown() { teardown_fakes; }
   rm -f "$RECORD"
   echo "$bg" | "$SCRIPT" running
   [ "$(last_payload | jq -r '.msg')" = "reading a.rs" ]
-  # SubagentStop reports and forgets the id; a corrupt record fails open.
+  # One marker file per id, under the per-user state dir.
+  local markers=("$FAKEBIN"/state/zj-radar-dedup-*/bg-agents.bats-session.7.a1139)
+  [ -f "${markers[0]}" ] || { echo "no marker written under the test state dir"; return 1; }
+  # A dry run neither consults nor touches the markers: it prints the payload.
+  run bash -c "echo '$bg' | '$CLI' notify claude --status running --dry-run"
+  [[ "$output" == *"reading a.rs"* ]]
+  # Its SubagentStop is dropped too (a plain running over "waiting on …")
+  # and removes the marker; the id is then unknown and its hooks report.
   rm -f "$RECORD"
   echo '{"hook_event_name":"SubagentStop","cwd":"/tmp","agent_id":"a1139"}' | "$CLI" notify claude --status running
-  [ -s "$RECORD" ]
-  rm -f "$RECORD"
-  echo "$bg" | "$CLI" notify claude --status running
-  [ -s "$RECORD" ]
-  echo "$launch" | "$CLI" notify claude --status running
-  local f; for f in "$FAKEBIN"/state/zj-radar-dedup-*/bg-agents.*; do
-    [ -f "$f" ] || { echo "no record written under the test state dir"; return 1; }
-    printf 'junk' >"$f"
-  done
-  rm -f "$RECORD"
+  [ ! -s "$RECORD" ] || { echo "cli reported a background agent's SubagentStop"; return 1; }
+  [ ! -e "${markers[0]}" ]
   echo "$bg" | "$CLI" notify claude --status running
   [ -s "$RECORD" ]
 }
