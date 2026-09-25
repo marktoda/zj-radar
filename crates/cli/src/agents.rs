@@ -330,11 +330,13 @@ pub(crate) const SERVICE_WRAPPERS: &[&str] = &[
     "env", "nohup", "exec", "sudo", "time", "command", "bash", "sh", "zsh",
 ];
 
-/// Package runners, skipped with their flags from a segment's head to its
-/// command word (`pnpm exec vite`, `bun x vite`, `bundle exec jekyll serve`).
-/// Mirrored in notify.sh's `SERVICE_RUNNERS`.
+/// Package and script runners, skipped with their flags from a segment's head
+/// to its command word (`pnpm exec vite`, `bun x vite`, `bundle exec jekyll
+/// serve`, `uv run uvicorn`, `pnpm --filter web dev`). Mirrored in notify.sh's
+/// `SERVICE_RUNNERS`.
 pub(crate) const SERVICE_RUNNERS: &[&str] = &[
-    "npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx", "bundle",
+    "npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx", "bundle", "uv", "poetry",
+    "pipenv", "run",
 ];
 
 /// Runner flags whose value is the next token, skipped with it
@@ -371,7 +373,9 @@ const TOKEN_SEPARATORS: &[char] = &[' ', '\t', '"', '\''];
 /// - the **command word**: from the head, past [`SERVICE_RUNNERS`] and their
 ///   flags ([`SERVICE_VALUE_FLAGS`] skip their value too).
 ///
-/// A service is a [`SERVICE_PHRASES`] entry at either position; a `vite`
+/// A service is a [`SERVICE_PHRASES`] entry at either position; a `dev` or
+/// `start` script reached through a runner (`npm run dev`, `pnpm --filter web
+/// dev`, `yarn start`); a `vite`
 /// command word without a `build` argument; `docker compose up` /
 /// `docker-compose up` at either position without `-d`, `--detach`,
 /// `--abort-on-container-exit` or `--exit-code-from` (those end); or a
@@ -412,6 +416,7 @@ fn segment_is_service(segment: &str) -> bool {
     };
     let starts = |phrase: &[&str]| at(head, phrase) || at(cw, phrase);
     let phrase = SERVICE_PHRASES.iter().any(|p| starts(&p.split(' ').collect::<Vec<_>>()));
+    let script = cw > head && matches!(command, "dev" | "start");
     let vite = command == "vite" && !t[cw + 1..].contains(&"build");
     let compose = (starts(&["docker", "compose", "up"]) || starts(&["docker-compose", "up"]))
         && !t.iter().any(|s| {
@@ -423,7 +428,7 @@ fn segment_is_service(segment: &str) -> bool {
         let (flag, value) = s.split_once('=').map_or((*s, t.get(i + 1).copied()), |(f, v)| (f, Some(v)));
         matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
     });
-    phrase || vite || compose || watch
+    phrase || script || vite || compose || watch
 }
 
 /// Is this backgrounded shell a service — something that may never exit on

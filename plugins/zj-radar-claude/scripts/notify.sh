@@ -301,7 +301,8 @@ fi
 #   past SERVICE_RUNNERS and flags (SERVICE_VALUE_FLAGS skip their value).
 #   A segment is a service when a SERVICE_PHRASES entry's tokens start at the
 #   head or the command word (first token by basename, `@version` dropped),
-#   the command word is `vite` with no `build` argument, `docker compose up`
+#   the command word is a `dev`/`start` script reached through a runner, the
+#   command word is `vite` with no `build` argument, `docker compose up`
 #   / `docker-compose up` starts there without `-d`/`--detach`/
 #   `--abort-on-container-exit`/`--exit-code-from`, or a `--watch`/
 #   `--watchall` flag isn't `=false`/`=0` or followed by `false`/`0` (exempt
@@ -326,7 +327,7 @@ fi
 # "waiting on …".
 SERVICE_PHRASES="run dev|run start|run serve|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|next start|make dev|just dev|make server|just server|serve|http-server|mkdocs serve|jekyll serve|hugo server|hugo serve|ng serve|php artisan serve|python -m http.server|python3 -m http.server|manage.py runserver|python manage.py runserver|python3 manage.py runserver|rails s|rails server|flask run|uvicorn|gunicorn|nodemon|cargo watch|watchexec|kubectl port-forward|tail -f"
 SERVICE_WRAPPERS="env|nohup|exec|sudo|time|command|bash|sh|zsh"
-SERVICE_RUNNERS="npx|bunx|pnpm|yarn|bun|npm|exec|x|dlx|bundle"
+SERVICE_RUNNERS="npx|bunx|pnpm|yarn|bun|npm|exec|x|dlx|bundle|uv|poetry|pipenv|run"
 SERVICE_VALUE_FLAGS="-p|--package|--prefix|--dir|--cwd|--filter|--workspace"
 SERVICE_DESCRIPTION_PHRASES="dev server|development server|start server|start the server|watch mode"
 waiting=""
@@ -355,6 +356,7 @@ if [[ "$status" == "done" ]]; then
               | (($t[$c] // "") | word) as $cmd
               | def starts($p): at($t; $h; $p) or at($t; $c; $p);
               any($phrases | split("|")[] | split(" "); starts(.))
+              or ($c > $h and ($cmd == "dev" or $cmd == "start"))
               or ($cmd == "vite" and (any($t[$c + 1:][]; . == "build") | not))
               or ((starts(["docker", "compose", "up"]) or starts(["docker-compose", "up"]))
                   and (any($t[]; . == "-d" or . == "--detach" or . == "--abort-on-container-exit"

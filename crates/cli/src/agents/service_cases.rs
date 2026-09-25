@@ -153,9 +153,19 @@ bounded		Serve up the test report
 bounded		Run tests and watch for failures
 # Neither: nothing says it is bounded.
 service
+# Scripts through a runner: `dev`/`start` are services, other scripts end.
+service	pnpm --filter web dev
+service	pnpm -r --parallel dev
+service	uv run uvicorn app:app
+service	poetry run uvicorn app:app
+service	npm run start
+bounded	npm run test
+bounded	poetry run pytest
+bounded	uv run pytest -q
+bounded	yarn run build
+bounded	npm run dev:migrate
 # ── Known misses (a miss only holds "waiting on …" until the next Stop) ──
-bounded	uv run uvicorn app:app
 bounded	docker compose -f dev.yml up
+bounded	yarn workspace web start
 bounded	kubectl -n prod port-forward svc/db 5432
-bounded	pnpm --filter web dev
 "#;
