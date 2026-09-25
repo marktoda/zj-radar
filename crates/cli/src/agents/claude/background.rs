@@ -214,7 +214,8 @@ mod tests {
         for cmd in [
             "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
             "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
-            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
+            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "kubectl get pods --watch",
+            "nodemon index.js",
             "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
             "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
             "cd web && vite", "cd web&&vite", "pnpm exec vite --host", "bun x vite@latest", "npm run build; vite",
@@ -231,8 +232,38 @@ mod tests {
             "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
             "./watch.sh", "vitest run", "npm run watch-docs-check", "npm install vite", "pnpm add -D vite",
             "ls node_modules/vite", "cd packages/vite && pnpm test", "vite build&&echo ok",
+            // A gh / kubectl rollout status `--watch` waits on something that ends.
+            "gh pr checks 57 --watch", "gh pr checks 57 --watch && gh pr merge", "/usr/bin/gh run list --watch",
+            "kubectl rollout status deploy/x --watch", "kubectl rollout status deploy/x --watch=true",
         ] {
             assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
+        }
+    }
+
+    #[test]
+    fn the_gh_kubectl_watch_exemption_is_per_segment() {
+        // Only the segment whose command word is gh/kubectl is exempt.
+        for cmd in ["gh pr checks 57 && tsc --watch", "tsc --watch; gh pr view", "npx tsc --watch"] {
+            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
+        }
+    }
+
+    #[test]
+    fn service_phrases_need_shell_word_edges() {
+        // A phrase glued to `_ - . : /` on its right, or `_ - . :` on its
+        // left, is part of a longer name, not the service.
+        for cmd in [
+            "pytest tests/test_serve.py", "go test ./serve/...", "make dev-deps", "just dev-setup",
+            "npm run dev:migrate", "pytest tests/test_uvicorn_app.py", "ls serve.d", "cat .serve",
+        ] {
+            assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
+        }
+        // `/` on the left and shell punctuation on either side still match.
+        for cmd in [
+            "npm run dev|tee log", "bash -c \"npm run dev\"", "sh -c 'npm run dev'", "(npm run dev)",
+            "echo `npm start`", "./venv/bin/uvicorn app:app", "docker compose up", "tail -f log",
+        ] {
+            assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
         }
     }
 

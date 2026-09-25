@@ -294,7 +294,12 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
 
 /// Command-line phrases that mark a backgrounded shell as a long-lived
 /// service (a dev server, a watcher, a followed log, a tunnel) rather than
-/// bounded work, matched whole-word on the lowercased command. A false hit
+/// bounded work, matched on the lowercased command as whole shell words
+/// ([`contains_command_phrase`]: a path's last component counts, but a
+/// `_`/`-`/`.`/`:` prefix or a `/`/`-`/`_`/`.`/`:` suffix doesn't, so
+/// `pytest tests/test_serve.py`, `go test ./serve/...`, `make dev-deps` and
+/// `npm run dev:migrate` end; `cargo test -p serve` is a known false hit).
+/// A false hit
 /// is costly: a task's `holds` only ever drops (`core::task`), so it
 /// permanently shows the row done early and may fire an early "finished"
 /// notification; a miss holds the row "waiting on …" until the next `Stop`.
@@ -315,30 +320,51 @@ pub(crate) const SERVICE_PHRASES: &[&str] = &[
 
 /// Phrases that mark a service by the model-written task description
 /// ("Start the dev server"). Multi-word only: prose mentions single words
-/// in passing ("Run tests and watch for failures"). Mirrored in notify.sh's
-/// `SERVICE_DESCRIPTION_PHRASES`, same rules as [`SERVICE_PHRASES`].
+/// in passing ("Run tests and watch for failures"). Matched whole-word as
+/// prose (any non-alphanumeric is a boundary). Mirrored in notify.sh's
+/// `SERVICE_DESCRIPTION_PHRASES`, same character rules as [`SERVICE_PHRASES`].
 pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
     "dev server", "development server", "start server", "start the server", "watch mode",
 ];
+
+/// Characters that end a shell word in [`contains_command_phrase`]: ASCII
+/// whitespace and shell punctuation. Mirrored in notify.sh's `$re`.
+const COMMAND_PHRASE_EDGES: &[char] = &[' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '"', '\'', '`'];
+
+/// Does `cmd` contain `phrase` as whole shell words? Left of it: the start,
+/// a [`COMMAND_PHRASE_EDGES`] char, or `/` (so `bin/rails s` and
+/// `./node_modules/.bin/…` match); right of it: the end or an edge char —
+/// never `/`, `-`, `_`, `.`, `:` (so `test_serve.py`, `./serve/...`,
+/// `dev-deps` and `dev:migrate` don't).
+fn contains_command_phrase(cmd: &str, phrase: &str) -> bool {
+    let edge = |c: Option<char>| c.is_none_or(|c| COMMAND_PHRASE_EDGES.contains(&c));
+    cmd.match_indices(phrase).any(|(i, _)| {
+        let before = cmd[..i].chars().next_back();
+        (before == Some('/') || edge(before)) && edge(cmd[i + phrase.len()..].chars().next())
+    })
+}
 
 /// The token rules for words that are services only in some positions: a
 /// `vite` that is a segment's *command word* (after any package runner —
 /// `npx`, `pnpm exec`, `bun x`, … — and its flags; any path, `@version`
 /// ignored) unless its next token is `build`, and a `--watch`/`--watchall`
-/// flag unless set `=false`/`=0` (`gh run watch` ends; `jest --watch=false`
-/// ends). Segments split on `&`, `|`, `;`, so `cd web && vite` is a service
-/// while `pnpm add -D vite` and `cd packages/vite && pnpm test` are not.
-/// `cmd` is lowercased.
+/// flag unless set `=false`/`=0` (`jest --watch=false` ends) or the
+/// segment's command word is `gh`, or `kubectl` running `rollout status`,
+/// whose `--watch` waits on something bounded (`gh pr checks 57 --watch`,
+/// `kubectl rollout status deploy/x --watch`; `gh run watch` has no flag at
+/// all). Other `kubectl … --watch` (`get pods --watch`) streams forever. Segments split on `&`, `|`,
+/// `;`, so `cd web && vite` is a service while `pnpm add -D vite` and
+/// `cd packages/vite && pnpm test` are not. `cmd` is lowercased.
 fn service_tokens(cmd: &str) -> bool {
     const RUNNERS: &[&str] = &["npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx"];
     cmd.split(['&', '|', ';']).any(|segment| {
         let tokens: Vec<&str> = segment.split_whitespace().collect();
         let word = tokens.iter().position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
-        let vite = word.is_some_and(|i| {
-            basename(tokens[i]).and_then(|b| b.split('@').next()) == Some("vite")
-                && tokens.get(i + 1) != Some(&"build")
-        });
-        let watch = tokens.iter().any(|t| {
+        let command = word.and_then(|i| basename(tokens[i])).and_then(|b| b.split('@').next());
+        let vite = command == Some("vite") && word.and_then(|i| tokens.get(i + 1)) != Some(&"build");
+        let rollout_status = tokens.windows(2).any(|w| w == ["rollout", "status"]);
+        let bounded_watch = command == Some("gh") || (command == Some("kubectl") && rollout_status);
+        let watch = !bounded_watch && tokens.iter().any(|t| {
             let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
             matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
         });
@@ -357,12 +383,16 @@ pub(crate) fn shell_is_service(command: Option<&str>, description: Option<&str>)
     fn nonblank(s: Option<&str>) -> Option<&str> {
         s.filter(|s| !s.trim().is_empty())
     }
-    let any_phrase = |s: &str, phrases: &[&str]| phrases.iter().any(|p| contains_word(s, p));
-    let described = |d: &str| any_phrase(&d.to_lowercase(), SERVICE_DESCRIPTION_PHRASES);
+    let described = |d: &str| {
+        let d = d.to_lowercase();
+        SERVICE_DESCRIPTION_PHRASES.iter().any(|p| contains_word(&d, p))
+    };
     match (nonblank(command), nonblank(description)) {
         (Some(cmd), desc) => {
             let cmd = cmd.to_lowercase();
-            any_phrase(&cmd, SERVICE_PHRASES) || service_tokens(&cmd) || desc.is_some_and(described)
+            SERVICE_PHRASES.iter().any(|p| contains_command_phrase(&cmd, p))
+                || service_tokens(&cmd)
+                || desc.is_some_and(described)
         }
         (None, Some(desc)) => described(desc),
         (None, None) => true,

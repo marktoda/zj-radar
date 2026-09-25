@@ -56,9 +56,6 @@ pub struct EpochSecs(pub u64);
 /// the store — the remote disconnect flash reads this.
 pub struct TimerReport {
     pub changed: bool,
-    /// Every pane whose observation this tick changed (`changed` ⇔ non-empty),
-    /// so the caller can decide snapshot ownership per pane.
-    pub changed_panes: Vec<u32>,
     pub receded: Vec<(u32, TrackedObservation)>,
     pub completed: Vec<(u32, Kind)>,
 }
@@ -849,7 +846,7 @@ impl CommandStore {
     /// that TTL-receded to Idle) for the ledger.
     pub fn on_timer(&mut self, tick: Tick, now_epoch_s: EpochSecs) -> TimerReport {
         let (Tick(tick), EpochSecs(now_epoch_s)) = (tick, now_epoch_s);
-        let mut changed_panes = Vec::new();
+        let mut changed = false;
         let mut receded = Vec::new();
         let mut completed = Vec::new();
         let to_promote: Vec<u32> = self
@@ -874,11 +871,9 @@ impl CommandStore {
                     // re-promotion stores a byte-identical observation —
                     // nothing observable changed, so it must not trigger a
                     // snapshot write per re-report.
-                    if prev != &obs {
-                        changed_panes.push(pane_id);
-                    }
+                    changed |= prev != &obs;
                 } else {
-                    changed_panes.push(pane_id);
+                    changed = true;
                 }
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
@@ -905,7 +900,7 @@ impl CommandStore {
                     s.last_change_tick = tick;
                     s.completed_epoch_s = Some(now_epoch_s);
                     completed.push((pane_id, s.kind));
-                    changed_panes.push(pane_id);
+                    changed = true;
                 }
             }
         }
@@ -927,11 +922,11 @@ impl CommandStore {
                 s.last_change_tick = tick;
                 s.completed_epoch_s = None;
                 receded.push((pane_id, completed));
-                changed_panes.push(pane_id);
+                changed = true;
             }
         }
 
-        TimerReport { changed: !changed_panes.is_empty(), changed_panes, receded, completed }
+        TimerReport { changed, receded, completed }
     }
 
     /// Apply a pane's exit status. Deduped: a repeated identical

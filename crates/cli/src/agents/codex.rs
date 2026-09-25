@@ -86,9 +86,13 @@ fn permission_message(v: &Value) -> String {
         .to_string()
 }
 
+/// The non-blank `last_assistant_message`, or `None` — a blank one is as
+/// good as absent (a SubagentStop falls back to "delegating", not a blank
+/// active row).
 fn last_assistant_message(v: &Value) -> Option<String> {
     v.get("last_assistant_message")
         .and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
 }
 
@@ -205,6 +209,12 @@ mod tests {
         );
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "reviewed the tests");
+
+        // A blank message is as good as absent: never a blank active row.
+        for blank in [r#""""#, r#""  ""#] {
+            let u = update(&format!(r#"{{"hook_event_name": "SubagentStop", "last_assistant_message": {blank}}}"#));
+            assert_eq!((u.status, u.msg.as_str()), (Status::Running, "delegating"), "{blank}");
+        }
     }
 
     #[test]

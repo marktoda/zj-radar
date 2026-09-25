@@ -154,7 +154,9 @@ pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
 /// as a silently blank rail. Treating it as ungranted routes the user to the
 /// floating-pane grant flow instead.
 pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> bool {
-    let needle = format!("\"{wasm_abs_path}\"");
+    // The key as it appears in the file: a KDL string, escaped the same way
+    // the preseed (and Zellij's own KDL writer) spells it.
+    let needle = format!("\"{}\"", crate::setup::kdl_string(wasm_abs_path));
     let mut lines = permissions_kdl.lines().map(str::trim_start);
     let mut last: Option<Vec<String>> = None;
     while let Some(header) = lines.by_ref().find(|l| l.starts_with(&needle) && l.contains('{')) {
@@ -912,6 +914,18 @@ mod tests {
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm\"\n", "/x/zj_radar.wasm"));
         // The closing quote in the needle prevents matching a longer path it prefixes.
         assert!(!wasm_is_granted("\"/x/zj_radar.wasm.bak\" {\n}\n", "/x/zj_radar.wasm"));
+    }
+
+    #[test]
+    fn grant_detection_compares_against_the_kdl_escaped_key() {
+        // The file holds KDL strings: a path with `"` or `\` is keyed in its
+        // escaped spelling, so the raw path must never be what's matched.
+        let p = r#"/x/we"ird\zj_radar.wasm"#;
+        let perms = "ReadApplicationState; ReadCliPipes; ChangeApplicationState; RunCommands";
+        let escaped = format!(r#""/x/we\"ird\\zj_radar.wasm" {{ {perms} }}"#);
+        assert!(escaped.parse::<kdl::KdlDocument>().is_ok(), "fixture must be valid KDL: {escaped}");
+        assert!(wasm_is_granted(&escaped, p));
+        assert!(!wasm_is_granted(&format!("\"{p}\" {{ {perms} }}"), p), "the raw spelling is not the key");
     }
 
     #[test]

@@ -112,7 +112,14 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 # only ever bit on Linux.
 cwd="${cwd:0:4096}"
 [[ -n "$cwd" ]] || cwd="$PWD"
-msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
+# Only a Stop (status done) reads last_assistant_message: a SubagentStop
+# carries the subagent's whole final report there, which must not become
+# the running row's msg (parity with derive_claude).
+if [[ "$status" == "done" ]]; then
+    msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
+else
+    msg="$(jq -r '.message // empty' <<<"$input" 2>/dev/null || true)"
+fi
 task=""
 
 # Whole-word containment (mirrors zj_radar_core::command::contains_word): is $2
@@ -285,15 +292,20 @@ fi
 # model when it finishes: stay running with a "waiting on …" msg (parity with
 # waiting_msg in agents/claude/background.rs). Running subagents, workflows
 # and teammates hold; shells hold unless their command is a service (a
-# SERVICE_PHRASES entry, or service_tokens' rules per `&`/`|`/`;` segment: a
-# `vite` command word (past package runners and flags) not followed by
-# `build`, a `--watch`/`--watchall` flag not `=false`/`=0`) or their
-# description has a SERVICE_DESCRIPTION_PHRASES entry — both lists are
-# agents.rs's, welded by parity.bats, as are shell_is_service's rules: no
-# command → the description alone decides, neither → no hold. Anything else
-# doesn't hold. The label is the task's description, else its command's
-# first-token basename. jq's `test` is Oniguruma, so the phrases stay
-# regex-metachar-free apart from `.`, which is escaped below.
+# SERVICE_PHRASES entry as whole shell words — contains_command_phrase's
+# edges: left = start, whitespace, shell punctuation or `/`; right = end,
+# whitespace or shell punctuation, never `/ - _ . :` — or service_tokens'
+# rules per `&`/`|`/`;` segment: a `vite` command word (past package runners
+# and flags) not followed by `build`, a `--watch`/`--watchall` flag not
+# `=false`/`=0` unless the command word is `gh`, or `kubectl` running
+# `rollout status`) or their
+# description has a SERVICE_DESCRIPTION_PHRASES entry (prose word edges) —
+# both lists are agents.rs's, welded by parity.bats, as are
+# shell_is_service's rules: no command → the description alone decides,
+# neither → no hold. Anything else doesn't hold. The label is the task's
+# description, else its command's first-token basename. jq's `test` is
+# Oniguruma, so the phrases stay regex-metachar-free apart from `.`, which
+# is escaped below.
 #
 # Deliberately NOT here: the background-task *lines* (the wire's `tasks`
 # batch). They need the `zj-radar` CLI — this fallback keeps the waiting
@@ -309,18 +321,20 @@ waiting=""
 if [[ "$status" == "done" ]]; then
     # shellcheck disable=SC2016 # jq variables, expanded by jq, not the shell
     waiting="$(jq -r \
-        --arg re "(^|[^a-z0-9])(${SERVICE_PHRASES//./\\.})([^a-z0-9]|$)" \
+        --arg re "(^|[ \\t\\n\\r;&|()\"'\`/])(${SERVICE_PHRASES//./\\.})([ \\t\\n\\r;&|()\"'\`]|$)" \
         --arg dre "(^|[^a-z0-9])(${SERVICE_DESCRIPTION_PHRASES//./\\.})([^a-z0-9]|$)" '
         def str: if type == "string" then . else "" end;
         def toks: [splits("\\s+") | select(. != "")];
         def runner: . as $x | any(("npx","bunx","pnpm","yarn","bun","npm","exec","x","dlx"); . == $x);
-        def vite: toks as $t
+        def seg: toks as $t
             | ([range(0; $t | length) | select($t[.] | (startswith("-") or runner) | not)] | first) as $i
-            | $i != null and ($t[$i] | split("/") | last | split("@") | first) == "vite" and $t[$i + 1] != "build";
-        def watchflag: toks | any(.[]; split("=") as $p
+            | {t: $t, i: $i, w: (if $i == null then null else ($t[$i] | split("/") | last | split("@") | first) end)};
+        def vite: .w == "vite" and .t[.i + 1] != "build";
+        def rollout: .t as $t | any(range(0; ($t | length) - 1); $t[.] == "rollout" and $t[. + 1] == "status");
+        def watchflag: (.w == "gh" or (.w == "kubectl" and rollout) | not) and (.t | any(.[]; split("=") as $p
             | ($p[0] == "--watch" or $p[0] == "--watchall")
-              and (($p | length) == 1 or (($p[1:] | join("=")) as $v | $v != "false" and $v != "0")));
-        def segsvc: any(splits("[&|;]"); vite or watchflag);
+              and (($p | length) == 1 or (($p[1:] | join("=")) as $v | $v != "false" and $v != "0"))));
+        def segsvc: any(splits("[&|;]") | seg; vite or watchflag);
         def svc: ascii_downcase | (test($re) or segsvc);
         def dsvc: ascii_downcase | test($dre);
         def blank: test("\\S") | not;
