@@ -14,7 +14,7 @@ use crate::status::GlyphSet;
 /// rather than silently falling back.
 macro_rules! kinds {
     ( $( $variant:ident => $source:literal, $plain:literal, $nerd:literal );+ $(;)? ) => {
-        /// What kind of process owns a pane. Agents (Claude, Codex, Opencode,
+        /// What kind of process owns a pane. Agents (Claude, Codex, Opencode, Pi,
         /// Gemini) and task types (Test, Build, Deploy, Server) are peers — only
         /// the mark glyph differs; the renderer and sorter treat all variants
         /// identically.
@@ -71,6 +71,7 @@ kinds! {
     Claude   => "claude",   '✳', '\u{f06a9}'; // nf-md-robot
     Codex    => "codex",    '❉', '\u{f167a}'; // nf-md-robot-outline
     Opencode => "opencode", '✺', '\u{f0169}'; // nf-md-code-braces
+    Pi       => "pi",       '✴', '\u{f03ff}'; // nf-md-pi
     Gemini   => "gemini",   '✦', '\u{f0eb9}'; // nf-md-star-four-points (sparkle)
     Command  => "command",  '$', '$';
     Other    => "other",    '⦿', '⦿';
@@ -90,7 +91,7 @@ impl Kind {
     /// must declare which side it is here before it compiles.
     pub fn is_agent(self) -> bool {
         match self {
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini => true,
+            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini => true,
             Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy
             | Kind::Server | Kind::Remote => false,
         }
@@ -105,7 +106,7 @@ impl Kind {
     pub fn is_service(self) -> bool {
         match self {
             Kind::Server => true,
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini | Kind::Command
+            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini | Kind::Command
             | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Remote => false,
         }
     }
@@ -117,7 +118,7 @@ impl Kind {
     pub fn is_remote(self) -> bool {
         match self {
             Kind::Remote => true,
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Gemini | Kind::Command
+            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini | Kind::Command
             | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Server => false,
         }
     }
@@ -210,6 +211,18 @@ mod tests {
     }
 
     #[test]
+    fn pi_is_an_agent_kind_with_neutral_width_marks() {
+        assert_eq!(Kind::from_source("pi"), Kind::Pi);
+        assert!(Kind::Pi.is_agent());
+        assert!(!Kind::Pi.is_service());
+        assert!(!Kind::Pi.is_remote());
+        // U+2734 is East-Asian-Width Neutral; `π` (U+03C0) is Ambiguous and
+        // renders 2 columns in ambiguous-wide terminals — never use it.
+        assert_eq!(Kind::Pi.mark(GlyphSet::Plain), '✴');
+        assert_eq!(Kind::Pi.mark(GlyphSet::Nerd), '\u{f03ff}'); // nf-md-pi
+    }
+
+    #[test]
     fn is_remote_only_for_remote() {
         for &k in Kind::ALL {
             assert_eq!(k.is_remote(), k == Kind::Remote, "{k:?}");
@@ -248,7 +261,7 @@ mod tests {
     fn all_enumerates_every_variant() {
         // `ALL` drives the exhaustiveness of the other tests; pin its size so a
         // dropped table row is caught here instead of silently shrinking coverage.
-        assert_eq!(Kind::ALL.len(), 11);
+        assert_eq!(Kind::ALL.len(), 12);
         assert_eq!(Kind::Other.as_source(), "other");
     }
 

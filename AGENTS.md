@@ -5,8 +5,9 @@ at the real docs rather than duplicating them.
 
 zj-radar is a [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
 plus a host-side `zj-radar` CLI and producer adapters for Claude Code (a
-bundled Claude plugin), Codex (hooks installed by `zj-radar setup codex`), and
-Opencode (a JS bridge installed by `zj-radar setup opencode`).
+bundled Claude plugin), Codex (hooks installed by `zj-radar setup codex`),
+Opencode (a JS bridge installed by `zj-radar setup opencode`), and pi (an
+extension installed by `zj-radar setup pi`).
 
 ## Read first
 
@@ -25,8 +26,9 @@ cargo build                                    # host library + CLI checks
 cargo build --release --target wasm32-wasip1 -p zj-radar-plugin   # the wasm plugin Zellij loads
 just test        # L1–L4 deterministic host suite (unit, insta, proptest, vt100)
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
+just test-js     # pi bridge extension tests (needs node)
 just test-e2e    # L5 live: builds wasm, drives a real Zellij in a PTY (needs zellij)
-just ci          # what every PR must pass: test + clippy + wasm build + test-bash
+just ci          # what every PR must pass: test + clippy + wasm build + test-bash + test-js
 just review      # accept intentional insta snapshot changes (cargo insta review)
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```

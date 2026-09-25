@@ -38,6 +38,13 @@ pub(crate) fn opencode_plugin_is_ours(plugin_text: &str) -> bool {
     plugin_text.contains(OPENCODE_PLUGIN_MARKER_PREFIX)
 }
 
+/// True iff a pi extension file's text carries our ownership marker (any
+/// version). The single reader behind `setup pi`'s gating, the doctor, and
+/// producer detection.
+pub(crate) fn pi_extension_is_ours(text: &str) -> bool {
+    text.contains(PI_EXTENSION_MARKER_PREFIX)
+}
+
 /// The layout name a `config.kdl` selects via `default_layout "name"`, or
 /// `None` when unset. Line-scan like the other config detectors: the node at
 /// line start (not commented out), its first argument quoted or bare. This is

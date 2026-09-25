@@ -1,12 +1,12 @@
 # Contributing to zj-radar
 
 zj-radar is a [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
-plus a host-side CLI and producer adapters for Claude Code, Codex, and
-Opencode. This guide covers building, testing, and proposing changes.
+plus a host-side CLI and producer adapters for Claude Code, Codex, Opencode,
+and pi. This guide covers building, testing, and proposing changes.
 
 ## Project shape
 
-A three-crate Cargo workspace plus two non-Rust producers:
+A three-crate Cargo workspace plus three non-Rust producers:
 
 | Path | What it is |
 |------|------------|
@@ -16,6 +16,7 @@ A three-crate Cargo workspace plus two non-Rust producers:
 | `plugins/zj-radar-claude/` | The Claude Code producer plugin: `hooks.json` plus the bundled `notify.sh` fallback. |
 | `crates/cli/src/setup/opencode_plugin.js` | The Opencode 1.x bridge (server plugin), vendored into opencode's plugins dir as `zj-radar.js` by `setup opencode`. |
 | `crates/cli/src/setup/opencode_tui_plugin.js` | The Opencode 2.x bridge (TUI plugin), vendored as `zj-radar/tui.js` by `setup opencode`. |
+| `crates/cli/src/setup/pi_extension.js` | The pi bridge extension, vendored into pi's extensions dir as `zj-radar.js` by `setup pi` (harness: `crates/cli/tests/pi_bridge.test.mjs`, `just test-js`). |
 | `docs/` | User docs, the design doc, the executable rail spec. |
 
 Two rules are load-bearing. Read [`CONTEXT.md`](CONTEXT.md) before changing
@@ -54,8 +55,9 @@ cargo build --release --target wasm32-wasip1 -p zj-radar-plugin    # the wasm Ze
 ```sh
 just test        # L1–L4: unit, insta snapshots, proptest, vt100 (deterministic, host-only)
 just test-bash   # bats + shellcheck for notify.sh, install.sh, funnel.sh
+just test-js     # node --test for the pi bridge extension (crates/cli/tests/pi_bridge.test.mjs)
 just test-e2e    # L5: builds the wasm and drives a real Zellij in a PTY
-just ci          # what every PR must pass: test + clippy + wasm build + test-bash
+just ci          # what every PR must pass: test + clippy + wasm build + test-bash + test-js
 just review      # accept intentional insta snapshot changes
 ```
 

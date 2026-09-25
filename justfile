@@ -18,6 +18,10 @@ test-bash:
     sed -n '3,/^# ---- bash/p' plugins/zj-radar-claude/scripts/notify.sh | shellcheck -s sh -
     bats plugins/zj-radar-claude/tests scripts/tests
 
+# pi bridge harness (node --test). node is in the nix dev shell.
+test-js:
+    node --test crates/cli/tests/pi_bridge.test.mjs
+
 # Live E2E (L5): builds the wasm plugin, drives a real Zellij in a PTY.
 # `--test-threads=1` is REQUIRED: each test spawns its own Zellij session, and
 # running them in parallel makes sessions contend at startup so the plugin
@@ -88,4 +92,4 @@ hermetic:
 
 # Everything a PR must pass locally. CI runs more on top of this: the
 # `hermetic` job (nix flake check) and the live E2E suite (test-e2e).
-ci: test clippy build-wasm test-bash
+ci: test clippy build-wasm test-bash test-js

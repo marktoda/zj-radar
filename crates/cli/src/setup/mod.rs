@@ -1,9 +1,10 @@
-//! `zj-radar setup [claude|codex|opencode|zellij]` — idempotent,
+//! `zj-radar setup [claude|codex|opencode|pi|zellij]` — idempotent,
 //! conflict-aware local wiring. Claude is wired through Claude Code's own
 //! plugin marketplace (we drive the `claude plugin` CLI, never its files);
 //! Codex gets hooks.json entries; Opencode gets vendored JS bridge plugins
 //! dropped into its auto-loaded global plugins dir (no `opencode.json` edit:
-//! a 1.x server plugin file plus a 2.x TUI plugin directory);
+//! a 1.x server plugin file plus a 2.x TUI plugin directory); pi gets a
+//! vendored JS bridge extension in its auto-loaded extensions dir;
 //! Zellij setup installs the wasm at a stable path and manages the `radar`
 //! alias in `config.kdl`.
 
@@ -15,7 +16,9 @@ pub(crate) mod detect;
 mod download;
 mod edit;
 mod opencode;
+mod pi;
 mod preseed;
+mod vendored;
 mod zellij;
 pub(crate) use analyze::*;
 pub(crate) use check::*;
@@ -24,6 +27,7 @@ pub(crate) use codex::*;
 pub(crate) use download::*;
 pub(crate) use edit::*;
 pub(crate) use opencode::*;
+pub(crate) use pi::*;
 pub(crate) use zellij::*;
 
 use std::path::{Path, PathBuf};
@@ -108,6 +112,19 @@ pub(crate) const OPENCODE_TUI_PLUGIN_FILE_NAME: &str = "tui.js";
 pub(crate) const OPENCODE_PLUGIN_JS: &str = include_str!("opencode_plugin.js");
 pub(crate) const OPENCODE_TUI_PLUGIN_JS: &str = include_str!("opencode_tui_plugin.js");
 
+/// The ownership marker stamped into the vendored pi bridge's header line
+/// (`// ZJ_RADAR_PI_EXTENSION=<version>`). Shared by `setup pi`'s
+/// install/uninstall gating, the doctor, and producer detection. Ownership
+/// keys on the prefix so a bridge from any release is ours to rewrite.
+pub(crate) const PI_EXTENSION_MARKER_PREFIX: &str = "ZJ_RADAR_PI_EXTENSION=";
+#[cfg(test)]
+pub(crate) const PI_EXTENSION_MARKER: &str = "ZJ_RADAR_PI_EXTENSION=v1";
+/// The file pi auto-loads from its global extensions dir.
+pub(crate) const PI_EXTENSION_FILE_NAME: &str = "zj-radar.js";
+/// The vendored pi bridge extension (see `flake.nix`'s filter for the
+/// hermetic build's copy of this non-Rust `include_str!` input).
+pub(crate) const PI_EXTENSION_JS: &str = include_str!("pi_extension.js");
+
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
     pub wasm: Option<&'a Path>,
@@ -172,6 +189,13 @@ pub(crate) struct OpencodeSetupOpts {
     pub is_tty:  bool,
 }
 
+pub(crate) struct PiSetupOpts {
+    pub force:   bool,
+    pub dry_run: bool,
+    pub yes:     bool,
+    pub is_tty:  bool,
+}
+
 /// The single operation a `setup` invocation performs. Resolving this once makes
 /// the precedence (grant > check > uninstall > install) explicit instead of
 /// implicit in the order of `if` blocks.
@@ -229,15 +253,18 @@ pub fn run(options: SetupOptions<'_>) {
     // Bare `setup` = detected agents only: claude joins codex there, and
     // `setup_claude` itself skips gracefully when the binary is absent.
     let want_claude = bare || options.targets.iter().any(|a| a == "claude");
+    // Bare `setup` = detected agents only: pi joins the others there, and
+    // `setup_pi` itself skips gracefully when the binary/agent dir is absent.
+    let want_pi = bare || options.targets.iter().any(|a| a == "pi");
     let want_zellij = options.targets.iter().any(|a| a == "zellij")
         || options.wasm.is_some()
         || options.download;
     for a in options
         .targets
         .iter()
-        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "zellij"))
+        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "zellij"))
     {
-        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, opencode, zellij). Skipping."));
+        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, opencode, pi, zellij). Skipping."));
     }
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
     // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
@@ -279,6 +306,10 @@ pub fn run(options: SetupOptions<'_>) {
         // opencode shouldn't be failed by an agent it doesn't have.
         if options.targets.iter().any(|a| a == "opencode") || (both && which("opencode")) {
             missing |= check_opencode();
+        }
+        // pi's doctor is binary-gated like opencode's.
+        if options.targets.iter().any(|a| a == "pi") || (both && which("pi")) {
+            missing |= check_pi();
         }
         if missing {
             // The items above are the diagnostic; this sets the exit code so
@@ -340,6 +371,17 @@ pub fn run(options: SetupOptions<'_>) {
         setup_opencode(
             uninstall,
             OpencodeSetupOpts {
+                force:   options.force,
+                dry_run: options.dry_run,
+                yes:     options.yes,
+                is_tty,
+            },
+        );
+    }
+    if want_pi {
+        setup_pi(
+            uninstall,
+            PiSetupOpts {
                 force:   options.force,
                 dry_run: options.dry_run,
                 yes:     options.yes,

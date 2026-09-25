@@ -55,7 +55,7 @@ three lines show per pane (the rest fold into `┊ +N more`); on a short or
 narrow rail they fold into a `+N` count on the pane row. Claude only, for
 now, and it needs the `zj-radar` CLI installed.
 
-**Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✦` gemini ·
+**Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✦` gemini ·
 `$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
 `⦿` other.
 

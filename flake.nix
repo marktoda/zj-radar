@@ -50,6 +50,8 @@
           # (1.x server plugin, 2.x TUI plugin).
           || (pkgs.lib.hasSuffix "/crates/cli/src/setup/opencode_plugin.js" path)
           || (pkgs.lib.hasSuffix "/crates/cli/src/setup/opencode_tui_plugin.js" path)
+          # include_str!'d by the CLI's pi setup — the vendored bridge extension.
+          || (pkgs.lib.hasSuffix "/crates/cli/src/setup/pi_extension.js" path)
           # include_str!'d by the plugin's producer-script guard test (lib.rs).
           || (pkgs.lib.hasSuffix "/plugins/zj-radar-claude/scripts/notify.sh" path)
           # include_str!'d by the plugin's hook-headroom guard (hooks_manifest_tests.rs).
@@ -203,7 +205,7 @@
         # (`just test-bash` / `just test-e2e`, and the `shellcheck` step) — keep
         # them here so `nix develop -c just …` resolves on PATH. `jq` is used by
         # the bash hook tests. `cargo-deny` reproduces the nightly advisory job
-        # (`cargo deny check`).
+        # (`cargo deny check`). `node` runs the pi bridge harness (`just test-js`).
         packages = [
           toolchain
           pkgs.jq
@@ -212,6 +214,7 @@
           pkgs.bats
           pkgs.shellcheck
           pkgs.cargo-deny
+          pkgs.nodejs
         ];
         shellHook = ''
           echo "zj-radar dev shell: $(rustc --version)"

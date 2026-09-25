@@ -9,11 +9,13 @@
 use crate::agents::Agent;
 use crate::setup::{CODEX_HOOK_MARKER, CLAUDE_PLUGIN};
 
-/// Three producers, three wiring routes — name all, because `zj-radar setup`
+/// Four producers, four wiring routes — name all, because `zj-radar setup`
 /// wires each agent symmetrically (claude drives Claude Code's plugin
-/// marketplace; opencode drops a vendored JS bridge into its plugins dir).
+/// marketplace; opencode and pi each drop a vendored JS bridge into their
+/// auto-loaded dirs).
 pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup claude` \
-    (Claude Code), `zj-radar setup codex` (Codex), or `zj-radar setup opencode` (Opencode).";
+    (Claude Code), `zj-radar setup codex` (Codex), `zj-radar setup opencode` (Opencode), or \
+    `zj-radar setup pi` (pi).";
 
 /// The per-agent evidence, already read. `None` = the file is absent.
 #[derive(Default)]
@@ -28,6 +30,8 @@ pub(crate) struct ProducerTexts {
     /// bridge being ours counts as wired — which one opencode loads is its
     /// version's business, not ours.
     pub opencode_tui_plugin: Option<String>,
+    /// pi's vendored bridge extension; wired when it carries our header marker.
+    pub pi_extension: Option<String>,
 }
 
 impl ProducerTexts {
@@ -38,6 +42,7 @@ impl ProducerTexts {
             claude_plugins:      crate::setup::claude_installed_plugins_text(),
             opencode_plugin:     crate::setup::opencode_plugin_text(),
             opencode_tui_plugin: crate::setup::opencode_tui_plugin_text(),
+            pi_extension:        crate::setup::pi_extension_text(),
         }
     }
 
@@ -56,6 +61,7 @@ impl ProducerTexts {
             Agent::Opencode => [&self.opencode_plugin, &self.opencode_tui_plugin]
                 .into_iter()
                 .any(|text| text.as_deref().is_some_and(crate::setup::detect::opencode_plugin_is_ours)),
+            Agent::Pi => self.pi_extension.as_deref().is_some_and(crate::setup::detect::pi_extension_is_ours),
         }
     }
 }
@@ -73,14 +79,15 @@ pub(crate) fn names(agents: &[Agent]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::{OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER};
+    use crate::setup::{OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER, PI_EXTENSION_MARKER};
 
-    fn texts(codex: bool, claude: bool, opencode: bool) -> ProducerTexts {
+    fn texts(codex: bool, claude: bool, opencode: bool, pi: bool) -> ProducerTexts {
         ProducerTexts {
             codex_hooks:         codex.then(|| format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
             claude_plugins:      claude.then(|| format!("{{\"plugins\":[\"{CLAUDE_PLUGIN}\"]}}")),
             opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
             opencode_tui_plugin: None,
+            pi_extension:        pi.then(|| format!("// {PI_EXTENSION_MARKER}\n")),
         }
     }
 
@@ -103,9 +110,9 @@ mod tests {
 
     #[test]
     fn wired_lists_agents_in_declaration_order() {
-        assert_eq!(texts(true, true, true).wired(), Agent::ALL.to_vec());
-        assert_eq!(texts(true, false, true).wired(), vec![Agent::Codex, Agent::Opencode]);
-        assert!(texts(false, false, false).wired().is_empty());
+        assert_eq!(texts(true, true, true, true).wired(), Agent::ALL.to_vec());
+        assert_eq!(texts(true, false, true, false).wired(), vec![Agent::Codex, Agent::Opencode]);
+        assert!(texts(false, false, false, false).wired().is_empty());
     }
 
     #[test]
@@ -115,6 +122,7 @@ mod tests {
             claude_plugins:      Some("{\"plugins\":[\"someone-else\"]}".to_string()),
             opencode_plugin:     Some("// some other plugin\n".to_string()),
             opencode_tui_plugin: Some("export default { id: \"other\", setup() {} };\n".to_string()),
+            pi_extension:        Some("// some other extension\n".to_string()),
         };
         assert!(foreign.wired().is_empty(), "present-but-foreign files are not wired");
         assert!(ProducerTexts::default().wired().is_empty(), "absent files are not wired");

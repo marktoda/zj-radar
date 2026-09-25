@@ -52,6 +52,7 @@
         assert!(is_agent_command(&argv(&["claude"])));
         assert!(is_agent_command(&argv(&["codex"])));
         assert!(is_agent_command(&argv(&["opencode"])));
+        assert!(is_agent_command(&argv(&["pi"])));
         // Env/wrapper prefixes are peeled, mirroring is_shell_prompt.
         assert!(is_agent_command(&argv(&["env", "FOO=1", "claude"])));
         // Shells, ordinary commands, and nothing don't vouch.
@@ -1212,6 +1213,13 @@
                 "{name} is peeled by effective_program — membership lists would never see it"
             );
         }
+        for name in JS_RUNTIMES {
+            assert!(
+                !IGNORE_NAMES.contains(name) && !AGENT_NAMES.contains(name)
+                    && !DEFAULT_INTERACTIVE.contains(name) && !DEFAULT_REMOTE.contains(name),
+                "{name} is a JS runtime host, not a membership-list name"
+            );
+        }
     }
 
     #[test]
@@ -1619,4 +1627,48 @@
         s.on_timer(Tick(DEBOUNCE_TICKS * 2 + 1), EpochSecs(200));
         assert_eq!(s.get(1).unwrap().status, Status::Done, "a dead dev server is news");
         assert!(!s.needs_ticks());
+    }
+
+    #[test]
+    fn js_runtime_running_an_agent_script_is_that_agent() {
+        // pi is `#!/usr/bin/env node`; before it retitles itself (and always
+        // under bun, which never rewrites argv) the pane reads `node …/pi`.
+        assert!(is_agent_command(&argv(&["node", "/usr/local/bin/pi"])));
+        assert!(is_agent_command(&argv(&["node", "/home/u/.npm/bin/pi", "--model", "x"])));
+        assert!(is_agent_command(&argv(&["bun", "--bun", "/home/u/.bun/bin/pi"])));
+        // npm-installed Codex keeps a node wrapper alive as the pane's child.
+        assert!(is_agent_command(&argv(&["node", "/usr/lib/node_modules/@openai/codex/bin/codex.js"])));
+        assert!(is_agent_command(&argv(&["env", "FOO=1", "node", "/x/pi.mjs"])));
+        // Anything not named after an agent classifies exactly as before.
+        assert!(!is_agent_command(&argv(&["node", "server.js"])));
+        assert!(!is_agent_command(&argv(&["node"])));
+        // pnpm shims exec the bundle directly — a documented miss (the
+        // process title still covers it once pi starts).
+        assert!(!is_agent_command(&argv(&["node", "/x/dist/bundle/cli.js"])));
+        // A value-taking option we don't model stays conservative: `x` is
+        // read as the script, and it is not an agent.
+        assert!(!is_agent_command(&argv(&["node", "-r", "x", "/x/bin/pi"])));
+        assert!(!is_shell_prompt(&argv(&["node", "/x/bin/pi"])));
+    }
+
+    #[test]
+    fn js_runtime_agent_is_never_opened_as_a_command() {
+        // Mirrors `a_wrapped_agent_is_still_suppressed`: past the debounce,
+        // a node-hosted agent must still have no command lifecycle.
+        let mut store = CommandStore::default();
+        store.on_command_changed(1, &argv(&["node", "/usr/local/bin/pi"]), true, Some("/r"), 1);
+        store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
+        assert!(store.get(1).is_none(), "a node-hosted agent must stay push-owned");
+        // While `node server.js` is still tracked as an ordinary command.
+        store.on_command_changed(2, &argv(&["node", "server.js"]), true, Some("/r"), 1);
+        store.on_timer(Tick(2 + DEBOUNCE_TICKS), EpochSecs(0));
+        assert!(store.get(2).is_some(), "a plain node script still opens a lifecycle");
+    }
+
+    #[test]
+    fn plain_node_script_still_classifies_as_a_command() {
+        let cmd = argv(&["node", "server.js"]);
+        let (peeled, name) = effective_program(&cmd);
+        assert_eq!(name, "node");
+        assert_eq!(peeled, &cmd[..]);
     }

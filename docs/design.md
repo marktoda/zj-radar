@@ -59,6 +59,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 │ Claude Code → plugin hook / native CLI          (running/pending/done)  │
 │ Codex       → native CLI via hooks.json         (running/pending/done)  │
 │ Opencode    → JS bridge → native CLI            (running/pending/done/error) │
+│ pi          → extension → native CLI            (running/pending/done/error) │
 │ any script  → zj-radar notify generic                                   │
 └───────────────────────────┬─────────────────────────────────────────────┘
    zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack}
@@ -130,6 +131,7 @@ seam is the versioned pipe payload.
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
 | Codex legacy `agent-turn-complete` | `done` |
 | Opencode events | see §7 |
+| pi events | see §7 |
 | Observed command exiting nonzero | `error` |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
@@ -179,7 +181,7 @@ on the name and keeps its own copy of the state.
 
 ```json
 { "v": 1,
-  "source": "claude",                 // Kind vocabulary: claude | codex | opencode | gemini |
+  "source": "claude",                 // Kind vocabulary: claude | codex | opencode | pi | gemini |
                                       //   command | test | build | deploy | server | other
   "pane": { "type": "terminal", "id": 12 },
   "status": "running",                // running | pending | done | error | idle
@@ -388,10 +390,23 @@ parser rejects a one-line `{ plugin location="radar" }` without a trailing `;`.
   refused unless `--force`. Because opencode is an instrumented agent
   (`AGENT_NAMES`), its panes are never command-tracked; without the bridge
   they show nothing.
+- **pi**: `zj-radar setup pi` vendors a marker-owned bridge extension to pi's
+  auto-loaded extensions directory (`~/.pi/agent/extensions/zj-radar.js`, or
+  `$PI_CODING_AGENT_DIR/extensions/`); pi auto-loads it, so a restart or
+  `/reload` picks it up. The extension spawns `zj-radar notify pi --status <s>`
+  off pi's own hook events and reports only in the interactive TUI
+  (`ctx.mode === "tui"`); the `ZJ_RADAR_PI_EXTENSION=<v>` marker is what
+  idempotency, `--uninstall`, and `--check` key on. Because pi is an
+  instrumented agent (`AGENT_NAMES`), its panes are never command-tracked;
+  without the extension they show nothing. The command observer's node/bun
+  peel (`command::classify`, matching a hosted script's basename against
+  `AGENT_NAMES`) is what recognizes a globally-installed `pi` (`node
+  .../bin/pi`) — or an npm-installed Codex (`node .../codex.js`) — as the
+  agent rather than an anonymous `node` command.
 
 **Two install surfaces, two answers.** Claude Code has a plugin system that
 bundles hooks, so a plugin is the right shape: one install command, clean
-uninstall, no user-file surgery. Codex and Opencode have hook or plugin
+uninstall, no user-file surgery. Codex, Opencode, and pi have hook or plugin
 surfaces but no marketplace, so `zj-radar setup` edits their native config.
 The rules the installer keeps (`crates/cli/src/setup/`): strip-own-then-re-add
 keyed on a marker string, so re-runs are idempotent and `--uninstall` removes
@@ -632,7 +647,8 @@ being unavailable degrades only rehydration.
 functions in `crates/cli/src/setup/analyze.rs`, each fed a thin `Env` of
 already-read values by the IO shell. `Facts` is the single home for derived
 facts: alias present (managed vs unmanaged), rail injected, grant present,
-producer wired, Codex hooks/notify state, opencode plugin ownership. Both
+producer wired, Codex hooks/notify state, opencode plugin ownership, pi
+extension ownership. Both
 consumers project from it: `*_check_items` renders `--check`, and the install
 orchestrators gate on it. The pure mutators (`edit_*` → `Outcome`) share only
 the low-level detectors in `setup/detect.rs`. The legacy-notify vs hooks
