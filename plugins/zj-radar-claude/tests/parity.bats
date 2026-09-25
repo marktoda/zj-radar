@@ -371,12 +371,16 @@ teardown() { teardown_fakes; }
 
 @test "parity: servers, watchers and described services leave the Stop done" {
   local c
-  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest'; do
+  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest' \
+           'tail -f log' 'docker compose up' 'bundle exec jekyll serve' 'npm run dev' 'npm run dev|tee log' 'bash -c "npm run dev"' "sh -c 'npm run dev'" '(npm run dev)' 'echo `npm start`' './venv/bin/uvicorn app:app' $'npm run dev\techo' \
+           'gh pr checks 57 && tsc --watch' 'npx tsc --watch'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
     [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ] || { echo "[$c] held the row"; return 1; }
   done
   # Single service words only count in the right position: these hold.
-  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run' 'npm install vite' 'pnpm add -D vite' 'ls node_modules/vite' 'cd packages/vite && pnpm test' 'vite build&&echo ok'; do
+  for c in 'npx vite build' 'jest --watch=false' 'vitest --watch=0' 'gh run watch 123' './watch.sh' 'vitest run' 'npm install vite' 'pnpm add -D vite' 'ls node_modules/vite' 'cd packages/vite && pnpm test' 'vite build&&echo ok' \
+           'gh pr checks 57 --watch' 'gh pr checks 57 --watch && gh pr merge' '/usr/bin/gh run list --watch' 'kubectl rollout status deploy/x --watch' 'kubectl rollout status deploy/x --watch=true' \
+           'pytest tests/test_serve.py' 'go test ./serve/...' 'make dev-deps' 'just dev-setup' 'npm run dev:migrate' 'pytest tests/test_uvicorn_app.py' 'ls serve.d' 'cat .serve'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done
     [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ] || { echo "[$c] read as a service"; return 1; }
   done
@@ -408,6 +412,13 @@ teardown() { teardown_fakes; }
   parity_case '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose"}' running
 }
 
+@test "parity: a SubagentStop's final report never becomes the running msg" {
+  # Only a Stop reads last_assistant_message; a SubagentStop carries the
+  # subagent's whole report there.
+  parity_payloads '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","last_assistant_message":"## Findings\n\n- the rail is fine"}' running
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = working ]
+}
 @test "cli: a background subagent's own tool hooks send nothing (bash fallback diverges)" {
   # CLI-only by design (notify.sh documents it next to the tasks note): the
   # CLI leaves a marker per async_launched agentId per (session, pane) and
