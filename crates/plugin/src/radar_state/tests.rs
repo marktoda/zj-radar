@@ -95,6 +95,31 @@ fn pending_wait_drives_the_slow_cadence_until_saturation() {
 }
 
 #[test]
+fn stale_running_expiry_is_persisted_by_the_owning_tab_only() {
+    let expire = |own_position: usize| {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "mine", true), tab(20, 1, "theirs", false)]);
+        radar.set_tab_panes_for_position(0, vec![pane(7)]);
+        radar.set_tab_panes_for_position(1, vec![pane(8)]);
+        own_tab(&mut radar, own_position);
+        radar
+            .status_mut()
+            .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+        radar.command_changed(7, &["bash".into()], false, 5);
+        let mut out = TimerChange::default();
+        for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
+            let tc = radar.timer(t, 0);
+            out.changed |= tc.changed;
+            out.persist |= tc.persist;
+        }
+        assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+        out
+    };
+    assert_eq!(expire(0), TimerChange { changed: true, persist: true }, "own pane: render + write");
+    assert_eq!(expire(1), TimerChange { changed: true, persist: false }, "foreign pane: render only");
+}
+
+#[test]
 fn killed_agent_running_row_expires_via_the_timer() {
     // Ctrl+C'ing an agent mid-turn fires no hook; the pane returning to its
     // shell starts the grace clock and the timer clears the ghost "working"
@@ -106,7 +131,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar.command_changed(7, &["bash".into()], false, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
-        changed |= radar.timer(t, 0);
+        changed |= radar.timer(t, 0).changed;
     }
     assert!(changed, "the expiry renders + persists like any store change");
     assert_eq!(radar.status(7).unwrap().status, Status::Idle);
