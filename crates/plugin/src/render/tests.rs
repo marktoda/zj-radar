@@ -1069,36 +1069,20 @@ fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
 
 /// Build a PaneDisplay carrying an end-result outcome, for tag tests.
 fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: ExitOutcome) -> PaneDisplay {
-    PaneDisplay::Tracked {
-        pane_id: id,
-        kind,
-        status,
-        msg: msg.into(),
-        task: String::new(),
-        since_tick: 0,
-        outcome: Some(outcome),
-        pending_epoch_s: None,
-        origin: crate::observation::ObservationOrigin::StatusPipe,
-        acknowledged: false,
-        tasks: Default::default(),
+    let mut p = pe(id, kind, status, msg);
+    if let PaneDisplay::Tracked { outcome: o, .. } = &mut p {
+        *o = Some(outcome);
     }
+    p
 }
 
 /// Build a PaneDisplay carrying a sticky task label, for identity-line tests.
 fn pe_task(id: u32, kind: Kind, status: Status, msg: &str, task: &str) -> PaneDisplay {
-    PaneDisplay::Tracked {
-        pane_id: id,
-        kind,
-        status,
-        msg: msg.into(),
-        task: task.into(),
-        since_tick: 0,
-        outcome: None,
-        pending_epoch_s: None,
-        origin: crate::observation::ObservationOrigin::StatusPipe,
-        acknowledged: false,
-        tasks: Default::default(),
+    let mut p = pe(id, kind, status, msg);
+    if let PaneDisplay::Tracked { task: t, .. } = &mut p {
+        *t = task.into();
     }
+    p
 }
 
 // ── End-result outcome tag rendering ──
@@ -2854,34 +2838,50 @@ fn snapshot_cards_multi_pane() {
     insta::assert_snapshot!("cards_multi_pane_tint", tint_map(&raw));
 }
 
-/// An agent whose turn is over, waiting on background work: steady `⋯` on
-/// the agent line; one `┊` line per task — spinner for bounded work, `▸`
-/// for a service, `✗` / `●` / muted `·` for finished ones — with ages; the
-/// fourth task onward folds into `┊ +N more`. Single-pane (`└`, blank
-/// continuation) and multi-pane (`├`, `│` carried down column 1) both.
-fn waiting_agent(id: u32, kind: Kind) -> PaneDisplay {
-    use crate::task::{BgTask, BgTasks, TaskState};
-    let t = |id: &str, label: &str, holds: bool, state: TaskState, started: u64, ended: Option<u64>| BgTask {
+/// One background task, for the task-line fixtures.
+fn bg_task(id: &str, label: &str, holds: bool, state: crate::task::TaskState, started: u64, ended: Option<u64>) -> crate::task::BgTask {
+    crate::task::BgTask {
         id: id.into(), label: label.into(), holds, state, started_epoch_s: started, ended_epoch_s: ended,
-    };
-    let tasks = BgTasks {
-        items: vec![
-            t("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
-            t("d1", "npm run dev", false, TaskState::Running, 0, None),
-            t("b2", "lint", false, TaskState::Failed, 100, Some(220)),
-            t("b3", "", false, TaskState::Ended, 100, Some(130)),
-        ],
-        waiting: true,
-    };
-    match pe(id, kind, Status::Running, "waiting on Run the full integration test suite") {
-        PaneDisplay::Tracked { pane_id, kind, status, msg, since_tick, outcome, pending_epoch_s, origin, acknowledged, .. } => {
-            PaneDisplay::Tracked {
-                pane_id, kind, status, msg, task: "fix the flaky e2e retries".into(), since_tick, outcome,
-                pending_epoch_s, origin, acknowledged, tasks,
-            }
-        }
-        other => other,
     }
+}
+
+/// An agent whose turn is over, waiting on `items`: steady `⋯` on the agent
+/// line, then the task lines.
+fn agent_waiting_on(id: u32, kind: Kind, items: Vec<crate::task::BgTask>) -> PaneDisplay {
+    let mut p = pe_task(id, kind, Status::Running, "waiting on Run the full integration test suite", "fix the flaky e2e retries");
+    if let PaneDisplay::Tracked { tasks, .. } = &mut p {
+        *tasks = crate::task::BgTasks { items, waiting: true };
+    }
+    p
+}
+
+/// The overflowing fixture: four tasks against `MAX_TASK_LINES` = 3, so the
+/// holding run and the failure (ranked above the service — news must not
+/// hide) get lines and the third task onward folds into `┊ +2 more`.
+/// Single-pane (`└`, blank continuation) and multi-pane (`├`, `│` carried
+/// down column 1) both. The glyphs the fold hides are pinned by
+/// [`three_task_agent`].
+fn waiting_agent(id: u32, kind: Kind) -> PaneDisplay {
+    use crate::task::TaskState;
+    agent_waiting_on(id, kind, vec![
+        bg_task("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
+        bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
+        bg_task("b2", "lint", false, TaskState::Failed, 100, Some(220)),
+        bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
+    ])
+}
+
+/// Exactly `MAX_TASK_LINES` tasks, so nothing folds: the spinner for bounded
+/// work the agent holds on, `▸` for a service, and a muted `·` for a task
+/// that ended with no reported outcome — whose blank label falls back to
+/// "task".
+fn three_task_agent(id: u32, kind: Kind) -> PaneDisplay {
+    use crate::task::TaskState;
+    agent_waiting_on(id, kind, vec![
+        bg_task("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
+        bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
+        bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
+    ])
 }
 
 #[test]
@@ -2898,20 +2898,23 @@ fn snapshot_background_task_lines() {
     let opts = RenderOpts { now_epoch_s: 300, ..tight(&multi, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
     let raw = render(&multi, &opts);
     insta::assert_snapshot!("background_task_lines_multi_grid", grid(&raw, 32));
+
+    let unfolded = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![three_task_agent(1, Kind::Claude)])) }];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&unfolded, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let raw = render(&unfolded, &opts);
+    insta::assert_snapshot!("background_task_lines_unfolded_grid", grid(&raw, 32));
 }
 
 /// Re-state a `waiting_agent` fixture: status, msg, task, and `waiting`.
-fn restate(p: PaneDisplay, st: Status, new_msg: &str, new_task: &str, still_waiting: bool) -> PaneDisplay {
-    match p {
-        PaneDisplay::Tracked { pane_id, kind, since_tick, outcome, origin, acknowledged, mut tasks, .. } => {
-            tasks.waiting = still_waiting;
-            PaneDisplay::Tracked {
-                pane_id, kind, status: st, msg: new_msg.into(), task: new_task.into(), since_tick, outcome,
-                pending_epoch_s: None, origin, acknowledged, tasks,
-            }
-        }
-        other => other,
+fn restate(mut p: PaneDisplay, st: Status, new_msg: &str, new_task: &str, still_waiting: bool) -> PaneDisplay {
+    if let PaneDisplay::Tracked { status, msg, task, pending_epoch_s, tasks, .. } = &mut p {
+        *status = st;
+        *msg = new_msg.into();
+        *task = new_task.into();
+        *pending_epoch_s = None;
+        tasks.waiting = still_waiting;
     }
+    p
 }
 
 #[test]
@@ -2940,7 +2943,7 @@ fn snapshot_background_task_lines_under_other_states() {
 #[test]
 fn background_task_lines_fold_into_a_count_when_narrow_or_short() {
     let rows = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
-    // Narrow: no task lines (the `+4` tag rides the identity, which the
+    // Narrow: no task lines (the `+3` tag rides the identity, which the
     // width then clamps like any other tag).
     let narrow = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
     let text = strip_sgr(&narrow);
@@ -2950,7 +2953,32 @@ fn background_task_lines_fold_into_a_count_when_narrow_or_short() {
     let short = render(&rows, &RenderOpts { now_epoch_s: 300, ..ro_full(32, full_height - 1, crate::config::Density::Compact, GlyphSet::Plain) });
     let text = strip_sgr(&short);
     assert!(!text.contains(TASK_GUIDE), "{text}");
-    assert!(text.contains("fix the flaky") && text.contains("+4"), "the agent line survives with the count: {text}");
+    // The count is running work + failures (2 + 1; the muted `·` ended task
+    // is dropped), and the failure turns it red.
+    assert!(text.contains("fix the flaky") && text.contains("+3"), "the agent line survives with the count: {text}");
+    assert!(short.contains(&format!("{}+3", Role::Error.ansi())), "a failure colours the count red: {short:?}");
+}
+
+#[test]
+fn compact_task_count_is_neutral_without_failures_and_absent_when_all_settled() {
+    use crate::task::TaskState;
+    let compact_line = |items| {
+        let rows = vec![tab(1, "zj-radar", display_multi(vec![agent_waiting_on(1, Kind::Claude, items)]))];
+        let raw = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
+        raw.lines().find(|l| strip_sgr(l).contains("fix")).expect("agent line").to_string()
+    };
+    let running = compact_line(vec![
+        bg_task("b1", "tests", true, TaskState::Running, 60, None),
+        bg_task("b2", "lint", false, TaskState::Completed, 100, Some(220)),
+    ]);
+    assert!(strip_sgr(&running).contains("+1"), "only the running task counts: {running:?}");
+    assert!(!running.contains(Role::Error.ansi()), "no failure: neutral count: {running:?}");
+
+    let settled = compact_line(vec![
+        bg_task("b2", "lint", false, TaskState::Completed, 100, Some(220)),
+        bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
+    ]);
+    assert!(!strip_sgr(&settled).contains('+'), "nothing live or failed: no tag: {settled:?}");
 }
 
 #[test]

@@ -3162,6 +3162,51 @@ fn a_foreign_edge_does_not_drop_an_owned_deferred_write() {
 }
 
 #[test]
+fn timer_driven_edges_are_written_by_the_owning_tab_only() {
+    // A debounce promotion / Done confirm reaches every instance at once;
+    // like a pushed edge, only the instance whose tab holds the pane writes
+    // the shared snapshot — the rest still render the converged change.
+    let run = |pane_id: u32| {
+        let mut rt = two_tab_runtime_owning_tab_0();
+        rt.command_changed(pane_id, &["cargo".to_string(), "test".to_string()], true);
+        let mut ticks = Vec::new();
+        for _ in 0..DEBOUNCE_TICKS {
+            ticks.push(rt.timer_fast(PermissionProbe::default()));
+        }
+        assert_eq!(rt.radar.command_store().get(pane_id).map(|o| o.status), Some(Status::Running));
+        let promoted = ticks.last().unwrap().clone();
+        rt.command_changed(pane_id, &["zsh".to_string()], false);
+        let mut confirm = Vec::new();
+        for _ in 0..DEBOUNCE_TICKS {
+            confirm.push(rt.timer_fast(PermissionProbe::default()));
+        }
+        assert_eq!(rt.radar.command_store().get(pane_id).map(|o| o.status), Some(Status::Done));
+        (promoted, confirm.last().unwrap().clone())
+    };
+
+    let (promoted, done) = run(7);
+    assert!(persists(&promoted), "own pane's promotion is this tab's write, got {:?}", promoted.effects);
+    assert!(persists(&done), "own pane's Done confirm is this tab's write, got {:?}", done.effects);
+
+    let (promoted, done) = run(8);
+    assert!(promoted.render, "a foreign promotion still renders");
+    assert!(!persists(&promoted), "another tab's promotion is that tab's write, got {:?}", promoted.effects);
+    assert!(!persists(&done), "another tab's Done confirm is that tab's write, got {:?}", done.effects);
+}
+
+#[test]
+fn a_timer_edge_on_a_pane_no_tab_holds_is_written_by_everyone() {
+    let mut rt = two_tab_runtime_owning_tab_0();
+    rt.command_changed(99, &["cargo".to_string(), "test".to_string()], true);
+    let mut last = Outcome::none();
+    for _ in 0..DEBOUNCE_TICKS {
+        last = rt.timer_fast(PermissionProbe::default());
+    }
+    assert_eq!(rt.radar.command_store().get(99).map(|o| o.status), Some(Status::Running));
+    assert!(persists(&last), "unknown pane: everyone writes, got {:?}", last.effects);
+}
+
+#[test]
 fn reveal_repaints_once_even_when_the_rows_did_not_change() {
     // While hidden the instance painted nothing, so whatever the rows-diff
     // gate remembers as "on screen" is what was there BEFORE the tab went

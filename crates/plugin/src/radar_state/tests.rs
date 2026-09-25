@@ -95,6 +95,31 @@ fn pending_wait_drives_the_slow_cadence_until_saturation() {
 }
 
 #[test]
+fn stale_running_expiry_is_persisted_by_the_owning_tab_only() {
+    let expire = |own_position: usize| {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![tab(10, 0, "mine", true), tab(20, 1, "theirs", false)]);
+        radar.set_tab_panes_for_position(0, vec![pane(7)]);
+        radar.set_tab_panes_for_position(1, vec![pane(8)]);
+        own_tab(&mut radar, own_position);
+        radar
+            .status_mut()
+            .apply(payload_in_repo(7, Status::Running, "pinky"), 1, 0);
+        radar.command_changed(7, &["bash".into()], false, 5);
+        let mut out = TimerChange::default();
+        for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
+            let tc = radar.timer(t, 0);
+            out.changed |= tc.changed;
+            out.persist |= tc.persist;
+        }
+        assert_eq!(radar.status(7).unwrap().status, Status::Idle);
+        out
+    };
+    assert_eq!(expire(0), TimerChange { changed: true, persist: true }, "own pane: render + write");
+    assert_eq!(expire(1), TimerChange { changed: true, persist: false }, "foreign pane: render only");
+}
+
+#[test]
 fn killed_agent_running_row_expires_via_the_timer() {
     // Ctrl+C'ing an agent mid-turn fires no hook; the pane returning to its
     // shell starts the grace clock and the timer clears the ghost "working"
@@ -106,7 +131,7 @@ fn killed_agent_running_row_expires_via_the_timer() {
     radar.command_changed(7, &["bash".into()], false, 5);
     let mut changed = false;
     for t in 6..(6 + crate::status_store::RUNNING_SUSPECT_GRACE_TICKS + 2) {
-        changed |= radar.timer(t, 0);
+        changed |= radar.timer(t, 0).changed;
     }
     assert!(changed, "the expiry renders + persists like any store change");
     assert_eq!(radar.status(7).unwrap().status, Status::Idle);
@@ -1142,6 +1167,31 @@ fn identical_status_rebroadcast_is_a_strict_noop() {
 }
 
 #[test]
+fn status_payload_renames_only_when_the_naming_repo_changes() {
+    // `repo` is the only status field tab naming reads, so the tool-hook
+    // firehose (same repo, new label) must skip naming entirely. Leaving the
+    // tab un-echoed ("Tab #1") makes the difference observable: a recompute
+    // would re-emit "alpha" on every payload.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "Tab #1", true)]);
+    own_tab(&mut radar, 0);
+    radar.set_tab_panes_for_position(0, vec![focused_pane(1)]);
+    let running = |msg: &str, repo: &str| {
+        payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_in_repo(1, Status::Running, repo) })
+    };
+    let rename_to = |name: &str| vec![TabRename { id: TabId::new(10), name: name.into() }];
+
+    let first = radar.status_pipe(&running("editing", "alpha"), 1, 100, config::NamingMode::Managed).unwrap();
+    assert_eq!(first.renames, rename_to("alpha"), "a new repo names the tab");
+
+    let label = radar.status_pipe(&running("testing", "alpha"), 2, 200, config::NamingMode::Managed).unwrap();
+    assert!(label.renames.is_empty(), "same repo, new label: naming is skipped");
+
+    let moved = radar.status_pipe(&running("testing", "beta"), 3, 300, config::NamingMode::Managed).unwrap();
+    assert_eq!(moved.renames, rename_to("beta"), "a repo change still renames");
+}
+
+#[test]
 fn running_label_update_defers_render_and_persist_to_the_tick() {
     // Running→Running with a new activity label: the Fast tick (armed while
     // anything is Running) repaints and flushes within a second, so the
@@ -1733,9 +1783,12 @@ fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
     assert_eq!(radar.command(1).unwrap().status, Status::Done);
     assert!(radar.ledger_is_empty(), "still inside the TTL window — nothing has receded yet");
 
+    let before = radar.ledger_lines();
+    assert!(std::rc::Rc::ptr_eq(&before, &radar.ledger_lines()), "no mutation: the memo hits");
     radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede
 
     let lines = radar.ledger_lines();
+    assert!(before.is_empty(), "the pre-recede memo is not reused after the push");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].label, "cargo build");
     assert!(!lines[0].error);
