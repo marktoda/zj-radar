@@ -2,5 +2,5 @@
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 # (GitHub applies it automatically.)
 
-# style: cargo fmt --all (adopt rustfmt)
-6d233e13fa461519d71a92275ce8fce24cf65ec5
+# chore: adopt rustfmt (#63) — squash of the cargo fmt --all reformat
+9809f20b7450497ccb2164a3b026932e25ce8786
