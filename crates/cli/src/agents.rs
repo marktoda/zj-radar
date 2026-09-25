@@ -111,7 +111,8 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
         "Grep" | "Glob" => Some("searching".to_string()),
         "WebFetch" | "WebSearch" => Some("searching web".to_string()),
         // `Agent` is current Claude Code's name for the subagent tool; `Task`
-        // is the older one (and opencode's `task`, mapped in its adapter).
+        // is the older one (and opencode's `task`/`subagent`, mapped by its
+        // bridge table).
         "Task" | "Agent" => Some("delegating".to_string()),
         "TodoWrite" => Some("planning".to_string()),
         "apply_patch" => Some("editing files".to_string()),
@@ -169,9 +170,10 @@ pub fn trailing_question(msg: &str) -> Option<&str> {
     (line.ends_with('?') || line.ends_with('？')).then_some(line)
 }
 
-/// The msg baseline every producer shares (the Claude adapter and `notify
-/// generic`; codex builds per-event and never needs it; the bash fallback
-/// mirrors it in notify.sh): idle always broadcasts a BLANK msg — it means
+/// The msg baseline every producer shares (the Claude adapter, the opencode
+/// and pi bridges via [`derive_bridged`], and `notify generic`; codex builds
+/// per-event and never needs it; the bash fallback mirrors it in notify.sh):
+/// idle always broadcasts a BLANK msg — it means
 /// "no activity", so any stale message the payload rides in on (e.g. a
 /// SessionStart session_title) is dropped and the row recedes cleanly on
 /// `/clear` — and a running row with nothing better to say gets the
