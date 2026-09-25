@@ -112,7 +112,14 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)"
 # only ever bit on Linux.
 cwd="${cwd:0:4096}"
 [[ -n "$cwd" ]] || cwd="$PWD"
-msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
+# Only a Stop (status done) reads last_assistant_message: a SubagentStop
+# carries the subagent's whole final report there, which must not become
+# the running row's msg (parity with derive_claude).
+if [[ "$status" == "done" ]]; then
+    msg="$(jq -r '.message // .last_assistant_message // empty' <<<"$input" 2>/dev/null || true)"
+else
+    msg="$(jq -r '.message // empty' <<<"$input" 2>/dev/null || true)"
+fi
 task=""
 
 # Whole-word containment (mirrors zj_radar_core::command::contains_word): is $2

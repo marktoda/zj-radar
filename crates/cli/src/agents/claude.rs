@@ -33,16 +33,23 @@ fn status_from_event(event: &str) -> Option<Status> {
 pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
     let event = v.get("hook_event_name").and_then(|x| x.as_str());
-    let msg = v
-        .get("message")
-        .and_then(|x| x.as_str())
-        .or_else(|| v.get("last_assistant_message").and_then(|x| x.as_str()))
-        .unwrap_or("");
-
     let status = match intake.status_arg {
         Some(s) => Status::from_wire(s),
         None => status_from_event(event?)?,
     };
+
+    // Only a Stop (a Done) reads `last_assistant_message`: a SubagentStop
+    // carries the subagent's whole final report there, which must not become
+    // the running row's msg.
+    let msg = v
+        .get("message")
+        .and_then(|x| x.as_str())
+        .or_else(|| {
+            (status == Status::Done)
+                .then(|| v.get("last_assistant_message").and_then(|x| x.as_str()))
+                .flatten()
+        })
+        .unwrap_or("");
 
     let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
 
@@ -431,6 +438,17 @@ mod tests {
         // before derive, by `bg_agents` (it needs per-pane state).
         let raw = r#"{"hook_event_name":"PostToolUse","agent_id":"a55dd2e69238dcfae","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x.rs"}}"#;
         assert_eq!(derive(&intake(raw, Some("running"))).unwrap().msg, "reading x.rs");
+    }
+
+    #[test]
+    fn subagent_stop_ignores_the_subagents_final_report() {
+        // A SubagentStop's `last_assistant_message` is the subagent's whole
+        // report; only a Stop reads the field.
+        let raw = r###"{"hook_event_name":"SubagentStop","agent_id":"a1","last_assistant_message":"## Findings\n\n- x"}"###;
+        for status_arg in [Some("running"), None] {
+            let u = derive(&intake(raw, status_arg)).unwrap();
+            assert_eq!((u.status, u.msg.as_str()), (Status::Running, "working"), "{status_arg:?}");
+        }
     }
 
     #[test]

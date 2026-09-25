@@ -411,6 +411,14 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "reading a.rs" ]
   parity_case '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose"}' running
 }
+
+@test "parity: a SubagentStop's final report never becomes the running msg" {
+  # Only a Stop reads last_assistant_message; a SubagentStop carries the
+  # subagent's whole report there.
+  parity_payloads '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","last_assistant_message":"## Findings\n\n- the rail is fine"}' running
+  [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = working ]
+}
 @test "cli: a background subagent's own tool hooks send nothing (bash fallback diverges)" {
   # CLI-only by design (notify.sh documents it next to the tasks note): the
   # CLI leaves a marker per async_launched agentId per (session, pane) and
