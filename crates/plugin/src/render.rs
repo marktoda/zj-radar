@@ -1140,14 +1140,25 @@ fn ordered_tasks(tasks: &BgTasks) -> Vec<&BgTask> {
 }
 
 /// One pane's background-task lines: up to [`MAX_TASK_LINES`], or
-/// `MAX_TASK_LINES - 1` plus a closing `┊ +N more`.
+/// `MAX_TASK_LINES - 1` plus a closing `┊ +N more`. A fold always keeps the
+/// first failure on a line of its own, even past a crowd of held running
+/// work (failures are news), and the `+N more` line takes the error hue when
+/// a failure is among the folded tasks, like the compact `+N` tag.
 fn emit_task_lines(tasks: &BgTasks, ctx: &TaskLineCtx) -> Vec<String> {
-    let ordered = ordered_tasks(tasks);
+    let mut ordered = ordered_tasks(tasks);
     let show = if ordered.len() > MAX_TASK_LINES { MAX_TASK_LINES - 1 } else { ordered.len() };
+    if let Some(i) = ordered.iter().position(|t| t.state == TaskState::Failed).filter(|&i| i >= show) {
+        // Only held running work outranks a failure, so the slot given up is
+        // a held task's: it folds into the count instead.
+        let failure = ordered.remove(i);
+        ordered.insert(show - 1, failure);
+    }
     let mut out: Vec<String> = ordered.iter().take(show).map(|t| emit_task_line(t, ctx)).collect();
     if ordered.len() > show {
-        let more = format!("+{} more", ordered.len() - show);
-        out.push(task_prefixed_line(ctx, &more, |avail| Seg::new(ctx.guide_color, truncate(&more, avail)).to_string()));
+        let folded = &ordered[show..];
+        let more = format!("+{} more", folded.len());
+        let color = if folded.iter().any(|t| t.state == TaskState::Failed) { Role::Error.ansi() } else { ctx.guide_color };
+        out.push(task_prefixed_line(ctx, &more, |avail| Seg::new(color, truncate(&more, avail)).to_string()));
     }
     out
 }

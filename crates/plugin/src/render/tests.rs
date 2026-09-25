@@ -2903,6 +2903,49 @@ fn snapshot_background_task_lines() {
     let opts = RenderOpts { now_epoch_s: 300, ..tight(&unfolded, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
     let raw = render(&unfolded, &opts);
     insta::assert_snapshot!("background_task_lines_unfolded_grid", grid(&raw, 32));
+
+    let crowded = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![crowded_agent(1, Kind::Claude)])) }];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&crowded, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let raw = render(&crowded, &opts);
+    insta::assert_snapshot!("background_task_lines_crowded_grid", grid(&raw, 32));
+}
+
+/// Two held runs outrank a failure, but a fold still gives the failure a
+/// line: one held run, the failure, then `┊ +2 more`.
+fn crowded_agent(id: u32, kind: Kind) -> PaneDisplay {
+    use crate::task::TaskState;
+    agent_waiting_on(id, kind, vec![
+        bg_task("u1", "unit", true, TaskState::Running, 60, None),
+        bg_task("e1", "e2e", true, TaskState::Running, 90, None),
+        bg_task("l1", "lint", false, TaskState::Failed, 100, Some(220)),
+        bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
+    ])
+}
+
+#[test]
+fn folded_task_lines_never_hide_a_failure() {
+    use crate::task::TaskState;
+    let task_lines = |p: PaneDisplay| {
+        let rows = vec![tab(1, "zj-radar", display_multi(vec![p]))];
+        let raw = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
+        raw.lines().filter(|l| strip_sgr(l).contains(TASK_GUIDE)).map(str::to_string).collect::<Vec<_>>()
+    };
+    let lines = task_lines(crowded_agent(1, Kind::Claude));
+    let text: Vec<String> = lines.iter().map(|l| strip_sgr(l)).collect();
+    assert_eq!(lines.len(), MAX_TASK_LINES, "{text:?}");
+    assert!(text[0].contains("unit") && text[1].contains("lint") && text[2].contains("+2 more"), "{text:?}");
+    assert!(!lines[2].contains(Role::Error.ansi()), "the one failure has its line: neutral count: {:?}", lines[2]);
+
+    // A second failure past the fold turns the `+N more` count red.
+    let lines = task_lines(agent_waiting_on(1, Kind::Claude, vec![
+        bg_task("u1", "unit", true, TaskState::Running, 60, None),
+        bg_task("e1", "e2e", true, TaskState::Running, 90, None),
+        bg_task("l1", "lint", false, TaskState::Failed, 100, Some(220)),
+        bg_task("l2", "typecheck", false, TaskState::Failed, 100, Some(200)),
+    ]));
+    let text: Vec<String> = lines.iter().map(|l| strip_sgr(l)).collect();
+    assert!(text[1].contains("lint") && text[2].contains("+2 more"), "{text:?}");
+    assert!(lines[2].contains(&format!("{}+2 more", Role::Error.ansi())), "a folded failure colours the count red: {:?}", lines[2]);
 }
 
 /// Re-state a `waiting_agent` fixture: status, msg, task, and `waiting`.
