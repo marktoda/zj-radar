@@ -16,7 +16,7 @@ A three-crate Cargo workspace plus three non-Rust producers:
 | `plugins/zj-radar-claude/` | The Claude Code producer plugin: `hooks.json` plus the bundled `notify.sh` fallback. |
 | `crates/cli/src/setup/opencode_plugin.js` | The Opencode 1.x bridge (server plugin), vendored into opencode's plugins dir as `zj-radar.js` by `setup opencode`. |
 | `crates/cli/src/setup/opencode_tui_plugin.js` | The Opencode 2.x bridge (TUI plugin), vendored as `zj-radar/tui.js` by `setup opencode`. |
-| `crates/cli/src/setup/pi_extension.js` | The pi bridge extension, vendored into pi's extensions dir as zj-radar.js by setup pi (harness: crates/cli/tests/pi_bridge.test.mjs, just test-js). |
+| `crates/cli/src/setup/pi_extension.js` | The pi bridge extension, vendored into pi's extensions dir as `zj-radar.js` by `setup pi` (harness: `crates/cli/tests/pi_bridge.test.mjs`, `just test-js`). |
 | `docs/` | User docs, the design doc, the executable rail spec. |
 
 Two rules are load-bearing. Read [`CONTEXT.md`](CONTEXT.md) before changing
