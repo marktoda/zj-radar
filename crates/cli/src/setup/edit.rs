@@ -65,6 +65,21 @@ pub fn edit_codex(existing: &str, install: bool, force: bool) -> Result<Outcome,
     }
 }
 
+/// Pure editor for `--legacy-notify --uninstall` when the `.bak` holds the
+/// user's own notifier (what `--force` replaced): put `restore` back into our
+/// slot, in place, instead of deleting the slot. Only our slot is replaced — a
+/// notify the user has since changed (or removed) is theirs, left alone.
+pub fn restore_codex_notify(existing: &str, restore: &toml_edit::Item) -> Result<Outcome, String> {
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
+    if !notify_is_ours(doc.get("notify")) {
+        return Ok(Outcome::Unchanged);
+    }
+    doc["notify"] = restore.clone();
+    Ok(Outcome::Changed(doc.to_string()))
+}
+
 /// Pure editor for Codex `hooks.json`. It strips only marker-owned Radar
 /// command hooks, then re-adds the current hook set when installing.
 pub fn edit_codex_hooks(existing: &str, install: bool) -> Result<Outcome, String> {
@@ -528,6 +543,28 @@ mod tests {
             edit_codex(foreign, false, false).unwrap(),
             Outcome::Unchanged
         ));
+    }
+
+    #[test]
+    fn restore_puts_the_users_notifier_back_into_our_slot_only() {
+        let bak = "notify = [\"my-notifier\", \"--flag\"]\nmodel = \"x\"\n";
+        let item = crate::setup::detect::codex_foreign_notify(bak).expect("foreign notify in bak");
+        let ours = "model = \"y\"\nnotify = [\"zj-radar\", \"notify\", \"codex\"]\n";
+        match restore_codex_notify(ours, &item).unwrap() {
+            Outcome::Changed(s) => {
+                let doc = s.parse::<DocumentMut>().unwrap();
+                let notify: Vec<_> = doc["notify"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+                assert_eq!(notify, ["my-notifier", "--flag"]);
+                assert!(s.contains("model = \"y\""), "the current config is kept, not the bak's: {s}");
+            }
+            o => panic!("{o:?}"),
+        }
+        // A notify the user changed since (not ours) is theirs — untouched.
+        assert!(matches!(restore_codex_notify("notify = [\"other\"]\n", &item).unwrap(), Outcome::Unchanged));
+        assert!(matches!(restore_codex_notify("model = \"x\"\n", &item).unwrap(), Outcome::Unchanged));
+        // A bak holding ours (or nothing) has nothing to restore.
+        assert!(crate::setup::detect::codex_foreign_notify(ours).is_none());
+        assert!(crate::setup::detect::codex_foreign_notify("model = \"x\"\n").is_none());
     }
 
     #[test]

@@ -20,6 +20,26 @@ pub(crate) fn codex_hooks_text() -> Option<String> {
     codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok())
 }
 
+/// Read Codex's config.toml for producer detection — the `--legacy-notify`
+/// route's evidence, `$CODEX_HOME`-aware like [`codex_hooks_text`].
+pub(crate) fn codex_config_text() -> Option<String> {
+    codex_config_path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+/// The text of a file `setup codex` is about to edit: absent reads as empty
+/// (a fresh install), but a present file we can't read (permissions, non-UTF8,
+/// a directory) is refused — treating it as empty would write our wiring over
+/// the user's config.
+fn read_for_edit(path: &std::path::Path) -> Result<String, String> {
+    match super::vendored::read_existing(path) {
+        super::vendored::Existing::Absent => Ok(String::new()),
+        super::vendored::Existing::Text(t) => Ok(t),
+        super::vendored::Existing::Unreadable(e) => {
+            Err(format!("refused — {} could not be read ({e})", path.display()))
+        }
+    }
+}
+
 fn codex_home_dir() -> Option<PathBuf> {
     codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"))
 }
@@ -68,7 +88,10 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
         println!("codex: skipped (binary/config not found)");
         return;
     }
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = match read_for_edit(&path) {
+        Ok(t) => t,
+        Err(e) => return crate::exit::fail_report("codex", e),
+    };
     let env = CodexEnv {
         codex_on_path,
         zj_radar_on_path: which("zj-radar"),
@@ -119,11 +142,28 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is
         println!("codex: skipped (binary/config not found)");
         return;
     }
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let Some(outcome) = edit_or_report("codex", edit_codex(&existing, !uninstall, force)) else {
+    let existing = match read_for_edit(&path) {
+        Ok(t) => t,
+        Err(e) => return crate::exit::fail_report("codex", e),
+    };
+    // The `.bak` is the user's only copy of a notifier `--force` replaced (the
+    // vendored-bridge rule, `vendored::write_bridge`): an uninstall puts it
+    // back into the slot, and no write may copy our line over it.
+    let bak = path_with_suffix(&path, BACKUP_SUFFIX);
+    let bak_notify = std::fs::read_to_string(&bak).ok().as_deref().and_then(detect::codex_foreign_notify);
+    let restoring = uninstall && bak_notify.is_some();
+    let edit = match (&bak_notify, uninstall) {
+        (Some(item), true) => restore_codex_notify(&existing, item),
+        _ => edit_codex(&existing, !uninstall, force),
+    };
+    let Some(outcome) = edit_or_report("codex", edit) else {
         return;
     };
     match outcome {
+        Outcome::Unchanged if uninstall => println!(
+            "codex: legacy notify already removed ({})",
+            path.display()
+        ),
         Outcome::Unchanged => println!(
             "codex: legacy notify already up to date ({})",
             path.display()
@@ -144,14 +184,32 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is
                 return;
             }
             let prompt = format!("Write {}?", path.display());
-            if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
+            if !confirm(&prompt, yes, is_tty) {
+                println!("codex: skipped (declined)");
                 return;
             }
-            println!(
-                "codex: legacy notify {} ({})",
-                if uninstall { "removed" } else { "installed" },
-                path.display()
-            );
+            // Replacing our slot while the `.bak` holds the user's notifier:
+            // skip the backup rather than copy our line over their only copy.
+            let replacing_ours = detect::codex_config_notify_is_ours(&existing);
+            let written = if replacing_ours && bak_notify.is_some() {
+                crate::fsutil::atomic_write(&path, new.as_bytes())
+            } else {
+                backup_then_write(&path, &new)
+            };
+            if let Err(e) = written {
+                crate::exit::fail_report("codex", format!("write failed — {e}"));
+                return;
+            }
+            let verb = match (uninstall, restoring) {
+                (true, true) => "removed — your previous notify restored from",
+                (true, false) => "removed",
+                (false, _) => "installed",
+            };
+            if restoring {
+                println!("codex: legacy notify {verb} {} ({})", bak.display(), path.display());
+            } else {
+                println!("codex: legacy notify {verb} ({})", path.display());
+            }
         }
     }
 }

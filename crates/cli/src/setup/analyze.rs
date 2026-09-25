@@ -44,7 +44,7 @@ pub(crate) fn read_zellij_env(config_dir: &Path, layout_name: Option<&str>) -> (
     let config_text = std::fs::read_to_string(&config_path).ok();
     let layout_name =
         crate::setup::detect::resolve_layout_name(layout_name, config_text.as_deref());
-    let layout_path = crate::setup::detect::resolve_layout_path(config_dir, &layout_name);
+    let layout_path = crate::setup::detect::resolve_layout_path(config_dir, &layout_name, config_text.as_deref());
     let env = ZellijEnv {
         layout_text:            std::fs::read_to_string(&layout_path).ok(),
         permissions_text:       crate::run::zellij_permissions_text(),

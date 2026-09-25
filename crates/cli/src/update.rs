@@ -117,19 +117,24 @@ pub fn run(options: UpdateOptions) {
 
     // The pin travels with the re-exec so a release landing between the
     // lookup above and this step can't split the two halves across versions.
-    if refresh_wasm && rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]) && wasm_stale {
-        println!("zj-radar: restart Zellij (or open a new session) to load the updated sidebar");
+    if refresh_wasm {
+        // Promise a restart only when the file actually changed: a clean exit
+        // is not proof of a write (setup may have declined, or left a managed
+        // wasm alone), and a false "restart to load the update" would repeat
+        // on every `update` while the wasm stays stale.
+        let before = installed_wasm_digest();
+        if rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]) {
+            let after = installed_wasm_digest();
+            println!("{}", wasm_refresh_line(wasm_stale, before.as_deref(), after.as_deref(), &target));
+        }
     }
     if cli_behind {
         // Re-wire only the producers already wired — a release may have changed
         // the codex hook shape or the vendored opencode/pi bridges — never one
         // the user hasn't chosen (bare `setup` would install for every agent on
-        // PATH).
-        let wired = crate::producers::ProducerTexts::read().wired();
-        if !wired.is_empty() {
-            let mut args = vec!["setup"];
-            args.extend(wired.iter().map(|a| a.source()));
-            args.push("-y");
+        // PATH) — and each along the route it was wired by (a notify-only
+        // Codex re-runs with `--legacy-notify`, never gaining hooks).
+        for args in crate::producers::ProducerTexts::read().rewire_invocations() {
             rerun(&exe, &target, &args);
         }
         println!(
@@ -165,6 +170,29 @@ fn wasm_status_line(wasm: &WasmState, target: &str, check: bool) -> String {
         WasmState::Stale => format!("wasm: differs from v{target} — will be refreshed"),
         WasmState::Unknown(why) if check => format!("wasm: could not compare against v{target} ({why})"),
         WasmState::Unknown(why) => format!("wasm: could not compare ({why}) — will be refreshed"),
+    }
+}
+
+/// The sha256 of the installed sidebar wasm, `None` when it can't be read (or
+/// hashed). Compared across the `setup zellij --download` re-run to tell
+/// whether the file really changed.
+fn installed_wasm_digest() -> Option<String> {
+    let config_dir = crate::setup::zellij_config_dir()?;
+    crate::setup::compute_sha256(&crate::setup::zellij_wasm_dest(&config_dir))
+}
+
+/// The line after the wasm refresh re-run: a restart prompt only when the
+/// installed bytes changed. A stale wasm that is still the same file means the
+/// refresh didn't land — say so instead of promising an update. An `Unknown`
+/// state that turned out identical (setup skips identical bytes) is quietly
+/// current.
+fn wasm_refresh_line(was_stale: bool, before: Option<&str>, after: Option<&str>, target: &str) -> String {
+    match (before, after) {
+        (Some(b), Some(a)) if b == a && was_stale => format!(
+            "zj-radar: the sidebar wasm still differs from v{target} — the refresh did not replace it (see above)"
+        ),
+        (Some(b), Some(a)) if b == a => format!("zj-radar: the sidebar wasm already matches v{target}"),
+        _ => "zj-radar: restart Zellij (or open a new session) to load the updated sidebar".to_string(),
     }
 }
 
@@ -513,6 +541,19 @@ mod tests {
         assert!(!wasm_status_line(&WasmState::Stale, "0.6.0", true).contains("refreshed"));
         assert!(wasm_status_line(&unknown, "0.6.0", false).contains("will be refreshed"));
         assert!(wasm_status_line(&WasmState::Stale, "0.6.0", false).contains("will be refreshed"));
+    }
+
+    #[test]
+    fn wasm_refresh_line_promises_a_restart_only_when_the_file_changed() {
+        let restart = |l: String| l.contains("restart Zellij");
+        assert!(restart(wasm_refresh_line(true, Some("aa"), Some("bb"), "0.8.0")));
+        // Stale and unchanged: the refresh didn't land — never "restart to load".
+        let same = wasm_refresh_line(true, Some("aa"), Some("aa"), "0.8.0");
+        assert!(!restart(same.clone()) && same.contains("still differs from v0.8.0"), "{same}");
+        // Couldn't compare, turned out identical: current, nothing to restart.
+        assert!(!restart(wasm_refresh_line(false, Some("aa"), Some("aa"), "0.8.0")));
+        // No wasm before (or unhashable): the write is what happened.
+        assert!(restart(wasm_refresh_line(true, None, Some("bb"), "0.8.0")));
     }
 
     #[test]

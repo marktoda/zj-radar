@@ -138,7 +138,8 @@ pub struct SetupOptions<'a> {
     pub force: bool,
     /// Non-interactive consent to inject the rail into the target layout.
     pub inject: bool,
-    /// Layout name to inject into (`<config_dir>/layouts/<name>.kdl`).
+    /// Layout name (`<layout dir>/<name>.kdl`) or path to inject into — see
+    /// `detect::resolve_layout_path_from`.
     /// `None` means `default`.
     pub layout: Option<&'a str>,
     /// Open the plugin in a focused floating pane so Zellij can prompt for
@@ -277,8 +278,8 @@ pub fn run(options: SetupOptions<'_>) {
         // needs no wasm source, and "is my install healthy?" wants the rail's
         // state too) plus every DETECTED agent. An explicit target always
         // reports; the bare doctor includes an agent only when it is present
-        // here (binary on PATH; for codex/opencode/pi also its config/bridge
-        // already installed — claude is gated on the binary alone), so a
+        // here (binary on PATH, or its config/bridge/plugin already
+        // installed), so a
         // machine without that agent isn't failed by it. `update` runs this
         // same bare doctor.
         let both = options.targets.is_empty();
@@ -290,7 +291,10 @@ pub fn run(options: SetupOptions<'_>) {
         if explicit("codex") || (both && codex_installed(which("codex"))) {
             missing |= check_codex(options.legacy_notify);
         }
-        if explicit("claude") || (both && which("claude")) {
+        // Claude's local install is a shell alias (never on PATH), so the
+        // installed plugin counts as present too.
+        let claude_wired = || crate::producers::ProducerTexts::read().is_wired(crate::agents::Agent::Claude);
+        if explicit("claude") || (both && (which("claude") || claude_wired())) {
             missing |= check_claude();
         }
         if explicit("opencode") || (both && (which("opencode") || opencode_bridge_is_ours())) {
