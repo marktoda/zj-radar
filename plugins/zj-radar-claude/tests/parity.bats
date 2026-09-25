@@ -371,7 +371,7 @@ teardown() { teardown_fakes; }
 
 @test "parity: servers, watchers and described services leave the Stop done" {
   local c
-  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest' \
+  for c in 'python -m http.server 8000' 'make dev' 'npx vite' 'vite dev' './node_modules/.bin/vite serve' 'uvicorn app:app' 'flask run' 'bin/rails s' 'cargo watch -x test' 'tsc --watch' 'jest --watchAll' 'vitest --watch=true' 'kubectl port-forward svc/db 5432' 'kubectl get pods --watch' 'nodemon index.js' 'cd web && vite' 'pnpm exec vite --host' 'bun x vite@latest' \
            'tail -f log' 'docker compose up' 'bundle exec jekyll serve' 'npm run dev' 'npm run dev|tee log' 'bash -c "npm run dev"' "sh -c 'npm run dev'" '(npm run dev)' 'echo `npm start`' './venv/bin/uvicorn app:app' $'npm run dev\techo' \
            'gh pr checks 57 && tsc --watch' 'npx tsc --watch'; do
     parity_payloads "$(jq -nc --arg c "$c" '{hook_event_name:"Stop",cwd:"/home/u/myrepo",last_assistant_message:"started",background_tasks:[{id:"b1",type:"shell",status:"running",command:$c}]}')" done

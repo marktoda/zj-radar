@@ -349,9 +349,10 @@ fn contains_command_phrase(cmd: &str, phrase: &str) -> bool {
 /// `npx`, `pnpm exec`, `bun x`, … — and its flags; any path, `@version`
 /// ignored) unless its next token is `build`, and a `--watch`/`--watchall`
 /// flag unless set `=false`/`=0` (`jest --watch=false` ends) or the
-/// segment's command word is `gh` or `kubectl`, whose `--watch` waits on
-/// something bounded (`gh pr checks 57 --watch`, `kubectl rollout status
-/// --watch`; `gh run watch` has no flag at all). Segments split on `&`, `|`,
+/// segment's command word is `gh`, or `kubectl` running `rollout status`,
+/// whose `--watch` waits on something bounded (`gh pr checks 57 --watch`,
+/// `kubectl rollout status deploy/x --watch`; `gh run watch` has no flag at
+/// all). Other `kubectl … --watch` (`get pods --watch`) streams forever. Segments split on `&`, `|`,
 /// `;`, so `cd web && vite` is a service while `pnpm add -D vite` and
 /// `cd packages/vite && pnpm test` are not. `cmd` is lowercased.
 fn service_tokens(cmd: &str) -> bool {
@@ -361,7 +362,8 @@ fn service_tokens(cmd: &str) -> bool {
         let word = tokens.iter().position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
         let command = word.and_then(|i| basename(tokens[i])).and_then(|b| b.split('@').next());
         let vite = command == Some("vite") && word.and_then(|i| tokens.get(i + 1)) != Some(&"build");
-        let bounded_watch = matches!(command, Some("gh" | "kubectl"));
+        let rollout_status = tokens.windows(2).any(|w| w == ["rollout", "status"]);
+        let bounded_watch = command == Some("gh") || (command == Some("kubectl") && rollout_status);
         let watch = !bounded_watch && tokens.iter().any(|t| {
             let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
             matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))

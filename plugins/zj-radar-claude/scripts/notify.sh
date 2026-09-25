@@ -297,7 +297,8 @@ fi
 # whitespace or shell punctuation, never `/ - _ . :` — or service_tokens'
 # rules per `&`/`|`/`;` segment: a `vite` command word (past package runners
 # and flags) not followed by `build`, a `--watch`/`--watchall` flag not
-# `=false`/`=0` unless the command word is `gh`/`kubectl`) or their
+# `=false`/`=0` unless the command word is `gh`, or `kubectl` running
+# `rollout status`) or their
 # description has a SERVICE_DESCRIPTION_PHRASES entry (prose word edges) —
 # both lists are agents.rs's, welded by parity.bats, as are
 # shell_is_service's rules: no command → the description alone decides,
@@ -329,7 +330,8 @@ if [[ "$status" == "done" ]]; then
             | ([range(0; $t | length) | select($t[.] | (startswith("-") or runner) | not)] | first) as $i
             | {t: $t, i: $i, w: (if $i == null then null else ($t[$i] | split("/") | last | split("@") | first) end)};
         def vite: .w == "vite" and .t[.i + 1] != "build";
-        def watchflag: (.w == "gh" or .w == "kubectl" | not) and (.t | any(.[]; split("=") as $p
+        def rollout: .t as $t | any(range(0; ($t | length) - 1); $t[.] == "rollout" and $t[. + 1] == "status");
+        def watchflag: (.w == "gh" or (.w == "kubectl" and rollout) | not) and (.t | any(.[]; split("=") as $p
             | ($p[0] == "--watch" or $p[0] == "--watchall")
               and (($p | length) == 1 or (($p[1:] | join("=")) as $v | $v != "false" and $v != "0"))));
         def segsvc: any(splits("[&|;]") | seg; vite or watchflag);

@@ -214,7 +214,8 @@ mod tests {
         for cmd in [
             "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
             "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
-            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
+            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "kubectl get pods --watch",
+            "nodemon index.js",
             "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
             "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
             "cd web && vite", "cd web&&vite", "pnpm exec vite --host", "bun x vite@latest", "npm run build; vite",
@@ -231,7 +232,7 @@ mod tests {
             "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
             "./watch.sh", "vitest run", "npm run watch-docs-check", "npm install vite", "pnpm add -D vite",
             "ls node_modules/vite", "cd packages/vite && pnpm test", "vite build&&echo ok",
-            // A gh/kubectl `--watch` waits on something that ends.
+            // A gh / kubectl rollout status `--watch` waits on something that ends.
             "gh pr checks 57 --watch", "gh pr checks 57 --watch && gh pr merge", "/usr/bin/gh run list --watch",
             "kubectl rollout status deploy/x --watch", "kubectl rollout status deploy/x --watch=true",
         ] {
