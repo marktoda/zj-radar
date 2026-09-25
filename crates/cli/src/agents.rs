@@ -322,19 +322,28 @@ pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
 ];
 
 /// The token rules for words that are services only in some positions: a
-/// `vite` command token (any path) unless its next token is `build`, and a
-/// `--watch`/`--watchall` flag unless set `=false`/`=0` (`gh run watch`
-/// ends; `jest --watch=false` ends). `cmd` is lowercased.
+/// `vite` that is a segment's *command word* (after any package runner —
+/// `npx`, `pnpm exec`, `bun x`, … — and its flags; any path, `@version`
+/// ignored) unless its next token is `build`, and a `--watch`/`--watchall`
+/// flag unless set `=false`/`=0` (`gh run watch` ends; `jest --watch=false`
+/// ends). Segments split on `&`, `|`, `;`, so `cd web && vite` is a service
+/// while `pnpm add -D vite` and `cd packages/vite && pnpm test` are not.
+/// `cmd` is lowercased.
 fn service_tokens(cmd: &str) -> bool {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    let vite = tokens.iter().enumerate().any(|(i, t)| {
-        basename(t) == Some("vite") && tokens.get(i + 1) != Some(&"build")
-    });
-    let watch = tokens.iter().any(|t| {
-        let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
-        matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
-    });
-    vite || watch
+    const RUNNERS: &[&str] = &["npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx"];
+    cmd.split(['&', '|', ';']).any(|segment| {
+        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        let word = tokens.iter().position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
+        let vite = word.is_some_and(|i| {
+            basename(tokens[i]).and_then(|b| b.split('@').next()) == Some("vite")
+                && tokens.get(i + 1) != Some(&"build")
+        });
+        let watch = tokens.iter().any(|t| {
+            let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
+            matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
+        });
+        vite || watch
+    })
 }
 
 /// Is this backgrounded shell a service — something that may never exit on

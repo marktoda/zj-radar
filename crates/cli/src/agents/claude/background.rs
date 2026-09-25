@@ -217,6 +217,7 @@ mod tests {
             "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
             "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
             "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
+            "cd web && vite", "cd web&&vite", "pnpm exec vite --host", "bun x vite@latest", "npm run build; vite",
         ] {
             assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
         }
@@ -228,7 +229,8 @@ mod tests {
         // "finished" early, so these single words need the right position.
         for cmd in [
             "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
-            "./watch.sh", "vitest run", "npm run watch-docs-check",
+            "./watch.sh", "vitest run", "npm run watch-docs-check", "npm install vite", "pnpm add -D vite",
+            "ls node_modules/vite", "cd packages/vite && pnpm test", "vite build&&echo ok",
         ] {
             assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
         }
