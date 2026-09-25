@@ -16,6 +16,25 @@ pub fn notify_is_ours(item: Option<&Item>) -> bool {
         .unwrap_or(false)
 }
 
+/// True iff a Codex `config.toml` text parses and its top-level `notify` is
+/// ours — the `--legacy-notify` wiring route, for producer detection. An
+/// unparseable file owns nothing.
+pub(crate) fn codex_config_notify_is_ours(config_text: &str) -> bool {
+    config_text
+        .parse::<toml_edit::DocumentMut>()
+        .is_ok_and(|doc| notify_is_ours(doc.get("notify")))
+}
+
+/// The top-level `notify` of a Codex `config.toml` text when it is present and
+/// NOT ours — the user's own notifier, e.g. what a `.bak` holds after
+/// `--legacy-notify --force` replaced it. `None` when the text is unparseable,
+/// has no `notify`, or holds ours.
+pub(crate) fn codex_foreign_notify(config_text: &str) -> Option<Item> {
+    let doc = config_text.parse::<toml_edit::DocumentMut>().ok()?;
+    let item = doc.get("notify")?;
+    (!notify_is_ours(Some(item))).then(|| item.clone())
+}
+
 pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
     handler
         .get("command")
@@ -52,12 +71,19 @@ pub(crate) fn pi_extension_is_ours(text: &str) -> bool {
 /// load — hardcoding `default.kdl` injected the rail into a file a
 /// `default_layout "main"` user never sees.
 pub(crate) fn default_layout_name(config_text: &str) -> Option<String> {
+    config_node_value(config_text, "default_layout")
+}
+
+/// The first argument of a `node "value"` line in `config.kdl` (quoted or
+/// bare), skipping commented-out lines. The shared line-scan behind
+/// `default_layout` and `layout_dir`.
+fn config_node_value(config_text: &str, node: &str) -> Option<String> {
     for line in config_text.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("//") || trimmed.starts_with("/-") {
             continue;
         }
-        let Some(rest) = trimmed.strip_prefix("default_layout") else {
+        let Some(rest) = trimmed.strip_prefix(node) else {
             continue;
         };
         // Node name must end here (not e.g. `default_layout_x`).
@@ -88,13 +114,46 @@ pub(crate) fn resolve_layout_name(explicit: Option<&str>, config_text: Option<&s
         .unwrap_or_else(|| "default".to_string())
 }
 
-/// The layout FILE `setup`/`--check` should operate on:
-/// `<config_dir>/layouts/<name>.kdl` for a name [`resolve_layout_name`]
-/// resolved. One resolution shared by the install path and the doctor
-/// (`read_zellij_env`), so both inspect the layout Zellij actually loads
-/// (and the one a `--layout` install just wrote).
-pub(crate) fn resolve_layout_path(config_dir: &Path, layout_name: &str) -> PathBuf {
-    config_dir.join("layouts").join(format!("{layout_name}.kdl"))
+/// The layout FILE `setup`/`--check` should operate on, for a value
+/// [`resolve_layout_name`] resolved. One resolution shared by the install path
+/// and the doctor (`read_zellij_env`), so both inspect the layout Zellij
+/// actually loads (and the one a `--layout` install just wrote). Reads `$HOME`
+/// for `~`; the rules live in [`resolve_layout_path_from`].
+pub(crate) fn resolve_layout_path(config_dir: &Path, layout_name: &str, config_text: Option<&str>) -> PathBuf {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    resolve_layout_path_from(config_dir, layout_name, config_text, home.as_deref())
+}
+
+/// Pure half of [`resolve_layout_path`]. Zellij takes either a layout NAME or
+/// a PATH in `default_layout` (and `--layout`):
+/// - a path — the value contains `/`, starts with `~`, or ends in `.kdl` — is
+///   used as written: `~` expands against `home`, a relative path resolves
+///   against `config_dir`, and no second `.kdl` is appended (the name rule
+///   turned `"/home/u/mine.kdl"` into a bogus `/home/u/mine.kdl.kdl`);
+/// - a name is `<layout dir>/<name>.kdl`, where the layout dir is the config's
+///   `layout_dir` when set (same path rules) else `<config_dir>/layouts`.
+pub(crate) fn resolve_layout_path_from(
+    config_dir: &Path,
+    layout_name: &str,
+    config_text: Option<&str>,
+    home: Option<&Path>,
+) -> PathBuf {
+    let expand = |value: &str| -> PathBuf {
+        let path = match (value.strip_prefix('~'), home) {
+            (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
+            _ => PathBuf::from(value),
+        };
+        if path.is_absolute() { path } else { config_dir.join(path) }
+    };
+    let is_path = layout_name.contains('/') || layout_name.starts_with('~') || layout_name.ends_with(".kdl");
+    if is_path {
+        return expand(layout_name);
+    }
+    let layout_dir = config_text
+        .and_then(|t| config_node_value(t, "layout_dir"))
+        .map(|dir| expand(&dir))
+        .unwrap_or_else(|| config_dir.join("layouts"));
+    layout_dir.join(format!("{layout_name}.kdl"))
 }
 
 pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) {
@@ -344,5 +403,29 @@ mod tests {
         assert_eq!(resolve_layout_name(None, config), "main");
         assert_eq!(resolve_layout_name(None, Some("theme \"nord\"\n")), "default");
         assert_eq!(resolve_layout_name(None, None), "default");
+    }
+
+    #[test]
+    fn resolve_layout_path_takes_names_and_paths_like_zellij() {
+        let cfg = Path::new("/c/zellij");
+        let home = Some(Path::new("/home/u"));
+        let at = |name: &str, text: Option<&str>| resolve_layout_path_from(cfg, name, text, home);
+        // A name → <config_dir>/layouts/<name>.kdl.
+        assert_eq!(at("main", None), PathBuf::from("/c/zellij/layouts/main.kdl"));
+        // A path is used as written — never a second `.kdl`.
+        assert_eq!(at("/home/u/mine.kdl", None), PathBuf::from("/home/u/mine.kdl"));
+        assert_eq!(at("~/layouts/mine.kdl", None), PathBuf::from("/home/u/layouts/mine.kdl"));
+        assert_eq!(at("~/mine", None), PathBuf::from("/home/u/mine"));
+        // Relative paths resolve against the config dir.
+        assert_eq!(at("mine.kdl", None), PathBuf::from("/c/zellij/mine.kdl"));
+        assert_eq!(at("sub/mine.kdl", None), PathBuf::from("/c/zellij/sub/mine.kdl"));
+        // `layout_dir` moves where NAMES resolve, not paths.
+        let text = Some("layout_dir \"/l/dir\"\ndefault_layout \"main\"\n");
+        assert_eq!(at("main", text), PathBuf::from("/l/dir/main.kdl"));
+        assert_eq!(at("/x/y.kdl", text), PathBuf::from("/x/y.kdl"));
+        assert_eq!(at("main", Some("layout_dir \"~/ly\"\n")), PathBuf::from("/home/u/ly/main.kdl"));
+        assert_eq!(at("main", Some("layout_dir \"ly\"\n")), PathBuf::from("/c/zellij/ly/main.kdl"));
+        // A commented-out layout_dir is not set.
+        assert_eq!(at("main", Some("// layout_dir \"/l/dir\"\n")), PathBuf::from("/c/zellij/layouts/main.kdl"));
     }
 }

@@ -1236,6 +1236,7 @@ mod tests {
             }),
             producers: ProducerTexts {
                 codex_hooks:         codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
+                codex_config:        None,
                 claude_plugins:      claude.then(|| "zj-radar-claude".to_string()),
                 opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
                 opencode_tui_plugin: None,
