@@ -16,12 +16,15 @@
 //!   malformed field is an empty snapshot, so nothing stale survives a turn).
 //!
 //! The same ids flow through all three (a subagent's `agentId` is its
-//! `background_tasks` id and its notification `task-id`). One known gap:
-//! work a *subagent* backgrounds fires its start on the parent's pane, but
-//! the parent's `Stop` likely doesn't list it and its outcome wakes the
-//! subagent, so the rail can end it as a muted `·` while it still runs —
-//! never a false green, so accepted. Mirrored in
-//! notify.sh's bash fallback; parity.bats pins the two.
+//! `background_tasks` id and its notification `task-id`). Work a *subagent*
+//! backgrounds is never tracked: its launching `PostToolUse` carries
+//! `agent_id` and is dropped whole (`claude::in_subagent`), and the parent's
+//! `Stop` doesn't list it anyway.
+//!
+//! Task lines are CLI-only: notify.sh's bash fallback sends no `tasks`, and
+//! mirrors only the resulting waiting status (the "waiting on …" Running of a
+//! turn end); parity.bats pins that status, and `SERVICE_PHRASES`, between
+//! the two.
 
 use crate::agents::{command_basename, shell_is_service};
 use serde_json::Value;

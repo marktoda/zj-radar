@@ -157,6 +157,14 @@ file_activity() { # $1 = verb, $2 = jq path to the file path → tool_activity
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
     hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
+    # A subagent's own tool calls (the hook carries a non-empty `agent_id`)
+    # fire on the parent's pane: as running broadcasts they clobbered the
+    # parent's "waiting on …" / needs-you row. Send nothing (parity with
+    # in_subagent in agents/claude.rs, which explains the accepted costs).
+    if [[ "$hook_event" == "PreToolUse" || "$hook_event" == "PostToolUse" ]] \
+        && [[ "$(jq -r '.agent_id | strings' <<<"$input" 2>/dev/null || true)" != "" ]]; then
+        exit 0
+    fi
     # UserPromptSubmit: capture the first non-empty prompt line as the sticky
     # task label (mirrors task_from_prompt in agents.rs). Slash commands,
     # harness-injected tag lines (e.g. <task-notification>), and bare acks

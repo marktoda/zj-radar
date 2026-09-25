@@ -25,6 +25,27 @@ fn status_from_event(event: &str) -> Option<Status> {
     }
 }
 
+/// Did this hook fire inside a subagent? Claude Code stamps `agent_id` (and
+/// `agent_type`) on hooks a subagent's own tool calls fire — verified live on
+/// 2.1.282; the main agent's hooks never carry it. Foreground and background
+/// subagents are indistinguishable here.
+///
+/// Their Pre/PostToolUse hooks share the parent's `ZELLIJ_PANE_ID`, so as
+/// plain running payloads they clobbered the parent's row: a *background*
+/// subagent's tool calls overwrote "waiting on …" and — worse — downgraded a
+/// `needs you` (a trailing question, a permission prompt) to running before
+/// the user answered. So they send nothing. The parent's own hooks cover the
+/// subagent's life: `PreToolUse` on the `Agent` tool (delegating), its
+/// `PostToolUse` (a foreground return, or a background launch's task start),
+/// `SubagentStop`, and the task-notification wake. Costs, accepted: a
+/// foreground subagent's row holds at "delegating" instead of its live tool,
+/// a permission answered inside one stays `needs you` until it returns (its
+/// PostToolUse was the recovery edge), and work a subagent backgrounds is
+/// never drawn as a task line.
+fn in_subagent(v: &Value) -> bool {
+    v.get("agent_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
+}
+
 /// Decide Claude's status + msg + cwd. `status_arg` (from the matcher-driven
 /// hooks.json) wins; else derive from `hook_event_name`. Applies the pending
 /// backstop, the running-with-no-activity baseline, and — for Pre/PostToolUse —
@@ -32,6 +53,9 @@ fn status_from_event(event: &str) -> Option<Status> {
 pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
     let event = v.get("hook_event_name").and_then(|x| x.as_str());
+    if matches!(event, Some("PreToolUse" | "PostToolUse")) && in_subagent(&v) {
+        return None;
+    }
     let msg = v
         .get("message")
         .and_then(|x| x.as_str())
@@ -420,6 +444,30 @@ mod tests {
         let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/p/x.rs"},"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"cargo test"}]}"#;
         let u = derive(&intake(raw, Some("running"))).unwrap();
         assert_eq!(u.msg, "editing x.rs");
+    }
+
+    #[test]
+    fn a_subagents_own_tool_hooks_send_nothing() {
+        // Shapes from the 2.1.282 capture: a background subagent's tool calls
+        // fire on the parent's pane after the parent's Stop — they must not
+        // clobber its "waiting on …" or "needs you" row.
+        for event in ["PreToolUse", "PostToolUse"] {
+            let raw = format!(
+                r#"{{"hook_event_name":"{event}","agent_id":"a55dd2e69238dcfae","agent_type":"general-purpose","tool_name":"Read","tool_input":{{"file_path":"/p/x.rs"}}}}"#
+            );
+            assert_eq!(derive(&intake(&raw, Some("running"))), None, "{event}");
+            assert_eq!(derive(&intake(&raw, None)), None, "{event}");
+        }
+        // Even one that backgrounds work: the parent's snapshot never lists it.
+        let bg = r#"{"hook_event_name":"PostToolUse","agent_id":"a1","tool_name":"Bash","tool_input":{"command":"cargo test","run_in_background":true},"tool_response":{"backgroundTaskId":"b7"}}"#;
+        assert_eq!(derive(&intake(bg, Some("running"))), None);
+        // The parent's own hooks (no agent_id, or a blank one) still report.
+        let parent = r#"{"hook_event_name":"PreToolUse","agent_id":"","tool_name":"Read","tool_input":{"file_path":"/p/x.rs"}}"#;
+        assert_eq!(derive(&intake(parent, Some("running"))).unwrap().msg, "reading x.rs");
+        // SubagentStop carries agent_id too, but is the parent-side edge of a
+        // subagent's end: it still reports.
+        let stop = r#"{"hook_event_name":"SubagentStop","agent_id":"a1","agent_type":"general-purpose","last_assistant_message":"found it"}"#;
+        assert_eq!(derive(&intake(stop, Some("running"))).unwrap().status, Status::Running);
     }
 
     #[test]

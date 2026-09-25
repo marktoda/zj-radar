@@ -366,6 +366,19 @@ teardown() { teardown_fakes; }
   done <<<"$rust"
 }
 
+@test "parity: a subagent's own tool hooks send nothing in both" {
+  # A background subagent's tool calls fire on the parent's pane (with
+  # `agent_id`) and must not clobber its waiting / needs-you row.
+  parity_noop '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}' running
+  parity_noop '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"backgroundTaskId":"b1"}}' running
+  # A blank or non-string agent_id is the parent's own hook; SubagentStop
+  # (which also carries agent_id) is the parent-side edge and still reports.
+  parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":"","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}' running
+  [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "reading a.rs" ]
+  parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":7,"tool_name":"Grep","tool_input":{}}' running
+  parity_case '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose"}' running
+}
+
 @test "parity: Agent tool reads as delegating" {
   parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Agent","tool_input":{"prompt":"x"}}' running
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = delegating ]
