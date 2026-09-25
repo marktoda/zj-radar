@@ -4263,6 +4263,7 @@ fn stale_badge_entry(
         is_current,
         selected,
         stale,
+        tabs: vec![],
     }
 }
 
@@ -4286,6 +4287,30 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
     assert_eq!(t.session.as_deref(), Some("alpha"));
     assert_eq!(t.tab_position, 2);
     assert_eq!(lines[2].target, None, "separator line is click-inert");
+}
+
+#[test]
+fn peer_session_tree_lists_tabs_and_agents_with_tab_targets() {
+    use crate::presence::{PresencePane, PresenceTab};
+    let mut peer = badge_entry("review", false, 1, 0, None, false);
+    peer.tabs = vec![PresenceTab {
+        position: 2,
+        name: "PR 8577".into(),
+        panes: vec![PresencePane {
+            kind: "claude".into(), status: "running".into(),
+            label: "reviewing CI".into(),
+        }],
+    }];
+    let lines = render_session_badge(
+        &[badge_entry("work", true, 0, 0, None, false), peer], &ro(36, 18));
+    assert_eq!(lines.len(), 5);
+    assert!(lines[2].text.contains("PR 8577"));
+    assert!(lines[3].text.contains("reviewing CI"));
+    for line in &lines[2..4] {
+        let target = line.target.as_ref().expect("peer child is clickable");
+        assert_eq!(target.session.as_deref(), Some("review"));
+        assert_eq!(target.session_tab_position(), Some(2));
+    }
 }
 
 #[test]

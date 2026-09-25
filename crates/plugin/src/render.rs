@@ -1771,9 +1771,10 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let accent = Role::Accent.ansi();
     let running_glyph = Status::Running.glyph_for(opts.glyphs);
     let attention_glyph = Status::Pending.glyph_for(opts.glyphs);
+    let mut child_budget = opts.height.saturating_sub(entries.len() + 6);
     let mut lines: Vec<Line> = entries
         .iter()
-        .map(|entry| {
+        .flat_map(|entry| {
             let hotspot = (entry.stale && !entry.is_current)
                 .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
             let hotspot = HotspotSlot::new(width, BADGE_LINE_HOTSPOT_MIN, hotspot);
@@ -1813,7 +1814,40 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                 .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
             let line = Line::new(text, target, LineBg::Rail);
             let hotspot_color = if entry.selected { accent } else { &stale };
-            hotspot.finish(line, hotspot_color)
+            let mut group = vec![hotspot.finish(line, hotspot_color)];
+            // Local tabs already appear below the badge with full pane detail.
+            // Peer tabs are a read-only tree from the bounded presence file.
+            if !entry.is_current {
+                for (tab_index, tab) in entry.tabs.iter().enumerate() {
+                    if child_budget == 0 { break; }
+                    child_budget -= 1;
+                    let connector = if tab_index + 1 == entry.tabs.len() { "└" } else { "├" };
+                    let tab_status = tab.panes.iter()
+                        .map(|pane| Status::from_wire(&pane.status))
+                        .max().unwrap_or(Status::Idle);
+                    let glyph = tab_status.glyph_for(opts.glyphs);
+                    let label = format!("{} {}", glyph, tab.name);
+                    let text = prefixed_line(width, 4,
+                        || format!("  {connector} {label}"),
+                        |avail| format!("  {connector} {}", Seg::new(&idle, truncate(&label, avail))));
+                    let target = RailTarget::for_session(entry.name.clone(), Some(tab.position));
+                    group.push(Line::new(text, Some(target), LineBg::Rail));
+                    for (pane_index, pane) in tab.panes.iter().enumerate() {
+                        if child_budget == 0 { break; }
+                        child_budget -= 1;
+                        let branch = if pane_index + 1 == tab.panes.len() { "└" } else { "├" };
+                        let status = Status::from_wire(&pane.status).glyph_for(opts.glyphs);
+                        let kind = Kind::from_source(&pane.kind).mark(opts.glyphs);
+                        let label = format!("{status} {kind} {}", pane.label);
+                        let text = prefixed_line(width, 6,
+                            || format!("    {branch} {label}"),
+                            |avail| format!("    {branch} {}", Seg::new(&idle, truncate(&label, avail))));
+                        let target = RailTarget::for_session(entry.name.clone(), Some(tab.position));
+                        group.push(Line::new(text, Some(target), LineBg::Rail));
+                    }
+                }
+            }
+            group
         })
         .collect();
     lines.push(Line::new("\n".to_string(), None, LineBg::Rail));
@@ -1851,7 +1885,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // Zero tabs with a non-empty ledger still has something to show (spec §9's
     // floor: header + bottom region, no cards) — the header must not vanish
     // just because `rows` is empty.
-    let has_content = !rows.is_empty() || !ledger.is_empty();
+    let has_content = !rows.is_empty() || !ledger.is_empty() || opts.badge.len() > 1;
 
     // Built (and its line count reserved out of `body_budget`) BEFORE
     // `plan_layout` runs, exactly like `header_lines` above it — otherwise
@@ -1859,7 +1893,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // actually get once the badge lines land above them, and the final
     // `flat.truncate(opts.height)` in `render_rail` would silently eat into
     // the footer/last row rather than the folding math accounting for it.
-    let badge_lines = render_session_badge(&opts.badge, opts);
+    let mut badge_lines = render_session_badge(&opts.badge, opts);
+    let own_badge = (!badge_lines.is_empty()).then(|| badge_lines.remove(0));
 
     let (mut blocks, metas): (Vec<Vec<Line>>, Vec<RowMeta>) = rows
         .iter()
@@ -1876,7 +1911,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     let body_budget = opts
         .height
         .saturating_sub(header_lines(opts.header, opts.density, has_content))
-        .saturating_sub(badge_lines.len());
+        .saturating_sub(badge_lines.len() + usize::from(own_badge.is_some()));
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
     let overflow = plan.len() < rows.len();
     // Drives the header-rule heartbeat — a plain `any()`, not a
@@ -1905,9 +1940,9 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
-    // Cross-session badge (zero lines with ≤1 session — see
-    // `render_session_badge`), between the header and the first card.
-    for line in badge_lines {
+    // The current session heads its own live tab cards. Peer sessions and
+    // their child tabs come after those cards, keeping the tree grouped.
+    if let Some(line) = own_badge {
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
@@ -1951,6 +1986,10 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         for _ in 0..spacing.gap {
             flat.push(gap.clone());
         }
+    }
+
+    for line in badge_lines {
+        flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
     // Idle strip.
@@ -2179,7 +2218,7 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // — the caller routes that case to `onboarding` instead (spec §7/§9). Zero
     // rows with a non-empty ledger still renders: header + bottom region, no
     // cards.
-    if rows.is_empty() && ledger.is_empty() {
+    if rows.is_empty() && ledger.is_empty() && opts.badge.len() <= 1 {
         return RenderedRail::from_lines(vec![]);
     }
     let cards = opts.density == Density::Cards;
