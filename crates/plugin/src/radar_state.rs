@@ -8,7 +8,7 @@ use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::rollup::{self, LedgerLine, TabDisplay, TabRow, TerminalPane};
 use crate::status::Status;
-use crate::status_store::{Replaced, StatusStore};
+use crate::status_store::StatusStore;
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
 use serde::{Deserialize, Serialize};
@@ -812,7 +812,7 @@ impl RadarState {
     ) -> Option<RadarChange> {
         let p = payload::parse(raw)?;
         let pane_id = p.pane_id;
-        // `replace` hands back the overwritten observation (by move — no
+        // `apply` hands back the overwritten observation (by move — no
         // pre-apply clone), for two uses: the ping flash fires only on a LIVE
         // not-Pending → Pending edge, never on a re-broadcast of an
         // already-Pending status (spec's "flip", not "is"; snapshot load never
@@ -820,21 +820,22 @@ impl RadarState {
         // the no-op/label-only classification below compares the whole
         // observation across the apply.
         let incoming = p.status;
-        let Replaced { prev, recedes } = self.status.replace(p, tick, now_epoch_s);
+        let replaced = self.status.apply(p, tick, now_epoch_s);
+        let prev = replaced.prev.as_ref();
         // Producers re-assert liberally (the Claude plugin broadcasts on every
         // tool hook, and Pre/PostToolUse derive the SAME activity string), so
         // an identical re-broadcast is the single hottest payload this method
-        // sees. `replace` already treats it as a store no-op (no epoch re-stamp,
+        // sees. `apply` already treats it as a store no-op (no epoch re-stamp,
         // no ledger edge); reporting a full-work change for it made every rail
         // instance re-render and re-persist for nothing — measured at ~0.5s of
         // host CPU per message across an 8-tab session under Zellij's wasm
         // interpreter. Nothing changed ⇒ nothing to render, persist, or rename.
         // (An identical payload never recedes, so returning here drops no
         // ledger edge.)
-        if prev.as_ref() == self.status.get(pane_id) {
+        if prev == self.status.get(pane_id) {
             return Some(RadarChange::default());
         }
-        let prev_status = prev.as_ref().map(|o| o.status);
+        let prev_status = prev.map(|o| o.status);
         let now_status = self.status.get(pane_id).map(|o| o.status);
         let flips_to_pending = incoming == Status::Pending && prev_status != Some(Status::Pending);
         self.touch();
@@ -859,7 +860,7 @@ impl RadarState {
         // A background-task change (a start, an outcome, a turn-end snapshot)
         // is rare, real state — not firehose — so it renders and persists now,
         // like any edge: a tab opened this second must rehydrate it.
-        let tasks_changed = prev.as_ref().map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
+        let tasks_changed = prev.map(|o| &o.tasks) != self.status.get(pane_id).map(|o| &o.tasks);
         // `repo` is the only status field tab naming reads (`tab_facts`), and
         // the namer filters an empty repo to "none" — so a payload that leaves
         // the effective repo alone cannot change this tab's name, and the
@@ -867,13 +868,13 @@ impl RadarState {
         fn naming_repo(o: Option<&TrackedObservation>) -> Option<&str> {
             o.map(|o| o.repo.as_str()).filter(|r| !r.is_empty())
         }
-        let repo_changed = naming_repo(prev.as_ref()) != naming_repo(self.status.get(pane_id));
+        let repo_changed = naming_repo(prev) != naming_repo(self.status.get(pane_id));
         // A Done/Error that recedes on overwrite (a new broadcast for the same
         // pane, INCLUDING the `/clear` idle-overwrite edge) hands off here —
         // last, so the comparisons above could borrow `prev` first.
         // Status-origin recede: never suppressed (see `command_changed`'s
         // matching call site).
-        if let Some(displaced) = prev.filter(|_| recedes) {
+        if let Some(displaced) = replaced.receded() {
             self.ledger_recede_now(vec![(pane_id, displaced)]);
         }
         let label_only = prev_status == now_status

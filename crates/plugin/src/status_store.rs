@@ -27,12 +27,19 @@ pub const RUNNING_SUSPECT_GRACE_TICKS: u64 = zj_radar_core::pipe::RUNNING_QUIET_
 /// that introduces its pane, so unknown ids must stay accepted.
 pub const MAX_TRACKED_PANES: usize = 256;
 
-/// What [`StatusStore::replace`] overwrote: the pane's previous observation,
-/// and whether it is a completion that recedes to the ledger (the `apply`
-/// rule — a real edge over a `Done`/`Error`).
+/// What [`StatusStore::apply`] overwrote: the pane's previous observation,
+/// and whether it is a completion that recedes to the ledger (a real edge
+/// over a `Done`/`Error`).
 pub struct Replaced {
     pub prev: Option<TrackedObservation>,
     pub recedes: bool,
+}
+
+impl Replaced {
+    /// The displaced observation, only when it recedes to the ledger.
+    pub fn receded(self) -> Option<TrackedObservation> {
+        self.prev.filter(|_| self.recedes)
+    }
 }
 
 #[derive(Default)]
@@ -51,22 +58,15 @@ impl StatusStore {
     /// Apply an incoming payload. Latest broadcast wins (the pipe delivers in
     /// order; no producer stamps a sequence, so there is nothing to reorder).
     ///
-    /// Returns the displaced observation IFF it was a completion (`Done`/`Error`)
-    /// that a *real* edge just overwrote — status or message actually changed.
-    /// An identical `(status, msg)` re-broadcast is a no-op edge: it returns
-    /// `None` and does not re-stamp `completed_epoch_s`, so a completion's
-    /// original wall-clock stamp survives repeated re-broadcasts of the same
-    /// turn (spec §4.2/§4.3).
-    pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Option<TrackedObservation> {
-        let Replaced { prev, recedes } = self.replace(p, tick, now_epoch_s);
-        prev.filter(|_| recedes)
-    }
-
-    /// [`apply`](Self::apply), handing back the pane's previous observation
-    /// whether or not it recedes — so a caller that compares before/after
-    /// (`RadarState::status_pipe`) gets the old value by move instead of
-    /// cloning it (tasks and all) ahead of the apply.
-    pub fn replace(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Replaced {
+    /// Hands back the pane's previous observation by move — so a caller that
+    /// compares before/after (`RadarState::status_pipe`) needn't clone it
+    /// (tasks and all) ahead of the apply — and whether it recedes: true IFF
+    /// it was a completion (`Done`/`Error`) that a *real* edge just overwrote
+    /// — status or message actually changed. An identical `(status, msg)`
+    /// re-broadcast is a no-op edge: it never recedes and does not re-stamp
+    /// `completed_epoch_s`, so a completion's original wall-clock stamp
+    /// survives repeated re-broadcasts of the same turn (spec §4.2/§4.3).
+    pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Replaced {
         // Any payload is proof the producer is alive — cancel a pending
         // stale-Running grace clock before it can misfire.
         self.suspect_running.remove(&p.pane_id);
@@ -539,7 +539,7 @@ mod tests {
         let mut idle = payload(1, Status::Idle);
         idle.msg = String::new();
         // The overwrite differs in status → the old Done recedes out.
-        let receded = s.apply(idle, 2, 200);
+        let receded = s.apply(idle, 2, 200).receded();
 
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
@@ -584,17 +584,17 @@ mod tests {
         let mut s = StatusStore::default();
         s.apply(payload(1, Status::Done), 1, 100);
         assert!(
-            s.apply(payload(1, Status::Done), 2, 200).is_none(),
+            s.apply(payload(1, Status::Done), 2, 200).receded().is_none(),
             "identical (status,msg) is a no-op edge"
         );
         let mut new_msg = payload(1, Status::Done);
         new_msg.msg = "another turn".into();
-        let displaced = s.apply(new_msg, 3, 300);
+        let displaced = s.apply(new_msg, 3, 300).receded();
         assert_eq!(displaced.unwrap().completed_epoch_s, Some(100), "old completion comes out");
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(300), "new one stamped fresh");
         // A non-completion overwrite (Running) still displaces the old Done:
         s.apply(payload(2, Status::Done), 1, 100);
-        let displaced = s.apply(payload(2, Status::Running), 2, 200);
+        let displaced = s.apply(payload(2, Status::Running), 2, 200).receded();
         assert_eq!(displaced.unwrap().status, Status::Done);
     }
 
