@@ -1,8 +1,9 @@
 # Using the rail
 
 What the sidebar shows, what the glyphs mean, and what clicking does. The exact
-grid for every scenario is in [`rail-reference.md`](rail-reference.md); this
-page is the reader's version.
+grid for most scenarios is in [`rail-reference.md`](rail-reference.md)
+(background-task lines are pinned by render snapshots instead); this page is
+the reader's version.
 
 ## Anatomy
 
@@ -52,8 +53,9 @@ is over and only that work remains, the agent's own glyph turns to a steady
 `⋯`. Finished tasks read `●` completed, `✗` failed, `○` killed, or a muted `·`
 when the outcome is unknown, and stay listed until your next prompt. At most
 three lines show per pane (the rest fold into `┊ +N more`); on a short or
-narrow rail they fold into a `+N` count on the pane row. Claude only, for
-now, and it needs the `zj-radar` CLI installed.
+narrow rail they fold into a `+N` count on the pane row, error-coloured when
+one failed. Claude only, for now, and it needs the `zj-radar` CLI installed.
+The full semantics are in [`activity-model.md`](activity-model.md).
 
 **Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✦` gemini ·
 `$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
