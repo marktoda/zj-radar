@@ -35,9 +35,15 @@ fn entries() -> Vec<(String, u64)> {
 
 /// The send deadline an entry's command actually gets: an explicit
 /// `ZJ_RADAR_PIPE_TIMEOUT=N` prefix wins (the override both producers honor),
-/// else the CLI's status-keyed default — `running` heartbeats take the short
-/// cap, everything else the full one (mirrors `default_pipe_timeout_secs` in
-/// crates/cli/src/notify.rs and the fallback literals in notify.sh).
+/// else the CLI's default — the worst case the entry can hit. That is the
+/// full cap for every entry, `running` included: a `running` heartbeat takes
+/// the short `RUNNING_PIPE_TIMEOUT_SECS`, but one carrying background tasks
+/// (a `PostToolUse` launch, a `<task-notification>` wake) is an edge and keeps
+/// the full cap (`default_pipe_timeout_secs(_, edge)` in
+/// crates/cli/src/notify.rs). Budgeting
+/// the hook for the heartbeat would let the runner kill a task edge mid-send.
+/// (Only the CLI sends tasks; notify.sh's fallback keeps every `running` on
+/// the short cap, which the full-cap budget covers too.)
 fn send_cap(command: &str) -> u64 {
     if let Some(rest) = command.split("ZJ_RADAR_PIPE_TIMEOUT=").nth(1) {
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -45,11 +51,7 @@ fn send_cap(command: &str) -> u64 {
             return n;
         }
     }
-    if command.ends_with(" running") {
-        RUNNING_PIPE_TIMEOUT_SECS
-    } else {
-        DEFAULT_PIPE_TIMEOUT_SECS
-    }
+    DEFAULT_PIPE_TIMEOUT_SECS
 }
 
 const NOTIFY_SH: &str = include_str!("../../../plugins/zj-radar-claude/scripts/notify.sh");
@@ -61,6 +63,8 @@ const NOTIFY_SH: &str = include_str!("../../../plugins/zj-radar-claude/scripts/n
 #[test]
 fn bash_producer_deadline_literals_match_the_pipe_constants() {
     let default_line = format!("default_deadline={DEFAULT_PIPE_TIMEOUT_SECS}");
+    // The fallback never sends background tasks (they need the CLI), so every
+    // `running` it sends is a heartbeat on the short cap.
     let running_line =
         format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
     assert!(

@@ -541,6 +541,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     task: pane.task.clone(),
                     source: source.to_string(),
                     ack: false,
+                    tasks: None,
                 });
                 radar.status_pipe(&wire_running, 0, 0, NamingMode::Off);
 
@@ -553,6 +554,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     task: "".into(),
                     source: source.to_string(),
                     ack: false,
+                    tasks: None,
                 });
                 radar.status_pipe(&wire_idle, 1, 0, NamingMode::Off);
             } else {
@@ -565,6 +567,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     task: pane.task.clone(),
                     source: source.to_string(),
                     ack: false,
+                    tasks: None,
                 });
                 // Applied "now" relative to the render epoch, backdated by the
                 // `waiting <N>m` trailer — how the doc's pending scenarios earn

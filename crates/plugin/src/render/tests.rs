@@ -88,6 +88,7 @@ fn display(
                 pending_epoch_s: d.pending_epoch_s,
                 origin: crate::observation::ObservationOrigin::StatusPipe,
                 acknowledged: false,
+                tasks: Default::default(),
             }]
         })
         .unwrap_or_default();
@@ -1062,6 +1063,7 @@ fn pe(id: u32, kind: Kind, status: Status, msg: &str) -> PaneDisplay {
         pending_epoch_s: None,
         origin: crate::observation::ObservationOrigin::StatusPipe,
         acknowledged: false,
+        tasks: Default::default(),
     }
 }
 
@@ -1078,6 +1080,7 @@ fn pe_outcome(id: u32, kind: Kind, status: Status, msg: &str, outcome: ExitOutco
         pending_epoch_s: None,
         origin: crate::observation::ObservationOrigin::StatusPipe,
         acknowledged: false,
+        tasks: Default::default(),
     }
 }
 
@@ -1094,6 +1097,7 @@ fn pe_task(id: u32, kind: Kind, status: Status, msg: &str, task: &str) -> PaneDi
         pending_epoch_s: None,
         origin: crate::observation::ObservationOrigin::StatusPipe,
         acknowledged: false,
+        tasks: Default::default(),
     }
 }
 
@@ -1555,6 +1559,7 @@ fn overflow_compresses_calm_before_urgent() {
     let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
         status: r.display.status,
         full_lines: render_row(r, &opts_check).len(),
+        compact_lines: render_row(r, &opts_check).len(),
     }).collect();
     let (plan, strip_folded) = plan_overflow(&metas, body_budget);
     assert_eq!(strip_folded, 0, "no idle rows to strip");
@@ -1618,6 +1623,7 @@ fn overflow_all_one_line_when_extreme() {
     let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
         status: r.display.status,
         full_lines: render_row(r, &opts_check).len(),
+        compact_lines: render_row(r, &opts_check).len(),
     }).collect();
     let (plan, _) = plan_overflow(&metas, 1);
     for (_, lines) in &plan {
@@ -1730,6 +1736,7 @@ fn gaps_dropped_under_overflow() {
     let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
         status: r.display.status,
         full_lines: render_row(r, &opts_check).len(),
+        compact_lines: render_row(r, &opts_check).len(),
     }).collect();
     let (plan, strip, spacing) =
         plan_layout(&metas, height - 2, crate::config::Density::Comfortable);
@@ -1765,6 +1772,7 @@ fn plan_layout_compact_always_zero_gap() {
     let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
         status: r.display.status,
         full_lines: render_row(r, &opts_check).len(),
+        compact_lines: render_row(r, &opts_check).len(),
     }).collect();
     // Even with very large budget, compact never adds gaps.
     let (_, _, spacing) = plan_layout(&metas, 100, crate::config::Density::Compact);
@@ -1779,6 +1787,7 @@ fn plan_layout_comfortable_gap_when_space_available() {
     let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
         status: r.display.status,
         full_lines: render_row(r, &opts_check).len(),
+        compact_lines: render_row(r, &opts_check).len(),
     }).collect();
     let (_, _, spacing) = plan_layout(&metas, 10, crate::config::Density::Comfortable);
     assert_eq!(spacing.gap, 1, "Comfortable with room should use gaps");
@@ -2845,6 +2854,120 @@ fn snapshot_cards_multi_pane() {
     insta::assert_snapshot!("cards_multi_pane_tint", tint_map(&raw));
 }
 
+/// An agent whose turn is over, waiting on background work: steady `⋯` on
+/// the agent line; one `┊` line per task — spinner for bounded work, `▸`
+/// for a service, `✗` / `●` / muted `·` for finished ones — with ages; the
+/// fourth task onward folds into `┊ +N more`. Single-pane (`└`, blank
+/// continuation) and multi-pane (`├`, `│` carried down column 1) both.
+fn waiting_agent(id: u32, kind: Kind) -> PaneDisplay {
+    use crate::task::{BgTask, BgTasks, TaskState};
+    let t = |id: &str, label: &str, holds: bool, state: TaskState, started: u64, ended: Option<u64>| BgTask {
+        id: id.into(), label: label.into(), holds, state, started_epoch_s: started, ended_epoch_s: ended,
+    };
+    let tasks = BgTasks {
+        items: vec![
+            t("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
+            t("d1", "npm run dev", false, TaskState::Running, 0, None),
+            t("b2", "lint", false, TaskState::Failed, 100, Some(220)),
+            t("b3", "", false, TaskState::Ended, 100, Some(130)),
+        ],
+        waiting: true,
+    };
+    match pe(id, kind, Status::Running, "waiting on Run the full integration test suite") {
+        PaneDisplay::Tracked { pane_id, kind, status, msg, since_tick, outcome, pending_epoch_s, origin, acknowledged, .. } => {
+            PaneDisplay::Tracked {
+                pane_id, kind, status, msg, task: "fix the flaky e2e retries".into(), since_tick, outcome,
+                pending_epoch_s, origin, acknowledged, tasks,
+            }
+        }
+        other => other,
+    }
+}
+
+#[test]
+fn snapshot_background_task_lines() {
+    let single = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&single, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let raw = render(&single, &opts);
+    insta::assert_snapshot!("background_task_lines_single_grid", grid(&raw, 32));
+
+    let multi = vec![tab(2, "team", display_multi(vec![
+        waiting_agent(1, Kind::Claude),
+        pe(2, Kind::Test, Status::Done, "cargo test"),
+    ]))];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&multi, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let raw = render(&multi, &opts);
+    insta::assert_snapshot!("background_task_lines_multi_grid", grid(&raw, 32));
+}
+
+/// Re-state a `waiting_agent` fixture: status, msg, task, and `waiting`.
+fn restate(p: PaneDisplay, st: Status, new_msg: &str, new_task: &str, still_waiting: bool) -> PaneDisplay {
+    match p {
+        PaneDisplay::Tracked { pane_id, kind, since_tick, outcome, origin, acknowledged, mut tasks, .. } => {
+            tasks.waiting = still_waiting;
+            PaneDisplay::Tracked {
+                pane_id, kind, status: st, msg: new_msg.into(), task: new_task.into(), since_tick, outcome,
+                pending_epoch_s: None, origin, acknowledged, tasks,
+            }
+        }
+        other => other,
+    }
+}
+
+#[test]
+fn snapshot_background_task_lines_under_other_states() {
+    // A turn that ended on a question with tests still running: the `↳`
+    // question comes first, then the task lines (fixed spinner frame — a
+    // Pending row gets no Fast ticks).
+    let asked = restate(waiting_agent(1, Kind::Claude), Status::Pending, "Bump the version too?", "fix the flaky e2e retries", false);
+    let rows = vec![tab(1, "zj-radar", display_multi(vec![asked]))];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    insta::assert_snapshot!("background_task_lines_pending_grid", grid(&render(&rows, &opts), 32));
+
+    // A Done pane whose only content is its task summary still earns lines.
+    let done = restate(waiting_agent(1, Kind::Claude), Status::Done, "", "", false);
+    let rows = vec![tab(1, "zj-radar", display_multi(vec![done]))];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let text = strip_sgr(&render(&rows, &opts));
+    assert!(text.contains(TASK_GUIDE), "{text}");
+
+    // Nerd glyphs: the waiting mark and the outcome glyphs swap sets.
+    let rows = vec![tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)]))];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Nerd)) };
+    insta::assert_snapshot!("background_task_lines_nerd_grid", grid(&render(&rows, &opts), 32));
+}
+
+#[test]
+fn background_task_lines_fold_into_a_count_when_narrow_or_short() {
+    let rows = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
+    // Narrow: no task lines (the `+4` tag rides the identity, which the
+    // width then clamps like any other tag).
+    let narrow = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
+    let text = strip_sgr(&narrow);
+    assert!(!text.contains(TASK_GUIDE), "{text}");
+    // Short: the planner takes the compact form before squeezing the card.
+    let full_height = body_line_count(&rows, &[], &ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain));
+    let short = render(&rows, &RenderOpts { now_epoch_s: 300, ..ro_full(32, full_height - 1, crate::config::Density::Compact, GlyphSet::Plain) });
+    let text = strip_sgr(&short);
+    assert!(!text.contains(TASK_GUIDE), "{text}");
+    assert!(text.contains("fix the flaky") && text.contains("+4"), "the agent line survives with the count: {text}");
+}
+
+#[test]
+fn task_lines_click_through_to_the_agent_pane() {
+    let rows = vec![tab(1, "zj-radar", display_multi(vec![waiting_agent(7, Kind::Claude)]))];
+    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let rail = render_rail(&rows, &[], &opts);
+    let task_line_targets: Vec<_> = rail
+        .ansi
+        .lines()
+        .zip(&rail.targets)
+        .filter(|(l, _)| strip_sgr(l).contains(TASK_GUIDE))
+        .map(|(_, t)| t.as_ref().and_then(|t| t.pane_id))
+        .collect();
+    assert_eq!(task_line_targets, vec![Some(7), Some(7), Some(7)], "2 tasks + `+N more`, all on the agent pane");
+}
+
 /// Light terminal theme: the visible text is theme-independent (so `grid`
 /// matches the dark canonical layout), but the surface ladder derives
 /// different colors. The tint map — computed against the *light* theme it was
@@ -3288,6 +3411,36 @@ prop_compose! {
 }
 
 prop_compose! {
+    /// Arbitrary background tasks: every state, holding or not, ASCII / long
+    /// / CJK labels, blank labels, with and without `waiting` — so task lines,
+    /// `+N more`, the compact `+N` tag, and the waiting glyph all ride every
+    /// width/lockstep proptest that draws panes.
+    fn arb_bg_tasks()(
+        items in proptest::collection::vec((
+            proptest::sample::select(crate::task::TaskState::ALL.to_vec()),
+            any::<bool>(),
+            prop_oneof![
+                Just(String::new()),
+                "[a-z ]{1,40}",
+                Just("端到端测试套件运行".to_string()),
+            ],
+            0u64..5000,
+        ), 0..6),
+        waiting in any::<bool>(),
+    ) -> crate::task::BgTasks {
+        let items = items.into_iter().enumerate().map(|(i, (state, holds, label, age))| crate::task::BgTask {
+            id: format!("t{i}"),
+            label,
+            holds,
+            state,
+            started_epoch_s: 0,
+            ended_epoch_s: state.is_ended().then_some(age),
+        }).collect();
+        crate::task::BgTasks { items, waiting }
+    }
+}
+
+prop_compose! {
     /// An arbitrary pane: ~15% untracked, else a tracked pane with an
     /// arbitrary Kind/Status, a short / long / CJK message, and a fuzzed
     /// sticky task so truncation, wide-glyph width, and the narrow-width
@@ -3300,6 +3453,7 @@ prop_compose! {
         untracked in 0u8..100,
         msg_pick in 0u8..3,
         task in arb_task(),
+        bg in arb_bg_tasks(),
     ) -> PaneDisplay {
         if untracked < 15 {
             PaneDisplay::untracked(id, "term")
@@ -3320,6 +3474,7 @@ prop_compose! {
                 pending_epoch_s: None,
                 origin: crate::observation::ObservationOrigin::StatusPipe,
                 acknowledged: false,
+                tasks: bg,
             }
         }
     }
@@ -3647,6 +3802,7 @@ fn hotspot_metadata_survives_cards_finalize_and_excludes_question_and_overflow_l
         pending_epoch_s: None,
         origin: crate::observation::ObservationOrigin::StatusPipe,
         acknowledged: false,
+        tasks: Default::default(),
     };
     let mut panes = vec![pending];
     panes.extend((11..=17).map(|id| pe(id, Kind::Claude, Status::Running, "working")));

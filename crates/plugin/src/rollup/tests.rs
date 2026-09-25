@@ -24,6 +24,7 @@ fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservati
         completed_epoch_s: None,
         pending_epoch_s: None,
         acknowledged: false,
+        tasks: Default::default(),
     }
 }
 
@@ -240,6 +241,7 @@ fn build(specs: &[Spec]) -> (Vec<TerminalPane>, HashMap<u32, TrackedObservation>
                     completed_epoch_s: None,
                     pending_epoch_s: None,
                     acknowledged: false,
+                    tasks: Default::default(),
                 },
             );
         }

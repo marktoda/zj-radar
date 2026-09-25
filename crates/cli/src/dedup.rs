@@ -2,7 +2,9 @@
 //! identical to the one this pane just sent.
 //!
 //! Claude fires PreToolUse AND PostToolUse per tool call, and both derive the
-//! same wire payload (`agents/claude.rs` reads only tool_name/tool_input/cwd),
+//! same wire payload (`agents/claude.rs` reads tool_name/tool_input/cwd for
+//! both; PostToolUse's `tool_response` only matters when it launched
+//! background work, and that payload is an edge `broadcast` never dedups),
 //! so half of tool-loop traffic is an exact duplicate — paid at full host cost
 //! (hook process tree, git probes, `zellij pipe` fan-out to every rail
 //! instance) and then no-op'd receiver-side. This module remembers the last

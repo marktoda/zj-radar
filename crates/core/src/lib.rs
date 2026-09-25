@@ -50,6 +50,7 @@ pub mod observation;
 pub mod payload;
 pub mod pipe;
 pub mod status;
+pub mod task;
 mod wire;
 
 // The friendly external surface, re-exported at the root. In-repo consumers
@@ -60,3 +61,4 @@ pub use pipe::{
     self_limiting_pipe_argv, DEFAULT_PIPE_TIMEOUT_SECS, MAX_STDIN_BYTES, RUNNING_PIPE_TIMEOUT_SECS,
 };
 pub use status::Status;
+pub use task::{TaskBatch, TaskState, TaskUpdate};

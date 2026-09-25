@@ -117,6 +117,73 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
+/// Background tasks end to end through the real wasm plugin: the payload
+/// sequence a Claude turn produces when it backgrounds a test run (launch,
+/// turn-end snapshot while it still runs, the failure outcome from the
+/// `<task-notification>` wake, the final turn end) must draw the `┊` task
+/// line, hold the agent's steady `⋯` while it waits, then flip the task to
+/// `✗` and the agent to done — parse → merge → render on a live rail, not the
+/// host-side renderer the insta snapshots pin.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn background_task_lines_render_on_the_live_rail() {
+    let wasm = plugin_wasm_path();
+    assert!(wasm.exists(), "Plugin wasm not found at {:?}", wasm);
+    let isolated = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_tasks_{}", std::process::id());
+    let session = ZellijSession::start(&session_name, &sidebar_layout(&wasm), &wasm, isolated);
+    let pane_id = session.discover_terminal_pane_id();
+    let payload = |status: &str, msg: &str, task: &str, tasks: &str| {
+        format!(
+            r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"{status}","repo":"web","branch":"main","msg":"{msg}","task":"{task}","tasks":{tasks}}}"#
+        )
+    };
+    let secs = std::time::Duration::from_secs(5);
+
+    // A human prompt, then the PostToolUse that backgrounded the tests.
+    session.pipe_status(&payload("running", "working", "fix flaky retries", "null"));
+    session.pipe_status(&payload(
+        "running",
+        "running tests",
+        "",
+        r#"{"snapshot":false,"items":[{"id":"b1","state":"running","label":"Run tests","holds":true}]}"#,
+    ));
+    assert!(
+        session.wait_for_sidebar(32, "┊", secs) && session.wait_for_sidebar(32, "Run tests", secs),
+        "the launch should draw a task line;\nsidebar:\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
+
+    // The turn ends while the tests still run: the agent waits (steady ⋯).
+    session.pipe_status(&payload(
+        "running",
+        "waiting on Run tests",
+        "",
+        r#"{"snapshot":true,"items":[{"id":"b1","state":"running","label":"Run tests","holds":true}]}"#,
+    ));
+    assert!(
+        session.wait_for_sidebar(32, "⋯", secs),
+        "a turn-end snapshot with holding work should show the waiting glyph;\nsidebar:\n{}",
+        sidebar_region(&session.screen(), 32)
+    );
+
+    // The wake reports the failure, then the final turn end lists nothing.
+    session.pipe_status(&payload(
+        "running",
+        "working",
+        "",
+        r#"{"snapshot":false,"items":[{"id":"b1","state":"failed"}]}"#,
+    ));
+    session.pipe_status(&payload("done", "tests failed", "", r#"{"snapshot":true,"items":[]}"#));
+    let settled = session.wait_until(secs, |s| {
+        let sb = sidebar_region(&s.screen(), 32);
+        sb.lines().any(|l| l.contains('┊') && l.contains('✗') && l.contains("Run tests")) && !sb.contains('⋯')
+    });
+    let sidebar = sidebar_region(&session.screen(), 32);
+    eprintln!("[e2e] sidebar region (32 cols):\n{sidebar}");
+    assert!(settled, "the task should end as ✗ under a done agent (no ⋯);\nsidebar:\n{sidebar}");
+}
+
 /// Issue #46: a rail whose tab holds no terminal pane must not take the
 /// session down. Zellij closes any tab with no selectable tiled pane
 /// (`Screen::render` → `tabs_to_close`), and a `children` nested inside the

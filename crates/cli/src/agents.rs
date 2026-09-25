@@ -17,6 +17,7 @@ use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
 use serde_json::Value;
 use zj_radar_core::command::contains_word;
+use zj_radar_core::task::TaskBatch;
 
 /// Everything an adapter needs to derive an update. Gathered by `run()` so the
 /// adapters stay pure — no stdin/env/IO lives behind the seam, which keeps each
@@ -40,6 +41,9 @@ pub struct AgentUpdate {
     /// Sticky task label from `UserPromptSubmit` (first line of the prompt).
     /// `None` = don't touch the plugin's stored label (the wire sends "").
     pub task: Option<String>,
+    /// Background-task batch (`core::task`), or `None` (absent on the wire:
+    /// leave the stored tasks alone). Only Claude reports tasks today.
+    pub tasks: Option<TaskBatch>,
 }
 
 /// The closed set of push-reporter agents. A variant's [`Agent::source`] string
@@ -213,6 +217,15 @@ pub(crate) fn shell_is_service(cmd: &str) -> bool {
     SERVICE_PHRASES.iter().any(|p| contains_word(&cmd_lower, p))
 }
 
+/// The basename of a command line's first whitespace-separated token
+/// (`/usr/bin/make -j4` → `make`), or `None` for a blank line or a
+/// trailing-slash token. Shared by the Bash activity fallback and the
+/// background-task label fallback so the two name a command the same way
+/// (notify.sh mirrors it in both places).
+pub(crate) fn command_basename(cmd: &str) -> Option<&str> {
+    basename(cmd.split_whitespace().next()?)
+}
+
 fn bash_activity(tool_input: &Value) -> Option<String> {
     let cmd = tool_input.get("command")?.as_str()?;
     let cmd_lower = cmd.to_lowercase();
@@ -233,12 +246,7 @@ fn bash_activity(tool_input: &Value) -> Option<String> {
     } else if has("install") {
         Some("installing".to_string())
     } else {
-        let first_token = cmd.split_whitespace().next()?;
-        let base = first_token.rsplit('/').next().unwrap_or(first_token);
-        if base.is_empty() {
-            return None;
-        }
-        Some(format!("running {base}"))
+        command_basename(cmd).map(|base| format!("running {base}"))
     }
 }
 

@@ -51,6 +51,7 @@ pub(crate) fn payload_in_repo(pane_id: u32, status: Status, repo: &str) -> Statu
         task: String::new(),
         source: "claude".into(),
         ack: false,
+        tasks: None,
     }
 }
 

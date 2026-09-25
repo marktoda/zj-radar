@@ -1,5 +1,7 @@
 //! Claude Code hook payload → Radar status update.
 
+mod background;
+
 use super::{tool_activity, AgentUpdate, Intake};
 use crate::status::Status;
 use serde_json::Value;
@@ -23,45 +25,6 @@ fn status_from_event(event: &str) -> Option<Status> {
     }
 }
 
-/// Does this background task hold the agent — bounded work whose completion
-/// will wake it? `background_tasks` rides `Stop` (Claude Code ≥ 2.1.145-ish;
-/// undocumented, verified live on 2.1.282) as `{id, type, status,
-/// description, command?}`. Subagents, workflows and teammates end; shells end
-/// unless they look like a service; monitors, crons and any type we don't know
-/// may never end, so they don't hold (a row spinning forever is the worse lie).
-fn holds_agent(task: &Value) -> bool {
-    if task.get("status").and_then(|x| x.as_str()) != Some("running") {
-        return false;
-    }
-    match task.get("type").and_then(|x| x.as_str()) {
-        Some("subagent" | "workflow" | "teammate") => true,
-        Some("shell") => {
-            let cmd = task.get("command").and_then(|x| x.as_str()).unwrap_or("");
-            !super::shell_is_service(cmd)
-        }
-        _ => false,
-    }
-}
-
-/// The Running msg for a `Stop` that still has holding background work, or
-/// `None` when nothing holds (absent/malformed field included — today's Done).
-fn waiting_msg(v: &Value) -> Option<String> {
-    let holding: Vec<&Value> = v
-        .get("background_tasks")?
-        .as_array()?
-        .iter()
-        .filter(|t| holds_agent(t))
-        .collect();
-    match holding.as_slice() {
-        [] => None,
-        [only] => {
-            let desc = only.get("description").and_then(|x| x.as_str()).map(str::trim).unwrap_or("");
-            Some(if desc.is_empty() { "waiting on 1 task".to_string() } else { format!("waiting on {desc}") })
-        }
-        many => Some(format!("waiting on {} tasks", many.len())),
-    }
-}
-
 /// Decide Claude's status + msg + cwd. `status_arg` (from the matcher-driven
 /// hooks.json) wins; else derive from `hook_event_name`. Applies the pending
 /// backstop, the running-with-no-activity baseline, and — for Pre/PostToolUse —
@@ -80,32 +43,47 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         None => status_from_event(event?)?,
     };
 
-    // A turn that ends by asking the user something is blocked on input, not
-    // finished — but Claude's hook model only surfaces tool-permission
-    // questions as `Notification`s; a prose question just fires `Stop`. Remap
-    // that Done to Pending with the trailing question as the message, so the
-    // rail shows "needs you" instead of a green row the user will misread as
-    // safe to ignore.
+    let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
+
+    // A Done is a `Stop`: the turn is over. Every Stop carries the turn-end
+    // snapshot of background tasks (`background::turn_end`), whichever status
+    // it resolves to below.
     if status == Status::Done {
+        let snapshot = background::turn_end(&v);
+        // A turn that ends by asking the user something is blocked on input,
+        // not finished — but Claude's hook model only surfaces tool-permission
+        // questions as `Notification`s; a prose question just fires `Stop`.
+        // Remap that Done to Pending with the trailing question as the
+        // message, so the rail shows "needs you" instead of a green row the
+        // user will misread as safe to ignore.
         if let Some(question) = super::trailing_question(msg) {
             return Some(AgentUpdate {
                 status: Status::Pending,
                 msg: question.to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+                cwd,
                 task: None,
+                tasks: Some(snapshot),
             });
         }
         // The turn ended, but work it backgrounded (tests, a subagent) is
         // still running and will wake the model when it finishes — the next
         // `Stop` carries the refreshed list, so the real Done arrives then.
-        if let Some(waiting) = waiting_msg(&v) {
+        if let Some(waiting) = background::waiting_msg(&snapshot) {
             return Some(AgentUpdate {
                 status: Status::Running,
                 msg: waiting,
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+                cwd,
                 task: None,
+                tasks: Some(snapshot),
             });
         }
+        return Some(AgentUpdate {
+            status,
+            msg: super::baseline_msg(status, msg),
+            cwd,
+            task: None,
+            tasks: Some(snapshot),
+        });
     }
 
     if status == Status::Pending {
@@ -130,19 +108,18 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         }
     }
 
-    let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
-    let task = if event == Some("UserPromptSubmit") {
-        v.get("prompt")
-            .and_then(|x| x.as_str())
-            .and_then(super::task_from_prompt)
-    } else {
-        None
+    let prompt = v.get("prompt").and_then(|x| x.as_str());
+    let (task, tasks) = match event {
+        Some("UserPromptSubmit") => (prompt.and_then(super::task_from_prompt), prompt.and_then(background::ended)),
+        Some("PostToolUse") => (None, background::started(&v)),
+        _ => (None, None),
     };
     Some(AgentUpdate {
         status,
         msg: out_msg,
         cwd,
         task,
+        tasks,
     })
 }
 
@@ -340,10 +317,61 @@ mod tests {
     }
 
     #[test]
-    fn a_task_without_a_description_still_reads_as_a_count() {
+    fn a_task_without_a_description_falls_back_to_its_command_then_a_count() {
         let raw = stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"make"}]"#);
         let u = derive(&intake(&raw, Some("done"))).unwrap();
+        assert_eq!(u.msg, "waiting on make");
+        let raw = stop_with_tasks(r#"[{"id":"w1","type":"workflow","status":"running"}]"#);
+        let u = derive(&intake(&raw, Some("done"))).unwrap();
         assert_eq!(u.msg, "waiting on 1 task");
+    }
+
+    #[test]
+    fn every_stop_carries_the_turn_end_snapshot() {
+        // Done, waiting-Running, and question-Pending all send it; a Stop
+        // with no field sends an empty one so nothing stale outlives a turn.
+        let waiting = derive(&intake(&stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"pytest"}]"#), Some("done"))).unwrap();
+        let t = waiting.tasks.unwrap();
+        assert!(t.snapshot);
+        assert_eq!((t.items[0].id.as_str(), t.items[0].holds), ("b1", true));
+        let done = derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"ok"}"#, Some("done"))).unwrap();
+        assert_eq!(done.status, Status::Done);
+        let t = done.tasks.unwrap();
+        assert!(t.snapshot && t.items.is_empty());
+        let asked = derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"Ship it?","background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#, Some("done"))).unwrap();
+        assert_eq!(asked.status, Status::Pending);
+        assert!(!asked.tasks.unwrap().items[0].holds, "a dev server never holds");
+    }
+
+    #[test]
+    fn a_background_launch_reports_its_start() {
+        let u = derive(&intake(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"cargo test","description":"Run tests","run_in_background":true},"tool_response":{"backgroundTaskId":"b7"}}"#,
+            Some("running"),
+        ))
+        .unwrap();
+        assert_eq!(u.status, Status::Running);
+        assert_eq!(u.msg, "running tests", "the live activity still shows");
+        let t = u.tasks.unwrap();
+        assert!(!t.snapshot);
+        assert_eq!((t.items[0].id.as_str(), t.items[0].label.as_str()), ("b7", "Run tests"));
+        // The PreToolUse twin and ordinary tools carry nothing.
+        let pre = derive(&intake(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"x","run_in_background":true}}"#, Some("running"))).unwrap();
+        assert_eq!(pre.tasks, None);
+    }
+
+    #[test]
+    fn a_task_notification_wake_reports_outcomes_and_keeps_the_label() {
+        let u = derive(&intake(
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\n<task-id>b7</task-id>\n<status>failed</status>\n</task-notification>"}"#,
+            Some("running"),
+        ))
+        .unwrap();
+        assert_eq!(u.task, None, "machinery, not the human's task");
+        let t = u.tasks.unwrap();
+        assert_eq!((t.items[0].id.as_str(), t.items[0].state), ("b7", zj_radar_core::task::TaskState::Failed));
+        let human = derive(&intake(r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#, Some("running"))).unwrap();
+        assert_eq!(human.tasks, None);
     }
 
     #[test]

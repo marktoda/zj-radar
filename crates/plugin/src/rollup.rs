@@ -17,6 +17,7 @@
 use crate::kind::Kind;
 use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::status::Status;
+use crate::task::BgTasks;
 
 /// One terminal pane of a tab's topology — the input record `roll_up`
 /// aggregates and `RadarState` stores per tab.
@@ -79,6 +80,9 @@ pub(crate) enum PaneDisplay {
         /// notifier skips it. Cleared by the pane's next real broadcast —
         /// see `StatusStore::apply`.
         acknowledged: bool,
+        /// Background tasks the agent started (`core::task`), rendered as
+        /// `┊` sub-lines under the pane line.
+        tasks: BgTasks,
     },
     Untracked {
         pane_id: u32,
@@ -192,6 +196,20 @@ impl PaneDisplay {
             Self::Tracked { pending_epoch_s, .. } => *pending_epoch_s,
             Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
+    }
+
+    /// Background tasks (empty for untracked/interactive panes) — feeds
+    /// `render`'s task sub-lines and the agent line's waiting glyph.
+    pub(crate) fn tasks(&self) -> Option<&BgTasks> {
+        match self {
+            Self::Tracked { tasks, .. } if !tasks.is_empty() => Some(tasks),
+            _ => None,
+        }
+    }
+
+    /// The agent's turn is over and it waits on its background work.
+    pub(crate) fn is_waiting(&self) -> bool {
+        matches!(self, Self::Tracked { status: Status::Running, tasks, .. } if tasks.waiting)
     }
 
     pub(crate) fn has_unacknowledged_status_pending(&self) -> bool {
@@ -309,6 +327,7 @@ pub(crate) fn roll_up<'a, 'q>(
                 outcome: pane_outcome(s),
                 pending_epoch_s: s.pending_epoch_s,
                 acknowledged: s.acknowledged,
+                tasks: s.tasks.clone(),
             }));
         } else {
             let display = interactive(pane.id)

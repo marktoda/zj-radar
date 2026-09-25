@@ -118,10 +118,10 @@ seam is the versioned pipe payload.
 
 | Source event | Status |
 |---|---|
-| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
+| Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. A `PostToolUse` that backgrounded work and a `<task-notification>` wake carry a background-task batch and are never deduped. Otherwise `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going) |
-| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `tail -f`, …) and unknown task types don't hold the row. |
+| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `tail -f`, …) and unknown task types don't hold the row. Every Stop also carries the running set as a `tasks` snapshot; a `PostToolUse` that backgrounds work carries its start, and a `<task-notification>` `UserPromptSubmit` carries each outcome (see `crates/core/src/task.rs`). |
 | Claude `SessionStart` (`source: "clear"`) | `idle` (resets the row on `/clear`) |
 | Claude `SessionEnd` | `idle` |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
@@ -213,9 +213,10 @@ Every caller, the plugin's ack echo included, sends through the self-limiting
 detached `sleep; kill` watchdog inside the spawned subtree reaps its own hung
 client even if the caller is killed mid-send. Deadlines are status-keyed:
 `DEFAULT_PIPE_TIMEOUT_SECS` (5 s) for once-per-turn edges,
-`RUNNING_PIPE_TIMEOUT_SECS` (2 s) for `running` heartbeats. The bundled hooks'
-`timeout` values must clear the cap plus 2 s (welded by
-`hooks_manifest_tests.rs`). The subtree exits with the client's status, so a
+`RUNNING_PIPE_TIMEOUT_SECS` (2 s) for `running` heartbeats — except a
+`running` that carries background tasks, which is an edge and keeps 5 s. The
+bundled hooks' `timeout` values must clear the worst-case cap plus 2 s
+(welded by `hooks_manifest_tests.rs`). The subtree exits with the client's status, so a
 caller can tell a delivered send from one killed at the deadline; the CLI
 producer blocks on that exit, with a cap + 1 s backstop thread for the corner
 where the watchdog's own fork failed.
@@ -225,7 +226,8 @@ payloads, so half of tool-loop traffic would be a duplicate every rail
 instance pays to receive. The CLI drops an identical `running` re-sent within
 `DEDUP_TTL_SECS` at the `broadcast` choke point, before any git work or spawn;
 edges always send, which is what keeps PostToolUse the Pending→Running
-recovery edge (the `pending` overwrites the record). The TTL is pinned below
+recovery edge (the `pending` overwrites the record), and so does any payload
+carrying background tasks (a start or outcome can't be recovered later). The TTL is pinned below
 the plugin's stale-Running grace, which any payload cancels, and only a
 confirmed delivery is recorded — hence the wrapper's exit status above. The
 rule, its key, and its bounds: `crates/cli/src/dedup.rs`.

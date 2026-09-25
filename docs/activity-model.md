@@ -82,6 +82,22 @@ signal (§4 layer 4) remains future work.
 | **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag | n/a | n/a | n/a |
 | **Idle** | muted row if `ever_active` | muted row | muted row, `⇄` marker cleared (the marker tracks *connected*, not *was remote*) | muted identity label while the program is foreground (it also replaces a stale finished-command echo); nothing once it exits |
 
+**Background tasks** (the payload's `tasks`, today Claude only) render as
+`┊` sub-lines under their agent's pane line, reusing this matrix's
+vocabulary: running work the agent waits on spins with a `· 4m` age, a
+running service holds the steady `▸` with no age, and finished tasks show
+`●` completed / `✗` failed / muted `○` killed / muted `·` ended (outcome
+unknown — never a false green) with their frozen duration. While the agent's
+turn is over and it waits on that work, its own pane line holds a steady `⋯`
+and the spinner moves down to the task lines (the tab header keeps spinning:
+the tab as a whole is still working). Task state never feeds the
+roll-up, counts, or notifications: the agent reports its own outcome. At
+most three task lines per pane (two plus `┊ +N more` beyond that, failures
+sorted first after running work); under height pressure, or below 20
+columns, a card drops them for a `+N` count on the pane line (finished
+tasks included) — right after the inter-card gaps go, before any other
+squeeze.
+
 Ties in the tab-level roll-up: on equal severity a bounded job outranks a
 steady row (`Service` or `Remote`) as the tab's primary detail — a spinning
 build summarizes the tab better than a server or an ssh session that is

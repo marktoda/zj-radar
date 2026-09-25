@@ -59,15 +59,33 @@ the notifier can stay quiet about it. Pruning has a one-manifest grace
 ## Status contract
 
 The external seam between producers and the plugin: the `zj_radar.status.v1`
-payload `{v, source, pane, status, repo, branch, msg, task, ack}`, parsed and
-sanitized in `crates/core/src/payload.rs`. Ordering is latest-wins. Unknown
-fields are ignored. `task` is a sticky label; `ack` means "the user already
-saw this" and silences the notifier. The plugin is a caller too: the `✓`
+payload `{v, source, pane, status, repo, branch, msg, task, ack, tasks}`,
+parsed and sanitized in `crates/core/src/payload.rs`. Ordering is
+latest-wins. Unknown fields are ignored. `task` is a sticky label; `ack`
+means "the user already saw this" and silences the notifier; `tasks` carries
+*background tasks* (below). The plugin is a caller too: the `✓`
 gesture broadcasts a synthetic `done` with `ack: true` (`Effect::BroadcastStatus`)
 instead of mutating local state. Every sender goes through the bounded argv in
 `crates/core/src/pipe.rs` (`self_limiting_pipe_argv`). Field rules for
 producers: [`docs/producers.md`](docs/producers.md#writing-your-own-producer);
 the backpressure story: design.md → *The pipe contract*.
+
+## Background task
+
+Work an agent started that runs without its attention: a backgrounded test
+run, a background subagent, a dev server. It rides the status contract's
+optional `tasks` batch (upserts by id, optionally a running-set snapshot) and
+is folded by the one merge rule, `BgTasks::apply` in `crates/core/src/task.rs`,
+called from `StatusStore::apply`. `holds` splits bounded work (the agent will
+be woken when it ends; it spins) from services (never hold; steady `▸`). A
+reported outcome is final; a task a snapshot drops with no outcome is `Ended`
+(muted, never a false green). *Waiting* is per payload: a `running` whose
+snapshot still has holding work means the turn is over and the agent waits.
+Rendered as `┊` sub-lines under the pane line (`render::emit_task_lines`);
+never feeds the roll-up, counts, or notifications. Only Claude reports tasks
+today, and only through the CLI (`crates/cli/src/agents/claude/background.rs`;
+the bash fallback mirrors the waiting status but not the tasks). Not the activity
+model's *Job*, which is a class of observed command.
 
 ## Information source
 

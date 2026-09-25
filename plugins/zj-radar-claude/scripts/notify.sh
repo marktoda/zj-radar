@@ -282,25 +282,33 @@ if [[ "$status" == "done" && -n "$msg" ]]; then
 fi
 
 # The turn ended but work it backgrounded is still running and will wake the
-# model when it finishes: stay running with a "waiting on …" msg. Parity with
-# holds_agent/waiting_msg in agents/claude.rs — running subagents, workflows
+# model when it finishes: stay running with a "waiting on …" msg (parity with
+# waiting_msg in agents/claude/background.rs). Running subagents, workflows
 # and teammates hold; shells hold unless a service phrase matches (the list is
 # agents.rs's SERVICE_PHRASES, welded by parity.bats); anything else doesn't.
-# jq's `test` is Oniguruma, so the phrases stay regex-metachar-free.
+# The label is the task's description, else its command's first-token
+# basename. jq's `test` is Oniguruma, so the phrases stay regex-metachar-free.
+#
+# Deliberately NOT here: the background-task *lines* (the wire's `tasks`
+# batch). They need the `zj-radar` CLI — this fallback keeps the waiting
+# status honest, but mirroring the whole task protocol in jq would double
+# every future change to it for a degraded path.
 SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|serve|tail -f|compose up"
 if [[ "$status" == "done" ]]; then
+    # shellcheck disable=SC2016 # jq variables, expanded by jq, not the shell
     waiting="$(jq -r --arg re "(^|[^a-z0-9])($SERVICE_PHRASES)([^a-z0-9]|$)" '
+        def str: if type == "string" then . else "" end;
         [ (.background_tasks // empty) | arrays | .[] | objects
           | select(.status == "running")
+          | select((.id | str) != "")
           | select(.type == "subagent" or .type == "workflow" or .type == "teammate"
-                   or (.type == "shell"
-                       and ((.command | if type == "string" then . else "" end
-                             | ascii_downcase | test($re)) | not))) ]
+                   or (.type == "shell" and ((.command | str | ascii_downcase | test($re)) | not)))
+          | (.description | str | gsub("^\\s+|\\s+$"; "")) as $d
+          | if $d != "" then $d
+            else ([.command | str | splits("\\s+") | select(. != "")] | .[0] // "" | split("/") | last // "")
+            end ]
         | if length == 0 then empty
-          elif length == 1 then
-            (.[0].description | if type == "string" then . else "" end
-             | gsub("^\\s+|\\s+$"; "")) as $d
-            | if $d == "" then "waiting on 1 task" else "waiting on " + $d end
+          elif length == 1 then (if .[0] != "" then "waiting on " + .[0] else "waiting on 1 task" end)
           else "waiting on \(length) tasks" end' <<<"$input" 2>/dev/null || true)"
     if [[ -n "$waiting" ]]; then
         status="running"
