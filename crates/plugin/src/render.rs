@@ -897,12 +897,13 @@ impl HotspotSlot {
     }
 }
 
-/// Emit one row's body into `out`, respecting `max_lines`.
+/// One row's full-form lines — a test convenience over [`render_row_form`],
+/// which the renderer itself calls (it needs the task-line count and the
+/// compact form too).
 ///
 /// Line 1 (gutter+glyph+num+name+slot) is ALWAYS emitted (via
-/// [`tab_header_line`]). PrimaryDetail/roster lines are emitted in priority
-/// order. Returns the full untruncated set of lines; caller applies
-/// `.take(max_lines)` for overflow.
+/// [`tab_header_line`]), then the pane/detail lines in priority order.
+/// Returns the full untruncated set of lines; overflow is the planner's job.
 #[cfg(test)]
 fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
     render_row_form(row, opts, false).0
@@ -916,7 +917,7 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 /// anything the card owns.
 fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>, usize) {
     let compact = compact || opts.width < TASK_LINES_MIN_WIDTH;
-    let task_line_count = std::cell::Cell::new(0usize);
+    let mut task_line_count = 0usize;
     let mut lines: Vec<Line> = Vec::new();
     let width = opts.width;
     let st = row.display.status;
@@ -943,8 +944,10 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
     // empty identity with no rendering outcome tag — earns no lines at all.
     // It lives here, on the same `identity` that gets emitted, so the gate
     // can never judge a different value than the one drawn.
+    //
+    // Returns the pane's lines plus how many of them are task lines.
     let child_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
-    let pane_lines = |pane: &PaneDisplay, branch: Branch, skip_silent: bool| -> Vec<Line> {
+    let pane_lines = |pane: &PaneDisplay, branch: Branch, skip_silent: bool| -> (Vec<Line>, usize) {
         let pane_status = pane.render_status();
         let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
         if skip_silent {
@@ -956,7 +959,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
             // pane has no observation-status at all — its muted label IS its
             // content (an open editor names the pane).
             if pane.status() == Some(Status::Idle) || !says_something {
-                return Vec::new();
+                return (Vec::new(), 0);
             }
         }
         // The two tags key on disjoint statuses (Pending vs Running), so the
@@ -968,19 +971,20 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         );
         // Compact form: the pane's background tasks survive as a count,
         // reserved on the line so the identity absorbs any truncation.
-        let tasks_tag = pane.tasks().filter(|_| compact).map(|t| format!("+{}", t.items.len()));
+        let tasks_tag = pane.tasks().filter(|_| compact).and_then(compact_tasks_tag);
         let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane.has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
         let hotspot = HotspotSlot::new(opts.width, PANE_LINE_HOTSPOT_MIN, hotspot);
         let content_width = hotspot.content_width();
-        let text = emit_pane_line(pane, &identity, tasks_tag.as_deref(), detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
+        let text = emit_pane_line(pane, &identity, tasks_tag.as_ref(), detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
         // `pane_target` is cloned here because a Pending/Error pane also emits
         // the subordinate `↳ question` line below, targeting the SAME pane —
         // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
         let line = Line::new(text, Some(pane_target.clone()), child_bg);
         let line = hotspot.finish(line, Role::Attention.ansi());
         let mut out = vec![line];
+        let mut task_lines = 0;
         if let Some(q) = detail {
             let text = emit_pane_detail_line(
                 q, row.active, st, pane_status, branch, &idle_color, width,
@@ -999,11 +1003,11 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
                 animating: pane_status == Status::Running,
             };
             for text in emit_task_lines(tasks, &ctx) {
-                task_line_count.set(task_line_count.get() + 1);
+                task_lines += 1;
                 out.push(Line::new(text, Some(pane_target.clone()), child_bg));
             }
         }
-        out
+        (out, task_lines)
     };
 
     // ── Multi-pane line-per-pane tree (new design) ────────────────────────────
@@ -1029,7 +1033,9 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
             } else {
                 Branch::Tee
             };
-            lines.extend(pane_lines(pane, branch, false));
+            let (pane_out, task_lines) = pane_lines(pane, branch, false);
+            lines.extend(pane_out);
+            task_line_count += task_lines;
         }
 
         if remaining > 0 {
@@ -1045,7 +1051,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
             );
             lines.push(Line::new(text, Some(tab_target), child_bg));
         }
-        return (lines, task_line_count.get());
+        return (lines, task_line_count);
     }
 
     // ── Single-pane pane line (chunk 1) ──────────────────────────────────────
@@ -1065,9 +1071,33 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
     // itself lives inside `pane_lines` (`skip_silent`), judged on the very
     // identity it emits.
     if let Some(pane) = row.display.panes.iter().find(|p| p.earns_pane_line()) {
-        lines.extend(pane_lines(pane, Branch::Elbow, true));
+        let (pane_out, task_lines) = pane_lines(pane, Branch::Elbow, true);
+        lines.extend(pane_out);
+        task_line_count += task_lines;
     }
-    (lines, task_line_count.get())
+    (lines, task_line_count)
+}
+
+/// The compact form's stand-in for a pane's task lines: a `+N` count on the
+/// identity line.
+struct CompactTasksTag {
+    text: String,
+    /// Some task failed: the tag takes the error hue.
+    failed: bool,
+}
+
+/// The compact `+N` tag for a pane's tasks, or `None` when nothing is worth
+/// counting. It counts only what still matters at a glance — running work
+/// and failures — because the finished-fine ones (`●` / killed / `·`) are the
+/// detail the full form has room for and the compact form exists to drop.
+/// A failure turns the tag red: the full form deliberately ranks failures
+/// above services so they never hide behind `+N more`, and the compact form
+/// must not hide them behind a neutral count either.
+fn compact_tasks_tag(tasks: &BgTasks) -> Option<CompactTasksTag> {
+    let failed = tasks.items.iter().filter(|t| t.state == TaskState::Failed).count();
+    let running = tasks.items.iter().filter(|t| t.state == TaskState::Running).count();
+    let n = running + failed;
+    (n > 0).then(|| CompactTasksTag { text: format!("+{n}"), failed: failed > 0 })
 }
 
 /// Render context shared by one pane's background-task lines.
@@ -1280,7 +1310,7 @@ fn prefixed_line(
 fn emit_pane_line(
     pane: &PaneDisplay,
     identity: &str,
-    tasks_tag: Option<&str>,
+    tasks_tag: Option<&CompactTasksTag>,
     has_detail: bool,
     opts: &RenderOpts,
     width: usize,
@@ -1324,15 +1354,16 @@ fn emit_pane_line(
             // The compact form's `+N` task count is reserved first (like the
             // outcome tag inside `compose_activity`), dropped only when not
             // even one identity column would remain beside it.
-            let tag_w = tasks_tag.map_or(0, |t| UnicodeWidthStr::width(t) + 1);
+            let tag_w = tasks_tag.map_or(0, |t| UnicodeWidthStr::width(t.text.as_str()) + 1);
             let (tasks_tag, tag_w) = match tasks_tag {
                 Some(t) if tag_w < avail => (Some(t), tag_w),
                 _ => (None, 0),
             };
             let mut activity = compose_activity(identity, pane.outcome(), avail - tag_w, &cmd_color);
             if let Some(t) = tasks_tag {
+                let tag_color = if t.failed { Role::Error.ansi() } else { conn_color };
                 activity.push(' ');
-                activity.push_str(&Seg::new(conn_color, t).to_string());
+                activity.push_str(&Seg::new(tag_color, t.text.as_str()).to_string());
             }
             // The glyph carries the status color (bold on non-idle, matching line 1); the
             // mark is the vendor-neutral stronger dim, always bold.
