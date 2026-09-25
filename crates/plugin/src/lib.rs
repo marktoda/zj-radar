@@ -352,8 +352,9 @@ impl ZellijPlugin for State {
             // plugin that only reads `session_name` off it.
             EventType::InitialKeybinds,
             // Tab shown / hidden (tab switch, close, layout apply, client
-            // detach; never at load). A hidden rail skips its paints and
-            // snapshot writes — `PluginRuntime::hidden` has the contract.
+            // detach; never at load). A hidden rail skips its paints only;
+            // state, ticks, and snapshot writes carry on —
+            // `PluginRuntime::hidden` has the contract.
             EventType::Visible,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
