@@ -399,9 +399,13 @@ fi
 # literals in sync with core::pipe's RUNNING/DEFAULT_PIPE_TIMEOUT_SECS):
 # `running` heartbeats are droppable, edges are not. Keyed on the FINAL
 # status, after the done→pending question remap above, so a remapped edge
-# keeps the edge deadline.
+# keeps the edge deadline — and so does the done→running "waiting on …"
+# remap: it is a turn end, not a heartbeat (the CLI sends it on the edge
+# deadline too, as a task-bearing payload).
 default_deadline=5
+edge_deadline="$default_deadline"
 [[ "$status" == "running" ]] && default_deadline=2
+[[ -n "$waiting" ]] && default_deadline="$edge_deadline"
 pipe_deadline="${ZJ_RADAR_PIPE_TIMEOUT:-$default_deadline}"
 # Fail CLOSED on a malformed override: the watchdog subshell inherits `set -e`,
 # so a value `sleep` rejects would kill it before the `kill` line runs and the
