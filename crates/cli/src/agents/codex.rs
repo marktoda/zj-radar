@@ -27,10 +27,7 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
         "PreToolUse" | "PostToolUse" => {
             let tool_name = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
             let tool_input = v.get("tool_input").unwrap_or(&Value::Null);
-            (
-                Status::Running,
-                tool_activity(tool_name, tool_input).unwrap_or_else(|| "working".to_string()),
-            )
+            (Status::Running, tool_activity(tool_name, tool_input).unwrap_or_else(|| "working".to_string()))
         }
         "PermissionRequest" => (Status::Pending, permission_message(v)),
         // A SubagentStop's `last_assistant_message` is the subagent's report,
@@ -41,9 +38,7 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
         _ => return None,
     };
     let task = if event == "UserPromptSubmit" {
-        v.get("prompt")
-            .and_then(|x| x.as_str())
-            .and_then(super::task_from_prompt)
+        v.get("prompt").and_then(|x| x.as_str()).and_then(super::task_from_prompt)
     } else {
         None
     };
@@ -55,12 +50,7 @@ fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
     if ty != "agent-turn-complete" {
         return None;
     }
-    let (status, msg) = turn_end(
-        v.get("last-assistant-message")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string(),
-    );
+    let (status, msg) = turn_end(v.get("last-assistant-message").and_then(|x| x.as_str()).unwrap_or("").to_string());
     Some(AgentUpdate { status, msg, cwd: string_field(v, "cwd"), tasks: None, task: None })
 }
 
@@ -88,10 +78,7 @@ fn permission_message(v: &Value) -> String {
 /// The non-blank `last_assistant_message`, or `None` — a blank one is as
 /// good as absent.
 fn last_assistant_message(v: &Value) -> Option<String> {
-    v.get("last_assistant_message")
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_string)
+    v.get("last_assistant_message").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string)
 }
 
 #[cfg(test)]
@@ -99,11 +86,7 @@ mod tests {
     use super::*;
 
     fn update(raw: &str) -> AgentUpdate {
-        derive(&Intake {
-            raw,
-            status_arg: None,
-        })
-        .unwrap()
+        derive(&Intake { raw, status_arg: None }).unwrap()
     }
 
     #[test]
@@ -131,9 +114,7 @@ mod tests {
     fn stop_ending_in_a_question_remaps_done_to_pending() {
         // Same rule as the Claude adapter: a turn that ends mid-question is
         // blocked on input; only the trailing line rides as the msg.
-        let u = update(
-            r#"{"hook_event_name":"Stop","last_assistant_message":"Refactored.\n\nShould I push?"}"#,
-        );
+        let u = update(r#"{"hook_event_name":"Stop","last_assistant_message":"Refactored.\n\nShould I push?"}"#);
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Should I push?");
         // A statement-final turn stays done.
@@ -283,12 +264,7 @@ mod tests {
 
     #[test]
     fn unknown_or_bad_events_are_noops() {
-        let none = |raw: &str| {
-            derive(&Intake {
-                raw,
-                status_arg: None,
-            })
-        };
+        let none = |raw: &str| derive(&Intake { raw, status_arg: None });
         assert!(none("not json").is_none());
         assert!(none(r#"{"hook_event_name":"SessionStart"}"#).is_none());
         assert!(none(r#"{"type":"task-started"}"#).is_none());
@@ -313,11 +289,7 @@ mod tests {
     #[test]
     fn status_arg_is_ignored_by_codex() {
         // Codex derives purely from the payload; an explicit status arg is a no-op.
-        let u = derive(&Intake {
-            raw: r#"{"hook_event_name":"UserPromptSubmit"}"#,
-            status_arg: Some("done"),
-        })
-        .unwrap();
+        let u = derive(&Intake { raw: r#"{"hook_event_name":"UserPromptSubmit"}"#, status_arg: Some("done") }).unwrap();
         assert_eq!(u.status, Status::Running);
     }
 }

@@ -42,13 +42,11 @@
 //! - [`permission_result`](PluginRuntime::permission_result) — Zellij's grant /
 //!   deny verdict.
 
-use crate::control::Verb;
 use crate::config;
+use crate::control::Verb;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
-use crate::radar_state::{
-    Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId,
-};
+use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
@@ -133,9 +131,16 @@ pub(crate) enum Effect {
     /// are written by every instance (`RadarState::timer`).
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
-    RenameTab { tab_id: TabId, name: String },
-    SwitchTab { position: usize },
-    ShowPane { pane_id: u32 },
+    RenameTab {
+        tab_id: TabId,
+        name: String,
+    },
+    SwitchTab {
+        position: usize,
+    },
+    ShowPane {
+        pane_id: u32,
+    },
     /// Read these panes' working directories once (blocking `get_pane_cwd`) to
     /// bootstrap a name for a freshly-opened tab before it emits `CwdChanged`.
     ///
@@ -145,7 +150,9 @@ pub(crate) enum Effect {
     /// `cwd_changed` never emits another `ResolveCwd` — but note that this
     /// effect's full consequences are realized in that second pass, not in the
     /// `Outcome` that carried it.
-    ResolveCwd { pane_ids: Vec<u32> },
+    ResolveCwd {
+        pane_ids: Vec<u32>,
+    },
     /// Close this plugin's own pane. Emitted by the onboarding floating pane
     /// after permission is granted — it has served its purpose. Needs no Zellij
     /// permission (`close_self` is always allowed).
@@ -161,7 +168,11 @@ pub(crate) enum Effect {
     /// the same edge and emits this same effect, and the host layer uses the
     /// key to elect exactly one dispatcher (`SessionFiles::claim_notification`)
     /// so N visited tabs don't produce N identical toasts.
-    Notify { key: String, title: String, body: String },
+    Notify {
+        key: String,
+        title: String,
+        body: String,
+    },
     /// Publish this session's own [`Presence`] for peer rails to read —
     /// lib.rs does `files.persist_presence(unless_fresher_than, || runtime.presence_json())`.
     /// Decided in one place, `project`: a presence *content* edge (a count
@@ -171,7 +182,9 @@ pub(crate) enum Effect {
     /// the write when the pid-keyed file's mtime is already younger than
     /// that — every tab's instance runs the same clock against one file,
     /// and a sibling's write already proved this session alive.
-    PersistPresence { unless_fresher_than: Option<std::time::Duration> },
+    PersistPresence {
+        unless_fresher_than: Option<std::time::Duration>,
+    },
     /// Re-read every peer session's presence file and feed the result back
     /// through `presences_changed` — mirrors `ResolveCwd`'s
     /// request/read-back pattern, except the read is gated on cadence (see
@@ -183,7 +196,10 @@ pub(crate) enum Effect {
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
     /// Emitted by `timer` when `Sessions::tick` reports an idle commit.
-    SwitchSession { name: String, tab_position: Option<usize> },
+    SwitchSession {
+        name: String,
+        tab_position: Option<usize>,
+    },
     /// Delete every on-disk presence file whose `session_name` matches
     /// `name` — all of them, since a name can have multiple pid-keyed
     /// corpses (`sessions.rs`'s dedup doc) — except this session's own
@@ -199,7 +215,9 @@ pub(crate) enum Effect {
     /// destructive to a live session: if the dismissed name is secretly
     /// still alive, its next heartbeat/edge re-publishes a fresh presence
     /// file and it simply reappears, fresh (see `Sessions::dismiss`).
-    DismissPresence { name: String },
+    DismissPresence {
+        name: String,
+    },
     /// Re-broadcast a `zj_radar.status.v1` payload over the shared pipe —
     /// `payload` is already wire-encoded (`payload::to_wire`), ready to hand
     /// to `zellij pipe`. Emitted by `mouse_right_click`'s pending-pane
@@ -215,7 +233,9 @@ pub(crate) enum Effect {
     /// `(status, msg)` twice: no `completed_epoch_s` re-stamp, no second
     /// ledger edge) is what makes that convergence idempotent rather than a
     /// second race.
-    BroadcastStatus { payload: String },
+    BroadcastStatus {
+        payload: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -539,9 +559,8 @@ impl PluginRuntime {
         }
         // `PaneUpdate::from_raw` already dropped plugin panes, so a non-empty
         // entry for our own tab position IS a terminal neighbor. Latch only.
-        self.own_tab_saw_terminal |= self
-            .own_tab_position
-            .is_some_and(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
+        self.own_tab_saw_terminal |=
+            self.own_tab_position.is_some_and(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
         let mut effects = Vec::new();
         self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
@@ -576,8 +595,7 @@ impl PluginRuntime {
         // (store timer, cadence decision, re-arm via project) sees the same "now".
         let now = now_epoch_s;
         let mut effects = Vec::new();
-        let permission_changed =
-            self.check_deferred_permission_request(permission, &mut effects);
+        let permission_changed = self.check_deferred_permission_request(permission, &mut effects);
         // Our own request is in-flight (including one this very tick just
         // fired): keep the shared lock fresh so no waiting peer reclaims it
         // out from under a live prompt.
@@ -610,8 +628,7 @@ impl PluginRuntime {
         // not sit blank for up to a full interval on an arbitrary tick phase.
         let scan_due = is_slow_fire
             || self.sessions.wants_fast_cadence()
-            || self.last_presence_scan
-                .is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
+            || self.last_presence_scan.is_none_or(|at| self.tick.saturating_sub(at) >= PRESENCE_READ_TICK_INTERVAL);
         if scan_due {
             self.last_presence_scan = Some(self.tick);
             effects.push(Effect::ReadPresences);
@@ -667,9 +684,7 @@ impl PluginRuntime {
             // click instead of falling through to row navigation: the user
             // aimed at an action, not at the row behind it.
             return match action {
-                render::HotspotAction::DismissPresence { name } => {
-                    self.dismiss_stale_session(name)
-                }
+                render::HotspotAction::DismissPresence { name } => self.dismiss_stale_session(name),
                 render::HotspotAction::Acknowledge { target } => {
                     Outcome::with_effects(false, self.acknowledge_pending_targets(&target))
                 }
@@ -816,12 +831,10 @@ impl PluginRuntime {
             Verb::AttentionPrev | Verb::SessionPrev => Direction::Prev,
         };
         match verb {
-            Verb::AttentionNext | Verb::AttentionPrev => {
-                match self.radar.next_attention_tab(dir) {
-                    Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
-                    None => Outcome::none(),
-                }
-            }
+            Verb::AttentionNext | Verb::AttentionPrev => match self.radar.next_attention_tab(dir) {
+                Some(position) => Outcome::with_effects(false, vec![Effect::SwitchTab { position }]),
+                None => Outcome::none(),
+            },
             Verb::SessionNext | Verb::SessionPrev => {
                 let render = self.sessions.cycle(dir);
                 // A fresh tap must arm Fast immediately (not wait for the next
@@ -919,14 +932,18 @@ impl PluginRuntime {
         // topology, so a pre-topology payload or stale store id cannot inflate
         // cross-session counts; command observations are excluded at this
         // seam, not inferred later from a tab's dominant status.
-        let running = rows.iter()
+        let running = rows
+            .iter()
             .flat_map(|r| &r.display.panes)
             .filter(|p| p.is_status_origin() && p.status() == Some(Status::Running))
             .count();
         let mut attention = 0usize;
         let mut attention_tab_position = None;
         for r in rows.iter() {
-            let tab_attention = r.display.panes.iter()
+            let tab_attention = r
+                .display
+                .panes
+                .iter()
                 .filter(|p| p.is_status_origin() && p.status().is_some_and(Status::needs_you))
                 .count();
             if tab_attention > 0 {
@@ -967,13 +984,11 @@ impl PluginRuntime {
 
     pub(crate) fn permission_result(&mut self, granted: bool) -> Outcome {
         self.record_permission_result(granted);
-        let mut effects = vec![
-            Effect::PersistPermissionMarker(if granted {
-                PermissionMarker::Granted
-            } else {
-                PermissionMarker::Denied
-            }),
-        ];
+        let mut effects = vec![Effect::PersistPermissionMarker(if granted {
+            PermissionMarker::Granted
+        } else {
+            PermissionMarker::Denied
+        })];
         // The prompt just resolved, so the rail may go passive — IF a
         // terminal neighbor is known (`desired_selectable`); a rail-only tab
         // keeps it reachable.
@@ -992,12 +1007,7 @@ impl PluginRuntime {
         self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
-    pub(crate) fn command_changed(
-        &mut self,
-        pane_id: u32,
-        command: &[String],
-        is_foreground: bool,
-    ) -> Outcome {
+    pub(crate) fn command_changed(&mut self, pane_id: u32, command: &[String], is_foreground: bool) -> Outcome {
         let change = self.radar.command_changed(pane_id, command, is_foreground, self.tick);
         self.project(vec![], change, crate::clock::now_epoch_s())
     }
@@ -1046,12 +1056,7 @@ impl PluginRuntime {
     /// `rows()` and `ledger_lines()` are memoized on the radar generation, so
     /// consulting this per event costs a compare, not a rollup.
     fn current_render_key(&self) -> RenderKey {
-        (
-            self.radar.rows(self.tick),
-            self.radar.ledger_lines(),
-            self.sessions.badge(),
-            self.theme.clone(),
-        )
+        (self.radar.rows(self.tick), self.radar.ledger_lines(), self.sessions.badge(), self.theme.clone())
     }
 
     /// The `RenderOpts` a paint at `width`×`height` would use right now — the
@@ -1081,8 +1086,7 @@ impl PluginRuntime {
         // Stamp the render gate's baseline from the very values this pass
         // draws — the key IS what's on screen, by construction (`project`
         // compares `current_render_key` against it).
-        self.last_render_key =
-            Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
+        self.last_render_key = Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
@@ -1168,11 +1172,7 @@ impl PluginRuntime {
         Outcome::with_effects(false, effects)
     }
 
-    fn check_deferred_permission_request(
-        &mut self,
-        probe: PermissionProbe,
-        effects: &mut Vec<Effect>,
-    ) -> bool {
+    fn check_deferred_permission_request(&mut self, probe: PermissionProbe, effects: &mut Vec<Effect>) -> bool {
         let policy = self.permission_policy();
         // `on_timer` is inert unless we're waiting on a peer; a decision landing
         // (marker arrived, or we reclaimed a stale lock — see session_files)
@@ -1313,10 +1313,7 @@ impl PluginRuntime {
     }
 
     fn effects_from_renames(&self, renames: Vec<TabRename>) -> Vec<Effect> {
-        renames
-            .into_iter()
-            .map(|TabRename { id, name }| Effect::RenameTab { tab_id: id, name })
-            .collect()
+        renames.into_iter().map(|TabRename { id, name }| Effect::RenameTab { tab_id: id, name }).collect()
     }
 
     /// The sole projection from a domain [`RadarChange`] to host [`Effect`]s.
@@ -1385,9 +1382,7 @@ impl PluginRuntime {
         // the radar generation moved — the derive is a full `rows()` pass,
         // which every broadcast in an 8-tab session used to pay twice.
         let mut content_moved = false;
-        if !self.own_session_name.is_empty()
-            && self.presence_gen != Some(self.radar.generation())
-        {
+        if !self.own_session_name.is_empty() && self.presence_gen != Some(self.radar.generation()) {
             self.presence_gen = Some(self.radar.generation());
             let fresh = self.own_presence();
             render |= self.sessions.set_own(fresh.clone());

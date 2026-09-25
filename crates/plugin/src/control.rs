@@ -24,8 +24,8 @@ pub(crate) fn parse(s: &str) -> Option<Verb> {
     match s.trim() {
         "attention-next" => Some(Verb::AttentionNext),
         "attention-prev" => Some(Verb::AttentionPrev),
-        "session-next"   => Some(Verb::SessionNext),
-        "session-prev"   => Some(Verb::SessionPrev),
+        "session-next" => Some(Verb::SessionNext),
+        "session-prev" => Some(Verb::SessionPrev),
         _ => None,
     }
 }
@@ -62,10 +62,7 @@ mod tests {
     #[test]
     fn documented_cmd_pipe_verbs_parse() {
         let doc = include_str!("../../../docs/configuration.md");
-        assert!(
-            doc.contains(CMD_PIPE),
-            "configuration.md must document the {CMD_PIPE} pipe by name"
-        );
+        assert!(doc.contains(CMD_PIPE), "configuration.md must document the {CMD_PIPE} pipe by name");
         let bind = format!("name \"{CMD_PIPE}\"; payload \"");
         let mut checked = 0;
         for chunk in doc.split(bind.as_str()).skip(1) {

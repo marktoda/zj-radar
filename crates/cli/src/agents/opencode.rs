@@ -41,9 +41,18 @@ const BRIDGE: Bridge = Bridge {
     tool_event: "tool.execute",
     prompt_event: "chat.message",
     tool_names: &[
-        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("shell", "Bash"),
-        ("grep", "Grep"), ("glob", "Glob"), ("webfetch", "WebFetch"), ("websearch", "WebSearch"),
-        ("task", "Task"), ("subagent", "Task"), ("todowrite", "TodoWrite"),
+        ("read", "Read"),
+        ("write", "Write"),
+        ("edit", "Edit"),
+        ("bash", "Bash"),
+        ("shell", "Bash"),
+        ("grep", "Grep"),
+        ("glob", "Glob"),
+        ("webfetch", "WebFetch"),
+        ("websearch", "WebSearch"),
+        ("task", "Task"),
+        ("subagent", "Task"),
+        ("todowrite", "TodoWrite"),
     ],
     arg_keys: &[("filePath", "file_path"), ("notebookPath", "notebook_path")],
 };
@@ -120,7 +129,8 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(u.msg, "pushing");
-        let u = derive(&intake(r#"{"event":"tool.execute","tool":"subagent","tool_input":{}}"#, Some("running"))).unwrap();
+        let u =
+            derive(&intake(r#"{"event":"tool.execute","tool":"subagent","tool_input":{}}"#, Some("running"))).unwrap();
         assert_eq!(u.msg, "delegating");
 
         // The 2.x bridge's bare run-started refresh: running, baseline msg.
@@ -139,11 +149,8 @@ mod tests {
 
     #[test]
     fn unknown_tool_falls_back_to_working() {
-        let u = derive(&intake(
-            r#"{"event":"tool.execute","tool":"frobnicate","tool_input":{}}"#,
-            Some("running"),
-        ))
-        .unwrap();
+        let u = derive(&intake(r#"{"event":"tool.execute","tool":"frobnicate","tool_input":{}}"#, Some("running")))
+            .unwrap();
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "working");
     }
@@ -183,11 +190,8 @@ mod tests {
 
     #[test]
     fn session_idle_with_statement_stays_done() {
-        let u = derive(&intake(
-            r#"{"event":"session.idle","message":"All tests pass.","cwd":"/repo"}"#,
-            Some("done"),
-        ))
-        .unwrap();
+        let u = derive(&intake(r#"{"event":"session.idle","message":"All tests pass.","cwd":"/repo"}"#, Some("done")))
+            .unwrap();
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "All tests pass.");
         assert_eq!(u.cwd.as_deref(), Some("/repo"));
@@ -232,11 +236,8 @@ mod tests {
     fn session_lifecycle_resets_to_idle_with_blank_msg() {
         // session.created/deleted → idle: any stale message is dropped so the
         // rail never shows an idle row with leftover text.
-        let u = derive(&intake(
-            r#"{"event":"session.lifecycle","message":"stale","cwd":"/repo"}"#,
-            Some("idle"),
-        ))
-        .unwrap();
+        let u =
+            derive(&intake(r#"{"event":"session.lifecycle","message":"stale","cwd":"/repo"}"#, Some("idle"))).unwrap();
         assert_eq!(u.status, Status::Idle);
         assert_eq!(u.msg, "");
         assert_eq!(u.cwd.as_deref(), Some("/repo"));
@@ -253,10 +254,7 @@ mod tests {
     fn derives_status_from_event_when_no_explicit_status() {
         // Robustness path: the bridge always passes --status, but deriving
         // from `event` keeps the adapter directly testable without it.
-        assert_eq!(
-            derive(&intake(r#"{"event":"chat.message"}"#, None)).unwrap().status,
-            Status::Running
-        );
+        assert_eq!(derive(&intake(r#"{"event":"chat.message"}"#, None)).unwrap().status, Status::Running);
         assert_eq!(
             derive(&intake(r#"{"event":"session.error","message":"boom"}"#, None)).unwrap().status,
             Status::Error

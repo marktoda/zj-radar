@@ -46,7 +46,10 @@ pub(crate) fn claude_installed_plugins_text() -> Option<String> {
 /// non-empty), else `<home>/.claude`. A hard-coded `~/.claude` told a
 /// `CLAUDE_CONFIG_DIR` user their installed plugin was missing. Pure (env
 /// passed in) so the precedence is unit-tested, like `codex_home_from`.
-fn claude_config_dir_from(config_dir: Option<std::ffi::OsString>, home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+fn claude_config_dir_from(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
     if let Some(d) = config_dir.filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(d));
     }

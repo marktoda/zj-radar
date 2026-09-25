@@ -237,10 +237,22 @@ mod tests {
             (Deferring, None, true, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
             (Deferring, None, false, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
             (Deferring, Some(Granted), false, PermissionState::Requesting, Transition::Requested),
-            (Deferring, Some(Denied), false, PermissionState::Resolved { granted: false }, Transition::Resolved { granted: false }),
+            (
+                Deferring,
+                Some(Denied),
+                false,
+                PermissionState::Resolved { granted: false },
+                Transition::Resolved { granted: false },
+            ),
             // LockCoordinated: marker, else a held lock self-elects.
             (LockCoordinated, Some(Granted), false, PermissionState::Requesting, Transition::Requested),
-            (LockCoordinated, Some(Denied), true, PermissionState::Resolved { granted: false }, Transition::Resolved { granted: false }),
+            (
+                LockCoordinated,
+                Some(Denied),
+                true,
+                PermissionState::Resolved { granted: false },
+                Transition::Resolved { granted: false },
+            ),
             (LockCoordinated, None, true, PermissionState::Requesting, Transition::Requested),
             (LockCoordinated, None, false, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
         ];
@@ -330,10 +342,7 @@ mod tests {
     #[test]
     fn impatient_deferring_waiter_still_honors_a_denied_marker() {
         let mut st = PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS };
-        assert_eq!(
-            st.on_timer(&probe(Some(Denied), true), Deferring),
-            Transition::Resolved { granted: false }
-        );
+        assert_eq!(st.on_timer(&probe(Some(Denied), true), Deferring), Transition::Resolved { granted: false });
         assert_eq!(st, PermissionState::Resolved { granted: false });
     }
 

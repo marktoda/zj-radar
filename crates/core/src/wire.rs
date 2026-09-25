@@ -48,8 +48,12 @@ pub(crate) use wire_serialize;
 /// in how it treats an unknown token.
 macro_rules! wire_serde {
     // Default accessor names.
-    (lenient, $T:ty) => { $crate::wire::wire_serde!(lenient, $T, as_wire, from_wire); };
-    (strict,  $T:ty) => { $crate::wire::wire_serde!(strict,  $T, as_wire, from_wire); };
+    (lenient, $T:ty) => {
+        $crate::wire::wire_serde!(lenient, $T, as_wire, from_wire);
+    };
+    (strict,  $T:ty) => {
+        $crate::wire::wire_serde!(strict, $T, as_wire, from_wire);
+    };
 
     // lenient: `$from(&str) -> Self` — unknown tokens already fold into a fallback.
     (lenient, $T:ty, $to:ident, $from:ident) => {
@@ -66,12 +70,8 @@ macro_rules! wire_serde {
         impl<'de> serde::Deserialize<'de> for $T {
             fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
                 let raw = <String as serde::Deserialize>::deserialize(de)?;
-                <$T>::$from(&raw).ok_or_else(|| {
-                    serde::de::Error::custom(format!(
-                        "unknown {} wire token: {raw:?}",
-                        stringify!($T),
-                    ))
-                })
+                <$T>::$from(&raw)
+                    .ok_or_else(|| serde::de::Error::custom(format!("unknown {} wire token: {raw:?}", stringify!($T),)))
             }
         }
     };

@@ -82,10 +82,7 @@ fn plugin_loads_and_renders_status() {
     let session_name = format!("zjr_smoke_{}", std::process::id());
     let layout = sidebar_layout(&wasm);
 
-    eprintln!(
-        "[e2e] starting session '{}' with layout:\n{}",
-        session_name, layout
-    );
+    eprintln!("[e2e] starting session '{}' with layout:\n{}", session_name, layout);
     let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
     eprintln!("[e2e] plugin loaded (saw ' RADAR' in PTY)");
 
@@ -109,10 +106,7 @@ fn plugin_loads_and_renders_status() {
     let appeared = session.wait_for_sidebar(32, "building", std::time::Duration::from_secs(5));
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
-    assert!(
-        appeared,
-        "sidebar should show the piped activity 'building' after the pipe;\nsidebar:\n{sidebar}"
-    );
+    assert!(appeared, "sidebar should show the piped activity 'building' after the pipe;\nsidebar:\n{sidebar}");
 
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
@@ -260,9 +254,7 @@ fn rail_only_tab_keeps_the_session_alive() {
     // keeps the rail passive so Zellij's close wins.
     session.run_action(&["write-chars", "exit"]);
     session.run_action(&["write", "13"]);
-    let ended = session.wait_until(std::time::Duration::from_secs(10), |s| {
-        s.pty_text().contains("Bye from Zellij")
-    });
+    let ended = session.wait_until(std::time::Duration::from_secs(10), |s| s.pty_text().contains("Bye from Zellij"));
     assert!(
         ended && !session.is_alive(),
         "`exit` in the tab's last shell must end the single-tab session; it is still alive\nscreen:\n{}",
@@ -288,20 +280,21 @@ fn clicking_pending_glyph_acknowledges_the_pane() {
     );
     session.pipe_status(&payload);
 
-    let ready = session.wait_until(std::time::Duration::from_secs(5), |s| {
-        sidebar_region(&s.screen(), 32).contains('✓')
-    });
+    let ready =
+        session.wait_until(std::time::Duration::from_secs(5), |s| sidebar_region(&s.screen(), 32).contains('✓'));
     let screen = session.screen();
     let sidebar = sidebar_region(&screen, 32);
     assert!(ready, "pending glyph must be visible before clicking; rail:\n{sidebar}");
-    let row = sidebar_row_index(&screen, 32, "approve glyph")
-        .expect("the pending pane line must be visible");
-    let glyph_col = sidebar.lines().nth(row)
+    let row = sidebar_row_index(&screen, 32, "approve glyph").expect("the pending pane line must be visible");
+    let glyph_col = sidebar
+        .lines()
+        .nth(row)
         .and_then(|line| {
             let prefix = line.split_once('✓')?.0;
             Some(unicode_width::UnicodeWidthStr::width(prefix))
         })
-        .expect("the pane line's exact checkmark column") as u16 + 1;
+        .expect("the pane line's exact checkmark column") as u16
+        + 1;
 
     // `click_at` is one-based screen space, whereas the runtime receives the
     // zero-based display-cell offset. The +1 is explicit at this boundary.
@@ -339,10 +332,7 @@ fn multi_agent_needs_you_is_visible() {
     // the tab, allowing both agents' states to aggregate and render.
     let layout = sidebar_layout_two_terminal(&wasm);
 
-    eprintln!(
-        "[e2e] starting multi-agent session '{}' with two-terminal layout",
-        session_name
-    );
+    eprintln!("[e2e] starting multi-agent session '{}' with two-terminal layout", session_name);
     let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
     eprintln!("[e2e] plugin loaded");
 
@@ -380,10 +370,7 @@ fn multi_agent_needs_you_is_visible() {
     });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] sidebar region (32 cols):\n{}", sidebar);
-    assert!(
-        appeared,
-        "pending (needs-you) agent must surface in the sidebar after the pipe;\nsidebar:\n{sidebar}"
-    );
+    assert!(appeared, "pending (needs-you) agent must surface in the sidebar after the pipe;\nsidebar:\n{sidebar}");
 
     eprintln!("[e2e] PASS: needs-you agent appeared in the rendered sidebar");
 }
@@ -424,11 +411,9 @@ fn notify_sh_end_to_end_updates_sidebar() {
 
     // Fire the real notify.sh with a PostToolUse Edit hook payload.
     // notify.sh will derive msg="editing auth.rs" and pipe it to the plugin.
-    let hook_json = r#"{"hook_event_name":"PostToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
-    eprintln!(
-        "[e2e] firing notify.sh running with hook JSON: {}",
-        hook_json
-    );
+    let hook_json =
+        r#"{"hook_event_name":"PostToolUse","cwd":".","tool_name":"Edit","tool_input":{"file_path":"src/auth.rs"}}"#;
+    eprintln!("[e2e] firing notify.sh running with hook JSON: {}", hook_json);
     session.run_notify_sh("running", pane_id, hook_json);
 
     // Poll the vt100 sidebar region for the activity notify.sh derived.
@@ -468,10 +453,7 @@ fn multi_pane_renders_one_line_per_pane() {
     let session_name = format!("zjr_lineper_{}", std::process::id());
     let layout = sidebar_layout_two_terminal(&wasm);
 
-    eprintln!(
-        "[e2e] starting line-per-pane session '{}' with two-terminal layout",
-        session_name
-    );
+    eprintln!("[e2e] starting line-per-pane session '{}' with two-terminal layout", session_name);
     let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
     eprintln!("[e2e] plugin loaded");
 
@@ -514,21 +496,11 @@ fn multi_pane_renders_one_line_per_pane() {
     // another containing "beta" or "taskb" — proving the line-per-pane layout.
     let lines: Vec<&str> = sidebar.lines().collect();
 
-    let line_a = lines
-        .iter()
-        .position(|l| l.contains("alpha") || l.contains("taska"));
-    let line_b = lines
-        .iter()
-        .position(|l| l.contains("beta") || l.contains("taskb"));
+    let line_a = lines.iter().position(|l| l.contains("alpha") || l.contains("taska"));
+    let line_b = lines.iter().position(|l| l.contains("beta") || l.contains("taskb"));
 
-    eprintln!(
-        "[e2e] pane-A identifier on sidebar row: {:?}",
-        line_a
-    );
-    eprintln!(
-        "[e2e] pane-B identifier on sidebar row: {:?}",
-        line_b
-    );
+    eprintln!("[e2e] pane-A identifier on sidebar row: {:?}", line_a);
+    eprintln!("[e2e] pane-B identifier on sidebar row: {:?}", line_b);
 
     assert!(
         line_a.is_some(),
@@ -547,10 +519,7 @@ fn multi_pane_renders_one_line_per_pane() {
         line_a, line_b, sidebar
     );
 
-    eprintln!(
-        "[e2e] PASS: two panes rendered on distinct sidebar lines (row {:?} vs row {:?})",
-        line_a, line_b
-    );
+    eprintln!("[e2e] PASS: two panes rendered on distinct sidebar lines (row {:?} vs row {:?})", line_a, line_b);
 }
 
 /// Rendered-output fidelity: assert on the ACTUAL cells Zellij painted — both
@@ -604,26 +573,20 @@ fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
 
     // (1) Header on row 0.
     let row0 = sidebar.lines().next().unwrap_or("");
-    assert!(
-        row0.contains("RADAR"),
-        "row 0 must be the ' RADAR' header; got {row0:?}\nsidebar:\n{sidebar}"
-    );
+    assert!(row0.contains("RADAR"), "row 0 must be the ' RADAR' header; got {row0:?}\nsidebar:\n{sidebar}");
 
     // (2) The agent card is two rows: a detail row carrying the activity +
     //     Claude mark, and the tab row above it carrying the focus spine + a
     //     running spinner glyph. Locate by the activity text (reliably rendered).
     let lines: Vec<&str> = sidebar.lines().collect();
-    let detail_idx = sidebar_row_index(&screen, 32, "building").unwrap_or_else(|| {
-        panic!("the agent activity 'building' must render in the sidebar;\nsidebar:\n{sidebar}")
-    });
+    let detail_idx = sidebar_row_index(&screen, 32, "building")
+        .unwrap_or_else(|| panic!("the agent activity 'building' must render in the sidebar;\nsidebar:\n{sidebar}"));
     assert!(
         lines[detail_idx].contains('✳'),
         "the Claude identity mark '✳' must render on the activity row; got {:?}\nsidebar:\n{sidebar}",
         lines[detail_idx]
     );
-    let tab_idx = detail_idx
-        .checked_sub(1)
-        .expect("the agent tab row must sit above its activity row");
+    let tab_idx = detail_idx.checked_sub(1).expect("the agent tab row must sit above its activity row");
     let tab_row = lines[tab_idx];
     assert!(
         tab_row.contains('▌'),
@@ -724,23 +687,15 @@ fn focused_done_stays_lit_until_a_shared_clear() {
     });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] post-idle sidebar (32 cols):\n{}", sidebar);
-    assert!(
-        receded,
-        "an idle broadcast must recede the finished card row;\nsidebar:\n{}",
-        sidebar
-    );
+    assert!(receded, "an idle broadcast must recede the finished card row;\nsidebar:\n{}", sidebar);
     // The feature working: the completion that just receded resurfaces below
     // the `─ earlier` rule as a ledger row rather than vanishing outright.
     assert!(
-        sidebar
-            .split_once("─ earlier")
-            .is_some_and(|(_, after)| after.contains("deploying")),
+        sidebar.split_once("─ earlier").is_some_and(|(_, after)| after.contains("deploying")),
         "the receded completion should resurface as an `─ earlier` ledger row;\nsidebar:\n{}",
         sidebar
     );
-    eprintln!(
-        "[e2e] PASS: done stayed lit under focus, receded to the ledger on the idle broadcast"
-    );
+    eprintln!("[e2e] PASS: done stayed lit under focus, receded to the ledger on the idle broadcast");
 }
 
 /// Behavior: an error the user is watching must NOT recede — CONTEXT.md's hard
@@ -863,10 +818,7 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     });
     let sidebar = sidebar_region(&screen, 32);
     eprintln!("[e2e] rail before click (32 cols):\n{}", sidebar);
-    assert!(
-        ready,
-        "both tab rows must render in tab 1's rail before clicking;\nsidebar:\n{sidebar}"
-    );
+    assert!(ready, "both tab rows must render in tab 1's rail before clicking;\nsidebar:\n{sidebar}");
 
     // Click tab 2's rail row. Every rendered line of a tab's card carries that
     // tab's SwitchTab target, so the "beta" detail row is a valid click point.
@@ -875,13 +827,9 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     // is already active is a no-op). Assert the switch via dump-screen showing
     // tab 2's terminal — external to the rail's own rendering, so it proves the
     // SwitchTab effect reached Zellij.
-    let row2 = sidebar_row_index(&screen, 32, "beta")
-        .expect("tab 2 row must be locatable in the rail");
+    let row2 = sidebar_row_index(&screen, 32, "beta").expect("tab 2 row must be locatable in the rail");
     let click_row = (row2 + 1) as u16;
-    eprintln!(
-        "[e2e] clicking tab 2 row at sidebar index {} (screen row {})",
-        row2, click_row
-    );
+    eprintln!("[e2e] clicking tab 2 row at sidebar index {} (screen row {})", row2, click_row);
     let switched = session.wait_until(std::time::Duration::from_secs(8), |s| {
         s.click_at(3, click_row);
         s.dump_screen().contains(&format!("ZPID={pane2}"))
@@ -932,11 +880,7 @@ fn manual_tab_name_survives_switch_to_another_plugin_instance() {
         let names = s.tab_names();
         names.len() == 2 && names.last().is_some_and(|name| !name.starts_with("Tab #"))
     });
-    assert!(
-        tab2_ready,
-        "tab 2 never completed its initial auto-name; got {:?}",
-        session.tab_names()
-    );
+    assert!(tab2_ready, "tab 2 never completed its initial auto-name; got {:?}", session.tab_names());
 
     // Rename tab 2 by its stable id, not the focused tab. `rename-tab` with no
     // id targets whatever tab the attached client has focused, and after
@@ -946,13 +890,9 @@ fn manual_tab_name_survives_switch_to_another_plugin_instance() {
     // id 1 — distinct from `go-to-tab`, which is 1-based by position.
     let manual_name = "keep-this-manual-name";
     session.run_action_checked(&["rename-tab", "--tab-id", "1", manual_name]);
-    let (renamed, timeline) = session.sample_tab_names_until(Duration::from_secs(5), |names| {
-        names.get(1).is_some_and(|name| name == manual_name)
-    });
-    assert!(
-        renamed,
-        "manual rename never landed; tab-name timeline (elapsed → names) was {timeline:?}"
-    );
+    let (renamed, timeline) = session
+        .sample_tab_names_until(Duration::from_secs(5), |names| names.get(1).is_some_and(|name| name == manual_name));
+    assert!(renamed, "manual rename never landed; tab-name timeline (elapsed → names) was {timeline:?}");
 
     // Switch to tab 1 (a different instance) and hold on Zellij's authoritative
     // tab names for a few seconds: a rename from any instance would show here.
@@ -1048,10 +988,7 @@ fn command_activity_reaches_background_tab_instances() {
     // Tab one's OWN instance must show the running command (baseline: the
     // command path works in-instance).
     let seen_on_1 = session.wait_for_sidebar(32, "sleep", Duration::from_secs(10));
-    eprintln!(
-        "[e2e] tab-one rail WHILE running:\n{}",
-        sidebar_region(&session.screen(), 32)
-    );
+    eprintln!("[e2e] tab-one rail WHILE running:\n{}", sidebar_region(&session.screen(), 32));
     assert!(
         seen_on_1,
         "tab one's own rail should show the running command;\n{}",
@@ -1067,9 +1004,7 @@ fn command_activity_reaches_background_tab_instances() {
     });
     assert!(on2, "could not switch to tab two to read its rail");
     // Give tab two's instance time to process + promote (debounce) if it got it.
-    let converged = session.wait_until(Duration::from_secs(6), |s| {
-        sidebar_region(&s.screen(), 32).contains("sleep")
-    });
+    let converged = session.wait_until(Duration::from_secs(6), |s| sidebar_region(&s.screen(), 32).contains("sleep"));
     let tab2 = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] tab-two rail (background instance):\n{tab2}");
     eprintln!("[e2e] RESULT: background instance sees the command (converges) = {converged}");
@@ -1121,22 +1056,14 @@ fn dispatched_grant_float_enables_ungranted_attached_session() {
     let ungranted = session.wait_for_sidebar(32, "needs permission", Duration::from_secs(10));
     let pre = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] pre-dispatch sidebar (32 cols):\n{}", pre);
-    assert!(
-        ungranted,
-        "precondition: an ungranted deferring rail must show 'needs permission';\nsidebar:\n{pre}"
-    );
+    assert!(ungranted, "precondition: an ungranted deferring rail must show 'needs permission';\nsidebar:\n{pre}");
 
     // Dispatch EXACTLY what `run` sends on a live attach — `grant_float_args`
     // minus the `--session <s> action` prefix the harness's `action()` adds.
     let wasm_abs = wasm.canonicalize().unwrap_or_else(|_| wasm.clone());
     let url = format!("file:{}", wasm_abs.display());
     session.run_action(&[
-        "launch-or-focus-plugin",
-        &url,
-        "--floating",
-        "--move-to-focused-tab",
-        "--configuration",
-        "role=onboarding",
+        "launch-or-focus-plugin", &url, "--floating", "--move-to-focused-tab", "--configuration", "role=onboarding",
     ]);
     eprintln!("[e2e] dispatched onboarding float: {url}");
 
@@ -1221,11 +1148,9 @@ fn rail_paints_every_column_of_its_pane() {
 
     // Locate the focused card's tab row (spine '▌' + spinner), same technique
     // as `rendered_sidebar_paints_focused_card_with_text_and_tint`.
-    let detail_idx = sidebar_row_index(&screen, 40, "building")
-        .expect("the agent activity 'building' must render in the sidebar");
-    let tab_idx = detail_idx
-        .checked_sub(1)
-        .expect("the agent tab row must sit above its activity row") as u16;
+    let detail_idx =
+        sidebar_row_index(&screen, 40, "building").expect("the agent activity 'building' must render in the sidebar");
+    let tab_idx = detail_idx.checked_sub(1).expect("the agent tab row must sit above its activity row") as u16;
     eprintln!("[e2e] header row=0, focused-card tab row={tab_idx}, detail row={detail_idx}");
 
     // Per-column background dump, columns 0..40, for both rows.
@@ -1241,10 +1166,7 @@ fn rail_paints_every_column_of_its_pane() {
     }
 
     fn last_painted_col(dump: &[(u16, vt100::Color, String)]) -> Option<u16> {
-        dump.iter()
-            .rev()
-            .find(|(_, bg, _)| !matches!(bg, vt100::Color::Default))
-            .map(|(c, _, _)| *c)
+        dump.iter().rev().find(|(_, bg, _)| !matches!(bg, vt100::Color::Default)).map(|(c, _, _)| *c)
     }
 
     fn fmt_dump(dump: &[(u16, vt100::Color, String)]) -> String {
@@ -1255,11 +1177,7 @@ fn rail_paints_every_column_of_its_pane() {
                     vt100::Color::Idx(i) => format!("idx({i})"),
                     vt100::Color::Rgb(r, g, b) => format!("rgb({r},{g},{b})"),
                 };
-                let chs = if ch.trim().is_empty() {
-                    "' '".to_string()
-                } else {
-                    format!("{ch:?}")
-                };
+                let chs = if ch.trim().is_empty() { "' '".to_string() } else { format!("{ch:?}") };
                 format!("  col={c:2} bg={bgs:<14} ch={chs}")
             })
             .collect::<Vec<_>>()
@@ -1296,17 +1214,11 @@ fn rail_paints_every_column_of_its_pane() {
     // painted further right than expected).
     eprintln!(
         "[e2e] columns 28..40 header:  {:?}",
-        header_dump[28..40]
-            .iter()
-            .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
-            .collect::<Vec<_>>()
+        header_dump[28..40].iter().map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}")).collect::<Vec<_>>()
     );
     eprintln!(
         "[e2e] columns 28..40 card:    {:?}",
-        card_dump[28..40]
-            .iter()
-            .map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}"))
-            .collect::<Vec<_>>()
+        card_dump[28..40].iter().map(|(c, bg, ch)| format!("{c}:{bg:?}:{ch:?}")).collect::<Vec<_>>()
     );
 
     // Decisive assertions, written so failures self-document the exact
@@ -1427,9 +1339,7 @@ fn session_next_switches_to_the_session_with_attention() {
     // counts (e.g. a peer file that parsed but was empty).
     let attention_glyph = Status::Pending.glyph_for(GlyphSet::Plain);
     let needle = format!("{} 1{attention_glyph}", b.name);
-    let saw_badge = a.wait_until(Duration::from_secs(10), |s| {
-        sidebar_region(&s.screen(), 32).contains(&needle)
-    });
+    let saw_badge = a.wait_until(Duration::from_secs(10), |s| sidebar_region(&s.screen(), 32).contains(&needle));
     eprintln!("[e2e] A's rail (32 cols):\n{}", sidebar_region(&a.screen(), 32));
     assert!(
         saw_badge,
@@ -1570,9 +1480,7 @@ fn dead_peer_presence_file_is_reaped_through_the_real_cache_mount() {
     ));
 
     let b_name = b.name.clone();
-    let saw_peer = a.wait_until(Duration::from_secs(10), |s| {
-        sidebar_region(&s.screen(), 32).contains(&b_name)
-    });
+    let saw_peer = a.wait_until(Duration::from_secs(10), |s| sidebar_region(&s.screen(), 32).contains(&b_name));
     eprintln!("[e2e] A's rail with B alive:\n{}", sidebar_region(&a.screen(), 32));
     assert!(
         saw_peer,

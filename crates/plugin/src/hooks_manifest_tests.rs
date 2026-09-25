@@ -67,8 +67,7 @@ fn bash_producer_deadline_literals_match_the_pipe_constants() {
     // `running` it sends is a heartbeat on the short cap — except the
     // waiting-on-background Stop remap, which restores the edge cap after
     // this line.
-    let running_line =
-        format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
+    let running_line = format!("[[ \"$status\" == \"running\" ]] && default_deadline={RUNNING_PIPE_TIMEOUT_SECS}");
     assert!(
         NOTIFY_SH.contains(&default_line),
         "notify.sh must set `{default_line}` (core::pipe::DEFAULT_PIPE_TIMEOUT_SECS) — \

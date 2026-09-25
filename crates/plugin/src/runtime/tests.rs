@@ -1,5 +1,5 @@
 use super::*;
-use crate::command::{DEBOUNCE_TICKS, EpochSecs, Tick};
+use crate::command::{EpochSecs, Tick, DEBOUNCE_TICKS};
 use crate::config::{Density, NamingMode};
 use crate::payload::{self, StatusPayload};
 use crate::radar_state::TabId;
@@ -9,18 +9,11 @@ use crate::test_fixtures::{pane, payload_for, tab};
 use std::collections::{HashMap, HashSet};
 
 fn config() -> config::Config {
-    config::Config {
-        naming: NamingMode::Off,
-        density: Density::Compact,
-        ..config::Config::default()
-    }
+    config::Config { naming: NamingMode::Off, density: Density::Compact, ..config::Config::default() }
 }
 
 fn runtime_with_config(config: config::Config) -> PluginRuntime {
-    PluginRuntime {
-        config,
-        ..Default::default()
-    }
+    PluginRuntime { config, ..Default::default() }
 }
 
 /// A granted runtime with the default test `config()` and NO session name —
@@ -28,11 +21,7 @@ fn runtime_with_config(config: config::Config) -> PluginRuntime {
 /// inline. `runtime_with_granted_permission` differs by also setting a session
 /// name, which only the presence tests need.
 fn granted_runtime() -> PluginRuntime {
-    PluginRuntime {
-        permission: PermissionState::Resolved { granted: true },
-        config: config(),
-        ..Default::default()
-    }
+    PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() }
 }
 
 /// Push the canonical Done ledger entry (tab 1 "work", "cargo test", pane 5) at
@@ -93,26 +82,14 @@ impl PluginRuntime {
 #[test]
 fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
     let mut seeded = RadarState::default();
-    seeded
-        .status_mut()
-        .apply(payload_for(9, Status::Running), 7, 0);
+    seeded.status_mut().apply(payload_for(9, Status::Running), 7, 0);
     let snapshot = seeded.snapshot_json(None, 7);
 
     let mut runtime = PluginRuntime::default();
-    let outcome = runtime.load(
-        config(),
-        Some(&snapshot),
-        PermissionProbe {
-            marker: None,
-            lock_acquired: true,
-        },
-    );
+    let outcome = runtime.load(config(), Some(&snapshot), PermissionProbe { marker: None, lock_acquired: true });
 
     assert_eq!(runtime.tick, 7);
-    assert_eq!(
-        runtime.radar.status_store().get(9).unwrap().status,
-        Status::Running
-    );
+    assert_eq!(runtime.radar.status_store().get(9).unwrap().status, Status::Running);
     assert_eq!(runtime.permission, PermissionState::Requesting);
     assert_eq!(
         outcome,
@@ -121,11 +98,7 @@ fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
             // SetTimeout keeps a paint trigger alive so the needs_permission
             // screen reaches the rail before the user grants (pre-grant
             // Zellij sends no state events to trigger a render).
-            effects: vec![
-                Effect::RequestPermission,
-                Effect::SetTimeout(Cadence::Fast),
-                Effect::SetSelectable(true),
-            ],
+            effects: vec![Effect::RequestPermission, Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true),],
         }
     );
 }
@@ -142,17 +115,17 @@ fn load_sweeps_a_rehydrated_running_interactive_row() {
     seeded.command_mut().insert_snapshot_observation(
         9,
         crate::observation::TrackedObservation::command(
-            Status::Running, "proj".into(), "nvim README.md".into(), crate::kind::Kind::Command, 7,
+            Status::Running,
+            "proj".into(),
+            "nvim README.md".into(),
+            crate::kind::Kind::Command,
+            7,
         ),
     );
     let snapshot = seeded.snapshot_json(None, 7);
 
     let mut runtime = PluginRuntime::default();
-    runtime.load(
-        config(),
-        Some(&snapshot),
-        PermissionProbe { marker: None, lock_acquired: true },
-    );
+    runtime.load(config(), Some(&snapshot), PermissionProbe { marker: None, lock_acquired: true });
 
     let obs = runtime.radar.command_store().get(9).unwrap();
     assert_eq!(obs.status, Status::Idle, "rehydrated spinner demoted at load");
@@ -189,26 +162,14 @@ fn config_pipe_interactive_override_demotes_live_rows_and_persists() {
 #[test]
 fn load_denied_marker_records_denial_without_requesting_permission() {
     let mut runtime = PluginRuntime::default();
-    let outcome = runtime.load(
-        config(),
-        None,
-        PermissionProbe {
-            marker: Some(PermissionMarker::Denied),
-            lock_acquired: false,
-        },
-    );
+    let outcome =
+        runtime.load(config(), None, PermissionProbe { marker: Some(PermissionMarker::Denied), lock_acquired: false });
 
     assert!(!runtime.permission.granted());
     assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
     // A denied rail never receives a manifest, so it never learns of a
     // terminal neighbor and stays selectable (see `desired_selectable`).
-    assert_eq!(
-        outcome,
-        Outcome {
-            render: false,
-            effects: vec![Effect::SetSelectable(true)],
-        }
-    );
+    assert_eq!(outcome, Outcome { render: false, effects: vec![Effect::SetSelectable(true)] });
 }
 
 #[test]
@@ -218,19 +179,14 @@ fn denied_rail_with_running_snapshot_never_arms_the_timer() {
     // snapshot can never finish — arming Fast for it would pin 1 Hz ticks and
     // repaints forever behind the static needs-permission face.
     let mut seeded = RadarState::default();
-    seeded
-        .status_mut()
-        .apply(payload_for(9, Status::Running), 7, 0);
+    seeded.status_mut().apply(payload_for(9, Status::Running), 7, 0);
     let snapshot = seeded.snapshot_json(None, 7);
 
     let mut runtime = PluginRuntime::default();
     let outcome = runtime.load(
         config(),
         Some(&snapshot),
-        PermissionProbe {
-            marker: Some(PermissionMarker::Denied),
-            lock_acquired: false,
-        },
+        PermissionProbe { marker: Some(PermissionMarker::Denied), lock_acquired: false },
     );
 
     assert!(runtime.permission.denied());
@@ -252,11 +208,7 @@ fn onboarding_pane_requests_even_without_lock_and_closes_on_grant() {
     // may hold it), so Zellij renders its grant prompt on the focused float.
     let onboarding = config::Config { role: config::Role::Onboarding, ..config() };
     let mut runtime = PluginRuntime::default();
-    let load = runtime.load(
-        onboarding,
-        None,
-        PermissionProbe { marker: None, lock_acquired: false },
-    );
+    let load = runtime.load(onboarding, None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::Requesting);
     assert!(load.effects.contains(&Effect::RequestPermission));
 
@@ -295,35 +247,20 @@ fn deferring_rail_never_requests_until_marker_lands() {
     assert!(!tick.effects.contains(&Effect::RequestPermission));
 
     // The float's granted marker finally lets it request (auto-resolves).
-    let granted_tick = runtime.timer_fast(PermissionProbe {
-        marker: Some(PermissionMarker::Granted),
-        lock_acquired: false,
-    });
+    let granted_tick =
+        runtime.timer_fast(PermissionProbe { marker: Some(PermissionMarker::Granted), lock_acquired: false });
     assert!(granted_tick.effects.contains(&Effect::RequestPermission));
 }
 
 #[test]
 fn peer_waits_then_requests_after_granted_marker() {
     let mut runtime = PluginRuntime::default();
-    let load = runtime.load(
-        config(),
-        None,
-        PermissionProbe {
-            marker: None,
-            lock_acquired: false,
-        },
-    );
+    let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
     // Selectable, not passive: no manifest has shown a terminal neighbor yet.
-    assert_eq!(
-        load.effects,
-        vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]
-    );
+    assert_eq!(load.effects, vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]);
 
-    let timer = runtime.timer_fast(PermissionProbe {
-        marker: Some(PermissionMarker::Granted),
-        lock_acquired: false,
-    });
+    let timer = runtime.timer_fast(PermissionProbe { marker: Some(PermissionMarker::Granted), lock_acquired: false });
 
     assert!(timer.render);
     assert_eq!(runtime.permission, PermissionState::Requesting);
@@ -351,16 +288,13 @@ fn requesting_instance_heartbeats_the_lock_each_tick_and_stops_when_answered() {
     // In-flight request: every tick refreshes the shared lock so waiting
     // peers can't reclaim it from under the live prompt.
     let mut runtime = PluginRuntime::default();
-    let load = runtime.load(
-        config(),
-        None,
-        PermissionProbe { marker: None, lock_acquired: true },
-    );
+    let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: true });
     assert!(load.effects.contains(&Effect::RequestPermission));
     let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
     assert!(
         tick.effects.contains(&Effect::HeartbeatPermissionLock),
-        "an in-flight request must heartbeat the lock; effects = {:?}", tick.effects,
+        "an in-flight request must heartbeat the lock; effects = {:?}",
+        tick.effects,
     );
 
     // A merely WAITING peer never heartbeats — a stale lock is exactly the
@@ -386,13 +320,12 @@ fn stranded_deferring_rail_escalates_and_requests_after_patience() {
     let deferring = config::Config { defer_permission: true, ..config() };
     let mut runtime = PluginRuntime::default();
     let _ = runtime.load(deferring, None, PermissionProbe { marker: None, lock_acquired: true });
-    runtime.permission = PermissionState::WaitingForPeer {
-        ticks: crate::permission::DEFER_PATIENCE_TICKS - 1,
-    };
+    runtime.permission = PermissionState::WaitingForPeer { ticks: crate::permission::DEFER_PATIENCE_TICKS - 1 };
     let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: true });
     assert!(
         tick.effects.contains(&Effect::RequestPermission),
-        "patience exhausted + reclaimed lock must self-elect; effects = {:?}", tick.effects,
+        "patience exhausted + reclaimed lock must self-elect; effects = {:?}",
+        tick.effects,
     );
     assert_eq!(runtime.permission, PermissionState::Requesting);
 }
@@ -405,14 +338,7 @@ fn owner_paints_needs_permission_while_request_in_flight() {
     // needs_permission screen never gets a render trigger and the rail sits
     // blank — the bug this guards.
     let mut runtime = PluginRuntime::default();
-    let load = runtime.load(
-        config(),
-        None,
-        PermissionProbe {
-            marker: None,
-            lock_acquired: true,
-        },
-    );
+    let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: true });
     assert!(
         load.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
         "owner must arm a timer so the needs_permission screen gets a paint trigger",
@@ -420,23 +346,14 @@ fn owner_paints_needs_permission_while_request_in_flight() {
 
     // The tick repaints while still awaiting the user's y/n — even with no
     // marker, no reclaimed lock, and no agent work to report.
-    let tick = runtime.timer_fast(PermissionProbe {
-        marker: None,
-        lock_acquired: false,
-    });
-    assert!(
-        tick.render,
-        "owner repaints needs_permission while its request is in-flight",
-    );
+    let tick = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
+    assert!(tick.render, "owner repaints needs_permission while its request is in-flight",);
     assert!(!runtime.permission.granted());
 
     // Once the user answers, the heartbeat stops: a granted, idle rail must
     // not spin a timer forever.
     let _ = runtime.permission_result(true);
-    let after = runtime.timer_fast(PermissionProbe {
-        marker: None,
-        lock_acquired: false,
-    });
+    let after = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: false });
     assert!(!after.render, "granted idle rail must not keep repainting");
     assert!(!after.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
 }
@@ -448,20 +365,10 @@ fn waiting_peer_self_promotes_when_it_reclaims_the_lock() {
     // probe reports lock_acquired with no marker — the peer must take over
     // the prompt rather than wait forever.
     let mut runtime = PluginRuntime::default();
-    let _ = runtime.load(
-        config(),
-        None,
-        PermissionProbe {
-            marker: None,
-            lock_acquired: false,
-        },
-    );
+    let _ = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
 
-    let timer = runtime.timer_fast(PermissionProbe {
-        marker: None,
-        lock_acquired: true,
-    });
+    let timer = runtime.timer_fast(PermissionProbe { marker: None, lock_acquired: true });
 
     assert_eq!(runtime.permission, PermissionState::Requesting);
     assert!(!runtime.permission.is_waiting());
@@ -475,11 +382,7 @@ fn probe_is_wanted_only_while_waiting_on_a_peer() {
     // is in-flight or the state resolves, `on_timer` ignores it — so the
     // per-tick disk probe must stop (N tabs were reading N files/sec forever).
     let mut runtime = PluginRuntime::default();
-    let _ = runtime.load(
-        config(),
-        None,
-        PermissionProbe { marker: None, lock_acquired: false },
-    );
+    let _ = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
     assert!(runtime.wants_permission_probe(), "a waiting peer must keep probing");
 
@@ -506,13 +409,8 @@ fn probe_stays_wanted_for_a_deferring_rail_past_its_patience() {
     let deferring = config::Config { defer_permission: true, ..config() };
     let mut runtime = PluginRuntime::default();
     let _ = runtime.load(deferring, None, PermissionProbe { marker: None, lock_acquired: false });
-    runtime.permission = PermissionState::WaitingForPeer {
-        ticks: crate::permission::DEFER_PATIENCE_TICKS + 5,
-    };
-    assert!(
-        runtime.wants_permission_probe(),
-        "an impatient deferring waiter still needs fresh probes to escalate",
-    );
+    runtime.permission = PermissionState::WaitingForPeer { ticks: crate::permission::DEFER_PATIENCE_TICKS + 5 };
+    assert!(runtime.wants_permission_probe(), "an impatient deferring waiter still needs fresh probes to escalate",);
 }
 
 #[test]
@@ -531,10 +429,7 @@ fn permission_result_persists_marker_and_updates_selectability() {
         outcome,
         Outcome {
             render: true,
-            effects: vec![
-                Effect::PersistPermissionMarker(PermissionMarker::Granted),
-                Effect::SetSelectable(true),
-            ],
+            effects: vec![Effect::PersistPermissionMarker(PermissionMarker::Granted), Effect::SetSelectable(true),],
         }
     );
 }
@@ -588,10 +483,7 @@ fn timer_promotion_persists_snapshot_for_late_spawned_instances() {
 #[test]
 fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
     let mut runtime = runtime_with_config(config());
-    let raw = payload::to_wire(&StatusPayload {
-        msg: "cargo test".into(),
-        ..payload_for(5, Status::Running)
-    });
+    let raw = payload::to_wire(&StatusPayload { msg: "cargo test".into(), ..payload_for(5, Status::Running) });
 
     let outcome = runtime.status_pipe(&raw);
 
@@ -602,44 +494,26 @@ fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
     // not position — the order contract has its own dedicated test.
     assert_eq!(outcome.effects.len(), 2);
     assert!(outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
-    assert!(outcome
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Effect::PersistSnapshot)));
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, Effect::PersistSnapshot)));
     let json = runtime.snapshot_json(None);
     let mut restored = RadarState::default();
     let tick = restored.load_snapshot(&json).expect("valid snapshot");
     assert_eq!(tick, 0);
-    assert_eq!(
-        restored.status_store().get(5).unwrap().status,
-        Status::Running
-    );
+    assert_eq!(restored.status_store().get(5).unwrap().status, Status::Running);
 }
 
 #[test]
 fn panes_changed_prunes_focuses_and_persists_snapshot() {
     let mut runtime = runtime_with_config(config());
     runtime.tabs_changed(vec![tab(0, "work", true)]);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(10, Status::Running), 1, 0);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(11, Status::Running), 1, 0);
+    runtime.radar.status_mut().apply(payload_for(10, Status::Running), 1, 0);
+    runtime.radar.status_mut().apply(payload_for(11, Status::Running), 1, 0);
     runtime.radar.command_mut().on_exit(12, Some(0), Tick(1), EpochSecs(0));
 
     let mut live = HashSet::new();
     live.insert(10);
     let mut tab_panes = HashMap::new();
-    tab_panes.insert(
-        0,
-        vec![TerminalPane {
-            focused_in_tab: true,
-            ..pane(10)
-        }],
-    );
+    tab_panes.insert(0, vec![TerminalPane { focused_in_tab: true, ..pane(10) }]);
 
     let first = runtime.panes_changed(PaneUpdate {
         tab_panes: tab_panes.clone(),
@@ -661,10 +535,7 @@ fn panes_changed_prunes_focuses_and_persists_snapshot() {
     assert!(outcome.render);
     assert!(runtime.radar.status_store().get(11).is_none());
     assert!(runtime.radar.command_store().get(12).is_none());
-    assert!(outcome
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Effect::PersistSnapshot)));
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, Effect::PersistSnapshot)));
 }
 
 #[test]
@@ -686,10 +557,7 @@ fn panes_changed_emits_resolve_cwd_effect_for_new_panes() {
         exits: Vec::new(),
     });
 
-    assert!(outcome
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![7])));
+    assert!(outcome.effects.iter().any(|e| matches!(e, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![7])));
 }
 
 #[test]
@@ -705,13 +573,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
 
     let rename = runtime.cwd_changed(7, "/work/myrepo".into());
 
-    assert_eq!(
-        rename.effects,
-        vec![Effect::RenameTab {
-            tab_id: TabId::new(1),
-            name: "myrepo".into(),
-        }]
-    );
+    assert_eq!(rename.effects, vec![Effect::RenameTab { tab_id: TabId::new(1), name: "myrepo".into() }]);
     assert_eq!(runtime.radar.applied_name(TabId::new(1)), Some("myrepo"));
 
     let command = vec!["cargo".to_string(), "test".to_string()];
@@ -737,15 +599,8 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     // The promotion mutates the command store, so this tick persists the
     // snapshot too (late-spawned instances must see the Running command).
     // No peer scan: tick 2 is inside the decimation interval of tick 1's seed.
-    assert_eq!(
-        timer.effects,
-        vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
-    );
-    let state = runtime
-        .radar
-        .command_store()
-        .get(7)
-        .expect("promoted command");
+    assert_eq!(timer.effects, vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]);
+    let state = runtime.radar.command_store().get(7).expect("promoted command");
     assert_eq!(state.status, Status::Running);
     assert_eq!(state.repo, "myrepo");
 }
@@ -757,16 +612,10 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
         density: Density::Compact,
         ..config::Config::default()
     });
-    runtime.tabs_changed(vec![
-        tab(0, "Tab #1", true),
-        tab(1, "Tab #2", false),
-    ]);
+    runtime.tabs_changed(vec![tab(0, "Tab #1", true), tab(1, "Tab #2", false)]);
     runtime.own_plugin_tab_changed(Some(0));
     let topology = runtime.panes_changed(PaneUpdate {
-        tab_panes: HashMap::from([
-            (0, vec![pane(10)]),
-            (1, vec![pane(11)]),
-        ]),
+        tab_panes: HashMap::from([(0, vec![pane(10)]), (1, vec![pane(11)])]),
         live: HashSet::from([10, 11]),
         theme: None,
         exits: Vec::new(),
@@ -774,15 +623,17 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
     // The cwd bootstrap is deliberately NOT ownership-scoped (the cwd also
     // stamps observed commands' repo, which the notification claim key hashes
     // — every instance must agree on it); only renames are.
-    assert!(topology.effects.iter().any(|effect| {
-        matches!(effect, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![10, 11])
-    }));
+    assert!(topology
+        .effects
+        .iter()
+        .any(|effect| { matches!(effect, Effect::ResolveCwd { pane_ids } if pane_ids == &vec![10, 11]) }));
 
     let foreign = runtime.cwd_changed(11, "/work/foreign".into());
     assert!(
-        foreign.effects.iter().all(|effect| {
-            !matches!(effect, Effect::RenameTab { tab_id, .. } if *tab_id == TabId::new(2))
-        }),
+        foreign
+            .effects
+            .iter()
+            .all(|effect| { !matches!(effect, Effect::RenameTab { tab_id, .. } if *tab_id == TabId::new(2)) }),
         "tab 1's sidebar must not rename tab 2: {:?}",
         foreign.effects
     );
@@ -797,8 +648,7 @@ fn sidebar_instance_never_renames_a_foreign_tab() {
 fn config_pipe_accepts_json_scalars() {
     let mut runtime = PluginRuntime::default();
 
-    let outcome = runtime
-        .config_pipe(r#"{"header":false,"density":"compact","glyphs":"nerd","naming":"off"}"#);
+    let outcome = runtime.config_pipe(r#"{"header":false,"density":"compact","glyphs":"nerd","naming":"off"}"#);
 
     assert!(outcome.render);
     assert_eq!(runtime.config.naming, NamingMode::Off);
@@ -813,21 +663,10 @@ fn render_records_targets_and_mouse_click_returns_host_effect() {
     // Line 2 = tab header, line 3 = pane 20, line 4 = pane 21, line 5 = pane 22.
     let mut runtime = granted_runtime();
     runtime.tabs_changed(vec![tab(0, "team", false), tab(1, "plain", false)]);
-    runtime
-        .radar
-        .set_tab_panes_for_position(0, vec![pane(20), pane(21), pane(22)]);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(20, Status::Pending), 1, 0);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(21, Status::Running), 1, 0);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(22, Status::Running), 1, 0);
+    runtime.radar.set_tab_panes_for_position(0, vec![pane(20), pane(21), pane(22)]);
+    runtime.radar.status_mut().apply(payload_for(20, Status::Pending), 1, 0);
+    runtime.radar.status_mut().apply(payload_for(21, Status::Running), 1, 0);
+    runtime.radar.status_mut().apply(payload_for(22, Status::Running), 1, 0);
 
     let ansi = runtime.render(100, 80);
     assert!(ansi.contains("team"));
@@ -849,13 +688,8 @@ fn single_pane_detail_line_click_shows_the_pane() {
     // (SwitchTab) — mirroring the multi-pane tree rows.
     let mut runtime = granted_runtime();
     runtime.tabs_changed(vec![tab(0, "team", false)]);
-    runtime
-        .radar
-        .set_tab_panes_for_position(0, vec![pane(30)]);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(30, Status::Running), 1, 0);
+    runtime.radar.set_tab_panes_for_position(0, vec![pane(30)]);
+    runtime.radar.status_mut().apply(payload_for(30, Status::Running), 1, 0);
 
     let ansi = runtime.render(100, 80);
     assert!(ansi.contains("team"));
@@ -893,10 +727,7 @@ fn no_tabs_with_history_renders_ledger_not_scanning() {
     };
     runtime.tabs_changed(vec![tab(0, "web", true)]);
     runtime.radar.set_tab_panes_for_position(0, vec![pane(5)]);
-    runtime
-        .radar
-        .status_mut()
-        .apply(payload_for(5, Status::Done), 1, 1_000);
+    runtime.radar.status_mut().apply(payload_for(5, Status::Done), 1, 1_000);
 
     // The pane closes with a still-lit Done: the second absence confirms the
     // close (the first is the break-pane grace) and pruning hands it to the
@@ -917,10 +748,7 @@ fn no_tabs_with_history_renders_ledger_not_scanning() {
     let ansi = runtime.render(24, 40);
     assert!(ansi.contains("earlier"), "ledger renders even with no tabs: {ansi:?}");
     assert!(ansi.contains("alt-[n] jump"), "footer still pins to the floor: {ansi:?}");
-    assert!(
-        !ansi.to_lowercase().contains("scanning"),
-        "must not fall back to the onboarding scanning face: {ansi:?}"
-    );
+    assert!(!ansi.to_lowercase().contains("scanning"), "must not fall back to the onboarding scanning face: {ansi:?}");
 }
 
 #[test]
@@ -1128,12 +956,12 @@ fn presence_withheld_until_own_session_name_is_known() {
 #[test]
 fn session_cycle_commits_via_switch_session_effect_on_idle_tick() {
     let mut rt = runtime_with_granted_permission(); // own session name is "work"
-    // "alpha" needs no separate liveness registration anymore — its presence
-    // report IS its liveness (no more `SessionUpdate` peer list to
-    // cross-check against — see `docs/design.md`, "Why not SessionUpdate").
-    rt.presences_changed(vec![
-        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#),
-    ]);
+                                                    // "alpha" needs no separate liveness registration anymore — its presence
+                                                    // report IS its liveness (no more `SessionUpdate` peer list to
+                                                    // cross-check against — see `docs/design.md`, "Why not SessionUpdate").
+    rt.presences_changed(vec![fresh(
+        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":1}"#,
+    )]);
 
     let out = rt.control_pipe("session-next");
     assert!(out.render, "selection highlight renders");
@@ -1189,26 +1017,18 @@ fn clicking_a_session_line_emits_switch_session() {
     // cross-session target), 3 = peer "alpha" badge line (clickable).
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     rt.tabs_changed(vec![tab(0, "team", false)]);
-    rt.presences_changed(vec![
-        fresh(r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#),
-    ]);
+    rt.presences_changed(vec![fresh(
+        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#,
+    )]);
 
     let ansi = rt.render(100, 80);
     assert!(ansi.contains("alpha"), "setup: the peer's badge line must actually render");
 
     let own_click = rt.mouse_click(2, 0);
-    assert_eq!(
-        own_click,
-        Outcome::default(),
-        "the own-session badge line has no click target, got {:?}",
-        own_click
-    );
+    assert_eq!(own_click, Outcome::default(), "the own-session badge line has no click target, got {:?}", own_click);
 
     let peer_click = rt.mouse_click(3, 0);
-    assert_eq!(
-        peer_click.effects,
-        vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]
-    );
+    assert_eq!(peer_click.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]);
 }
 
 #[test]
@@ -1218,13 +1038,7 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
 
     let out = rt.mouse_right_click(3, 0);
 
-    assert_eq!(
-        out,
-        Outcome {
-            render: true,
-            effects: vec![Effect::DismissPresence { name: "alpha".into() }],
-        }
-    );
+    assert_eq!(out, Outcome { render: true, effects: vec![Effect::DismissPresence { name: "alpha".into() }] });
     assert!(
         !rt.sessions.badge().iter().any(|b| b.name == "alpha"),
         "dismissed stale peer must disappear from this runtime's badge"
@@ -1235,8 +1049,7 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
 fn left_click_on_stale_badge_glyph_dismisses_but_the_row_body_still_switches() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
-    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
-        .expect("stale peer badge must carry a dismiss glyph");
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3).expect("stale peer badge must carry a dismiss glyph");
 
     let body = rt.mouse_click(3, start_col - 1);
     assert_eq!(body.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: None }]);
@@ -1257,17 +1070,12 @@ fn raced_away_dismiss_glyph_consumes_the_click_instead_of_switching_sessions() {
     let json = r#"{"session_name":"alpha","running":0,"attention":1}"#;
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(json));
-    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
-        .expect("stale peer badge must carry a dismiss glyph");
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3).expect("stale peer badge must carry a dismiss glyph");
 
     rt.presences_changed(vec![fresh(json)]); // alpha heartbeats back to life
 
     let out = rt.mouse_click(3, start_col);
-    assert_eq!(
-        out,
-        Outcome::default(),
-        "a raced-away dismiss must consume the click, not switch sessions"
-    );
+    assert_eq!(out, Outcome::default(), "a raced-away dismiss must consume the click, not switch sessions");
     assert!(
         rt.sessions.badge().iter().any(|b| b.name == "alpha"),
         "the healthy peer must survive the stale-rendered click"
@@ -1330,17 +1138,13 @@ fn raced_away_acknowledge_glyph_consumes_the_click_instead_of_showing_the_pane()
     // agent's next broadcast) with no re-render in between, so the cached
     // rail still shows the acknowledge glyph with nothing Pending behind it.
     let mut rt = runtime_with_pending_panes();
-    let (start_col, _) = rt.last_rendered.hotspot_at_line(3)
-        .expect("pending pane 10 must carry its acknowledge hotspot");
+    let (start_col, _) =
+        rt.last_rendered.hotspot_at_line(3).expect("pending pane 10 must carry its acknowledge hotspot");
 
     rt.status_pipe(&payload_json(10, "done"));
 
     let out = rt.mouse_click(3, start_col);
-    assert_eq!(
-        out,
-        Outcome::default(),
-        "a raced-away acknowledge must consume the click, not ShowPane"
-    );
+    assert_eq!(out, Outcome::default(), "a raced-away acknowledge must consume the click, not ShowPane");
 }
 
 #[test]
@@ -1351,10 +1155,7 @@ fn right_click_on_fresh_session_line_is_inert() {
     let out = rt.mouse_right_click(3, 0);
 
     assert_eq!(out, Outcome::default());
-    assert!(
-        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
-        "fresh peer must remain on the badge"
-    );
+    assert!(rt.sessions.badge().iter().any(|b| b.name == "alpha"), "fresh peer must remain on the badge");
 }
 
 #[test]
@@ -1388,10 +1189,7 @@ fn right_click_without_permission_is_inert_even_on_stale_session_line() {
     rt.permission = PermissionState::default();
 
     assert_eq!(rt.mouse_right_click(3, 0), Outcome::default());
-    assert!(
-        rt.sessions.badge().iter().any(|b| b.name == "alpha"),
-        "ungranted right-click must not mutate the badge"
-    );
+    assert!(rt.sessions.badge().iter().any(|b| b.name == "alpha"), "ungranted right-click must not mutate the badge");
 }
 
 // ── Right-click: pending-pane acknowledge (issue #5) ───────────────────────
@@ -1448,9 +1246,8 @@ fn right_click_on_pending_pane_broadcasts_and_leaves_local_state_untouched_until
 #[test]
 fn left_click_requires_the_pending_glyph_cells_but_right_click_keeps_row_wide_parity() {
     let mut rt = runtime_with_pending_panes();
-    let (start_col, _) = rt.last_rendered
-        .hotspot_at_line(2)
-        .expect("pending tab header must carry its acknowledge hotspot");
+    let (start_col, _) =
+        rt.last_rendered.hotspot_at_line(2).expect("pending tab header must carry its acknowledge hotspot");
 
     // The cell before the glyph keeps ordinary navigation semantics; only the
     // glyph itself acknowledges. `start_col` is display-cell zero based.
@@ -1571,7 +1368,8 @@ fn acknowledge_echo_never_fires_a_done_notification() {
         let t = rt.timer_fast(PermissionProbe::default());
         assert!(
             !t.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
-            "an acknowledge must never notify; effects = {:?}", t.effects
+            "an acknowledge must never notify; effects = {:?}",
+            t.effects
         );
     }
 }
@@ -1590,7 +1388,8 @@ fn a_real_pending_to_done_broadcast_still_notifies() {
     assert_eq!(
         tick.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
         1,
-        "a real background Pending → Done must still notify; effects = {:?}", tick.effects
+        "a real background Pending → Done must still notify; effects = {:?}",
+        tick.effects
     );
 }
 
@@ -1604,8 +1403,8 @@ fn own_badge_row_updates_live_as_running_and_attention_move() {
     // that the own row's rendered counts actually track a later status edge,
     // not just its state at the moment the name became known.
     let mut rt = runtime_with_granted_permission(); // own session name "work"
-    // A second session must exist for the badge to render at all
-    // (`render_session_badge` renders zero lines for `entries.len() <= 1`).
+                                                    // A second session must exist for the badge to render at all
+                                                    // (`render_session_badge` renders zero lines for `entries.len() <= 1`).
     rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#)]);
     drive_tabs_and_panes(&mut rt); // tab 0, pane 7
 
@@ -1629,11 +1428,7 @@ fn two_tab_runtime_with_running_commands() -> PluginRuntime {
     let mut rt = runtime_with_config(config());
     rt.tabs_changed(vec![tab(0, "active", true), tab(1, "bg", false)]);
     // Place panes in their tabs.
-    rt.radar.set_tab_panes_for_position(0, vec![TerminalPane {
-        id: 5,
-        focused_in_tab: true,
-        ..Default::default()
-    }]);
+    rt.radar.set_tab_panes_for_position(0, vec![TerminalPane { id: 5, focused_in_tab: true, ..Default::default() }]);
     rt.radar.set_tab_panes_for_position(1, vec![pane(7)]);
     // Register foreground commands on both panes.
     rt.command_changed(5, &["make".into()], true);
@@ -1655,9 +1450,8 @@ fn deferred_snapshot_write_flushes_on_the_next_tick() {
     let mut rt = runtime_with_config(config());
     rt.tabs_changed(vec![tab(0, "work", true)]);
     rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
-    let running = |msg: &str| {
-        crate::payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_for(7, Status::Running) })
-    };
+    let running =
+        |msg: &str| crate::payload::to_wire(&StatusPayload { msg: msg.into(), ..payload_for(7, Status::Running) });
 
     let first = rt.status_pipe(&running("editing lib.rs"));
     assert!(
@@ -1718,12 +1512,7 @@ fn render_gate_vetoes_repaints_whose_drawn_content_is_unchanged() {
     live.insert(7);
     let mut tab_panes = HashMap::new();
     tab_panes.insert(0, vec![TerminalPane { focused_in_tab: true, ..pane(7) }]);
-    let manifest = || PaneUpdate {
-        tab_panes: tab_panes.clone(),
-        live: live.clone(),
-        theme: None,
-        exits: vec![],
-    };
+    let manifest = || PaneUpdate { tab_panes: tab_panes.clone(), live: live.clone(), theme: None, exits: vec![] };
 
     let first = rt.panes_changed(manifest());
     assert!(first.render, "first manifest is un-stamped content: renders");
@@ -1821,11 +1610,7 @@ fn project_emits_effects_in_canonical_order() {
     // All six kinds must actually be present, otherwise the ordering
     // assertion above is vacuous.
     for expected in 0..=5 {
-        assert!(
-            kinds.contains(&expected),
-            "expected effect kind {expected} to be present; got {:?}",
-            outcome.effects
-        );
+        assert!(kinds.contains(&expected), "expected effect kind {expected} to be present; got {:?}", outcome.effects);
     }
 }
 
@@ -1862,7 +1647,8 @@ fn backgrounded_done_emits_notify_effect() {
     });
     assert!(
         out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
-        "a background Done should emit Effect::Notify; effects = {:?}", out.effects
+        "a background Done should emit Effect::Notify; effects = {:?}",
+        out.effects
     );
 }
 
@@ -1907,7 +1693,8 @@ fn restored_snapshot_does_not_notify() {
     assert!(
         !out.effects.iter().any(|e| matches!(e, Effect::Notify { .. })),
         "a pre-existing Done loaded from snapshot must not fire a notification; \
-         effects = {:?}", out.effects
+         effects = {:?}",
+        out.effects
     );
 }
 
@@ -1918,10 +1705,7 @@ fn backgrounded_done_via_status_pipe_notifies_once_then_timer_quiesces() {
     // non-settling status pipe, so the runtime arms the timer once to carry the
     // deferred notify/recede — then quiesces.
     let mut rt = runtime_with_config(config());
-    let raw = payload::to_wire(&StatusPayload {
-        msg: "shipped".into(),
-        ..payload_for(7, Status::Done)
-    });
+    let raw = payload::to_wire(&StatusPayload { msg: "shipped".into(), ..payload_for(7, Status::Done) });
 
     // The edge arms the timer but does not itself settle (focus could be stale).
     let edge = rt.status_pipe(&raw);
@@ -1936,7 +1720,8 @@ fn backgrounded_done_via_status_pipe_notifies_once_then_timer_quiesces() {
     assert_eq!(
         tick1.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).count(),
         1,
-        "the settle tick fires the done notification once; effects = {:?}", tick1.effects,
+        "the settle tick fires the done notification once; effects = {:?}",
+        tick1.effects,
     );
 
     // Then the timer quiesces within a bounded number of ticks — a backgrounded
@@ -1969,33 +1754,21 @@ fn flash_keeps_fast_timer_until_cleared() {
     rt.tabs_changed(vec![tab(0, "work", true)]);
     rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
 
-    let raw = payload::to_wire(&StatusPayload {
-        msg: "approve?".into(),
-        ..payload_for(7, Status::Pending)
-    });
+    let raw = payload::to_wire(&StatusPayload { msg: "approve?".into(), ..payload_for(7, Status::Pending) });
     let edge = rt.status_pipe(&raw);
-    assert!(
-        edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "the flip-to-pending edge arms the timer"
-    );
+    assert!(edge.effects.contains(&Effect::SetTimeout(Cadence::Fast)), "the flip-to-pending edge arms the timer");
 
     // Tick 1 carries the deferred notify settle; the flash (armed through
     // tick 2) is still active, so the timer must not disarm yet.
     rt.timer_fast(PermissionProbe::default());
     assert_eq!(rt.tick, 1);
-    assert!(
-        rt.timer_chain.armed().is_some(),
-        "flash still active at tick 1 — timer must stay armed"
-    );
+    assert!(rt.timer_chain.armed().is_some(), "flash still active at tick 1 — timer must stay armed");
 
     // Tick 2: the flash window has just elapsed (`now_tick < flash_until`,
     // and `flash_until == 2`).
     rt.timer_fast(PermissionProbe::default());
     assert_eq!(rt.tick, 2);
-    assert!(
-        !rt.radar.has_active_flash(rt.tick),
-        "flash window has elapsed by tick 2"
-    );
+    assert!(!rt.radar.has_active_flash(rt.tick), "flash window has elapsed by tick 2");
 
     // With nothing running, the Fast loop has nothing left — but the
     // pending row's `· Nm` wait tag is still counting, so the timer
@@ -2059,7 +1832,7 @@ fn command_done_keeps_fast_timer_armed_until_ttl_recede() {
     rt.command_changed(7, &["make".into()], true);
     rt.timer_fast(PermissionProbe::default()); // debounce tick 1
     rt.timer_fast(PermissionProbe::default()); // promote (DEBOUNCE_TICKS=2)
-    // Command leaves the foreground → tentative done → confirmed next tick.
+                                               // Command leaves the foreground → tentative done → confirmed next tick.
     rt.command_changed(7, &["zsh".into()], true);
     rt.timer_fast(PermissionProbe::default());
     rt.timer_fast(PermissionProbe::default());
@@ -2136,11 +1909,7 @@ fn command_ttl_recede_rearms_slow_not_fast_when_ledgered() {
     rt.timer_fast(PermissionProbe::default());
     rt.timer_fast(PermissionProbe::default());
     assert_eq!(rt.radar.command_store().get(7).unwrap().status, Status::Done);
-    assert_eq!(
-        rt.timer_chain.armed(),
-        Some(Cadence::Fast),
-        "a Done awaiting TTL needs Fast resolution"
-    );
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a Done awaiting TTL needs Fast resolution");
 
     for _ in 0..=crate::command::DONE_TTL_TICKS {
         rt.timer_fast(PermissionProbe::default());
@@ -2253,11 +2022,13 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), fire_epoch);
     assert!(
         slow.effects.iter().any(presence_heartbeat),
-        "the heartbeat refreshes the presence file, got {:?}", slow.effects
+        "the heartbeat refreshes the presence file, got {:?}",
+        slow.effects
     );
     assert!(
         slow.effects.contains(&Effect::SetTimeout(Cadence::Slow)),
-        "the heartbeat chain re-arms itself, got {:?}", slow.effects
+        "the heartbeat chain re-arms itself, got {:?}",
+        slow.effects
     );
 }
 
@@ -2315,16 +2086,9 @@ fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
     let tick_before = rt.tick;
     let live = rt.timer_now(PermissionProbe::default(), 1.0);
     assert_eq!(rt.tick, tick_before + 1, "the live fast fire ticks");
-    let rearms = live
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SetTimeout(_)))
-        .count();
+    let rearms = live.effects.iter().filter(|e| matches!(e, Effect::SetTimeout(_))).count();
     assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
-    assert!(
-        live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "running work keeps the Fast cadence"
-    );
+    assert!(live.effects.contains(&Effect::SetTimeout(Cadence::Fast)), "running work keeps the Fast cadence");
 
     // The STALE slow fire (elapsed ~60s) lands second, with the re-armed
     // fast fire still in flight: swallowed whole — no tick advance, no
@@ -2363,16 +2127,9 @@ fn stale_slow_fire_landing_first_is_swallowed() {
     // The surviving fast fire ticks normally and re-arms exactly once.
     let live = rt.timer_now(PermissionProbe::default(), 1.0);
     assert_eq!(rt.tick, tick_before + 1, "the live fire ticks");
-    let rearms = live
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SetTimeout(_)))
-        .count();
+    let rearms = live.effects.iter().filter(|e| matches!(e, Effect::SetTimeout(_))).count();
     assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
-    assert!(
-        live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "running work keeps the Fast cadence"
-    );
+    assert!(live.effects.contains(&Effect::SetTimeout(Cadence::Fast)), "running work keeps the Fast cadence");
 }
 
 #[test]
@@ -2415,12 +2172,14 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     let fast = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
     assert!(
         !fast.effects.iter().any(publishes_presence),
-        "a fast fire inside the heartbeat window must not republish, got {:?}", fast.effects
+        "a fast fire inside the heartbeat window must not republish, got {:?}",
+        fast.effects
     );
     let slow = rt.timer(PermissionProbe::default(), Cadence::Slow.seconds(), now);
     assert!(
         !slow.effects.iter().any(publishes_presence),
-        "a slow fire inside the heartbeat window must not churn the file, got {:?}", slow.effects
+        "a slow fire inside the heartbeat window must not churn the file, got {:?}",
+        slow.effects
     );
 
     // The write ages past the threshold: the next live fire republishes —
@@ -2437,7 +2196,8 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
         heartbeats, 1,
         "an overdue fast fire must refresh the presence file's mtime, exactly \
          once, as a heartbeat whose skip window is shorter than the heartbeat \
-         itself, got {:?}", due.effects
+         itself, got {:?}",
+        due.effects
     );
 
     // The emit restamped the write clock (`project`'s single stamp point):
@@ -2445,7 +2205,8 @@ fn presence_heartbeat_is_level_triggered_on_write_age_not_on_cadence() {
     let restamped = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
     assert!(
         !restamped.effects.iter().any(presence_edge),
-        "the heartbeat write must reset the level trigger, got {:?}", restamped.effects
+        "the heartbeat write must reset the level trigger, got {:?}",
+        restamped.effects
     );
 }
 
@@ -2493,7 +2254,8 @@ fn heartbeat_coincident_with_a_genuine_presence_edge_persists_exactly_once() {
     assert_eq!(
         persists, 1,
         "a Slow heartbeat coinciding with a real content edge must still \
-         publish exactly once, got {:?}", tick.effects
+         publish exactly once, got {:?}",
+        tick.effects
     );
 }
 
@@ -2507,17 +2269,9 @@ fn read_presences_rides_every_slow_fire_and_decimated_fast_fires() {
     let mut rt = granted_runtime();
 
     let scans: Vec<bool> = (0..(2 * PRESENCE_READ_TICK_INTERVAL))
-        .map(|_| {
-            rt.timer_fast(PermissionProbe::default())
-                .effects
-                .contains(&Effect::ReadPresences)
-        })
+        .map(|_| rt.timer_fast(PermissionProbe::default()).effects.contains(&Effect::ReadPresences))
         .collect();
-    assert_eq!(
-        scans.iter().filter(|&&s| s).count(),
-        2,
-        "Fast fires must scan peers once per interval, got {scans:?}"
-    );
+    assert_eq!(scans.iter().filter(|&&s| s).count(), 2, "Fast fires must scan peers once per interval, got {scans:?}");
 
     // Every Slow fire scans, unconditionally. An idle rail runs on nothing
     // but Slow fires, and the scan is the only thing that ever grades a peer
@@ -2528,7 +2282,11 @@ fn read_presences_rides_every_slow_fire_and_decimated_fast_fires() {
     let mut rt = granted_runtime();
     for _ in 0..3 {
         let slow = rt.timer_slow(PermissionProbe::default());
-        assert!(slow.effects.contains(&Effect::ReadPresences), "every Slow fire must scan peers, got {:?}", slow.effects);
+        assert!(
+            slow.effects.contains(&Effect::ReadPresences),
+            "every Slow fire must scan peers, got {:?}",
+            slow.effects
+        );
     }
 }
 
@@ -2705,10 +2463,7 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
         Some(Cadence::Slow),
         "an idle session must ride out the run on the Slow cadence"
     );
-    assert!(
-        heartbeats >= 10,
-        "expected at least 10 heartbeats over 15 virtual minutes, got {heartbeats}"
-    );
+    assert!(heartbeats >= 10, "expected at least 10 heartbeats over 15 virtual minutes, got {heartbeats}");
 }
 
 /// Drain `sim`/`rt` until the chain is Slow-only-armed with nothing else
@@ -2813,10 +2568,7 @@ fn idle_slow_chain_keeps_scanning_peers_for_half_an_hour() {
         "worst gap between peer scans was {worst_gap_ms}ms, which must stay under the \
          {horizon_ms}ms dead horizon or an idle rail can leave a corpse listed"
     );
-    assert!(
-        scans >= 25,
-        "expected ~one scan per Slow fire over 30 virtual minutes, got {scans}"
-    );
+    assert!(scans >= 25, "expected ~one scan per Slow fire over 30 virtual minutes, got {scans}");
     assert_eq!(
         rt.timer_chain.armed(),
         Some(Cadence::Slow),
@@ -2830,7 +2582,11 @@ fn slow_heartbeat_survives_a_long_sustained_busy_period() {
     // elapses WHILE Fast activity is still ongoing (not right at the
     // boundary), so it gets swallowed mid-burst rather than right at the
     // busy/idle seam.
-    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
     let mut sim = FireSim::new();
     let named = rt.session_name_changed(Some("work".into()));
     sim.schedule_from(&named.effects);
@@ -2889,10 +2645,7 @@ fn sustained_fast_cadence_with_unchanged_content_still_heartbeats_presence() {
         "setup: the whole run must have stayed Fast-pinned — otherwise this \
          never exercised the starving case"
     );
-    assert!(
-        heartbeats >= 2,
-        "expected repeated Fast-cadence heartbeats across 4 virtual minutes, got {heartbeats}"
-    );
+    assert!(heartbeats >= 2, "expected repeated Fast-cadence heartbeats across 4 virtual minutes, got {heartbeats}");
 }
 
 #[test]
@@ -2901,7 +2654,11 @@ fn slow_heartbeat_survives_flapping_activity_then_settling() {
     // gaps in between (too short for even one Slow fire to land), each one
     // a fresh Slow->Fast top-up stacking a fresh stale-Slow-to-be behind
     // the last — then a final, permanent idle settle.
-    let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
     let mut sim = FireSim::new();
     let named = rt.session_name_changed(Some("work".into()));
     sim.schedule_from(&named.effects);
@@ -3149,7 +2906,8 @@ fn a_foreign_edge_does_not_drop_an_owned_deferred_write() {
     // pane 7's pending write.
     let mut rt = two_tab_runtime_owning_tab_0();
     rt.status_pipe(&payload_json(7, "running"));
-    let relabel = rt.status_pipe(&payload::to_wire(&StatusPayload { msg: "editing".into(), ..payload_for(7, Status::Running) }));
+    let relabel =
+        rt.status_pipe(&payload::to_wire(&StatusPayload { msg: "editing".into(), ..payload_for(7, Status::Running) }));
     assert!(!persists(&relabel) && rt.snapshot_dirty, "label-only defers, got {:?}", relabel.effects);
 
     let foreign = rt.status_pipe(&payload_json(8, "done"));
@@ -3259,11 +3017,7 @@ fn hidden_rail_still_heartbeats_presence() {
     rt.last_presence_write_epoch_s = now.saturating_sub(PRESENCE_HEARTBEAT_S);
 
     let due = rt.timer(PermissionProbe::default(), Cadence::Fast.seconds(), now);
-    assert!(
-        due.effects.iter().any(presence_heartbeat),
-        "hidden rails heartbeat too, got {:?}",
-        due.effects
-    );
+    assert!(due.effects.iter().any(presence_heartbeat), "hidden rails heartbeat too, got {:?}", due.effects);
 }
 
 #[test]
@@ -3308,12 +3062,7 @@ fn selectable_effects(outcome: &Outcome) -> Vec<bool> {
 
 fn manifest(tab_panes: HashMap<usize, Vec<TerminalPane>>) -> PaneUpdate {
     let live = tab_panes.values().flatten().map(|p| p.id).collect();
-    PaneUpdate {
-        tab_panes,
-        live,
-        theme: None,
-        exits: Vec::new(),
-    }
+    PaneUpdate { tab_panes, live, theme: None, exits: Vec::new() }
 }
 
 #[test]
@@ -3323,14 +3072,7 @@ fn load_declares_the_rail_selectable_before_any_manifest_arrives() {
     // exactly what closed a rail-only tab. Load must declare the pane
     // selectable and wait for evidence of a terminal neighbor.
     let mut runtime = PluginRuntime::default();
-    let outcome = runtime.load(
-        config(),
-        None,
-        PermissionProbe {
-            marker: None,
-            lock_acquired: false,
-        },
-    );
+    let outcome = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert!(runtime.permission.is_waiting());
     assert_eq!(selectable_effects(&outcome), vec![true]);
 }

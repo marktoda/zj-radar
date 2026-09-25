@@ -30,12 +30,9 @@ const GRANT_HINT: &str = "First run: a permission prompt opens — press y to en
 /// (empty or all-symbol input), falls back to `"radar"` rather than emitting a
 /// degenerate all-dashes name.
 pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
-    let base = name_override
-        .unwrap_or_else(|| cwd.file_name().and_then(|s| s.to_str()).unwrap_or(""));
-    let sanitized: String = base
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
-        .collect();
+    let base = name_override.unwrap_or_else(|| cwd.file_name().and_then(|s| s.to_str()).unwrap_or(""));
+    let sanitized: String =
+        base.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect();
     // Trim the dash a trailing folded char leaves ("My Proj!" → "My-Proj",
     // not "My-Proj-") — pure cosmetics for the session list.
     let sanitized = sanitized.trim_end_matches('-');
@@ -78,12 +75,7 @@ fn owned_config_args(config_dir: &Path) -> Vec<String> {
 /// `--config-dir`'s `layouts/`.
 pub(crate) fn create_session_args(config_dir: &Path, session: &str, layout: &str) -> Vec<String> {
     let mut args = owned_config_args(config_dir);
-    args.extend([
-        "--session".into(),
-        session.into(),
-        "--new-session-with-layout".into(),
-        layout.into(),
-    ]);
+    args.extend(["--session".into(), session.into(), "--new-session-with-layout".into(), layout.into()]);
     args
 }
 
@@ -162,21 +154,11 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
     while let Some(header) = lines.by_ref().find(|l| l.starts_with(&needle) && l.contains('{')) {
         let body = &header[header.find('{').map_or(0, |i| i + 1)..];
         last = Some(match body.find('}') {
-            Some(end) => body[..end]
-                .split([';', ' '])
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .collect(),
-            None => lines
-                .by_ref()
-                .take_while(|l| !l.starts_with('}'))
-                .map(|l| l.trim_end().to_string())
-                .collect(),
+            Some(end) => body[..end].split([';', ' ']).filter(|t| !t.is_empty()).map(str::to_string).collect(),
+            None => lines.by_ref().take_while(|l| !l.starts_with('}')).map(|l| l.trim_end().to_string()).collect(),
         });
     }
-    last.is_some_and(|granted| {
-        REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.iter().any(|t| t == required))
-    })
+    last.is_some_and(|granted| REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.iter().any(|t| t == required)))
 }
 
 /// Join argv into a copy-pasteable shell command. Every printed command hint
@@ -191,7 +173,8 @@ pub(crate) fn shell_join(args: &[String]) -> String {
 }
 
 fn shell_quote(arg: &str) -> String {
-    let safe = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',' | b'@' | b'+');
+    let safe =
+        |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',' | b'@' | b'+');
     if !arg.is_empty() && arg.bytes().all(safe) {
         arg.to_string()
     } else {
@@ -300,11 +283,7 @@ pub(crate) fn asset_marker(version: &str, assets: &Assets) -> String {
 /// (so a deleted file forces a rewrite). Each file is written atomically; the
 /// marker is written last, so an interrupted run is re-materialized rather
 /// than served half-written.
-pub(crate) fn materialize(
-    dir: &Path,
-    version: &str,
-    assets: &Assets,
-) -> std::io::Result<Materialized> {
+pub(crate) fn materialize(dir: &Path, version: &str, assets: &Assets) -> std::io::Result<Materialized> {
     let wasm_path = dir.join("plugins").join(crate::WASM_FILE_NAME);
     let config_path = dir.join("config.kdl");
     let layout_path = dir.join("layouts").join("radar.kdl");
@@ -353,12 +332,7 @@ const WASM: Option<&[u8]> = Some(include_bytes!(env!("ZJ_RADAR_WASM_PATH")));
 const WASM: Option<&[u8]> = None;
 
 fn embedded_assets() -> Assets {
-    Assets {
-        config_template: CONFIG_TEMPLATE,
-        layout: LAYOUT,
-        onboarding_layout: ONBOARDING_LAYOUT,
-        wasm: WASM,
-    }
+    Assets { config_template: CONFIG_TEMPLATE, layout: LAYOUT, onboarding_layout: ONBOARDING_LAYOUT, wasm: WASM }
 }
 
 // ── Orchestration: pure plan + thin IO ───────────────────────────────────────
@@ -417,10 +391,8 @@ struct RunPlan {
 /// layout; collect the ordered advisory lines (grant hint before producer hint);
 /// surface whether we're nested.
 fn plan_run(facts: &RunFacts) -> RunPlan {
-    let granted = facts
-        .permissions_kdl
-        .as_deref()
-        .is_some_and(|kdl| wasm_is_granted(kdl, &facts.wasm_path.to_string_lossy()));
+    let granted =
+        facts.permissions_kdl.as_deref().is_some_and(|kdl| wasm_is_granted(kdl, &facts.wasm_path.to_string_lossy()));
 
     let args = if facts.session_exists {
         attach_session_args(&facts.config_dir, &facts.session)
@@ -444,10 +416,9 @@ fn plan_run(facts: &RunFacts) -> RunPlan {
     // is up. Needed when the wasm is ungranted (the float hosts the prompt) OR
     // when the cached layout resurrects deferring rails (granted or not, they
     // are stuck until a float writes the marker).
-    let post_attach_watch = (facts.session_exists
-        && !facts.session_running
-        && (!granted || facts.resurrect_layout_defers))
-        .then(|| grant_float_args(&facts.session, &facts.wasm_path));
+    let post_attach_watch =
+        (facts.session_exists && !facts.session_running && (!granted || facts.resurrect_layout_defers))
+            .then(|| grant_float_args(&facts.session, &facts.wasm_path));
 
     let mut advisories = Vec::new();
     if !granted {
@@ -508,11 +479,7 @@ fn session_is_running(name: &str) -> bool {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .is_some_and(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| line_is_running_session(l, name))
-        })
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| line_is_running_session(l, name)))
 }
 
 /// Pure classifier behind [`session_is_running`]: does this `zellij
@@ -550,11 +517,7 @@ fn cached_session_layout(session: &str) -> Option<String> {
     let base = zellij_permissions_path()?.parent()?.to_path_buf();
     let entries = std::fs::read_dir(base).ok()?;
     entries.flatten().find_map(|entry| {
-        let candidate = entry
-            .path()
-            .join("session_info")
-            .join(session)
-            .join("session-layout.kdl");
+        let candidate = entry.path().join("session_info").join(session).join("session-layout.kdl");
         std::fs::read_to_string(candidate).ok()
     })
 }
@@ -607,8 +570,7 @@ pub fn run(opts: RunOptions) {
     // Atomic (read + temp-file rename via `atomic_write`), not `fs::copy` onto
     // the destination: a live session may load the wasm mid-copy otherwise.
     if let Some(wasm) = std::env::var_os("ZJ_RADAR_WASM").filter(|w| !w.is_empty()) {
-        let copied = std::fs::read(&wasm)
-            .and_then(|bytes| atomic_write(&materialized.wasm_path, &bytes));
+        let copied = std::fs::read(&wasm).and_then(|bytes| atomic_write(&materialized.wasm_path, &bytes));
         if let Err(e) = copied {
             crate::exit::fail_report(
                 "zj-radar",
@@ -691,10 +653,7 @@ pub fn run(opts: RunOptions) {
         // the printed commands, but omitting it silently would make the
         // printed transcript incomplete. Stderr, like all prose.
         if let Some(watch) = &plan.post_attach_watch {
-            eprintln!(
-                "# zj-radar would also run, once the resurrected server is up: zellij {}",
-                shell_join(watch)
-            );
+            eprintln!("# zj-radar would also run, once the resurrected server is up: zellij {}", shell_join(watch));
         }
         return;
     }
@@ -825,8 +784,10 @@ mod tests {
         // `--print-cmd` output, which can't carry env changes.
         assert_eq!(
             create_session_args(Path::new("/cfg"), "foo", "radar"),
-            vec!["--config", "/cfg/config.kdl", "--config-dir", "/cfg",
-                 "--session", "foo", "--new-session-with-layout", "radar"]
+            vec![
+                "--config", "/cfg/config.kdl", "--config-dir", "/cfg", "--session", "foo", "--new-session-with-layout",
+                "radar"
+            ]
         );
         // The owned config on attach is load-bearing: a resurrected session is
         // a NEW server whose config (Ctrl-y grant keybind included) comes from
@@ -840,9 +801,7 @@ mod tests {
     #[test]
     fn running_line_parse_scans_only_the_tail_for_exited() {
         // A dead session appends `(EXITED - attach to resurrect)` after the name.
-        assert!(!line_is_running_session(
-            "proj [Created 5m ago] (EXITED - attach to resurrect)", "proj"
-        ));
+        assert!(!line_is_running_session("proj [Created 5m ago] (EXITED - attach to resurrect)", "proj"));
         // Live lines — bare or `(current)`-tagged — are running.
         assert!(line_is_running_session("proj [Created 2s ago]", "proj"));
         assert!(line_is_running_session("proj [Created 5m ago] (current)", "proj"));
@@ -891,8 +850,7 @@ mod tests {
     fn shell_join_quotes_what_a_shell_would_split_or_expand() {
         let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Plain flags and paths pass through bare.
-        assert_eq!(shell_join(&s(&["attach", "--config-dir", "/cfg", "foo"])),
-                   "attach --config-dir /cfg foo");
+        assert_eq!(shell_join(&s(&["attach", "--config-dir", "/cfg", "foo"])), "attach --config-dir /cfg foo");
         // The macOS owned-config path — the case this helper exists for.
         assert_eq!(
             shell_join(&s(&["--config-dir", "/Users/m/Library/Application Support/zj-radar/zellij"])),
@@ -961,9 +919,8 @@ mod tests {
         // header line. Misreading it used to swallow the NEXT entry's lines
         // as this block's grant set.
         let p = "/x/zj_radar.wasm";
-        let inline_full = format!(
-            "\"{p}\" {{ ReadApplicationState; ReadCliPipes; ChangeApplicationState; RunCommands }}\n"
-        );
+        let inline_full =
+            format!("\"{p}\" {{ ReadApplicationState; ReadCliPipes; ChangeApplicationState; RunCommands }}\n");
         assert!(wasm_is_granted(&inline_full, p), "inline full block is a grant");
         let inline_partial_then_foreign = format!(
             "\"{p}\" {{ ReadApplicationState }}\n\
@@ -982,10 +939,7 @@ mod tests {
             permissions_path_in(Path::new("/cache"), true),
             Path::new("/cache/org.Zellij-Contributors.Zellij/permissions.kdl")
         );
-        assert_eq!(
-            permissions_path_in(Path::new("/cache"), false),
-            Path::new("/cache/zellij/permissions.kdl")
-        );
+        assert_eq!(permissions_path_in(Path::new("/cache"), false), Path::new("/cache/zellij/permissions.kdl"));
     }
 
     fn test_assets() -> Assets {
@@ -1044,11 +998,7 @@ mod tests {
         let m = materialize(&dir, "0.1.0", &test_assets()).unwrap();
         let cfg = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
         let doc: kdl::KdlDocument = cfg.parse().unwrap_or_else(|e| panic!("config must parse ({e}):\n{cfg}"));
-        let radar = doc
-            .get("plugins")
-            .and_then(|p| p.children())
-            .and_then(|c| c.get("radar"))
-            .expect("radar alias");
+        let radar = doc.get("plugins").and_then(|p| p.children()).and_then(|c| c.get("radar")).expect("radar alias");
         let location = radar.get("location").and_then(|v| v.as_string()).expect("location string");
         assert_eq!(location, format!("file:{}", m.wasm_path.display()));
     }
@@ -1148,10 +1098,7 @@ mod tests {
         // owned config — creation and every later attach/resurrect alike. It
         // must launch the radar plugin floating in the onboarding role.
         assert!(CONFIG_TEMPLATE.contains("bind \"Ctrl y\""), "config must bind the grant escape hatch");
-        assert!(
-            CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""),
-            "keybind must launch the radar plugin"
-        );
+        assert!(CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""), "keybind must launch the radar plugin");
         assert!(CONFIG_TEMPLATE.contains("floating true"), "grant pane must be floating to be legible");
         assert!(
             CONFIG_TEMPLATE.contains("role \"onboarding\""),
@@ -1231,16 +1178,15 @@ mod tests {
             session_running: false,
             inside_zellij: false,
             resurrect_layout_defers: false,
-            permissions_kdl: granted.then(|| {
-                format!("\"{wasm}\" {{\n    {}\n}}\n", REQUIRED_PLUGIN_PERMISSIONS.join("\n    "))
-            }),
+            permissions_kdl: granted
+                .then(|| format!("\"{wasm}\" {{\n    {}\n}}\n", REQUIRED_PLUGIN_PERMISSIONS.join("\n    "))),
             producers: ProducerTexts {
-                codex_hooks:         codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
-                codex_config:        None,
-                claude_plugins:      claude.then(|| "zj-radar-claude".to_string()),
-                opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+                codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
+                codex_config: None,
+                claude_plugins: claude.then(|| "zj-radar-claude".to_string()),
+                opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
                 opencode_tui_plugin: None,
-                pi_extension:        None,
+                pi_extension: None,
             },
         }
     }
@@ -1248,10 +1194,7 @@ mod tests {
     #[test]
     fn plan_run_creates_new_session_when_absent() {
         let p = plan_run(&facts(true, true, false)); // granted → plain rail layout
-        assert_eq!(
-            p.args,
-            create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar")
-        );
+        assert_eq!(p.args, create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar"));
         assert!(!p.nested);
     }
 
@@ -1261,10 +1204,7 @@ mod tests {
         // grant prompt legibly. The layout carries the float, so there's no
         // pre-attach dispatch on the create path.
         let p = plan_run(&facts(false, true, false));
-        assert_eq!(
-            p.args,
-            create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar-onboarding")
-        );
+        assert_eq!(p.args, create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar-onboarding"));
         assert!(p.pre_attach.is_none(), "create path carries the float in its layout, not a dispatch");
     }
 

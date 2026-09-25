@@ -191,12 +191,7 @@ impl ZellijSession {
     /// every Zellij subprocess. The caller is responsible for writing
     /// permissions.kdl into it before calling this (see
     /// `pre_grant_permissions`).
-    pub fn start(
-        name: &str,
-        layout_kdl: &str,
-        plugin_wasm: &Path,
-        isolated: IsolatedEnvironment,
-    ) -> Self {
+    pub fn start(name: &str, layout_kdl: &str, plugin_wasm: &Path, isolated: IsolatedEnvironment) -> Self {
         Self::start_with_size(name, layout_kdl, plugin_wasm, isolated, 40, 100)
     }
 
@@ -232,22 +227,12 @@ impl ZellijSession {
 
     /// Shared implementation behind `start_with_size` (owned environment) and
     /// `start_sibling` (borrowed environment).
-    fn start_internal(
-        name: &str,
-        layout_kdl: &str,
-        isolated: IsolatedEnvironment,
-        rows: u16,
-        cols: u16,
-    ) -> Self {
+    fn start_internal(name: &str, layout_kdl: &str, isolated: IsolatedEnvironment, rows: u16, cols: u16) -> Self {
         assert_zellij_version();
 
         // Kill any previous session with this name to avoid conflicts.
-        let _ = isolated.command("zellij")
-            .args(["delete-session", name, "--force"])
-            .output();
-        let _ = isolated.command("zellij")
-            .args(["kill-session", name])
-            .output();
+        let _ = isolated.command("zellij").args(["delete-session", name, "--force"]).output();
+        let _ = isolated.command("zellij").args(["kill-session", name]).output();
         std::thread::sleep(Duration::from_millis(300));
 
         // Write the layout to a temp file.
@@ -257,25 +242,13 @@ impl ZellijSession {
         std::fs::write(&layout_path, layout_kdl).unwrap();
 
         // Open a PTY pair. Zellij needs a real TTY to start.
-        let pty = NativePtySystem::default()
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
+        let pty = NativePtySystem::default().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).unwrap();
 
         // Build the zellij command.
         // --new-session-with-layout creates a new session even from inside another
         // zellij session (unlike plain --session which tries to attach).
         let mut cmd = CommandBuilder::new("zellij");
-        cmd.args([
-            "--session",
-            name,
-            "--new-session-with-layout",
-            layout_path.to_str().unwrap(),
-        ]);
+        cmd.args(["--session", name, "--new-session-with-layout", layout_path.to_str().unwrap()]);
         // Prevent inheriting the outer session's env vars.
         cmd.env_remove("ZELLIJ");
         cmd.env_remove("ZELLIJ_SESSION_NAME");
@@ -341,10 +314,7 @@ impl ZellijSession {
 
             // Handle permission prompt (fallback if permissions.kdl wasn't read).
             if !perm_sent
-                && (text.contains("Grant")
-                    || text.contains("Allow")
-                    || text.contains("y/n")
-                    || text.contains("Deny"))
+                && (text.contains("Grant") || text.contains("Allow") || text.contains("y/n") || text.contains("Deny"))
             {
                 if let Ok(mut w) = self.pty_writer.lock() {
                     let _ = w.write_all(b"y");
@@ -365,15 +335,7 @@ impl ZellijSession {
         panic!(
             "zellij session '{}' never showed plugin header; PTY tail:\n{}",
             self.name,
-            self
-                .pty_text()
-                .chars()
-                .rev()
-                .take(200)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
+            self.pty_text().chars().rev().take(200).collect::<String>().chars().rev().collect::<String>()
         );
     }
 
@@ -384,19 +346,13 @@ impl ZellijSession {
     /// typically gets pane_id=0, but we verify at runtime to be safe.
     pub fn discover_terminal_pane_id(&self) -> u32 {
         // Inject: echo "ZPID=$ZELLIJ_PANE_ID"
-        let _ = self.isolated.command("zellij")
-            .args([
-                "--session",
-                &self.name,
-                "action",
-                "write-chars",
-                r#"echo "ZPID=$ZELLIJ_PANE_ID""#,
-            ])
+        let _ = self
+            .isolated
+            .command("zellij")
+            .args(["--session", &self.name, "action", "write-chars", r#"echo "ZPID=$ZELLIJ_PANE_ID""#])
             .output();
         // Send Enter (keycode 13).
-        let _ = self.isolated.command("zellij")
-            .args(["--session", &self.name, "action", "write", "13"])
-            .output();
+        let _ = self.isolated.command("zellij").args(["--session", &self.name, "action", "write", "13"]).output();
         std::thread::sleep(Duration::from_millis(800));
 
         let screen = self.dump_screen();
@@ -405,10 +361,7 @@ impl ZellijSession {
         }
 
         eprintln!("[e2e] warn: could not parse ZPID from dump-screen; defaulting to 0");
-        eprintln!(
-            "[e2e] dump-screen was: {:?}",
-            &screen[..screen.len().min(300)]
-        );
+        eprintln!("[e2e] dump-screen was: {:?}", &screen[..screen.len().min(300)]);
         0
     }
 
@@ -423,18 +376,12 @@ impl ZellijSession {
         std::thread::sleep(Duration::from_millis(300));
 
         // Inject `echo ZPID2=$ZELLIJ_PANE_ID` into the newly focused pane.
-        let _ = self.isolated.command("zellij")
-            .args([
-                "--session",
-                &self.name,
-                "action",
-                "write-chars",
-                r#"echo "ZPID2=$ZELLIJ_PANE_ID""#,
-            ])
+        let _ = self
+            .isolated
+            .command("zellij")
+            .args(["--session", &self.name, "action", "write-chars", r#"echo "ZPID2=$ZELLIJ_PANE_ID""#])
             .output();
-        let _ = self.isolated.command("zellij")
-            .args(["--session", &self.name, "action", "write", "13"])
-            .output();
+        let _ = self.isolated.command("zellij").args(["--session", &self.name, "action", "write", "13"]).output();
         std::thread::sleep(Duration::from_millis(600));
 
         let screen = self.dump_screen();
@@ -449,7 +396,8 @@ impl ZellijSession {
 
     /// Inject a `zellij action` sub-command into the session.
     fn action(&self, args: &[&str]) -> std::process::Output {
-        self.isolated.command("zellij")
+        self.isolated
+            .command("zellij")
             .args(["--session", &self.name, "action"])
             .args(args)
             .output()
@@ -458,24 +406,14 @@ impl ZellijSession {
 
     /// Send a `zj_radar.status.v1` pipe message to the plugin.
     pub fn pipe_status(&self, json: &str) {
-        let out = self.isolated.command("zellij")
-            .args([
-                "--session",
-                &self.name,
-                "pipe",
-                "--name",
-                "zj_radar.status.v1",
-                "--",
-                json,
-            ])
+        let out = self
+            .isolated
+            .command("zellij")
+            .args(["--session", &self.name, "pipe", "--name", "zj_radar.status.v1", "--", json])
             .output()
             .expect("zellij pipe failed to spawn");
         if !out.status.success() {
-            eprintln!(
-                "[e2e] pipe failed (rc={}): {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            );
+            eprintln!("[e2e] pipe failed (rc={}): {}", out.status, String::from_utf8_lossy(&out.stderr));
         }
         // Allow the plugin time to re-render.
         std::thread::sleep(Duration::from_millis(500));
@@ -495,8 +433,8 @@ impl ZellijSession {
         // CARGO_MANIFEST_DIR is crates/plugin, so go up two levels — mirroring
         // plugin_wasm_path. (Before the workspace split the manifest dir WAS the
         // repo root, so the old `plugins/...` path silently broke this test.)
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/zj-radar-claude/scripts/notify.sh");
+        let script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/zj-radar-claude/scripts/notify.sh");
         use std::io::Write as _;
         let mut command = self.isolated.command("bash");
         command
@@ -511,15 +449,8 @@ impl ZellijSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit());
-        let mut child = command
-            .spawn()
-            .expect("spawn notify.sh");
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(hook_json.as_bytes())
-            .unwrap();
+        let mut child = command.spawn().expect("spawn notify.sh");
+        child.stdin.as_mut().unwrap().write_all(hook_json.as_bytes()).unwrap();
         child.wait().unwrap();
         // notify.sh's send is synchronous, so on the happy path the pipe has
         // been consumed by the time `wait` returns (if the send deadline
@@ -581,9 +512,7 @@ impl ZellijSession {
     /// scrollback, so a match cannot be a false positive from echoed input or a
     /// piped payload string landing in the buffer.
     pub fn wait_for_sidebar(&self, width: u16, needle: &str, timeout: Duration) -> bool {
-        self.wait_until(timeout, |s| {
-            sidebar_region(&s.screen(), width).contains(needle)
-        })
+        self.wait_until(timeout, |s| sidebar_region(&s.screen(), width).contains(needle))
     }
 
     /// Inject a left-button mouse click at 1-based screen (`col`, `row`) by
@@ -660,15 +589,13 @@ impl ZellijSession {
     /// Unlike sidebar text, this does not read any plugin instance's possibly
     /// stale render; `query-tab-names` asks the session host directly.
     pub fn tab_names(&self) -> Vec<String> {
-        let output = self.isolated.command("zellij")
+        let output = self
+            .isolated
+            .command("zellij")
             .args(["--session", &self.name, "action", "query-tab-names"])
             .output()
             .expect("zellij query-tab-names failed to spawn");
-        assert!(
-            output.status.success(),
-            "zellij query-tab-names failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success(), "zellij query-tab-names failed: {}", String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(str::trim)
@@ -681,7 +608,9 @@ impl ZellijSession {
     /// Exposed so the isolation regression can prove the spawned session is
     /// present privately while absent from the ambient/default server.
     pub fn isolated_session_names(&self) -> Vec<String> {
-        let output = self.isolated.command("zellij")
+        let output = self
+            .isolated
+            .command("zellij")
             .args(["list-sessions", "--short", "--no-formatting"])
             .output()
             .expect("isolated zellij list-sessions failed to spawn");
@@ -726,12 +655,8 @@ fn assert_zellij_version() {
 
 impl Drop for ZellijSession {
     fn drop(&mut self) {
-        let _ = self.isolated.command("zellij")
-            .args(["delete-session", &self.name, "--force"])
-            .output();
-        let _ = self.isolated.command("zellij")
-            .args(["kill-session", &self.name])
-            .output();
+        let _ = self.isolated.command("zellij").args(["delete-session", &self.name, "--force"]).output();
+        let _ = self.isolated.command("zellij").args(["kill-session", &self.name]).output();
         // `isolated` drops here, removing its cache/config/data/socket roots.
     }
 }
@@ -942,9 +867,7 @@ pub fn isolated_temp_home() -> IsolatedEnvironment {
 /// never triggers the harness's auto-grant; the ungranted state stays put until a
 /// test dispatches the grant float itself.
 pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     format!(
         r#"layout {{
     cwd "/tmp"
@@ -966,9 +889,7 @@ pub fn deferring_rail_layout(plugin_wasm: &Path) -> String {
 /// Uses `/tmp` as CWD so the shell starts without `direnv`/`devenv` overhead.
 /// The `DIRENV_DISABLE=1` env var is also set on the Zellij process.
 pub fn sidebar_layout(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     format!(
         r#"layout {{
     cwd "/tmp"
@@ -995,9 +916,7 @@ pub fn sidebar_layout(plugin_wasm: &Path) -> String {
 /// its id. The sibling terminal is typically `focused_id - 1` or `focused_id + 1`
 /// — but see `discover_next_pane_id` for the safer runtime approach.
 pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     format!(
         r#"layout {{
     cwd "/tmp"
@@ -1021,9 +940,7 @@ pub fn sidebar_layout_two_terminal(plugin_wasm: &Path) -> String {
 /// cross-instance convergence (does a per-pane `CommandChanged`/exit reach the
 /// instance in another tab?).
 pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     let w = wasm_abs.display();
     // The rail lives in `default_tab_template` so Zellij applies it to *every*
     // tab (each gets its own plugin instance); each `tab` block just declares the
@@ -1055,9 +972,7 @@ pub fn two_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
 /// the session with it ("Bye from Zellij!"). Also what a status-bar-only
 /// `default_tab_template` plus a plain `tab` looks like after `--inject`.
 pub fn rail_only_tab_layout(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     let w = wasm_abs.display();
     format!(
         r#"layout {{
@@ -1083,9 +998,7 @@ pub fn rail_only_tab_layout(plugin_wasm: &Path) -> String {
 /// The initial unnamed tab starts at `/tmp`, allowing Managed naming to claim it
 /// before a test applies a manual rename.
 pub fn runtime_sidebar_tabs_layout(plugin_wasm: &Path) -> String {
-    let wasm_abs = plugin_wasm
-        .canonicalize()
-        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    let wasm_abs = plugin_wasm.canonicalize().unwrap_or_else(|_| plugin_wasm.to_path_buf());
     let w = wasm_abs.display();
     format!(
         r#"layout {{
@@ -1118,11 +1031,7 @@ pub fn screen_text(screen: &vt100::Screen) -> String {
     let rows = screen.size().0;
     let cols = screen.size().1;
     (0..rows)
-        .map(|r| {
-            (0..cols)
-                .map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default())
-                .collect::<String>()
-        })
+        .map(|r| (0..cols).map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1131,9 +1040,7 @@ pub fn screen_text(screen: &vt100::Screen) -> String {
 /// `needle`. Lets a test locate a rendered row (e.g. the agent's tab line)
 /// without hard-coding a row number that shifts as the layout evolves.
 pub fn sidebar_row_index(screen: &vt100::Screen, width: u16, needle: &str) -> Option<usize> {
-    sidebar_region(screen, width)
-        .lines()
-        .position(|l| l.contains(needle))
+    sidebar_region(screen, width).lines().position(|l| l.contains(needle))
 }
 
 /// The first truecolor (`Rgb`) background color found scanning the left `width`
@@ -1164,11 +1071,7 @@ pub fn sidebar_row_bg_rgb(screen: &vt100::Screen, row: u16, width: u16) -> Optio
 pub fn sidebar_region(screen: &vt100::Screen, width: u16) -> String {
     let rows = screen.size().0;
     (0..rows)
-        .map(|r| {
-            (0..width)
-                .map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default())
-                .collect::<String>()
-        })
+        .map(|r| (0..width).map(|c| screen.cell(r, c).map(|x| x.contents()).unwrap_or_default()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
 }

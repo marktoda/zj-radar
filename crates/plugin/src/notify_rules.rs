@@ -73,17 +73,9 @@ fn enabled(status: Status, kind: Kind, cfg: &Config) -> bool {
 }
 
 fn build(pane_id: u32, o: &TrackedObservation, status: Status) -> Notification {
-    let title = if o.branch.is_empty() {
-        o.repo.clone()
-    } else {
-        format!("{} · {}", o.repo, o.branch)
-    };
+    let title = if o.branch.is_empty() { o.repo.clone() } else { format!("{} · {}", o.repo, o.branch) };
     let phrase = phrase(status, o.kind).unwrap_or("");
-    let body = if o.msg.is_empty() {
-        phrase.to_string()
-    } else {
-        format!("{phrase} — {}", o.msg)
-    };
+    let body = if o.msg.is_empty() { phrase.to_string() } else { format!("{phrase} — {}", o.msg) };
     Notification { pane_id, status, title, body }
 }
 
@@ -235,10 +227,7 @@ mod tests {
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
         let cfg = Config { notify_done: false, ..Config::default() };
-        assert!(
-            diff(&prev, &cur, None, &cfg).is_empty(),
-            "notify_done:false must suppress a Running→Done edge"
-        );
+        assert!(diff(&prev, &cur, None, &cfg).is_empty(), "notify_done:false must suppress a Running→Done edge");
     }
 
     #[test]
@@ -248,10 +237,7 @@ mod tests {
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
         let cfg = Config { notify_pending: false, ..Config::default() };
-        assert!(
-            diff(&prev, &cur, None, &cfg).is_empty(),
-            "notify_pending:false must suppress a Running→Pending edge"
-        );
+        assert!(diff(&prev, &cur, None, &cfg).is_empty(), "notify_pending:false must suppress a Running→Pending edge");
     }
 
     #[test]

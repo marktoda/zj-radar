@@ -105,12 +105,7 @@ impl SessionFiles {
         )
     }
 
-    fn open_with_roots_at<I>(
-        ids: SessionFileIds,
-        roots: I,
-        now: SystemTime,
-        max_age: Duration,
-    ) -> SessionFilesOpen
+    fn open_with_roots_at<I>(ids: SessionFileIds, roots: I, now: SystemTime, max_age: Duration) -> SessionFilesOpen
     where
         I: IntoIterator<Item = PathBuf>,
     {
@@ -123,20 +118,13 @@ impl SessionFiles {
             let snapshot = std::fs::read_to_string(&paths.snapshot).ok();
             let files = SessionFiles { paths: Some(paths) };
             let permission = files.permission_probe(now);
-            return SessionFilesOpen {
-                files,
-                snapshot,
-                permission,
-            };
+            return SessionFilesOpen { files, snapshot, permission };
         }
 
         SessionFilesOpen {
             files: SessionFiles::default(),
             snapshot: None,
-            permission: PermissionProbe {
-                marker: None,
-                lock_acquired: true,
-            },
+            permission: PermissionProbe { marker: None, lock_acquired: true },
         }
     }
 
@@ -196,7 +184,12 @@ impl SessionFiles {
         self.persist_presence_at(unless_fresher_than, json, SystemTime::now())
     }
 
-    fn persist_presence_at(&self, unless_fresher_than: Option<Duration>, json: impl FnOnce() -> String, now: SystemTime) {
+    fn persist_presence_at(
+        &self,
+        unless_fresher_than: Option<Duration>,
+        json: impl FnOnce() -> String,
+        now: SystemTime,
+    ) {
         let Some(paths) = &self.paths else {
             return;
         };
@@ -233,12 +226,14 @@ impl SessionFiles {
         let mut out = Vec::new();
         // The own-file skip is the pre-read predicate: no point paying the
         // open+read for a file whose content is discarded by name.
-        for_each_presence_file(&paths.root, |name| !paths.is_own_presence_file(name), |entry, json| {
-            let age_secs = age_of(entry.metadata(), now)
-                .map(|age| age.as_secs())
-                .unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
-            out.push(PeerPresenceFile { json, age_secs });
-        });
+        for_each_presence_file(
+            &paths.root,
+            |name| !paths.is_own_presence_file(name),
+            |entry, json| {
+                let age_secs = age_of(entry.metadata(), now).map(|age| age.as_secs()).unwrap_or(0); // metadata/clock hiccup: treat as fresh rather than drop the peer
+                out.push(PeerPresenceFile { json, age_secs });
+            },
+        );
         // Sorted by content, so `sessions::update_presences`'s later-entry-
         // wins dedup tie-break is deterministic across reads. (Unstable is
         // fine: equal keys are byte-identical files.)
@@ -272,11 +267,15 @@ impl SessionFiles {
         let Some(paths) = &self.paths else {
             return;
         };
-        for_each_presence_file(&paths.root, |name| !paths.is_own_presence_file(name), |entry, json| {
-            if matches(&json) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        });
+        for_each_presence_file(
+            &paths.root,
+            |name| !paths.is_own_presence_file(name),
+            |entry, json| {
+                if matches(&json) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            },
+        );
     }
 
     /// Re-probe the permission state for a timer tick: re-read the marker and,
@@ -291,21 +290,14 @@ impl SessionFiles {
     fn permission_probe(&self, now: SystemTime) -> PermissionProbe {
         let marker = self.permission_marker();
         let lock_acquired = marker.is_none() && self.become_permission_request_owner(now);
-        PermissionProbe {
-            marker,
-            lock_acquired,
-        }
+        PermissionProbe { marker, lock_acquired }
     }
 
     fn become_permission_request_owner(&self, now: SystemTime) -> bool {
         let Some(paths) = &self.paths else {
             return true;
         };
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&paths.permission_lock)
-        {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&paths.permission_lock) {
             Ok(_) => true,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 reclaim_if_stale(&paths.permission_lock, now, PERMISSION_LOCK_TTL)
@@ -336,15 +328,9 @@ impl SessionFiles {
         };
         prune_stale_claims(paths, now);
         let claim = paths.notify_claim(key);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&claim)
-        {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&claim) {
             Ok(_) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                reclaim_if_stale(&claim, now, NOTIFY_CLAIM_TTL)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => reclaim_if_stale(&claim, now, NOTIFY_CLAIM_TTL),
             // Coordination failed: prefer a duplicate toast over a missed
             // "needs input" — same trade the permission election makes.
             Err(_) => true,
@@ -381,11 +367,7 @@ fn is_peer_presence_file(name: &str) -> bool {
 /// skip) costs nothing — filtering it in the callback instead would pay a
 /// wasted wasi open+read per scan. Unreadable files are skipped; content
 /// filtering stays the callback's job.
-fn for_each_presence_file(
-    root: &Path,
-    keep: impl Fn(&str) -> bool,
-    mut f: impl FnMut(&std::fs::DirEntry, String),
-) {
+fn for_each_presence_file(root: &Path, keep: impl Fn(&str) -> bool, mut f: impl FnMut(&std::fs::DirEntry, String)) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -406,9 +388,7 @@ fn for_each_presence_file(
 /// so each caller decides its own conservative fallback (treat as fresh,
 /// don't reclaim, don't prune).
 fn age_of(meta: std::io::Result<std::fs::Metadata>, now: SystemTime) -> Option<Duration> {
-    meta.and_then(|m| m.modified())
-        .ok()
-        .and_then(|modified| now.duration_since(modified).ok())
+    meta.and_then(|m| m.modified()).ok().and_then(|modified| now.duration_since(modified).ok())
 }
 
 /// Remove spent notify claims so a long-lived session doesn't accrete one file
@@ -443,11 +423,7 @@ fn reclaim_if_stale(lock: &Path, now: SystemTime, ttl: Duration) -> bool {
         return false;
     }
     let _ = std::fs::remove_file(lock);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock)
-        .is_ok()
+    std::fs::OpenOptions::new().write(true).create_new(true).open(lock).is_ok()
 }
 
 impl SessionPaths {
@@ -456,16 +432,10 @@ impl SessionPaths {
         let snapshot = root.join(format!("{session_prefix}.json"));
         let snapshot_tmp = root.join(format!("{session_prefix}.json.{}.tmp", ids.plugin_id));
         let permission_marker = root.join(format!("{session_prefix}.permissions"));
-        let permission_marker_tmp = root.join(format!(
-            "{session_prefix}.permissions.{}.tmp",
-            ids.plugin_id
-        ));
+        let permission_marker_tmp = root.join(format!("{session_prefix}.permissions.{}.tmp", ids.plugin_id));
         let permission_lock = root.join(format!("{session_prefix}.permissions.lock"));
         let presence = root.join(format!("{PRESENCE_PREFIX}{}.json", ids.zellij_pid));
-        let presence_tmp = root.join(format!(
-            "{PRESENCE_PREFIX}{}.json.{}.tmp",
-            ids.zellij_pid, ids.plugin_id
-        ));
+        let presence_tmp = root.join(format!("{PRESENCE_PREFIX}{}.json.{}.tmp", ids.zellij_pid, ids.plugin_id));
         Self {
             root,
             session_prefix,
@@ -480,29 +450,21 @@ impl SessionPaths {
     }
 
     fn notify_claim(&self, key: &str) -> PathBuf {
-        self.root
-            .join(format!("{}.notify.{key}", self.session_prefix))
+        self.root.join(format!("{}.notify.{key}", self.session_prefix))
     }
 
     fn is_current_session_file(&self, name: &str) -> bool {
         name == format!("{}.json", self.session_prefix)
             || name == format!("{}.permissions", self.session_prefix)
             || name == format!("{}.permissions.lock", self.session_prefix)
-            || (name.starts_with(&format!("{}.json.", self.session_prefix))
-                && name.ends_with(".tmp"))
-            || (name.starts_with(&format!("{}.permissions.", self.session_prefix))
-                && name.ends_with(".tmp"))
+            || (name.starts_with(&format!("{}.json.", self.session_prefix)) && name.ends_with(".tmp"))
+            || (name.starts_with(&format!("{}.permissions.", self.session_prefix)) && name.ends_with(".tmp"))
             || name.starts_with(&format!("{}.notify.", self.session_prefix))
     }
 
     fn is_own_presence_file(&self, name: &str) -> bool {
-        self.presence
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy() == name)
-            || self
-                .presence_tmp
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy() == name)
+        self.presence.file_name().is_some_and(|n| n.to_string_lossy() == name)
+            || self.presence_tmp.file_name().is_some_and(|n| n.to_string_lossy() == name)
     }
 }
 
@@ -510,10 +472,7 @@ fn root_is_writable(root: &Path, ids: SessionFileIds) -> bool {
     if std::fs::create_dir_all(root).is_err() {
         return false;
     }
-    let probe = root.join(format!(
-        ".zj-radar.probe.{}.{}",
-        ids.zellij_pid, ids.plugin_id
-    ));
+    let probe = root.join(format!(".zj-radar.probe.{}.{}", ids.zellij_pid, ids.plugin_id));
     if std::fs::write(&probe, b"").is_err() {
         return false;
     }
@@ -576,14 +535,8 @@ fn is_owned_session_file(name: &str) -> bool {
     if matches!(suffix, "json" | "permissions" | "permissions.lock") {
         return true;
     }
-    suffix
-        .strip_prefix("json.")
-        .and_then(|rest| rest.strip_suffix(".tmp"))
-        .is_some_and(is_digits)
-        || suffix
-            .strip_prefix("permissions.")
-            .and_then(|rest| rest.strip_suffix(".tmp"))
-            .is_some_and(is_digits)
+    suffix.strip_prefix("json.").and_then(|rest| rest.strip_suffix(".tmp")).is_some_and(is_digits)
+        || suffix.strip_prefix("permissions.").and_then(|rest| rest.strip_suffix(".tmp")).is_some_and(is_digits)
         || suffix.starts_with("notify.")
 }
 
@@ -605,10 +558,7 @@ mod tests {
     impl TempDir {
         fn new(name: &str) -> Self {
             let n = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
-            let path = std::env::temp_dir().join(format!(
-                "zj-radar-session-files-{name}-{}-{n}",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir().join(format!("zj-radar-session-files-{name}-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             Self { path }
@@ -630,19 +580,11 @@ mod tests {
     }
 
     fn ids(plugin_id: u32, zellij_pid: u32) -> SessionFileIds {
-        SessionFileIds {
-            plugin_id,
-            zellij_pid,
-        }
+        SessionFileIds { plugin_id, zellij_pid }
     }
 
     fn open(root: &Path, ids: SessionFileIds) -> SessionFilesOpen {
-        SessionFiles::open_with_roots_at(
-            ids,
-            [root.to_path_buf()],
-            SystemTime::now(),
-            SNAPSHOT_MAX_AGE,
-        )
+        SessionFiles::open_with_roots_at(ids, [root.to_path_buf()], SystemTime::now(), SNAPSHOT_MAX_AGE)
     }
 
     #[test]
@@ -680,37 +622,26 @@ mod tests {
         let owner = SessionFiles::open_with_roots_at(ids(1, 42), root(), now, SNAPSHOT_MAX_AGE);
         assert!(owner.permission.lock_acquired);
         let fresh_peer = SessionFiles::open_with_roots_at(ids(2, 42), root(), now, SNAPSHOT_MAX_AGE);
-        assert!(
-            !fresh_peer.permission.lock_acquired,
-            "a fresh lock must still make peers wait"
-        );
+        assert!(!fresh_peer.permission.lock_acquired, "a fresh lock must still make peers wait");
 
         // Once the lock outlives the TTL (owner presumed gone with the prompt
         // unanswered) the next instance reclaims it instead of waiting forever.
         let later = now + PERMISSION_LOCK_TTL + Duration::from_secs(60);
         let reclaimer = SessionFiles::open_with_roots_at(ids(3, 42), root(), later, SNAPSHOT_MAX_AGE);
-        assert!(
-            reclaimer.permission.lock_acquired,
-            "a stale lock must be reclaimed so peers aren't stranded forever"
-        );
+        assert!(reclaimer.permission.lock_acquired, "a stale lock must be reclaimed so peers aren't stranded forever");
     }
 
     #[test]
     fn marker_short_circuits_lock_election() {
         let dir = TempDir::new("marker");
         let owner = open(dir.path(), ids(1, 42));
-        owner
-            .files
-            .persist_permission_marker(PermissionMarker::Granted);
+        owner.files.persist_permission_marker(PermissionMarker::Granted);
 
         let peer = open(dir.path(), ids(2, 42));
 
         assert_eq!(peer.permission.marker, Some(PermissionMarker::Granted));
         assert!(!peer.permission.lock_acquired);
-        assert_eq!(
-            peer.files.permission_marker(),
-            Some(PermissionMarker::Granted)
-        );
+        assert_eq!(peer.files.permission_marker(), Some(PermissionMarker::Granted));
         assert!(!dir.join("zj-radar.42.permissions.1.tmp").exists());
     }
 
@@ -749,18 +680,10 @@ mod tests {
         std::fs::create_dir(dir.join("zj-radar.42.permissions.9.tmp")).unwrap();
         let opened = open(dir.path(), ids(9, 42));
 
-        opened
-            .files
-            .persist_permission_marker(PermissionMarker::Denied);
+        opened.files.persist_permission_marker(PermissionMarker::Denied);
 
-        assert_eq!(
-            std::fs::read_to_string(dir.join("zj-radar.42.permissions")).unwrap(),
-            "granted"
-        );
-        assert_eq!(
-            opened.files.permission_marker(),
-            Some(PermissionMarker::Granted)
-        );
+        assert_eq!(std::fs::read_to_string(dir.join("zj-radar.42.permissions")).unwrap(), "granted");
+        assert_eq!(opened.files.permission_marker(), Some(PermissionMarker::Granted));
     }
 
     #[test]
@@ -770,10 +693,7 @@ mod tests {
 
         opened.files.persist_snapshot(|_| r#"{"v":1}"#.into());
 
-        assert_eq!(
-            std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(),
-            r#"{"v":1}"#
-        );
+        assert_eq!(std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(), r#"{"v":1}"#);
         assert_eq!(opened.files.snapshot().as_deref(), Some(r#"{"v":1}"#));
         assert!(!dir.join("zj-radar.42.json.9.tmp").exists());
     }
@@ -787,10 +707,7 @@ mod tests {
 
         opened.files.persist_snapshot(|_| "new".into());
 
-        assert_eq!(
-            std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(),
-            "old"
-        );
+        assert_eq!(std::fs::read_to_string(dir.join("zj-radar.42.json")).unwrap(), "old");
     }
 
     #[test]
@@ -809,10 +726,7 @@ mod tests {
         opened.files.persist_snapshot(|_| "seed".into());
 
         assert!(!broken.join("zj-radar.42.json").exists());
-        assert_eq!(
-            std::fs::read_to_string(fallback.join("zj-radar.42.json")).unwrap(),
-            "seed"
-        );
+        assert_eq!(std::fs::read_to_string(fallback.join("zj-radar.42.json")).unwrap(), "seed");
     }
 
     #[test]
@@ -865,12 +779,8 @@ mod tests {
         let dir = TempDir::new("notify-disabled");
         let broken = dir.join("cache-as-file");
         std::fs::write(&broken, b"not a dir").unwrap();
-        let opened = SessionFiles::open_with_roots_at(
-            ids(3, 42),
-            [broken.clone(), broken],
-            SystemTime::now(),
-            SNAPSHOT_MAX_AGE,
-        );
+        let opened =
+            SessionFiles::open_with_roots_at(ids(3, 42), [broken.clone(), broken], SystemTime::now(), SNAPSHOT_MAX_AGE);
         // No coordination possible → every instance dispatches (the pre-claim
         // behavior), because a missed "needs input" is worse than a dup toast.
         assert!(opened.files.claim_notification_at("k", SystemTime::now()));
@@ -900,9 +810,7 @@ mod tests {
             SNAPSHOT_MAX_AGE,
         );
         opened.files.persist_snapshot(|_| "ignored".into());
-        opened
-            .files
-            .persist_permission_marker(PermissionMarker::Denied);
+        opened.files.persist_permission_marker(PermissionMarker::Denied);
 
         assert_eq!(opened.snapshot, None);
         assert_eq!(opened.permission.marker, None);
@@ -913,28 +821,15 @@ mod tests {
     #[test]
     fn stale_pruning_removes_old_session_snapshot_marker_and_lock() {
         let dir = TempDir::new("prune");
-        for name in [
-            "zj-radar.1.json",
-            "zj-radar.1.permissions",
-            "zj-radar.1.permissions.lock",
-        ] {
+        for name in ["zj-radar.1.json", "zj-radar.1.permissions", "zj-radar.1.permissions.lock"] {
             std::fs::write(dir.join(name), b"old").unwrap();
         }
-        for name in [
-            "zj-radar.2.json",
-            "zj-radar.2.permissions",
-            "zj-radar.2.permissions.lock",
-        ] {
+        for name in ["zj-radar.2.json", "zj-radar.2.permissions", "zj-radar.2.permissions.lock"] {
             std::fs::write(dir.join(name), b"current").unwrap();
         }
 
         let now = SystemTime::now() + SNAPSHOT_MAX_AGE + Duration::from_secs(1);
-        let _ = SessionFiles::open_with_roots_at(
-            ids(3, 2),
-            [dir.path().to_path_buf()],
-            now,
-            SNAPSHOT_MAX_AGE,
-        );
+        let _ = SessionFiles::open_with_roots_at(ids(3, 2), [dir.path().to_path_buf()], now, SNAPSHOT_MAX_AGE);
 
         assert!(!dir.join("zj-radar.1.json").exists());
         assert!(!dir.join("zj-radar.1.permissions").exists());
@@ -948,31 +843,20 @@ mod tests {
     fn stale_pruning_does_not_keep_numeric_prefix_collisions() {
         let dir = TempDir::new("prune-prefix");
         for name in [
-            "zj-radar.20.json",
-            "zj-radar.20.json.8.tmp",
-            "zj-radar.20.permissions",
-            "zj-radar.20.permissions.8.tmp",
+            "zj-radar.20.json", "zj-radar.20.json.8.tmp", "zj-radar.20.permissions", "zj-radar.20.permissions.8.tmp",
             "zj-radar.20.permissions.lock",
         ] {
             std::fs::write(dir.join(name), b"old").unwrap();
         }
         for name in [
-            "zj-radar.2.json",
-            "zj-radar.2.json.3.tmp",
-            "zj-radar.2.permissions",
-            "zj-radar.2.permissions.3.tmp",
+            "zj-radar.2.json", "zj-radar.2.json.3.tmp", "zj-radar.2.permissions", "zj-radar.2.permissions.3.tmp",
             "zj-radar.2.permissions.lock",
         ] {
             std::fs::write(dir.join(name), b"current").unwrap();
         }
 
         let now = SystemTime::now() + SNAPSHOT_MAX_AGE + Duration::from_secs(1);
-        let _ = SessionFiles::open_with_roots_at(
-            ids(3, 2),
-            [dir.path().to_path_buf()],
-            now,
-            SNAPSHOT_MAX_AGE,
-        );
+        let _ = SessionFiles::open_with_roots_at(ids(3, 2), [dir.path().to_path_buf()], now, SNAPSHOT_MAX_AGE);
 
         assert!(!dir.join("zj-radar.20.json").exists());
         assert!(!dir.join("zj-radar.20.json.8.tmp").exists());
@@ -990,22 +874,14 @@ mod tests {
     fn stale_pruning_ignores_unknown_zj_radar_files() {
         let dir = TempDir::new("prune-unknown");
         for name in [
-            "zj-radar.notes",
-            "zj-radar.abc.json",
-            "zj-radar.1.unknown",
-            "zj-radar.1.json.tmp",
+            "zj-radar.notes", "zj-radar.abc.json", "zj-radar.1.unknown", "zj-radar.1.json.tmp",
             "zj-radar.1.permissions.tmp",
         ] {
             std::fs::write(dir.join(name), b"not ours").unwrap();
         }
 
         let now = SystemTime::now() + SNAPSHOT_MAX_AGE + Duration::from_secs(1);
-        let _ = SessionFiles::open_with_roots_at(
-            ids(3, 2),
-            [dir.path().to_path_buf()],
-            now,
-            SNAPSHOT_MAX_AGE,
-        );
+        let _ = SessionFiles::open_with_roots_at(ids(3, 2), [dir.path().to_path_buf()], now, SNAPSHOT_MAX_AGE);
 
         assert!(dir.join("zj-radar.notes").exists());
         assert!(dir.join("zj-radar.abc.json").exists());
@@ -1025,7 +901,10 @@ mod tests {
         )
         .files;
         let snapshot = dir.path().join("zj-radar.42.json");
-        files.persist_snapshot(|existing| { assert!(existing.is_none()); "first".into() });
+        files.persist_snapshot(|existing| {
+            assert!(existing.is_none());
+            "first".into()
+        });
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first");
         files.persist_snapshot(|existing| format!("{}+second", existing.unwrap()));
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "first+second");
@@ -1050,7 +929,11 @@ mod tests {
 
         // Just written (by this or any sibling instance): skipped, and the
         // JSON closure is never even evaluated.
-        files.persist_presence_at(Some(min_age), || unreachable!("fresh file must not be serialized"), SystemTime::now());
+        files.persist_presence_at(
+            Some(min_age),
+            || unreachable!("fresh file must not be serialized"),
+            SystemTime::now(),
+        );
         assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
 
         // A content edge (no window) always writes, fresh or not.
@@ -1149,8 +1032,15 @@ mod tests {
         let fresh = peers.iter().find(|p| p.json.contains("fresh")).expect("fresh peer present");
         let old = peers.iter().find(|p| p.json.contains("\"old\"")).expect("old-mtime peer still present, not dropped");
         assert!(fresh.age_secs < 5, "freshly-written peer's age should read ~0s, got {}", fresh.age_secs);
-        assert!(old.age_secs >= old_age.as_secs(), "backdated peer's age must reflect its real mtime, got {}", old.age_secs);
-        assert!(old_path.exists(), "the read path must never delete anything — only the dismiss/reap and the open-time sweep do");
+        assert!(
+            old.age_secs >= old_age.as_secs(),
+            "backdated peer's age must reflect its real mtime, got {}",
+            old.age_secs
+        );
+        assert!(
+            old_path.exists(),
+            "the read path must never delete anything — only the dismiss/reap and the open-time sweep do"
+        );
     }
 
     #[test]

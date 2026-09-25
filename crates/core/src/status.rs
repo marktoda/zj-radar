@@ -261,11 +261,7 @@ mod tests {
         // The table generates `from_wire`/`as_wire` from one row each, so the
         // inverse holds for every variant by construction — this guards it.
         for &s in Status::ALL {
-            assert_eq!(
-                Status::from_wire(s.as_wire()),
-                s,
-                "{s:?} must survive a wire round-trip",
-            );
+            assert_eq!(Status::from_wire(s.as_wire()), s, "{s:?} must survive a wire round-trip",);
         }
     }
 

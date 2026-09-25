@@ -104,11 +104,7 @@ pub(crate) enum PaneDisplay {
 
 impl PaneDisplay {
     pub(crate) fn untracked(pane_id: u32, title: &str) -> Self {
-        let title = if title.trim().is_empty() {
-            "terminal".to_string()
-        } else {
-            title.to_string()
-        };
+        let title = if title.trim().is_empty() { "terminal".to_string() } else { title.to_string() };
         Self::Untracked { pane_id, title }
     }
 
@@ -135,9 +131,9 @@ impl PaneDisplay {
 
     pub(crate) fn pane_id(&self) -> u32 {
         match self {
-            Self::Tracked { pane_id, .. }
-            | Self::Untracked { pane_id, .. }
-            | Self::Interactive { pane_id, .. } => *pane_id,
+            Self::Tracked { pane_id, .. } | Self::Untracked { pane_id, .. } | Self::Interactive { pane_id, .. } => {
+                *pane_id
+            }
         }
     }
 
@@ -213,12 +209,10 @@ impl PaneDisplay {
     }
 
     pub(crate) fn has_unacknowledged_status_pending(&self) -> bool {
-        matches!(self, Self::Tracked {
-            status: Status::Pending,
-            acknowledged: false,
-            origin: ObservationOrigin::StatusPipe,
-            ..
-        })
+        matches!(
+            self,
+            Self::Tracked { status: Status::Pending, acknowledged: false, origin: ObservationOrigin::StatusPipe, .. }
+        )
     }
 
     pub(crate) fn is_status_origin(&self) -> bool {
@@ -285,17 +279,12 @@ pub(crate) fn roll_up<'a, 'q>(
     let mut pane_displays = Vec::with_capacity(panes.len());
 
     let interactive = |pane_id: u32| {
-        quiet(pane_id).map(|(msg, kind)| PaneDisplay::Interactive {
-            pane_id,
-            kind,
-            msg: msg.to_string(),
-        })
+        quiet(pane_id).map(|(msg, kind)| PaneDisplay::Interactive { pane_id, kind, msg: msg.to_string() })
     };
 
     for pane in panes {
         let Some(s) = resolve(pane.id) else {
-            let display = interactive(pane.id)
-                .unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
+            let display = interactive(pane.id).unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
             pane_displays.push(display);
             continue;
         };
@@ -311,11 +300,7 @@ pub(crate) fn roll_up<'a, 'q>(
             if s.status == Status::Pending {
                 pending += 1;
             }
-            let display = if s.status == Status::Idle {
-                interactive(pane.id)
-            } else {
-                None
-            };
+            let display = if s.status == Status::Idle { interactive(pane.id) } else { None };
             pane_displays.push(display.unwrap_or_else(|| PaneDisplay::Tracked {
                 pane_id: pane.id,
                 kind: s.kind,
@@ -330,8 +315,7 @@ pub(crate) fn roll_up<'a, 'q>(
                 tasks: s.tasks.clone(),
             }));
         } else {
-            let display = interactive(pane.id)
-                .unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
+            let display = interactive(pane.id).unwrap_or_else(|| PaneDisplay::untracked(pane.id, &pane.title));
             pane_displays.push(display);
         }
         animating = animating || s.animating();
@@ -345,9 +329,7 @@ pub(crate) fn roll_up<'a, 'q>(
         // pane on a full tie.
         if s.status.is_active() {
             let key = (s.status, !s.kind.is_steady(), s.last_change_tick);
-            let wins = best
-                .as_ref()
-                .is_none_or(|d| key >= (d.status, !d.kind.is_steady(), d.since_tick));
+            let wins = best.as_ref().is_none_or(|d| key >= (d.status, !d.kind.is_steady(), d.since_tick));
             if wins {
                 best = Some(PrimaryDetail {
                     repo: s.repo.clone(),
@@ -366,11 +348,7 @@ pub(crate) fn roll_up<'a, 'q>(
 
     TabDisplay {
         status: best.as_ref().map_or(Status::Idle, |d| d.status),
-        progress: ProgressCounts {
-            done,
-            total,
-            pending,
-        },
+        progress: ProgressCounts { done, total, pending },
         detail: best,
         panes: pane_displays,
         animating,

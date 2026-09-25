@@ -66,11 +66,8 @@ mod tests {
     fn parse_is_lenient_on_garbage_and_missing_fields() {
         assert_eq!(Presence::parse("not json"), None);
         assert_eq!(Presence::parse("{}"), None); // session_name is required
-        // Unknown fields are ignored; absent optionals default.
-        let p = Presence::parse(
-            r#"{"session_name":"a","running":1,"attention":0,"future_field":true}"#,
-        )
-        .unwrap();
+                                                 // Unknown fields are ignored; absent optionals default.
+        let p = Presence::parse(r#"{"session_name":"a","running":1,"attention":0,"future_field":true}"#).unwrap();
         assert_eq!(p.attention_tab_position, None);
         assert_eq!(p.updated_epoch_s, 0);
     }

@@ -9,8 +9,8 @@
 mod support;
 
 use assert_cmd::Command;
-use support::{ShimDir, HOOK_MARKER};
 use std::fs;
+use support::{ShimDir, HOOK_MARKER};
 use tempfile::TempDir;
 
 /// Returns a fresh tempdir with an empty hooks.json pre-created so that
@@ -38,10 +38,7 @@ fn setup_codex_installs_hooks_without_touching_foreign_notify() {
         .success();
 
     let config_after = fs::read_to_string(config).unwrap();
-    assert_eq!(
-        config_after,
-        "notify = [\"/other/notifier\", \"turn-ended\"]\n"
-    );
+    assert_eq!(config_after, "notify = [\"/other/notifier\", \"turn-ended\"]\n");
     let hooks = fs::read_to_string(codex_home.path().join("hooks.json")).unwrap();
     assert!(hooks.contains(HOOK_MARKER));
     assert!(hooks.contains("\"PermissionRequest\""));
@@ -64,11 +61,7 @@ fn setup_dry_run_does_not_write_hooks_json() {
         .success();
 
     let after_dry_run = fs::read_to_string(&hooks_path).unwrap();
-    assert_eq!(
-        after_dry_run.trim(),
-        "{}",
-        "dry-run must not modify hooks.json; got: {after_dry_run:?}"
-    );
+    assert_eq!(after_dry_run.trim(), "{}", "dry-run must not modify hooks.json; got: {after_dry_run:?}");
 
     // Positive control: the same CODEX_HOME without --dry-run MUST install our hooks.
     Command::cargo_bin("zj-radar")
@@ -79,19 +72,10 @@ fn setup_dry_run_does_not_write_hooks_json() {
         .success();
 
     let after_real = fs::read_to_string(&hooks_path).unwrap();
-    assert!(
-        after_real.contains(HOOK_MARKER),
-        "real run must have written our hook command; got: {after_real:?}"
-    );
+    assert!(after_real.contains(HOOK_MARKER), "real run must have written our hook command; got: {after_real:?}");
     // Verify the file has the expected shape: our marker appears for multiple events
-    assert!(
-        after_real.contains("\"Stop\""),
-        "hooks.json must contain the Stop event"
-    );
-    assert!(
-        after_real.contains("\"PermissionRequest\""),
-        "hooks.json must contain the PermissionRequest event"
-    );
+    assert!(after_real.contains("\"Stop\""), "hooks.json must contain the Stop event");
+    assert!(after_real.contains("\"PermissionRequest\""), "hooks.json must contain the PermissionRequest event");
 }
 
 // ── idempotency ─────────────────────────────────────────────────────────────
@@ -115,19 +99,13 @@ fn setup_codex_hooks_is_idempotent() {
     let after_first = fs::read_to_string(&hooks_path).unwrap();
 
     // Non-vacuous: first run actually wrote our hook
-    assert!(
-        after_first.contains(HOOK_MARKER),
-        "first run must have written our hook command; got: {after_first:?}"
-    );
+    assert!(after_first.contains(HOOK_MARKER), "first run must have written our hook command; got: {after_first:?}");
 
     // Second run must not change the file
     run();
     let after_second = fs::read_to_string(&hooks_path).unwrap();
 
-    assert_eq!(
-        after_first, after_second,
-        "second setup must be a no-op (idempotent)"
-    );
+    assert_eq!(after_first, after_second, "second setup must be a no-op (idempotent)");
 }
 
 // ── codex hook guidance mentions disabled hooks when config says so ───────────
@@ -140,11 +118,7 @@ fn setup_codex_hooks_is_idempotent() {
 #[test]
 fn setup_codex_guidance_warns_when_hooks_feature_disabled() {
     let codex_home = isolated_codex_home();
-    fs::write(
-        codex_home.path().join("config.toml"),
-        "[features]\nhooks = false\n",
-    )
-    .unwrap();
+    fs::write(codex_home.path().join("config.toml"), "[features]\nhooks = false\n").unwrap();
 
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
@@ -209,15 +183,9 @@ fn setup_zellij_refuses_wasm_and_download_together() {
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
         .assert();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert!(
-        stderr.contains("not both"),
-        "expected a mutual-exclusion refusal; got stderr: {stderr:?}"
-    );
+    assert!(stderr.contains("not both"), "expected a mutual-exclusion refusal; got stderr: {stderr:?}");
 
-    assert!(
-        !config_path.exists(),
-        "the conflict guard must not write config.kdl"
-    );
+    assert!(!config_path.exists(), "the conflict guard must not write config.kdl");
 }
 
 // ── Test: an interrupted download never leaves a partial wasm behind ─────────
@@ -318,11 +286,7 @@ fn checksum_mismatch_refuses_to_install_the_wasm() {
     // Prepend the fake curl but keep the inherited PATH, so `sha256sum`/`shasum`
     // still resolve — without a hash tool the code degrades to a TLS-only
     // warning and the mismatch would never be caught (a different path).
-    let path = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = format!("{}:{}", fakebin.path().display(), std::env::var("PATH").unwrap_or_default());
 
     Command::cargo_bin("zj-radar")
         .unwrap()
@@ -346,10 +310,7 @@ fn checksum_mismatch_refuses_to_install_the_wasm() {
         .into_iter()
         .filter(|p| p.contains("zj_radar") || p.ends_with(".part") || p.ends_with(".sha256"))
         .collect();
-    assert!(
-        staged.is_empty(),
-        "a rejected download must leave no wasm/.part/.sha256 behind, found {staged:?}"
-    );
+    assert!(staged.is_empty(), "a rejected download must leave no wasm/.part/.sha256 behind, found {staged:?}");
 }
 
 // ── Test: setup/check operate on the layout Zellij actually loads ────────────
@@ -361,11 +322,7 @@ fn checksum_mismatch_refuses_to_install_the_wasm() {
 #[test]
 fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     let config_dir = TempDir::new().unwrap();
-    fs::write(
-        config_dir.path().join("config.kdl"),
-        "default_layout \"main\"\n",
-    )
-    .unwrap();
+    fs::write(config_dir.path().join("config.kdl"), "default_layout \"main\"\n").unwrap();
     let layouts = config_dir.path().join("layouts");
     fs::create_dir_all(&layouts).unwrap();
     // main.kdl HAS the rail; other.kdl does not.
@@ -396,10 +353,7 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
 
     // --layout other: the doctor must inspect other.kdl, which lacks the rail.
     let out = check(&["--layout", "other"]);
-    assert!(
-        !out.contains("ok layout"),
-        "check --layout other must inspect other.kdl (no rail); got:\n{out}"
-    );
+    assert!(!out.contains("ok layout"), "check --layout other must inspect other.kdl (no rail); got:\n{out}");
 }
 
 // ── Test: the doctor is scriptable ───────────────────────────────────────────
@@ -640,14 +594,8 @@ fn setup_zellij_inject_creates_full_layout_when_none_exists() {
         .success();
 
     let created = fs::read_to_string(&layout_path).unwrap();
-    assert!(
-        created.contains("plugin location=\"radar\""),
-        "created layout must carry the rail; got:\n{created}"
-    );
-    assert!(
-        created.contains("swap_tiled_layout"),
-        "created layout must carry the swap layouts; got:\n{created}"
-    );
+    assert!(created.contains("plugin location=\"radar\""), "created layout must carry the rail; got:\n{created}");
+    assert!(created.contains("swap_tiled_layout"), "created layout must carry the swap layouts; got:\n{created}");
     assert!(
         !layout_path.with_file_name("default.kdl.zj-radar.bak").exists(),
         "a freshly created layout has no original to back up"
@@ -669,10 +617,7 @@ fn setup_zellij_yes_never_creates_a_layout_file() {
 
     assert!(!layout_path.exists(), "--yes must not create files");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("--inject"),
-        "the no-layout fallback must point at the create route; got:\n{stdout}"
-    );
+    assert!(stdout.contains("--inject"), "the no-layout fallback must point at the create route; got:\n{stdout}");
 }
 
 // ── --inject writes the rail into the layout and creates a .bak ───────────────
@@ -681,7 +626,7 @@ fn setup_zellij_yes_never_creates_a_layout_file() {
 fn setup_zellij_inject_writes_rail_and_bak() {
     let config_dir = isolated_zellij_config(FIXTURE_LAYOUT);
     let layout_path = config_dir.path().join("layouts").join("default.kdl");
-    let bak_path    = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
+    let bak_path = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
 
     Command::cargo_bin("zj-radar")
         .unwrap()
@@ -691,30 +636,14 @@ fn setup_zellij_inject_writes_rail_and_bak() {
         .success();
 
     let injected = fs::read_to_string(&layout_path).unwrap();
-    assert!(
-        injected.contains("// zj-radar:wrap begin"),
-        "--inject must add the wrap begin marker; got:\n{injected}"
-    );
-    assert!(
-        injected.contains("plugin location=\"radar\""),
-        "--inject must add the radar plugin; got:\n{injected}"
-    );
-    assert!(
-        injected.contains("swap_tiled_layout"),
-        "--inject must add swap layouts; got:\n{injected}"
-    );
-    assert!(
-        bak_path.exists(),
-        "--inject must create a .zj-radar.bak backup at {}",
-        bak_path.display()
-    );
+    assert!(injected.contains("// zj-radar:wrap begin"), "--inject must add the wrap begin marker; got:\n{injected}");
+    assert!(injected.contains("plugin location=\"radar\""), "--inject must add the radar plugin; got:\n{injected}");
+    assert!(injected.contains("swap_tiled_layout"), "--inject must add swap layouts; got:\n{injected}");
+    assert!(bak_path.exists(), "--inject must create a .zj-radar.bak backup at {}", bak_path.display());
 
     // The backup must be the original fixture.
     let bak = fs::read_to_string(&bak_path).unwrap();
-    assert_eq!(
-        bak, FIXTURE_LAYOUT,
-        ".bak must contain the original layout"
-    );
+    assert_eq!(bak, FIXTURE_LAYOUT, ".bak must contain the original layout");
 }
 
 // ── --inject with existing swaps skips swap blocks, prints advisory ────────────
@@ -756,16 +685,11 @@ layout {
         .clone();
 
     let injected = fs::read_to_string(&layout_path).unwrap();
-    assert!(
-        injected.contains("plugin location=\"radar\""),
-        "--inject must add the radar plugin; got:\n{injected}"
-    );
-    assert!(
-        injected.contains("tab_template name=\"ui\""),
-        "--inject must add the ui template; got:\n{injected}"
-    );
+    assert!(injected.contains("plugin location=\"radar\""), "--inject must add the radar plugin; got:\n{injected}");
+    assert!(injected.contains("tab_template name=\"ui\""), "--inject must add the ui template; got:\n{injected}");
     assert_eq!(
-        injected.matches("swap_tiled_layout").count(), 1,
+        injected.matches("swap_tiled_layout").count(),
+        1,
         "the user's lone swap block must remain the only one; got:\n{injected}"
     );
 
@@ -798,10 +722,7 @@ fn setup_zellij_yes_without_inject_prints_snippet_and_does_not_modify() {
 
     // Layout must be unmodified.
     let after = fs::read_to_string(&layout_path).unwrap();
-    assert_eq!(
-        after, FIXTURE_LAYOUT,
-        "--yes without --inject must not modify the layout (Snippet mode)"
-    );
+    assert_eq!(after, FIXTURE_LAYOUT, "--yes without --inject must not modify the layout (Snippet mode)");
     // The tailored snippet must be printed.
     assert!(
         stdout.contains("default_tab_template") || stdout.contains("Add the sidebar"),
@@ -825,10 +746,7 @@ fn setup_zellij_uninstall_reverses_injection() {
         .success();
 
     let injected = fs::read_to_string(&layout_path).unwrap();
-    assert!(
-        injected.contains("// zj-radar:wrap begin"),
-        "prerequisite: inject must have written the rail"
-    );
+    assert!(injected.contains("// zj-radar:wrap begin"), "prerequisite: inject must have written the rail");
 
     // Now uninstall (layout-only, no wasm config needed).
     Command::cargo_bin("zj-radar")
@@ -843,15 +761,9 @@ fn setup_zellij_uninstall_reverses_injection() {
         !after.contains("// zj-radar:wrap begin") && !after.contains("// zj-radar:block begin"),
         "--uninstall must remove the begin markers"
     );
-    assert!(
-        !after.contains("plugin location=\"radar\""),
-        "--uninstall must remove the radar plugin"
-    );
+    assert!(!after.contains("plugin location=\"radar\""), "--uninstall must remove the radar plugin");
     // Must still be valid KDL with the original tab preserved.
-    assert!(
-        after.contains("default_tab_template"),
-        "uninstall must preserve the rest of the layout"
-    );
+    assert!(after.contains("default_tab_template"), "uninstall must preserve the rest of the layout");
 }
 
 // ── --uninstall deletes a layout that setup created whole ─────────────────────
@@ -919,10 +831,7 @@ fn setup_zellij_uninstall_advises_on_edited_whole_created_layout() {
         .get_output()
         .clone();
 
-    assert!(
-        layout_path.exists(),
-        "an edited layout is the user's — uninstall must never delete it"
-    );
+    assert!(layout_path.exists(), "an edited layout is the user's — uninstall must never delete it");
     assert_eq!(
         fs::read_to_string(&layout_path).unwrap(),
         edited,
@@ -941,7 +850,7 @@ fn setup_zellij_uninstall_advises_on_edited_whole_created_layout() {
 fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     let config_dir = isolated_zellij_config(FIXTURE_LAYOUT);
     let layout_path = config_dir.path().join("layouts").join("default.kdl");
-    let bak_path    = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
+    let bak_path = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
 
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
@@ -957,16 +866,10 @@ fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     // Layout must be unchanged.
     let after = fs::read_to_string(&layout_path).unwrap();
     assert_eq!(after, FIXTURE_LAYOUT, "dry-run must not modify the layout");
-    assert!(
-        !bak_path.exists(),
-        "dry-run must not create a .bak file"
-    );
+    assert!(!bak_path.exists(), "dry-run must not create a .bak file");
 
     // stdout must show what would change.
-    assert!(
-        stdout.contains("dry-run"),
-        "dry-run output must mention dry-run; stdout:\n{stdout}"
-    );
+    assert!(stdout.contains("dry-run"), "dry-run output must mention dry-run; stdout:\n{stdout}");
 }
 
 #[test]
@@ -977,11 +880,7 @@ fn setup_zellij_inject_honors_a_default_layout_given_as_a_path() {
     let elsewhere = TempDir::new().unwrap();
     let mine = elsewhere.path().join("mine.kdl");
     fs::write(&mine, FIXTURE_LAYOUT).unwrap();
-    fs::write(
-        config_dir.path().join("config.kdl"),
-        format!("default_layout \"{}\"\n", mine.display()),
-    )
-    .unwrap();
+    fs::write(config_dir.path().join("config.kdl"), format!("default_layout \"{}\"\n", mine.display())).unwrap();
     let out = Command::cargo_bin("zj-radar")
         .unwrap()
         .args(["setup", "zellij", "--inject", "-y"])
@@ -1085,11 +984,7 @@ fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
     let home = TempDir::new().unwrap();
     let plugins_dir = home.path().join(".claude/plugins");
     fs::create_dir_all(&plugins_dir).unwrap();
-    fs::write(
-        plugins_dir.join("installed_plugins.json"),
-        r#"{"plugins":["zj-radar-claude"]}"#,
-    )
-    .unwrap();
+    fs::write(plugins_dir.join("installed_plugins.json"), r#"{"plugins":["zj-radar-claude"]}"#).unwrap();
 
     let run = || {
         Command::cargo_bin("zj-radar")
@@ -1136,9 +1031,7 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
         if seed_grant {
             let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
             #[cfg(target_os = "macos")]
-            let perms_path = home
-                .path()
-                .join("Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl");
+            let perms_path = home.path().join("Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl");
             #[cfg(not(target_os = "macos"))]
             let perms_path = home.path().join(".cache/zellij/permissions.kdl");
             fs::create_dir_all(perms_path.parent().unwrap()).unwrap();
@@ -1170,10 +1063,7 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
     };
 
     let stdout = install_stdout(true);
-    assert!(
-        stdout.contains("zellij: installed"),
-        "granted install must still install; stdout:\n{stdout}"
-    );
+    assert!(stdout.contains("zellij: installed"), "granted install must still install; stdout:\n{stdout}");
     assert!(
         !stdout.contains("press y to"),
         "already-granted install must not print the first-launch grant hint; stdout:\n{stdout}"
@@ -1182,10 +1072,7 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
     // With no prior grant, a consented install now pre-seeds the grant itself
     // (see the pre-seed section below) — the first-launch hint is superseded.
     let stdout = install_stdout(false);
-    assert!(
-        stdout.contains("pre-authorized"),
-        "ungranted install must pre-seed the grant; stdout:\n{stdout}"
-    );
+    assert!(stdout.contains("pre-authorized"), "ungranted install must pre-seed the grant; stdout:\n{stdout}");
     assert!(
         !stdout.contains("press y to"),
         "a pre-seeded install needs no first-launch walkthrough; stdout:\n{stdout}"
@@ -1245,8 +1132,8 @@ fn setup_zellij_preseeds_grant_on_install() {
     let (config_dir, home, stdout, _) = preseed_install(None);
     let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
 
-    let perms = fs::read_to_string(permissions_path(home.path()))
-        .expect("a consented install must write permissions.kdl");
+    let perms =
+        fs::read_to_string(permissions_path(home.path())).expect("a consented install must write permissions.kdl");
     assert!(
         perms.contains(&format!("\"{}\"", wasm_dest.display())),
         "grant must be keyed by the absolute wasm destination:\n{perms}"
@@ -1270,10 +1157,7 @@ fn setup_zellij_preseeds_grant_on_install() {
         .get_output()
         .clone();
     let check = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        check.contains("ok grant"),
-        "the doctor must see the pre-seeded grant; check output:\n{check}"
-    );
+    assert!(check.contains("ok grant"), "the doctor must see the pre-seeded grant; check output:\n{check}");
 }
 
 #[test]
@@ -1283,14 +1167,8 @@ fn setup_zellij_preseed_preserves_foreign_entries() {
     let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
 
     let perms = fs::read_to_string(permissions_path(home.path())).unwrap();
-    assert!(
-        perms.starts_with(foreign),
-        "another plugin's grant must survive byte-for-byte:\n{perms}"
-    );
-    assert!(
-        perms.contains(&format!("\"{}\"", wasm_dest.display())),
-        "our grant must be appended alongside:\n{perms}"
-    );
+    assert!(perms.starts_with(foreign), "another plugin's grant must survive byte-for-byte:\n{perms}");
+    assert!(perms.contains(&format!("\"{}\"", wasm_dest.display())), "our grant must be appended alongside:\n{perms}");
     // Zellij owns this file: the standard .bak restore point must exist.
     let bak = permissions_path(home.path()).with_file_name("permissions.kdl.zj-radar.bak");
     assert_eq!(
@@ -1313,14 +1191,8 @@ fn setup_zellij_preseed_refuses_malformed_permissions_kdl() {
         malformed,
         "a malformed permissions.kdl must be left untouched"
     );
-    assert!(
-        stderr.contains("refusing"),
-        "the refusal must be reported; stderr:\n{stderr}"
-    );
-    assert!(
-        stdout.contains("press y to"),
-        "with no pre-seed the first-launch hint must return; stdout:\n{stdout}"
-    );
+    assert!(stderr.contains("refusing"), "the refusal must be reported; stderr:\n{stderr}");
+    assert!(stdout.contains("press y to"), "with no pre-seed the first-launch hint must return; stdout:\n{stdout}");
 }
 
 #[test]
@@ -1339,14 +1211,8 @@ fn setup_zellij_dry_run_would_preseed_but_writes_nothing() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        stdout.contains("would pre-authorize"),
-        "dry-run must announce the pre-seed; stdout:\n{stdout}"
-    );
-    assert!(
-        !permissions_path(home.path()).exists(),
-        "dry-run must not create permissions.kdl"
-    );
+    assert!(stdout.contains("would pre-authorize"), "dry-run must announce the pre-seed; stdout:\n{stdout}");
+    assert!(!permissions_path(home.path()).exists(), "dry-run must not create permissions.kdl");
 }
 
 #[test]
@@ -1380,10 +1246,7 @@ fn setup_zellij_preseed_skipped_without_tty_falls_back_to_hint() {
 
     let output = run(false); // no --yes, piped stdin: nothing can be consented
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        !permissions_path(home.path()).exists(),
-        "a skipped pre-authorization must write nothing"
-    );
+    assert!(!permissions_path(home.path()).exists(), "a skipped pre-authorization must write nothing");
     assert!(
         stdout.contains("no tty — re-run with -y"),
         "the non-tty skip must say why and name the -y escape; stdout:\n{stdout}"
@@ -1421,10 +1284,7 @@ fn setup_zellij_never_writes_a_symlinked_layout() {
         .clone();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        stderr.contains("symlink"),
-        "must say WHY it refused (symlink / Nix); stderr:\n{stderr}"
-    );
+    assert!(stderr.contains("symlink"), "must say WHY it refused (symlink / Nix); stderr:\n{stderr}");
     assert!(
         stdout.contains("Add the sidebar"),
         "must still print the tailored snippet for the Nix config; stdout:\n{stdout}"
@@ -1434,11 +1294,7 @@ fn setup_zellij_never_writes_a_symlinked_layout() {
         fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
         "--inject must not replace the symlink with a regular file"
     );
-    assert_eq!(
-        fs::read_to_string(&real).unwrap(),
-        FIXTURE_LAYOUT,
-        "the symlink target must be untouched"
-    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), FIXTURE_LAYOUT, "the symlink target must be untouched");
 
     // Uninstall: same guard (no config.kdl → the layout-only uninstall path).
     let output = Command::cargo_bin("zj-radar")
@@ -1450,10 +1306,7 @@ fn setup_zellij_never_writes_a_symlinked_layout() {
         .get_output()
         .clone();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        stderr.contains("symlink"),
-        "--uninstall must refuse a symlinked layout out loud; stderr:\n{stderr}"
-    );
+    assert!(stderr.contains("symlink"), "--uninstall must refuse a symlinked layout out loud; stderr:\n{stderr}");
     assert!(
         fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
         "--uninstall must leave the symlink in place"
@@ -1494,11 +1347,7 @@ fn setup_zellij_refuses_an_unreadable_layout_instead_of_recreating_it() {
         stderr.contains("could not read layout"),
         "must report the read error, not claim the layout is absent; stderr:\n{stderr}"
     );
-    assert_eq!(
-        fs::read(&layout_path).unwrap(),
-        non_utf8,
-        "--inject must leave an unreadable layout byte-identical"
-    );
+    assert_eq!(fs::read(&layout_path).unwrap(), non_utf8, "--inject must leave an unreadable layout byte-identical");
 
     // Uninstall: same discrimination (unreadable != nothing to uninstall).
     let output = Command::cargo_bin("zj-radar")
@@ -1510,15 +1359,8 @@ fn setup_zellij_refuses_an_unreadable_layout_instead_of_recreating_it() {
         .get_output()
         .clone();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        stderr.contains("could not read layout"),
-        "--uninstall must report the read error; stderr:\n{stderr}"
-    );
-    assert_eq!(
-        fs::read(&layout_path).unwrap(),
-        non_utf8,
-        "--uninstall must leave an unreadable layout byte-identical"
-    );
+    assert!(stderr.contains("could not read layout"), "--uninstall must report the read error; stderr:\n{stderr}");
+    assert_eq!(fs::read(&layout_path).unwrap(), non_utf8, "--uninstall must leave an unreadable layout byte-identical");
 }
 
 // ── Test: --dry-run --download never touches the network ─────────────────────
@@ -1542,17 +1384,10 @@ fn setup_zellij_dry_run_download_skips_the_fetch_and_writes_nothing() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(stdout.contains("would download"), "dry-run must announce the download it skipped; stdout:\n{stdout}");
+    assert!(stdout.contains("dry-run"), "the config preview must still print; stdout:\n{stdout}");
     assert!(
-        stdout.contains("would download"),
-        "dry-run must announce the download it skipped; stdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("dry-run"),
-        "the config preview must still print; stdout:\n{stdout}"
-    );
-    assert!(
-        !config_dir.path().join("config.kdl").exists()
-            && !config_dir.path().join("plugins").exists(),
+        !config_dir.path().join("config.kdl").exists() && !config_dir.path().join("plugins").exists(),
         "--dry-run --download must write nothing"
     );
 }
@@ -1615,15 +1450,9 @@ fn check_warns_when_zellij_config_file_points_elsewhere() {
 
     // Unset, or pointing at the resolved path: no warning.
     let out = check(None);
-    assert!(
-        !out.contains("config env"),
-        "no override -> no config env item; got:\n{out}"
-    );
+    assert!(!out.contains("config env"), "no override -> no config env item; got:\n{out}");
     let out = check(Some(&resolved));
-    assert!(
-        !out.contains("config env"),
-        "an override that matches the resolved path is consistent; got:\n{out}"
-    );
+    assert!(!out.contains("config env"), "an override that matches the resolved path is consistent; got:\n{out}");
 }
 
 // ── setup claude: drives Claude Code's real plugin CLI ───────────────────────
@@ -1638,11 +1467,7 @@ fn claude_home(wired: bool) -> TempDir {
     if wired {
         let plugins = home.path().join(".claude/plugins");
         fs::create_dir_all(&plugins).unwrap();
-        fs::write(
-            plugins.join("installed_plugins.json"),
-            r#"{"plugins":["zj-radar-claude"]}"#,
-        )
-        .unwrap();
+        fs::write(plugins.join("installed_plugins.json"), r#"{"plugins":["zj-radar-claude"]}"#).unwrap();
     }
     home
 }
@@ -1861,10 +1686,7 @@ fn setup_zellij_uninstall_deletes_a_v013_authored_layout() {
     fs::write(&layout_path, &legacy).unwrap();
 
     run(&["setup", "zellij", "--uninstall", "--yes"]);
-    assert!(
-        !layout_path.exists(),
-        "a layout authored whole by v0.1.3 setup must still be deleted on uninstall"
-    );
+    assert!(!layout_path.exists(), "a layout authored whole by v0.1.3 setup must still be deleted on uninstall");
 }
 
 #[test]
@@ -1921,10 +1743,7 @@ fn setup_zellij_dry_run_never_contradicts_itself_about_the_grant() {
     fs::remove_file(permissions_path(home.path())).unwrap(); // grant gone again
     let output = run(&["--dry-run"]); // Unchanged arm under dry-run
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        stdout.contains("would pre-authorize"),
-        "dry-run must announce the pre-seed; stdout:\n{stdout}"
-    );
+    assert!(stdout.contains("would pre-authorize"), "dry-run must announce the pre-seed; stdout:\n{stdout}");
     assert!(
         !stdout.contains("permissions not pre-authorized"),
         "the BLANK-rail warning contradicts the would-pre-authorize line; stdout:\n{stdout}"
@@ -2039,7 +1858,10 @@ fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
     assert_eq!(fs::read_to_string(&bak).unwrap(), "export const Other = async () => ({});\n");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(&format!("left {}", bak.display())), "stdout:\n{stdout}");
-    assert!(stdout.contains(&format!("`mv {} {}` to restore it", bak.display(), plugin.display())), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("`mv {} {}` to restore it", bak.display(), plugin.display())),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]

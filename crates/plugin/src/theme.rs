@@ -33,11 +33,7 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
 
 /// Linear per-channel blend: t=0 → a, t=1 → b.
 pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let ch = |ac: u8, bc: u8| {
-        (ac as f32 + (bc as f32 - ac as f32) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
+    let ch = |ac: u8, bc: u8| (ac as f32 + (bc as f32 - ac as f32) * t).round().clamp(0.0, 255.0) as u8;
     (ch(a.0, b.0), ch(a.1, b.1), ch(a.2, b.2))
 }
 
@@ -211,12 +207,7 @@ mod tests {
     fn rail_bg_is_darker_than_terminal_bg() {
         // The panel base is a "crust" one step darker than the terminal bg.
         let d = DerivedColors::from_bg_fg(FALLBACK_BG, FALLBACK_FG);
-        assert!(
-            lum(d.rail_bg) < lum(FALLBACK_BG),
-            "rail_bg {:?} must be darker than bg {:?}",
-            d.rail_bg,
-            FALLBACK_BG
-        );
+        assert!(lum(d.rail_bg) < lum(FALLBACK_BG), "rail_bg {:?} must be darker than bg {:?}", d.rail_bg, FALLBACK_BG);
     }
 
     #[test]

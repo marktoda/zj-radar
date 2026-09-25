@@ -21,9 +21,7 @@ pub struct Recorded {
 
 impl ShimDir {
     pub fn new() -> Self {
-        ShimDir {
-            dir: TempDir::new().unwrap(),
-        }
+        ShimDir { dir: TempDir::new().unwrap() }
     }
 
     /// Install a fake `name` binary that records argv + stdin to
@@ -66,7 +64,8 @@ impl ShimDir {
         let pid_file = self.dir.path().join(format!("{name}.pid"));
         let script = format!(
             "#!/bin/sh\nprintf '%s\\t\\n' \"$*\" >> {log:?}\necho $$ > {pid_file:?}\nexec sleep {secs}\n",
-            log = log, pid_file = pid_file
+            log = log,
+            pid_file = pid_file
         );
         let bin = self.dir.path().join(name);
         fs::write(&bin, script).unwrap();
@@ -83,16 +82,10 @@ impl ShimDir {
         let pid_file = self.dir.path().join(format!("{name}.pid"));
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            if let Some(pid) = fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-            {
+            if let Some(pid) = fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
                 return pid;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "hanging {name} shim never started (no pid in {pid_file:?})"
-            );
+            assert!(std::time::Instant::now() < deadline, "hanging {name} shim never started (no pid in {pid_file:?})");
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
@@ -138,11 +131,7 @@ impl ShimDir {
         let calls = self.recorded("zellij");
         assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast: {calls:?}");
         let c = &calls[0];
-        assert!(
-            c.args.contains(&"pipe".to_string()),
-            "expected the pipe subcommand in: {:?}",
-            c.args
-        );
+        assert!(c.args.contains(&"pipe".to_string()), "expected the pipe subcommand in: {:?}", c.args);
         assert_eq!(c.stdin, "", "payload should be sent as argv, not stdin");
         c.args.join(" ")
     }
@@ -165,12 +154,7 @@ impl ShimDir {
             .map(|l| {
                 let mut parts = l.splitn(2, '\t');
                 Recorded {
-                    args: parts
-                        .next()
-                        .unwrap_or("")
-                        .split_whitespace()
-                        .map(String::from)
-                        .collect(),
+                    args: parts.next().unwrap_or("").split_whitespace().map(String::from).collect(),
                     stdin: parts.next().unwrap_or("").to_string(),
                 }
             })

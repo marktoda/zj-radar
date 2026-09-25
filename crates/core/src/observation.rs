@@ -181,12 +181,8 @@ impl ObservationStore {
     /// only the completions would re-open the trap where a caller reads
     /// emptiness as "nothing removed" and skips the persist.
     pub fn prune(&mut self, live: &HashSet<u32>) -> Vec<(u32, TrackedObservation)> {
-        let dropped: Vec<(u32, TrackedObservation)> = self
-            .map
-            .iter()
-            .filter(|(id, _)| !live.contains(id))
-            .map(|(&id, obs)| (id, obs.clone()))
-            .collect();
+        let dropped: Vec<(u32, TrackedObservation)> =
+            self.map.iter().filter(|(id, _)| !live.contains(id)).map(|(&id, obs)| (id, obs.clone())).collect();
         self.map.retain(|id, _| live.contains(id));
         dropped
     }
@@ -305,7 +301,11 @@ mod tests {
         dropped.sort_unstable_by_key(|(id, _)| *id);
         assert_eq!(dropped.len(), 2, "every drop comes back out — emptiness is the persist signal");
         assert_eq!((dropped[0].0, dropped[0].1.status), (1, Status::Done));
-        assert_eq!((dropped[1].0, dropped[1].1.status), (3, Status::Running), "non-completions included; the ledger sink filters");
+        assert_eq!(
+            (dropped[1].0, dropped[1].1.status),
+            (3, Status::Running),
+            "non-completions included; the ledger sink filters"
+        );
         assert!(s.get(3).is_none());
         assert!(s.get(2).is_some());
     }

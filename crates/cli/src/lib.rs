@@ -185,23 +185,9 @@ pub fn run() -> std::process::ExitCode {
         Command::Run { name, print_cmd } => {
             run::run(run::RunOptions { name, print_cmd });
         }
-        Command::Notify {
-            agent,
-            input,
-            status,
-            msg,
-            task,
-            source,
-            dry_run,
-        } => {
+        Command::Notify { agent, input, status, msg, task, source, dry_run } => {
             if agent == "generic" {
-                notify::run_generic(
-                    status.as_deref(),
-                    msg.as_deref(),
-                    task.as_deref(),
-                    source.as_deref(),
-                    dry_run,
-                );
+                notify::run_generic(status.as_deref(), msg.as_deref(), task.as_deref(), source.as_deref(), dry_run);
             } else {
                 // `--msg`/`--task`/`--source` belong to `notify generic`; the
                 // agent adapters derive all three from the hook payload. Hint

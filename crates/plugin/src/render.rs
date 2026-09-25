@@ -402,10 +402,7 @@ impl LineBg {
 /// Rail line per frame for a value the caller already holds. Outside Cards
 /// density the line passes through untouched.
 fn paint_if_cards(line: Line, cards: bool, width: usize, rail: &str) -> Line {
-    debug_assert!(
-        matches!(line.bg, LineBg::Rail | LineBg::None),
-        "row-less surface emitted a row-owned line class"
-    );
+    debug_assert!(matches!(line.bg, LineBg::Rail | LineBg::None), "row-less surface emitted a row-owned line class");
     match line.bg {
         LineBg::Rail if cards => line.painted(width, rail),
         _ => line,
@@ -434,12 +431,11 @@ impl Line {
     /// debug_assert compiles out) even if a future string source skips
     /// sanitize.
     fn new(text: String, target: Option<RailTarget>, bg: LineBg) -> Self {
-        debug_assert!(
-            !text.trim_end_matches('\n').contains('\n'),
-            "interior newline breaks lockstep: {text:?}"
-        );
+        debug_assert!(!text.trim_end_matches('\n').contains('\n'), "interior newline breaks lockstep: {text:?}");
         let mut text = text;
-        while text.ends_with('\n') { text.pop(); }
+        while text.ends_with('\n') {
+            text.pop();
+        }
         if text.contains('\n') {
             text = text.replace('\n', " ");
         }
@@ -459,8 +455,7 @@ impl Line {
     /// [`Line::new`] — the paint paths must not assign `text` raw, or the
     /// constructor's newline invariant becomes discipline-held again.
     fn painted(self, width: usize, bg: &str) -> Line {
-        Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg)
-            .with_hotspot(self.hotspot)
+        Line::new(paint_card_line(&self.text, width, bg), self.target, self.bg).with_hotspot(self.hotspot)
     }
 }
 
@@ -724,7 +719,10 @@ fn with_time_tag(identity: String, tag: Option<String>) -> String {
 /// densest width-math in the file, self-contained here so `render_row` reads
 /// as pane-roster logic.
 fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> Line {
-    let hotspot = row.display.panes.iter()
+    let hotspot = row
+        .display
+        .panes
+        .iter()
         .any(PaneDisplay::has_unacknowledged_status_pending)
         .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
     let hotspot = HotspotSlot::new(opts.width, TAB_HEADER_HOTSPOT_MIN, hotspot);
@@ -760,11 +758,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // red, "3 pinky" peach+bold. Idle recedes to the dim idle_text; waiting is
     // also bold (it's the alarm). Active is shown by the spine + brighter card,
     // NOT bold, so the two cues stay independent.
-    let label_color = if st == Status::Idle {
-        tc_fg(opts.theme.idle_text)
-    } else {
-        hue(st.role())
-    };
+    let label_color = if st == Status::Idle { tc_fg(opts.theme.idle_text) } else { hue(st.role()) };
     // Bold encodes *activity*: every non-idle row's glyph+number+name is bold so
     // state reads at a glance. Idle stays light/recessed. (Focus is a separate
     // cue — the accent spine + brighter card — so the two stay independent.)
@@ -796,9 +790,9 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let remote_w = if row.display.remote { UnicodeWidthChar::width(remote_mark).unwrap_or(1) } else { 0 };
     let marker_glyphs = usize::from(row.display.remote) + usize::from(row.has_bell);
     let marker_w = if marker_glyphs > 0 { remote_w + usize::from(row.has_bell) + 1 } else { 0 }; // glyphs + trailing space
-    // The marker and the action slot are independent signals. The action slot
-    // has already reduced `width`, so both fit whenever the marker fits this
-    // content budget.
+                                                                                                 // The marker and the action slot are independent signals. The action slot
+                                                                                                 // has already reduced `width`, so both fit whenever the marker fits this
+                                                                                                 // content budget.
     let show_marker = marker_glyphs > 0 && prefix_len + marker_w <= width;
     let marker_len = if show_marker { marker_w } else { 0 };
     let marker = if show_marker {
@@ -824,16 +818,9 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let gap = width.saturating_sub(used);
     let sp_after_num = if has_trailing_sp { " " } else { "" };
     let label_text = format!("{glyph_char} {num}{sp_after_num}{name}");
-    let label = Seg {
-        color: &label_color,
-        bold: label_bold,
-        text: label_text.into(),
-    };
-    let line = Line::new(
-        format!("{}{}{}{}\n", bar, label, " ".repeat(gap), marker),
-        Some(tab_target.clone()),
-        LineBg::Card,
-    );
+    let label = Seg { color: &label_color, bold: label_bold, text: label_text.into() };
+    let line =
+        Line::new(format!("{}{}{}{}\n", bar, label, " ".repeat(gap), marker), Some(tab_target.clone()), LineBg::Card);
     hotspot.finish(line, &hue(Role::Attention))
 }
 
@@ -865,11 +852,7 @@ struct HotspotSlot {
 impl HotspotSlot {
     fn new(width: usize, minimum: usize, action: Option<HotspotAction>) -> Self {
         let action = action.filter(|_| width >= minimum);
-        let content_width = if action.is_some() {
-            width.saturating_sub(HOTSPOT_SLOT_COLS)
-        } else {
-            width
-        };
+        let content_width = if action.is_some() { width.saturating_sub(HOTSPOT_SLOT_COLS) } else { width };
         Self { width, content_width, action }
     }
 
@@ -972,12 +955,26 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         // Compact form: the pane's background tasks survive as a count,
         // reserved on the line so the identity absorbs any truncation.
         let tasks_tag = pane.tasks().filter(|_| compact).and_then(compact_tasks_tag);
-        let pane_target = RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
-        let hotspot = pane.has_unacknowledged_status_pending()
+        let pane_target =
+            RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
+        let hotspot = pane
+            .has_unacknowledged_status_pending()
             .then(|| HotspotAction::Acknowledge { target: pane_target.clone() });
         let hotspot = HotspotSlot::new(opts.width, PANE_LINE_HOTSPOT_MIN, hotspot);
         let content_width = hotspot.content_width();
-        let text = emit_pane_line(pane, &identity, tasks_tag.as_ref(), detail.is_some(), opts, content_width, row.active, st, &dim_strong, &idle_color, branch);
+        let text = emit_pane_line(
+            pane,
+            &identity,
+            tasks_tag.as_ref(),
+            detail.is_some(),
+            opts,
+            content_width,
+            row.active,
+            st,
+            &dim_strong,
+            &idle_color,
+            branch,
+        );
         // `pane_target` is cloned here because a Pending/Error pane also emits
         // the subordinate `↳ question` line below, targeting the SAME pane —
         // `RailTarget` dropped `Copy` when `session` (a `String`) joined it.
@@ -986,9 +983,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         let mut out = vec![line];
         let mut task_lines = 0;
         if let Some(q) = detail {
-            let text = emit_pane_detail_line(
-                q, row.active, st, pane_status, branch, &idle_color, width,
-            );
+            let text = emit_pane_detail_line(q, row.active, st, pane_status, branch, &idle_color, width);
             out.push(Line::new(text, Some(pane_target.clone()), child_bg));
         }
         if let Some(tasks) = pane.tasks().filter(|_| !compact) {
@@ -1018,9 +1013,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
     // `└`. No collapse — the tree is purely a visual affordance for "these panes
     // belong to the tab above."
     if is_multi_pane(&row.display) {
-        let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter()
-            .filter(|p| p.earns_pane_line())
-            .collect();
+        let tracked_panes: Vec<&PaneDisplay> = row.display.panes.iter().filter(|p| p.earns_pane_line()).collect();
         let total_tracked = tracked_panes.len();
         let show = total_tracked.min(MAX_PANE_LINES);
         let remaining = total_tracked - show;
@@ -1028,11 +1021,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         for (i, &pane) in tracked_panes.iter().take(show).enumerate() {
             // The final pane line is the `└` only when no `+N more` line follows
             // it; otherwise that trailing line carries the elbow.
-            let branch = if i + 1 == show && remaining == 0 {
-                Branch::Elbow
-            } else {
-                Branch::Tee
-            };
+            let branch = if i + 1 == show && remaining == 0 { Branch::Elbow } else { Branch::Tee };
             let (pane_out, task_lines) = pane_lines(pane, branch, false);
             lines.extend(pane_out);
             task_line_count += task_lines;
@@ -1157,7 +1146,8 @@ fn emit_task_lines(tasks: &BgTasks, ctx: &TaskLineCtx) -> Vec<String> {
     if ordered.len() > show {
         let folded = &ordered[show..];
         let more = format!("+{} more", folded.len());
-        let color = if folded.iter().any(|t| t.state == TaskState::Failed) { Role::Error.ansi() } else { ctx.guide_color };
+        let color =
+            if folded.iter().any(|t| t.state == TaskState::Failed) { Role::Error.ansi() } else { ctx.guide_color };
         out.push(task_prefixed_line(ctx, &more, |avail| Seg::new(color, truncate(&more, avail)).to_string()));
     }
     out
@@ -1271,11 +1261,7 @@ fn compose_activity(cmd: &str, outcome: Option<ExitOutcome>, avail: usize, cmd_c
     for tag in [full.as_str(), min] {
         let tag_w = UnicodeWidthStr::width(tag);
         if tag_w + 2 <= avail {
-            return format!(
-                "{} {}",
-                Seg::new(cmd_color, truncate(cmd, avail - tag_w - 1)),
-                Seg::new(role, tag),
-            );
+            return format!("{} {}", Seg::new(cmd_color, truncate(cmd, avail - tag_w - 1)), Seg::new(role, tag),);
         }
     }
     // Too tight for any command: show the outcome glyph alone (clip if even that
@@ -1378,11 +1364,7 @@ fn emit_pane_line(
             }
             // The glyph carries the status color (bold on non-idle, matching line 1); the
             // mark is the vendor-neutral stronger dim, always bold.
-            let glyph_seg = Seg {
-                color: glyph_color,
-                bold: status != Status::Idle,
-                text: glyph.to_string().into(),
-            };
+            let glyph_seg = Seg { color: glyph_color, bold: status != Status::Idle, text: glyph.to_string().into() };
             let mark_seg = Seg::bold(dim_strong, mark.to_string());
             format!(
                 "{}{} {} {}",
@@ -1572,11 +1554,7 @@ fn paint_card_line(line: &str, width: usize, bg: &str) -> String {
 }
 
 fn target_for_row(row: &TabRow) -> RailTarget {
-    RailTarget {
-        tab_position: row.tab_position(),
-        pane_id: None,
-        session: None,
-    }
+    RailTarget { tab_position: row.tab_position(), pane_id: None, session: None }
 }
 
 /// Produce the identity header lines as raw (unpainted) `Line` values.
@@ -1607,11 +1585,7 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     }
     let width = opts.width;
     let accent = Role::Accent.ansi();
-    let primary = if overflow {
-        format!("{}▲", rows.len())
-    } else {
-        format!("·{}", rows.len())
-    };
+    let primary = if overflow { format!("{}▲", rows.len()) } else { format!("·{}", rows.len()) };
     let title = " RADAR";
     let title_w = UnicodeWidthStr::width(title);
     // Title in accent; primary muted (accent when overflowing, so the ▲
@@ -1649,27 +1623,15 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
         // the pre-badge single-token clamp.
         Seg::new(primary_color, truncate(&plain_right, right_w)).to_string()
     } else {
-        right_segs
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect::<String>()
+        right_segs.into_iter().map(|s| s.to_string()).collect::<String>()
     };
     let mut title_line = String::new();
-    title_line.push_str(&format!(
-        "{}{}{}\n",
-        Seg::new(accent, title_clamped),
-        " ".repeat(gap),
-        right_rendered,
-    ));
+    title_line.push_str(&format!("{}{}{}\n", Seg::new(accent, title_clamped), " ".repeat(gap), right_rendered,));
 
     let mut lines = vec![Line::new(title_line, None, LineBg::Rail)];
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
-        lines.push(Line::new(
-            format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
-            None,
-            LineBg::Rail,
-        ));
+        lines.push(Line::new(format!("{}\n", header_rule(width, opts.now_tick, working, accent)), None, LineBg::Rail));
     }
     // The one fact `header_lines` states independently (it must, for the body
     // budget — see its doc) re-checked against what was actually emitted.
@@ -1696,12 +1658,7 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
     let pos = (now_tick % width as u64) as usize;
     let before = "═".repeat(pos);
     let after = "═".repeat(width - pos - 1);
-    format!(
-        "{}{}{}",
-        Seg::new(accent, before),
-        Seg::bold(accent, "◆"),
-        Seg::new(accent, after),
-    )
+    format!("{}{}{}", Seg::new(accent, before), Seg::bold(accent, "◆"), Seg::new(accent, after),)
 }
 
 /// The cross-session badge: one line per session `Sessions::badge()` tracks
@@ -1774,8 +1731,8 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let mut lines: Vec<Line> = entries
         .iter()
         .map(|entry| {
-            let hotspot = (entry.stale && !entry.is_current)
-                .then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
+            let hotspot =
+                (entry.stale && !entry.is_current).then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
             let hotspot = HotspotSlot::new(width, BADGE_LINE_HOTSPOT_MIN, hotspot);
             let content_width = hotspot.content_width();
             let mut label = entry.name.clone();
@@ -1809,8 +1766,8 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                     format!("{} {}", Seg::new(marker_color, marker), label_seg)
                 },
             );
-            let target = (!entry.is_current)
-                .then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
+            let target =
+                (!entry.is_current).then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
             let line = Line::new(text, target, LineBg::Rail);
             let hotspot_color = if entry.selected { accent } else { &stale };
             hotspot.finish(line, hotspot_color)
@@ -1827,13 +1784,7 @@ fn render_strip(strip_folded: usize, opts: &RenderOpts) -> Vec<Line> {
         return vec![];
     }
     vec![Line::new(
-        format!(
-            "{}\n",
-            Seg::new(
-                Role::Accent.ansi(),
-                truncate(&format!("+{} idle ▾", strip_folded), opts.width),
-            ),
-        ),
+        format!("{}\n", Seg::new(Role::Accent.ansi(), truncate(&format!("+{} idle ▾", strip_folded), opts.width),),),
         None,
         LineBg::Rail,
     )]
@@ -1865,11 +1816,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         .iter()
         .map(|r| {
             let (block, task_lines) = render_row_form(r, opts, false);
-            let meta = RowMeta {
-                status: r.display.status,
-                full_lines: block.len(),
-                compact_lines: block.len() - task_lines,
-            };
+            let meta =
+                RowMeta { status: r.display.status, full_lines: block.len(), compact_lines: block.len() - task_lines };
             (block, meta)
         })
         .unzip();
@@ -1894,9 +1842,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // (`docs/activity-model.md` §1). The footer tally deliberately stays
     // Status-only — "1 working" for an up dev server is honest English, and
     // a count is not an animation.
-    let working = rows
-        .iter()
-        .any(|r| r.display.status == Status::Running && r.display.animating);
+    let working = rows.iter().any(|r| r.display.status == Status::Running && r.display.animating);
 
     let mut flat: Vec<Line> = Vec::new();
 
@@ -1923,7 +1869,8 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // rides inside the value, so Cards finalization cannot forget it when
         // `Line` grows another lockstep field. Outside Cards density nothing
         // paints, so the map is never built at all.
-        let surfaces = cards.then(|| Surfaces { rail: &rail, card: card_tint(row, &opts.theme), active_child: &active_child });
+        let surfaces =
+            cards.then(|| Surfaces { rail: &rail, card: card_tint(row, &opts.theme), active_child: &active_child });
         let finalize = |line: Line| -> Line {
             let mut line = match surfaces.as_ref().and_then(|s| line.bg.escape(s)) {
                 Some(esc) => line.painted(width, esc),
@@ -1983,11 +1930,7 @@ fn bottom_filler() -> Line {
 /// The footer's top rule: a full-width ghost-colored `─` line.
 fn footer_rule(opts: &RenderOpts) -> Line {
     let ghost = tc_fg(opts.theme.idle_text);
-    Line::new(
-        format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))),
-        None,
-        LineBg::Rail,
-    )
+    Line::new(format!("{}\n", Seg::new(&ghost, "─".repeat(opts.width))), None, LineBg::Rail)
 }
 
 /// The footer's bottom hint line: "alt-[n] jump", clamped to width. Starts at
@@ -1995,11 +1938,7 @@ fn footer_rule(opts: &RenderOpts) -> Line {
 /// the two footer lines one column out of step.
 fn footer_hint(opts: &RenderOpts) -> Line {
     let idle = tc_fg(opts.theme.idle_text);
-    Line::new(
-        format!("{}\n", Seg::new(&idle, truncate("alt-[n] jump", opts.width))),
-        None,
-        LineBg::Rail,
-    )
+    Line::new(format!("{}\n", Seg::new(&idle, truncate("alt-[n] jump", opts.width))), None, LineBg::Rail)
 }
 
 /// The footer's tally line: `{n} working · {m} need you`. `n` counts
@@ -2065,11 +2004,7 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
     let dim_strong = tc_fg(opts.theme.dim_strong);
     let age = crate::ledger::format_age(line.at_epoch_s, opts.now_epoch_s);
     let age_w = UnicodeWidthStr::width(age.as_str());
-    let (glyph, glyph_role) = if line.error {
-        ("✗", Role::Error)
-    } else {
-        ("●", Role::Success)
-    };
+    let (glyph, glyph_role) = if line.error { ("✗", Role::Error) } else { ("●", Role::Success) };
     let prefix = age_w + 1 + 1 + 1; // age, space, glyph, space
     let text = prefixed_line(
         width,

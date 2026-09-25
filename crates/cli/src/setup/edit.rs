@@ -28,9 +28,7 @@ fn our_array() -> Array {
 /// Pure editor. `install=true` adds/keeps our notify; `install=false` uninstalls.
 /// Never clobbers a foreign notify unless `force`. Errors on unparseable TOML.
 pub fn edit_codex(existing: &str, install: bool, force: bool) -> Result<Outcome, String> {
-    let mut doc = existing
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
+    let mut doc = existing.parse::<DocumentMut>().map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
     let present = doc.get("notify").is_some();
     let ours = notify_is_ours(doc.get("notify"));
 
@@ -70,9 +68,7 @@ pub fn edit_codex(existing: &str, install: bool, force: bool) -> Result<Outcome,
 /// slot, in place, instead of deleting the slot. Only our slot is replaced — a
 /// notify the user has since changed (or removed) is theirs, left alone.
 pub fn restore_codex_notify(existing: &str, restore: &toml_edit::Item) -> Result<Outcome, String> {
-    let mut doc = existing
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
+    let mut doc = existing.parse::<DocumentMut>().map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
     if !notify_is_ours(doc.get("notify")) {
         return Ok(Outcome::Unchanged);
     }
@@ -153,10 +149,7 @@ fn strip_codex_hooks(file: &mut HooksFile) {
 
 fn add_codex_hooks(file: &mut HooksFile) {
     for event in CODEX_HOOK_EVENTS {
-        file.hooks
-            .entry(event.to_string())
-            .or_default()
-            .push(codex_hook_group());
+        file.hooks.entry(event.to_string()).or_default().push(codex_hook_group());
     }
 }
 
@@ -173,9 +166,7 @@ fn codex_hook_group() -> HookGroup {
 }
 
 fn normalized_hooks_text(existing: &str) -> String {
-    parse_hooks_file(existing)
-        .and_then(|f| json_pretty(&f))
-        .unwrap_or_else(|_| existing.to_string())
+    parse_hooks_file(existing).and_then(|f| json_pretty(&f)).unwrap_or_else(|_| existing.to_string())
 }
 
 fn json_pretty<T: Serialize>(value: &T) -> Result<String, String> {
@@ -260,10 +251,7 @@ fn kdl_line_braces(line: &str) -> Vec<(usize, Brace)> {
 }
 
 pub(crate) fn brace_delta(line: &str) -> isize {
-    kdl_line_braces(line)
-        .iter()
-        .map(|(_, b)| if *b == Brace::Open { 1 } else { -1 })
-        .sum()
+    kdl_line_braces(line).iter().map(|(_, b)| if *b == Brace::Open { 1 } else { -1 }).sum()
 }
 
 fn remove_unmanaged_radar_aliases(lines: &mut Vec<String>) {
@@ -296,9 +284,7 @@ pub(crate) fn is_plugins_node_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     !trimmed.starts_with("//")
         && line.contains('{')
-        && trimmed
-            .strip_prefix("plugins")
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['{', ' ', '\t']))
+        && trimmed.strip_prefix("plugins").is_some_and(|rest| rest.is_empty() || rest.starts_with(['{', ' ', '\t']))
 }
 
 fn find_plugins_insert(lines: &[String]) -> Option<(usize, String)> {
@@ -398,12 +384,7 @@ fn plugins_block_has_radar(doc: &kdl::KdlDocument) -> bool {
 
 /// Pure editor for `~/.config/zellij/config.kdl`. It manages only the
 /// marker-tagged `radar` plugin alias; layout templates remain user-owned.
-pub fn edit_zellij(
-    existing: &str,
-    location: &str,
-    install: bool,
-    force: bool,
-) -> Result<Outcome, String> {
+pub fn edit_zellij(existing: &str, location: &str, install: bool, force: bool) -> Result<Outcome, String> {
     let mut lines = split_lines(existing);
     strip_managed_zellij_alias(&mut lines);
 
@@ -463,10 +444,7 @@ mod tests {
 
     fn assert_top_level_notify_is_ours(toml: &str) {
         let doc = toml.parse::<toml_edit::DocumentMut>().expect("valid toml");
-        assert!(
-            notify_is_ours(doc.get("notify")),
-            "notify must be top-level and ours:\n{toml}"
-        );
+        assert!(notify_is_ours(doc.get("notify")), "notify must be top-level and ours:\n{toml}");
     }
 
     #[test]
@@ -485,10 +463,7 @@ mod tests {
         match out {
             Outcome::Changed(s) => {
                 assert_top_level_notify_is_ours(&s);
-                assert!(
-                    s.contains("[marketplaces.x]"),
-                    "must preserve the user's table"
-                );
+                assert!(s.contains("[marketplaces.x]"), "must preserve the user's table");
             }
             o => panic!("{o:?}"),
         }
@@ -497,19 +472,13 @@ mod tests {
     #[test]
     fn idempotent_when_already_ours() {
         let existing = "notify = [\"zj-radar\", \"notify\", \"codex\"]\n";
-        assert!(matches!(
-            edit_codex(existing, true, false).unwrap(),
-            Outcome::Unchanged
-        ));
+        assert!(matches!(edit_codex(existing, true, false).unwrap(), Outcome::Unchanged));
     }
 
     #[test]
     fn foreign_notify_refuses_without_force() {
         let existing = "notify = [\"/some/other/notifier\", \"turn-ended\"]\n";
-        assert!(matches!(
-            edit_codex(existing, true, false).unwrap(),
-            Outcome::Conflict
-        ));
+        assert!(matches!(edit_codex(existing, true, false).unwrap(), Outcome::Conflict));
     }
 
     #[test]
@@ -518,10 +487,7 @@ mod tests {
         match edit_codex(existing, true, true).unwrap() {
             Outcome::Changed(s) => {
                 assert_top_level_notify_is_ours(&s);
-                assert!(
-                    s.contains("model = \"gpt-5.5\""),
-                    "must preserve other keys"
-                );
+                assert!(s.contains("model = \"gpt-5.5\""), "must preserve other keys");
                 assert!(!s.contains("/other"), "foreign notifier must be gone");
             }
             o => panic!("{o:?}"),
@@ -539,10 +505,7 @@ mod tests {
             o => panic!("{o:?}"),
         }
         let foreign = "notify = [\"/other\", \"turn-ended\"]\n";
-        assert!(matches!(
-            edit_codex(foreign, false, false).unwrap(),
-            Outcome::Unchanged
-        ));
+        assert!(matches!(edit_codex(foreign, false, false).unwrap(), Outcome::Unchanged));
     }
 
     #[test]
@@ -553,7 +516,8 @@ mod tests {
         match restore_codex_notify(ours, &item).unwrap() {
             Outcome::Changed(s) => {
                 let doc = s.parse::<DocumentMut>().unwrap();
-                let notify: Vec<_> = doc["notify"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+                let notify: Vec<_> =
+                    doc["notify"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
                 assert_eq!(notify, ["my-notifier", "--flag"]);
                 assert!(s.contains("model = \"y\""), "the current config is kept, not the bak's: {s}");
             }
@@ -617,10 +581,7 @@ mod tests {
             Outcome::Changed(s) => s,
             o => panic!("{o:?}"),
         };
-        assert!(matches!(
-            edit_codex_hooks(&once, true).unwrap(),
-            Outcome::Unchanged
-        ));
+        assert!(matches!(edit_codex_hooks(&once, true).unwrap(), Outcome::Unchanged));
     }
 
     #[test]
@@ -716,10 +677,8 @@ mod tests {
         }
         match edit_codex_hooks(existing, true).unwrap() {
             Outcome::Changed(s) => {
-                let empty = hooks_value(&s)
-                    .pointer("/hooks/Stop/0/hooks")
-                    .and_then(Value::as_array)
-                    .is_some_and(Vec::is_empty);
+                let empty =
+                    hooks_value(&s).pointer("/hooks/Stop/0/hooks").and_then(Value::as_array).is_some_and(Vec::is_empty);
                 assert!(empty, "preexisting empty group should remain:\n{s}");
             }
             o => panic!("{o:?}"),
@@ -775,10 +734,7 @@ mod tests {
     #[test]
     fn kdl_line_braces_ignores_strings_and_comments() {
         // Structural braces, with byte offsets.
-        assert_eq!(
-            kdl_line_braces("plugins {}"),
-            vec![(8, Brace::Open), (9, Brace::Close)]
-        );
+        assert_eq!(kdl_line_braces("plugins {}"), vec![(8, Brace::Open), (9, Brace::Close)]);
         // Braces inside strings don't count; the string's braces are skipped
         // but the real closing brace after it is still seen.
         assert_eq!(kdl_line_braces(r#"radar name="{not a block}" {"#), vec![(27, Brace::Open)]);
@@ -810,20 +766,11 @@ mod tests {
 
     #[test]
     fn zellij_fresh_config_adds_plugins_alias_block() {
-        match edit_zellij(
-            "",
-            "file:~/.config/zellij/plugins/zj_radar.wasm",
-            true,
-            false,
-        )
-        .unwrap()
-        {
+        match edit_zellij("", "file:~/.config/zellij/plugins/zj_radar.wasm", true, false).unwrap() {
             Outcome::Changed(s) => {
                 assert!(s.contains("plugins {"));
                 assert!(s.contains(ZELLIJ_ALIAS_BEGIN));
-                assert!(
-                    s.contains("radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\"")
-                );
+                assert!(s.contains("radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\""));
                 assert!(s.contains("naming \"managed\""));
             }
             o => panic!("{o:?}"),
@@ -844,13 +791,8 @@ mod tests {
     }
 
     fn assert_radar_inside_plugins(config: &str) {
-        let doc: kdl::KdlDocument = config
-            .parse()
-            .expect("edited config must stay valid KDL");
-        assert!(
-            plugins_block_has_radar(&doc),
-            "radar alias must land inside a `plugins` block:\n{config}"
-        );
+        let doc: kdl::KdlDocument = config.parse().expect("edited config must stay valid KDL");
+        assert!(plugins_block_has_radar(&doc), "radar alias must land inside a `plugins` block:\n{config}");
         // The alias must not have leaked into any OTHER top-level block.
         for node in doc.nodes().iter().filter(|n| n.name().value() != "plugins") {
             if let Some(children) = node.children() {
@@ -882,11 +824,9 @@ mod tests {
     fn zellij_one_line_plugins_block_variants_get_alias_inside_plugins() {
         // Empty, inline-content (`;`-separated), and trailing-comment
         // one-liners — each must end with the alias inside `plugins`.
-        for existing in [
-            "plugins {}\n",
-            "plugins { tab-bar location=\"zellij:tab-bar\"; }\n",
-            "plugins {} // aliases live here\n",
-        ] {
+        for existing in
+            ["plugins {}\n", "plugins { tab-bar location=\"zellij:tab-bar\"; }\n", "plugins {} // aliases live here\n"]
+        {
             match edit_zellij(existing, "file:/tmp/zj_radar.wasm", true, false).unwrap() {
                 Outcome::Changed(s) => assert_radar_inside_plugins(&s),
                 other => panic!("expected Changed for {existing:?}, got {other:?}"),
@@ -902,10 +842,7 @@ mod tests {
             Outcome::Changed(s) => s,
             other => panic!("expected Changed, got {other:?}"),
         };
-        assert!(matches!(
-            edit_zellij(&once, "file:/tmp/zj_radar.wasm", true, false).unwrap(),
-            Outcome::Unchanged
-        ));
+        assert!(matches!(edit_zellij(&once, "file:/tmp/zj_radar.wasm", true, false).unwrap(), Outcome::Unchanged));
     }
 
     #[test]
@@ -914,19 +851,13 @@ mod tests {
             Outcome::Changed(s) => s,
             o => panic!("{o:?}"),
         };
-        assert!(matches!(
-            edit_zellij(&once, "file:/tmp/zj_radar.wasm", true, false).unwrap(),
-            Outcome::Unchanged
-        ));
+        assert!(matches!(edit_zellij(&once, "file:/tmp/zj_radar.wasm", true, false).unwrap(), Outcome::Unchanged));
     }
 
     #[test]
     fn zellij_unmanaged_radar_alias_conflicts_without_force() {
         let existing = "plugins {\n    radar location=\"file:/other.wasm\"\n}\n";
-        assert!(matches!(
-            edit_zellij(existing, "file:/tmp/zj_radar.wasm", true, false).unwrap(),
-            Outcome::Conflict
-        ));
+        assert!(matches!(edit_zellij(existing, "file:/tmp/zj_radar.wasm", true, false).unwrap(), Outcome::Conflict));
     }
 
     #[test]

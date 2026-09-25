@@ -9,9 +9,7 @@ pub fn notify_is_ours(item: Option<&Item>) -> bool {
     item.and_then(|i| i.as_array())
         .map(|a| {
             a.len() == CODEX_NOTIFY_MARKER.len()
-                && a.iter()
-                    .zip(CODEX_NOTIFY_MARKER)
-                    .all(|(v, m)| v.as_str() == Some(m))
+                && a.iter().zip(CODEX_NOTIFY_MARKER).all(|(v, m)| v.as_str() == Some(m))
         })
         .unwrap_or(false)
 }
@@ -20,9 +18,7 @@ pub fn notify_is_ours(item: Option<&Item>) -> bool {
 /// ours — the `--legacy-notify` wiring route, for producer detection. An
 /// unparseable file owns nothing.
 pub(crate) fn codex_config_notify_is_ours(config_text: &str) -> bool {
-    config_text
-        .parse::<toml_edit::DocumentMut>()
-        .is_ok_and(|doc| notify_is_ours(doc.get("notify")))
+    config_text.parse::<toml_edit::DocumentMut>().is_ok_and(|doc| notify_is_ours(doc.get("notify")))
 }
 
 /// The top-level `notify` of a Codex `config.toml` text when it is present and
@@ -36,10 +32,7 @@ pub(crate) fn codex_foreign_notify(config_text: &str) -> Option<Item> {
 }
 
 pub(crate) fn codex_hook_handler_is_ours(handler: &Value) -> bool {
-    handler
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
+    handler.get("command").and_then(Value::as_str).is_some_and(|command| command.contains(CODEX_HOOK_MARKER))
         || handler
             .get("commandWindows")
             .and_then(Value::as_str)
@@ -94,9 +87,7 @@ fn config_node_value(config_text: &str, node: &str) -> Option<String> {
         let name = if let Some(quoted) = rest.strip_prefix('"') {
             quoted.split('"').next().unwrap_or("")
         } else {
-            rest.split(|c: char| c.is_whitespace() || c == '{' || c == '/')
-                .next()
-                .unwrap_or("")
+            rest.split(|c: char| c.is_whitespace() || c == '{' || c == '/').next().unwrap_or("")
         };
         if !name.is_empty() {
             return Some(name.to_string());
@@ -143,7 +134,11 @@ pub(crate) fn resolve_layout_path_from(
             (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
             _ => PathBuf::from(value),
         };
-        if path.is_absolute() { path } else { config_dir.join(path) }
+        if path.is_absolute() {
+            path
+        } else {
+            config_dir.join(path)
+        }
     };
     let is_path = layout_name.contains('/') || layout_name.starts_with('~') || layout_name.ends_with(".kdl");
     if is_path {
@@ -163,10 +158,8 @@ pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) {
             i += 1;
             continue;
         }
-        let Some(end) = lines[i + 1..]
-            .iter()
-            .position(|line| line.trim() == ZELLIJ_ALIAS_END)
-            .map(|offset| i + 1 + offset)
+        let Some(end) =
+            lines[i + 1..].iter().position(|line| line.trim() == ZELLIJ_ALIAS_END).map(|offset| i + 1 + offset)
         else {
             // Malformed block: a BEGIN with no matching END (a hand-edited or
             // truncated config). Skip it — draining to EOF here would delete
@@ -227,10 +220,7 @@ pub(crate) fn in_plugins_block_mask(lines: &[String]) -> Vec<bool> {
 /// plugins block never count, however radar-shaped they look.
 pub(crate) fn has_unmanaged_radar_alias(lines: &[String]) -> bool {
     let mask = in_plugins_block_mask(lines);
-    lines
-        .iter()
-        .zip(&mask)
-        .any(|(line, in_plugins)| *in_plugins && is_unmanaged_radar_alias_line(line))
+    lines.iter().zip(&mask).any(|(line, in_plugins)| *in_plugins && is_unmanaged_radar_alias_line(line))
 }
 
 #[cfg(test)]
@@ -239,10 +229,7 @@ mod tests {
 
     fn assert_top_level_notify_is_ours(toml: &str) {
         let doc = toml.parse::<toml_edit::DocumentMut>().expect("valid toml");
-        assert!(
-            notify_is_ours(doc.get("notify")),
-            "notify must be top-level and ours:\n{toml}"
-        );
+        assert!(notify_is_ours(doc.get("notify")), "notify must be top-level and ours:\n{toml}");
     }
 
     #[test]
@@ -253,9 +240,7 @@ mod tests {
 
     #[test]
     fn notify_is_ours_rejects_foreign_array() {
-        let doc = "notify = [\"/other\", \"turn-ended\"]\n"
-            .parse::<toml_edit::DocumentMut>()
-            .unwrap();
+        let doc = "notify = [\"/other\", \"turn-ended\"]\n".parse::<toml_edit::DocumentMut>().unwrap();
         assert!(!notify_is_ours(doc.get("notify")));
     }
 
@@ -362,26 +347,20 @@ mod tests {
     #[test]
     fn in_plugins_block_mask_tracks_nesting_and_one_liners() {
         let lines: Vec<String> = vec![
-            "plugins {".into(),         // 0: opener, not inside
-            "    radar {".into(),       // 1: inside
+            "plugins {".into(),            // 0: opener, not inside
+            "    radar {".into(),          // 1: inside
             "        naming \"x\"".into(), // 2: inside (nested)
-            "    }".into(),             // 3: inside
-            "}".into(),                 // 4: closer, not inside
-            "plugins {}".into(),        // 5: one-liner, nothing inside
-            "radar".into(),             // 6: outside
+            "    }".into(),                // 3: inside
+            "}".into(),                    // 4: closer, not inside
+            "plugins {}".into(),           // 5: one-liner, nothing inside
+            "radar".into(),                // 6: outside
         ];
-        assert_eq!(
-            in_plugins_block_mask(&lines),
-            vec![false, true, true, true, false, false, false],
-        );
+        assert_eq!(in_plugins_block_mask(&lines), vec![false, true, true, true, false, false, false],);
     }
 
     #[test]
     fn default_layout_name_parses_quoted_bare_and_ignores_comments() {
-        assert_eq!(
-            default_layout_name("theme \"nord\"\ndefault_layout \"main\"\n"),
-            Some("main".to_string())
-        );
+        assert_eq!(default_layout_name("theme \"nord\"\ndefault_layout \"main\"\n"), Some("main".to_string()));
         assert_eq!(default_layout_name("default_layout compact\n"), Some("compact".to_string()));
         // Commented-out (both KDL comment forms) and absent → None.
         assert_eq!(default_layout_name("// default_layout \"main\"\n"), None);
@@ -390,10 +369,7 @@ mod tests {
         // A different node whose name merely starts with it doesn't match.
         assert_eq!(default_layout_name("default_layout_dir \"/tmp\"\n"), None);
         // Trailing comment after a bare name is not part of the name.
-        assert_eq!(
-            default_layout_name("default_layout main // my layout\n"),
-            Some("main".to_string())
-        );
+        assert_eq!(default_layout_name("default_layout main // my layout\n"), Some("main".to_string()));
     }
 
     #[test]

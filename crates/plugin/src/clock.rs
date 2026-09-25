@@ -16,8 +16,5 @@
 /// (session_files.rs uses SystemTime). Free function so RadarState/store tests
 /// can pass literal epochs instead.
 pub(crate) fn now_epoch_s() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

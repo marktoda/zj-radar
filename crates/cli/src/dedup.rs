@@ -80,12 +80,7 @@ pub struct SentKey {
 
 impl SentKey {
     pub fn new(status: Status, source: &str, msg: &str, task: &str) -> SentKey {
-        SentKey {
-            status,
-            source: source.to_string(),
-            msg: msg.to_string(),
-            task: task.to_string(),
-        }
+        SentKey { status, source: source.to_string(), msg: msg.to_string(), task: task.to_string() }
     }
 }
 
@@ -103,10 +98,7 @@ struct Record {
 /// is never trusted: it would otherwise read as age 0 for as long as the skew
 /// lasts, muting heartbeats past the TTL.
 fn is_redundant(key: &SentKey, last: &Record, now: u64) -> bool {
-    key.status == Status::Running
-        && last.key == *key
-        && last.sent_at <= now
-        && now - last.sent_at < DEDUP_TTL_SECS
+    key.status == Status::Running && last.key == *key && last.sent_at <= now && now - last.sent_at < DEDUP_TTL_SECS
 }
 
 /// Handle to one pane's last-sent record. Built by [`LastSent::from_env`] on
@@ -131,9 +123,7 @@ impl LastSent {
 
     /// The record file for (`session`, `pane_id`) under `dir`.
     pub fn at(dir: &Path, session: &str, pane_id: u32) -> LastSent {
-        LastSent {
-            path: dir.join(format!("last-sent.{}.{pane_id}.json", sanitize(session))),
-        }
+        LastSent { path: dir.join(format!("last-sent.{}.{pane_id}.json", sanitize(session))) }
     }
 
     /// True when sending `key` now would repeat the last confirmed delivery
@@ -151,10 +141,7 @@ impl LastSent {
     /// torn file. Write failures are ignored: the worst case is one redundant
     /// send next time.
     pub fn record(&self, key: &SentKey, now: u64) {
-        let record = Record {
-            key: key.clone(),
-            sent_at: now,
-        };
+        let record = Record { key: key.clone(), sent_at: now };
         if let Ok(body) = serde_json::to_vec(&record) {
             let _ = atomic_write(&self.path, &body);
         }
@@ -169,10 +156,7 @@ impl LastSent {
 /// Seconds since the epoch, saturating at 0 on a pre-1970 clock so a skewed
 /// host can't panic a hook.
 pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Where the per-user state files live, or `None` (dedup off) when no dir is
@@ -185,9 +169,7 @@ pub fn unix_now() -> u64 {
 /// presence scans read the directory.
 pub(crate) fn state_dir() -> Option<PathBuf> {
     let uid = current_uid()?;
-    let dir = dirs::runtime_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(format!("zj-radar-dedup-{uid}"));
+    let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join(format!("zj-radar-dedup-{uid}"));
     private_dir(&dir, uid).then_some(dir)
 }
 
@@ -197,10 +179,7 @@ pub(crate) fn state_dir() -> Option<PathBuf> {
 /// [`private_dir`] then rejects the dir as foreign.
 fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self")
-        .ok()
-        .or_else(|| std::fs::metadata(dirs::home_dir()?).ok())
-        .map(|m| m.uid())
+    std::fs::metadata("/proc/self").ok().or_else(|| std::fs::metadata(dirs::home_dir()?).ok()).map(|m| m.uid())
 }
 
 /// Create `dir` 0700 if absent, then accept it only if it is a real
@@ -328,10 +307,8 @@ mod tests {
         assert!(!ls.is_duplicate(&running("other"), 1000 + DEDUP_TTL_SECS / 2));
         assert!(!ls.is_duplicate(&key, 1000 + DEDUP_TTL_SECS));
         // No temp file left behind — the record is the directory's only entry.
-        let names: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
+        let names: Vec<_> =
+            std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert_eq!(names, vec!["last-sent.my-session.7.json".to_string()]);
     }
 
