@@ -94,12 +94,16 @@ Change the commands there and in the script together.
 ## Lint and formatting
 
 ```sh
+just fmt        # cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-> **Do not run `rustfmt` / `cargo fmt`.** The code is hand-formatted (aligned
-> one-line structs, for example). A `cargo fmt` diff will be rejected. Match
-> the surrounding code.
+Rust code is formatted by rustfmt with the repo's `rustfmt.toml` (width 120,
+dense heuristics). `just ci` and the CI `checks` job run
+`cargo fmt --all --check`, so run `just fmt` before pushing. The one-time
+reformat commit is listed in `.git-blame-ignore-revs`; point
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` at it to skip it in
+`git blame` (GitHub's blame view does this automatically).
 
 `cargo deny check` runs nightly in CI (advisories, licenses, sources; config
 in `deny.toml`), not on PRs, because the advisory DB changes daily.

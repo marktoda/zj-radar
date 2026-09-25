@@ -35,6 +35,13 @@ test-e2e:
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Format Rust code (rustfmt.toml).
+fmt:
+    cargo fmt --all
+
+fmt-check:
+    cargo fmt --all --check
+
 # Review/accept snapshot changes after intentional render edits.
 review:
     cargo insta review
@@ -92,4 +99,4 @@ hermetic:
 
 # Everything a PR must pass locally. CI runs more on top of this: the
 # `hermetic` job (nix flake check) and the live E2E suite (test-e2e).
-ci: test clippy build-wasm test-bash test-js
+ci: fmt-check test clippy build-wasm test-bash test-js
