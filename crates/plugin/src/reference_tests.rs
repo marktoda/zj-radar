@@ -42,11 +42,7 @@ fn parse_cases(doc: &str) -> Vec<Case> {
         // Detect heading
         if raw_line.starts_with("## ") && !in_input && !in_expect {
             // Flush any pending case before moving to next heading
-            if let (Some(id), Some(inp), Some(exp)) = (
-                current_id.take(),
-                current_input.take(),
-                current_expect.take(),
-            ) {
+            if let (Some(id), Some(inp), Some(exp)) = (current_id.take(), current_input.take(), current_expect.take()) {
                 cases.push(Case { id, input: inp, expect: exp });
             }
             current_id = Some(raw_line[3..].trim().to_string());
@@ -78,11 +74,9 @@ fn parse_cases(doc: &str) -> Vec<Case> {
                 in_expect = false;
                 buf.clear();
                 // If we have both blocks under the current heading, record it.
-                if let (Some(id), Some(inp), Some(exp)) = (
-                    current_id.clone(),
-                    current_input.clone(),
-                    current_expect.take(),
-                ) {
+                if let (Some(id), Some(inp), Some(exp)) =
+                    (current_id.clone(), current_input.clone(), current_expect.take())
+                {
                     cases.push(Case { id, input: inp, expect: exp });
                     current_input = None;
                 }
@@ -182,7 +176,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     }
 
     struct TabSpec {
-        pos: usize,   // 1-based DSL position (e.g. `tab 1 "shell"` -> pos=1)
+        pos: usize, // 1-based DSL position (e.g. `tab 1 "shell"` -> pos=1)
         name: String,
         active: bool,
         has_bell: bool,
@@ -253,18 +247,12 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
             let outcome_str = parts.next().unwrap_or("done");
             let remainder = parts.next().unwrap_or("");
             let age_secs: u64 = age_str.parse().unwrap_or_else(|_| {
-                panic!(
-                    "reference DSL: bad ledger age '{}' — must be an integer number of seconds",
-                    age_str
-                )
+                panic!("reference DSL: bad ledger age '{}' — must be an integer number of seconds", age_str)
             });
             let error = match outcome_str {
                 "done" => false,
                 "error" => true,
-                other => panic!(
-                    "reference DSL: unknown ledger outcome '{}' — must be 'done' or 'error'",
-                    other
-                ),
+                other => panic!("reference DSL: unknown ledger outcome '{}' — must be 'done' or 'error'", other),
             };
             let (tab_name, after) = take_quoted(remainder);
             let (label, _) = take_quoted(after);
@@ -290,13 +278,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
             let active = after_name.contains("active");
             let has_bell = after_name.contains("bell");
             let idx = tabs.len();
-            tabs.push(TabSpec {
-                pos,
-                name: name.to_string(),
-                active,
-                has_bell,
-                panes: Vec::new(),
-            });
+            tabs.push(TabSpec { pos, name: name.to_string(), active, has_bell, panes: Vec::new() });
             current_tab = Some(idx);
             continue;
         }
@@ -398,9 +380,9 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     let mins = mins.strip_suffix('m').unwrap_or_else(|| {
                         panic!("reference DSL: bad waiting trailer '{trailer}' — expected 'waiting <N>m'")
                     });
-                    waiting_m = mins.parse().unwrap_or_else(|_| {
-                        panic!("reference DSL: bad waiting minutes '{mins}' — must be an integer")
-                    });
+                    waiting_m = mins
+                        .parse()
+                        .unwrap_or_else(|_| panic!("reference DSL: bad waiting minutes '{mins}' — must be an integer"));
                     trailer = remainder.trim();
                 } else if let Some(code_str) = trailer.strip_prefix("exit ") {
                     let code_str = code_str.trim();
@@ -446,13 +428,16 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     // 1. tabs_changed: one RadarTab per DSL tab.
     // DSL pos is 1-based (e.g. `tab 1 "shell"`); rows() returns number = position+1,
     // so we store position = pos - 1 to get the right display number.
-    let radar_tabs: Vec<RadarTab> = tabs.iter().map(|spec| RadarTab {
-        id: TabId::new(spec.pos),
-        position: spec.pos.saturating_sub(1),
-        name: spec.name.clone(),
-        active: spec.active,
-        has_bell: spec.has_bell,
-    }).collect();
+    let radar_tabs: Vec<RadarTab> = tabs
+        .iter()
+        .map(|spec| RadarTab {
+            id: TabId::new(spec.pos),
+            position: spec.pos.saturating_sub(1),
+            name: spec.name.clone(),
+            active: spec.active,
+            has_bell: spec.has_bell,
+        })
+        .collect();
     radar.tabs_changed(radar_tabs);
 
     // 2. panes_changed: register all panes as live terminal panes.
@@ -461,25 +446,20 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
 
     for spec in &tabs {
         let position = spec.pos.saturating_sub(1);
-        let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
-            live.insert(p.pane_id);
-            TerminalPane {
-                id: p.pane_id,
-                title: p.msg.clone(),
-                focused_in_tab: false,
-            }
-        }).collect();
+        let terminal_panes: Vec<TerminalPane> = spec
+            .panes
+            .iter()
+            .map(|p| {
+                live.insert(p.pane_id);
+                TerminalPane { id: p.pane_id, title: p.msg.clone(), focused_in_tab: false }
+            })
+            .collect();
         if !terminal_panes.is_empty() {
             tab_panes.insert(position, terminal_panes);
         }
     }
 
-    let update = PaneUpdate {
-        tab_panes,
-        live,
-        theme: None,
-        exits: Vec::new(),
-    };
+    let update = PaneUpdate { tab_panes, live, theme: None, exits: Vec::new() };
     radar.panes_changed(update, 0, 0, NamingMode::Off);
 
     // 3. Apply status for each tracked pane.
@@ -509,8 +489,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     for spec in &tabs {
         for pane in &spec.panes {
             if pane.interactive || pane.exit_code.is_some() {
-                let argv: Vec<String> =
-                    pane.msg.split_whitespace().map(|s| s.to_string()).collect();
+                let argv: Vec<String> = pane.msg.split_whitespace().map(|s| s.to_string()).collect();
                 radar.command_changed(pane.pane_id, &argv, true, 0);
                 if let Some(code) = pane.exit_code {
                     command_exits.push((pane.pane_id, code));
@@ -578,24 +557,19 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         let mut live2: HashSet<u32> = HashSet::new();
         for spec in &tabs {
             let position = spec.pos.saturating_sub(1);
-            let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
-                live2.insert(p.pane_id);
-                TerminalPane {
-                    id: p.pane_id,
-                    title: p.msg.clone(),
-                    focused_in_tab: false,
-                }
-            }).collect();
+            let terminal_panes: Vec<TerminalPane> = spec
+                .panes
+                .iter()
+                .map(|p| {
+                    live2.insert(p.pane_id);
+                    TerminalPane { id: p.pane_id, title: p.msg.clone(), focused_in_tab: false }
+                })
+                .collect();
             if !terminal_panes.is_empty() {
                 tab_panes2.insert(position, terminal_panes);
             }
         }
-        let update2 = PaneUpdate {
-            tab_panes: tab_panes2,
-            live: live2,
-            theme: None,
-            exits: command_exits,
-        };
+        let update2 = PaneUpdate { tab_panes: tab_panes2, live: live2, theme: None, exits: command_exits };
         radar.panes_changed(update2, 2, 0, NamingMode::Off);
     }
 
@@ -659,8 +633,7 @@ fn rail_reference_matches() {
     // one Case. Count openers the way the parser does (the whole trimmed line
     // is the fence tag) so the inline mentions in the doc's prose — set off in
     // four-backtick spans, never alone on a line — don't count.
-    let fence_openers =
-        |tag: &str| doc.lines().filter(|l| l.trim_start() == tag).count();
+    let fence_openers = |tag: &str| doc.lines().filter(|l| l.trim_start() == tag).count();
     for tag in ["```rail-input", "```rail-expect"] {
         assert_eq!(
             cases.len(),
@@ -685,17 +658,8 @@ fn rail_reference_matches() {
             eprintln!("PASS: {}", case.id);
         } else {
             eprintln!("FAIL: {}", case.id);
-            failures.push(format!(
-                "### {}\n--- expected ---\n{}\n--- got ---\n{}",
-                case.id, case.expect, got
-            ));
+            failures.push(format!("### {}\n--- expected ---\n{}\n--- got ---\n{}", case.id, case.expect, got));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "{} scenario(s) mismatch:\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
-    );
+    assert!(failures.is_empty(), "{} scenario(s) mismatch:\n\n{}", failures.len(), failures.join("\n\n"));
 }
-

@@ -69,8 +69,8 @@ pub struct TimerReport {
 /// a spurious command lifecycle after each real command and notify "direnv"
 /// instead of the command that just finished.
 const IGNORE_NAMES: &[&str] = &[
-    "zsh", "bash", "fish", "sh", "dash", "ash", "ksh", "mksh", "tcsh", "csh",
-    "nu", "nushell", "pwsh", "elvish", "xonsh", "starship", "direnv",
+    "zsh", "bash", "fish", "sh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "nu", "nushell", "pwsh", "elvish",
+    "xonsh", "starship", "direnv",
 ];
 
 /// Binaries of the *push*-instrumented agents. These report via the
@@ -103,11 +103,8 @@ pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode", "pi"];
 /// "opened nvim" read as "returned to shell" and wrongly exit-clear a finished
 /// agent's pushed status.
 pub const DEFAULT_INTERACTIVE: &[&str] = &[
-    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro",
-    "less", "more", "most", "man",
-    "htop", "btop", "top",
-    "lazygit", "tig", "gitui", "k9s",
-    "fzf", "ranger", "yazi", "nnn", "lf", "mc",
+    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro", "less", "more", "most", "man", "htop", "btop", "top",
+    "lazygit", "tig", "gitui", "k9s", "fzf", "ranger", "yazi", "nnn", "lf", "mc",
 ];
 
 /// Remote-session launchers: "this pane's shell is on another machine"
@@ -219,9 +216,9 @@ fn first_non_option(args: &[String], start: usize) -> Option<(usize, &str)> {
 }
 
 fn known_subcommand<'a>(args: &'a [String], known: &[&str]) -> Option<(usize, &'a str)> {
-    args.iter().enumerate().find_map(|(idx, arg)| {
-        (!is_option_arg(arg) && known.contains(&arg.as_str())).then_some((idx, arg.as_str()))
-    })
+    args.iter()
+        .enumerate()
+        .find_map(|(idx, arg)| (!is_option_arg(arg) && known.contains(&arg.as_str())).then_some((idx, arg.as_str())))
 }
 
 /// First non-option arg at/after `start`, usable as a display target.
@@ -230,12 +227,7 @@ fn target_after(args: &[String], start: usize) -> Option<&str> {
 }
 
 fn raw_display(parts: &[&str]) -> String {
-    parts
-        .iter()
-        .filter(|part| !part.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" ")
 }
 
 /// Launcher exes that prefix the *real* command (`sudo make`, `time cargo
@@ -257,9 +249,8 @@ const JS_SCRIPT_EXTS: &[&str] = &[".js", ".mjs", ".cjs"];
 /// Requires a non-empty key of `[A-Za-z0-9_]` before the `=`, so flags like
 /// `--features=cli` (key contains `-`) and paths are not mistaken for one.
 fn is_env_assignment(s: &str) -> bool {
-    s.split_once('=').is_some_and(|(key, _)| {
-        !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    })
+    s.split_once('=')
+        .is_some_and(|(key, _)| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
 }
 
 /// Strip leading `KEY=VAL` assignments and known wrapper exes so the rest of the
@@ -320,8 +311,8 @@ const TOOL_RULES: &[ToolRule] = &[
     ToolRule {
         exes: &["cargo"],
         subcommands: Some(&[
-            "test", "build", "check", "clippy", "fmt", "run", "bench", "doc", "clean", "install",
-            "publish", "update", "nextest",
+            "test", "build", "check", "clippy", "fmt", "run", "bench", "doc", "clean", "install", "publish", "update",
+            "nextest",
         ]),
         target_verbs: &["test", "bench", "run", "nextest"],
         exe_kind: None,
@@ -343,8 +334,11 @@ const TOOL_RULES: &[ToolRule] = &[
         exe_kind: None,
         verb_kinds: &[],
         word_kinds: &[
-            ("test", Kind::Test), ("build", Kind::Build),
-            ("dev", Kind::Server), ("start", Kind::Server), ("serve", Kind::Server),
+            ("test", Kind::Test),
+            ("build", Kind::Build),
+            ("dev", Kind::Server),
+            ("start", Kind::Server),
+            ("serve", Kind::Server),
         ],
     },
     ToolRule {
@@ -362,22 +356,20 @@ const TOOL_RULES: &[ToolRule] = &[
         exe_kind: None,
         verb_kinds: &[],
         word_kinds: &[
-            ("test", Kind::Test), ("build", Kind::Build),
-            ("deploy", Kind::Deploy), ("push", Kind::Deploy),
-            ("serve", Kind::Server), ("server", Kind::Server), ("dev", Kind::Server),
+            ("test", Kind::Test),
+            ("build", Kind::Build),
+            ("deploy", Kind::Deploy),
+            ("push", Kind::Deploy),
+            ("serve", Kind::Server),
+            ("server", Kind::Server),
+            ("dev", Kind::Server),
         ],
     },
 ];
 
 /// The fallback rule: keep the exe plus its first non-option arg; plain command.
-const FIRST_ARG_RULE: ToolRule = ToolRule {
-    exes: &[],
-    subcommands: None,
-    target_verbs: &[],
-    exe_kind: None,
-    verb_kinds: &[],
-    word_kinds: &[],
-};
+const FIRST_ARG_RULE: ToolRule =
+    ToolRule { exes: &[], subcommands: None, target_verbs: &[], exe_kind: None, verb_kinds: &[], word_kinds: &[] };
 
 /// Classification columns for the python-interpreter path. The display comes
 /// from [`display_python`] (its `-m` shape doesn't fit the table's columns),
@@ -422,8 +414,7 @@ fn apply_tool_rule(exe: &str, args: &[String], rule: &ToolRule) -> String {
 /// version-shaped (digits/dots only), so python-adjacent tools
 /// (`python-config`, `python-build`) keep the ordinary first-arg treatment.
 fn is_python_interpreter(exe: &str) -> bool {
-    exe.strip_prefix("python")
-        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    exe.strip_prefix("python").is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
 /// `python -m <module>` has its own shape (the `-m` flag, plus a `pytest`
@@ -449,18 +440,14 @@ fn display_python(exe: &str, args: &[String]) -> String {
 /// 2222`) rather than baked into the same argv element (`-p2222`,
 /// `-oProxyJump=x`). Shared by ssh, autossh, et — all ssh-alike argv
 /// shapes.
-const SSH_VALUE_OPTS: &[char] = &[
-    'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R', 'S',
-    'W', 'w',
-];
+const SSH_VALUE_OPTS: &[char] =
+    &['B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R', 'S', 'W', 'w'];
 
 /// autossh's additions to ssh's set: `-M <monitor-port>` is its defining
 /// option, and for plain ssh `-M` is the no-value ControlMaster flag — so the
 /// table is per exe, not shared.
-const AUTOSSH_VALUE_OPTS: &[char] = &[
-    'M', 'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R',
-    'S', 'W', 'w',
-];
+const AUTOSSH_VALUE_OPTS: &[char] =
+    &['M', 'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'p', 'Q', 'R', 'S', 'W', 'w'];
 
 /// Long options that take a FOLLOWING value (`--predict adaptive`), as opposed
 /// to `--foo=bar`'s self-contained form — the union across mosh (Getopt::Long)
@@ -468,12 +455,10 @@ const AUTOSSH_VALUE_OPTS: &[char] = &[
 /// the other tool, so a union cannot misparse either.
 const REMOTE_VALUE_LONG_OPTS: &[&str] = &[
     // mosh
-    "--ssh", "--server", "--predict", "--port", "--family", "--client", "--bind-server",
-    "--experimental-remote-ip", "--local",
-    // et
-    "--jumphost", "--jport", "--tunnel", "--reversetunnel", "--username", "--user",
-    "--command", "--ssh-option", "--sshoptions", "--ssh-socket", "--terminal-path",
-    "--keepalive", "--serverfifo", "--logtostdout",
+    "--ssh", "--server", "--predict", "--port", "--family", "--client", "--bind-server", "--experimental-remote-ip",
+    "--local", // et
+    "--jumphost", "--jport", "--tunnel", "--reversetunnel", "--username", "--user", "--command", "--ssh-option",
+    "--sshoptions", "--ssh-socket", "--terminal-path", "--keepalive", "--serverfifo", "--logtostdout",
 ];
 
 /// Strip a `user@` prefix and any `:port`/path suffix, keeping only the host —
@@ -618,10 +603,7 @@ fn classify(command: &[String]) -> (String, Kind) {
     let (raw, rule) = if is_python_interpreter(exe) {
         (display_python(exe, args), &PYTHON_RULE)
     } else {
-        let rule = TOOL_RULES
-            .iter()
-            .find(|r| r.exes.contains(&exe))
-            .unwrap_or(&FIRST_ARG_RULE);
+        let rule = TOOL_RULES.iter().find(|r| r.exes.contains(&exe)).unwrap_or(&FIRST_ARG_RULE);
         (apply_tool_rule(exe, args, rule), rule)
     };
     let display = sanitize(&raw, MAX_MSG_CHARS);
@@ -632,9 +614,9 @@ fn classify(command: &[String]) -> (String, Kind) {
     // lowering (`make TEST`, `npm run BUILD` must still classify).
     let kind = if let Some(kind) = rule.exe_kind {
         kind
-    } else if let Some(kind) = operative_verb(args, rule).and_then(|(_, verb)| {
-        rule.verb_kinds.iter().find(|&&(v, _)| v == verb).map(|&(_, k)| k)
-    }) {
+    } else if let Some(kind) = operative_verb(args, rule)
+        .and_then(|(_, verb)| rule.verb_kinds.iter().find(|&&(v, _)| v == verb).map(|&(_, k)| k))
+    {
         kind
     } else {
         let lowered = display.to_lowercase();
@@ -659,8 +641,7 @@ fn classify(command: &[String]) -> (String, Kind) {
 pub fn contains_word(haystack: &str, word: &str) -> bool {
     let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
     haystack.match_indices(word).any(|(i, _)| {
-        boundary(haystack[..i].chars().next_back())
-            && boundary(haystack[i + word.len()..].chars().next())
+        boundary(haystack[..i].chars().next_back()) && boundary(haystack[i + word.len()..].chars().next())
     })
 }
 
@@ -821,11 +802,7 @@ impl CommandStore {
     /// flip the row to Done and straight back. `or_insert` keeps the FIRST
     /// observation tick — re-reports must not restart the window.
     fn arm_tentative_done(&mut self, pane_id: u32, tick: u64) {
-        if self
-            .store
-            .get(pane_id)
-            .is_some_and(|s| s.status == Status::Running)
-        {
+        if self.store.get(pane_id).is_some_and(|s| s.status == Status::Running) {
             self.pending_done.entry(pane_id).or_insert(tick);
         }
     }
@@ -910,9 +887,7 @@ impl CommandStore {
         let to_recede: Vec<u32> = self
             .store
             .observations()
-            .filter(|(_, s)| {
-                s.status == Status::Done && tick.saturating_sub(s.last_change_tick) >= DONE_TTL_TICKS
-            })
+            .filter(|(_, s)| s.status == Status::Done && tick.saturating_sub(s.last_change_tick) >= DONE_TTL_TICKS)
             .map(|(id, _)| id)
             .collect();
         for pane_id in to_recede {
@@ -998,11 +973,7 @@ impl CommandStore {
             // absorb (priming reconstructs the entry a fresh instance lost),
             // while the Idle arm above blocks replays of *any* code by status
             // alone, so a per-code entry would add nothing there.
-            if self
-                .store
-                .get(pane_id)
-                .is_some_and(|s| s.status == new_status && s.exit_code == exit_status)
-            {
+            if self.store.get(pane_id).is_some_and(|s| s.status == new_status && s.exit_code == exit_status) {
                 self.exited.insert(pane_id, exit_status);
                 return None;
             }
@@ -1015,8 +986,7 @@ impl CommandStore {
         // same way promotion derives it) labels the completion below.
         let pending = self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
-        let identity =
-            pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
+        let identity = pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
 
         let mut receded = None;
         if let Some(s) = self.store.get_mut(pane_id) {
@@ -1045,8 +1015,7 @@ impl CommandStore {
             // shell that exits is removed from the manifest (never reported
             // `exited=true`), so it never reaches here. Do not "guard to tracked
             // panes" — that would drop legitimate run-pane completions.
-            let (repo, msg, kind) =
-                identity.unwrap_or_else(|| (String::new(), String::new(), Kind::Command));
+            let (repo, msg, kind) = identity.unwrap_or_else(|| (String::new(), String::new(), Kind::Command));
             let _ = self.store.insert(
                 pane_id,
                 TrackedObservation {
@@ -1098,11 +1067,7 @@ impl CommandStore {
     /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
     /// owns origin routing — it `match`es on `observation.origin` to pick the store
     /// — so this trusts what it's handed rather than re-checking the origin.
-    pub fn insert_snapshot_observation(
-        &mut self,
-        pane_id: u32,
-        observation: TrackedObservation,
-    ) {
+    pub fn insert_snapshot_observation(&mut self, pane_id: u32, observation: TrackedObservation) {
         let _ = self.store.insert(pane_id, observation);
     }
 
@@ -1145,12 +1110,7 @@ impl CommandStore {
     /// `display_first_token_is_the_exe_basename`). Returns whether anything
     /// observable changed (the caller's render/persist trigger).
     pub fn set_interactive_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
-        self.interactive = DEFAULT_INTERACTIVE
-            .iter()
-            .copied()
-            .chain(extras)
-            .map(str::to_string)
-            .collect();
+        self.interactive = DEFAULT_INTERACTIVE.iter().copied().chain(extras).map(str::to_string).collect();
         let mut changed = false;
         // Re-judge every pending against the new set — symmetric, so removing
         // an extra un-quiets its pending and the next tick promotes it. The
@@ -1212,10 +1172,7 @@ impl CommandStore {
     /// foreground: `(display, kind)` from its non-promotable pending. Feeds
     /// the rail's muted pane label (`rollup::PaneDisplay::Interactive`).
     pub fn quiet_identity(&self, pane_id: u32) -> Option<(&str, Kind)> {
-        self.pending
-            .get(&pane_id)
-            .filter(|p| !p.promotable)
-            .map(|p| (p.command.as_str(), p.kind))
+        self.pending.get(&pane_id).filter(|p| !p.promotable).map(|p| (p.command.as_str(), p.kind))
     }
 
     /// Whether `name` (a peeled exe basename) is a user-configured remote
@@ -1240,11 +1197,8 @@ impl CommandStore {
     /// Returns whether anything observable changed (the caller's
     /// render/persist trigger).
     pub fn set_remote_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
-        self.remote_extras = extras
-            .into_iter()
-            .filter(|name| !DEFAULT_REMOTE.contains(name))
-            .map(str::to_string)
-            .collect();
+        self.remote_extras =
+            extras.into_iter().filter(|name| !DEFAULT_REMOTE.contains(name)).map(str::to_string).collect();
         // The flip, or `None` to leave the row alone.
         let rekind = |name: &str, kind: Kind| -> Option<Kind> {
             match (self.remote_extras.contains(name), kind.is_remote()) {

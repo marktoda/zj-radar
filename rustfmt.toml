@@ -1,0 +1,6 @@
+# Dense by design: long lines and packed tables over one-item-per-line.
+# Stable options only (the toolchain is stable). `just fmt` applies it;
+# `just ci` and CI check it.
+max_width = 120
+use_small_heuristics = "Max"
+short_array_element_width_threshold = 40

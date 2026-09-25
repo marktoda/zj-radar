@@ -28,10 +28,6 @@ jobs:
   # made `nix flake check` rebuild the ~250-crate tree THREE times (host + cli +
   # wasm) for ~10 min. Swatinem/rust-cache keeps ./target + ~/.cargo incremental
   # across runs; the nix-store cache just avoids re-substituting the toolchain.
-  #
-  # NOTE: no `cargo fmt --check` — this project does NOT use rustfmt. The
-  # codebase is intentionally hand-formatted (aligned one-line multi-field
-  # structs etc.). Never add a fmt gate or run `cargo fmt --all`.
   checks:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -51,6 +47,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # --workspace --all-targets so test/example code is linted too;
       # --all-features covers the off-by-default `e2e` flag.
+      - name: rustfmt
+        run: nix develop -c cargo fmt --all --check
       - name: clippy
         run: nix develop -c cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: deterministic suite (L1-L4)

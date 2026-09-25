@@ -70,11 +70,7 @@ fn backup_plan(path: &std::path::Path, is_ours: fn(&str) -> bool) -> (std::path:
 /// The line reporting a foreign `.bak` an uninstall left (or, `dry_run`,
 /// would leave) beside `path`, with the command that restores it.
 pub(crate) fn kept_backup_line(label: &str, bak: &std::path::Path, path: &std::path::Path, dry_run: bool) -> String {
-    let restore = crate::run::shell_join(&[
-        "mv".to_string(),
-        bak.display().to_string(),
-        path.display().to_string(),
-    ]);
+    let restore = crate::run::shell_join(&["mv".to_string(), bak.display().to_string(), path.display().to_string()]);
     let verb = if dry_run { "would leave" } else { "left" };
     format!("{label}: {verb} {} (not ours — the file `--force` replaced); `{restore}` to restore it", bak.display())
 }
@@ -165,9 +161,9 @@ pub(crate) fn plan_uninstall(existing: &Existing, is_ours: fn(&str) -> bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::detect::opencode_plugin_is_ours;
     use super::super::{OPENCODE_PLUGIN_JS, OPENCODE_TUI_PLUGIN_JS};
+    use super::*;
 
     fn unreadable() -> Existing {
         Existing::Unreadable(std::io::Error::new(std::io::ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
@@ -175,7 +171,10 @@ mod tests {
 
     #[test]
     fn plan_install_writes_when_absent_or_empty() {
-        assert_eq!(plan_install(&Existing::Absent, OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours), InstallPlan::Write);
+        assert_eq!(
+            plan_install(&Existing::Absent, OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
+            InstallPlan::Write
+        );
         // An empty file is nobody's plugin — write over it without --force.
         assert_eq!(
             plan_install(&Existing::Text(String::new()), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
@@ -186,20 +185,38 @@ mod tests {
     #[test]
     fn plan_install_is_up_to_date_only_when_byte_identical() {
         assert_eq!(
-            plan_install(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
+            plan_install(
+                &Existing::Text(OPENCODE_PLUGIN_JS.to_string()),
+                OPENCODE_PLUGIN_JS,
+                false,
+                opencode_plugin_is_ours
+            ),
             InstallPlan::UpToDate
         );
         assert_eq!(
-            plan_install(&Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string()), OPENCODE_TUI_PLUGIN_JS, false, opencode_plugin_is_ours),
+            plan_install(
+                &Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string()),
+                OPENCODE_TUI_PLUGIN_JS,
+                false,
+                opencode_plugin_is_ours
+            ),
             InstallPlan::UpToDate
         );
         // Ours (marker present) but stale → rewrite, no --force needed.
         let stale = format!("// {}\n// older bridge\n", super::super::OPENCODE_PLUGIN_MARKER);
-        assert_eq!(plan_install(&Existing::Text(stale), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours), InstallPlan::Write);
+        assert_eq!(
+            plan_install(&Existing::Text(stale), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
+            InstallPlan::Write
+        );
         // The two bridges are never interchangeable: the 1.x text at the 2.x
         // path is ours, but stale.
         assert_eq!(
-            plan_install(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), OPENCODE_TUI_PLUGIN_JS, false, opencode_plugin_is_ours),
+            plan_install(
+                &Existing::Text(OPENCODE_PLUGIN_JS.to_string()),
+                OPENCODE_TUI_PLUGIN_JS,
+                false,
+                opencode_plugin_is_ours
+            ),
             InstallPlan::Write
         );
     }
@@ -207,7 +224,10 @@ mod tests {
     #[test]
     fn plan_install_refuses_foreign_plugin_without_force() {
         let foreign = Existing::Text("export const Other = async () => ({});\n".to_string());
-        assert_eq!(plan_install(&foreign, OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours), InstallPlan::RefuseForeign);
+        assert_eq!(
+            plan_install(&foreign, OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
+            InstallPlan::RefuseForeign
+        );
         assert_eq!(plan_install(&foreign, OPENCODE_PLUGIN_JS, true, opencode_plugin_is_ours), InstallPlan::Write);
     }
 
@@ -215,7 +235,10 @@ mod tests {
     fn plan_install_treats_unreadable_file_as_foreign() {
         // A present-but-unreadable file (non-UTF8, permissions) must NOT read as
         // absent — that would skip the refusal gate and overwrite it silently.
-        assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours), InstallPlan::RefuseForeign);
+        assert_eq!(
+            plan_install(&unreadable(), OPENCODE_PLUGIN_JS, false, opencode_plugin_is_ours),
+            InstallPlan::RefuseForeign
+        );
         assert_eq!(plan_install(&unreadable(), OPENCODE_PLUGIN_JS, true, opencode_plugin_is_ours), InstallPlan::Write);
     }
 
@@ -244,7 +267,9 @@ mod tests {
         let line = kept_backup_line("pi", &bak, path, false);
         assert!(line.starts_with("pi: left /Users/m/My Config/zj-radar.js.zj-radar.bak (not ours"), "{line}");
         assert!(
-            line.ends_with("`mv '/Users/m/My Config/zj-radar.js.zj-radar.bak' '/Users/m/My Config/zj-radar.js'` to restore it"),
+            line.ends_with(
+                "`mv '/Users/m/My Config/zj-radar.js.zj-radar.bak' '/Users/m/My Config/zj-radar.js'` to restore it"
+            ),
             "{line}"
         );
         assert!(kept_backup_line("pi", &bak, path, true).starts_with("pi: would leave "));
@@ -260,9 +285,18 @@ mod tests {
     #[test]
     fn plan_uninstall_distinguishes_absent_from_foreign() {
         assert_eq!(plan_uninstall(&Existing::Absent, opencode_plugin_is_ours), UninstallPlan::Absent);
-        assert_eq!(plan_uninstall(&Existing::Text("// not ours\n".to_string()), opencode_plugin_is_ours), UninstallPlan::NotOurs);
+        assert_eq!(
+            plan_uninstall(&Existing::Text("// not ours\n".to_string()), opencode_plugin_is_ours),
+            UninstallPlan::NotOurs
+        );
         assert_eq!(plan_uninstall(&unreadable(), opencode_plugin_is_ours), UninstallPlan::NotOurs);
-        assert_eq!(plan_uninstall(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), opencode_plugin_is_ours), UninstallPlan::Remove);
-        assert_eq!(plan_uninstall(&Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string()), opencode_plugin_is_ours), UninstallPlan::Remove);
+        assert_eq!(
+            plan_uninstall(&Existing::Text(OPENCODE_PLUGIN_JS.to_string()), opencode_plugin_is_ours),
+            UninstallPlan::Remove
+        );
+        assert_eq!(
+            plan_uninstall(&Existing::Text(OPENCODE_TUI_PLUGIN_JS.to_string()), opencode_plugin_is_ours),
+            UninstallPlan::Remove
+        );
     }
 }

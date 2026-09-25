@@ -145,10 +145,8 @@ pub fn run(options: UpdateOptions) {
     // The doctor's exit code grades install completeness (a machine with no
     // producer wired reads "missing"), not this update — its items are the
     // report; only a failure to *run* it is ours.
-    if let Err(e) = std::process::Command::new(&exe)
-        .args(["setup", "--check"])
-        .env("ZJ_RADAR_VERSION", &target)
-        .status()
+    if let Err(e) =
+        std::process::Command::new(&exe).args(["setup", "--check"]).env("ZJ_RADAR_VERSION", &target).status()
     {
         crate::exit::fail_report("update", format!("could not run {} — {e}", exe.display()));
     }
@@ -211,11 +209,7 @@ fn needs_wasm_refresh(wasm: &WasmState) -> bool {
 /// report is most useful exactly when something went wrong.
 fn rerun(exe: &Path, target: &str, args: &[&str]) -> bool {
     println!("zj-radar: running `zj-radar {}`", args.join(" "));
-    match std::process::Command::new(exe)
-        .args(args)
-        .env("ZJ_RADAR_VERSION", target)
-        .status()
-    {
+    match std::process::Command::new(exe).args(args).env("ZJ_RADAR_VERSION", target).status() {
         Ok(s) if s.success() => true,
         Ok(s) => {
             crate::exit::fail_report("update", format!("`zj-radar {}` exited with {s}", args.join(" ")));
@@ -237,9 +231,7 @@ fn target_version() -> Result<String, String> {
             // Validate here so a prerelease or typo is named as such, rather
             // than failing the `is_newer` comparison and reading as "older".
             if parse_version(v).is_none() {
-                return Err(format!(
-                    "ZJ_RADAR_VERSION={v} is not a MAJOR.MINOR.PATCH release version (e.g. v0.5.0)"
-                ));
+                return Err(format!("ZJ_RADAR_VERSION={v} is not a MAJOR.MINOR.PATCH release version (e.g. v0.5.0)"));
             }
             return Ok(v.to_string());
         }
@@ -254,7 +246,10 @@ fn latest_release_version() -> Result<String, String> {
     let url = format!("https://github.com/{}/releases/latest", crate::setup::repo_slug());
     let effective = if crate::setup::which("curl") {
         let out = Command::new("curl")
-            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fsSLI", "-o", "/dev/null", "-w", "%{url_effective}"])
+            .args([
+                "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fsSLI", "-o", "/dev/null", "-w",
+                "%{url_effective}",
+            ])
             .arg(&url)
             .output()
             .map_err(|e| format!("failed to run curl — {e}"))?;
@@ -280,8 +275,7 @@ fn latest_release_version() -> Result<String, String> {
     } else {
         return Err("need curl or wget on PATH to look up the latest release".to_string());
     };
-    tag_from_latest_redirect(&effective)
-        .ok_or_else(|| format!("could not read a release version from {effective}"))
+    tag_from_latest_redirect(&effective).ok_or_else(|| format!("could not read a release version from {effective}"))
 }
 
 /// Compare the installed wasm's sha256 with the digest published for `target`.
@@ -343,11 +337,9 @@ fn self_replace(target: &str) -> Result<Option<PathBuf>, String> {
         InstallKind::SelfManaged => {}
     }
     let Some(triple) = target_triple() else {
-        return Err(
-            "no prebuilt binary is published for this platform — build from source: \
+        return Err("no prebuilt binary is published for this platform — build from source: \
              cargo install zj-radar, then zj-radar setup zellij --download"
-                .to_string(),
-        );
+            .to_string());
     };
     let staging = crate::setup::private_download_dir()?.join(format!("cli-{target}"));
     let tarball = staging.join(format!("zj-radar-{triple}.tar.gz"));
@@ -495,8 +487,7 @@ pub(crate) fn replace_binary(fresh: &Path, current: &Path) -> Result<(), String>
                 std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
                     .map_err(|e| format!("chmod {} failed — {e}", staged.display()))?;
             }
-            std::fs::rename(&staged, current)
-                .map_err(|e| format!("replacing {} failed — {e}", current.display()))
+            std::fs::rename(&staged, current).map_err(|e| format!("replacing {} failed — {e}", current.display()))
         });
     if result.is_err() {
         let _ = std::fs::remove_file(&staged);
@@ -516,10 +507,7 @@ mod tests {
             Some("0.5.1".to_string())
         );
         // A trailing slash or a tag without the `v` prefix still resolves.
-        assert_eq!(
-            tag_from_latest_redirect("https://github.com/o/r/releases/tag/0.6.0/"),
-            Some("0.6.0".to_string())
-        );
+        assert_eq!(tag_from_latest_redirect("https://github.com/o/r/releases/tag/0.6.0/"), Some("0.6.0".to_string()));
     }
 
     #[test]
@@ -600,10 +588,7 @@ mod tests {
             classify_install(Path::new("/home/u/.local/bin/zj-radar"), None, Some(home)),
             InstallKind::SelfManaged
         );
-        assert_eq!(
-            classify_install(Path::new("/usr/local/bin/zj-radar"), None, None),
-            InstallKind::SelfManaged
-        );
+        assert_eq!(classify_install(Path::new("/usr/local/bin/zj-radar"), None, None), InstallKind::SelfManaged);
         // A `.cargo` directory elsewhere in the path is not cargo's bin dir.
         assert_eq!(
             classify_install(Path::new("/home/u/.cargo-backup/zj-radar"), None, Some(home)),
@@ -711,11 +696,7 @@ mod tests {
     fn target_triple_is_one_of_the_published_release_targets() {
         // Whatever host runs this test must map onto a triple the release
         // workflow publishes (or None where we ship no prebuilt binary).
-        let published = [
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-musl",
-            "aarch64-apple-darwin",
-        ];
+        let published = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "aarch64-apple-darwin"];
         let has_prebuilt = cfg!(unix) && !cfg!(all(target_os = "macos", target_arch = "x86_64"));
         assert_eq!(target_triple().is_some(), has_prebuilt);
         if let Some(t) = target_triple() {

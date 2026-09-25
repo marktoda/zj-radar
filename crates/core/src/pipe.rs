@@ -110,10 +110,10 @@ pub fn self_limiting_pipe_argv(payload: &str, timeout_secs: u64) -> Vec<String> 
         "sh".to_string(),
         "-c".to_string(),
         SELF_LIMITING_SEND.to_string(),
-        "zj-radar-pipe".to_string(), // $0 — a label for ps output
-        timeout_secs.to_string(),    // $1
+        "zj-radar-pipe".to_string(),  // $0 — a label for ps output
+        timeout_secs.to_string(),     // $1
         STATUS_PIPE_NAME.to_string(), // $2
-        payload.to_string(),         // $3
+        payload.to_string(),          // $3
     ]
 }
 

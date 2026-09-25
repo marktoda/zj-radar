@@ -61,10 +61,8 @@ mod tests {
         atomic_write(&target, b"hello").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
         // No temp file left behind — the target is its directory's only entry.
-        let entries: Vec<_> = std::fs::read_dir(target.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
+        let entries: Vec<_> =
+            std::fs::read_dir(target.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(entries, vec![std::ffi::OsString::from("c.txt")]);
     }
 

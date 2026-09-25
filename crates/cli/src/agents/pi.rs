@@ -42,8 +42,14 @@ const BRIDGE: Bridge = Bridge {
     tool_event: "tool",
     prompt_event: "prompt",
     tool_names: &[
-        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("powershell", "Bash"),
-        ("grep", "Grep"), ("find", "Glob"), ("ls", "Glob"),
+        ("read", "Read"),
+        ("write", "Write"),
+        ("edit", "Edit"),
+        ("bash", "Bash"),
+        ("powershell", "Bash"),
+        ("grep", "Grep"),
+        ("find", "Glob"),
+        ("ls", "Glob"),
     ],
     arg_keys: &[("path", "file_path")],
 };
@@ -117,7 +123,8 @@ mod tests {
 
     #[test]
     fn ui_prompt_is_pending_with_title_and_blank_is_dropped() {
-        let u = derive(&intake(r#"{"event":"ui_prompt.start","message":"Allow rm -rf build?"}"#, Some("pending"))).unwrap();
+        let u =
+            derive(&intake(r#"{"event":"ui_prompt.start","message":"Allow rm -rf build?"}"#, Some("pending"))).unwrap();
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Allow rm -rf build?");
         assert!(derive(&intake(r#"{"event":"ui_prompt.start","message":"  "}"#, Some("pending"))).is_none());
@@ -173,7 +180,10 @@ mod tests {
         assert_eq!(derive(&intake(r#"{"event":"settled","message":"ok."}"#, None)).unwrap().status, Status::Done);
         assert_eq!(derive(&intake(r#"{"event":"error","message":"x"}"#, None)).unwrap().status, Status::Error);
         assert_eq!(derive(&intake(r#"{"event":"session.new"}"#, None)).unwrap().status, Status::Idle);
-        assert!(derive(&intake(r#"{"event":"ui_prompt.end"}"#, None)).is_none(), "the bridge always picks ui_prompt.end's status");
+        assert!(
+            derive(&intake(r#"{"event":"ui_prompt.end"}"#, None)).is_none(),
+            "the bridge always picks ui_prompt.end's status"
+        );
         assert!(derive(&intake(r#"{"event":"unknown"}"#, None)).is_none());
         assert!(derive(&intake("not json", None)).is_none());
     }

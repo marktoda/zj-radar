@@ -28,7 +28,8 @@ just test        # L1–L4 deterministic host suite (unit, insta, proptest, vt10
 just test-bash   # bash hook tests (needs bats + shellcheck + jq)
 just test-js     # pi bridge extension tests (needs node)
 just test-e2e    # L5 live: builds wasm, drives a real Zellij in a PTY (needs zellij)
-just ci          # what every PR must pass: test + clippy + wasm build + test-bash + test-js
+just fmt         # cargo fmt --all (rustfmt.toml)
+just ci          # what every PR must pass: fmt check + test + clippy + wasm build + test-bash + test-js
 just review      # accept intentional insta snapshot changes (cargo insta review)
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
@@ -38,8 +39,8 @@ No wasm build is needed for typical work: the plugin's domain modules and
 
 ## Non-negotiable rules
 
-- **Do not run `rustfmt` / `cargo fmt`.** The code is hand-formatted. Match
-  the surrounding code.
+- **Format with `just fmt`** (`cargo fmt --all`, config in `rustfmt.toml`);
+  `just ci` and CI fail on unformatted code.
 - **Push-driven, never poll-driven.** No polling, no blocking host queries on
   any per-event or per-tick path. The one exception is the once-per-pane
   `Effect::ResolveCwd` naming bootstrap. See

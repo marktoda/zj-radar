@@ -74,31 +74,17 @@ pub(crate) fn plan_overflow(rows: &[RowMeta], body_budget: usize) -> (Vec<(usize
     let total: usize = rows.iter().map(|r| r.full_lines).sum();
     if total <= body_budget {
         // Everything fits at full fidelity.
-        let plan = rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (i, r.full_lines))
-            .collect();
+        let plan = rows.iter().enumerate().map(|(i, r)| (i, r.full_lines)).collect();
         return (plan, 0);
     }
 
     // Step 1: fold idle rows; keep non-idle at full line counts.
-    let non_idle_idx: Vec<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.status != Status::Idle)
-        .map(|(i, _)| i)
-        .collect();
-    let folded_count = rows
-        .iter()
-        .filter(|r| r.status == Status::Idle)
-        .count();
+    let non_idle_idx: Vec<usize> =
+        rows.iter().enumerate().filter(|(_, r)| r.status != Status::Idle).map(|(i, _)| i).collect();
+    let folded_count = rows.iter().filter(|r| r.status == Status::Idle).count();
 
     // Each kept row starts at its full (uncompressed) line count.
-    let mut planned: Vec<(usize, usize)> = non_idle_idx
-        .iter()
-        .map(|&i| (i, rows[i].full_lines))
-        .collect();
+    let mut planned: Vec<(usize, usize)> = non_idle_idx.iter().map(|&i| (i, rows[i].full_lines)).collect();
 
     // Step 2: check if the strip line itself (1 extra line) would overflow.
     let strip_line: usize = if folded_count > 0 { 1 } else { 0 };
@@ -215,16 +201,9 @@ pub(crate) fn plan_layout(
     // Fast path: if every row's FULL block (content + gap) fits, render
     // everything at full fidelity with full spacing. `card_block_lines` is the
     // single footprint source shared with the budgeting below.
-    let full_footprint: usize = rows
-        .iter()
-        .map(|r| card_block_lines(r.full_lines, base))
-        .sum();
+    let full_footprint: usize = rows.iter().map(|r| card_block_lines(r.full_lines, base)).sum();
     if full_footprint <= body_budget {
-        let plan = rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (i, r.full_lines))
-            .collect();
+        let plan = rows.iter().enumerate().map(|(i, r)| (i, r.full_lines)).collect();
         return (plan, 0, base);
     }
 

@@ -75,7 +75,14 @@ impl LedgerEntry {
         } else {
             obs.msg.clone()
         };
-        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"), label, pane_id })
+        Some(LedgerEntry {
+            at_epoch_s,
+            outcome,
+            tab_id,
+            tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"),
+            label,
+            pane_id,
+        })
     }
 
     /// Re-scrub the free-text fields. Live entries are built from
@@ -244,7 +251,14 @@ mod tests {
     }
 
     fn entry(pane_id: u32, outcome: LedgerOutcome, label: &str, at_epoch_s: u64) -> LedgerEntry {
-        LedgerEntry { at_epoch_s, outcome, tab_id: TabId::new(0), tab_name: "tab".into(), label: label.to_string(), pane_id }
+        LedgerEntry {
+            at_epoch_s,
+            outcome,
+            tab_id: TabId::new(0),
+            tab_name: "tab".into(),
+            label: label.to_string(),
+            pane_id,
+        }
     }
 
     #[test]
@@ -384,8 +398,7 @@ mod tests {
         let got: Vec<u64> = ledger.entries().map(|e| e.at_epoch_s).collect();
         assert_eq!(got, vec![200, 100, 50]);
 
-        let oversized: Vec<LedgerEntry> =
-            (0..40u32).map(|i| entry(i, LedgerOutcome::Done, "x", i as u64)).collect();
+        let oversized: Vec<LedgerEntry> = (0..40u32).map(|i| entry(i, LedgerOutcome::Done, "x", i as u64)).collect();
         ledger.replace(oversized);
         assert_eq!(ledger.to_vec().len(), LEDGER_CAP);
     }

@@ -170,7 +170,7 @@ just dev      # build and launch a sandboxed dev session
 ```
 
 [`CONTRIBUTING.md`](https://github.com/marktoda/zj-radar/blob/main/CONTRIBUTING.md)
-covers the test layers, the no-`rustfmt` rule, and PR expectations. The hero
+covers the test layers, formatting, and PR expectations. The hero
 GIF is reproducible from
 [`demo/`](https://github.com/marktoda/zj-radar/tree/main/demo).
 

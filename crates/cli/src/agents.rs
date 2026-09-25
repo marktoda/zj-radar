@@ -132,9 +132,8 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
 /// Bare acknowledgements that must not clobber a real task label when sent as
 /// a follow-up prompt. Compared lowercased with trailing punctuation stripped.
 const ACK_PROMPTS: &[&str] = &[
-    "y", "yes", "yep", "yeah", "n", "no", "ok", "okay", "k", "sure", "go",
-    "go ahead", "proceed", "continue", "do it", "lgtm", "sounds good",
-    "approved", "thanks", "ty", "thank you",
+    "y", "yes", "yep", "yeah", "n", "no", "ok", "okay", "k", "sure", "go", "go ahead", "proceed", "continue", "do it",
+    "lgtm", "sounds good", "approved", "thanks", "ty", "thank you",
 ];
 
 /// Extract a sticky task label from a submitted prompt: the first non-empty
@@ -234,7 +233,13 @@ pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUp
 
     if status == Status::Done {
         if let Some(question) = trailing_question(msg) {
-            return Some(AgentUpdate { status: Status::Pending, msg: question.to_string(), cwd, task: None, tasks: None });
+            return Some(AgentUpdate {
+                status: Status::Pending,
+                msg: question.to_string(),
+                cwd,
+                task: None,
+                tasks: None,
+            });
         }
     }
     if status == Status::Pending && msg.trim().is_empty() {
@@ -281,10 +286,7 @@ fn rename_keys(input: &Value, keys: &[(&str, &str)]) -> Value {
 /// adapter and [`derive_bridged`] (both read `cwd`-style fields off a
 /// `serde_json::Value`).
 pub(crate) fn string_field(v: &serde_json::Value, field: &str) -> Option<String> {
-    v.get(field)
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    v.get(field).and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 pub(crate) fn basename(path: &str) -> Option<&str> {
@@ -314,11 +316,10 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
 /// and runs the shared case corpus, `agents/service_cases.rs`, through both
 /// producers).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
-    "run dev", "run start", "run serve", "npm start", "pnpm start", "yarn start", "bun start",
-    "pnpm dev", "yarn dev", "bun dev", "next dev", "next start", "make dev", "just dev",
-    "make server", "just server", "serve", "http-server", "mkdocs serve", "jekyll serve",
-    "hugo server", "hugo serve", "ng serve", "php artisan serve", "python -m http.server",
-    "python3 -m http.server", "manage.py runserver", "python manage.py runserver",
+    "run dev", "run start", "run serve", "npm start", "pnpm start", "yarn start", "bun start", "pnpm dev", "yarn dev",
+    "bun dev", "next dev", "next start", "make dev", "just dev", "make server", "just server", "serve", "http-server",
+    "mkdocs serve", "jekyll serve", "hugo server", "hugo serve", "ng serve", "php artisan serve",
+    "python -m http.server", "python3 -m http.server", "manage.py runserver", "python manage.py runserver",
     "python3 manage.py runserver", "http.server", "rails s", "rails server", "flask run", "uvicorn", "gunicorn",
     "nodemon", "cargo watch", "watchexec", "kubectl port-forward", "tail -f",
 ];
@@ -326,34 +327,29 @@ pub(crate) const SERVICE_PHRASES: &[&str] = &[
 /// Words that run the rest of their segment as a command (`nohup npm run dev`,
 /// `bash -c "vite"`): skipped, with any flags, to find a segment's head.
 /// Mirrored in notify.sh's `SERVICE_WRAPPERS`.
-pub(crate) const SERVICE_WRAPPERS: &[&str] = &[
-    "env", "nohup", "exec", "sudo", "time", "timeout", "nice", "xargs", "command", "bash", "sh", "zsh",
-];
+pub(crate) const SERVICE_WRAPPERS: &[&str] =
+    &["env", "nohup", "exec", "sudo", "time", "timeout", "nice", "xargs", "command", "bash", "sh", "zsh"];
 
 /// Package and script runners, skipped with their flags from a segment's head
 /// to its command word (`pnpm exec vite`, `bun x vite`, `bundle exec jekyll
 /// serve`, `uv run uvicorn`, `pnpm --filter web dev`). Mirrored in notify.sh's
 /// `SERVICE_RUNNERS`.
-pub(crate) const SERVICE_RUNNERS: &[&str] = &[
-    "npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx", "bundle", "uv", "poetry",
-    "pipenv", "run",
-];
+pub(crate) const SERVICE_RUNNERS: &[&str] =
+    &["npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx", "bundle", "uv", "poetry", "pipenv", "run"];
 
 /// Runner flags whose value is the next token, skipped with it
 /// (`npx -p vite vite build` runs `vite build`). Mirrored in notify.sh's
 /// `SERVICE_VALUE_FLAGS`.
-pub(crate) const SERVICE_VALUE_FLAGS: &[&str] = &[
-    "-p", "--package", "--prefix", "--dir", "--cwd", "--filter", "--workspace",
-];
+pub(crate) const SERVICE_VALUE_FLAGS: &[&str] =
+    &["-p", "--package", "--prefix", "--dir", "--cwd", "--filter", "--workspace"];
 
 /// Phrases that mark a service by the model-written task description
 /// ("Start the dev server"). Multi-word only: prose mentions single words
 /// in passing ("Run tests and watch for failures"). Matched whole-word as
 /// prose (any non-alphanumeric is a boundary). Mirrored in notify.sh's
 /// `SERVICE_DESCRIPTION_PHRASES`, same character rules as [`SERVICE_PHRASES`].
-pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
-    "dev server", "development server", "start server", "start the server", "watch mode",
-];
+pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] =
+    &["dev server", "development server", "start server", "start the server", "watch mode"];
 
 /// Characters that split a command line into segments, each run as its own
 /// command: `&`, `|`, `;`, newline, CR, and the subshell / substitution
@@ -405,9 +401,8 @@ fn segment_is_service(segment: &str) -> bool {
         digits.starts_with(|c: char| c.is_ascii_digit()) && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
     }
     let t: Vec<&str> = segment.split(TOKEN_SEPARATORS).filter(|s| !s.is_empty()).collect();
-    let Some(head) = t
-        .iter()
-        .position(|s| !(assignment(s) || SERVICE_WRAPPERS.contains(s) || s.starts_with('-') || number(s)))
+    let Some(head) =
+        t.iter().position(|s| !(assignment(s) || SERVICE_WRAPPERS.contains(s) || s.starts_with('-') || number(s)))
     else {
         return false;
     };
@@ -426,16 +421,15 @@ fn segment_is_service(segment: &str) -> bool {
         cw += 2;
     }
     let command = t.get(cw).map_or("", |s| word(s));
-    let at = |i: usize, phrase: &[&str]| {
-        phrase.iter().enumerate().all(|(k, p)| t.get(i + k).map(|s| word(s)) == Some(p))
-    };
+    let at =
+        |i: usize, phrase: &[&str]| phrase.iter().enumerate().all(|(k, p)| t.get(i + k).map(|s| word(s)) == Some(p));
     let starts = |phrase: &[&str]| at(head, phrase) || at(cw, phrase);
     let phrase = SERVICE_PHRASES.iter().any(|p| starts(&p.split(' ').collect::<Vec<_>>()));
     // A `dev`/`start` script only right after a runner word or a runner
     // flag's value (`pnpm --filter web dev`) — never the value of an unknown
     // flag (`uv run --extra dev pytest`).
-    let via_runner = cw > head
-        && (SERVICE_RUNNERS.contains(&t[cw - 1]) || (cw >= 2 && SERVICE_VALUE_FLAGS.contains(&t[cw - 2])));
+    let via_runner =
+        cw > head && (SERVICE_RUNNERS.contains(&t[cw - 1]) || (cw >= 2 && SERVICE_VALUE_FLAGS.contains(&t[cw - 2])));
     let script = via_runner && matches!(command, "dev" | "start");
     let vite = command == "vite" && !t[cw + 1..].contains(&"build");
     let compose = (starts(&["docker", "compose", "up"]) || starts(&["docker-compose", "up"]))
@@ -446,10 +440,11 @@ fn segment_is_service(segment: &str) -> bool {
     let port_forward = word(t[head]) == "kubectl" && t.contains(&"port-forward");
     let rollout_status = t.windows(2).any(|w| w == ["rollout", "status"]);
     let bounded_watch = command == "gh" || (command == "kubectl" && rollout_status);
-    let watch = !bounded_watch && t.iter().enumerate().any(|(i, s)| {
-        let (flag, value) = s.split_once('=').map_or((*s, t.get(i + 1).copied()), |(f, v)| (f, Some(v)));
-        matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
-    });
+    let watch = !bounded_watch
+        && t.iter().enumerate().any(|(i, s)| {
+            let (flag, value) = s.split_once('=').map_or((*s, t.get(i + 1).copied()), |(f, v)| (f, Some(v)));
+            matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
+        });
     phrase || script || port_forward || vite || compose || watch
 }
 
@@ -609,18 +604,19 @@ mod tests {
     fn agent_help_text_mentions_all_sources() {
         // Read the lib.rs file and check that the `agent` field's doc comment
         // (only that comment, not the whole file) mentions all sources.
-        let lib_rs = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")
-        ).expect("Could not read lib.rs");
+        let lib_rs = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+            .expect("Could not read lib.rs");
 
         // Scope the search to the `Notify::agent` field's doc-comment block:
         // from its opening line down to the field declaration that follows it.
         // Scoping matters — without it, a future backticked agent name ANYWHERE
         // in lib.rs (e.g. in an unrelated doc comment) would make this guard
         // vacuously pass instead of catching a stale `agent` doc comment.
-        let doc_start = lib_rs.find("/// Which agent is reporting")
+        let doc_start = lib_rs
+            .find("/// Which agent is reporting")
             .expect("lib.rs must have the `Notify::agent` field's doc comment (\"Which agent is reporting\")");
-        let field_decl = lib_rs[doc_start..].find("agent: String,")
+        let field_decl = lib_rs[doc_start..]
+            .find("agent: String,")
             .map(|i| doc_start + i)
             .expect("the `agent` doc comment must be immediately followed by the `agent: String,` field");
         let doc_comment = &lib_rs[doc_start..field_decl];
@@ -647,11 +643,7 @@ mod tests {
     fn tool_edit_write_multiedit_reduce_to_basename() {
         for tool in &["Edit", "Write", "MultiEdit"] {
             let input = json(r#"{"file_path": "/path/to/auth.rs"}"#);
-            assert_eq!(
-                tool_activity(tool, &input).unwrap(),
-                "editing auth.rs",
-                "tool={tool}"
-            );
+            assert_eq!(tool_activity(tool, &input).unwrap(), "editing auth.rs", "tool={tool}");
         }
     }
 
@@ -664,50 +656,29 @@ mod tests {
     #[test]
     fn tool_notebook_edit_uses_notebook_path() {
         let input = json(r#"{"notebook_path": "/notebooks/analysis.ipynb"}"#);
-        assert_eq!(
-            tool_activity("NotebookEdit", &input).unwrap(),
-            "editing analysis.ipynb"
-        );
+        assert_eq!(tool_activity("NotebookEdit", &input).unwrap(), "editing analysis.ipynb");
     }
 
     #[test]
     fn tool_grep_and_glob_return_searching() {
-        assert_eq!(
-            tool_activity("Grep", &json(r#"{"pattern": "foo"}"#)).unwrap(),
-            "searching"
-        );
-        assert_eq!(
-            tool_activity("Glob", &json(r#"{"pattern": "*.rs"}"#)).unwrap(),
-            "searching"
-        );
+        assert_eq!(tool_activity("Grep", &json(r#"{"pattern": "foo"}"#)).unwrap(), "searching");
+        assert_eq!(tool_activity("Glob", &json(r#"{"pattern": "*.rs"}"#)).unwrap(), "searching");
     }
 
     #[test]
     fn tool_webfetch_and_websearch_return_searching_web() {
-        assert_eq!(
-            tool_activity("WebFetch", &json(r#"{"url": "https://example.com"}"#)).unwrap(),
-            "searching web"
-        );
-        assert_eq!(
-            tool_activity("WebSearch", &json(r#"{"query": "rust async"}"#)).unwrap(),
-            "searching web"
-        );
+        assert_eq!(tool_activity("WebFetch", &json(r#"{"url": "https://example.com"}"#)).unwrap(), "searching web");
+        assert_eq!(tool_activity("WebSearch", &json(r#"{"query": "rust async"}"#)).unwrap(), "searching web");
     }
 
     #[test]
     fn tool_task_returns_delegating() {
-        assert_eq!(
-            tool_activity("Task", &json(r#"{"description": "do X"}"#)).unwrap(),
-            "delegating"
-        );
+        assert_eq!(tool_activity("Task", &json(r#"{"description": "do X"}"#)).unwrap(), "delegating");
     }
 
     #[test]
     fn tool_todowrite_returns_planning() {
-        assert_eq!(
-            tool_activity("TodoWrite", &json(r#"{"todos": []}"#)).unwrap(),
-            "planning"
-        );
+        assert_eq!(tool_activity("TodoWrite", &json(r#"{"todos": []}"#)).unwrap(), "planning");
     }
 
     #[test]
@@ -733,17 +704,13 @@ mod tests {
         // commands misclassify. Each of these embeds a keyword inside another
         // word and must fall through to the generic "running <exe>".
         for (cmd, expected) in [
-            ("git checkout latest", "running git"), // "latest" ⊅ test
-            ("npm uninstall left-pad", "running npm"), // "uninstall" ⊅ install
-            ("cat fastest.txt", "running cat"),     // "fastest" ⊅ test
+            ("git checkout latest", "running git"),     // "latest" ⊅ test
+            ("npm uninstall left-pad", "running npm"),  // "uninstall" ⊅ install
+            ("cat fastest.txt", "running cat"),         // "fastest" ⊅ test
             ("./rebuilder.sh", "running rebuilder.sh"), // "rebuilder" ⊅ build
         ] {
             let input = json(&format!(r#"{{"command": {cmd:?}}}"#));
-            assert_eq!(
-                tool_activity("Bash", &input).as_deref(),
-                Some(expected),
-                "cmd={cmd}"
-            );
+            assert_eq!(tool_activity("Bash", &input).as_deref(), Some(expected), "cmd={cmd}");
         }
     }
 
@@ -762,18 +729,12 @@ mod tests {
     #[test]
     fn tool_apply_patch_returns_editing_files() {
         let input = json(r#"{"command": "apply_patch <<'PATCH'\n*** Begin Patch\nPATCH"}"#);
-        assert_eq!(
-            tool_activity("apply_patch", &input).unwrap(),
-            "editing files"
-        );
+        assert_eq!(tool_activity("apply_patch", &input).unwrap(), "editing files");
     }
 
     #[test]
     fn tool_mcp_uses_tool_basename() {
-        assert_eq!(
-            tool_activity("mcp__filesystem__read_file", &json("{}")).unwrap(),
-            "using read_file"
-        );
+        assert_eq!(tool_activity("mcp__filesystem__read_file", &json("{}")).unwrap(), "using read_file");
     }
 
     #[test]
@@ -831,10 +792,7 @@ mod tests {
 
     #[test]
     fn trailing_question_is_the_last_nonempty_line_only_when_it_asks() {
-        assert_eq!(
-            trailing_question("Done with the refactor.\n\nShall I push?  \n"),
-            Some("Shall I push?")
-        );
+        assert_eq!(trailing_question("Done with the refactor.\n\nShall I push?  \n"), Some("Shall I push?"));
         // Question earlier, statement last → not blocked on the user.
         assert_eq!(trailing_question("Anything else?\nAll tests pass."), None);
         assert_eq!(trailing_question("all set"), None);

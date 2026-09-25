@@ -89,8 +89,8 @@ impl TabNamer {
             // Sanitized exactly like the tab intake sanitizes host names: what
             // we apply must equal what `TabUpdate` echoes back, or stickiness
             // would misread our own (re-sanitized) name as a manual rename.
-            let Some(desired) = computed_name(&tab.panes)
-                .map(|n| crate::payload::sanitize(&n, crate::payload::MAX_TAB_NAME_CHARS))
+            let Some(desired) =
+                computed_name(&tab.panes).map(|n| crate::payload::sanitize(&n, crate::payload::MAX_TAB_NAME_CHARS))
             else {
                 continue;
             };
@@ -99,10 +99,7 @@ impl TabNamer {
             }
             if force || is_default_name(&tab.name) || ours {
                 self.applied.insert(tab.id, desired.clone());
-                out.push(TabRename {
-                    id: tab.id,
-                    name: desired,
-                });
+                out.push(TabRename { id: tab.id, name: desired });
             }
         }
         out
@@ -180,8 +177,7 @@ fn is_pane_placeholder(title: &str) -> bool {
 /// Zellij's auto-numbered defaults ("Tab #N", "Pane #N"): a prefix plus a
 /// non-empty run of ASCII digits, nothing else.
 fn is_numbered_placeholder(name: &str, prefix: &str) -> bool {
-    name.strip_prefix(prefix)
-        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+    name.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn is_default_name(name: &str) -> bool {
@@ -193,10 +189,7 @@ fn cwd_basename(path: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    trimmed
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .map(str::to_string)
+    trimmed.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// Path markers for agent-managed git worktrees created under the standard
@@ -239,39 +232,22 @@ mod tests {
 
     /// Build a pane carrying just a repo (unfocused unless `focused`).
     fn repo_pane(repo: &str, focused: bool) -> PaneFacts {
-        PaneFacts {
-            repo: Some(repo.into()),
-            focused,
-            ..PaneFacts::default()
-        }
+        PaneFacts { repo: Some(repo.into()), focused, ..PaneFacts::default() }
     }
 
     /// Build a tab with the given id, current name, and panes.
     fn tab(id: usize, name: &str, panes: Vec<PaneFacts>) -> TabFacts {
-        TabFacts {
-            id: TabId::new(id),
-            name: name.into(),
-            panes,
-        }
+        TabFacts { id: TabId::new(id), name: name.into(), panes }
     }
 
     fn renamed_to(name: &str) -> Vec<TabRename> {
-        vec![TabRename {
-            id: TabId::new(1),
-            name: name.into(),
-        }]
+        vec![TabRename { id: TabId::new(1), name: name.into() }]
     }
 
     #[test]
     fn cwd_basename_handles_normal_trailing_root_and_empty_paths() {
-        assert_eq!(
-            cwd_basename("/Users/m/dev/zj-radar"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(
-            cwd_basename("/Users/m/dev/zj-radar/"),
-            Some("zj-radar".into())
-        );
+        assert_eq!(cwd_basename("/Users/m/dev/zj-radar"), Some("zj-radar".into()));
+        assert_eq!(cwd_basename("/Users/m/dev/zj-radar/"), Some("zj-radar".into()));
         assert_eq!(cwd_basename("/"), None);
         assert_eq!(cwd_basename(""), None);
     }
@@ -326,31 +302,15 @@ mod tests {
 
         // No repo anywhere → focused pane's cwd basename.
         let panes = vec![
-            PaneFacts {
-                cwd: Some("/work/one".into()),
-                title: "one".into(),
-                ..PaneFacts::default()
-            },
-            PaneFacts {
-                cwd: Some("/work/two".into()),
-                title: "two".into(),
-                focused: true,
-                ..PaneFacts::default()
-            },
+            PaneFacts { cwd: Some("/work/one".into()), title: "one".into(), ..PaneFacts::default() },
+            PaneFacts { cwd: Some("/work/two".into()), title: "two".into(), focused: true, ..PaneFacts::default() },
         ];
         assert_eq!(computed_name(&panes), Some("two".into()));
 
         // No repo, no cwd → focused pane's title, with the activity prefix stripped.
         let panes = vec![
-            PaneFacts {
-                title: "first".into(),
-                ..PaneFacts::default()
-            },
-            PaneFacts {
-                title: "⠀ spinner-title".into(),
-                focused: true,
-                ..PaneFacts::default()
-            },
+            PaneFacts { title: "first".into(), ..PaneFacts::default() },
+            PaneFacts { title: "⠀ spinner-title".into(), focused: true, ..PaneFacts::default() },
         ];
         assert_eq!(computed_name(&panes), Some("spinner-title".into()));
     }
@@ -362,14 +322,8 @@ mod tests {
         // rather than giving up — the title tier mirrors name_supported, which
         // already accepts any pane's title.
         let panes = vec![
-            PaneFacts {
-                title: "   ".into(),
-                ..PaneFacts::default()
-            },
-            PaneFacts {
-                title: "scratch".into(),
-                ..PaneFacts::default()
-            },
+            PaneFacts { title: "   ".into(), ..PaneFacts::default() },
+            PaneFacts { title: "scratch".into(), ..PaneFacts::default() },
         ];
         assert_eq!(computed_name(&panes), Some("scratch".into()));
     }
@@ -381,23 +335,11 @@ mod tests {
         // pane attribute name_supported accepts must be computable. This pins
         // the two against drift across repo / worktree / title tiers.
         let panes = vec![
-            PaneFacts {
-                repo: Some("repo-one".into()),
-                title: "t1".into(),
-                ..PaneFacts::default()
-            },
-            PaneFacts {
-                cwd: Some("/work/two".into()),
-                title: "t2".into(),
-                focused: true,
-                ..PaneFacts::default()
-            },
+            PaneFacts { repo: Some("repo-one".into()), title: "t1".into(), ..PaneFacts::default() },
+            PaneFacts { cwd: Some("/work/two".into()), title: "t2".into(), focused: true, ..PaneFacts::default() },
         ];
         let name = computed_name(&panes).expect("a name should be computable here");
-        assert!(
-            name_supported(&panes, &name),
-            "computed name {name:?} must be considered supported"
-        );
+        assert!(name_supported(&panes, &name), "computed name {name:?} must be considered supported");
         // A non-focused, non-first pane's title is both supported AND computable
         // (the case that used to diverge).
         assert!(name_supported(&panes, "t1"));
@@ -407,10 +349,7 @@ mod tests {
     fn worktree_repo_dir_resolves_claude_worktree_paths_to_parent_repo() {
         // A worktree under the standard `<repo>/.claude/worktrees/<branch>` path
         // resolves to the PARENT repo's basename, not the branch dir.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x"),
-            Some("zj-radar".into())
-        );
+        assert_eq!(worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x"), Some("zj-radar".into()));
         // Deeper cwd inside the worktree still resolves to the repo.
         assert_eq!(
             worktree_repo_dir("/Users/m/dev/zj-radar/.claude/worktrees/feat-x/src/app"),
@@ -426,14 +365,8 @@ mod tests {
             Some("zj-radar".into())
         );
         // A normal (non-worktree) path keeps its plain basename.
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar"),
-            Some("zj-radar".into())
-        );
-        assert_eq!(
-            worktree_repo_dir("/Users/m/dev/zj-radar/src"),
-            Some("src".into())
-        );
+        assert_eq!(worktree_repo_dir("/Users/m/dev/zj-radar"), Some("zj-radar".into()));
+        assert_eq!(worktree_repo_dir("/Users/m/dev/zj-radar/src"), Some("src".into()));
     }
 
     #[test]
@@ -516,19 +449,11 @@ mod tests {
     fn applied_name_is_sticky_while_any_pane_justifies_it() {
         let mut namer = TabNamer::default();
         // Focused `alpha` names the tab; `beta` also present.
-        let tabs = vec![tab(
-            1,
-            "Tab #1",
-            vec![repo_pane("alpha", true), repo_pane("beta", false)],
-        )];
+        let tabs = vec![tab(1, "Tab #1", vec![repo_pane("alpha", true), repo_pane("beta", false)])];
         assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("alpha"));
         // Host echoes the rename; focus shifts to `beta`. `alpha` is still
         // justified by the other pane, so the name must NOT churn.
-        let tabs = vec![tab(
-            1,
-            "alpha",
-            vec![repo_pane("alpha", false), repo_pane("beta", true)],
-        )];
+        let tabs = vec![tab(1, "alpha", vec![repo_pane("alpha", false), repo_pane("beta", true)])];
         assert!(namer.rename(&tabs, NamingMode::Managed).is_empty());
         assert_eq!(namer.applied_name(TabId::new(1)), Some("alpha"));
     }
@@ -536,10 +461,8 @@ mod tests {
     #[test]
     fn retain_tabs_forgets_closed_tabs_and_keeps_live_ones() {
         let mut namer = TabNamer::default();
-        let tabs = vec![
-            tab(1, "Tab #1", vec![repo_pane("alpha", true)]),
-            tab(2, "Tab #2", vec![repo_pane("beta", true)]),
-        ];
+        let tabs =
+            vec![tab(1, "Tab #1", vec![repo_pane("alpha", true)]), tab(2, "Tab #2", vec![repo_pane("beta", true)])];
         namer.rename(&tabs, NamingMode::Managed);
         assert_eq!(namer.applied_name(TabId::new(1)), Some("alpha"));
         assert_eq!(namer.applied_name(TabId::new(2)), Some("beta"));
@@ -547,26 +470,14 @@ mod tests {
         // Tab 1 closes; only tab 2 remains in the live set.
         let live = std::collections::HashSet::from([TabId::new(2)]);
         namer.retain_tabs(&live);
-        assert_eq!(
-            namer.applied_name(TabId::new(1)),
-            None,
-            "a closed tab's applied name is dropped"
-        );
-        assert_eq!(
-            namer.applied_name(TabId::new(2)),
-            Some("beta"),
-            "a live tab's applied name is kept"
-        );
+        assert_eq!(namer.applied_name(TabId::new(1)), None, "a closed tab's applied name is dropped");
+        assert_eq!(namer.applied_name(TabId::new(2)), Some("beta"), "a live tab's applied name is kept");
     }
 
     #[test]
     fn repicks_when_the_applied_name_loses_all_support() {
         let mut namer = TabNamer::default();
-        let tabs = vec![tab(
-            1,
-            "Tab #1",
-            vec![repo_pane("alpha", true), repo_pane("beta", false)],
-        )];
+        let tabs = vec![tab(1, "Tab #1", vec![repo_pane("alpha", true), repo_pane("beta", false)])];
         assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("alpha"));
         // Host echoes; the `alpha` pane closes, leaving only `beta`. `alpha` is no
         // longer supported, so the tab re-picks from the survivor.

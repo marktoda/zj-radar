@@ -171,7 +171,8 @@ mod tests {
     const BG_TOOL: &str = r#"{"hook_event_name":"PreToolUse","agent_id":"a1139dfe5ebed1d64","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x"}}"#;
     const BG_POST: &str = r#"{"hook_event_name":"PostToolUse","agent_id":"a1139dfe5ebed1d64","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":""}}"#;
     const FG_TOOL: &str = r#"{"hook_event_name":"PostToolUse","agent_id":"a061999ea11fbeafa","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x"}}"#;
-    const BG_STOP: &str = r#"{"hook_event_name":"SubagentStop","agent_id":"a1139dfe5ebed1d64","agent_type":"general-purpose"}"#;
+    const BG_STOP: &str =
+        r#"{"hook_event_name":"SubagentStop","agent_id":"a1139dfe5ebed1d64","agent_type":"general-purpose"}"#;
     fn now() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
     }
@@ -187,10 +188,8 @@ mod tests {
     }
 
     fn markers(t: &BgAgents) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(&t.dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
+        let mut names: Vec<String> =
+            std::fs::read_dir(&t.dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
         names
     }
@@ -251,7 +250,9 @@ mod tests {
         assert!(t.intake(&with_id(BG_TOOL, "../../etc/x"), now()));
         let long = "a".repeat(500);
         t.intake(&with_id(LAUNCH, &long), now());
-        assert!(markers(&t).iter().any(|n| n.ends_with(&"a".repeat(MAX_ID_CHARS)) && !n.ends_with(&"a".repeat(MAX_ID_CHARS + 1))));
+        assert!(markers(&t)
+            .iter()
+            .any(|n| n.ends_with(&"a".repeat(MAX_ID_CHARS)) && !n.ends_with(&"a".repeat(MAX_ID_CHARS + 1))));
         // An id with nothing filename-safe records nothing.
         t.intake(&with_id(LAUNCH, "///"), now());
         assert!(!t.intake(&with_id(BG_TOOL, "///"), now()));

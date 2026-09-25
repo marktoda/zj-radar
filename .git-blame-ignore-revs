@@ -1,0 +1,6 @@
+# Revisions `git blame` should skip. Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub applies it automatically.)
+
+# style: cargo fmt --all (adopt rustfmt)
+6d233e13fa461519d71a92275ce8fce24cf65ec5

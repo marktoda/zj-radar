@@ -21,12 +21,7 @@ pub(crate) fn grid(raw: &str, width: u16) -> String {
     let lines: Vec<String> = (0..height)
         .map(|r| {
             (0..width)
-                .map(|c| {
-                    screen
-                        .cell(r, c)
-                        .map(|cell| cell.contents())
-                        .unwrap_or_default()
-                })
+                .map(|c| screen.cell(r, c).map(|cell| cell.contents()).unwrap_or_default())
                 .collect::<String>()
                 .trim_end()
                 .to_string()
@@ -34,10 +29,6 @@ pub(crate) fn grid(raw: &str, width: u16) -> String {
         .collect();
 
     // Trim trailing blank rows (the headroom row, plus any trailing gap rows).
-    let end = lines
-        .iter()
-        .rposition(|l| !l.is_empty())
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let end = lines.iter().rposition(|l| !l.is_empty()).map(|i| i + 1).unwrap_or(0);
     lines[..end].join("\n")
 }

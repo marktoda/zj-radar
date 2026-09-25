@@ -106,10 +106,7 @@ pub(crate) fn to_json<'a>(
     let snapshot = RadarSnapshot {
         v: RADAR_SNAPSHOT_V,
         tick: snapshot_tick,
-        observations: observations
-            .into_iter()
-            .map(|((pane_id, _), obs)| SnapshotEntry { pane_id, obs })
-            .collect(),
+        observations: observations.into_iter().map(|((pane_id, _), obs)| SnapshotEntry { pane_id, obs }).collect(),
         ledger: merged_ledger,
     };
     serde_json::to_string(&snapshot).unwrap_or_default()
@@ -151,11 +148,7 @@ fn load_v3(snapshot: RadarSnapshot) -> Option<LoadedSnapshot> {
     // hand-edited file) may have persisted raw control chars, so scrub both
     // observations and ledger on the way in like every other externally-
     // sourced string.
-    let observations = snapshot
-        .observations
-        .into_iter()
-        .map(|entry| (entry.pane_id, entry.obs.sanitized()))
-        .collect();
+    let observations = snapshot.observations.into_iter().map(|entry| (entry.pane_id, entry.obs.sanitized())).collect();
     let ledger = snapshot.ledger.into_iter().map(LedgerEntry::sanitized).collect();
     Some((observations, snapshot.tick, ledger))
 }

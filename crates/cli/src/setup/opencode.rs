@@ -6,9 +6,12 @@
 //! opencode version picks its bridge. Install, uninstall, `--check` and
 //! `run`'s detection all key on the header marker (`detect.rs`).
 
-use super::*;
 use super::detect::opencode_plugin_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, dry_run_backup_line, kept_backup_line, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{
+    dry_run_backup_line, kept_backup_line, plan_install, plan_uninstall, read_existing, remove_backup_if_ours,
+    write_bridge, Existing, InstallPlan, UninstallPlan,
+};
+use super::*;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -88,8 +91,8 @@ fn opencode_installed_from(on_path: bool, config_dir_exists: bool, plugin_exists
 /// One vendored bridge: where it lives, what it must contain, what it is for.
 struct Bridge {
     /// "opencode 1.x" / "opencode 2.x" — for the user-facing lines.
-    line:     &'static str,
-    path:     PathBuf,
+    line: &'static str,
+    path: PathBuf,
     embedded: &'static str,
     existing: Existing,
 }
@@ -142,12 +145,8 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
     // Refuse as a unit: a foreign file at either path is a stop, even when the
     // other would write cleanly — a half-installed pair is harder to reason
     // about than "nothing changed, here is why".
-    let foreign: Vec<&Bridge> = bridges
-        .iter()
-        .zip(&plans)
-        .filter(|(_, p)| **p == InstallPlan::RefuseForeign)
-        .map(|(b, _)| b)
-        .collect();
+    let foreign: Vec<&Bridge> =
+        bridges.iter().zip(&plans).filter(|(_, p)| **p == InstallPlan::RefuseForeign).map(|(b, _)| b).collect();
     if !foreign.is_empty() {
         let why = foreign.iter().map(|b| b.existing.refusal_reason(&b.path)).collect::<Vec<_>>().join("; ");
         crate::exit::fail_report(
@@ -156,17 +155,10 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
         );
         return;
     }
-    let to_write: Vec<&Bridge> = bridges
-        .iter()
-        .zip(&plans)
-        .filter(|(_, p)| **p == InstallPlan::Write)
-        .map(|(b, _)| b)
-        .collect();
+    let to_write: Vec<&Bridge> =
+        bridges.iter().zip(&plans).filter(|(_, p)| **p == InstallPlan::Write).map(|(b, _)| b).collect();
     if to_write.is_empty() {
-        println!(
-            "opencode: plugins already up to date ({})",
-            paths_list(bridges.iter().map(|b| b.path.clone()))
-        );
+        println!("opencode: plugins already up to date ({})", paths_list(bridges.iter().map(|b| b.path.clone())));
         print_opencode_guidance(&facts, false);
         return;
     }
@@ -207,7 +199,8 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
         }
     }
     if to_remove.is_empty() {
-        if bridges.iter().all(|b| matches!(plan_uninstall(&b.existing, opencode_plugin_is_ours), UninstallPlan::Absent)) {
+        if bridges.iter().all(|b| matches!(plan_uninstall(&b.existing, opencode_plugin_is_ours), UninstallPlan::Absent))
+        {
             println!("opencode: plugin not installed ({})", paths_list(bridges.iter().map(|b| b.path.clone())));
         }
         return;
@@ -242,7 +235,8 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
         // now holds nothing; `remove_dir` refuses a non-empty dir, which is
         // exactly the "someone else put something here" case where we must
         // leave it. An empty `zj-radar/` dir we never wrote into stays too.
-        if let Some(dir) = b.path.parent().filter(|d| d.file_name().is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME)) {
+        if let Some(dir) = b.path.parent().filter(|d| d.file_name().is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME))
+        {
             let _ = std::fs::remove_dir(dir);
         }
     }
@@ -325,7 +319,9 @@ mod tests {
         assert!(OPENCODE_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
         assert!(OPENCODE_TUI_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
         assert_ne!(OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER);
-        for (js, marker) in [(OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER), (OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER)] {
+        for (js, marker) in
+            [(OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER), (OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER)]
+        {
             assert!(
                 js.lines().next().is_some_and(|l| l.contains(marker)),
                 "the vendored plugin must carry the {marker} marker in its header line"

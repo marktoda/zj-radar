@@ -30,11 +30,7 @@ pub fn repo_branch(cwd: &str) -> (String, String) {
 /// Environment that changes where git looks. Any of these set → let git
 /// decide; reproducing their semantics is not worth the surface.
 const DISCOVERY_ENV: [&str; 6] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_CEILING_DIRECTORIES",
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 ];
 
@@ -217,16 +213,12 @@ fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
 /// `--show-toplevel`'s basename for git versions without `--path-format`
 /// (added in 2.31). Empty strings when git fails (not a repo, no git).
 fn spawn_repo_branch(cwd: &str) -> (String, String) {
-    let repo = git_output(
-        cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .and_then(|d| repo_name_from_common_dir(&d))
-    .or_else(|| {
-        git_output(cwd, &["rev-parse", "--show-toplevel"])
-            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
-    })
-    .unwrap_or_default();
+    let repo = git_output(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .and_then(|d| repo_name_from_common_dir(&d))
+        .or_else(|| {
+            git_output(cwd, &["rev-parse", "--show-toplevel"]).map(|p| p.rsplit('/').next().unwrap_or(&p).to_string())
+        })
+        .unwrap_or_default();
     let branch = git_output(cwd, &["branch", "--show-current"]).unwrap_or_default();
     (repo, branch)
 }
@@ -241,18 +233,12 @@ mod tests {
     #[test]
     fn common_dir_normal_checkout_is_repo_name() {
         // A normal checkout's common dir is "<repo>/.git" → repo basename.
-        assert_eq!(
-            repo_name_from_common_dir("/Users/m/dev/pinky/.git"),
-            Some("pinky".into())
-        );
+        assert_eq!(repo_name_from_common_dir("/Users/m/dev/pinky/.git"), Some("pinky".into()));
     }
 
     #[test]
     fn common_dir_bare_repo_strips_dot_git() {
-        assert_eq!(
-            repo_name_from_common_dir("/srv/git/acme.git"),
-            Some("acme".into())
-        );
+        assert_eq!(repo_name_from_common_dir("/srv/git/acme.git"), Some("acme".into()));
     }
 
     #[test]
@@ -269,10 +255,7 @@ mod tests {
         // flag to stdout and exits 0, so this exact string is what git_output
         // hands us. It must be rejected (→ --show-toplevel fallback), not
         // surfaced as a repo named "--path-format=absolute".
-        assert_eq!(
-            repo_name_from_common_dir("--path-format=absolute\n.git"),
-            None
-        );
+        assert_eq!(repo_name_from_common_dir("--path-format=absolute\n.git"), None);
         // And any other multi-line or non-absolute output is equally untrusted.
         assert_eq!(repo_name_from_common_dir("/a/.git\n/b/.git"), None);
         assert_eq!(repo_name_from_common_dir("relative/.git"), None);
@@ -403,10 +386,7 @@ mod tests {
             let pinky = make_repo(tmp.path(), "pinky", "ref: refs/heads/main\n");
             let link = tmp.path().join("link");
             std::os::unix::fs::symlink(&pinky, &link).unwrap();
-            assert_eq!(
-                native_repo_branch(&link),
-                Some(("pinky".to_string(), "main".to_string()))
-            );
+            assert_eq!(native_repo_branch(&link), Some(("pinky".to_string(), "main".to_string())));
         }
     }
 
@@ -458,13 +438,7 @@ mod tests {
         let bare = root.join("acme.git");
         assert!(git(root, &["clone", "-q", "--bare", pinky.to_str().unwrap(), "acme.git"]));
 
-        for cwd in [
-            pinky.clone(),
-            pinky.join("src/deep"),
-            wt.clone(),
-            wt.join("crates"),
-            detached,
-        ] {
+        for cwd in [pinky.clone(), pinky.join("src/deep"), wt.clone(), wt.join("crates"), detached] {
             let cwd_s = cwd.to_str().unwrap();
             let native = native_repo_branch(&cwd).unwrap_or_else(|| panic!("native declined a real repo: {cwd_s}"));
             let spawned = spawn_repo_branch(cwd_s);

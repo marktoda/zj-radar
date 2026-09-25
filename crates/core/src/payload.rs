@@ -45,9 +45,7 @@ const WIRE_FREE_TEXT_FIELDS: usize = 5;
 const WIRE_TASK_ITEM_OVERHEAD_BYTES: usize = 96;
 const WIRE_TASKS_MAX_BYTES: usize =
     MAX_TASKS * ((MAX_TASK_ID_CHARS + MAX_TASK_LABEL_CHARS) * 6 + WIRE_TASK_ITEM_OVERHEAD_BYTES);
-const _: () = assert!(
-    WIRE_FREE_TEXT_FIELDS * MAX_WIRE_FIELD_CHARS * 6 + WIRE_TASKS_MAX_BYTES < MAX_PAYLOAD_BYTES / 2
-);
+const _: () = assert!(WIRE_FREE_TEXT_FIELDS * MAX_WIRE_FIELD_CHARS * 6 + WIRE_TASKS_MAX_BYTES < MAX_PAYLOAD_BYTES / 2);
 
 /// The versioned pipe name that binds every producer to the plugin — the one
 /// string that must never drift between them. The pipe *name* carries the
@@ -501,10 +499,7 @@ pub fn to_wire(p: &StatusPayload) -> String {
     serde_json::to_string(&Wire {
         v: STATUS_VERSION,
         source: cap_chars(&p.source, MAX_WIRE_FIELD_CHARS),
-        pane: WirePane {
-            kind: "terminal",
-            id: p.pane_id,
-        },
+        pane: WirePane { kind: "terminal", id: p.pane_id },
         status: p.status,
         repo: cap_chars(&p.repo, MAX_WIRE_FIELD_CHARS),
         branch: cap_chars(&p.branch, MAX_WIRE_FIELD_CHARS),
@@ -633,14 +628,8 @@ mod tests {
     #[test]
     fn parses_pane_id_boundaries() {
         // 0 and u32::MAX are both valid pane ids — neither overflows nor is special.
-        assert_eq!(
-            p(r#"{"pane":{"type":"terminal","id":0},"status":"done"}"#).unwrap().pane_id,
-            0
-        );
-        assert_eq!(
-            p(r#"{"pane":{"type":"terminal","id":4294967295},"status":"done"}"#).unwrap().pane_id,
-            u32::MAX
-        );
+        assert_eq!(p(r#"{"pane":{"type":"terminal","id":0},"status":"done"}"#).unwrap().pane_id, 0);
+        assert_eq!(p(r#"{"pane":{"type":"terminal","id":4294967295},"status":"done"}"#).unwrap().pane_id, u32::MAX);
     }
 
     #[test]
@@ -742,7 +731,7 @@ mod tests {
         assert_eq!(sanitize("abc\u{202e}def", 100), "abcdef"); // RLO
         assert_eq!(sanitize("a\u{200f}b\u{200e}c", 100), "abc"); // RLM / LRM
         assert_eq!(sanitize("x\u{2066}y\u{2069}z", 100), "xyz"); // LRI / PDI isolates
-        // The zero-width JOINER is preserved — it is load-bearing for emoji.
+                                                                 // The zero-width JOINER is preserved — it is load-bearing for emoji.
         let zwj = "👩\u{200d}💻";
         assert_eq!(sanitize(zwj, 100), zwj);
     }
@@ -871,12 +860,19 @@ mod tests {
             status: Status::Running,
             tasks: Some(TaskBatch {
                 snapshot: true,
-                items: vec![TaskUpdate { id: "b1".into(), state: TaskState::Running, label: "Run tests".into(), holds: true }],
+                items: vec![TaskUpdate {
+                    id: "b1".into(),
+                    state: TaskState::Running,
+                    label: "Run tests".into(),
+                    holds: true,
+                }],
             }),
             ..Default::default()
         });
         assert!(
-            json.ends_with(r#""tasks":{"snapshot":true,"items":[{"id":"b1","state":"running","label":"Run tests","holds":true}]}}"#),
+            json.ends_with(
+                r#""tasks":{"snapshot":true,"items":[{"id":"b1","state":"running","label":"Run tests","holds":true}]}}"#
+            ),
             "{json}"
         );
         let got = parse(&json).unwrap().tasks.unwrap();
@@ -928,13 +924,16 @@ mod tests {
 
     #[test]
     fn an_oversized_snapshot_is_downgraded_to_a_delta_on_both_sides() {
-        let item = |i: usize| TaskUpdate { id: format!("b{i}"), state: TaskState::Running, label: String::new(), holds: true };
-        let wire = |n: usize| to_wire(&StatusPayload {
-            pane_id: 1,
-            status: Status::Running,
-            tasks: Some(TaskBatch { snapshot: true, items: (0..n).map(item).collect() }),
-            ..Default::default()
-        });
+        let item =
+            |i: usize| TaskUpdate { id: format!("b{i}"), state: TaskState::Running, label: String::new(), holds: true };
+        let wire = |n: usize| {
+            to_wire(&StatusPayload {
+                pane_id: 1,
+                status: Status::Running,
+                tasks: Some(TaskBatch { snapshot: true, items: (0..n).map(item).collect() }),
+                ..Default::default()
+            })
+        };
         // Exactly at the cap the snapshot keeps its authority...
         assert!(parse(&wire(MAX_TASKS)).unwrap().tasks.unwrap().snapshot);
         // ...one past it, the producer drops the flag as it truncates.
@@ -944,7 +943,10 @@ mod tests {
         // A foreign producer that sends an oversized snapshot anyway: the
         // parser truncates and downgrades, so the dropped items stay running.
         let items: Vec<String> = (0..=MAX_TASKS).map(|i| format!(r#"{{"id":"b{i}","state":"running"}}"#)).collect();
-        let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#, items.join(","));
+        let raw = format!(
+            r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#,
+            items.join(",")
+        );
         let got = p(&raw).unwrap().tasks.unwrap();
         assert_eq!(got.items.len(), MAX_TASKS);
         assert!(!got.snapshot, "a truncated snapshot is not the complete running set");
@@ -952,7 +954,10 @@ mod tests {
         let mut items = items;
         items.pop();
         items.push(r#"{"id":"","state":"running"}"#.into());
-        let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#, items.join(","));
+        let raw = format!(
+            r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#,
+            items.join(",")
+        );
         assert!(p(&raw).unwrap().tasks.unwrap().snapshot);
     }
 

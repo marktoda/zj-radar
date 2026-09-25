@@ -28,34 +28,19 @@ pub(crate) enum Direction {
 ///
 /// Returns `None` when no tab needs attention, or when the only attention tab is
 /// already active (a no-op).
-fn cycle_attention(
-    tabs: &[(usize, Status)],
-    active: Option<usize>,
-    dir: Direction,
-) -> Option<usize> {
-    let mut members: Vec<usize> = tabs
-        .iter()
-        .filter(|(_, s)| s.needs_attention())
-        .map(|(p, _)| *p)
-        .collect();
+fn cycle_attention(tabs: &[(usize, Status)], active: Option<usize>, dir: Direction) -> Option<usize> {
+    let mut members: Vec<usize> = tabs.iter().filter(|(_, s)| s.needs_attention()).map(|(p, _)| *p).collect();
     members.sort_unstable();
     members.dedup();
     if members.is_empty() {
         return None;
     }
     let target = match (dir, active) {
-        (Direction::Next, Some(a)) => members
-            .iter()
-            .copied()
-            .find(|&p| p > a)
-            .or_else(|| members.first().copied()),
+        (Direction::Next, Some(a)) => members.iter().copied().find(|&p| p > a).or_else(|| members.first().copied()),
         (Direction::Next, None) => members.first().copied(),
-        (Direction::Prev, Some(a)) => members
-            .iter()
-            .rev()
-            .copied()
-            .find(|&p| p < a)
-            .or_else(|| members.last().copied()),
+        (Direction::Prev, Some(a)) => {
+            members.iter().rev().copied().find(|&p| p < a).or_else(|| members.last().copied())
+        }
         (Direction::Prev, None) => members.last().copied(),
     };
     match target {
@@ -158,15 +143,8 @@ impl PaneUpdate {
                 exits.push((p.id, p.exit_status));
             }
         }
-        let theme = focused_colors
-            .or(any_colors)
-            .map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
-        PaneUpdate {
-            tab_panes,
-            live,
-            theme,
-            exits,
-        }
+        let theme = focused_colors.or(any_colors).map(|(bg, fg)| theme::DerivedColors::from_bg_fg(bg, fg));
+        PaneUpdate { tab_panes, live, theme, exits }
     }
 }
 
@@ -193,7 +171,11 @@ impl SnapshotWrite {
     /// `Now` on a real change, `None` otherwise — the shape every
     /// changed-flag call site wants.
     pub(crate) fn now_if(changed: bool) -> Self {
-        if changed { Self::Now } else { Self::None }
+        if changed {
+            Self::Now
+        } else {
+            Self::None
+        }
     }
 }
 
@@ -366,12 +348,8 @@ impl RadarState {
                 observation.last_change_tick = tick;
             }
             match observation.origin {
-                ObservationOrigin::StatusPipe => self
-                    .status
-                    .insert_snapshot_observation(pane_id, observation),
-                ObservationOrigin::Command => self
-                    .command
-                    .insert_snapshot_observation(pane_id, observation),
+                ObservationOrigin::StatusPipe => self.status.insert_snapshot_observation(pane_id, observation),
+                ObservationOrigin::Command => self.command.insert_snapshot_observation(pane_id, observation),
             }
         }
         self.ledger.replace(ledger);
@@ -392,11 +370,8 @@ impl RadarState {
         let active = self.tabs.iter().find(|t| t.active).map(|t| t.position);
         // Order is irrelevant here: `cycle_attention` sorts the attention
         // members itself, so we gather `(position, status)` pairs as-is.
-        let pairs: Vec<(usize, Status)> = self
-            .tabs
-            .iter()
-            .map(|t| (t.position, self.tab_display_for(t.position).status))
-            .collect();
+        let pairs: Vec<(usize, Status)> =
+            self.tabs.iter().map(|t| (t.position, self.tab_display_for(t.position).status)).collect();
         cycle_attention(&pairs, active, dir)
     }
 
@@ -420,8 +395,7 @@ impl RadarState {
             }
         }
         let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
-        *self.rows_memo.borrow_mut() =
-            Some(RowsMemo { generation: self.generation, lit_flashes, rows: rows.clone() });
+        *self.rows_memo.borrow_mut() = Some(RowsMemo { generation: self.generation, lit_flashes, rows: rows.clone() });
         rows
     }
 
@@ -484,11 +458,7 @@ impl RadarState {
         // current set), so `applied` doesn't accrete gone tabs.
         let live: HashSet<TabId> = self.tabs.iter().map(|t| t.id).collect();
         self.namer.retain_tabs(&live);
-        RadarChange {
-            render: true,
-            settle: false,
-            ..RadarChange::default()
-        }
+        RadarChange { render: true, settle: false, ..RadarChange::default() }
     }
 
     /// Record which tab contains this plugin pane. Ownership resolves once and
@@ -509,11 +479,7 @@ impl RadarState {
         let Some(position) = self.naming_tab_position else {
             return;
         };
-        self.naming_tab_id = self
-            .tabs
-            .iter()
-            .find(|tab| tab.position == position)
-            .map(|tab| tab.id);
+        self.naming_tab_id = self.tabs.iter().find(|tab| tab.position == position).map(|tab| tab.id);
     }
 
     pub(crate) fn has_naming_tab(&self) -> bool {
@@ -563,10 +529,8 @@ impl RadarState {
             // Captured BEFORE `on_exit` mutates: a Running remote session
             // ending is the disconnect edge the tab flash announces — see
             // `arm_flash`'s doc.
-            let was_remote_running = self
-                .command
-                .get(pane_id)
-                .is_some_and(|o| o.kind.is_remote() && o.status == Status::Running);
+            let was_remote_running =
+                self.command.get(pane_id).is_some_and(|o| o.kind.is_remote() && o.status == Status::Running);
             if let Some(displaced) = self.command.on_exit(pane_id, exit_status, Tick(tick), EpochSecs(now_epoch_s)) {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
                 displaced_any = true;
@@ -608,8 +572,7 @@ impl RadarState {
             .filter(|id| !update.live.contains(id) && !absent_before.contains_key(id))
             .map(|id| (id, old_index.get(&id).cloned()))
             .collect();
-        let effective_live: HashSet<u32> =
-            update.live.iter().copied().chain(graced.keys().copied()).collect();
+        let effective_live: HashSet<u32> = update.live.iter().copied().chain(graced.keys().copied()).collect();
         // A confirmed-gone pane left the topology one manifest ago, so
         // `old_index` no longer carries it — the ledger files its recede under
         // the tab identity captured at first absence instead.
@@ -631,8 +594,7 @@ impl RadarState {
         self.ledger_receded(dropped_status, &prune_index, &status_tracked);
         self.ledger_receded(dropped_command, &prune_index, &status_tracked);
         self.pane_cwd.retain(|id, _| effective_live.contains(id));
-        self.cwd_bootstrap_attempted
-            .retain(|id| effective_live.contains(id));
+        self.cwd_bootstrap_attempted.retain(|id| effective_live.contains(id));
         // Track this update's fresh focus for notification suppression. It no
         // longer drives rail state (no focus recede) — see `note_focus`. `settle`
         // still gates the notifier: `panes_changed` carries trustworthy focus, so
@@ -696,22 +658,12 @@ impl RadarState {
         changed
     }
 
-    pub(crate) fn cwd_changed(
-        &mut self,
-        pane_id: u32,
-        path: String,
-        naming: config::NamingMode,
-    ) -> RadarChange {
+    pub(crate) fn cwd_changed(&mut self, pane_id: u32, path: String, naming: config::NamingMode) -> RadarChange {
         self.pane_cwd.insert(pane_id, path);
         // A cwd feeds *naming* only — nothing `rows()` reads. The rail repaint
         // (if any) arrives via the `RenameTab` effect's own `TabUpdate` echo,
         // so requesting one here just re-drew an identical rail.
-        RadarChange {
-            render: false,
-            renames: self.rename_tabs(naming),
-            settle: false,
-            ..RadarChange::default()
-        }
+        RadarChange { render: false, renames: self.rename_tabs(naming), settle: false, ..RadarChange::default() }
     }
 
     /// Unlike the other mutating entry points, this one takes no `now_epoch_s`:
@@ -728,8 +680,7 @@ impl RadarState {
         tick: u64,
     ) -> RadarChange {
         let cwd = self.pane_cwd.get(&pane_id).map(String::as_str);
-        self.command
-            .on_command_changed(pane_id, command, is_foreground, cwd, tick);
+        self.command.on_command_changed(pane_id, command, is_foreground, cwd, tick);
         // A pane back at its shell prompt means the agent that was pushing status
         // has exited (no producer hook fires on quit), so clear the now-stale
         // pushed status → idle. This rides the shared `CommandChanged` signal, so
@@ -893,13 +844,8 @@ impl RadarState {
     /// after snapshot load and on every `config.v1` override, so both a
     /// rehydrated stale Running row and a mid-session config change take
     /// effect immediately. Returns whether observable state changed.
-    pub(crate) fn set_interactive_commands(
-        &mut self,
-        extras: &std::collections::BTreeSet<String>,
-    ) -> bool {
-        let changed = self
-            .command
-            .set_interactive_extras(extras.iter().map(String::as_str));
+    pub(crate) fn set_interactive_commands(&mut self, extras: &std::collections::BTreeSet<String>) -> bool {
+        let changed = self.command.set_interactive_extras(extras.iter().map(String::as_str));
         if changed {
             self.touch();
         }
@@ -910,13 +856,8 @@ impl RadarState {
     /// (level-triggered — see `CommandStore::set_remote_extras`). Called after
     /// snapshot load and on every `config.v1` override, mirroring
     /// `set_interactive_commands`. Returns whether observable state changed.
-    pub(crate) fn set_remote_commands(
-        &mut self,
-        extras: &std::collections::BTreeSet<String>,
-    ) -> bool {
-        let changed = self
-            .command
-            .set_remote_extras(extras.iter().map(String::as_str));
+    pub(crate) fn set_remote_commands(&mut self, extras: &std::collections::BTreeSet<String>) -> bool {
+        let changed = self.command.set_remote_extras(extras.iter().map(String::as_str));
         if changed {
             self.touch();
         }
@@ -1006,18 +947,10 @@ impl RadarState {
     /// A pane CAN appear in both stores; `resolve` applies the system-wide
     /// "status wins over command" precedence, so a shared id maps to the status
     /// observation.
-    pub(crate) fn notify_views(
-        &self,
-    ) -> std::collections::BTreeMap<u32, &crate::observation::TrackedObservation> {
-        let ids: std::collections::BTreeSet<u32> = self
-            .command
-            .observations()
-            .map(|(id, _)| id)
-            .chain(self.status.observations().map(|(id, _)| id))
-            .collect();
-        ids.into_iter()
-            .filter_map(|id| self.resolve(id).map(|o| (id, o)))
-            .collect()
+    pub(crate) fn notify_views(&self) -> std::collections::BTreeMap<u32, &crate::observation::TrackedObservation> {
+        let ids: std::collections::BTreeSet<u32> =
+            self.command.observations().map(|(id, _)| id).chain(self.status.observations().map(|(id, _)| id)).collect();
+        ids.into_iter().filter_map(|id| self.resolve(id).map(|o| (id, o))).collect()
     }
 
     /// Prepared ledger rows for rendering, newest first. Each row's tab
@@ -1061,8 +994,7 @@ impl RadarState {
     pub(crate) fn pending_wait_unsaturated(&self, now_epoch_s: u64) -> bool {
         self.status.observations().any(|(_, o)| {
             o.status == Status::Pending
-                && o.pending_epoch_s
-                    .is_some_and(|t| now_epoch_s.saturating_sub(t) < crate::ledger::SATURATE_S)
+                && o.pending_epoch_s.is_some_and(|t| now_epoch_s.saturating_sub(t) < crate::ledger::SATURATE_S)
         })
     }
 
@@ -1111,10 +1043,7 @@ impl RadarState {
     /// the set of panes it should check for a dismissible `Pending`. Empty
     /// for an unknown position, same as every other `tab_panes` lookup here.
     pub(crate) fn pane_ids_for_tab(&self, position: usize) -> Vec<u32> {
-        self.tab_panes
-            .get(&position)
-            .map(|panes| panes.iter().map(|p| p.id).collect())
-            .unwrap_or_default()
+        self.tab_panes.get(&position).map(|panes| panes.iter().map(|p| p.id).collect()).unwrap_or_default()
     }
 
     /// The STATUS-PIPE observation for `pane_id`, or `None` if the status
@@ -1260,10 +1189,7 @@ impl RadarState {
     fn focused_terminal_in_active_tab(&self) -> Option<u32> {
         let active = self.tabs.iter().find(|tab| tab.active)?;
         let panes = self.tab_panes.get(&active.position)?;
-        panes
-            .iter()
-            .find(|pane| pane.focused_in_tab)
-            .map(|pane| pane.id)
+        panes.iter().find(|pane| pane.focused_in_tab).map(|pane| pane.id)
     }
 
     /// Live terminal panes whose cwd we have neither learned (via `CwdChanged`)
@@ -1286,9 +1212,7 @@ impl RadarState {
         let mut others = Vec::new();
         for panes in self.tab_panes.values() {
             for p in panes {
-                if self.pane_cwd.contains_key(&p.id)
-                    || self.cwd_bootstrap_attempted.contains(&p.id)
-                {
+                if self.pane_cwd.contains_key(&p.id) || self.cwd_bootstrap_attempted.contains(&p.id) {
                     continue;
                 }
                 if p.focused_in_tab {
@@ -1301,11 +1225,7 @@ impl RadarState {
         // Deterministic order regardless of HashMap iteration; focused first.
         focused.sort_unstable();
         others.sort_unstable();
-        let targets: Vec<u32> = focused
-            .into_iter()
-            .chain(others)
-            .take(MAX_CWD_BOOTSTRAP_PER_UPDATE)
-            .collect();
+        let targets: Vec<u32> = focused.into_iter().chain(others).take(MAX_CWD_BOOTSTRAP_PER_UPDATE).collect();
         for id in &targets {
             self.cwd_bootstrap_attempted.insert(*id);
         }

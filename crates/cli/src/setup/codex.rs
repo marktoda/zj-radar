@@ -53,24 +53,18 @@ fn codex_home_from(codex_home: Option<OsString>, home: Option<OsString>) -> Opti
     if let Some(h) = codex_home.filter(|h| !h.is_empty()) {
         return Some(PathBuf::from(h));
     }
-    home.filter(|h| !h.is_empty())
-        .map(|h| PathBuf::from(h).join(".codex"))
+    home.filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".codex"))
 }
 
 /// Is Codex present? The binary on PATH, or its config/hooks already on disk.
 /// Gates both the codex install and the bare doctor.
 pub(crate) fn codex_installed(codex_on_path: bool) -> bool {
-    codex_on_path
-        || codex_config_path().is_some_and(|p| p.exists())
-        || codex_hooks_path().is_some_and(|p| p.exists())
+    codex_on_path || codex_config_path().is_some_and(|p| p.exists()) || codex_hooks_path().is_some_and(|p| p.exists())
 }
 
 pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
     if codex_home_dir().is_none() {
-        crate::exit::fail_report(
-            "codex",
-            "skipped — set $HOME or $CODEX_HOME so the Codex config dir can be resolved",
-        );
+        crate::exit::fail_report("codex", "skipped — set $HOME or $CODEX_HOME so the Codex config dir can be resolved");
         return;
     }
     if opts.legacy_notify {
@@ -95,8 +89,8 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     let env = CodexEnv {
         codex_on_path,
         zj_radar_on_path: which("zj-radar"),
-        config_text:      codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
-        hooks_text:       Some(existing.clone()),
+        config_text: codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        hooks_text: Some(existing.clone()),
     };
     let facts = analyze_codex(&env);
     let Some(outcome) = edit_or_report("codex", edit_codex_hooks(&existing, !uninstall)) else {
@@ -123,11 +117,7 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
             if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
                 return;
             }
-            println!(
-                "codex: hooks {} ({})",
-                if uninstall { "removed" } else { "installed" },
-                path.display()
-            );
+            println!("codex: hooks {} ({})", if uninstall { "removed" } else { "installed" }, path.display());
             if !uninstall {
                 print_codex_hook_guidance(&facts);
             }
@@ -160,14 +150,8 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is
         return;
     };
     match outcome {
-        Outcome::Unchanged if uninstall => println!(
-            "codex: legacy notify already removed ({})",
-            path.display()
-        ),
-        Outcome::Unchanged => println!(
-            "codex: legacy notify already up to date ({})",
-            path.display()
-        ),
+        Outcome::Unchanged if uninstall => println!("codex: legacy notify already removed ({})", path.display()),
+        Outcome::Unchanged => println!("codex: legacy notify already up to date ({})", path.display()),
         Outcome::Conflict => {
             crate::exit::fail_report(
                 "codex",
@@ -217,10 +201,7 @@ fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is
 fn print_codex_hook_guidance(facts: &CodexFacts) {
     if matches!(facts.hooks_feature, CodexHooksFeature::Disabled) {
         if let Some(path) = codex_config_path() {
-            eprintln!(
-                "codex: warning — hooks appear disabled in {} (`[features].hooks = false`)",
-                path.display()
-            );
+            eprintln!("codex: warning — hooks appear disabled in {} (`[features].hooks = false`)", path.display());
         }
     }
     println!("codex: {CODEX_HOOK_TRUST_ADVICE}.");
@@ -238,18 +219,12 @@ mod tests {
 
     #[test]
     fn codex_home_prefers_codex_home_over_home() {
-        assert_eq!(
-            codex_home_from(Some(os("/x/codex")), Some(os("/home/u"))),
-            Some(PathBuf::from("/x/codex")),
-        );
+        assert_eq!(codex_home_from(Some(os("/x/codex")), Some(os("/home/u"))), Some(PathBuf::from("/x/codex")),);
     }
 
     #[test]
     fn codex_home_falls_back_to_home_dot_codex() {
-        assert_eq!(
-            codex_home_from(None, Some(os("/home/u"))),
-            Some(PathBuf::from("/home/u/.codex")),
-        );
+        assert_eq!(codex_home_from(None, Some(os("/home/u"))), Some(PathBuf::from("/home/u/.codex")),);
     }
 
     #[test]
@@ -260,9 +235,6 @@ mod tests {
         assert_eq!(codex_home_from(Some(OsString::new()), Some(OsString::new())), None);
         assert_eq!(codex_home_from(None, Some(OsString::new())), None);
         // An empty CODEX_HOME still lets a real HOME win.
-        assert_eq!(
-            codex_home_from(Some(OsString::new()), Some(os("/home/u"))),
-            Some(PathBuf::from("/home/u/.codex")),
-        );
+        assert_eq!(codex_home_from(Some(OsString::new()), Some(os("/home/u"))), Some(PathBuf::from("/home/u/.codex")),);
     }
 }

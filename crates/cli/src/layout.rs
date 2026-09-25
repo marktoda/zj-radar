@@ -135,9 +135,7 @@ pub(crate) fn analyze(layout: &str) -> LayoutFacts {
         has_rail: layout.contains(WRAP_BEGIN)
             || layout.contains(BLOCK_BEGIN)
             || layout.contains("plugin location=\"radar\""),
-        has_children_anchor: layout
-            .split_whitespace()
-            .any(|tok| tok == "children" || tok.starts_with("children;")),
+        has_children_anchor: layout.split_whitespace().any(|tok| tok == "children" || tok.starts_with("children;")),
     }
 }
 
@@ -183,13 +181,13 @@ pub(crate) fn tailored_snippet(facts: &LayoutFacts) -> String {
 /// original anchor is restored exactly. Distinct from the block markers so the
 /// two regions can be reversed differently.
 const WRAP_BEGIN: &str = "// zj-radar:wrap begin";
-const WRAP_END:   &str = "// zj-radar:wrap end";
+const WRAP_END: &str = "// zj-radar:wrap end";
 
 /// Marker pair fencing the *appended* additions (the `ui` template, the swap
 /// blocks, and any added `new_tab_template`). `uninstall` DELETES a block region
 /// entirely — these are pure insertions with no original content underneath.
 const BLOCK_BEGIN: &str = "// zj-radar:block begin";
-const BLOCK_END:   &str = "// zj-radar:block end";
+const BLOCK_END: &str = "// zj-radar:block end";
 
 /// The rail vertical-split that wraps a tab's `children` anchor. Single source
 /// of truth for the wrap shape — the radar pane plus the `children` anchor it
@@ -198,12 +196,8 @@ const BLOCK_END:   &str = "// zj-radar:block end";
 /// and `uninstall` can collapse the whole region back to that lone `children`.
 /// Lines are joined and re-indented to the anchor's column at splice time.
 const RAIL_PANE_WRAP: &[&str] = &[
-    "pane split_direction=\"vertical\" {",
-    "    pane size=32 borderless=true {",
-    "        plugin location=\"radar\"",
-    "    }",
-    "    children",
-    "}",
+    "pane split_direction=\"vertical\" {", "    pane size=32 borderless=true {", "        plugin location=\"radar\"",
+    "    }", "    children", "}",
 ];
 
 /// Why an `inject` call declined to transform a layout. Injection is
@@ -237,18 +231,14 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
         return Ok(layout.to_string());
     }
 
-    let doc = layout
-        .parse::<kdl::KdlDocument>()
-        .map_err(|e| Refusal::Unparseable(e.to_string()))?;
+    let doc = layout.parse::<kdl::KdlDocument>().map_err(|e| Refusal::Unparseable(e.to_string()))?;
 
     // Shape gate: the transform needs a template or a `children` anchor to wrap.
     // `analyze` already scanned for both; if neither is present this isn't a
     // shape we touch — fail-closed. (Checked post-parse so a malformed layout
     // is reported as `Unparseable`, not `Unrecognized`.)
     if !facts.has_children_anchor && !facts.has_default_template {
-        return Err(Refusal::Unrecognized(
-            "no `default_tab_template` or `children` anchor to wrap".into(),
-        ));
+        return Err(Refusal::Unrecognized("no `default_tab_template` or `children` anchor to wrap".into()));
     }
 
     // The transform only knows the `layout { ... }` shape.
@@ -257,9 +247,7 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
         .iter()
         .find(|n| n.name().value() == "layout")
         .ok_or_else(|| Refusal::Unrecognized("no top-level `layout` node".into()))?;
-    let body = layout_node
-        .children()
-        .ok_or_else(|| Refusal::Unrecognized("`layout` has no body".into()))?;
+    let body = layout_node.children().ok_or_else(|| Refusal::Unrecognized("`layout` has no body".into()))?;
 
     // We require a recognized shape: a `default_tab_template` whose body holds a
     // `children` anchor, or a top-level `children` anchor directly in `layout`.
@@ -272,9 +260,7 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
         .and_then(find_children_anchor)
         .or_else(|| find_children_anchor(body))
         .ok_or_else(|| {
-            Refusal::Unrecognized(
-                "no `default_tab_template` or top-level `children` anchor to wrap".into(),
-            )
+            Refusal::Unrecognized("no `default_tab_template` or top-level `children` anchor to wrap".into())
         })?;
 
     // Byte ranges to splice. KDL spans index into the original source, so we
@@ -313,16 +299,9 @@ pub(crate) fn inject(layout: &str, facts: &LayoutFacts) -> Result<String, Refusa
     //    user's one-word edit: route each entry through the `ui` template we
     //    still inject (inert until referenced). The caller prints that
     //    guidance; docs/troubleshooting.md carries the full story.
-    let mut additions = if facts.has_swaps {
-        RAIL_UI_TEMPLATE.to_string()
-    } else {
-        format!("{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}")
-    };
-    if !body
-        .nodes()
-        .iter()
-        .any(|n| n.name().value() == "new_tab_template")
-    {
+    let mut additions =
+        if facts.has_swaps { RAIL_UI_TEMPLATE.to_string() } else { format!("{RAIL_UI_TEMPLATE}\n\n{SWAP_BLOCKS}") };
+    if !body.nodes().iter().any(|n| n.name().value() == "new_tab_template") {
         additions = format!("{NEW_TAB_TEMPLATE}\n\n{additions}");
     }
     let additions = block_fence(&additions);
@@ -416,9 +395,7 @@ pub(crate) fn uninstall(layout: &str) -> Option<String> {
         let abs_end_marker = search_from + rel_end;
         // Consume through the end of the END marker's line (including its \n).
         let after_end = abs_end_marker + end_marker.len();
-        let end_of_line = layout[after_end..]
-            .find('\n')
-            .map_or(len, |pos| after_end + pos + 1);
+        let end_of_line = layout[after_end..].find('\n').map_or(len, |pos| after_end + pos + 1);
 
         // Emit everything from current position up to the BEGIN line's indent.
         out.push_str(&layout[i..line_start]);
@@ -443,7 +420,11 @@ pub(crate) fn uninstall(layout: &str) -> Option<String> {
         changed = true;
     }
 
-    if changed { Some(out) } else { None }
+    if changed {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Find a bare `children` anchor (no args, no body) that is a **direct child**
@@ -452,11 +433,10 @@ pub(crate) fn uninstall(layout: &str) -> Option<String> {
 /// not be wrapped (that would break the user's own layout). A `children` that
 /// carries arguments or a child block is not a plain anchor and is skipped.
 fn find_children_anchor(block: &kdl::KdlDocument) -> Option<&kdl::KdlNode> {
-    block.nodes().iter().find(|node| {
-        node.name().value() == "children"
-            && node.entries().is_empty()
-            && node.children().is_none()
-    })
+    block
+        .nodes()
+        .iter()
+        .find(|node| node.name().value() == "children" && node.entries().is_empty() && node.children().is_none())
 }
 
 /// The `tab` nodes declared directly under `layout` whose body holds no node
@@ -472,12 +452,7 @@ fn find_children_anchor(block: &kdl::KdlDocument) -> Option<&kdl::KdlNode> {
 /// node (a pane, a pane template, `floating_panes`) is the user's business.
 pub(crate) fn empty_tab_bodies(layout: &str) -> Vec<String> {
     let Ok(doc) = layout.parse::<kdl::KdlDocument>() else { return Vec::new() };
-    let Some(body) = doc
-        .nodes()
-        .iter()
-        .find(|n| n.name().value() == "layout")
-        .and_then(|n| n.children())
-    else {
+    let Some(body) = doc.nodes().iter().find(|n| n.name().value() == "layout").and_then(|n| n.children()) else {
         return Vec::new();
     };
     body.nodes()
@@ -497,10 +472,7 @@ pub(crate) fn empty_tab_bodies(layout: &str) -> Vec<String> {
 /// The leading whitespace (spaces/tabs) on the line containing `offset`.
 fn line_indent(src: &str, offset: usize) -> String {
     let line_start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
-    src[line_start..offset]
-        .chars()
-        .take_while(|c| *c == ' ' || *c == '\t')
-        .collect()
+    src[line_start..offset].chars().take_while(|c| *c == ' ' || *c == '\t').collect()
 }
 
 /// Fence the canonical wrap lines in the WRAP marker pair so the injected split
@@ -559,19 +531,19 @@ mod tests {
         // The explicit tab NODE must stay (a default_tab_template drops a
         // tab's floating_panes) — only the name attribute must go.
         let l = full_layout();
-        assert!(
-            l.contains("tab focus=true"),
-            "the explicit starter tab node must remain:\n{l}"
-        );
-        assert!(
-            !l.contains("tab name="),
-            "a named starter tab permanently opts out of smart naming:\n{l}"
-        );
+        assert!(l.contains("tab focus=true"), "the explicit starter tab node must remain:\n{l}");
+        assert!(!l.contains("tab name="), "a named starter tab permanently opts out of smart naming:\n{l}");
     }
 
     #[test]
     fn snippet_is_situation_aware() {
-        let none = LayoutFacts { has_default_template: true, has_swaps: false, has_top_bar: false, has_rail: false, has_children_anchor: true };
+        let none = LayoutFacts {
+            has_default_template: true,
+            has_swaps: false,
+            has_top_bar: false,
+            has_rail: false,
+            has_children_anchor: true,
+        };
         let s = tailored_snippet(&none);
         assert!(s.contains("swap_tiled_layout"), "must include swaps when absent");
 
@@ -592,7 +564,8 @@ mod tests {
 
     #[test]
     fn analyze_detects_shape() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
+        let clean =
+            "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let f = analyze(clean);
         assert!(f.has_default_template && f.has_children_anchor);
         assert!(!f.has_swaps && !f.has_rail);
@@ -600,7 +573,8 @@ mod tests {
         let with_bar = "layout {\n    default_tab_template {\n        pane size=1 { plugin location=\"zellij:compact-bar\" }\n        children\n    }\n}\n";
         assert!(analyze(with_bar).has_top_bar);
 
-        let injected = format!("layout {{\n{}\n{}\n{}\n}}\n", super::BLOCK_BEGIN, super::RAIL_UI_TEMPLATE, super::BLOCK_END);
+        let injected =
+            format!("layout {{\n{}\n{}\n{}\n}}\n", super::BLOCK_BEGIN, super::RAIL_UI_TEMPLATE, super::BLOCK_END);
         assert!(analyze(&injected).has_rail);
     }
 
@@ -622,7 +596,8 @@ mod tests {
 
     #[test]
     fn inject_wraps_children_and_adds_marked_swaps() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
+        let clean =
+            "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let out = inject(clean, &analyze(clean)).unwrap();
         assert!(out.contains(WRAP_BEGIN) && out.contains(WRAP_END), "must fence the wrap");
         assert!(out.contains(BLOCK_BEGIN) && out.contains(BLOCK_END), "must fence the additions");
@@ -665,7 +640,8 @@ layout {
         assert!(out.contains("plugin location=\"radar\""), "rail must be injected");
         assert!(out.contains("tab_template name=\"ui\""), "ui template must be added");
         assert_eq!(
-            out.matches("swap_tiled_layout").count(), 1,
+            out.matches("swap_tiled_layout").count(),
+            1,
             "the user's lone swap block must remain the only one: {out}"
         );
         out.parse::<kdl::KdlDocument>().expect("injected output must be valid KDL");
@@ -676,7 +652,8 @@ layout {
 
     #[test]
     fn inject_is_idempotent() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
+        let clean =
+            "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let once = inject(clean, &analyze(clean)).unwrap();
         let twice = inject(&once, &analyze(&once)).unwrap();
         assert_eq!(once, twice, "re-injecting must be a no-op");
@@ -731,8 +708,7 @@ layout {
         assert!(out.contains("swap_tiled_layout"), "must inject swap layouts");
 
         // The output must be parseable by the same KDL parser (v1-fallback).
-        out.parse::<kdl::KdlDocument>()
-            .expect("injected output must be valid KDL");
+        out.parse::<kdl::KdlDocument>().expect("injected output must be valid KDL");
     }
 
     /// Regression: an INLINE anchor (`default_tab_template { children }`, valid
@@ -744,10 +720,8 @@ layout {
     fn inject_inline_children_anchor_produces_valid_kdl() {
         let input = "layout {\n    default_tab_template { children }\n}\n";
         let facts = analyze(input);
-        let out = inject(input, &facts)
-            .expect("inline anchor is a recognized shape and must inject");
-        out.parse::<kdl::KdlDocument>()
-            .expect("injected output must be valid KDL");
+        let out = inject(input, &facts).expect("inline anchor is a recognized shape and must inject");
+        out.parse::<kdl::KdlDocument>().expect("injected output must be valid KDL");
         assert!(out.contains(WRAP_BEGIN), "must contain wrap begin marker");
         assert!(out.contains("plugin location=\"radar\""), "must inject radar plugin");
     }
@@ -767,9 +741,8 @@ layout {
         for input in shapes {
             let facts = analyze(input);
             if let Ok(out) = inject(input, &facts) {
-                out.parse::<kdl::KdlDocument>().unwrap_or_else(|e| {
-                    panic!("inject returned unparseable output for {input:?}: {e}")
-                });
+                out.parse::<kdl::KdlDocument>()
+                    .unwrap_or_else(|e| panic!("inject returned unparseable output for {input:?}: {e}"));
             }
         }
     }
@@ -806,7 +779,8 @@ layout {
     /// `children` anchor, the appended block is deleted with its separator line).
     #[test]
     fn uninstall_round_trips_to_original() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
+        let clean =
+            "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let injected = inject(clean, &analyze(clean)).unwrap();
         assert!(injected.contains(WRAP_BEGIN), "inject must add wrap markers");
         assert!(injected.contains(BLOCK_BEGIN), "inject must add block markers");
@@ -867,7 +841,8 @@ layout {
     /// anchor, so the second inject had nothing to wrap.
     #[test]
     fn inject_uninstall_inject_is_idempotent() {
-        let clean = "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
+        let clean =
+            "layout {\n    default_tab_template {\n        children\n    }\n    tab {\n        pane\n    }\n}\n";
         let first = inject(clean, &analyze(clean)).expect("first inject");
         let restored = uninstall(&first).expect("uninstall");
         let again = inject(&restored, &analyze(&restored)).expect("re-inject must not fail Unrecognized");
@@ -879,13 +854,8 @@ layout {
         // A BEGIN with no matching END (hand-edited / truncated layout) must
         // not delete anything — better a stale comment than a corrupted file
         // (same fail-closed rule as detect.rs's unmatched alias BEGIN).
-        let truncated = format!(
-            "layout {{\n    {WRAP_BEGIN}\n    pane\n    children\n}}\n"
-        );
-        assert!(
-            uninstall(&truncated).is_none(),
-            "an unmatched BEGIN must reverse nothing, not drain to EOF"
-        );
+        let truncated = format!("layout {{\n    {WRAP_BEGIN}\n    pane\n    children\n}}\n");
+        assert!(uninstall(&truncated).is_none(), "an unmatched BEGIN must reverse nothing, not drain to EOF");
         // Same for the block kind.
         let truncated = format!("layout {{\n    {BLOCK_BEGIN}\n    tab {{ pane }}\n}}\n");
         assert!(uninstall(&truncated).is_none());
@@ -896,13 +866,8 @@ layout {
         // A marker with content before it on the same line is not a region we
         // authored (inject always emits markers on their own lines) — it must
         // be skipped verbatim, even when a well-formed END follows.
-        let mid_line = format!(
-            "layout {{\n    pane {WRAP_BEGIN}\n    pane\n    {WRAP_END}\n    children\n}}\n"
-        );
-        assert!(
-            uninstall(&mid_line).is_none(),
-            "a mid-line BEGIN must not anchor a removal"
-        );
+        let mid_line = format!("layout {{\n    pane {WRAP_BEGIN}\n    pane\n    {WRAP_END}\n    children\n}}\n");
+        assert!(uninstall(&mid_line).is_none(), "a mid-line BEGIN must not anchor a removal");
     }
 
     #[test]

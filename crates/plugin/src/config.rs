@@ -306,9 +306,7 @@ pub(crate) fn overrides_from_json(raw: &str) -> Option<BTreeMap<String, String>>
             .filter_map(|(k, v)| {
                 let s = match v {
                     serde_json::Value::String(s) => Some(s.clone()),
-                    serde_json::Value::Bool(b) => {
-                        Some(if *b { "true" } else { "false" }.to_string())
-                    }
+                    serde_json::Value::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
                     serde_json::Value::Number(n) => Some(n.to_string()),
                     _ => None,
                 };
@@ -324,10 +322,8 @@ mod tests {
 
     #[test]
     fn overrides_from_json_flattens_scalars_and_drops_the_rest() {
-        let kv = overrides_from_json(
-            r#"{"naming":"off","header":true,"density":1,"nested":{"x":1},"nul":null}"#,
-        )
-        .expect("a JSON object yields Some");
+        let kv = overrides_from_json(r#"{"naming":"off","header":true,"density":1,"nested":{"x":1},"nul":null}"#)
+            .expect("a JSON object yields Some");
         assert_eq!(kv.get("naming").map(String::as_str), Some("off"));
         assert_eq!(kv.get("header").map(String::as_str), Some("true"));
         assert_eq!(kv.get("density").map(String::as_str), Some("1"));
@@ -342,10 +338,7 @@ mod tests {
     fn overrides_from_json_rejects_oversized_payloads_before_parsing() {
         // Mirror of the status pipe's `MAX_PAYLOAD_BYTES` cap: an over-limit
         // config payload is dropped before serde_json allocates a Value tree.
-        let over = format!(
-            r#"{{"naming":"{}"}}"#,
-            "x".repeat(crate::payload::MAX_PAYLOAD_BYTES)
-        );
+        let over = format!(r#"{{"naming":"{}"}}"#, "x".repeat(crate::payload::MAX_PAYLOAD_BYTES));
         assert!(over.len() > crate::payload::MAX_PAYLOAD_BYTES, "sanity: fixture exceeds the cap");
         assert!(overrides_from_json(&over).is_none());
     }
@@ -354,14 +347,8 @@ mod tests {
     fn role_parses_and_defaults_to_sidebar() {
         assert_eq!(Config::default().role, Role::Sidebar);
         assert_eq!(Config::from_map(&map(&[])).role, Role::Sidebar);
-        assert_eq!(
-            Config::from_map(&map(&[("role", "onboarding")])).role,
-            Role::Onboarding
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("role", "ONBOARDING")])).role,
-            Role::Onboarding
-        );
+        assert_eq!(Config::from_map(&map(&[("role", "onboarding")])).role, Role::Onboarding);
+        assert_eq!(Config::from_map(&map(&[("role", "ONBOARDING")])).role, Role::Onboarding);
         // unknown → default Sidebar
         assert_eq!(Config::from_map(&map(&[("role", "wat")])).role, Role::Sidebar);
     }
@@ -375,10 +362,7 @@ mod tests {
     }
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
     #[test]
@@ -392,11 +376,7 @@ mod tests {
 
     #[test]
     fn parses_all_keys() {
-        let c = Config::from_map(&map(&[
-            ("naming", "force"),
-            ("header", "false"),
-            ("glyphs", "nerd"),
-        ]));
+        let c = Config::from_map(&map(&[("naming", "force"), ("header", "false"), ("glyphs", "nerd")]));
         assert_eq!(c.naming, NamingMode::Force);
         assert!(!c.header);
         assert_eq!(c.glyphs, crate::status::GlyphSet::Nerd);
@@ -404,32 +384,17 @@ mod tests {
 
     #[test]
     fn glyphs_parses_and_defaults_to_plain() {
-        assert_eq!(
-            Config::from_map(&map(&[("glyphs", "nerd")])).glyphs,
-            crate::status::GlyphSet::Nerd
-        );
+        assert_eq!(Config::from_map(&map(&[("glyphs", "nerd")])).glyphs, crate::status::GlyphSet::Nerd);
         // absent → default (Plain)
-        assert_eq!(
-            Config::from_map(&map(&[])).glyphs,
-            crate::status::GlyphSet::Plain
-        );
+        assert_eq!(Config::from_map(&map(&[])).glyphs, crate::status::GlyphSet::Plain);
     }
 
     #[test]
     fn naming_is_case_insensitive_and_falls_back() {
-        assert_eq!(
-            Config::from_map(&map(&[("naming", "OFF")])).naming,
-            NamingMode::Off
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("naming", "Force")])).naming,
-            NamingMode::Force
-        );
+        assert_eq!(Config::from_map(&map(&[("naming", "OFF")])).naming, NamingMode::Off);
+        assert_eq!(Config::from_map(&map(&[("naming", "Force")])).naming, NamingMode::Force);
         // unknown value → default
-        assert_eq!(
-            Config::from_map(&map(&[("naming", "wat")])).naming,
-            NamingMode::Managed
-        );
+        assert_eq!(Config::from_map(&map(&[("naming", "wat")])).naming, NamingMode::Managed);
     }
 
     #[test]
@@ -460,42 +425,21 @@ mod tests {
 
     #[test]
     fn density_parses_all_variants() {
-        assert_eq!(
-            Config::from_map(&map(&[("density", "compact")])).density,
-            Density::Compact
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("density", "comfortable")])).density,
-            Density::Comfortable
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("density", "cards")])).density,
-            Density::Cards
-        );
+        assert_eq!(Config::from_map(&map(&[("density", "compact")])).density, Density::Compact);
+        assert_eq!(Config::from_map(&map(&[("density", "comfortable")])).density, Density::Comfortable);
+        assert_eq!(Config::from_map(&map(&[("density", "cards")])).density, Density::Cards);
     }
 
     #[test]
     fn density_unknown_value_falls_back_to_cards() {
-        assert_eq!(
-            Config::from_map(&map(&[("density", "super-dense")])).density,
-            Density::Cards
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("density", "")])).density,
-            Density::Cards
-        );
+        assert_eq!(Config::from_map(&map(&[("density", "super-dense")])).density, Density::Cards);
+        assert_eq!(Config::from_map(&map(&[("density", "")])).density, Density::Cards);
     }
 
     #[test]
     fn density_is_case_insensitive() {
-        assert_eq!(
-            Config::from_map(&map(&[("density", "COMPACT")])).density,
-            Density::Compact
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("density", "Cards")])).density,
-            Density::Cards
-        );
+        assert_eq!(Config::from_map(&map(&[("density", "COMPACT")])).density, Density::Compact);
+        assert_eq!(Config::from_map(&map(&[("density", "Cards")])).density, Density::Cards);
     }
 
     #[test]
@@ -531,18 +475,9 @@ mod tests {
         // install — only the run-owned layouts may claim Ctrl-y.
         assert_eq!(Config::default().grant_hint, GrantHint::Generic);
         assert_eq!(Config::from_map(&map(&[])).grant_hint, GrantHint::Generic);
-        assert_eq!(
-            Config::from_map(&map(&[("grant_hint", "ctrl-y")])).grant_hint,
-            GrantHint::CtrlY
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("grant_hint", "CTRL-Y")])).grant_hint,
-            GrantHint::CtrlY
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("grant_hint", "banana")])).grant_hint,
-            GrantHint::Generic
-        );
+        assert_eq!(Config::from_map(&map(&[("grant_hint", "ctrl-y")])).grant_hint, GrantHint::CtrlY);
+        assert_eq!(Config::from_map(&map(&[("grant_hint", "CTRL-Y")])).grant_hint, GrantHint::CtrlY);
+        assert_eq!(Config::from_map(&map(&[("grant_hint", "banana")])).grant_hint, GrantHint::Generic);
     }
 
     #[test]
@@ -553,30 +488,16 @@ mod tests {
         assert_eq!(Config::default().jump_hint, JumpHint::Hidden);
         assert!(!JumpHint::Hidden.shows());
         assert_eq!(Config::from_map(&map(&[])).jump_hint, JumpHint::Hidden);
-        assert_eq!(
-            Config::from_map(&map(&[("jump_hint", "alt-n")])).jump_hint,
-            JumpHint::AltN
-        );
+        assert_eq!(Config::from_map(&map(&[("jump_hint", "alt-n")])).jump_hint, JumpHint::AltN);
         assert!(JumpHint::AltN.shows());
-        assert_eq!(
-            Config::from_map(&map(&[("jump_hint", "ALT-N")])).jump_hint,
-            JumpHint::AltN
-        );
-        assert_eq!(
-            Config::from_map(&map(&[("jump_hint", "banana")])).jump_hint,
-            JumpHint::Hidden
-        );
+        assert_eq!(Config::from_map(&map(&[("jump_hint", "ALT-N")])).jump_hint, JumpHint::AltN);
+        assert_eq!(Config::from_map(&map(&[("jump_hint", "banana")])).jump_hint, JumpHint::Hidden);
     }
 
     #[test]
     fn apply_overrides_all_four_fields() {
         let mut c = Config::default();
-        let kv = map(&[
-            ("naming", "force"),
-            ("density", "compact"),
-            ("glyphs", "nerd"),
-            ("header", "false"),
-        ]);
+        let kv = map(&[("naming", "force"), ("density", "compact"), ("glyphs", "nerd"), ("header", "false")]);
         c.apply_overrides(&kv);
         assert_eq!(c.naming, NamingMode::Force);
         assert_eq!(c.density, Density::Compact);
@@ -601,10 +522,7 @@ mod tests {
     #[test]
     fn documented_config_pipe_name_matches() {
         let doc = include_str!("../../../docs/configuration.md");
-        assert!(
-            doc.contains(CONFIG_PIPE),
-            "configuration.md must document the {CONFIG_PIPE} pipe by name"
-        );
+        assert!(doc.contains(CONFIG_PIPE), "configuration.md must document the {CONFIG_PIPE} pipe by name");
     }
 
     #[test]

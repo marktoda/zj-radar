@@ -3,9 +3,12 @@
 //! edit; a clean uninstall is one file delete. Install, uninstall, `--check`
 //! and producer detection all key on the header marker (`detect.rs`).
 
-use super::*;
 use super::detect::pi_extension_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, dry_run_backup_line, kept_backup_line, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{
+    dry_run_backup_line, kept_backup_line, plan_install, plan_uninstall, read_existing, remove_backup_if_ours,
+    write_bridge, Existing, InstallPlan, UninstallPlan,
+};
+use super::*;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -77,8 +80,8 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     let facts = analyze_pi(&PiEnv {
         pi_on_path,
         zj_radar_on_path: which("zj-radar"),
-        extension_text:   existing.text().map(str::to_string),
-        pi_version:       None,
+        extension_text: existing.text().map(str::to_string),
+        pi_version: None,
     });
 
     if uninstall {
@@ -114,7 +117,10 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     match plan_install(&existing, PI_EXTENSION_JS, opts.force, pi_extension_is_ours) {
         InstallPlan::RefuseForeign => {
             let why = existing.refusal_reason(&path);
-            crate::exit::fail_report("pi", format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."));
+            crate::exit::fail_report(
+                "pi",
+                format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."),
+            );
         }
         InstallPlan::UpToDate => {
             println!("pi: extension already up to date ({})", path.display());
@@ -170,7 +176,10 @@ mod tests {
     #[test]
     fn pi_agent_dir_falls_back_to_home_and_treats_empty_as_unset() {
         assert_eq!(pi_agent_dir_from(None, Some(os("/home/u"))), Some(PathBuf::from("/home/u/.pi/agent")));
-        assert_eq!(pi_agent_dir_from(Some(OsString::new()), Some(os("/home/u"))), Some(PathBuf::from("/home/u/.pi/agent")));
+        assert_eq!(
+            pi_agent_dir_from(Some(OsString::new()), Some(os("/home/u"))),
+            Some(PathBuf::from("/home/u/.pi/agent"))
+        );
         assert_eq!(pi_agent_dir_from(None, Some(OsString::new())), None);
         assert_eq!(pi_agent_dir_from(None, None), None);
     }
@@ -200,10 +209,7 @@ mod tests {
         assert!(!js.contains("spawnSync") && !js.contains("execSync"), "never block pi's event loop");
         assert!(js.contains("ZELLIJ"), "must gate on $ZELLIJ");
         assert!(js.contains("\"ignore\", \"ignore\""), "child stdout/stderr must never reach pi's TUI");
-        assert!(
-            js.contains("stdin.on(\"error\""),
-            "child.stdin needs an error listener or an async EPIPE crashes pi"
-        );
+        assert!(js.contains("stdin.on(\"error\""), "child.stdin needs an error listener or an async EPIPE crashes pi");
         for line in js.lines().filter(|l| l.starts_with("import ")) {
             assert!(line.contains("from \"node:"), "only node: builtins may be imported: {line}");
         }

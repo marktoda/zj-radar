@@ -92,8 +92,9 @@ impl Kind {
     pub fn is_agent(self) -> bool {
         match self {
             Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini => true,
-            Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy
-            | Kind::Server | Kind::Remote => false,
+            Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Server | Kind::Remote => {
+                false
+            }
         }
     }
 
@@ -106,8 +107,17 @@ impl Kind {
     pub fn is_service(self) -> bool {
         match self {
             Kind::Server => true,
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini | Kind::Command
-            | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Remote => false,
+            Kind::Claude
+            | Kind::Codex
+            | Kind::Opencode
+            | Kind::Pi
+            | Kind::Gemini
+            | Kind::Command
+            | Kind::Other
+            | Kind::Test
+            | Kind::Build
+            | Kind::Deploy
+            | Kind::Remote => false,
         }
     }
 
@@ -118,8 +128,17 @@ impl Kind {
     pub fn is_remote(self) -> bool {
         match self {
             Kind::Remote => true,
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Gemini | Kind::Command
-            | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Server => false,
+            Kind::Claude
+            | Kind::Codex
+            | Kind::Opencode
+            | Kind::Pi
+            | Kind::Gemini
+            | Kind::Command
+            | Kind::Other
+            | Kind::Test
+            | Kind::Build
+            | Kind::Deploy
+            | Kind::Server => false,
         }
     }
 
@@ -249,11 +268,7 @@ mod tests {
         // The table generates `from_source`/`as_source` from one row each, so the
         // inverse holds for every variant by construction — this guards it.
         for &k in Kind::ALL {
-            assert_eq!(
-                Kind::from_source(k.as_source()),
-                k,
-                "{k:?} must survive a source round-trip",
-            );
+            assert_eq!(Kind::from_source(k.as_source()), k, "{k:?} must survive a source round-trip",);
         }
     }
 

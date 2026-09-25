@@ -357,8 +357,9 @@ teardown() { teardown_fakes; }
   # the command lists are compared as tokens, never as regex).
   local name rust bash_list p
   for name in SERVICE_PHRASES SERVICE_WRAPPERS SERVICE_RUNNERS SERVICE_VALUE_FLAGS SERVICE_DESCRIPTION_PHRASES; do
-    rust="$(sed -n "/ $name: &\[&str\] = &\[/,/^];/p" "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" \
-      | grep -o '"[^"]*"' | tr -d '"' | sort)"
+    # From the `const` line through the first `];`, whatever rustfmt's layout.
+    rust="$(awk -v n=" $name: &[&str] =" 'index($0, n) { on = 1 } on { print } on && /\];/ { exit }' \
+      "$BATS_TEST_DIRNAME/../../../crates/cli/src/agents.rs" | grep -o '"[^"]*"' | tr -d '"' | sort)"
     bash_list="$(grep -m1 "^$name=" "$SCRIPT" | sed "s/^$name=\"//; s/\"\$//" | tr '|' '\n' | sort)"
     [ -n "$rust" ] || { echo "extraction of $name from agents.rs broke"; return 1; }
     echo "$name rust=[$rust]"; echo "$name bash=[$bash_list]"

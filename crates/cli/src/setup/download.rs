@@ -76,16 +76,12 @@ pub(crate) fn download_verified_asset(url: &str, dest: &Path, describe: &str) ->
     let fetched = run_download(url, &part)
         .and_then(|()| {
             if !part.is_file() {
-                return Err(format!(
-                    "download reported success but {} is missing",
-                    part.display()
-                ));
+                return Err(format!("download reported success but {} is missing", part.display()));
             }
             verify_checksum(&checksum_url(url), &part, describe)
         })
         .and_then(|()| {
-            std::fs::rename(&part, dest)
-                .map_err(|e| format!("moving the download into place failed — {e}"))
+            std::fs::rename(&part, dest).map_err(|e| format!("moving the download into place failed — {e}"))
         });
     if fetched.is_err() {
         let _ = std::fs::remove_file(&part);
@@ -200,10 +196,8 @@ pub(crate) fn download_wasm(version: &str) -> Result<PathBuf, String> {
 pub(crate) fn private_download_dir() -> Result<PathBuf, String> {
     let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let dir = std::env::temp_dir().join(format!("zj-radar-{user}"));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create download dir failed — {e}"))?;
-    let meta = std::fs::symlink_metadata(&dir)
-        .map_err(|e| format!("stat download dir failed — {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create download dir failed — {e}"))?;
+    let meta = std::fs::symlink_metadata(&dir).map_err(|e| format!("stat download dir failed — {e}"))?;
     if !meta.is_dir() {
         return Err(format!("{} exists but is not a directory — refusing to stage downloads there", dir.display()));
     }
@@ -245,11 +239,7 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
             .arg(url)
             .status()
             .map_err(|e| format!("failed to run wget — {e}"))?;
-        return if status.success() {
-            Ok(())
-        } else {
-            Err(format!("wget failed for {url}"))
-        };
+        return if status.success() { Ok(()) } else { Err(format!("wget failed for {url}")) };
     }
     Err("need curl or wget on PATH to download".to_string())
 }
@@ -336,9 +326,7 @@ mod tests {
         // `parse_sha256` is unit-tested, but the shell-out + parse composition
         // that feeds it is not — a regression in how `sha256sum`/`shasum -a 256`
         // output is consumed would slip the checksum guard.
-        let Some(dir) = std::env::var_os("TMPDIR")
-            .map(std::path::PathBuf::from)
-            .or_else(|| Some(std::env::temp_dir()))
+        let Some(dir) = std::env::var_os("TMPDIR").map(std::path::PathBuf::from).or_else(|| Some(std::env::temp_dir()))
         else {
             return;
         };

@@ -9,8 +9,7 @@ Key implementation notes — anything a reviewer needs to follow the diff.
 
 ## Checklist
 
-- [ ] `just ci` passes (`just test` + `cargo clippy` + wasm build + `just test-bash`).
-- [ ] Did **not** run `cargo fmt` (this repo is hand-formatted — see CONTRIBUTING.md).
+- [ ] `just ci` passes (fmt check + `just test` + `cargo clippy` + wasm build + `just test-bash` + `just test-js`).
 - [ ] Tests added/updated at the right layer (snapshot / `rail-reference.md` for render changes, unit/proptest for wire/parse).
 - [ ] Snapshots reviewed with `just review` if render output changed.
 - [ ] Docs updated (`README.md` / `docs/` / `CONTEXT.md`) if behavior or interfaces changed.

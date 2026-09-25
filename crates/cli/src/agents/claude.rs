@@ -45,9 +45,7 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         .get("message")
         .and_then(|x| x.as_str())
         .or_else(|| {
-            (status == Status::Done)
-                .then(|| v.get("last_assistant_message").and_then(|x| x.as_str()))
-                .flatten()
+            (status == Status::Done).then(|| v.get("last_assistant_message").and_then(|x| x.as_str())).flatten()
         })
         .unwrap_or("");
 
@@ -77,13 +75,7 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         // still running and will wake the model when it finishes — the next
         // `Stop` carries the refreshed list, so the real Done arrives then.
         if let Some(waiting) = background::waiting_msg(&snapshot) {
-            return Some(AgentUpdate {
-                status: Status::Running,
-                msg: waiting,
-                cwd,
-                task: None,
-                tasks: Some(snapshot),
-            });
+            return Some(AgentUpdate { status: Status::Running, msg: waiting, cwd, task: None, tasks: Some(snapshot) });
         }
         return Some(AgentUpdate {
             status,
@@ -122,13 +114,7 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
         Some("PostToolUse") => (None, background::started(&v)),
         _ => (None, None),
     };
-    Some(AgentUpdate {
-        status,
-        msg: out_msg,
-        cwd,
-        task,
-        tasks,
-    })
+    Some(AgentUpdate { status, msg: out_msg, cwd, task, tasks })
 }
 
 #[cfg(test)]
@@ -157,13 +143,7 @@ mod tests {
     fn pending_backstop_drops_empty_and_generic() {
         assert!(derive(&intake(r#"{"message":""}"#, Some("pending"))).is_none());
         assert!(derive(&intake(r#"{"message":"Claude needs attention"}"#, Some("pending"))).is_none());
-        assert!(
-            derive(&intake(
-                r#"{"message":"Claude Code needs your attention"}"#,
-                Some("pending")
-            ))
-            .is_none()
-        );
+        assert!(derive(&intake(r#"{"message":"Claude Code needs your attention"}"#, Some("pending"))).is_none());
     }
 
     #[test]
@@ -174,19 +154,9 @@ mod tests {
         assert_eq!(u.status, Status::Running);
         assert_eq!(u.msg, "working");
         // Whitespace-only is also empty.
-        assert_eq!(
-            derive(&intake(r#"{"message":"   "}"#, Some("running")))
-                .unwrap()
-                .msg,
-            "working"
-        );
+        assert_eq!(derive(&intake(r#"{"message":"   "}"#, Some("running"))).unwrap().msg, "working");
         // Event-derived running (no explicit status) with no message too.
-        assert_eq!(
-            derive(&intake(r#"{"hook_event_name":"UserPromptSubmit"}"#, None))
-                .unwrap()
-                .msg,
-            "working"
-        );
+        assert_eq!(derive(&intake(r#"{"hook_event_name":"UserPromptSubmit"}"#, None)).unwrap().msg, "working");
     }
 
     #[test]
@@ -197,22 +167,10 @@ mod tests {
 
     #[test]
     fn derives_status_from_event_when_no_explicit_status() {
+        assert_eq!(derive(&intake(r#"{"hook_event_name":"UserPromptSubmit"}"#, None)).unwrap().status, Status::Running);
+        assert_eq!(derive(&intake(r#"{"hook_event_name":"PostToolUse"}"#, None)).unwrap().status, Status::Running);
         assert_eq!(
-            derive(&intake(r#"{"hook_event_name":"UserPromptSubmit"}"#, None))
-                .unwrap()
-                .status,
-            Status::Running
-        );
-        assert_eq!(
-            derive(&intake(r#"{"hook_event_name":"PostToolUse"}"#, None))
-                .unwrap()
-                .status,
-            Status::Running
-        );
-        assert_eq!(
-            derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None))
-                .unwrap()
-                .status,
+            derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None)).unwrap().status,
             Status::Done
         );
         assert!(derive(&intake(r#"{"hook_event_name":"SomethingElse"}"#, None)).is_none());
@@ -220,11 +178,7 @@ mod tests {
 
     #[test]
     fn cwd_is_extracted_from_payload() {
-        let u = derive(&intake(
-            r#"{"hook_event_name":"Stop","message":"done","cwd":"/home/u/repo"}"#,
-            None,
-        ))
-        .unwrap();
+        let u = derive(&intake(r#"{"hook_event_name":"Stop","message":"done","cwd":"/home/u/repo"}"#, None)).unwrap();
         assert_eq!(u.cwd.as_deref(), Some("/home/u/repo"));
         // Absent cwd is None (run() applies the fallback).
         let u2 = derive(&intake(r#"{"hook_event_name":"Stop"}"#, None)).unwrap();
@@ -338,11 +292,16 @@ mod tests {
     fn every_stop_carries_the_turn_end_snapshot() {
         // Done, waiting-Running, and question-Pending all send it; a Stop
         // with no field sends an empty one so nothing stale outlives a turn.
-        let waiting = derive(&intake(&stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"pytest"}]"#), Some("done"))).unwrap();
+        let waiting = derive(&intake(
+            &stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"pytest"}]"#),
+            Some("done"),
+        ))
+        .unwrap();
         let t = waiting.tasks.unwrap();
         assert!(t.snapshot);
         assert_eq!((t.items[0].id.as_str(), t.items[0].holds), ("b1", true));
-        let done = derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"ok"}"#, Some("done"))).unwrap();
+        let done =
+            derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"ok"}"#, Some("done"))).unwrap();
         assert_eq!(done.status, Status::Done);
         let t = done.tasks.unwrap();
         assert!(t.snapshot && t.items.is_empty());
@@ -378,7 +337,8 @@ mod tests {
         assert_eq!(u.task, None, "machinery, not the human's task");
         let t = u.tasks.unwrap();
         assert_eq!((t.items[0].id.as_str(), t.items[0].state), ("b7", zj_radar_core::task::TaskState::Failed));
-        let human = derive(&intake(r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#, Some("running"))).unwrap();
+        let human =
+            derive(&intake(r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#, Some("running"))).unwrap();
         assert_eq!(human.tasks, None);
     }
 
@@ -444,7 +404,8 @@ mod tests {
     fn subagent_stop_ignores_the_subagents_final_report() {
         // A SubagentStop's `last_assistant_message` is the subagent's whole
         // report; only a Stop reads the field.
-        let raw = r###"{"hook_event_name":"SubagentStop","agent_id":"a1","last_assistant_message":"## Findings\n\n- x"}"###;
+        let raw =
+            r###"{"hook_event_name":"SubagentStop","agent_id":"a1","last_assistant_message":"## Findings\n\n- x"}"###;
         for status_arg in [Some("running"), None] {
             let u = derive(&intake(raw, status_arg)).unwrap();
             assert_eq!((u.status, u.msg.as_str()), (Status::Running, "working"), "{status_arg:?}");

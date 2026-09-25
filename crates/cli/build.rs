@@ -45,14 +45,7 @@ fn locate_wasm() -> Option<PathBuf> {
         return None;
     }
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args([
-            "build",
-            "--release",
-            "--target",
-            "wasm32-wasip1",
-            "-p",
-            "zj-radar-plugin",
-        ])
+        .args(["build", "--release", "--target", "wasm32-wasip1", "-p", "zj-radar-plugin"])
         .current_dir(&manifest)
         .status();
     match status {

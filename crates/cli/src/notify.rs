@@ -16,10 +16,7 @@ use std::process::Command;
 fn pane_id_from_env() -> Option<u32> {
     std::env::var_os("ZELLIJ")?; // not under Zellij → no-op
     let raw = std::env::var("ZELLIJ_PANE_ID").ok()?;
-    raw.strip_prefix("terminal_")
-        .unwrap_or(&raw)
-        .parse::<u32>()
-        .ok()
+    raw.strip_prefix("terminal_").unwrap_or(&raw).parse::<u32>().ok()
 }
 
 /// The pane id, with a stderr hint under `--dry-run` when there isn't one.
@@ -97,10 +94,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     {
         return;
     }
-    let Some(update) = agent.derive(&Intake {
-        raw: &raw,
-        status_arg,
-    }) else {
+    let Some(update) = agent.derive(&Intake { raw: &raw, status_arg }) else {
         return;
     };
 
@@ -116,13 +110,7 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
 /// Same fire-and-forget contract as the hook path: a missing/unknown status
 /// token prints a hint and exits 0; outside Zellij it exits 0 silently
 /// (`--dry-run` adds the not-inside-Zellij hint).
-pub fn run_generic(
-    status: Option<&str>,
-    msg: Option<&str>,
-    task: Option<&str>,
-    source: Option<&str>,
-    dry_run: bool,
-) {
+pub fn run_generic(status: Option<&str>, msg: Option<&str>, task: Option<&str>, source: Option<&str>, dry_run: bool) {
     let Some(pane_id) = pane_id_or_dry_run_hint(dry_run) else {
         return;
     };
@@ -181,11 +169,8 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
         return;
     }
 
-    let cwd = update
-        .cwd
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("PWD").ok())
-        .unwrap_or_else(|| ".".to_string());
+    let cwd =
+        update.cwd.filter(|s| !s.is_empty()).or_else(|| std::env::var("PWD").ok()).unwrap_or_else(|| ".".to_string());
     let (repo, branch) = crate::git::repo_branch(&cwd);
     // No client-side length caps here: `to_wire` bounds every free-text field
     // at MAX_WIRE_FIELD_CHARS — the single seam every producer path (adapter
@@ -282,10 +267,7 @@ fn send_with(payload: &str, timeout: std::time::Duration, path: Option<&std::ffi
 /// overflow `Duration` — this module promises the calling hook never sees
 /// a panic.
 fn pipe_send_timeout(status: Status, edge: bool) -> std::time::Duration {
-    parse_pipe_timeout(
-        std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(),
-        default_pipe_timeout_secs(status, edge),
-    )
+    parse_pipe_timeout(std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(), default_pipe_timeout_secs(status, edge))
 }
 
 /// The status-keyed half of `pipe_send_timeout`, split out (like
@@ -321,16 +303,12 @@ mod tests {
         // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
-                parse_pipe_timeout(raw.map(String::from), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS)
-                    .as_secs(),
+                parse_pipe_timeout(raw.map(String::from), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS).as_secs(),
                 crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
         }
-        assert_eq!(
-            parse_pipe_timeout(Some("2".into()), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS).as_secs(),
-            2
-        );
+        assert_eq!(parse_pipe_timeout(Some("2".into()), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS).as_secs(), 2);
     }
 
     #[test]
@@ -339,10 +317,7 @@ mod tests {
         // default. The env override (tested above via parse_pipe_timeout)
         // beats both. Pinned to the core constants so notify.sh's mirrored
         // literals and the hooks.json headroom guard share one source.
-        assert_eq!(
-            default_pipe_timeout_secs(Status::Running, false),
-            crate::pipe::RUNNING_PIPE_TIMEOUT_SECS
-        );
+        assert_eq!(default_pipe_timeout_secs(Status::Running, false), crate::pipe::RUNNING_PIPE_TIMEOUT_SECS);
         for edge in [Status::Done, Status::Pending, Status::Idle] {
             assert_eq!(
                 default_pipe_timeout_secs(edge, false),
@@ -352,20 +327,14 @@ mod tests {
         }
         // A running that carries background tasks is real state, not a
         // heartbeat: it gets the edge deadline.
-        assert_eq!(
-            default_pipe_timeout_secs(Status::Running, true),
-            crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS
-        );
+        assert_eq!(default_pipe_timeout_secs(Status::Running, true), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS);
     }
 
     #[test]
     fn pipe_timeout_clamps_so_instant_addition_cannot_panic() {
         // u64::MAX seconds would overflow `Instant + Duration` and panic —
         // this module promises the calling hook never sees a panic.
-        let d = parse_pipe_timeout(
-            Some(u64::MAX.to_string()),
-            crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
-        );
+        let d = parse_pipe_timeout(Some(u64::MAX.to_string()), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS);
         assert_eq!(d.as_secs(), 3600);
         let _ = d + std::time::Duration::from_secs(1); // the backstop's add must not overflow
     }
@@ -380,9 +349,12 @@ mod tests {
         let shim = dir.path().join("sh");
         // A `sh` that ignores its argv and sleeps: models the wrapper whose
         // in-subtree watchdog failed to fork, so nothing else bounds it.
-        std::fs::write(&shim, "#!/bin/sh
+        std::fs::write(
+            &shim, "#!/bin/sh
 exec sleep 30
-").unwrap();
+",
+        )
+        .unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();

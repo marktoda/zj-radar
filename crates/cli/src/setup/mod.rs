@@ -41,8 +41,7 @@ pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar not
 // No space before the `&&`: cmd.exe folds everything up to the separator into
 // the env var's VALUE, so `v1 &&` would set the marker to "v1 " and break the
 // marker round-trip that idempotency/uninstall detection depends on.
-pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str =
-    "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
+pub(crate) const CODEX_HOOK_COMMAND_WINDOWS: &str = "cmd /C \"set ZJ_RADAR_CODEX_HOOK=v1&& zj-radar notify codex\"";
 // Kill ceiling for the generated hook entries — derived from the send cap,
 // never hand-copied: the CLI's graceful bounded no-op lands at ~cap (its
 // in-subtree watchdog kills the pipe client at the deadline) with a cap + 1 s
@@ -61,23 +60,15 @@ pub(crate) const CODEX_HOOK_TIMEOUT_SECS: u64 = crate::pipe::DEFAULT_PIPE_TIMEOU
 // `status_pipe` treats an identical re-broadcast as a strict no-op (see
 // `CONTEXT.md` → Render gate), so keeping Post costs only the pipe delivery,
 // not a render+persist per rail instance.
-pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] = [
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "SubagentStart",
-    "SubagentStop",
-    "Stop",
-];
+pub(crate) const CODEX_HOOK_EVENTS: [&str; 7] =
+    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "Stop"];
 pub(crate) const ZELLIJ_ALIAS_BEGIN: &str = "// zj-radar: managed plugin alias begin";
 pub(crate) const ZELLIJ_ALIAS_END: &str = "// zj-radar: managed plugin alias end";
 // The one-time trust step Codex requires before it runs installed hooks. One
 // copy (the CODEX_HOOK_MARKER precedent) shared by setup's install epilogue
 // and the doctor's note item, so the advice can't drift between them. No
 // trailing punctuation — callers supply their own.
-pub(crate) const CODEX_HOOK_TRUST_ADVICE: &str =
-    "run `/hooks` in Codex to review and trust the zj-radar command hook";
+pub(crate) const CODEX_HOOK_TRUST_ADVICE: &str = "run `/hooks` in Codex to review and trust the zj-radar command hook";
 
 /// The ownership marker family stamped into every vendored opencode bridge
 /// file's header (`// ZJ_RADAR_OPENCODE_PLUGIN=<version>`). One shared source
@@ -160,36 +151,36 @@ pub(crate) fn wasm_source(wasm: Option<&Path>, download: bool) -> Result<WasmSou
     match (wasm, download) {
         (Some(_), true) => Err("pass either --wasm <path> or --download, not both".to_string()),
         (Some(p), false) => Ok(WasmSource::Path(p.to_path_buf())),
-        (None, true)     => Ok(WasmSource::Download),
-        (None, false)    => Ok(WasmSource::None),
+        (None, true) => Ok(WasmSource::Download),
+        (None, false) => Ok(WasmSource::None),
     }
 }
 
 pub(crate) struct ZellijSetupOpts<'a> {
     wasm_source: WasmSource,
-    force:       bool,
-    inject:      bool,
-    layout:      Option<&'a str>,
-    dry_run:     bool,
-    yes:         bool,
-    is_tty:      bool,
+    force: bool,
+    inject: bool,
+    layout: Option<&'a str>,
+    dry_run: bool,
+    yes: bool,
+    is_tty: bool,
 }
 
 pub(crate) struct CodexSetupOpts {
     legacy_notify: bool,
-    force:         bool,
-    dry_run:       bool,
-    yes:           bool,
-    is_tty:        bool,
+    force: bool,
+    dry_run: bool,
+    yes: bool,
+    is_tty: bool,
 }
 
 /// Options for the vendored-bridge targets (opencode, pi): both are "drop a
 /// marked file into the agent's auto-loaded dir", so they take the same knobs.
 pub(crate) struct BridgeSetupOpts {
-    pub force:   bool,
+    pub force: bool,
     pub dry_run: bool,
-    pub yes:     bool,
-    pub is_tty:  bool,
+    pub yes: bool,
+    pub is_tty: bool,
 }
 
 /// The single operation a `setup` invocation performs. Resolving this once makes
@@ -218,9 +209,7 @@ pub(crate) fn mode_from_flags(grant: bool, check: bool, uninstall: bool) -> Mode
 }
 
 pub(crate) fn which(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file()))
-        .unwrap_or(false)
+    std::env::var_os("PATH").map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file())).unwrap_or(false)
 }
 
 /// Entry point for `zj-radar setup`.
@@ -247,15 +236,13 @@ pub fn run(options: SetupOptions<'_>) {
     let want_opencode = bare || options.targets.iter().any(|a| a == "opencode");
     let want_claude = bare || options.targets.iter().any(|a| a == "claude");
     let want_pi = bare || options.targets.iter().any(|a| a == "pi");
-    let want_zellij = options.targets.iter().any(|a| a == "zellij")
-        || options.wasm.is_some()
-        || options.download;
-    for a in options
-        .targets
-        .iter()
-        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "zellij"))
+    let want_zellij = options.targets.iter().any(|a| a == "zellij") || options.wasm.is_some() || options.download;
+    for a in options.targets.iter().filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "zellij"))
     {
-        crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, opencode, pi, zellij). Skipping."));
+        crate::exit::fail_report(
+            "zj-radar",
+            format!("setup does not support '{a}' (supported: claude, codex, opencode, pi, zellij). Skipping."),
+        );
     }
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
     // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
@@ -335,11 +322,11 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             ZellijSetupOpts {
                 wasm_source,
-                force:   options.force,
-                inject:  options.inject,
-                layout:  options.layout,
+                force: options.force,
+                inject: options.inject,
+                layout: options.layout,
                 dry_run: options.dry_run,
-                yes:     options.yes,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -349,9 +336,9 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             CodexSetupOpts {
                 legacy_notify: options.legacy_notify,
-                force:         options.force,
-                dry_run:       options.dry_run,
-                yes:           options.yes,
+                force: options.force,
+                dry_run: options.dry_run,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -362,23 +349,13 @@ pub fn run(options: SetupOptions<'_>) {
     if want_opencode {
         setup_opencode(
             uninstall,
-            BridgeSetupOpts {
-                force:   options.force,
-                dry_run: options.dry_run,
-                yes:     options.yes,
-                is_tty,
-            },
+            BridgeSetupOpts { force: options.force, dry_run: options.dry_run, yes: options.yes, is_tty },
         );
     }
     if want_pi {
         setup_pi(
             uninstall,
-            BridgeSetupOpts {
-                force:   options.force,
-                dry_run: options.dry_run,
-                yes:     options.yes,
-                is_tty,
-            },
+            BridgeSetupOpts { force: options.force, dry_run: options.dry_run, yes: options.yes, is_tty },
         );
     }
 }
@@ -473,10 +450,7 @@ pub(crate) const BACKUP_SUFFIX: &str = ".zj-radar.bak";
 pub(crate) fn backup_then_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if path.exists() {
         std::fs::copy(path, path_with_suffix(path, BACKUP_SUFFIX)).map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!("backup copy failed ({e}); {} left untouched", path.display()),
-            )
+            std::io::Error::new(e.kind(), format!("backup copy failed ({e}); {} left untouched", path.display()))
         })?;
     }
     crate::fsutil::atomic_write(path, contents.as_bytes())

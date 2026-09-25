@@ -39,17 +39,16 @@ pub(crate) fn merge_grant(existing: Option<&str>, wasm_abs_path: &str) -> Result
     }
     let text = existing.unwrap_or("");
     if !text.trim().is_empty() {
-        text.parse::<kdl::KdlDocument>().map_err(|e| {
-            format!("existing permissions.kdl failed to parse — refusing to edit it ({e})")
-        })?;
+        text.parse::<kdl::KdlDocument>()
+            .map_err(|e| format!("existing permissions.kdl failed to parse — refusing to edit it ({e})"))?;
     }
     if crate::run::wasm_is_granted(text, wasm_abs_path) {
         return Ok(Preseed::AlreadyGranted);
     }
     let merged = append_block(text, wasm_abs_path);
-    merged.parse::<kdl::KdlDocument>().map_err(|e| {
-        format!("merged permissions.kdl would not parse — refusing to write it ({e})")
-    })?;
+    merged
+        .parse::<kdl::KdlDocument>()
+        .map_err(|e| format!("merged permissions.kdl would not parse — refusing to write it ({e})"))?;
     Ok(Preseed::Merged(merged))
 }
 

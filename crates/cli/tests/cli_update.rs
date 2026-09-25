@@ -60,11 +60,7 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
     // `update` only moves forward: refreshing the wasm to an older pin while
     // the CLI stays put would split the two halves across versions.
     let home = TempDir::new().unwrap();
-    let out = update_cmd(&home, "0.0.1", &[])
-        .assert()
-        .failure()
-        .get_output()
-        .clone();
+    let out = update_cmd(&home, "0.0.1", &[]).assert().failure().get_output().clone();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("older"), "should explain the refusal: {stderr}");
     assert!(stderr.contains("install.sh"), "should point at the installer for downgrades: {stderr}");
@@ -73,11 +69,7 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
 #[test]
 fn update_rejects_a_pin_that_is_not_a_plain_version() {
     let home = TempDir::new().unwrap();
-    let out = update_cmd(&home, "v0.6.0-rc1", &["--check"])
-        .assert()
-        .failure()
-        .get_output()
-        .clone();
+    let out = update_cmd(&home, "v0.6.0-rc1", &["--check"]).assert().failure().get_output().clone();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("MAJOR.MINOR.PATCH"), "should name the expected shape, not call it older: {stderr}");
     assert!(!stderr.contains("older"), "{stderr}");
@@ -98,11 +90,7 @@ fn update_leaves_a_symlinked_wasm_to_its_manager() {
     fs::write(&store_copy, b"\0asm").unwrap();
     std::os::unix::fs::symlink(&store_copy, plugins.join("zj_radar.wasm")).unwrap();
 
-    let out = update_cmd(&home, CURRENT, &["--check"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+    let out = update_cmd(&home, CURRENT, &["--check"]).assert().success().get_output().clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("managed"), "wasm line should say it is managed elsewhere: {stdout}");
     assert!(!stdout.contains("differs"), "{stdout}");
@@ -111,11 +99,7 @@ fn update_leaves_a_symlinked_wasm_to_its_manager() {
 #[test]
 fn update_with_nothing_newer_does_not_reinstall_a_missing_wasm() {
     let home = TempDir::new().unwrap();
-    let out = update_cmd(&home, CURRENT, &[])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+    let out = update_cmd(&home, CURRENT, &[]).assert().success().get_output().clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("up to date"), "{stdout}");
     // `update` moves what is installed; a missing sidebar is a setup job.
@@ -168,8 +152,5 @@ fn update_refuses_to_overwrite_a_cargo_installed_binary() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("cargo install zj-radar"), "should hand off to cargo: {stdout}");
     // The binary itself is untouched.
-    assert_eq!(
-        fs::read(&relocated).unwrap(),
-        fs::read(assert_cmd::cargo::cargo_bin("zj-radar")).unwrap()
-    );
+    assert_eq!(fs::read(&relocated).unwrap(), fs::read(assert_cmd::cargo::cargo_bin("zj-radar")).unwrap());
 }

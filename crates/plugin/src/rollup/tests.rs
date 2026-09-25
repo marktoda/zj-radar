@@ -2,11 +2,7 @@ use super::*;
 use std::collections::HashMap;
 
 fn pane(id: u32, title: &str) -> TerminalPane {
-    TerminalPane {
-        id,
-        title: title.to_string(),
-        focused_in_tab: false,
-    }
+    TerminalPane { id, title: title.to_string(), focused_in_tab: false }
 }
 
 fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservation {
@@ -35,9 +31,7 @@ fn command_obs(status: Status, exit_code: Option<i32>) -> TrackedObservation {
 }
 
 /// Build a resolver from a fixed map — the test-side seam, no RadarState.
-fn resolver<'a>(
-    map: &'a HashMap<u32, TrackedObservation>,
-) -> impl Fn(u32) -> Option<&'a TrackedObservation> {
+fn resolver<'a>(map: &'a HashMap<u32, TrackedObservation>) -> impl Fn(u32) -> Option<&'a TrackedObservation> {
     move |id| map.get(&id)
 }
 
@@ -130,24 +124,15 @@ fn pending_is_only_counted_for_tracked_panes() {
     let display = roll_up(&panes, resolver(&map), |_| None);
 
     assert_eq!(display.progress.total, 0, "an un-tracked pane is not in total");
-    assert_eq!(
-        display.progress.pending, 0,
-        "pending must not count a pane excluded from total"
-    );
+    assert_eq!(display.progress.pending, 0, "pending must not count a pane excluded from total");
     assert!(!display.panes[0].is_tracked());
 }
 
 #[test]
 fn pane_outcome_maps_finished_commands_only() {
     assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(ExitOutcome::Ok));
-    assert_eq!(
-        pane_outcome(&command_obs(Status::Error, Some(2))),
-        Some(ExitOutcome::Failed(Some(2)))
-    );
-    assert_eq!(
-        pane_outcome(&command_obs(Status::Error, None)),
-        Some(ExitOutcome::Failed(None))
-    );
+    assert_eq!(pane_outcome(&command_obs(Status::Error, Some(2))), Some(ExitOutcome::Failed(Some(2))));
+    assert_eq!(pane_outcome(&command_obs(Status::Error, None)), Some(ExitOutcome::Failed(None)));
     // Active commands get no tag.
     assert_eq!(pane_outcome(&command_obs(Status::Running, None)), None);
     // Agents (status pipe) never get a tag, even when Done.
@@ -340,10 +325,7 @@ fn quiet_nvim(target: u32) -> impl Fn(u32) -> Option<(&'static str, Kind)> {
 fn quiet_identity_renders_interactive_where_untracked_would_be() {
     let panes = [pane(1, "shell")];
     let display = roll_up(&panes, |_| None, quiet_nvim(1));
-    assert_eq!(
-        display.panes[0],
-        PaneDisplay::Interactive { pane_id: 1, kind: Kind::Command, msg: "nvim".into() }
-    );
+    assert_eq!(display.panes[0], PaneDisplay::Interactive { pane_id: 1, kind: Kind::Command, msg: "nvim".into() });
     // Pure context: no counts, no severity, no detail.
     assert_eq!(display.status, Status::Idle);
     assert_eq!(display.progress, ProgressCounts::default());
@@ -370,10 +352,7 @@ fn quiet_identity_never_outranks_a_live_observation() {
         map.insert(1, obs(ObservationOrigin::StatusPipe, status, 1));
         let panes = [pane(1, "shell")];
         let display = roll_up(&panes, resolver(&map), quiet_nvim(1));
-        assert!(
-            display.panes[0].is_tracked(),
-            "{status:?} keeps its Tracked row"
-        );
+        assert!(display.panes[0].is_tracked(), "{status:?} keeps its Tracked row");
     }
 }
 
@@ -387,10 +366,7 @@ fn animating_tracks_running_jobs_not_services_and_sits_outside_the_ever_active_g
     map.insert(1, obs(ObservationOrigin::Command, Status::Running, 1)); // Kind::Build — a job
     assert!(roll_up(&panes, resolver(&map), |_| None).animating, "a running job animates");
     map.insert(1, TrackedObservation { kind: Kind::Server, ..obs(ObservationOrigin::Command, Status::Running, 1) });
-    assert!(
-        !roll_up(&panes, resolver(&map), |_| None).animating,
-        "a running service holds the steady mark — no sweep"
-    );
+    assert!(!roll_up(&panes, resolver(&map), |_| None).animating, "a running service holds the steady mark — no sweep");
 
     // `animating` accrues OUTSIDE roll_up's ever_active gate — deliberate: a
     // snapshot-loaded Running row with ever_active=false renders untracked

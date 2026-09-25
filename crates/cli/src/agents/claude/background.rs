@@ -163,20 +163,27 @@ mod tests {
 
     #[test]
     fn turn_end_lists_every_running_task_and_marks_what_holds() {
-        let v = json(r#"{"background_tasks":[
+        let v = json(
+            r#"{"background_tasks":[
             {"id":"b1","type":"shell","status":"running","description":" Run the test suite ","command":"cargo nextest run"},
             {"id":"b2","type":"shell","status":"running","command":"cd web && pnpm run dev"},
             {"id":"a1","type":"subagent","status":"running","description":"Explore rail"},
             {"id":"m1","type":"monitor","status":"running","description":"watch CI"},
             {"id":"b3","type":"shell","status":"completed","command":"cargo test"},
-            {"type":"shell","status":"running"},"junk"]}"#);
+            {"type":"shell","status":"running"},"junk"]}"#,
+        );
         let batch = turn_end(&v);
         assert!(batch.snapshot);
         let got: Vec<(&str, &str, bool)> =
             batch.items.iter().map(|t| (t.id.as_str(), t.label.as_str(), t.holds)).collect();
         assert_eq!(
             got,
-            vec![("b1", "Run the test suite", true), ("b2", "cd", false), ("a1", "Explore rail", true), ("m1", "watch CI", false)]
+            vec![
+                ("b1", "Run the test suite", true),
+                ("b2", "cd", false),
+                ("a1", "Explore rail", true),
+                ("m1", "watch CI", false)
+            ]
         );
     }
 
@@ -190,11 +197,14 @@ mod tests {
 
     #[test]
     fn waiting_msg_names_one_task_or_counts_several() {
-        let one = turn_end(&json(r#"{"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"make"}]}"#));
+        let one =
+            turn_end(&json(r#"{"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"make"}]}"#));
         assert_eq!(waiting_msg(&one).as_deref(), Some("waiting on make"));
         let unnamed = turn_end(&json(r#"{"background_tasks":[{"id":"w","type":"workflow","status":"running"}]}"#));
         assert_eq!(waiting_msg(&unnamed).as_deref(), Some("waiting on 1 task"));
-        let services = turn_end(&json(r#"{"background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#));
+        let services = turn_end(&json(
+            r#"{"background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#,
+        ));
         assert_eq!(waiting_msg(&services), None);
     }
 
@@ -236,10 +246,21 @@ mod tests {
         // Shapes from the live capture.
         let shell = started(&json(r#"{"tool_input":{"command":"sleep 25; echo BG_DONE","description":"Background sleep 25 seconds","run_in_background":true},
             "tool_response":{"stdout":"","backgroundTaskId":"bks7shfy0"}}"#)).unwrap();
-        assert_eq!(shell.items[0], TaskUpdate { id: "bks7shfy0".into(), state: TaskState::Running, label: "Background sleep 25 seconds".into(), holds: true });
+        assert_eq!(
+            shell.items[0],
+            TaskUpdate {
+                id: "bks7shfy0".into(),
+                state: TaskState::Running,
+                label: "Background sleep 25 seconds".into(),
+                holds: true
+            }
+        );
         assert!(!shell.snapshot);
-        let agent = started(&json(r#"{"tool_input":{"description":"Sleep and echo in subagent","run_in_background":true},
-            "tool_response":{"isAsync":true,"status":"async_launched","agentId":"a7c69e57f79598a8a"}}"#)).unwrap();
+        let agent = started(&json(
+            r#"{"tool_input":{"description":"Sleep and echo in subagent","run_in_background":true},
+            "tool_response":{"isAsync":true,"status":"async_launched","agentId":"a7c69e57f79598a8a"}}"#,
+        ))
+        .unwrap();
         assert_eq!((agent.items[0].id.as_str(), agent.items[0].holds), ("a7c69e57f79598a8a", true));
         assert_eq!(started(&json(r#"{"tool_response":{"stdout":"hi"}}"#)), None);
         assert_eq!(started(&json(r#"{"tool_response":{"backgroundTaskId":""}}"#)), None);

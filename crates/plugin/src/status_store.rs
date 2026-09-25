@@ -73,11 +73,7 @@ impl StatusStore {
         let prev = self.store.get(p.pane_id);
         let status_changed = prev.map(|s| s.status) != Some(p.status);
         let identical = !status_changed && prev.is_some_and(|s| s.msg == p.msg);
-        let last_change_tick = if status_changed {
-            tick
-        } else {
-            prev.map(|s| s.last_change_tick).unwrap_or(tick)
-        };
+        let last_change_tick = if status_changed { tick } else { prev.map(|s| s.last_change_tick).unwrap_or(tick) };
         let ever_active = p.status.is_active() || prev.is_some_and(|s| s.ever_active);
         // A fresh sticky label only rides a human prompt: the new-batch cue
         // for background tasks (read before `task` below takes the string).
@@ -150,11 +146,8 @@ impl StatusStore {
     /// all means a producer is flooding past the cap.
     fn evict_over_cap(&mut self) {
         while self.store.len() > MAX_TRACKED_PANES {
-            let Some(oldest) = self
-                .store
-                .observations()
-                .min_by_key(|(id, o)| (o.last_change_tick, *id))
-                .map(|(id, _)| id)
+            let Some(oldest) =
+                self.store.observations().min_by_key(|(id, o)| (o.last_change_tick, *id)).map(|(id, _)| id)
             else {
                 return;
             };
@@ -303,11 +296,7 @@ impl StatusStore {
     /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
     /// owns origin routing — it `match`es on `observation.origin` to pick the store
     /// — so this trusts what it's handed rather than re-checking the origin.
-    pub(crate) fn insert_snapshot_observation(
-        &mut self,
-        pane_id: u32,
-        observation: TrackedObservation,
-    ) {
+    pub(crate) fn insert_snapshot_observation(&mut self, pane_id: u32, observation: TrackedObservation) {
         let _ = self.store.insert(pane_id, observation);
     }
 }
@@ -614,10 +603,7 @@ mod tests {
             assert!(s.get(i).is_none(), "oldest pane {i} must be evicted");
         }
         assert!(s.get(extra).is_some(), "the oldest survivor is still tracked");
-        assert!(
-            s.get(MAX_TRACKED_PANES as u32 + extra - 1).is_some(),
-            "the newest pane is still tracked"
-        );
+        assert!(s.get(MAX_TRACKED_PANES as u32 + extra - 1).is_some(), "the newest pane is still tracked");
     }
 
     #[test]

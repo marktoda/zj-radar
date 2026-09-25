@@ -188,9 +188,8 @@ impl BgTasks {
             }
         }
         self.cap();
-        self.waiting = next == Status::Running
-            && batch.is_some_and(|b| b.snapshot && b.has_holding())
-            && self.any_holding();
+        self.waiting =
+            next == Status::Running && batch.is_some_and(|b| b.snapshot && b.has_holding()) && self.any_holding();
     }
 
     fn upsert(&mut self, update: &TaskUpdate, now: u64) {
@@ -282,12 +281,24 @@ mod tests {
     #[test]
     fn a_turn_end_snapshot_with_holding_work_is_waiting() {
         let mut t = BgTasks::default();
-        t.apply(Some(&snapshot(vec![up("b1", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 100);
+        t.apply(
+            Some(&snapshot(vec![up("b1", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            100,
+        );
         assert!(t.waiting);
         assert_eq!(t.items[0].started_epoch_s, 100);
         // Services alone don't make the agent wait.
         let mut s = BgTasks::default();
-        s.apply(Some(&snapshot(vec![up("dev", TaskState::Running, false)])), Some(Status::Running), Status::Done, false, 100);
+        s.apply(
+            Some(&snapshot(vec![up("dev", TaskState::Running, false)])),
+            Some(Status::Running),
+            Status::Done,
+            false,
+            100,
+        );
         assert!(!s.waiting);
         assert_eq!(states(&s), vec![("dev", TaskState::Running)]);
     }
@@ -295,9 +306,21 @@ mod tests {
     #[test]
     fn a_start_delta_stamps_the_real_start_and_the_snapshot_keeps_it() {
         let mut t = BgTasks::default();
-        t.apply(Some(&delta(vec![up("b1", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 10);
+        t.apply(
+            Some(&delta(vec![up("b1", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            10,
+        );
         assert!(!t.waiting, "a mid-turn start is not a turn end");
-        t.apply(Some(&snapshot(vec![up("b1", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 90);
+        t.apply(
+            Some(&snapshot(vec![up("b1", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            90,
+        );
         assert_eq!(t.items[0].started_epoch_s, 10);
         assert!(t.waiting);
     }
@@ -306,12 +329,30 @@ mod tests {
     fn an_outcome_is_terminal_and_a_snapshot_cannot_revive_it() {
         let mut t = BgTasks::default();
         t.apply(Some(&delta(vec![up("b1", TaskState::Running, true)])), None, Status::Running, false, 10);
-        t.apply(Some(&delta(vec![up("b1", TaskState::Failed, false)])), Some(Status::Running), Status::Running, false, 20);
+        t.apply(
+            Some(&delta(vec![up("b1", TaskState::Failed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            20,
+        );
         assert_eq!(states(&t), vec![("b1", TaskState::Failed)]);
         assert_eq!(t.items[0].ended_epoch_s, Some(20));
-        t.apply(Some(&snapshot(vec![up("b1", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 30);
+        t.apply(
+            Some(&snapshot(vec![up("b1", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            30,
+        );
         assert_eq!(states(&t), vec![("b1", TaskState::Failed)], "an outcome is final");
-        t.apply(Some(&delta(vec![up("b1", TaskState::Completed, false)])), Some(Status::Running), Status::Running, false, 40);
+        t.apply(
+            Some(&delta(vec![up("b1", TaskState::Completed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            40,
+        );
         assert_eq!(states(&t), vec![("b1", TaskState::Failed)], "…even against another outcome");
         assert!(!t.waiting);
     }
@@ -338,8 +379,20 @@ mod tests {
     #[test]
     fn a_snapshot_ends_omitted_running_tasks_without_claiming_success() {
         let mut t = BgTasks::default();
-        t.apply(Some(&snapshot(vec![up("b1", TaskState::Running, true), up("b2", TaskState::Running, true)])), None, Status::Running, false, 10);
-        t.apply(Some(&snapshot(vec![up("b2", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 20);
+        t.apply(
+            Some(&snapshot(vec![up("b1", TaskState::Running, true), up("b2", TaskState::Running, true)])),
+            None,
+            Status::Running,
+            false,
+            10,
+        );
+        t.apply(
+            Some(&snapshot(vec![up("b2", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            20,
+        );
         assert_eq!(states(&t), vec![("b1", TaskState::Ended), ("b2", TaskState::Running)]);
         t.apply(Some(&snapshot(vec![])), Some(Status::Running), Status::Done, false, 30);
         assert_eq!(states(&t), vec![("b1", TaskState::Ended), ("b2", TaskState::Ended)]);
@@ -350,14 +403,26 @@ mod tests {
     fn an_outcome_for_an_unseen_id_is_recorded() {
         // Started and finished inside one turn: no Stop ever listed it.
         let mut t = BgTasks::default();
-        t.apply(Some(&delta(vec![up("x", TaskState::Completed, false)])), Some(Status::Running), Status::Running, false, 5);
+        t.apply(
+            Some(&delta(vec![up("x", TaskState::Completed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            5,
+        );
         assert_eq!(states(&t), vec![("x", TaskState::Completed)]);
     }
 
     #[test]
     fn a_new_human_batch_clears_finished_tasks_but_keeps_running_ones() {
         let mut t = BgTasks::default();
-        t.apply(Some(&delta(vec![up("dev", TaskState::Running, false), up("b1", TaskState::Completed, false)])), None, Status::Done, false, 5);
+        t.apply(
+            Some(&delta(vec![up("dev", TaskState::Running, false), up("b1", TaskState::Completed, false)])),
+            None,
+            Status::Done,
+            false,
+            5,
+        );
         // Done → Running with no batch: the user prompted again.
         t.apply(None, Some(Status::Done), Status::Running, false, 6);
         assert_eq!(states(&t), vec![("dev", TaskState::Running)]);
@@ -367,16 +432,40 @@ mod tests {
         assert_eq!(states(&t), vec![("dev", TaskState::Running)]);
         // Pending → Running does NOT: it is also the mid-turn permission
         // answer's recovery edge, and a turn in flight keeps its summary.
-        t.apply(Some(&delta(vec![up("b4", TaskState::Failed, false)])), Some(Status::Running), Status::Pending, false, 8);
+        t.apply(
+            Some(&delta(vec![up("b4", TaskState::Failed, false)])),
+            Some(Status::Running),
+            Status::Pending,
+            false,
+            8,
+        );
         t.apply(None, Some(Status::Pending), Status::Running, false, 9);
         assert!(states(&t).contains(&("b4", TaskState::Failed)));
         // …but a real prompt answering it (a fresh sticky label) does.
-        t.apply(Some(&delta(vec![up("b5", TaskState::Completed, false)])), Some(Status::Running), Status::Pending, false, 9);
+        t.apply(
+            Some(&delta(vec![up("b5", TaskState::Completed, false)])),
+            Some(Status::Running),
+            Status::Pending,
+            false,
+            9,
+        );
         t.apply(None, Some(Status::Pending), Status::Running, true, 9);
         assert!(!states(&t).iter().any(|(id, _)| *id == "b5" || *id == "b4"));
-        t.apply(Some(&delta(vec![up("b4", TaskState::Failed, false)])), Some(Status::Running), Status::Running, false, 9);
+        t.apply(
+            Some(&delta(vec![up("b4", TaskState::Failed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            9,
+        );
         // Running → Running (prompting while waiting) keeps the summary.
-        t.apply(Some(&delta(vec![up("b3", TaskState::Completed, false)])), Some(Status::Running), Status::Running, false, 9);
+        t.apply(
+            Some(&delta(vec![up("b3", TaskState::Completed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            9,
+        );
         t.apply(None, Some(Status::Running), Status::Running, false, 10);
         assert_eq!(states(&t).len(), 3, "dev, b4, b3 all kept");
     }
@@ -415,13 +504,25 @@ mod tests {
         // lost the command must not make the agent wait on it.
         let mut t = BgTasks::default();
         t.apply(Some(&delta(vec![up("dev", TaskState::Running, false)])), None, Status::Running, false, 5);
-        t.apply(Some(&snapshot(vec![up("dev", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 6);
+        t.apply(
+            Some(&snapshot(vec![up("dev", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            6,
+        );
         assert!(!t.items[0].holds);
         assert!(!t.waiting, "nothing bounded to wait on");
         // …while a bounded task a later report calls a service stops holding.
         let mut b = BgTasks::default();
         b.apply(Some(&delta(vec![up("b1", TaskState::Running, true)])), None, Status::Running, false, 5);
-        b.apply(Some(&snapshot(vec![up("b1", TaskState::Running, false)])), Some(Status::Running), Status::Done, false, 6);
+        b.apply(
+            Some(&snapshot(vec![up("b1", TaskState::Running, false)])),
+            Some(Status::Running),
+            Status::Done,
+            false,
+            6,
+        );
         assert!(!b.items[0].holds);
     }
 
@@ -430,8 +531,20 @@ mod tests {
         let mut t = BgTasks::default();
         let many: Vec<_> = (0..MAX_TASKS).map(|i| up(&format!("r{i}"), TaskState::Running, true)).collect();
         t.apply(Some(&delta(many)), None, Status::Running, false, 5);
-        t.apply(Some(&delta(vec![up("old", TaskState::Completed, false)])), Some(Status::Running), Status::Running, false, 6);
-        t.apply(Some(&delta(vec![up("new", TaskState::Running, true)])), Some(Status::Running), Status::Running, false, 7);
+        t.apply(
+            Some(&delta(vec![up("old", TaskState::Completed, false)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            6,
+        );
+        t.apply(
+            Some(&delta(vec![up("new", TaskState::Running, true)])),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            7,
+        );
         assert_eq!(t.items.len(), MAX_TASKS);
         assert!(t.items.iter().all(|x| x.id != "old"), "the ended task went first");
         assert!(t.items.iter().any(|x| x.id == "new"));
@@ -463,8 +576,10 @@ mod tests {
 
     fn arb_step() -> impl Strategy<Value = (Option<TaskBatch>, Status)> {
         (
-            proptest::option::of((proptest::collection::vec(arb_update(), 0..5), any::<bool>())
-                .prop_map(|(items, snapshot)| TaskBatch { items, snapshot })),
+            proptest::option::of(
+                (proptest::collection::vec(arb_update(), 0..5), any::<bool>())
+                    .prop_map(|(items, snapshot)| TaskBatch { items, snapshot }),
+            ),
             proptest::sample::select(Status::ALL.to_vec()),
         )
     }

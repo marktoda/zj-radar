@@ -117,11 +117,7 @@ fn pending_edge_passes_and_the_recovery_running_is_sent() {
     notify_deduped(&shims, "running", PRE_EDIT, &[]);
     notify_deduped(&shims, "pending", pending, &[]);
     notify_deduped(&shims, "running", POST_EDIT, &[]);
-    let sent: Vec<String> = shims
-        .recorded("zellij")
-        .iter()
-        .map(|c| c.args.join(" "))
-        .collect();
+    let sent: Vec<String> = shims.recorded("zellij").iter().map(|c| c.args.join(" ")).collect();
     assert_eq!(sent.len(), 3, "running, pending, recovery running: {sent:?}");
     assert!(sent[1].contains("\"status\":\"pending\""), "{sent:?}");
     assert!(sent[2].contains("\"status\":\"running\""), "{sent:?}");
@@ -166,19 +162,10 @@ fn dedup_state_is_scoped_per_pane_and_session() {
     assert_eq!(shims.recorded("zellij").len(), 3);
     // The state files landed under the injected TMPDIR, not the real one.
     let state = dedup_leaf(shims.dir.path());
-    let mut names: Vec<_> = std::fs::read_dir(&state)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .collect();
+    let mut names: Vec<_> =
+        std::fs::read_dir(&state).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     names.sort();
-    assert_eq!(
-        names,
-        vec![
-            "last-sent.dedup-test.7.json",
-            "last-sent.dedup-test.8.json",
-            "last-sent.other.7.json"
-        ]
-    );
+    assert_eq!(names, vec!["last-sent.dedup-test.7.json", "last-sent.dedup-test.8.json", "last-sent.other.7.json"]);
 }
 
 #[test]
@@ -191,18 +178,9 @@ fn claude_posttooluse_edit_broadcasts_editing_activity() {
     notify(&shims, "claude", hook);
 
     let argv = shims.sole_pipe_argv();
-    assert!(
-        argv.contains("\"pane\""),
-        "payload missing pane field: {argv}"
-    );
-    assert!(
-        argv.contains("\"id\":7"),
-        "payload missing derived pane id 7 (ZELLIJ_PANE_ID=terminal_7): {argv}"
-    );
-    assert!(
-        argv.contains("editing auth.rs"),
-        "payload missing activity string: {argv}"
-    );
+    assert!(argv.contains("\"pane\""), "payload missing pane field: {argv}");
+    assert!(argv.contains("\"id\":7"), "payload missing derived pane id 7 (ZELLIJ_PANE_ID=terminal_7): {argv}");
+    assert!(argv.contains("editing auth.rs"), "payload missing activity string: {argv}");
     // The hook's cwd does not exist on this machine, so the native .git walk
     // declines and repo/branch come from the git fallback — the fake here.
     // Pins that the spawn path stays wired behind the native one.
@@ -222,10 +200,7 @@ fn claude_posttooluse_bash_git_push_broadcasts_pushing() {
     notify(&shims, "claude", hook);
 
     let argv = shims.sole_pipe_argv();
-    assert!(
-        argv.contains("pushing"),
-        "payload missing 'pushing' activity: {argv}"
-    );
+    assert!(argv.contains("pushing"), "payload missing 'pushing' activity: {argv}");
 }
 
 #[test]
@@ -240,16 +215,10 @@ fn codex_permissionrequest_broadcasts_pending_payload() {
     notify(&shims, "codex", hook);
 
     let argv = shims.sole_pipe_argv();
-    assert!(
-        argv.contains("--name zj_radar.status.v1"),
-        "broadcast must target the status pipe: {argv}"
-    );
+    assert!(argv.contains("--name zj_radar.status.v1"), "broadcast must target the status pipe: {argv}");
     assert!(argv.contains("\"source\":\"codex\""), "payload: {argv}");
     assert!(argv.contains("\"status\":\"pending\""), "payload: {argv}");
-    assert!(
-        argv.contains("\"id\":7"),
-        "payload missing derived pane id 7 (ZELLIJ_PANE_ID=terminal_7): {argv}"
-    );
+    assert!(argv.contains("\"id\":7"), "payload missing derived pane id 7 (ZELLIJ_PANE_ID=terminal_7): {argv}");
     assert!(argv.contains("Approve network access?"), "payload: {argv}");
 }
 
@@ -270,10 +239,7 @@ fn no_zellij_env_exits_clean_without_broadcast() {
         .write_stdin(r#"{"hook_event_name":"Stop","cwd":"/tmp"}"#)
         .assert()
         .success();
-    assert!(
-        shims.recorded("zellij").is_empty(),
-        "must not broadcast outside Zellij"
-    );
+    assert!(shims.recorded("zellij").is_empty(), "must not broadcast outside Zellij");
 }
 
 #[test]
@@ -358,9 +324,7 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
     {
         use std::io::Write;
         let mut stdin = notify.stdin.take().unwrap();
-        stdin
-            .write_all(br#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}"#)
-            .unwrap();
+        stdin.write_all(br#"{"hook_event_name":"Stop","cwd":"/home/u/myrepo"}"#).unwrap();
     } // scope end closes stdin so the adapter's read returns
 
     // Wait until the client is hung, then kill the producer BEFORE its 4s
@@ -396,9 +360,7 @@ fn hung_pipe_is_reaped_even_when_notify_itself_is_killed_mid_send() {
             break; // reaped — the leak is closed
         }
         if std::time::Instant::now() >= deadline {
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .status();
+            let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
             panic!("blocked `zellij pipe` client leaked past its watchdog after the producer died");
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -499,9 +461,5 @@ fn a_notify_invocation_clap_rejects_still_exits_zero_and_sends_nothing() {
     assert!(shims.recorded("zellij").is_empty());
 
     // Every other subcommand keeps clap's contract: usage on stderr, exit 2.
-    Command::cargo_bin("zj-radar")
-        .unwrap()
-        .args(["setup", "--no-such-flag"])
-        .assert()
-        .code(2);
+    Command::cargo_bin("zj-radar").unwrap().args(["setup", "--no-such-flag"]).assert().code(2);
 }

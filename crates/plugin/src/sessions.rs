@@ -269,10 +269,8 @@ impl Sessions {
         // entries (its session closed, or went stale itself) is treated the
         // same as "nothing selected" — restart below rather than advance
         // from a position it no longer occupies.
-        let current_position = self
-            .selection
-            .as_ref()
-            .and_then(|sel| selectable.iter().position(|s| s.presence.session_name == sel.name));
+        let current_position =
+            self.selection.as_ref().and_then(|sel| selectable.iter().position(|s| s.presence.session_name == sel.name));
         self.selection = match (current_position, selectable.len()) {
             (_, 0) => None,
             (None, _) => {
@@ -289,7 +287,10 @@ impl Sessions {
                     Direction::Next => (index + 1) % len,
                     Direction::Prev => (index + len - 1) % len,
                 };
-                Some(SelectionState { name: selectable[next].presence.session_name.clone(), taps_since_last_fire: true })
+                Some(SelectionState {
+                    name: selectable[next].presence.session_name.clone(),
+                    taps_since_last_fire: true,
+                })
             }
         };
         self.badge() != before
@@ -411,8 +412,13 @@ mod tests {
     use crate::radar_state::Direction;
 
     fn own(name: &str) -> Presence {
-        Presence { session_name: name.into(), running: 0, attention: 0,
-                  attention_tab_position: None, updated_epoch_s: 0 }
+        Presence {
+            session_name: name.into(),
+            running: 0,
+            attention: 0,
+            attention_tab_position: None,
+            updated_epoch_s: 0,
+        }
     }
     /// Fresh (age 0) peer presence, the shape most tests want.
     fn presence(name: &str, running: usize, attention: usize) -> (String, u64) {
@@ -428,8 +434,13 @@ mod tests {
     fn badge_orders_current_then_attention_then_rest() {
         let mut s = Sessions::default();
         s.update_presences(vec![presence("zeta", 1, 2), presence("alpha", 1, 0)]);
-        s.set_own(Presence { session_name: "work".into(), running: 3, attention: 0,
-                             attention_tab_position: None, updated_epoch_s: 0 });
+        s.set_own(Presence {
+            session_name: "work".into(),
+            running: 3,
+            attention: 0,
+            attention_tab_position: None,
+            updated_epoch_s: 0,
+        });
         // (Bound rather than chained straight off `s.badge()`: the literal
         // brief snippet borrows from a temporary `Vec<BadgeEntry>` that would
         // be dropped at the end of the `let` statement — a compile-mechanics
@@ -460,9 +471,9 @@ mod tests {
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 0, 1), presence("beta", 1, 0)]);
         // Order: work(current), alpha(attention), beta.
-        s.cycle(Direction::Next);                     // select alpha
+        s.cycle(Direction::Next); // select alpha
         assert_eq!(s.tick(), None, "the fire covering the tap must not commit — it clears the flag");
-        s.cycle(Direction::Next);                     // skip to beta
+        s.cycle(Direction::Next); // skip to beta
         assert_eq!(s.tick(), None, "the fire covering THIS tap must not commit either");
         let t = s.tick().expect("a fully quiet fire commits");
         assert_eq!(t.name, "beta");
@@ -474,9 +485,9 @@ mod tests {
         let mut s = Sessions::default();
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 0, 0)]);
-        s.cycle(Direction::Next);                     // alpha
-        s.cycle(Direction::Next);                     // wraps to work (current)
-        s.tick();                                     // the fire covering that tap: skip, clears the flag
+        s.cycle(Direction::Next); // alpha
+        s.cycle(Direction::Next); // wraps to work (current)
+        s.tick(); // the fire covering that tap: skip, clears the flag
         assert_eq!(s.tick(), None, "a quiet fire landing on the current session cancels");
     }
 
@@ -484,9 +495,10 @@ mod tests {
     fn commit_carries_attention_tab_position() {
         let mut s = Sessions::default();
         s.set_own(own("work"));
-        s.update_presences(vec![
-            (r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.to_string(), 0),
-        ]);
+        s.update_presences(vec![(
+            r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#.to_string(),
+            0,
+        )]);
         s.cycle(Direction::Next);
         s.tick(); // the fire covering the tap: skip, clears the flag
         assert_eq!(s.tick().unwrap().attention_tab_position, Some(2));
@@ -506,8 +518,8 @@ mod tests {
         s.set_own(own("work"));
         s.update_presences(vec![presence("alpha", 1, 0)]);
         s.cycle(Direction::Next); // selects alpha
-        // A fire landing right after the tap must not commit instantly —
-        // it covers the tap's interval and must reset the deadline instead.
+                                  // A fire landing right after the tap must not commit instantly —
+                                  // it covers the tap's interval and must reset the deadline instead.
         assert_eq!(s.tick(), None, "a fire landing right after the tap must not commit instantly");
         assert!(s.wants_fast_cadence(), "the selection survives that fire, still pending");
         let t = s.tick().expect("the next, fully quiet fire commits");
@@ -577,19 +589,32 @@ mod tests {
     fn update_presences_reports_change_only_on_actual_content_change() {
         let mut s = Sessions::default();
         assert!(s.update_presences(vec![presence("alpha", 1, 0)]).changed, "first presence report changes the badge");
-        assert!(!s.update_presences(vec![presence("alpha", 1, 0)]).changed, "identical presence report is not a change");
+        assert!(
+            !s.update_presences(vec![presence("alpha", 1, 0)]).changed,
+            "identical presence report is not a change"
+        );
     }
 
     #[test]
     fn set_own_reports_change_only_on_actual_content_change() {
         let mut s = Sessions::default();
-        let p = Presence { session_name: "work".into(), running: 3, attention: 0,
-                           attention_tab_position: None, updated_epoch_s: 0 };
+        let p = Presence {
+            session_name: "work".into(),
+            running: 3,
+            attention: 0,
+            attention_tab_position: None,
+            updated_epoch_s: 0,
+        };
         assert!(s.set_own(p.clone()), "first own-count report changes the badge");
         // Same badge-relevant fields, different updated_epoch_s (not part of
         // BadgeEntry) — must not register as a change.
-        let p2 = Presence { session_name: "work".into(), running: 3, attention: 0,
-                            attention_tab_position: None, updated_epoch_s: 99 };
+        let p2 = Presence {
+            session_name: "work".into(),
+            running: 3,
+            attention: 0,
+            attention_tab_position: None,
+            updated_epoch_s: 99,
+        };
         assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
     }
 
@@ -609,10 +634,7 @@ mod tests {
         s.update_presences(vec![presence("alpha", 2, 1)]);
 
         assert!(s.dismiss("alpha"), "dismissing an existing peer changes the badge");
-        assert!(
-            !s.badge().iter().any(|b| b.name == "alpha"),
-            "dismissed peer must no longer appear on the badge"
-        );
+        assert!(!s.badge().iter().any(|b| b.name == "alpha"), "dismissed peer must no longer appear on the badge");
     }
 
     #[test]
@@ -717,7 +739,10 @@ mod tests {
 
         s.tick(); // the fire covering the last tap: skip, clears the flag
         let t = s.tick().expect("a quiet fire commits");
-        assert_eq!(t.name, "beta", "after vanished selection, cycle must restart and select the first non-current entry");
+        assert_eq!(
+            t.name, "beta",
+            "after vanished selection, cycle must restart and select the first non-current entry"
+        );
     }
 
     // -- Pinning: duplicate-name dedup (killed-then-recreated session) ------
@@ -738,7 +763,10 @@ mod tests {
         let alphas: Vec<&BadgeEntry> = badge.iter().filter(|b| b.name == "alpha").collect();
         assert_eq!(alphas.len(), 1, "two presences for the same name must collapse to one badge entry");
         assert_eq!(alphas[0].running, 5, "the surviving entry must carry the fresher (greater updated_epoch_s) counts");
-        assert_eq!(alphas[0].attention, 2, "the surviving entry must carry the fresher (greater updated_epoch_s) counts");
+        assert_eq!(
+            alphas[0].attention, 2,
+            "the surviving entry must carry the fresher (greater updated_epoch_s) counts"
+        );
     }
 
     #[test]
@@ -750,11 +778,17 @@ mod tests {
         // merely "whichever is fresher" — the peer here claims a higher
         // updated_epoch_s and larger counts, and must still lose.
         let mut s = Sessions::default();
-        s.set_own(Presence { session_name: "work".into(), running: 3, attention: 0,
-                             attention_tab_position: None, updated_epoch_s: 50 });
-        s.update_presences(vec![
-            (r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(), 0),
-        ]);
+        s.set_own(Presence {
+            session_name: "work".into(),
+            running: 3,
+            attention: 0,
+            attention_tab_position: None,
+            updated_epoch_s: 50,
+        });
+        s.update_presences(vec![(
+            r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(),
+            0,
+        )]);
         let badge = s.badge();
         let work_entries: Vec<&BadgeEntry> = badge.iter().filter(|b| b.name == "work").collect();
         assert_eq!(work_entries.len(), 1, "a peer claiming our own name must not add a second badge line");
@@ -826,7 +860,10 @@ mod tests {
         let corpse = r#"{"session_name":"alpha","running":1,"attention":0,"updated_epoch_s":10}"#;
         let recreated = r#"{"session_name":"alpha","running":0,"attention":0,"updated_epoch_s":20}"#;
         let update = s.update_presences(vec![(corpse.to_string(), DEAD_AFTER_SECS + 100), (recreated.to_string(), 0)]);
-        assert!(update.dead.is_empty(), "a dead corpse losing the dedup to a fresh same-name file must not report the name dead");
+        assert!(
+            update.dead.is_empty(),
+            "a dead corpse losing the dedup to a fresh same-name file must not report the name dead"
+        );
         let alpha = s.badge().into_iter().find(|b| b.name == "alpha").expect("alpha present");
         assert!(!alpha.stale, "the fresher recreation must win the dedup, undimming the entry");
     }

@@ -35,13 +35,13 @@ pub(crate) use zj_radar_core::pipe;
 mod clock;
 mod config;
 mod control;
+#[cfg(test)]
+mod hooks_manifest_tests;
 mod ledger;
 mod notify_rules;
 mod permission;
 mod presence;
 mod radar_state;
-#[cfg(test)]
-mod hooks_manifest_tests;
 #[cfg(test)]
 mod reference_tests;
 mod render;
@@ -102,7 +102,6 @@ impl State {
         // assertions keep plain-Vec ergonomics.
         (*self.runtime.build_rows()).clone()
     }
-
 
     fn record_permission_request_started(&mut self) {
         self.runtime.record_permission_request_started();
@@ -196,15 +195,11 @@ impl State {
                 ]),
                 Effect::SetSelectable(selectable) => set_selectable(selectable),
                 Effect::SetTimeout(cadence) => set_timeout(cadence.seconds()),
-                Effect::PersistSnapshot => self
-                    .session_files
-                    .persist_snapshot(|existing| self.runtime.snapshot_json(existing)),
-                Effect::PersistPermissionMarker(marker) => {
-                    self.session_files.persist_permission_marker(marker)
+                Effect::PersistSnapshot => {
+                    self.session_files.persist_snapshot(|existing| self.runtime.snapshot_json(existing))
                 }
-                Effect::HeartbeatPermissionLock => {
-                    self.session_files.heartbeat_permission_lock()
-                }
+                Effect::PersistPermissionMarker(marker) => self.session_files.persist_permission_marker(marker),
+                Effect::HeartbeatPermissionLock => self.session_files.heartbeat_permission_lock(),
                 Effect::RenameTab { tab_id, name } => rename_tab_with_id(tab_id.raw() as u64, &name),
                 Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
                 Effect::ShowPane { pane_id } => {
@@ -222,16 +217,12 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
-                Effect::PersistPresence { unless_fresher_than } => self
-                    .session_files
-                    .persist_presence(unless_fresher_than, || self.runtime.presence_json()),
+                Effect::PersistPresence { unless_fresher_than } => {
+                    self.session_files.persist_presence(unless_fresher_than, || self.runtime.presence_json())
+                }
                 Effect::ReadPresences => {
-                    let raw = self
-                        .session_files
-                        .read_peer_presences()
-                        .into_iter()
-                        .map(|p| (p.json, p.age_secs))
-                        .collect();
+                    let raw =
+                        self.session_files.read_peer_presences().into_iter().map(|p| (p.json, p.age_secs)).collect();
                     let outcome = self.runtime.presences_changed(raw);
                     render |= self.handle_outcome(outcome);
                 }
@@ -246,8 +237,7 @@ impl State {
                     // showed them — while `remove_presences_matching` itself
                     // stays parse-agnostic (see its doc for the layering).
                     self.session_files.remove_presences_matching(|json| {
-                        crate::presence::Presence::parse(json)
-                            .is_some_and(|p| p.session_name == name)
+                        crate::presence::Presence::parse(json).is_some_and(|p| p.session_name == name)
                     });
                 }
                 Effect::BroadcastStatus { payload } => {
@@ -278,10 +268,7 @@ impl State {
                     // on a wedged receiver (e.g. stuck at a permission
                     // prompt), closing the orphaned-process leak this arm
                     // previously documented as an accepted risk.
-                    let argv = crate::pipe::self_limiting_pipe_argv(
-                        &payload,
-                        crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
-                    );
+                    let argv = crate::pipe::self_limiting_pipe_argv(&payload, crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS);
                     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
                     run_command(&args, std::collections::BTreeMap::new());
                 }
@@ -304,9 +291,7 @@ impl State {
     fn resolve_cwd(&mut self, pane_ids: Vec<u32>) {
         for id in pane_ids {
             if let Ok(path) = get_pane_cwd(PaneId::Terminal(id)) {
-                let outcome = self
-                    .runtime
-                    .cwd_changed(id, path.to_string_lossy().to_string());
+                let outcome = self.runtime.cwd_changed(id, path.to_string_lossy().to_string());
                 self.handle_effects(outcome.effects);
             }
         }
@@ -361,16 +346,10 @@ impl ZellijPlugin for State {
         // running shows their real status instead of a blank (all-idle) rail.
         let ids = get_plugin_ids();
         self.plugin_id = Some(ids.plugin_id);
-        let session = SessionFiles::open(SessionFileIds {
-            plugin_id: ids.plugin_id,
-            zellij_pid: ids.zellij_pid,
-        });
+        let session = SessionFiles::open(SessionFileIds { plugin_id: ids.plugin_id, zellij_pid: ids.zellij_pid });
         self.session_files = session.files;
-        let outcome = self.runtime.load(
-            config::Config::from_map(&config),
-            session.snapshot.as_deref(),
-            session.permission,
-        );
+        let outcome =
+            self.runtime.load(config::Config::from_map(&config), session.snapshot.as_deref(), session.permission);
         self.handle_outcome(outcome);
     }
 
@@ -393,10 +372,7 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(manifest) => {
                 let own_tab_position = self.plugin_id.and_then(|plugin_id| {
                     manifest.panes.iter().find_map(|(tab_pos, panes)| {
-                        panes
-                            .iter()
-                            .any(|pane| pane.is_plugin && pane.id == plugin_id)
-                            .then_some(*tab_pos)
+                        panes.iter().any(|pane| pane.is_plugin && pane.id == plugin_id).then_some(*tab_pos)
                     })
                 });
                 self.runtime.own_plugin_tab_changed(own_tab_position);
@@ -420,9 +396,7 @@ impl ZellijPlugin for State {
                         })
                     })
                     .collect();
-                let outcome = self
-                    .runtime
-                    .panes_changed(radar_state::PaneUpdate::from_raw(raw));
+                let outcome = self.runtime.panes_changed(radar_state::PaneUpdate::from_raw(raw));
                 self.handle_outcome(outcome)
             }
             Event::Timer(elapsed_s) => {
@@ -473,9 +447,7 @@ impl ZellijPlugin for State {
             }
             Event::CwdChanged(pane_id, path, _clients) => {
                 if let PaneId::Terminal(id) = pane_id {
-                    let outcome = self
-                        .runtime
-                        .cwd_changed(id, path.to_string_lossy().to_string());
+                    let outcome = self.runtime.cwd_changed(id, path.to_string_lossy().to_string());
                     return self.handle_outcome(outcome);
                 }
                 false // plugin panes: nothing observed, nothing to repaint
@@ -560,8 +532,7 @@ mod tests {
         let eq = decl + cli_src[decl..].find('=').expect("const has an initializer");
         let open = eq + cli_src[eq..].find('[').expect("initializer is an array");
         let close = open + cli_src[open..].find(']').expect("array closes");
-        let probed: std::collections::BTreeSet<&str> =
-            cli_src[open..close].split('"').skip(1).step_by(2).collect();
+        let probed: std::collections::BTreeSet<&str> = cli_src[open..close].split('"').skip(1).step_by(2).collect();
 
         assert_eq!(
             requested, probed,
@@ -609,16 +580,10 @@ mod tests {
         // tab_specs: (position, name, active)
         // Uses Compact density so existing click-mapping tests (which hard-code
         // line numbers assuming no gap lines) continue to pass unchanged.
-        let tabs = tab_specs
-            .iter()
-            .map(|&(pos, name, active)| tab(pos, name, active))
-            .collect();
+        let tabs = tab_specs.iter().map(|&(pos, name, active)| tab(pos, name, active)).collect();
         let mut state = State::default();
         state.runtime.tabs_changed(tabs);
-        state.runtime.config = config::Config {
-            density: config::Density::Compact,
-            ..config::Config::default()
-        };
+        state.runtime.config = config::Config { density: config::Density::Compact, ..config::Config::default() };
         state
     }
 
@@ -626,18 +591,9 @@ mod tests {
         apply_payload_with_msg(state, pane_id, status, tick, "msg");
     }
 
-    fn apply_payload_with_msg(
-        state: &mut State,
-        pane_id: u32,
-        status: Status,
-        tick: u64,
-        msg: &str,
-    ) {
+    fn apply_payload_with_msg(state: &mut State, pane_id: u32, status: Status, tick: u64, msg: &str) {
         let _ = state.runtime.radar.status_mut().apply(
-            StatusPayload {
-                msg: msg.into(),
-                ..payload_for(pane_id, status)
-            },
+            StatusPayload { msg: msg.into(), ..payload_for(pane_id, status) },
             tick,
             0,
         );
@@ -681,10 +637,7 @@ mod tests {
     fn build_rows_display_reflects_pane_status() {
         let mut state = make_state_with_tabs(&[(0, "agent-tab", false)]);
         // Assign pane 42 to tab position 0
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(42)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(42)]);
         apply_payload(&mut state, 42, Status::Running, 1);
         let rows = state.build_rows();
         assert_eq!(rows[0].display.status, Status::Running);
@@ -729,10 +682,7 @@ mod tests {
     #[test]
     fn agent_tab_running_occupies_two_lines() {
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1); // running → 2 lines
                                                            // rows 0,1 = header
         assert_eq!(state.tab_position_at_line(1), None);
@@ -748,10 +698,7 @@ mod tests {
     fn agent_tab_pending_with_msg_occupies_two_lines() {
         // New line-2 rule: pending + msg → 2 lines (mark + activity). Old 3-line case gone.
         let mut state = make_state_with_tabs(&[(0, "agent", false), (1, "plain", false)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?"); // pending+msg → 2
         assert_eq!(state.tab_position_at_line(1), None); // header
         assert_eq!(state.tab_position_at_line(2), Some(0)); // line 1
@@ -794,10 +741,7 @@ mod tests {
             (4, "e", false),
             (5, "pinky", false),
         ]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(5, vec![pane(50)]);
+        state.runtime.radar.set_tab_panes_for_position(5, vec![pane(50)]);
         apply_payload(&mut state, 50, Status::Pending, 1); // pending → non-idle, kept
         state.runtime.last_render_height = 6; // body_budget = 4
 
@@ -834,10 +778,7 @@ mod tests {
         // the other is a terminal neighbor in the rail's tab), and peer
         // sidebars that never asked go passive once a manifest shows one.
         let mut s = State::default();
-        assert!(
-            !s.runtime.permission.is_requesting(),
-            "peer sidebars that did not request permission stay passive"
-        );
+        assert!(!s.runtime.permission.is_requesting(), "peer sidebars that did not request permission stay passive");
 
         s.record_permission_request_started();
         assert!(
@@ -864,10 +805,7 @@ mod tests {
         // A tab with 2 panes both running, NOT active → new line-per-pane design:
         // row_lines = 1 header + 2 pane lines = 3 lines.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         // header = lines 0,1
@@ -891,36 +829,17 @@ mod tests {
         // 3-pane tab: pane 10 Pending, 11 + 12 Running. New line-per-pane design:
         // header (line 2) + pane 10 (line 3) + pane 11 (line 4) + pane 12 (line 5) = 4 lines.
         let mut state = make_state_with_tabs(&[(0, "monorepo", false), (1, "plain", false)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "run migration?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
         state.runtime.last_render_height = 100;
         // header = lines 0,1
-        assert_eq!(
-            state.target_at_line(2),
-            Some((0, None)),
-            "header → tab only"
-        );
+        assert_eq!(state.target_at_line(2), Some((0, None)), "header → tab only");
         // pane lines each target their pane (in position order)
-        assert_eq!(
-            state.target_at_line(3),
-            Some((0, Some(10))),
-            "pane line → pane 10"
-        );
-        assert_eq!(
-            state.target_at_line(4),
-            Some((0, Some(11))),
-            "pane line → pane 11"
-        );
-        assert_eq!(
-            state.target_at_line(5),
-            Some((0, Some(12))),
-            "pane line → pane 12"
-        );
+        assert_eq!(state.target_at_line(3), Some((0, Some(10))), "pane line → pane 10");
+        assert_eq!(state.target_at_line(4), Some((0, Some(11))), "pane line → pane 11");
+        assert_eq!(state.target_at_line(5), Some((0, Some(12))), "pane line → pane 12");
         // plain tab follows at line 6
         assert_eq!(state.tab_position_at_line(6), Some(1));
         assert!(state.tab_position_at_line(7).is_none());
@@ -930,25 +849,14 @@ mod tests {
     fn multi_pane_active_all_children_clickable() {
         // Active tab → ALL panes expand; each child line targets its pane.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
         apply_payload(&mut state, 20, Status::Running, 1);
         apply_payload(&mut state, 21, Status::Done, 1);
         state.runtime.last_render_height = 100;
         // header(2) + 2 children, no collapse.
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
-        assert_eq!(
-            state.target_at_line(3),
-            Some((0, Some(20))),
-            "child 0 → pane 20"
-        );
-        assert_eq!(
-            state.target_at_line(4),
-            Some((0, Some(21))),
-            "child 1 → pane 21"
-        );
+        assert_eq!(state.target_at_line(3), Some((0, Some(20))), "child 0 → pane 20");
+        assert_eq!(state.target_at_line(4), Some((0, Some(21))), "child 1 → pane 21");
         assert!(state.tab_position_at_line(5).is_none());
     }
 
@@ -960,31 +868,17 @@ mod tests {
         // tab's one tracked pane (20), same as the multi-pane tree rows — a
         // click routes to `Effect::ShowPane`, not `SwitchTab`.
         let mut state = make_state_with_tabs(&[(0, "team", true)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(20), pane(21)]);
         apply_payload(&mut state, 20, Status::Running, 1);
         state.runtime.last_render_height = 100;
 
         assert_eq!(state.target_at_line(2), Some((0, None)), "header");
-        assert_eq!(
-            state.target_at_line(3),
-            Some((0, Some(20))),
-            "detail line targets the single tracked pane"
-        );
+        assert_eq!(state.target_at_line(3), Some((0, Some(20))), "detail line targets the single tracked pane");
         assert!(state.tab_position_at_line(4).is_none(), "tab ends after 2 lines");
 
         let rows = state.build_rows();
-        assert_eq!(
-            rows[0].display.progress.total, 1,
-            "untracked pane is not progress"
-        );
-        assert_eq!(
-            rows[0].display.panes.len(),
-            2,
-            "both live panes are visible in display"
-        );
+        assert_eq!(rows[0].display.progress.total, 1, "untracked pane is not progress");
+        assert_eq!(rows[0].display.panes.len(), 2, "both live panes are visible in display");
     }
 
     /// Click mapping uses PLANNED (compressed) line counts, not uncompressed
@@ -1002,28 +896,12 @@ mod tests {
         //   position 1 (Running, 1 line) → line 3
         //   position 2 (Running, 1 line) → line 4
         //   position 3 (Pending, 2 lines) → lines 5-6
-        let mut state = make_state_with_tabs(&[
-            (0, "r0", false),
-            (1, "r1", false),
-            (2, "r2", false),
-            (3, "urgent", false),
-        ]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(1, vec![pane(11)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(2, vec![pane(12)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(3, vec![pane(13)]);
+        let mut state =
+            make_state_with_tabs(&[(0, "r0", false), (1, "r1", false), (2, "r2", false), (3, "urgent", false)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+        state.runtime.radar.set_tab_panes_for_position(1, vec![pane(11)]);
+        state.runtime.radar.set_tab_panes_for_position(2, vec![pane(12)]);
+        state.runtime.radar.set_tab_panes_for_position(3, vec![pane(13)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
@@ -1054,10 +932,7 @@ mod tests {
         // header (line 2) + pane10 (line 3) + pane11 (line 4) + pane12 (line 5) = 4 lines.
         // Followed by a plain tab at line 6.
         let mut state = make_state_with_tabs(&[(0, "team", false), (1, "plain", false)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11), pane(12)]);
         apply_payload_with_msg(&mut state, 10, Status::Pending, 1, "approve?");
         apply_payload(&mut state, 11, Status::Running, 1);
         apply_payload(&mut state, 12, Status::Running, 1);
@@ -1070,11 +945,7 @@ mod tests {
         assert_eq!(state.tab_position_at_line(4), Some(0), "pane 11 line");
         assert_eq!(state.tab_position_at_line(5), Some(0), "pane 12 line");
         // The plain tab must start at line 6, not earlier.
-        assert_eq!(
-            state.tab_position_at_line(6),
-            Some(1),
-            "plain tab follows the multi-pane tab"
-        );
+        assert_eq!(state.tab_position_at_line(6), Some(1), "plain tab follows the multi-pane tab");
         assert_eq!(state.tab_position_at_line(7), None, "beyond last tab");
     }
 
@@ -1091,10 +962,7 @@ mod tests {
         // the owned content rows belong to a tab. Tab 1 starts at line 4.
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.runtime.last_render_height = 100; // large → no overflow
-        state.runtime.config = config::Config {
-            density: config::Density::Comfortable,
-            ..config::Config::default()
-        };
+        state.runtime.config = config::Config { density: config::Density::Comfortable, ..config::Config::default() };
 
         // header lines
         assert_eq!(state.tab_position_at_line(0), None, "header line 0");
@@ -1102,19 +970,11 @@ mod tests {
         // tab 0 content line
         assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line");
         // tab 0 gap line — external separation, maps to None
-        assert_eq!(
-            state.tab_position_at_line(3),
-            None,
-            "tab 0 gap line maps to None"
-        );
+        assert_eq!(state.tab_position_at_line(3), None, "tab 0 gap line maps to None");
         // tab 1 content line starts at 4
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content line");
         // tab 1 gap line — external separation, maps to None
-        assert_eq!(
-            state.tab_position_at_line(5),
-            None,
-            "tab 1 gap line maps to None"
-        );
+        assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap line maps to None");
         // beyond
         assert_eq!(state.tab_position_at_line(6), None, "beyond last tab");
     }
@@ -1126,10 +986,7 @@ mod tests {
         // Lines: 0,1 header | 2 tab0 | 3 tab1
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.runtime.last_render_height = 100;
-        state.runtime.config = config::Config {
-            density: config::Density::Compact,
-            ..config::Config::default()
-        };
+        state.runtime.config = config::Config { density: config::Density::Compact, ..config::Config::default() };
 
         assert_eq!(state.tab_position_at_line(0), None);
         assert_eq!(state.tab_position_at_line(1), None);
@@ -1153,16 +1010,9 @@ mod tests {
         //   line 5  → None (beyond last tab)
         let mut state = make_state_with_tabs(&[(0, "a", false), (1, "b", false)]);
         state.runtime.last_render_height = 100;
-        state.runtime.config = config::Config {
-            density: config::Density::Cards,
-            ..config::Config::default()
-        };
+        state.runtime.config = config::Config { density: config::Density::Cards, ..config::Config::default() };
 
-        assert_eq!(
-            state.tab_position_at_line(0),
-            None,
-            "1-line header in Cards"
-        );
+        assert_eq!(state.tab_position_at_line(0), None, "1-line header in Cards");
         assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content");
         assert_eq!(state.tab_position_at_line(2), None, "tab 0 gap row → None");
         assert_eq!(state.tab_position_at_line(3), Some(1), "tab 1 content");
@@ -1180,28 +1030,14 @@ mod tests {
         // tab 0 is a Running tab WITH detail → 2 content lines.
         let mut state = make_state_with_tabs(&[(0, "work", false), (1, "b", false)]);
         // Make tab 0 a running agent with a detail line (2 content lines).
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(10)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(10)]);
         apply_payload(&mut state, 10, Status::Running, 1);
         state.runtime.last_render_height = 100;
-        state.runtime.config = config::Config {
-            density: config::Density::Cards,
-            ..config::Config::default()
-        };
+        state.runtime.config = config::Config { density: config::Density::Cards, ..config::Config::default() };
 
         assert_eq!(state.tab_position_at_line(0), None, "header");
-        assert_eq!(
-            state.tab_position_at_line(1),
-            Some(0),
-            "tab 0 content line 1"
-        );
-        assert_eq!(
-            state.tab_position_at_line(2),
-            Some(0),
-            "tab 0 content line 2"
-        );
+        assert_eq!(state.tab_position_at_line(1), Some(0), "tab 0 content line 1");
+        assert_eq!(state.tab_position_at_line(2), Some(0), "tab 0 content line 2");
         assert_eq!(state.tab_position_at_line(3), None, "tab 0 gap row → None");
         assert_eq!(state.tab_position_at_line(4), Some(1), "tab 1 content");
         assert_eq!(state.tab_position_at_line(5), None, "tab 1 gap row → None");
@@ -1212,31 +1048,19 @@ mod tests {
 
     #[test]
     fn command_pane_walks_idle_running_done() {
-        use crate::command::{DEBOUNCE_TICKS, EpochSecs, Tick};
+        use crate::command::{EpochSecs, Tick, DEBOUNCE_TICKS};
 
         let mut state = make_state_with_tabs(&[(0, "t", true)]);
-        state
-            .runtime
-            .radar
-            .set_tab_panes_for_position(0, vec![pane(5)]);
+        state.runtime.radar.set_tab_panes_for_position(0, vec![pane(5)]);
 
         // Tick counter managed locally, matching what PluginRuntime.tick would be.
         let mut tick: u64 = 0;
 
         // 1) shell prompt only → idle (zsh is in IGNORE_NAMES, no resolved state)
-        state.runtime.radar.command_mut().on_command_changed(
-            5,
-            &["zsh".to_string()],
-            true,
-            Some("/home/u/repo"),
-            tick,
-        );
+        state.runtime.radar.command_mut().on_command_changed(5, &["zsh".to_string()], true, Some("/home/u/repo"), tick);
         tick += 1;
         state.runtime.radar.command_mut().on_timer(Tick(tick), EpochSecs(0));
-        assert!(
-            state.runtime.radar.command_store().get(5).is_none(),
-            "shell prompt must leave pane idle"
-        );
+        assert!(state.runtime.radar.command_store().get(5).is_none(), "shell prompt must leave pane idle");
 
         // 2) real fg command → pending (not yet Running); after DEBOUNCE_TICKS timer → Running
         // pending since_tick = tick; a timer at (tick + DEBOUNCE_TICKS) satisfies
