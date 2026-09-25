@@ -108,7 +108,13 @@ impl StatusStore {
         // Background tasks: one merge rule, owned by `core::task` — upserts,
         // snapshots, terminal outcomes, the new-batch clear, and `waiting`.
         let mut tasks = prev.map(|s| s.tasks.clone()).unwrap_or_default();
-        tasks.apply(p.tasks.as_ref(), prev.map(|s| s.status), p.status, prompted, now_epoch_s);
+        tasks.apply(
+            p.tasks.as_ref(),
+            prev.map(|s| s.status),
+            p.status,
+            prompted,
+            now_epoch_s,
+        );
         let was_completion = prev.is_some_and(|s| s.status.is_completion());
         let prev = self.store.insert(
             p.pane_id,
@@ -132,7 +138,10 @@ impl StatusStore {
             },
         );
         self.evict_over_cap();
-        Replaced { prev, recedes: !identical && was_completion }
+        Replaced {
+            prev,
+            recedes: !identical && was_completion,
+        }
     }
 
     /// Enforce [`MAX_TRACKED_PANES`] after an intake insert: while over the
@@ -177,7 +186,11 @@ impl StatusStore {
     /// finishing." Unlike the (removed) focus-driven recede, this rides the
     /// shared `CommandChanged` signal, so every tab's instance clears in
     /// lockstep.
-    pub fn clear_on_prompt_return(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
+    pub fn clear_on_prompt_return(
+        &mut self,
+        pane_id: u32,
+        tick: u64,
+    ) -> Option<TrackedObservation> {
         let prev = self.store.get(pane_id)?;
         if prev.status == Status::Running {
             // First sighting starts the clock; repeats don't reset it (the
@@ -231,7 +244,10 @@ impl StatusStore {
         let mut cleared = Vec::new();
         for pane_id in due {
             self.suspect_running.remove(&pane_id);
-            let still_running = self.store.get(pane_id).is_some_and(|s| s.status == Status::Running);
+            let still_running = self
+                .store
+                .get(pane_id)
+                .is_some_and(|s| s.status == Status::Running);
             if still_running && self.force_idle(pane_id, now_tick).is_some() {
                 cleared.push(pane_id);
             }
@@ -331,7 +347,10 @@ mod tests {
     }
 
     fn payload_with_task(pane_id: u32, status: Status, task: &str) -> StatusPayload {
-        StatusPayload { task: task.into(), ..payload(pane_id, status) }
+        StatusPayload {
+            task: task.into(),
+            ..payload(pane_id, status)
+        }
     }
 
     #[test]
@@ -339,7 +358,14 @@ mod tests {
         // A pushed `source: server` Running row (reachable via `notify
         // generic`) holds the steady mark — it must not pin the 1 Hz timer…
         let mut s = StatusStore::default();
-        s.apply(StatusPayload { source: "server".into(), ..payload(1, Status::Running) }, 1, 0);
+        s.apply(
+            StatusPayload {
+                source: "server".into(),
+                ..payload(1, Status::Running)
+            },
+            1,
+            0,
+        );
         assert!(!s.needs_ticks(), "a steady service costs zero ticks");
         // …but its stale-Running grace clock is tick-measured, and this
         // predicate is that clock's ONLY tick source for a service row: a
@@ -363,9 +389,17 @@ mod tests {
         // …PreToolUse / Stop broadcasts don't (empty task) — the label sticks.
         s.apply(payload(1, Status::Running), 2, 0);
         s.apply(payload(1, Status::Done), 3, 0);
-        assert_eq!(s.get(1).unwrap().task, "fix flaky e2e", "sticky through the turn");
+        assert_eq!(
+            s.get(1).unwrap().task,
+            "fix flaky e2e",
+            "sticky through the turn"
+        );
         // A new prompt replaces it.
-        s.apply(payload_with_task(1, Status::Running, "now migrate the schema"), 4, 0);
+        s.apply(
+            payload_with_task(1, Status::Running, "now migrate the schema"),
+            4,
+            0,
+        );
         assert_eq!(s.get(1).unwrap().task, "now migrate the schema");
     }
 
@@ -411,7 +445,11 @@ mod tests {
         assert!(s.clear_on_prompt_return(1, 5).is_some());
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "message dropped");
-        assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
+        assert_eq!(
+            s.get(1).unwrap().repo,
+            "r",
+            "repo kept so the tab keeps its name"
+        );
 
         // Error and Pending also clear (the producer is gone).
         s.apply(payload(2, Status::Error), 1, 0);
@@ -441,12 +479,24 @@ mod tests {
         assert!(s.clear_on_prompt_return(1, 5).is_none());
         assert_eq!(s.get(1).unwrap().status, Status::Running);
         // Inside the window nothing expires.
-        assert!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS - 1).is_empty());
+        assert!(s
+            .expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS - 1)
+            .is_empty());
         // At the window's edge the ghost clears: no hook ever fires on a kill.
-        assert_eq!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS), vec![1]);
+        assert_eq!(
+            s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS),
+            vec![1]
+        );
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
-        assert_eq!(s.get(1).unwrap().repo, "r", "repo kept so the tab keeps its name");
-        assert!(s.get(1).unwrap().ever_active, "stays a muted row, not removed");
+        assert_eq!(
+            s.get(1).unwrap().repo,
+            "r",
+            "repo kept so the tab keeps its name"
+        );
+        assert!(
+            s.get(1).unwrap().ever_active,
+            "stays a muted row, not removed"
+        );
         assert!(!s.needs_ticks(), "the ghost no longer pins the fast timer");
     }
 
@@ -457,12 +507,16 @@ mod tests {
         assert!(s.clear_on_prompt_return(1, 5).is_none());
         // A hook payload proves the producer is alive.
         s.apply(payload(1, Status::Running), 6, 0);
-        assert!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS).is_empty());
+        assert!(s
+            .expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS)
+            .is_empty());
         // Suspect again; this time the flicker resolves back to the agent's
         // foreground (`cancel_running_suspect`, wired from command_changed).
         assert!(s.clear_on_prompt_return(1, 40).is_none());
         s.cancel_running_suspect(1);
-        assert!(s.expire_stale_running(40 + RUNNING_SUSPECT_GRACE_TICKS).is_empty());
+        assert!(s
+            .expire_stale_running(40 + RUNNING_SUSPECT_GRACE_TICKS)
+            .is_empty());
         assert_eq!(s.get(1).unwrap().status, Status::Running);
     }
 
@@ -473,8 +527,13 @@ mod tests {
         assert!(s.clear_on_prompt_return(1, 5).is_none());
         // The pane *staying* at the prompt is the stale evidence — a repeat
         // sighting must not push expiry out.
-        assert!(s.clear_on_prompt_return(1, 5 + RUNNING_SUSPECT_GRACE_TICKS - 1).is_none());
-        assert_eq!(s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS), vec![1]);
+        assert!(s
+            .clear_on_prompt_return(1, 5 + RUNNING_SUSPECT_GRACE_TICKS - 1)
+            .is_none());
+        assert_eq!(
+            s.expire_stale_running(5 + RUNNING_SUSPECT_GRACE_TICKS),
+            vec![1]
+        );
     }
 
     #[test]
@@ -483,7 +542,10 @@ mod tests {
         s.apply(payload(1, Status::Running), 1, 0);
         assert!(s.clear_on_prompt_return(1, 5).is_none());
         s.prune(&HashSet::new());
-        assert!(s.expire_stale_running(100).is_empty(), "no clock for a dead pane");
+        assert!(
+            s.expire_stale_running(100).is_empty(),
+            "no clock for a dead pane"
+        );
     }
 
     #[test]
@@ -543,7 +605,11 @@ mod tests {
 
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
-        assert_eq!(receded.unwrap().status, Status::Done, "the /clear overwrite is a recede edge");
+        assert_eq!(
+            receded.unwrap().status,
+            Status::Done,
+            "the /clear overwrite is a recede edge"
+        );
     }
 
     #[test]
@@ -554,7 +620,11 @@ mod tests {
         s.apply(payload(1, Status::Done), 2, 200);
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(200));
         s.apply(payload(1, Status::Done), 3, 300); // identical re-broadcast
-        assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(200), "no re-stamp");
+        assert_eq!(
+            s.get(1).unwrap().completed_epoch_s,
+            Some(200),
+            "no re-stamp"
+        );
     }
 
     #[test]
@@ -584,14 +654,24 @@ mod tests {
         let mut s = StatusStore::default();
         s.apply(payload(1, Status::Done), 1, 100);
         assert!(
-            s.apply(payload(1, Status::Done), 2, 200).receded().is_none(),
+            s.apply(payload(1, Status::Done), 2, 200)
+                .receded()
+                .is_none(),
             "identical (status,msg) is a no-op edge"
         );
         let mut new_msg = payload(1, Status::Done);
         new_msg.msg = "another turn".into();
         let displaced = s.apply(new_msg, 3, 300).receded();
-        assert_eq!(displaced.unwrap().completed_epoch_s, Some(100), "old completion comes out");
-        assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(300), "new one stamped fresh");
+        assert_eq!(
+            displaced.unwrap().completed_epoch_s,
+            Some(100),
+            "old completion comes out"
+        );
+        assert_eq!(
+            s.get(1).unwrap().completed_epoch_s,
+            Some(300),
+            "new one stamped fresh"
+        );
         // A non-completion overwrite (Running) still displaces the old Done:
         s.apply(payload(2, Status::Done), 1, 100);
         let displaced = s.apply(payload(2, Status::Running), 2, 200).receded();
@@ -613,7 +693,10 @@ mod tests {
         for i in 0..extra {
             assert!(s.get(i).is_none(), "oldest pane {i} must be evicted");
         }
-        assert!(s.get(extra).is_some(), "the oldest survivor is still tracked");
+        assert!(
+            s.get(extra).is_some(),
+            "the oldest survivor is still tracked"
+        );
         assert!(
             s.get(MAX_TRACKED_PANES as u32 + extra - 1).is_some(),
             "the newest pane is still tracked"
@@ -626,7 +709,14 @@ mod tests {
         s.apply(payload(1, Status::Pending), 1, 100);
         assert!(!s.get(1).unwrap().acknowledged);
         // The right-click acknowledge echo lands with `ack: true`.
-        s.apply(StatusPayload { ack: true, ..payload(1, Status::Done) }, 2, 200);
+        s.apply(
+            StatusPayload {
+                ack: true,
+                ..payload(1, Status::Done)
+            },
+            2,
+            200,
+        );
         assert!(s.get(1).unwrap().acknowledged);
         // The exemption lasts exactly as long as the acknowledged status: the
         // next real broadcast overwrites it.

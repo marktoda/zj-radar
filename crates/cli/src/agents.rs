@@ -130,9 +130,27 @@ pub fn tool_activity(tool_name: &str, tool_input: &Value) -> Option<String> {
 /// Bare acknowledgements that must not clobber a real task label when sent as
 /// a follow-up prompt. Compared lowercased with trailing punctuation stripped.
 const ACK_PROMPTS: &[&str] = &[
-    "y", "yes", "yep", "yeah", "n", "no", "ok", "okay", "k", "sure", "go",
-    "go ahead", "proceed", "continue", "do it", "lgtm", "sounds good",
-    "approved", "thanks", "ty", "thank you",
+    "y",
+    "yes",
+    "yep",
+    "yeah",
+    "n",
+    "no",
+    "ok",
+    "okay",
+    "k",
+    "sure",
+    "go",
+    "go ahead",
+    "proceed",
+    "continue",
+    "do it",
+    "lgtm",
+    "sounds good",
+    "approved",
+    "thanks",
+    "ty",
+    "thank you",
 ];
 
 /// Extract a sticky task label from a submitted prompt: the first non-empty
@@ -232,7 +250,13 @@ pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUp
 
     if status == Status::Done {
         if let Some(question) = trailing_question(msg) {
-            return Some(AgentUpdate { status: Status::Pending, msg: question.to_string(), cwd, task: None, tasks: None });
+            return Some(AgentUpdate {
+                status: Status::Pending,
+                msg: question.to_string(),
+                cwd,
+                task: None,
+                tasks: None,
+            });
         }
     }
     if status == Status::Pending && msg.trim().is_empty() {
@@ -245,7 +269,11 @@ pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUp
     }
     if status == Status::Running && event == bridge.tool_event {
         let raw_tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("");
-        let tool = bridge.tool_names.iter().find(|&&(from, _)| from == raw_tool).map_or(raw_tool, |&(_, to)| to);
+        let tool = bridge
+            .tool_names
+            .iter()
+            .find(|&&(from, _)| from == raw_tool)
+            .map_or(raw_tool, |&(_, to)| to);
         let tool_input = rename_keys(v.get("tool_input").unwrap_or(&Value::Null), bridge.arg_keys);
         if let Some(activity) = tool_activity(tool, &tool_input) {
             out_msg = activity;
@@ -253,13 +281,21 @@ pub(crate) fn derive_bridged(intake: &Intake, bridge: &Bridge) -> Option<AgentUp
     }
 
     let task = if status == Status::Running && event == bridge.prompt_event {
-        v.get("prompt").and_then(|x| x.as_str()).and_then(task_from_prompt)
+        v.get("prompt")
+            .and_then(|x| x.as_str())
+            .and_then(task_from_prompt)
     } else {
         None
     };
 
     // No bridge reports background tasks (Claude-only today): leave them alone.
-    Some(AgentUpdate { status, msg: out_msg, cwd, task, tasks: None })
+    Some(AgentUpdate {
+        status,
+        msg: out_msg,
+        cwd,
+        task,
+        tasks: None,
+    })
 }
 
 /// `input` with each object key found in `keys` renamed; other keys pass
@@ -269,7 +305,10 @@ fn rename_keys(input: &Value, keys: &[(&str, &str)]) -> Value {
         return input.clone();
     };
     let renamed = obj.iter().map(|(k, v)| {
-        let k = keys.iter().find(|&&(from, _)| from == k).map_or(k.as_str(), |&(_, to)| to);
+        let k = keys
+            .iter()
+            .find(|&&(from, _)| from == k)
+            .map_or(k.as_str(), |&(_, to)| to);
         (k.to_string(), v.clone())
     });
     Value::Object(renamed.collect())
@@ -306,11 +345,34 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
 /// Mirrored in notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]`
 /// (the parity suite pins both — the fallback escapes the `.`).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
-    "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
-    "pnpm dev", "yarn dev", "bun dev", "next dev", "make dev", "just dev",
-    "make server", "just server", "serve", "http.server", "runserver", "rails s",
-    "rails server", "flask run", "uvicorn", "gunicorn", "nodemon", "cargo watch",
-    "watchexec", "port-forward", "tail -f", "compose up",
+    "run dev",
+    "run start",
+    "npm start",
+    "pnpm start",
+    "yarn start",
+    "bun start",
+    "pnpm dev",
+    "yarn dev",
+    "bun dev",
+    "next dev",
+    "make dev",
+    "just dev",
+    "make server",
+    "just server",
+    "serve",
+    "http.server",
+    "runserver",
+    "rails s",
+    "rails server",
+    "flask run",
+    "uvicorn",
+    "gunicorn",
+    "nodemon",
+    "cargo watch",
+    "watchexec",
+    "port-forward",
+    "tail -f",
+    "compose up",
 ];
 
 /// Phrases that mark a service by the model-written task description
@@ -318,7 +380,11 @@ pub(crate) const SERVICE_PHRASES: &[&str] = &[
 /// in passing ("Run tests and watch for failures"). Mirrored in notify.sh's
 /// `SERVICE_DESCRIPTION_PHRASES`, same rules as [`SERVICE_PHRASES`].
 pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
-    "dev server", "development server", "start server", "start the server", "watch mode",
+    "dev server",
+    "development server",
+    "start server",
+    "start the server",
+    "watch mode",
 ];
 
 /// The token rules for words that are services only in some positions: a
@@ -330,10 +396,14 @@ pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
 /// while `pnpm add -D vite` and `cd packages/vite && pnpm test` are not.
 /// `cmd` is lowercased.
 fn service_tokens(cmd: &str) -> bool {
-    const RUNNERS: &[&str] = &["npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx"];
+    const RUNNERS: &[&str] = &[
+        "npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx",
+    ];
     cmd.split(['&', '|', ';']).any(|segment| {
         let tokens: Vec<&str> = segment.split_whitespace().collect();
-        let word = tokens.iter().position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
+        let word = tokens
+            .iter()
+            .position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
         let vite = word.is_some_and(|i| {
             basename(tokens[i]).and_then(|b| b.split('@').next()) == Some("vite")
                 && tokens.get(i + 1) != Some(&"build")
@@ -483,8 +553,9 @@ mod tests {
         // Read the lib.rs file and check that the `agent` field's doc comment
         // (only that comment, not the whole file) mentions all sources.
         let lib_rs = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs")
-        ).expect("Could not read lib.rs");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        )
+        .expect("Could not read lib.rs");
 
         // Scope the search to the `Notify::agent` field's doc-comment block:
         // from its opening line down to the field declaration that follows it.
@@ -596,7 +667,11 @@ mod tests {
             ("pip install foo", "installing"),
         ] {
             let input = json(&format!(r#"{{"command": {cmd:?}}}"#));
-            assert_eq!(tool_activity("Bash", &input).as_deref(), Some(expected), "cmd={cmd}");
+            assert_eq!(
+                tool_activity("Bash", &input).as_deref(),
+                Some(expected),
+                "cmd={cmd}"
+            );
         }
     }
 
@@ -606,9 +681,9 @@ mod tests {
         // commands misclassify. Each of these embeds a keyword inside another
         // word and must fall through to the generic "running <exe>".
         for (cmd, expected) in [
-            ("git checkout latest", "running git"), // "latest" ⊅ test
-            ("npm uninstall left-pad", "running npm"), // "uninstall" ⊅ install
-            ("cat fastest.txt", "running cat"),     // "fastest" ⊅ test
+            ("git checkout latest", "running git"),     // "latest" ⊅ test
+            ("npm uninstall left-pad", "running npm"),  // "uninstall" ⊅ install
+            ("cat fastest.txt", "running cat"),         // "fastest" ⊅ test
             ("./rebuilder.sh", "running rebuilder.sh"), // "rebuilder" ⊅ build
         ] {
             let input = json(&format!(r#"{{"command": {cmd:?}}}"#));
@@ -667,7 +742,10 @@ mod tests {
             task_from_prompt("  fix the flaky e2e retries\nhere's the log:\n…"),
             Some("fix the flaky e2e retries".to_string())
         );
-        assert_eq!(task_from_prompt("\n\n  migrate the schema  "), Some("migrate the schema".to_string()));
+        assert_eq!(
+            task_from_prompt("\n\n  migrate the schema  "),
+            Some("migrate the schema".to_string())
+        );
     }
 
     #[test]
@@ -682,14 +760,32 @@ mod tests {
     fn task_from_prompt_skips_harness_injected_tag_lines() {
         // Background-agent completions arrive via UserPromptSubmit wrapped in
         // tags; they must not clobber the human's sticky task label.
-        assert_eq!(task_from_prompt("<task-notification>\n<task-id>a1</task-id>"), None);
-        assert_eq!(task_from_prompt("  <system-reminder>ignore</system-reminder>"), None);
+        assert_eq!(
+            task_from_prompt("<task-notification>\n<task-id>a1</task-id>"),
+            None
+        );
+        assert_eq!(
+            task_from_prompt("  <system-reminder>ignore</system-reminder>"),
+            None
+        );
     }
 
     #[test]
     fn task_from_prompt_skips_bare_acknowledgements() {
         // Follow-up acks must not clobber the real task label.
-        for ack in ["yes", "Yes.", "y", "ok", "OK!", "continue", "go ahead", "do it", "lgtm", "sounds good", "thanks"] {
+        for ack in [
+            "yes",
+            "Yes.",
+            "y",
+            "ok",
+            "OK!",
+            "continue",
+            "go ahead",
+            "do it",
+            "lgtm",
+            "sounds good",
+            "thanks",
+        ] {
             assert_eq!(task_from_prompt(ack), None, "ack {ack:?} must be skipped");
         }
         // Short REAL tasks are kept — the filter is a list, not a length rule.
@@ -699,7 +795,10 @@ mod tests {
     #[test]
     fn task_from_prompt_caps_at_wire_field_bound() {
         let long = "x".repeat(MAX_WIRE_FIELD_CHARS + 88);
-        assert_eq!(task_from_prompt(&long).unwrap().chars().count(), MAX_WIRE_FIELD_CHARS);
+        assert_eq!(
+            task_from_prompt(&long).unwrap().chars().count(),
+            MAX_WIRE_FIELD_CHARS
+        );
     }
 
     #[test]
@@ -713,6 +812,9 @@ mod tests {
         assert_eq!(trailing_question("all set"), None);
         assert_eq!(trailing_question(""), None);
         // Full-width question mark (CJK) counts.
-        assert_eq!(trailing_question("完了しました。続けますか？"), Some("完了しました。続けますか？"));
+        assert_eq!(
+            trailing_question("完了しました。続けますか？"),
+            Some("完了しました。続けますか？")
+        );
     }
 }

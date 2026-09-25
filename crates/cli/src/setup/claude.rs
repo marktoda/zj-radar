@@ -38,19 +38,24 @@ pub(crate) fn claude_plugin_id() -> String {
 /// it guards against: one reader, so `run`'s advisory, `setup zellij`'s
 /// epilogue hint, and `--check` can never probe different paths.
 pub(crate) fn claude_installed_plugins_text() -> Option<String> {
-    claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
-        .and_then(|d| std::fs::read_to_string(d.join("plugins").join("installed_plugins.json")).ok())
+    claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir()).and_then(|d| {
+        std::fs::read_to_string(d.join("plugins").join("installed_plugins.json")).ok()
+    })
 }
 
 /// Resolve Claude Code's config dir: `$CLAUDE_CONFIG_DIR` wins (when
 /// non-empty), else `<home>/.claude`. A hard-coded `~/.claude` told a
 /// `CLAUDE_CONFIG_DIR` user their installed plugin was missing. Pure (env
 /// passed in) so the precedence is unit-tested, like `codex_home_from`.
-fn claude_config_dir_from(config_dir: Option<std::ffi::OsString>, home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+fn claude_config_dir_from(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
     if let Some(d) = config_dir.filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(d));
     }
-    home.filter(|h| !h.as_os_str().is_empty()).map(|h| h.join(".claude"))
+    home.filter(|h| !h.as_os_str().is_empty())
+        .map(|h| h.join(".claude"))
 }
 
 pub(crate) fn setup_claude(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
@@ -125,7 +130,11 @@ fn uninstall_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
         );
         return;
     }
-    if !confirm(&format!("Uninstall the {CLAUDE_PLUGIN} plugin via `claude plugin uninstall`?"), yes, is_tty) {
+    if !confirm(
+        &format!("Uninstall the {CLAUDE_PLUGIN} plugin via `claude plugin uninstall`?"),
+        yes,
+        is_tty,
+    ) {
         println!("claude: skipped (declined)");
         return;
     }
@@ -161,12 +170,18 @@ mod tests {
         // this on the same slug `marketplace add` takes, the three surfaces
         // agree structurally — including under a `ZJ_RADAR_REPO` override.
         assert_eq!(claude_marketplace_name("marktoda/zj-radar"), "zj-radar");
-        assert_eq!(claude_marketplace_name("fork-owner/zj-radar-fork"), "zj-radar-fork");
+        assert_eq!(
+            claude_marketplace_name("fork-owner/zj-radar-fork"),
+            "zj-radar-fork"
+        );
         // Degenerate slug without a slash: use it whole rather than panic.
         assert_eq!(claude_marketplace_name("zj-radar"), "zj-radar");
         // Trailing slash must not yield an empty name (`zj-radar-claude@` and
         // a dangling `marketplace remove `): fall back to the slug whole.
-        assert_eq!(claude_marketplace_name("marktoda/zj-radar/"), "marktoda/zj-radar/");
+        assert_eq!(
+            claude_marketplace_name("marktoda/zj-radar/"),
+            "marktoda/zj-radar/"
+        );
     }
 
     #[test]
@@ -174,11 +189,23 @@ mod tests {
         use std::ffi::OsString;
         use std::path::PathBuf;
         let home = || Some(PathBuf::from("/home/u"));
-        assert_eq!(claude_config_dir_from(Some(OsString::from("/x/claude")), home()), Some(PathBuf::from("/x/claude")));
-        assert_eq!(claude_config_dir_from(None, home()), Some(PathBuf::from("/home/u/.claude")));
+        assert_eq!(
+            claude_config_dir_from(Some(OsString::from("/x/claude")), home()),
+            Some(PathBuf::from("/x/claude"))
+        );
+        assert_eq!(
+            claude_config_dir_from(None, home()),
+            Some(PathBuf::from("/home/u/.claude"))
+        );
         // Empty is unset, not the root path.
-        assert_eq!(claude_config_dir_from(Some(OsString::new()), home()), Some(PathBuf::from("/home/u/.claude")));
+        assert_eq!(
+            claude_config_dir_from(Some(OsString::new()), home()),
+            Some(PathBuf::from("/home/u/.claude"))
+        );
         assert_eq!(claude_config_dir_from(None, None), None);
-        assert_eq!(claude_config_dir_from(Some(OsString::from("/x/claude")), None), Some(PathBuf::from("/x/claude")));
+        assert_eq!(
+            claude_config_dir_from(Some(OsString::from("/x/claude")), None),
+            Some(PathBuf::from("/x/claude"))
+        );
     }
 }

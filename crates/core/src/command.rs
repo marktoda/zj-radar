@@ -72,8 +72,8 @@ pub struct TimerReport {
 /// a spurious command lifecycle after each real command and notify "direnv"
 /// instead of the command that just finished.
 const IGNORE_NAMES: &[&str] = &[
-    "zsh", "bash", "fish", "sh", "dash", "ash", "ksh", "mksh", "tcsh", "csh",
-    "nu", "nushell", "pwsh", "elvish", "xonsh", "starship", "direnv",
+    "zsh", "bash", "fish", "sh", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "nu", "nushell",
+    "pwsh", "elvish", "xonsh", "starship", "direnv",
 ];
 
 /// Binaries of the *push*-instrumented agents. These report via the
@@ -106,11 +106,9 @@ pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode", "pi"];
 /// "opened nvim" read as "returned to shell" and wrongly exit-clear a finished
 /// agent's pushed status.
 pub const DEFAULT_INTERACTIVE: &[&str] = &[
-    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro",
-    "less", "more", "most", "man",
-    "htop", "btop", "top",
-    "lazygit", "tig", "gitui", "k9s",
-    "fzf", "ranger", "yazi", "nnn", "lf", "mc",
+    "vi", "vim", "nvim", "emacs", "nano", "hx", "kak", "micro", "less", "more", "most", "man",
+    "htop", "btop", "top", "lazygit", "tig", "gitui", "k9s", "fzf", "ranger", "yazi", "nnn", "lf",
+    "mc",
 ];
 
 /// Remote-session launchers: "this pane's shell is on another machine"
@@ -328,7 +326,12 @@ const TOOL_RULES: &[ToolRule] = &[
         ]),
         target_verbs: &["test", "bench", "run", "nextest"],
         exe_kind: None,
-        verb_kinds: &[("test", Kind::Test), ("nextest", Kind::Test), ("build", Kind::Build), ("check", Kind::Build)],
+        verb_kinds: &[
+            ("test", Kind::Test),
+            ("nextest", Kind::Test),
+            ("build", Kind::Build),
+            ("check", Kind::Build),
+        ],
         word_kinds: &[],
     },
     ToolRule {
@@ -346,8 +349,11 @@ const TOOL_RULES: &[ToolRule] = &[
         exe_kind: None,
         verb_kinds: &[],
         word_kinds: &[
-            ("test", Kind::Test), ("build", Kind::Build),
-            ("dev", Kind::Server), ("start", Kind::Server), ("serve", Kind::Server),
+            ("test", Kind::Test),
+            ("build", Kind::Build),
+            ("dev", Kind::Server),
+            ("start", Kind::Server),
+            ("serve", Kind::Server),
         ],
     },
     ToolRule {
@@ -365,9 +371,13 @@ const TOOL_RULES: &[ToolRule] = &[
         exe_kind: None,
         verb_kinds: &[],
         word_kinds: &[
-            ("test", Kind::Test), ("build", Kind::Build),
-            ("deploy", Kind::Deploy), ("push", Kind::Deploy),
-            ("serve", Kind::Server), ("server", Kind::Server), ("dev", Kind::Server),
+            ("test", Kind::Test),
+            ("build", Kind::Build),
+            ("deploy", Kind::Deploy),
+            ("push", Kind::Deploy),
+            ("serve", Kind::Server),
+            ("server", Kind::Server),
+            ("dev", Kind::Server),
         ],
     },
 ];
@@ -471,12 +481,30 @@ const AUTOSSH_VALUE_OPTS: &[char] = &[
 /// the other tool, so a union cannot misparse either.
 const REMOTE_VALUE_LONG_OPTS: &[&str] = &[
     // mosh
-    "--ssh", "--server", "--predict", "--port", "--family", "--client", "--bind-server",
-    "--experimental-remote-ip", "--local",
+    "--ssh",
+    "--server",
+    "--predict",
+    "--port",
+    "--family",
+    "--client",
+    "--bind-server",
+    "--experimental-remote-ip",
+    "--local",
     // et
-    "--jumphost", "--jport", "--tunnel", "--reversetunnel", "--username", "--user",
-    "--command", "--ssh-option", "--sshoptions", "--ssh-socket", "--terminal-path",
-    "--keepalive", "--serverfifo", "--logtostdout",
+    "--jumphost",
+    "--jport",
+    "--tunnel",
+    "--reversetunnel",
+    "--username",
+    "--user",
+    "--command",
+    "--ssh-option",
+    "--sshoptions",
+    "--ssh-socket",
+    "--terminal-path",
+    "--keepalive",
+    "--serverfifo",
+    "--logtostdout",
 ];
 
 /// Strip a `user@` prefix and any `:port`/path suffix, keeping only the host —
@@ -490,7 +518,10 @@ fn remote_destination(token: &str) -> String {
     let token = token.rsplit_once('@').map_or(token, |(_, host)| host);
     let token = token.split_once('/').map_or(token, |(host, _)| host);
     if let Some(inner) = token.strip_prefix('[') {
-        return inner.split_once(']').map_or(inner, |(host, _)| host).to_string();
+        return inner
+            .split_once(']')
+            .map_or(inner, |(host, _)| host)
+            .to_string();
     }
     match token.split_once(':') {
         Some((host, port)) if !port.contains(':') => host.to_string(),
@@ -516,7 +547,11 @@ fn display_remote(exe: &str, args: &[String]) -> (String, bool) {
     // an env var, never argv), never a remote command — so it never earns the
     // Job treatment the way `ssh box cargo build`'s trailing words do.
     let trailing_is_cmd = exe != "mosh-client";
-    let value_opts = if exe == "autossh" { AUTOSSH_VALUE_OPTS } else { SSH_VALUE_OPTS };
+    let value_opts = if exe == "autossh" {
+        AUTOSSH_VALUE_OPTS
+    } else {
+        SSH_VALUE_OPTS
+    };
     let mut dest: Option<String> = None;
     let mut positional_only = false;
     let mut i = 0;
@@ -533,7 +568,11 @@ fn display_remote(exe: &str, args: &[String]) -> (String, bool) {
                 continue;
             }
             if arg.starts_with("--") {
-                i += if REMOTE_VALUE_LONG_OPTS.contains(&arg) { 2 } else { 1 };
+                i += if REMOTE_VALUE_LONG_OPTS.contains(&arg) {
+                    2
+                } else {
+                    1
+                };
                 continue;
             }
             if is_option_arg(arg) {
@@ -609,7 +648,11 @@ fn classify(command: &[String]) -> (String, Kind) {
         // tunnel). A raw display that collapsed to the bare exe found no
         // destination at all (`ssh` bare, `ssh -V`) — an ordinary command,
         // not a session.
-        let kind = if raw == exe || has_remote_cmd { Kind::Command } else { Kind::Remote };
+        let kind = if raw == exe || has_remote_cmd {
+            Kind::Command
+        } else {
+            Kind::Remote
+        };
         return (sanitize(&raw, MAX_MSG_CHARS), kind);
     }
 
@@ -636,7 +679,10 @@ fn classify(command: &[String]) -> (String, Kind) {
     let kind = if let Some(kind) = rule.exe_kind {
         kind
     } else if let Some(kind) = operative_verb(args, rule).and_then(|(_, verb)| {
-        rule.verb_kinds.iter().find(|&&(v, _)| v == verb).map(|&(_, k)| k)
+        rule.verb_kinds
+            .iter()
+            .find(|&&(v, _)| v == verb)
+            .map(|&(_, k)| k)
     }) {
         kind
     } else {
@@ -692,8 +738,15 @@ fn effective_program(command: &[String]) -> (&[String], &str) {
 fn js_hosted_agent(command: &[String]) -> Option<(usize, &'static str)> {
     let at = command.iter().skip(1).position(|t| !is_option_arg(t))? + 1;
     let base = basename(&command[at]);
-    let stem = JS_SCRIPT_EXTS.iter().find_map(|ext| base.strip_suffix(ext)).unwrap_or(base);
-    AGENT_NAMES.iter().copied().find(|a| *a == stem).map(|a| (at, a))
+    let stem = JS_SCRIPT_EXTS
+        .iter()
+        .find_map(|ext| base.strip_suffix(ext))
+        .unwrap_or(base);
+    AGENT_NAMES
+        .iter()
+        .copied()
+        .find(|a| *a == stem)
+        .map(|a| (at, a))
 }
 
 /// Whether a `CommandChanged` means the pane is back at a shell prompt rather
@@ -778,7 +831,11 @@ impl CommandStore {
             // both Remote, and that is the user's call). DEFAULT_REMOTE names
             // never reach here (`is_remote_extra`): `classify`'s dedicated
             // branch above already decided their Kind from the argv shape.
-            let kind = if self.is_remote_extra(name) { Kind::Remote } else { kind };
+            let kind = if self.is_remote_extra(name) {
+                Kind::Remote
+            } else {
+                kind
+            };
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -862,7 +919,8 @@ impl CommandStore {
         for pane_id in to_promote {
             if let Some(p) = self.pending.remove(&pane_id) {
                 let repo = sanitize(basename(&p.cwd), MAX_REPO_CHARS);
-                let mut obs = TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick);
+                let mut obs =
+                    TrackedObservation::command(Status::Running, repo, p.command, p.kind, tick);
                 // A re-promotion of the SAME still-running command (Zellij
                 // re-reported the foreground) keeps the original start tick, so
                 // long-runner easing measures the true run, not the last report.
@@ -916,7 +974,8 @@ impl CommandStore {
             .store
             .observations()
             .filter(|(_, s)| {
-                s.status == Status::Done && tick.saturating_sub(s.last_change_tick) >= DONE_TTL_TICKS
+                s.status == Status::Done
+                    && tick.saturating_sub(s.last_change_tick) >= DONE_TTL_TICKS
             })
             .map(|(id, _)| id)
             .collect();
@@ -931,7 +990,12 @@ impl CommandStore {
             }
         }
 
-        TimerReport { changed: !changed_panes.is_empty(), changed_panes, receded, completed }
+        TimerReport {
+            changed: !changed_panes.is_empty(),
+            changed_panes,
+            receded,
+            completed,
+        }
     }
 
     /// Apply a pane's exit status. Deduped: a repeated identical
@@ -984,7 +1048,11 @@ impl CommandStore {
             // it again. Cost: a re-run that exits with no intervening
             // CommandChanged stays swallowed (pre-existing, rare, documented
             // race).
-            if self.store.get(pane_id).is_some_and(|s| s.status == Status::Idle) {
+            if self
+                .store
+                .get(pane_id)
+                .is_some_and(|s| s.status == Status::Idle)
+            {
                 return None;
             }
             // Mirror of `StatusStore::apply`'s identical-re-broadcast no-op
@@ -1020,8 +1088,13 @@ impl CommandStore {
         // same way promotion derives it) labels the completion below.
         let pending = self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
-        let identity =
-            pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
+        let identity = pending.map(|p| {
+            (
+                sanitize(basename(&p.cwd), MAX_REPO_CHARS),
+                p.command,
+                p.kind,
+            )
+        });
 
         let mut receded = None;
         if let Some(s) = self.store.get_mut(pane_id) {
@@ -1103,11 +1176,7 @@ impl CommandStore {
     /// Insert a snapshot-loaded observation. The caller (`RadarState::load_snapshot`)
     /// owns origin routing — it `match`es on `observation.origin` to pick the store
     /// — so this trusts what it's handed rather than re-checking the origin.
-    pub fn insert_snapshot_observation(
-        &mut self,
-        pane_id: u32,
-        observation: TrackedObservation,
-    ) {
+    pub fn insert_snapshot_observation(&mut self, pane_id: u32, observation: TrackedObservation) {
         let _ = self.store.insert(pane_id, observation);
     }
 
@@ -1149,7 +1218,10 @@ impl CommandStore {
     /// basename by construction of every display path (pinned by
     /// `display_first_token_is_the_exe_basename`). Returns whether anything
     /// observable changed (the caller's render/persist trigger).
-    pub fn set_interactive_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a str>) -> bool {
+    pub fn set_interactive_extras<'a>(
+        &mut self,
+        extras: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
         self.interactive = DEFAULT_INTERACTIVE
             .iter()
             .copied()
@@ -1283,7 +1355,10 @@ impl CommandStore {
 /// First whitespace-separated token of a display string, login-dash stripped —
 /// the exe basename by construction (see `set_interactive_extras`).
 fn first_token(display: &str) -> Option<&str> {
-    display.split_whitespace().next().map(|t| t.trim_start_matches('-'))
+    display
+        .split_whitespace()
+        .next()
+        .map(|t| t.trim_start_matches('-'))
 }
 
 #[cfg(test)]

@@ -193,7 +193,9 @@ impl PaneDisplay {
     /// Waiting-on-you stamp (Pending only) — feeds `render::wait_tag`.
     pub(crate) fn pending_epoch_s(&self) -> Option<u64> {
         match self {
-            Self::Tracked { pending_epoch_s, .. } => *pending_epoch_s,
+            Self::Tracked {
+                pending_epoch_s, ..
+            } => *pending_epoch_s,
             Self::Untracked { .. } | Self::Interactive { .. } => None,
         }
     }
@@ -213,16 +215,25 @@ impl PaneDisplay {
     }
 
     pub(crate) fn has_unacknowledged_status_pending(&self) -> bool {
-        matches!(self, Self::Tracked {
-            status: Status::Pending,
-            acknowledged: false,
-            origin: ObservationOrigin::StatusPipe,
-            ..
-        })
+        matches!(
+            self,
+            Self::Tracked {
+                status: Status::Pending,
+                acknowledged: false,
+                origin: ObservationOrigin::StatusPipe,
+                ..
+            }
+        )
     }
 
     pub(crate) fn is_status_origin(&self) -> bool {
-        matches!(self, Self::Tracked { origin: ObservationOrigin::StatusPipe, .. })
+        matches!(
+            self,
+            Self::Tracked {
+                origin: ObservationOrigin::StatusPipe,
+                ..
+            }
+        )
     }
 }
 

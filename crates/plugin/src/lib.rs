@@ -35,13 +35,13 @@ pub(crate) use zj_radar_core::pipe;
 mod clock;
 mod config;
 mod control;
+#[cfg(test)]
+mod hooks_manifest_tests;
 mod ledger;
 mod notify_rules;
 mod permission;
 mod presence;
 mod radar_state;
-#[cfg(test)]
-mod hooks_manifest_tests;
 #[cfg(test)]
 mod reference_tests;
 mod render;
@@ -102,7 +102,6 @@ impl State {
         // assertions keep plain-Vec ergonomics.
         (*self.runtime.build_rows()).clone()
     }
-
 
     fn record_permission_request_started(&mut self) {
         self.runtime.record_permission_request_started();
@@ -202,10 +201,10 @@ impl State {
                 Effect::PersistPermissionMarker(marker) => {
                     self.session_files.persist_permission_marker(marker)
                 }
-                Effect::HeartbeatPermissionLock => {
-                    self.session_files.heartbeat_permission_lock()
+                Effect::HeartbeatPermissionLock => self.session_files.heartbeat_permission_lock(),
+                Effect::RenameTab { tab_id, name } => {
+                    rename_tab_with_id(tab_id.raw() as u64, &name)
                 }
-                Effect::RenameTab { tab_id, name } => rename_tab_with_id(tab_id.raw() as u64, &name),
                 Effect::SwitchTab { position } => switch_tab_to(position as u32 + 1),
                 Effect::ShowPane { pane_id } => {
                     show_pane_with_id(PaneId::Terminal(pane_id), false, true);
@@ -222,7 +221,9 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
-                Effect::PersistPresence { unless_fresher_than } => self
+                Effect::PersistPresence {
+                    unless_fresher_than,
+                } => self
                     .session_files
                     .persist_presence(unless_fresher_than, || self.runtime.presence_json()),
                 Effect::ReadPresences => {
@@ -444,7 +445,9 @@ impl ZellijPlugin for State {
                 } else {
                     crate::permission::PermissionProbe::default()
                 };
-                let outcome = self.runtime.timer(probe, elapsed_s, crate::clock::now_epoch_s());
+                let outcome = self
+                    .runtime
+                    .timer(probe, elapsed_s, crate::clock::now_epoch_s());
                 self.handle_outcome(outcome)
             }
             Event::Mouse(Mouse::LeftClick(line, col)) => {
@@ -492,7 +495,9 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
-        let Some(raw) = &message.payload else { return false };
+        let Some(raw) = &message.payload else {
+            return false;
+        };
         let outcome = match message.name.as_str() {
             PIPE_NAME => self.runtime.status_pipe(raw),
             CONFIG_PIPE => self.runtime.config_pipe(raw),
@@ -550,13 +555,17 @@ mod tests {
             .match_indices("PermissionType::")
             .map(|(at, pat)| {
                 let rest = &plugin_src[at + pat.len()..];
-                &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
+                &rest[..rest
+                    .find(|c: char| !c.is_alphanumeric())
+                    .unwrap_or(rest.len())]
             })
             .collect();
         assert!(!requested.is_empty(), "request list not found in lib.rs");
 
         let cli_src = include_str!("../../cli/src/run.rs");
-        let decl = cli_src.find("const REQUIRED_PLUGIN_PERMISSIONS").expect("cli probe const present");
+        let decl = cli_src
+            .find("const REQUIRED_PLUGIN_PERMISSIONS")
+            .expect("cli probe const present");
         let eq = decl + cli_src[decl..].find('=').expect("const has an initializer");
         let open = eq + cli_src[eq..].find('[').expect("initializer is an array");
         let close = open + cli_src[open..].find(']').expect("array closes");
@@ -585,8 +594,13 @@ mod tests {
             .find(|l| l.trim_start().starts_with("zellij-tile"))
             .expect("plugin Cargo.toml declares zellij-tile");
         let analyze_src = include_str!("../../cli/src/setup/analyze.rs");
-        let decl = analyze_src.find("const MIN_SUPPORTED_ZELLIJ:").expect("const present in analyze.rs");
-        let eq = decl + analyze_src[decl..].find('=').expect("const has an initializer");
+        let decl = analyze_src
+            .find("const MIN_SUPPORTED_ZELLIJ:")
+            .expect("const present in analyze.rs");
+        let eq = decl
+            + analyze_src[decl..]
+                .find('=')
+                .expect("const has an initializer");
         let triple: Vec<&str> = analyze_src[eq + 1..]
             .split(';')
             .next()
@@ -596,7 +610,11 @@ mod tests {
             .split(',')
             .map(str::trim)
             .collect();
-        assert_eq!(triple.len(), 3, "MIN_SUPPORTED_ZELLIJ is a (major, minor, patch) triple");
+        assert_eq!(
+            triple.len(),
+            3,
+            "MIN_SUPPORTED_ZELLIJ is a (major, minor, patch) triple"
+        );
         let gate = format!("\"={}.{}.{}\"", triple[0], triple[1], triple[2]);
         assert!(
             pin_line.contains(&gate),
@@ -973,7 +991,10 @@ mod tests {
             Some((0, Some(20))),
             "detail line targets the single tracked pane"
         );
-        assert!(state.tab_position_at_line(4).is_none(), "tab ends after 2 lines");
+        assert!(
+            state.tab_position_at_line(4).is_none(),
+            "tab ends after 2 lines"
+        );
 
         let rows = state.build_rows();
         assert_eq!(
@@ -1212,7 +1233,7 @@ mod tests {
 
     #[test]
     fn command_pane_walks_idle_running_done() {
-        use crate::command::{DEBOUNCE_TICKS, EpochSecs, Tick};
+        use crate::command::{EpochSecs, Tick, DEBOUNCE_TICKS};
 
         let mut state = make_state_with_tabs(&[(0, "t", true)]);
         state
@@ -1232,7 +1253,11 @@ mod tests {
             tick,
         );
         tick += 1;
-        state.runtime.radar.command_mut().on_timer(Tick(tick), EpochSecs(0));
+        state
+            .runtime
+            .radar
+            .command_mut()
+            .on_timer(Tick(tick), EpochSecs(0));
         assert!(
             state.runtime.radar.command_store().get(5).is_none(),
             "shell prompt must leave pane idle"
@@ -1251,7 +1276,11 @@ mod tests {
         );
         // Still within debounce window: promote tick by exactly DEBOUNCE_TICKS.
         tick += DEBOUNCE_TICKS;
-        state.runtime.radar.command_mut().on_timer(Tick(tick), EpochSecs(0));
+        state
+            .runtime
+            .radar
+            .command_mut()
+            .on_timer(Tick(tick), EpochSecs(0));
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Running),
@@ -1262,7 +1291,11 @@ mod tests {
 
         // 3) pane exits with code 0 → Done (and stays Done; focus no longer clears it)
         tick += 1;
-        state.runtime.radar.command_mut().on_exit(5, Some(0), Tick(tick), EpochSecs(0));
+        state
+            .runtime
+            .radar
+            .command_mut()
+            .on_exit(5, Some(0), Tick(tick), EpochSecs(0));
         assert_eq!(
             state.runtime.radar.command_store().get(5).map(|s| s.status),
             Some(Status::Done),

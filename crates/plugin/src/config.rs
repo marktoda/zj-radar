@@ -346,7 +346,10 @@ mod tests {
             r#"{{"naming":"{}"}}"#,
             "x".repeat(crate::payload::MAX_PAYLOAD_BYTES)
         );
-        assert!(over.len() > crate::payload::MAX_PAYLOAD_BYTES, "sanity: fixture exceeds the cap");
+        assert!(
+            over.len() > crate::payload::MAX_PAYLOAD_BYTES,
+            "sanity: fixture exceeds the cap"
+        );
         assert!(overrides_from_json(&over).is_none());
     }
 
@@ -363,7 +366,10 @@ mod tests {
             Role::Onboarding
         );
         // unknown → default Sidebar
-        assert_eq!(Config::from_map(&map(&[("role", "wat")])).role, Role::Sidebar);
+        assert_eq!(
+            Config::from_map(&map(&[("role", "wat")])).role,
+            Role::Sidebar
+        );
     }
 
     #[test]
@@ -587,7 +593,10 @@ mod tests {
     #[test]
     fn naming_from_config_parses_all_variants() {
         assert_eq!(NamingMode::from_config("off"), Some(NamingMode::Off));
-        assert_eq!(NamingMode::from_config("managed"), Some(NamingMode::Managed));
+        assert_eq!(
+            NamingMode::from_config("managed"),
+            Some(NamingMode::Managed)
+        );
         assert_eq!(NamingMode::from_config("force"), Some(NamingMode::Force));
         // unknown → None (callers keep their current value)
         assert_eq!(NamingMode::from_config("wat"), None);
@@ -690,7 +699,11 @@ mod tests {
     fn interactive_commands_parses_commas_spaces_and_dashes() {
         let c = Config::from_map(&map(&[("interactive_commands", "gdb, ssh  -tig,")]));
         let got: Vec<&str> = c.interactive_commands.iter().map(String::as_str).collect();
-        assert_eq!(got, ["gdb", "ssh", "tig"], "split on commas/spaces, dash-stripped, empties dropped");
+        assert_eq!(
+            got,
+            ["gdb", "ssh", "tig"],
+            "split on commas/spaces, dash-stripped, empties dropped"
+        );
     }
 
     #[test]
@@ -715,7 +728,11 @@ mod tests {
     fn remote_commands_parses_commas_spaces_and_dashes() {
         let c = Config::from_map(&map(&[("remote_commands", "distrobox, rsh  -sshpass,")]));
         let got: Vec<&str> = c.remote_commands.iter().map(String::as_str).collect();
-        assert_eq!(got, ["distrobox", "rsh", "sshpass"], "split on commas/spaces, dash-stripped, empties dropped");
+        assert_eq!(
+            got,
+            ["distrobox", "rsh", "sshpass"],
+            "split on commas/spaces, dash-stripped, empties dropped"
+        );
     }
 
     #[test]

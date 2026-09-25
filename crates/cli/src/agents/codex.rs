@@ -48,7 +48,13 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
     } else {
         None
     };
-    Some(AgentUpdate { status, msg, cwd, task, tasks: None })
+    Some(AgentUpdate {
+        status,
+        msg,
+        cwd,
+        task,
+        tasks: None,
+    })
 }
 
 fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
@@ -62,7 +68,13 @@ fn derive_legacy_notify_update(v: &Value) -> Option<AgentUpdate> {
             .unwrap_or("")
             .to_string(),
     );
-    Some(AgentUpdate { status, msg, cwd: string_field(v, "cwd"), tasks: None, task: None })
+    Some(AgentUpdate {
+        status,
+        msg,
+        cwd: string_field(v, "cwd"),
+        tasks: None,
+        task: None,
+    })
 }
 
 /// A finished turn's status + msg, shared by the hook `Stop` and the legacy
@@ -243,7 +255,10 @@ mod tests {
               "last_assistant_message": "answer"
             }"#,
         ] {
-            if let Some(update) = derive(&Intake { raw, status_arg: None }) {
+            if let Some(update) = derive(&Intake {
+                raw,
+                status_arg: None,
+            }) {
                 latest = update;
             }
         }
@@ -268,7 +283,9 @@ mod tests {
     #[test]
     fn legacy_notify_ending_in_a_question_remaps_to_pending() {
         // Same rule as the hook path's Stop.
-        let u = update(r#"{"type":"agent-turn-complete","last-assistant-message":"Refactored.\n\nShould I push?"}"#);
+        let u = update(
+            r#"{"type":"agent-turn-complete","last-assistant-message":"Refactored.\n\nShould I push?"}"#,
+        );
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Should I push?");
     }

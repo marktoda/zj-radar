@@ -125,7 +125,9 @@ impl LastSent {
         if std::env::var_os("ZJ_RADAR_NO_DEDUP").is_some_and(|v| !v.is_empty()) {
             return None;
         }
-        let session = std::env::var("ZELLIJ_SESSION_NAME").ok().filter(|s| !s.is_empty())?;
+        let session = std::env::var("ZELLIJ_SESSION_NAME")
+            .ok()
+            .filter(|s| !s.is_empty())?;
         Some(LastSent::at(&state_dir()?, &session, pane_id))
     }
 
@@ -210,7 +212,8 @@ fn current_uid() -> Option<u32> {
 fn private_dir(dir: &Path, uid: u32) -> bool {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
-    std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
+    std::fs::symlink_metadata(dir)
+        .is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
 }
 
 /// Zellij session names are free text; fold anything outside a filename-safe
@@ -220,7 +223,13 @@ pub(crate) fn sanitize(session: &str) -> String {
     session
         .chars()
         .take(64)
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -240,7 +249,11 @@ mod tests {
     fn identical_running_within_ttl_is_redundant() {
         let key = running("editing auth.rs");
         assert!(is_redundant(&key, &last(key.clone(), 1000), 1000));
-        assert!(is_redundant(&key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS - 1));
+        assert!(is_redundant(
+            &key,
+            &last(key.clone(), 1000),
+            1000 + DEDUP_TTL_SECS - 1
+        ));
     }
 
     #[test]
@@ -248,7 +261,11 @@ mod tests {
         // The TTL bounds how long a rail that silently dropped the row can
         // disagree with a busy producer.
         let key = running("editing auth.rs");
-        assert!(!is_redundant(&key, &last(key.clone(), 1000), 1000 + DEDUP_TTL_SECS));
+        assert!(!is_redundant(
+            &key,
+            &last(key.clone(), 1000),
+            1000 + DEDUP_TTL_SECS
+        ));
     }
 
     #[test]
@@ -259,16 +276,26 @@ mod tests {
             SentKey::new(Status::Running, "claude", "editing auth.rs", "other task"),
             SentKey::new(Status::Running, "generic", "editing auth.rs", "fix auth"),
         ] {
-            assert!(!is_redundant(&key, &last(other.clone(), 1000), 1000), "{other:?}");
+            assert!(
+                !is_redundant(&key, &last(other.clone(), 1000), 1000),
+                "{other:?}"
+            );
         }
     }
 
     #[test]
     fn edges_are_never_redundant() {
         // Dropping an edge loses real state; only running heartbeats collapse.
-        for status in Status::ALL.iter().copied().filter(|s| *s != Status::Running) {
+        for status in Status::ALL
+            .iter()
+            .copied()
+            .filter(|s| *s != Status::Running)
+        {
             let key = SentKey::new(status, "claude", "same", "same");
-            assert!(!is_redundant(&key, &last(key.clone(), 1000), 1000), "{status:?}");
+            assert!(
+                !is_redundant(&key, &last(key.clone(), 1000), 1000),
+                "{status:?}"
+            );
         }
     }
 
@@ -306,7 +333,10 @@ mod tests {
         // Owned by someone else.
         let mine = base.path().join("mine");
         assert!(private_dir(&mine, uid));
-        assert!(!private_dir(&mine, uid.wrapping_add(1)), "foreign owner → dedup off");
+        assert!(
+            !private_dir(&mine, uid.wrapping_add(1)),
+            "foreign owner → dedup off"
+        );
         // A symlink to a perfectly private dir is rejected, not followed.
         let link = base.path().join("link");
         std::os::unix::fs::symlink(&mine, &link).unwrap();
@@ -349,7 +379,10 @@ mod tests {
         let pending = SentKey::new(Status::Pending, "claude", "Allow cargo?", "");
         assert!(!ls.is_duplicate(&pending, 1002));
         ls.record(&pending, 1002);
-        assert!(!ls.is_duplicate(&run, 1003), "recovery running must be sent");
+        assert!(
+            !ls.is_duplicate(&run, 1003),
+            "recovery running must be sent"
+        );
         ls.record(&run, 1003);
         assert!(ls.is_duplicate(&run, 1004));
     }
@@ -360,8 +393,15 @@ mod tests {
         let ls = LastSent::at(dir.path(), "s", 7);
         std::fs::write(dir.path().join("last-sent.s.7.json"), b"not json").unwrap();
         assert!(!ls.is_duplicate(&running("x"), 1000));
-        std::fs::write(dir.path().join("last-sent.s.7.json"), br#"{"key":{"status":"running"},"sent_at":1}"#).unwrap();
-        assert!(!ls.is_duplicate(&running("x"), 1000), "missing fields → no repeat");
+        std::fs::write(
+            dir.path().join("last-sent.s.7.json"),
+            br#"{"key":{"status":"running"},"sent_at":1}"#,
+        )
+        .unwrap();
+        assert!(
+            !ls.is_duplicate(&running("x"), 1000),
+            "missing fields → no repeat"
+        );
     }
 
     #[test]

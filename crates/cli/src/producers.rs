@@ -7,13 +7,14 @@
 //! ([`ProducerTexts::read`]) and graded purely ([`ProducerTexts::wired`]).
 
 use crate::agents::Agent;
-use crate::setup::{CODEX_HOOK_MARKER, CLAUDE_PLUGIN};
+use crate::setup::{CLAUDE_PLUGIN, CODEX_HOOK_MARKER};
 
 /// Four producers, four wiring routes — name all, because `zj-radar setup`
 /// wires each agent symmetrically (claude drives Claude Code's plugin
 /// marketplace; opencode and pi each drop a vendored JS bridge into their
 /// auto-loaded dirs).
-pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. Run `zj-radar setup claude` \
+pub(crate) const PRODUCER_HINT: &str =
+    "Agent status off — no producer wired. Run `zj-radar setup claude` \
     (Claude Code), `zj-radar setup codex` (Codex), `zj-radar setup opencode` (Opencode), or \
     `zj-radar setup pi` (pi).";
 
@@ -21,9 +22,9 @@ pub(crate) const PRODUCER_HINT: &str = "Agent status off — no producer wired. 
 #[derive(Default)]
 pub(crate) struct ProducerTexts {
     /// Codex's `hooks.json`; wired when it carries our command-hook marker.
-    pub codex_hooks:     Option<String>,
+    pub codex_hooks: Option<String>,
     /// Claude Code's `installed_plugins.json`; wired when it names our plugin.
-    pub claude_plugins:  Option<String>,
+    pub claude_plugins: Option<String>,
     /// opencode's vendored 1.x bridge plugin; wired when it carries our header marker.
     pub opencode_plugin: Option<String>,
     /// opencode's vendored 2.x TUI bridge plugin; same marker test. Either
@@ -38,17 +39,21 @@ impl ProducerTexts {
     /// The one IO point: read every producer's evidence from its home.
     pub(crate) fn read() -> Self {
         ProducerTexts {
-            codex_hooks:         crate::setup::codex_hooks_text(),
-            claude_plugins:      crate::setup::claude_installed_plugins_text(),
-            opencode_plugin:     crate::setup::opencode_plugin_text(),
+            codex_hooks: crate::setup::codex_hooks_text(),
+            claude_plugins: crate::setup::claude_installed_plugins_text(),
+            opencode_plugin: crate::setup::opencode_plugin_text(),
             opencode_tui_plugin: crate::setup::opencode_tui_plugin_text(),
-            pi_extension:        crate::setup::pi_extension_text(),
+            pi_extension: crate::setup::pi_extension_text(),
         }
     }
 
     /// The wired agents, in [`Agent::ALL`] order.
     pub(crate) fn wired(&self) -> Vec<Agent> {
-        Agent::ALL.iter().copied().filter(|a| self.is_wired(*a)).collect()
+        Agent::ALL
+            .iter()
+            .copied()
+            .filter(|a| self.is_wired(*a))
+            .collect()
     }
 
     /// Exhaustive on purpose: a new `Agent` variant does not compile until its
@@ -56,12 +61,24 @@ impl ProducerTexts {
     /// guard lattice can't otherwise reach.
     pub(crate) fn is_wired(&self, agent: Agent) -> bool {
         match agent {
-            Agent::Codex => self.codex_hooks.as_deref().is_some_and(|h| h.contains(CODEX_HOOK_MARKER)),
-            Agent::Claude => self.claude_plugins.as_deref().is_some_and(|p| p.contains(CLAUDE_PLUGIN)),
+            Agent::Codex => self
+                .codex_hooks
+                .as_deref()
+                .is_some_and(|h| h.contains(CODEX_HOOK_MARKER)),
+            Agent::Claude => self
+                .claude_plugins
+                .as_deref()
+                .is_some_and(|p| p.contains(CLAUDE_PLUGIN)),
             Agent::Opencode => [&self.opencode_plugin, &self.opencode_tui_plugin]
                 .into_iter()
-                .any(|text| text.as_deref().is_some_and(crate::setup::detect::opencode_plugin_is_ours)),
-            Agent::Pi => self.pi_extension.as_deref().is_some_and(crate::setup::detect::pi_extension_is_ours),
+                .any(|text| {
+                    text.as_deref()
+                        .is_some_and(crate::setup::detect::opencode_plugin_is_ours)
+                }),
+            Agent::Pi => self
+                .pi_extension
+                .as_deref()
+                .is_some_and(crate::setup::detect::pi_extension_is_ours),
         }
     }
 }
@@ -73,7 +90,11 @@ pub(crate) fn producer_hint(wired: &[Agent]) -> Option<String> {
 
 /// "codex, opencode" — the wired agents by name, for status lines.
 pub(crate) fn names(agents: &[Agent]) -> String {
-    agents.iter().map(|a| a.source()).collect::<Vec<_>>().join(", ")
+    agents
+        .iter()
+        .map(|a| a.source())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -83,11 +104,12 @@ mod tests {
 
     fn texts(codex: bool, claude: bool, opencode: bool, pi: bool) -> ProducerTexts {
         ProducerTexts {
-            codex_hooks:         codex.then(|| format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
-            claude_plugins:      claude.then(|| format!("{{\"plugins\":[\"{CLAUDE_PLUGIN}\"]}}")),
-            opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            codex_hooks: codex
+                .then(|| format!("{{\"command\": \"{CODEX_HOOK_MARKER} zj-radar notify codex\"}}")),
+            claude_plugins: claude.then(|| format!("{{\"plugins\":[\"{CLAUDE_PLUGIN}\"]}}")),
+            opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
             opencode_tui_plugin: None,
-            pi_extension:        pi.then(|| format!("// {PI_EXTENSION_MARKER}\n")),
+            pi_extension: pi.then(|| format!("// {PI_EXTENSION_MARKER}\n")),
         }
     }
 
@@ -101,8 +123,10 @@ mod tests {
         assert_eq!(tui_only.wired(), vec![Agent::Opencode]);
         // A foreign TUI plugin beside our 1.x file: still wired, by the 1.x file.
         let mixed = ProducerTexts {
-            opencode_plugin:     Some(format!("// {OPENCODE_PLUGIN_MARKER}\n")),
-            opencode_tui_plugin: Some("export default { id: \"other\", setup() {} };\n".to_string()),
+            opencode_plugin: Some(format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+            opencode_tui_plugin: Some(
+                "export default { id: \"other\", setup() {} };\n".to_string(),
+            ),
             ..ProducerTexts::default()
         };
         assert_eq!(mixed.wired(), vec![Agent::Opencode]);
@@ -111,21 +135,32 @@ mod tests {
     #[test]
     fn wired_lists_agents_in_declaration_order() {
         assert_eq!(texts(true, true, true, true).wired(), Agent::ALL.to_vec());
-        assert_eq!(texts(true, false, true, false).wired(), vec![Agent::Codex, Agent::Opencode]);
+        assert_eq!(
+            texts(true, false, true, false).wired(),
+            vec![Agent::Codex, Agent::Opencode]
+        );
         assert!(texts(false, false, false, false).wired().is_empty());
     }
 
     #[test]
     fn each_route_keys_on_its_marker_not_on_file_presence() {
         let foreign = ProducerTexts {
-            codex_hooks:         Some("{\"command\": \"/other/notifier\"}".to_string()),
-            claude_plugins:      Some("{\"plugins\":[\"someone-else\"]}".to_string()),
-            opencode_plugin:     Some("// some other plugin\n".to_string()),
-            opencode_tui_plugin: Some("export default { id: \"other\", setup() {} };\n".to_string()),
-            pi_extension:        Some("// some other extension\n".to_string()),
+            codex_hooks: Some("{\"command\": \"/other/notifier\"}".to_string()),
+            claude_plugins: Some("{\"plugins\":[\"someone-else\"]}".to_string()),
+            opencode_plugin: Some("// some other plugin\n".to_string()),
+            opencode_tui_plugin: Some(
+                "export default { id: \"other\", setup() {} };\n".to_string(),
+            ),
+            pi_extension: Some("// some other extension\n".to_string()),
         };
-        assert!(foreign.wired().is_empty(), "present-but-foreign files are not wired");
-        assert!(ProducerTexts::default().wired().is_empty(), "absent files are not wired");
+        assert!(
+            foreign.wired().is_empty(),
+            "present-but-foreign files are not wired"
+        );
+        assert!(
+            ProducerTexts::default().wired().is_empty(),
+            "absent files are not wired"
+        );
     }
 
     #[test]
@@ -134,7 +169,10 @@ mod tests {
         let hint = producer_hint(&[]).unwrap();
         for agent in Agent::ALL {
             let route = format!("zj-radar setup {}", agent.source());
-            assert!(hint.contains(&route), "hint must name the {route} route: {hint}");
+            assert!(
+                hint.contains(&route),
+                "hint must name the {route} route: {hint}"
+            );
         }
     }
 

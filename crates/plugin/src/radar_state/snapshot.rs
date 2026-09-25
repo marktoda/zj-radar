@@ -156,7 +156,11 @@ fn load_v3(snapshot: RadarSnapshot) -> Option<LoadedSnapshot> {
         .into_iter()
         .map(|entry| (entry.pane_id, entry.obs.sanitized()))
         .collect();
-    let ledger = snapshot.ledger.into_iter().map(LedgerEntry::sanitized).collect();
+    let ledger = snapshot
+        .ledger
+        .into_iter()
+        .map(LedgerEntry::sanitized)
+        .collect();
     Some((observations, snapshot.tick, ledger))
 }
 

@@ -35,7 +35,9 @@ pub(crate) fn merge_grant(existing: Option<&str>, wasm_abs_path: &str) -> Result
     if wasm_abs_path.contains(['"', '\\', '\n']) {
         // Quotable-verbatim paths only: the emitted key must byte-match what
         // Zellij's own lookup (and our `wasm_is_granted`) compare against.
-        return Err(format!("refusing to pre-seed an unquotable wasm path: {wasm_abs_path}"));
+        return Err(format!(
+            "refusing to pre-seed an unquotable wasm path: {wasm_abs_path}"
+        ));
     }
     let text = existing.unwrap_or("");
     if !text.trim().is_empty() {
@@ -96,8 +98,14 @@ mod tests {
     #[test]
     fn absent_file_produces_a_full_grant_block() {
         let out = merged(None);
-        assert!(block_grants_all(&out, WASM), "output must grant the full set:\n{out}");
-        assert!(out.parse::<kdl::KdlDocument>().is_ok(), "output must be valid KDL:\n{out}");
+        assert!(
+            block_grants_all(&out, WASM),
+            "output must grant the full set:\n{out}"
+        );
+        assert!(
+            out.parse::<kdl::KdlDocument>().is_ok(),
+            "output must be valid KDL:\n{out}"
+        );
         assert!(!out.contains("file:"), "grant keys carry no file: prefix");
     }
 
@@ -105,8 +113,14 @@ mod tests {
     fn foreign_entries_survive_byte_for_byte() {
         let existing = "\"/nix/store/abc-room.wasm\" {\n    ReadApplicationState\n    ChangeApplicationState\n}\n";
         let out = merged(Some(existing));
-        assert!(out.starts_with(existing), "foreign entry must be preserved untouched:\n{out}");
-        assert!(block_grants_all(&out, WASM), "our grant must be appended:\n{out}");
+        assert!(
+            out.starts_with(existing),
+            "foreign entry must be preserved untouched:\n{out}"
+        );
+        assert!(
+            block_grants_all(&out, WASM),
+            "our grant must be appended:\n{out}"
+        );
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
     }
 
@@ -121,8 +135,14 @@ mod tests {
         // inline_closed_block_never_bleeds_into_the_next_entry).
         let existing = format!("\"{WASM}\" {{\n    ReadApplicationState\n    ReadCliPipes\n}}\n");
         let out = merged(Some(&existing));
-        assert!(out.starts_with(existing.as_str()), "existing text is never edited:\n{out}");
-        assert!(block_grants_all(&out, WASM), "the later block must cover the full set:\n{out}");
+        assert!(
+            out.starts_with(existing.as_str()),
+            "existing text is never edited:\n{out}"
+        );
+        assert!(
+            block_grants_all(&out, WASM),
+            "the later block must cover the full set:\n{out}"
+        );
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
     }
 
@@ -138,7 +158,10 @@ mod tests {
             out.starts_with(existing.as_str()),
             "no existing byte may change — especially not the foreign block:\n{out}"
         );
-        assert!(block_grants_all(&out, WASM), "our grant lands as a later full block:\n{out}");
+        assert!(
+            block_grants_all(&out, WASM),
+            "our grant lands as a later full block:\n{out}"
+        );
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
     }
 
@@ -152,7 +175,10 @@ mod tests {
         );
         let out = merged(Some(&existing));
         assert!(out.starts_with(existing.as_str()));
-        assert!(block_grants_all(&out, WASM), "the appended block restores the full grant:\n{out}");
+        assert!(
+            block_grants_all(&out, WASM),
+            "the appended block restores the full grant:\n{out}"
+        );
     }
 
     #[test]
@@ -160,7 +186,10 @@ mod tests {
         let existing = format!(
             "\"{WASM}\" {{\n    RunCommands\n    ChangeApplicationState\n    ReadCliPipes\n    ReadApplicationState\n}}\n"
         );
-        assert_eq!(merge_grant(Some(&existing), WASM), Ok(Preseed::AlreadyGranted));
+        assert_eq!(
+            merge_grant(Some(&existing), WASM),
+            Ok(Preseed::AlreadyGranted)
+        );
     }
 
     #[test]
@@ -171,7 +200,10 @@ mod tests {
             "\"{WASM}\" {{\n    ReadApplicationState\n}}\n\
              \"{WASM}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n"
         );
-        assert_eq!(merge_grant(Some(&existing), WASM), Ok(Preseed::AlreadyGranted));
+        assert_eq!(
+            merge_grant(Some(&existing), WASM),
+            Ok(Preseed::AlreadyGranted)
+        );
     }
 
     #[test]
@@ -185,7 +217,10 @@ mod tests {
         // Zellij treats a malformed permissions.kdl as empty and rewrites it
         // wholesale on the next grant; we must not write into one.
         let err = merge_grant(Some("\"/a.wasm\" {\n    ReadApplicationState\n"), WASM).unwrap_err();
-        assert!(err.contains("parse"), "refusal should name the parse failure: {err}");
+        assert!(
+            err.contains("parse"),
+            "refusal should name the parse failure: {err}"
+        );
     }
 
     #[test]
@@ -195,7 +230,10 @@ mod tests {
             Ok(Preseed::Merged(text)) => text,
             other => panic!("expected Merged, got {other:?}"),
         };
-        assert!(block_grants_all(&out, spaced), "spaced path must be quoted intact:\n{out}");
+        assert!(
+            block_grants_all(&out, spaced),
+            "spaced path must be quoted intact:\n{out}"
+        );
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
     }
 

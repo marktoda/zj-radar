@@ -1,7 +1,9 @@
 //! Resolved per-pane observation vocabulary shared by status and command sources.
 
 use crate::kind::Kind;
-use crate::payload::{sanitize_in_place, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS};
+use crate::payload::{
+    sanitize_in_place, MAX_BRANCH_CHARS, MAX_MSG_CHARS, MAX_REPO_CHARS, MAX_TASK_CHARS,
+};
 use crate::status::Status;
 use crate::task::BgTasks;
 use crate::wire::wire_enum;
@@ -167,7 +169,11 @@ impl ObservationStore {
     /// Insert, returning the observation this one displaced (if any) — the hook
     /// recede edges ride: a Done/Error coming back out of `insert`/`prune` is a
     /// completion leaving the card, which `RadarState` may ledger.
-    pub fn insert(&mut self, pane_id: u32, observation: TrackedObservation) -> Option<TrackedObservation> {
+    pub fn insert(
+        &mut self,
+        pane_id: u32,
+        observation: TrackedObservation,
+    ) -> Option<TrackedObservation> {
         self.map.insert(pane_id, observation)
     }
 
@@ -192,7 +198,9 @@ impl ObservationStore {
     }
 
     pub fn observations(&self) -> impl Iterator<Item = (u32, &TrackedObservation)> {
-        self.map.iter().map(|(&pane_id, observation)| (pane_id, observation))
+        self.map
+            .iter()
+            .map(|(&pane_id, observation)| (pane_id, observation))
     }
 
     /// How many panes hold an observation. Feeds the tracked-pane cap check
@@ -257,20 +265,38 @@ mod tests {
         let json = serde_json::to_string(&obs).unwrap();
         // Enum fields persist as their wire vocabulary, not serde's default
         // variant names — so the snapshot format is stable and human-legible.
-        assert!(json.contains(r#""origin":"command""#), "origin token: {json}");
+        assert!(
+            json.contains(r#""origin":"command""#),
+            "origin token: {json}"
+        );
         assert!(json.contains(r#""status":"error""#), "status token: {json}");
-        assert!(json.contains(r#""task":"fix e2e""#), "task persists in snapshots: {json}");
-        assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+        assert!(
+            json.contains(r#""task":"fix e2e""#),
+            "task persists in snapshots: {json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<TrackedObservation>(&json).unwrap(),
+            obs
+        );
     }
 
     #[test]
     fn acknowledged_true_round_trips_through_the_snapshot() {
         // The notifier's silence exemption must survive a rehydrate: an acked
         // status reloaded from the snapshot must not re-notify.
-        let obs = TrackedObservation { acknowledged: true, ..sample() };
+        let obs = TrackedObservation {
+            acknowledged: true,
+            ..sample()
+        };
         let json = serde_json::to_string(&obs).unwrap();
-        assert!(json.contains(r#""acknowledged":true"#), "ack persists: {json}");
-        assert_eq!(serde_json::from_str::<TrackedObservation>(&json).unwrap(), obs);
+        assert!(
+            json.contains(r#""acknowledged":true"#),
+            "ack persists: {json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<TrackedObservation>(&json).unwrap(),
+            obs
+        );
     }
 
     #[test]
@@ -280,32 +306,73 @@ mod tests {
         // old instances and old snapshots see nothing new.
         let json = serde_json::to_string(&sample()).unwrap();
         assert!(!json.contains("tasks"), "{json}");
-        let mut obs = TrackedObservation { status: Status::Running, ..sample() };
+        let mut obs = TrackedObservation {
+            status: Status::Running,
+            ..sample()
+        };
         let batch = TaskBatch {
             snapshot: true,
-            items: vec![TaskUpdate { id: "b1".into(), state: TaskState::Running, label: "tests".into(), holds: true }],
+            items: vec![TaskUpdate {
+                id: "b1".into(),
+                state: TaskState::Running,
+                label: "tests".into(),
+                holds: true,
+            }],
         };
-        obs.tasks.apply(Some(&batch), Some(Status::Running), Status::Running, false, 42);
+        obs.tasks.apply(
+            Some(&batch),
+            Some(Status::Running),
+            Status::Running,
+            false,
+            42,
+        );
         let json = serde_json::to_string(&obs).unwrap();
         let back: TrackedObservation = serde_json::from_str(&json).unwrap();
         assert_eq!(back, obs);
         assert!(back.tasks.waiting);
-        assert_eq!(back.tasks.items[0].started_epoch_s, 42, "wall-clock age survives rehydration");
+        assert_eq!(
+            back.tasks.items[0].started_epoch_s, 42,
+            "wall-clock age survives rehydration"
+        );
     }
 
     #[test]
     fn insert_returns_displaced_and_prune_returns_every_drop() {
         let mut s = ObservationStore::default();
         assert!(s.insert(1, sample()).is_none());
-        let displaced = s.insert(1, TrackedObservation { status: Status::Done, ..sample() });
-        assert_eq!(displaced.unwrap().status, Status::Error, "old entry comes back out");
+        let displaced = s.insert(
+            1,
+            TrackedObservation {
+                status: Status::Done,
+                ..sample()
+            },
+        );
+        assert_eq!(
+            displaced.unwrap().status,
+            Status::Error,
+            "old entry comes back out"
+        );
         s.insert(2, sample());
-        s.insert(3, TrackedObservation { status: Status::Running, ..sample() });
+        s.insert(
+            3,
+            TrackedObservation {
+                status: Status::Running,
+                ..sample()
+            },
+        );
         let mut dropped = s.prune(&[2].into_iter().collect());
         dropped.sort_unstable_by_key(|(id, _)| *id);
-        assert_eq!(dropped.len(), 2, "every drop comes back out — emptiness is the persist signal");
+        assert_eq!(
+            dropped.len(),
+            2,
+            "every drop comes back out — emptiness is the persist signal"
+        );
         assert_eq!((dropped[0].0, dropped[0].1.status), (1, Status::Done));
-        assert_eq!((dropped[1].0, dropped[1].1.status), (3, Status::Running), "non-completions included; the ledger sink filters");
+        assert_eq!(
+            (dropped[1].0, dropped[1].1.status),
+            (3, Status::Running),
+            "non-completions included; the ledger sink filters"
+        );
         assert!(s.get(3).is_none());
         assert!(s.get(2).is_some());
     }
@@ -320,7 +387,10 @@ mod tests {
         assert_eq!(obs.exit_code, None);
         assert_eq!(obs.task, "", "pre-task snapshots load with an empty label");
         assert!(!obs.acknowledged, "pre-ack snapshots load unacknowledged");
-        assert_eq!(obs.pending_epoch_s, None, "pre-wait-tag snapshots load with no pending stamp");
+        assert_eq!(
+            obs.pending_epoch_s, None,
+            "pre-wait-tag snapshots load with no pending stamp"
+        );
         // An unknown origin is rejected so a corrupt entry can't masquerade as a
         // valid one — the snapshot loader drops the whole snapshot instead.
         let bad = json.replace(r#""origin":"command""#, r#""origin":"???""#);

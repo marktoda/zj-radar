@@ -57,7 +57,14 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 /// tool calls) skips the state dir, the JSON parse and the file IO. The
 /// caller runs it before [`BgAgents::from_env`].
 pub(crate) fn relevant(raw: &str) -> bool {
-    ["\"agent_id\"", "async_launched", "\"SessionStart\"", "\"SessionEnd\""].iter().any(|n| raw.contains(n))
+    [
+        "\"agent_id\"",
+        "async_launched",
+        "\"SessionStart\"",
+        "\"SessionEnd\"",
+    ]
+    .iter()
+    .any(|n| raw.contains(n))
 }
 
 /// A filename-safe id (`[A-Za-z0-9_-]`, capped), or `None` if nothing is left.
@@ -65,7 +72,13 @@ fn file_id(id: &str) -> Option<String> {
     let safe: String = id
         .chars()
         .take(MAX_ID_CHARS)
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     safe.chars().any(|c| c != '_').then_some(safe)
 }
@@ -82,7 +95,9 @@ impl BgAgents {
     /// without a session identity to scope them by, or without a state dir
     /// that is provably ours (nothing is suppressed).
     pub fn from_env(pane_id: u32) -> Option<BgAgents> {
-        let session = std::env::var("ZELLIJ_SESSION_NAME").ok().filter(|s| !s.is_empty())?;
+        let session = std::env::var("ZELLIJ_SESSION_NAME")
+            .ok()
+            .filter(|s| !s.is_empty())?;
         Some(BgAgents::at(&state_dir()?, &session, pane_id))
     }
 
@@ -92,7 +107,10 @@ impl BgAgents {
     /// markers, and its sweep would delete them.
     pub fn at(dir: &Path, session: &str, pane_id: u32) -> BgAgents {
         let session = sanitize(session).replace('.', "_");
-        BgAgents { dir: dir.to_path_buf(), prefix: format!("bg-agents.{session}.{pane_id}.") }
+        BgAgents {
+            dir: dir.to_path_buf(),
+            prefix: format!("bg-agents.{session}.{pane_id}."),
+        }
     }
 
     fn marker(&self, id: &str) -> Option<PathBuf> {
@@ -105,7 +123,10 @@ impl BgAgents {
         let Ok(mtime) = std::fs::metadata(path).and_then(|m| m.modified()) else {
             return false;
         };
-        let at = mtime.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_secs();
+        let at = mtime
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
         if now.saturating_sub(at) < TTL_SECS {
             return true;
         }
@@ -120,7 +141,11 @@ impl BgAgents {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if entry.file_name().to_str().is_some_and(|n| n.starts_with(&self.prefix)) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&self.prefix))
+            {
                 if all {
                     let _ = std::fs::remove_file(&path);
                 } else {
@@ -138,12 +163,18 @@ impl BgAgents {
             return false;
         };
         let event = str_field(&v, "hook_event_name").unwrap_or("");
-        let recorded = || str_field(&v, "agent_id").and_then(|id| self.marker(id)).filter(|m| BgAgents::live(m, now));
+        let recorded = || {
+            str_field(&v, "agent_id")
+                .and_then(|id| self.marker(id))
+                .filter(|m| BgAgents::live(m, now))
+        };
         match event {
             "PostToolUse" => {
                 let response = v.get("tool_response").unwrap_or(&Value::Null);
                 if str_field(response, "status") == Some("async_launched") {
-                    if let Some(marker) = str_field(response, "agentId").and_then(|id| self.marker(id)) {
+                    if let Some(marker) =
+                        str_field(response, "agentId").and_then(|id| self.marker(id))
+                    {
                         self.sweep(now, false);
                         let _ = std::fs::write(marker, b"");
                     }
@@ -173,7 +204,10 @@ mod tests {
     const FG_TOOL: &str = r#"{"hook_event_name":"PostToolUse","agent_id":"a061999ea11fbeafa","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x"}}"#;
     const BG_STOP: &str = r#"{"hook_event_name":"SubagentStop","agent_id":"a1139dfe5ebed1d64","agent_type":"general-purpose"}"#;
     fn now() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     fn tracker() -> (tempfile::TempDir, BgAgents) {
@@ -199,7 +233,10 @@ mod tests {
     fn a_launched_background_agents_hooks_are_suppressed() {
         let (_d, t) = tracker();
         assert!(!t.intake(LAUNCH, now()), "the launch itself reports");
-        assert_eq!(markers(&t), vec!["bg-agents.my_session.7.a1139dfe5ebed1d64"]);
+        assert_eq!(
+            markers(&t),
+            vec!["bg-agents.my_session.7.a1139dfe5ebed1d64"]
+        );
         assert!(t.intake(BG_TOOL, now()));
         assert!(t.intake(BG_POST, now()));
         // Its SubagentStop is suppressed too (a plain running over "waiting
@@ -207,7 +244,10 @@ mod tests {
         assert!(t.intake(BG_STOP, now()));
         assert!(markers(&t).is_empty());
         assert!(!t.intake(BG_TOOL, now()));
-        assert!(!t.intake(BG_STOP, now()), "an unrecorded SubagentStop reports");
+        assert!(
+            !t.intake(BG_STOP, now()),
+            "an unrecorded SubagentStop reports"
+        );
     }
 
     #[test]
@@ -215,7 +255,10 @@ mod tests {
         // Two background Agent calls in one turn: separate files, so neither
         // launch can overwrite the other's record.
         let (_d, t) = tracker();
-        let (a, b) = (BgAgents::at(&t.dir, "my session", 7), BgAgents::at(&t.dir, "my session", 7));
+        let (a, b) = (
+            BgAgents::at(&t.dir, "my session", 7),
+            BgAgents::at(&t.dir, "my session", 7),
+        );
         a.intake(&with_id(LAUNCH, "aaa"), now());
         b.intake(&with_id(LAUNCH, "bbb"), now());
         assert!(t.intake(&with_id(BG_TOOL, "aaa"), now()));
@@ -229,7 +272,10 @@ mod tests {
         let (_d, t) = tracker();
         t.intake(LAUNCH, now());
         assert!(!t.intake(FG_TOOL, now()));
-        assert!(!t.intake(r#"{"hook_event_name":"PreToolUse","tool_name":"Read"}"#, now()));
+        assert!(!t.intake(
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Read"}"#,
+            now()
+        ));
         // Markers are per pane.
         assert!(!BgAgents::at(&t.dir, "my session", 8).intake(BG_TOOL, now()));
     }
@@ -251,7 +297,10 @@ mod tests {
         assert!(t.intake(&with_id(BG_TOOL, "../../etc/x"), now()));
         let long = "a".repeat(500);
         t.intake(&with_id(LAUNCH, &long), now());
-        assert!(markers(&t).iter().any(|n| n.ends_with(&"a".repeat(MAX_ID_CHARS)) && !n.ends_with(&"a".repeat(MAX_ID_CHARS + 1))));
+        assert!(markers(&t)
+            .iter()
+            .any(|n| n.ends_with(&"a".repeat(MAX_ID_CHARS))
+                && !n.ends_with(&"a".repeat(MAX_ID_CHARS + 1))));
         // An id with nothing filename-safe records nothing.
         t.intake(&with_id(LAUNCH, "///"), now());
         assert!(!t.intake(&with_id(BG_TOOL, "///"), now()));
@@ -259,8 +308,12 @@ mod tests {
     }
 
     fn age(t: &BgAgents, id: &str, secs: u64) {
-        let f = std::fs::File::options().write(true).open(t.marker(id).unwrap()).unwrap();
-        f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(t.marker(id).unwrap())
+            .unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(secs))
+            .unwrap();
     }
 
     #[test]
@@ -284,7 +337,10 @@ mod tests {
     fn a_session_whose_name_extends_anothers_keeps_its_markers() {
         // Session `a` pane 1 must not sweep session `a.1` pane 5's markers.
         let dir = tempfile::tempdir().unwrap();
-        let (a, a1) = (BgAgents::at(dir.path(), "a", 1), BgAgents::at(dir.path(), "a.1", 5));
+        let (a, a1) = (
+            BgAgents::at(dir.path(), "a", 1),
+            BgAgents::at(dir.path(), "a.1", 5),
+        );
         a.intake(LAUNCH, now());
         a1.intake(LAUNCH, now());
         a.intake(r#"{"hook_event_name":"SessionEnd"}"#, now());
@@ -296,7 +352,10 @@ mod tests {
     fn session_edges_remove_only_this_panes_markers() {
         let (_d, t) = tracker();
         let other = BgAgents::at(&t.dir, "my session", 8);
-        for edge in [r#"{"hook_event_name":"SessionStart","source":"clear"}"#, r#"{"hook_event_name":"SessionEnd"}"#] {
+        for edge in [
+            r#"{"hook_event_name":"SessionStart","source":"clear"}"#,
+            r#"{"hook_event_name":"SessionEnd"}"#,
+        ] {
             t.intake(LAUNCH, now());
             other.intake(LAUNCH, now());
             assert!(!t.intake(edge, now()), "{edge} reports");
@@ -307,8 +366,12 @@ mod tests {
 
     #[test]
     fn unrelated_hooks_skip_everything() {
-        assert!(!relevant(r#"{"hook_event_name":"PostToolUse","tool_name":"Read"}"#));
-        assert!(!relevant(r#"{"hook_event_name":"PostToolUse","tool_response":{"file":"mentions SessionStart"}}"#));
+        assert!(!relevant(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Read"}"#
+        ));
+        assert!(!relevant(
+            r#"{"hook_event_name":"PostToolUse","tool_response":{"file":"mentions SessionStart"}}"#
+        ));
         assert!(relevant(BG_TOOL) && relevant(LAUNCH) && relevant(BG_STOP));
         assert!(relevant(r#"{"hook_event_name":"SessionEnd"}"#));
     }

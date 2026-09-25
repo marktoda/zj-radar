@@ -29,7 +29,9 @@ fn pane_id_from_env() -> Option<u32> {
 fn pane_id_or_dry_run_hint(dry_run: bool) -> Option<u32> {
     let pane_id = pane_id_from_env();
     if pane_id.is_none() && dry_run {
-        eprintln!("zj-radar: not inside Zellij (no ZELLIJ/ZELLIJ_PANE_ID) — nothing would be broadcast");
+        eprintln!(
+            "zj-radar: not inside Zellij (no ZELLIJ/ZELLIJ_PANE_ID) — nothing would be broadcast"
+        );
     }
     pane_id
 }
@@ -66,7 +68,11 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
         return;
     };
     let Some(agent) = Agent::from_cli(agent) else {
-        let expected = Agent::ALL.iter().map(|a| a.source()).collect::<Vec<_>>().join(" | ");
+        let expected = Agent::ALL
+            .iter()
+            .map(|a| a.source())
+            .collect::<Vec<_>>()
+            .join(" | ");
         eprintln!("zj-radar: unknown agent '{agent}' (expected: {expected} — or `notify generic` for scripts)");
         return;
     };
@@ -77,7 +83,10 @@ pub fn run(agent: &str, input: Option<&str>, status_arg: Option<&str>, dry_run: 
     // hints on. Hint-and-no-op keeps the calling hook unbroken.
     if let Some(token) = status_arg {
         if Status::try_from_wire(token).is_none() {
-            eprintln!("zj-radar: unknown --status '{token}' (expected: {})", wire_vocabulary());
+            eprintln!(
+                "zj-radar: unknown --status '{token}' (expected: {})",
+                wire_vocabulary()
+            );
             return;
         }
     }
@@ -139,7 +148,11 @@ pub fn run_generic(
 /// The status tokens producers may pass, straight from the table (`Status::ALL`)
 /// so a vocabulary change can't leave a stale hint behind.
 fn wire_vocabulary() -> String {
-    Status::ALL.iter().map(|s| s.as_wire()).collect::<Vec<_>>().join("|")
+    Status::ALL
+        .iter()
+        .map(|s| s.as_wire())
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// The pure half of [`run_generic`]: explicit flags → update. `None` (no
@@ -148,7 +161,11 @@ fn wire_vocabulary() -> String {
 /// erase the row it meant to update. Mirrors the adapters' conventions: a
 /// running row with no message gets the `working` baseline; idle always
 /// broadcasts blank; an empty task means "keep the stored label" (wire rule).
-fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -> Option<AgentUpdate> {
+fn generic_update(
+    status: Option<&str>,
+    msg: Option<&str>,
+    task: Option<&str>,
+) -> Option<AgentUpdate> {
     let status = Status::try_from_wire(status?)?;
     let msg = crate::agents::baseline_msg(status, msg.unwrap_or(""));
     Some(AgentUpdate {
@@ -176,8 +193,16 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
     // debugging tool: it neither consults nor touches the record.
     let key = SentKey::new(update.status, source, &update.msg, &task);
     let now = crate::dedup::unix_now();
-    let last_sent = if dry_run { None } else { LastSent::from_env(pane_id) };
-    if !edge && last_sent.as_ref().is_some_and(|l| l.is_duplicate(&key, now)) {
+    let last_sent = if dry_run {
+        None
+    } else {
+        LastSent::from_env(pane_id)
+    };
+    if !edge
+        && last_sent
+            .as_ref()
+            .is_some_and(|l| l.is_duplicate(&key, now))
+    {
         return;
     }
 
@@ -321,8 +346,11 @@ mod tests {
         // never drift from what the plugin and docs/producers.md advertise.
         for raw in [None, Some("abc"), Some("-3"), Some("10s"), Some("")] {
             assert_eq!(
-                parse_pipe_timeout(raw.map(String::from), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS)
-                    .as_secs(),
+                parse_pipe_timeout(
+                    raw.map(String::from),
+                    crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS
+                )
+                .as_secs(),
                 crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS,
                 "raw={raw:?}"
             );
@@ -380,9 +408,13 @@ mod tests {
         let shim = dir.path().join("sh");
         // A `sh` that ignores its argv and sleeps: models the wrapper whose
         // in-subtree watchdog failed to fork, so nothing else bounds it.
-        std::fs::write(&shim, "#!/bin/sh
+        std::fs::write(
+            &shim,
+            "#!/bin/sh
 exec sleep 30
-").unwrap();
+",
+        )
+        .unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -427,20 +459,34 @@ exec sleep 30
     #[test]
     fn generic_update_mirrors_adapter_msg_and_task_conventions() {
         // Running with no msg → the "working" baseline (never a blank active row).
-        assert_eq!(generic_update(Some("running"), None, None).unwrap().msg, "working");
+        assert_eq!(
+            generic_update(Some("running"), None, None).unwrap().msg,
+            "working"
+        );
         // Idle always broadcasts blank, dropping any msg passed alongside.
-        assert_eq!(generic_update(Some("idle"), Some("stale"), None).unwrap().msg, "");
+        assert_eq!(
+            generic_update(Some("idle"), Some("stale"), None)
+                .unwrap()
+                .msg,
+            ""
+        );
         // Task rides only when non-blank (wire rule: empty = keep stored label).
         let u = generic_update(Some("running"), Some("deploying"), Some("nightly deploy")).unwrap();
         assert_eq!(u.task.as_deref(), Some("nightly deploy"));
-        assert_eq!(generic_update(Some("done"), None, Some("  ")).unwrap().task, None);
+        assert_eq!(
+            generic_update(Some("done"), None, Some("  ")).unwrap().task,
+            None
+        );
     }
 
     // --- bounded stdin read ---
 
     #[test]
     fn read_capped_reads_small_input_whole() {
-        assert_eq!(read_capped(std::io::Cursor::new(b"hello".to_vec()), 1024), "hello");
+        assert_eq!(
+            read_capped(std::io::Cursor::new(b"hello".to_vec()), 1024),
+            "hello"
+        );
         assert_eq!(read_capped(std::io::Cursor::new(Vec::new()), 1024), "");
     }
 

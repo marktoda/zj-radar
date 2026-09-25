@@ -223,7 +223,9 @@ mod tests {
         assert!(Status::Running < Status::Pending);
         assert!(Status::Pending < Status::Error);
         assert_eq!(
-            [Status::Done, Status::Error, Status::Running].into_iter().max(),
+            [Status::Done, Status::Error, Status::Running]
+                .into_iter()
+                .max(),
             Some(Status::Error),
             "max yields the most-urgent status",
         );

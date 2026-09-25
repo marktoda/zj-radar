@@ -42,8 +42,14 @@ const BRIDGE: Bridge = Bridge {
     tool_event: "tool",
     prompt_event: "prompt",
     tool_names: &[
-        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("powershell", "Bash"),
-        ("grep", "Grep"), ("find", "Glob"), ("ls", "Glob"),
+        ("read", "Read"),
+        ("write", "Write"),
+        ("edit", "Edit"),
+        ("bash", "Bash"),
+        ("powershell", "Bash"),
+        ("grep", "Grep"),
+        ("find", "Glob"),
+        ("ls", "Glob"),
     ],
     arg_keys: &[("path", "file_path")],
 };
@@ -86,21 +92,49 @@ mod tests {
 
     #[test]
     fn prompt_ack_keeps_label() {
-        let u = derive(&intake(r#"{"event":"prompt","prompt":"ok"}"#, Some("running"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"prompt","prompt":"ok"}"#,
+            Some("running"),
+        ))
+        .unwrap();
         assert_eq!(u.task, None);
     }
 
     #[test]
     fn tool_events_normalize_pi_tools_into_shared_vocab() {
         for (raw, expected) in [
-            (r#"{"event":"tool","tool":"read","tool_input":{"path":"/p/auth.rs"}}"#, "reading auth.rs"),
-            (r#"{"event":"tool","tool":"edit","tool_input":{"path":"/p/mod.rs"}}"#, "editing mod.rs"),
-            (r#"{"event":"tool","tool":"write","tool_input":{"path":"/p/new.rs"}}"#, "editing new.rs"),
-            (r#"{"event":"tool","tool":"bash","tool_input":{"command":"git push origin main"}}"#, "pushing"),
-            (r#"{"event":"tool","tool":"powershell","tool_input":{"command":"cargo test"}}"#, "running tests"),
-            (r#"{"event":"tool","tool":"grep","tool_input":{"pattern":"x"}}"#, "searching"),
-            (r#"{"event":"tool","tool":"find","tool_input":{"pattern":"*.rs"}}"#, "searching"),
-            (r#"{"event":"tool","tool":"ls","tool_input":{"path":"."}}"#, "searching"),
+            (
+                r#"{"event":"tool","tool":"read","tool_input":{"path":"/p/auth.rs"}}"#,
+                "reading auth.rs",
+            ),
+            (
+                r#"{"event":"tool","tool":"edit","tool_input":{"path":"/p/mod.rs"}}"#,
+                "editing mod.rs",
+            ),
+            (
+                r#"{"event":"tool","tool":"write","tool_input":{"path":"/p/new.rs"}}"#,
+                "editing new.rs",
+            ),
+            (
+                r#"{"event":"tool","tool":"bash","tool_input":{"command":"git push origin main"}}"#,
+                "pushing",
+            ),
+            (
+                r#"{"event":"tool","tool":"powershell","tool_input":{"command":"cargo test"}}"#,
+                "running tests",
+            ),
+            (
+                r#"{"event":"tool","tool":"grep","tool_input":{"pattern":"x"}}"#,
+                "searching",
+            ),
+            (
+                r#"{"event":"tool","tool":"find","tool_input":{"pattern":"*.rs"}}"#,
+                "searching",
+            ),
+            (
+                r#"{"event":"tool","tool":"ls","tool_input":{"path":"."}}"#,
+                "searching",
+            ),
         ] {
             let u = derive(&intake(raw, Some("running"))).unwrap();
             assert_eq!(u.status, Status::Running, "{raw}");
@@ -111,16 +145,28 @@ mod tests {
 
     #[test]
     fn unknown_tool_falls_back_to_working() {
-        let u = derive(&intake(r#"{"event":"tool","tool":"frobnicate","tool_input":null}"#, Some("running"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"tool","tool":"frobnicate","tool_input":null}"#,
+            Some("running"),
+        ))
+        .unwrap();
         assert_eq!(u.msg, "working");
     }
 
     #[test]
     fn ui_prompt_is_pending_with_title_and_blank_is_dropped() {
-        let u = derive(&intake(r#"{"event":"ui_prompt.start","message":"Allow rm -rf build?"}"#, Some("pending"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"ui_prompt.start","message":"Allow rm -rf build?"}"#,
+            Some("pending"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Allow rm -rf build?");
-        assert!(derive(&intake(r#"{"event":"ui_prompt.start","message":"  "}"#, Some("pending"))).is_none());
+        assert!(derive(&intake(
+            r#"{"event":"ui_prompt.start","message":"  "}"#,
+            Some("pending")
+        ))
+        .is_none());
     }
 
     #[test]
@@ -135,7 +181,11 @@ mod tests {
 
     #[test]
     fn settled_statement_is_done_and_question_remaps_to_pending() {
-        let u = derive(&intake(r#"{"event":"settled","message":"All tests pass."}"#, Some("done"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"settled","message":"All tests pass."}"#,
+            Some("done"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Done);
         assert_eq!(u.msg, "All tests pass.");
         let u = derive(&intake(
@@ -149,7 +199,11 @@ mod tests {
 
     #[test]
     fn error_carries_message_or_neutral_label() {
-        let u = derive(&intake(r#"{"event":"error","message":"401 invalid api key"}"#, Some("error"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"error","message":"401 invalid api key"}"#,
+            Some("error"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Error);
         assert_eq!(u.msg, "401 invalid api key");
         let u = derive(&intake(r#"{"event":"error","message":""}"#, Some("error"))).unwrap();
@@ -169,11 +223,34 @@ mod tests {
 
     #[test]
     fn derives_status_from_event_when_no_explicit_status() {
-        assert_eq!(derive(&intake(r#"{"event":"prompt"}"#, None)).unwrap().status, Status::Running);
-        assert_eq!(derive(&intake(r#"{"event":"settled","message":"ok."}"#, None)).unwrap().status, Status::Done);
-        assert_eq!(derive(&intake(r#"{"event":"error","message":"x"}"#, None)).unwrap().status, Status::Error);
-        assert_eq!(derive(&intake(r#"{"event":"session.new"}"#, None)).unwrap().status, Status::Idle);
-        assert!(derive(&intake(r#"{"event":"ui_prompt.end"}"#, None)).is_none(), "the bridge always picks ui_prompt.end's status");
+        assert_eq!(
+            derive(&intake(r#"{"event":"prompt"}"#, None))
+                .unwrap()
+                .status,
+            Status::Running
+        );
+        assert_eq!(
+            derive(&intake(r#"{"event":"settled","message":"ok."}"#, None))
+                .unwrap()
+                .status,
+            Status::Done
+        );
+        assert_eq!(
+            derive(&intake(r#"{"event":"error","message":"x"}"#, None))
+                .unwrap()
+                .status,
+            Status::Error
+        );
+        assert_eq!(
+            derive(&intake(r#"{"event":"session.new"}"#, None))
+                .unwrap()
+                .status,
+            Status::Idle
+        );
+        assert!(
+            derive(&intake(r#"{"event":"ui_prompt.end"}"#, None)).is_none(),
+            "the bridge always picks ui_prompt.end's status"
+        );
         assert!(derive(&intake(r#"{"event":"unknown"}"#, None)).is_none());
         assert!(derive(&intake("not json", None)).is_none());
     }

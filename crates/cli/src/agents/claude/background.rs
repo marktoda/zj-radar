@@ -66,7 +66,8 @@ pub(super) fn turn_end(v: &Value) -> TaskBatch {
                 .filter(|t| str_field(t, "status") == Some("running"))
                 .filter_map(|t| {
                     let id = str_field(t, "id").filter(|id| !id.is_empty())?;
-                    let (command, description) = (str_field(t, "command"), str_field(t, "description"));
+                    let (command, description) =
+                        (str_field(t, "command"), str_field(t, "description"));
                     let holds = match str_field(t, "type") {
                         Some("subagent" | "workflow" | "teammate") => true,
                         Some("shell") => !shell_is_service(command, description),
@@ -82,7 +83,10 @@ pub(super) fn turn_end(v: &Value) -> TaskBatch {
                 .collect()
         })
         .unwrap_or_default();
-    TaskBatch { items, snapshot: true }
+    TaskBatch {
+        items,
+        snapshot: true,
+    }
 }
 
 /// The Running msg for a turn end still waiting on holding work, or `None`.
@@ -119,7 +123,10 @@ pub(super) fn started(v: &Value) -> Option<TaskBatch> {
     } else {
         return None;
     };
-    (!update.id.is_empty()).then(|| TaskBatch { items: vec![update], snapshot: false })
+    (!update.id.is_empty()).then(|| TaskBatch {
+        items: vec![update],
+        snapshot: false,
+    })
 }
 
 /// The text between `<tag>` and `</tag>` in `block`, if present.
@@ -147,10 +154,18 @@ pub(super) fn ended(prompt: &str) -> Option<TaskBatch> {
                 s @ ("completed" | "failed" | "killed") => TaskState::from_wire(s)?,
                 _ => return None,
             };
-            Some(TaskUpdate { id: id.to_string(), state, label: String::new(), holds: false })
+            Some(TaskUpdate {
+                id: id.to_string(),
+                state,
+                label: String::new(),
+                holds: false,
+            })
         })
         .collect();
-    (!items.is_empty()).then_some(TaskBatch { items, snapshot: false })
+    (!items.is_empty()).then_some(TaskBatch {
+        items,
+        snapshot: false,
+    })
 }
 
 #[cfg(test)]
@@ -163,26 +178,40 @@ mod tests {
 
     #[test]
     fn turn_end_lists_every_running_task_and_marks_what_holds() {
-        let v = json(r#"{"background_tasks":[
+        let v = json(
+            r#"{"background_tasks":[
             {"id":"b1","type":"shell","status":"running","description":" Run the test suite ","command":"cargo nextest run"},
             {"id":"b2","type":"shell","status":"running","command":"cd web && pnpm run dev"},
             {"id":"a1","type":"subagent","status":"running","description":"Explore rail"},
             {"id":"m1","type":"monitor","status":"running","description":"watch CI"},
             {"id":"b3","type":"shell","status":"completed","command":"cargo test"},
-            {"type":"shell","status":"running"},"junk"]}"#);
+            {"type":"shell","status":"running"},"junk"]}"#,
+        );
         let batch = turn_end(&v);
         assert!(batch.snapshot);
-        let got: Vec<(&str, &str, bool)> =
-            batch.items.iter().map(|t| (t.id.as_str(), t.label.as_str(), t.holds)).collect();
+        let got: Vec<(&str, &str, bool)> = batch
+            .items
+            .iter()
+            .map(|t| (t.id.as_str(), t.label.as_str(), t.holds))
+            .collect();
         assert_eq!(
             got,
-            vec![("b1", "Run the test suite", true), ("b2", "cd", false), ("a1", "Explore rail", true), ("m1", "watch CI", false)]
+            vec![
+                ("b1", "Run the test suite", true),
+                ("b2", "cd", false),
+                ("a1", "Explore rail", true),
+                ("m1", "watch CI", false)
+            ]
         );
     }
 
     #[test]
     fn turn_end_without_the_field_is_an_empty_snapshot() {
-        for raw in [r#"{}"#, r#"{"background_tasks":null}"#, r#"{"background_tasks":"x"}"#] {
+        for raw in [
+            r#"{}"#,
+            r#"{"background_tasks":null}"#,
+            r#"{"background_tasks":"x"}"#,
+        ] {
             let batch = turn_end(&json(raw));
             assert!(batch.snapshot && batch.items.is_empty(), "{raw}");
         }
@@ -190,11 +219,17 @@ mod tests {
 
     #[test]
     fn waiting_msg_names_one_task_or_counts_several() {
-        let one = turn_end(&json(r#"{"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"make"}]}"#));
+        let one = turn_end(&json(
+            r#"{"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"make"}]}"#,
+        ));
         assert_eq!(waiting_msg(&one).as_deref(), Some("waiting on make"));
-        let unnamed = turn_end(&json(r#"{"background_tasks":[{"id":"w","type":"workflow","status":"running"}]}"#));
+        let unnamed = turn_end(&json(
+            r#"{"background_tasks":[{"id":"w","type":"workflow","status":"running"}]}"#,
+        ));
         assert_eq!(waiting_msg(&unnamed).as_deref(), Some("waiting on 1 task"));
-        let services = turn_end(&json(r#"{"background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#));
+        let services = turn_end(&json(
+            r#"{"background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#,
+        ));
         assert_eq!(waiting_msg(&services), None);
     }
 
@@ -212,12 +247,35 @@ mod tests {
     #[test]
     fn long_running_servers_watchers_and_tunnels_never_hold() {
         for cmd in [
-            "python -m http.server 8000", "make dev", "just dev", "npx vite", "uvicorn app:app --reload",
-            "flask run", "rails s", "bin/rails server", "python manage.py runserver", "gunicorn app:wsgi",
-            "cargo watch -x test", "tsc --watch", "kubectl port-forward svc/db 5432", "nodemon index.js",
-            "bundle exec jekyll serve", "make server", "vite", "npx vite dev", "./node_modules/.bin/vite serve",
-            "pnpm vite preview", "jest --watch", "jest --watchAll", "vitest --watch=true", "watchexec -e rs cargo test",
-            "cd web && vite", "cd web&&vite", "pnpm exec vite --host", "bun x vite@latest", "npm run build; vite",
+            "python -m http.server 8000",
+            "make dev",
+            "just dev",
+            "npx vite",
+            "uvicorn app:app --reload",
+            "flask run",
+            "rails s",
+            "bin/rails server",
+            "python manage.py runserver",
+            "gunicorn app:wsgi",
+            "cargo watch -x test",
+            "tsc --watch",
+            "kubectl port-forward svc/db 5432",
+            "nodemon index.js",
+            "bundle exec jekyll serve",
+            "make server",
+            "vite",
+            "npx vite dev",
+            "./node_modules/.bin/vite serve",
+            "pnpm vite preview",
+            "jest --watch",
+            "jest --watchAll",
+            "vitest --watch=true",
+            "watchexec -e rs cargo test",
+            "cd web && vite",
+            "cd web&&vite",
+            "pnpm exec vite --host",
+            "bun x vite@latest",
+            "npm run build; vite",
         ] {
             assert!(!shell_holds(Some(cmd), None), "{cmd} is a service");
         }
@@ -228,9 +286,19 @@ mod tests {
         // A false service is permanent (`holds` only drops) and may notify
         // "finished" early, so these single words need the right position.
         for cmd in [
-            "npx vite build", "vite build --mode prod", "jest --watch=false", "vitest --watch=0", "gh run watch 123",
-            "./watch.sh", "vitest run", "npm run watch-docs-check", "npm install vite", "pnpm add -D vite",
-            "ls node_modules/vite", "cd packages/vite && pnpm test", "vite build&&echo ok",
+            "npx vite build",
+            "vite build --mode prod",
+            "jest --watch=false",
+            "vitest --watch=0",
+            "gh run watch 123",
+            "./watch.sh",
+            "vitest run",
+            "npm run watch-docs-check",
+            "npm install vite",
+            "pnpm add -D vite",
+            "ls node_modules/vite",
+            "cd packages/vite && pnpm test",
+            "vite build&&echo ok",
         ] {
             assert!(shell_holds(Some(cmd), None), "{cmd} is bounded");
         }
@@ -239,8 +307,14 @@ mod tests {
     #[test]
     fn the_description_can_mark_a_service_but_single_words_do_not() {
         // An unlisted command whose description gives it away.
-        assert!(!shell_holds(Some("./bin/app --port 3000"), Some("Start the dev server")));
-        assert!(!shell_holds(Some("./run.sh"), Some("Rebuild in watch mode")));
+        assert!(!shell_holds(
+            Some("./bin/app --port 3000"),
+            Some("Start the dev server")
+        ));
+        assert!(!shell_holds(
+            Some("./run.sh"),
+            Some("Rebuild in watch mode")
+        ));
         // Bounded work whose description mentions a service word in passing.
         for (cmd, desc) in [
             ("cargo test -p server", "Run the server tests"),
@@ -251,7 +325,10 @@ mod tests {
             ("vitest run", "Run unit tests"),
             ("./observe.sh", "Observe results"),
         ] {
-            assert!(shell_holds(Some(cmd), Some(desc)), "{cmd} / {desc} is bounded");
+            assert!(
+                shell_holds(Some(cmd), Some(desc)),
+                "{cmd} / {desc} is bounded"
+            );
         }
     }
 
@@ -270,13 +347,27 @@ mod tests {
         // Shapes from the live capture.
         let shell = started(&json(r#"{"tool_input":{"command":"sleep 25; echo BG_DONE","description":"Background sleep 25 seconds","run_in_background":true},
             "tool_response":{"stdout":"","backgroundTaskId":"bks7shfy0"}}"#)).unwrap();
-        assert_eq!(shell.items[0], TaskUpdate { id: "bks7shfy0".into(), state: TaskState::Running, label: "Background sleep 25 seconds".into(), holds: true });
+        assert_eq!(
+            shell.items[0],
+            TaskUpdate {
+                id: "bks7shfy0".into(),
+                state: TaskState::Running,
+                label: "Background sleep 25 seconds".into(),
+                holds: true
+            }
+        );
         assert!(!shell.snapshot);
         let agent = started(&json(r#"{"tool_input":{"description":"Sleep and echo in subagent","run_in_background":true},
             "tool_response":{"isAsync":true,"status":"async_launched","agentId":"a7c69e57f79598a8a"}}"#)).unwrap();
-        assert_eq!((agent.items[0].id.as_str(), agent.items[0].holds), ("a7c69e57f79598a8a", true));
+        assert_eq!(
+            (agent.items[0].id.as_str(), agent.items[0].holds),
+            ("a7c69e57f79598a8a", true)
+        );
         assert_eq!(started(&json(r#"{"tool_response":{"stdout":"hi"}}"#)), None);
-        assert_eq!(started(&json(r#"{"tool_response":{"backgroundTaskId":""}}"#)), None);
+        assert_eq!(
+            started(&json(r#"{"tool_response":{"backgroundTaskId":""}}"#)),
+            None
+        );
     }
 
     #[test]
@@ -285,9 +376,26 @@ mod tests {
                       <task-notification>\n<task-id>b3dea3w6o</task-id>\n<status>completed</status>\n</task-notification>\n\
                       <task-notification>\n<task-id>m1</task-id>\n<status>event</status>\n</task-notification>";
         let batch = ended(prompt).unwrap();
-        let got: Vec<(&str, TaskState)> = batch.items.iter().map(|t| (t.id.as_str(), t.state)).collect();
-        assert_eq!(got, vec![("b9pmfbej6", TaskState::Failed), ("b3dea3w6o", TaskState::Completed)]);
-        assert_eq!(ended("fix the <task-notification> parser"), None, "a human prompt isn't a wake");
-        assert_eq!(ended("<task-notification><status>killed</status></task-notification>"), None);
+        let got: Vec<(&str, TaskState)> = batch
+            .items
+            .iter()
+            .map(|t| (t.id.as_str(), t.state))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("b9pmfbej6", TaskState::Failed),
+                ("b3dea3w6o", TaskState::Completed)
+            ]
+        );
+        assert_eq!(
+            ended("fix the <task-notification> parser"),
+            None,
+            "a human prompt isn't a wake"
+        );
+        assert_eq!(
+            ended("<task-notification><status>killed</status></task-notification>"),
+            None
+        );
     }
 }

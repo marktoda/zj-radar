@@ -111,7 +111,10 @@ pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
 
     let prompt = v.get("prompt").and_then(|x| x.as_str());
     let (task, tasks) = match event {
-        Some("UserPromptSubmit") => (prompt.and_then(super::task_from_prompt), prompt.and_then(background::ended)),
+        Some("UserPromptSubmit") => (
+            prompt.and_then(super::task_from_prompt),
+            prompt.and_then(background::ended),
+        ),
         Some("PostToolUse") => (None, background::started(&v)),
         _ => (None, None),
     };
@@ -149,14 +152,16 @@ mod tests {
     #[test]
     fn pending_backstop_drops_empty_and_generic() {
         assert!(derive(&intake(r#"{"message":""}"#, Some("pending"))).is_none());
-        assert!(derive(&intake(r#"{"message":"Claude needs attention"}"#, Some("pending"))).is_none());
-        assert!(
-            derive(&intake(
-                r#"{"message":"Claude Code needs your attention"}"#,
-                Some("pending")
-            ))
-            .is_none()
-        );
+        assert!(derive(&intake(
+            r#"{"message":"Claude needs attention"}"#,
+            Some("pending")
+        ))
+        .is_none());
+        assert!(derive(&intake(
+            r#"{"message":"Claude Code needs your attention"}"#,
+            Some("pending")
+        ))
+        .is_none());
     }
 
     #[test]
@@ -203,9 +208,12 @@ mod tests {
             Status::Running
         );
         assert_eq!(
-            derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None))
-                .unwrap()
-                .status,
+            derive(&intake(
+                r#"{"hook_event_name":"Stop","message":"done"}"#,
+                None
+            ))
+            .unwrap()
+            .status,
             Status::Done
         );
         assert!(derive(&intake(r#"{"hook_event_name":"SomethingElse"}"#, None)).is_none());
@@ -319,7 +327,8 @@ mod tests {
 
     #[test]
     fn a_task_without_a_description_falls_back_to_its_command_then_a_count() {
-        let raw = stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"make"}]"#);
+        let raw =
+            stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"make"}]"#);
         let u = derive(&intake(&raw, Some("done"))).unwrap();
         assert_eq!(u.msg, "waiting on make");
         let raw = stop_with_tasks(r#"[{"id":"w1","type":"workflow","status":"running"}]"#);
@@ -331,17 +340,30 @@ mod tests {
     fn every_stop_carries_the_turn_end_snapshot() {
         // Done, waiting-Running, and question-Pending all send it; a Stop
         // with no field sends an empty one so nothing stale outlives a turn.
-        let waiting = derive(&intake(&stop_with_tasks(r#"[{"id":"b1","type":"shell","status":"running","command":"pytest"}]"#), Some("done"))).unwrap();
+        let waiting = derive(&intake(
+            &stop_with_tasks(
+                r#"[{"id":"b1","type":"shell","status":"running","command":"pytest"}]"#,
+            ),
+            Some("done"),
+        ))
+        .unwrap();
         let t = waiting.tasks.unwrap();
         assert!(t.snapshot);
         assert_eq!((t.items[0].id.as_str(), t.items[0].holds), ("b1", true));
-        let done = derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"ok"}"#, Some("done"))).unwrap();
+        let done = derive(&intake(
+            r#"{"hook_event_name":"Stop","last_assistant_message":"ok"}"#,
+            Some("done"),
+        ))
+        .unwrap();
         assert_eq!(done.status, Status::Done);
         let t = done.tasks.unwrap();
         assert!(t.snapshot && t.items.is_empty());
         let asked = derive(&intake(r#"{"hook_event_name":"Stop","last_assistant_message":"Ship it?","background_tasks":[{"id":"d","type":"shell","status":"running","command":"npm run dev"}]}"#, Some("done"))).unwrap();
         assert_eq!(asked.status, Status::Pending);
-        assert!(!asked.tasks.unwrap().items[0].holds, "a dev server never holds");
+        assert!(
+            !asked.tasks.unwrap().items[0].holds,
+            "a dev server never holds"
+        );
     }
 
     #[test]
@@ -355,7 +377,10 @@ mod tests {
         assert_eq!(u.msg, "running tests", "the live activity still shows");
         let t = u.tasks.unwrap();
         assert!(!t.snapshot);
-        assert_eq!((t.items[0].id.as_str(), t.items[0].label.as_str()), ("b7", "Run tests"));
+        assert_eq!(
+            (t.items[0].id.as_str(), t.items[0].label.as_str()),
+            ("b7", "Run tests")
+        );
         // The PreToolUse twin and ordinary tools carry nothing.
         let pre = derive(&intake(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"x","run_in_background":true}}"#, Some("running"))).unwrap();
         assert_eq!(pre.tasks, None);
@@ -370,8 +395,15 @@ mod tests {
         .unwrap();
         assert_eq!(u.task, None, "machinery, not the human's task");
         let t = u.tasks.unwrap();
-        assert_eq!((t.items[0].id.as_str(), t.items[0].state), ("b7", zj_radar_core::task::TaskState::Failed));
-        let human = derive(&intake(r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#, Some("running"))).unwrap();
+        assert_eq!(
+            (t.items[0].id.as_str(), t.items[0].state),
+            ("b7", zj_radar_core::task::TaskState::Failed)
+        );
+        let human = derive(&intake(
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#,
+            Some("running"),
+        ))
+        .unwrap();
         assert_eq!(human.tasks, None);
     }
 
@@ -402,7 +434,11 @@ mod tests {
             let u = derive(&intake(&raw, Some("done"))).unwrap();
             assert_eq!(u.status, Status::Done, "background_tasks = {tasks}");
         }
-        let u = derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None)).unwrap();
+        let u = derive(&intake(
+            r#"{"hook_event_name":"Stop","message":"done"}"#,
+            None,
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Done);
     }
 
@@ -430,7 +466,10 @@ mod tests {
         // permission answered inside it. Background subagents are filtered
         // before derive, by `bg_agents` (it needs per-pane state).
         let raw = r#"{"hook_event_name":"PostToolUse","agent_id":"a55dd2e69238dcfae","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/p/x.rs"}}"#;
-        assert_eq!(derive(&intake(raw, Some("running"))).unwrap().msg, "reading x.rs");
+        assert_eq!(
+            derive(&intake(raw, Some("running"))).unwrap().msg,
+            "reading x.rs"
+        );
     }
 
     #[test]
@@ -464,7 +503,11 @@ mod tests {
         // idle means "no activity": any message riding along the payload (e.g. a
         // SessionStart session_title, or a stale last_assistant_message) is
         // dropped so the rail never shows an idle row with leftover text.
-        let u = derive(&intake(r#"{"message":"old work in progress"}"#, Some("idle"))).unwrap();
+        let u = derive(&intake(
+            r#"{"message":"old work in progress"}"#,
+            Some("idle"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Idle);
         assert_eq!(u.msg, "");
     }
@@ -502,7 +545,11 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(u.task, None);
-        let u = derive(&intake(r#"{"hook_event_name":"Stop","message":"done"}"#, None)).unwrap();
+        let u = derive(&intake(
+            r#"{"hook_event_name":"Stop","message":"done"}"#,
+            None,
+        ))
+        .unwrap();
         assert_eq!(u.task, None);
     }
 }

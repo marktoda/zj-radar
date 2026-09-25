@@ -75,7 +75,11 @@ fn identical_pre_and_post_running_payloads_send_once() {
 
     notify_deduped(&shims, "running", PRE_EDIT, &[]);
     notify_deduped(&shims, "running", POST_EDIT, &[]);
-    assert_eq!(shims.recorded("zellij").len(), 1, "the Post repeat must be deduped");
+    assert_eq!(
+        shims.recorded("zellij").len(),
+        1,
+        "the Post repeat must be deduped"
+    );
 
     // A different activity is a different payload — sent.
     let read = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Read","tool_input":{"file_path":"/home/u/myrepo/README.md"}}"#;
@@ -98,7 +102,11 @@ fn a_running_that_carries_background_tasks_is_never_deduped() {
     };
     notify_deduped(&shims, "running", &wake("b1"), &[]);
     notify_deduped(&shims, "running", &wake("b2"), &[]);
-    let sent: Vec<String> = shims.recorded("zellij").iter().map(|c| c.args.join(" ")).collect();
+    let sent: Vec<String> = shims
+        .recorded("zellij")
+        .iter()
+        .map(|c| c.args.join(" "))
+        .collect();
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert!(sent[1].contains(r#""id":"b2""#), "{sent:?}");
 }
@@ -122,7 +130,11 @@ fn pending_edge_passes_and_the_recovery_running_is_sent() {
         .iter()
         .map(|c| c.args.join(" "))
         .collect();
-    assert_eq!(sent.len(), 3, "running, pending, recovery running: {sent:?}");
+    assert_eq!(
+        sent.len(),
+        3,
+        "running, pending, recovery running: {sent:?}"
+    );
     assert!(sent[1].contains("\"status\":\"pending\""), "{sent:?}");
     assert!(sent[2].contains("\"status\":\"running\""), "{sent:?}");
     // …and only the recovery's own repeat collapses.
@@ -140,7 +152,11 @@ fn failed_send_is_not_recorded_so_the_repeat_is_retried() {
     shims.add_fake_git("/home/u/myrepo", "main");
     notify_deduped(&shims, "running", PRE_EDIT, &[]);
     notify_deduped(&shims, "running", POST_EDIT, &[]);
-    assert_eq!(shims.recorded("zellij").len(), 2, "an unconfirmed send must be retried");
+    assert_eq!(
+        shims.recorded("zellij").len(),
+        2,
+        "an unconfirmed send must be retried"
+    );
 }
 
 #[test]
@@ -160,9 +176,19 @@ fn dedup_state_is_scoped_per_pane_and_session() {
     shims.add_fake_git("/home/u/myrepo", "main");
     notify_deduped(&shims, "running", PRE_EDIT, &[]);
     // Same payload from another pane: its own record, so it is sent.
-    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_PANE_ID", "terminal_8")]);
+    notify_deduped(
+        &shims,
+        "running",
+        POST_EDIT,
+        &[("ZELLIJ_PANE_ID", "terminal_8")],
+    );
     // Same pane id in another session: also its own record.
-    notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_SESSION_NAME", "other")]);
+    notify_deduped(
+        &shims,
+        "running",
+        POST_EDIT,
+        &[("ZELLIJ_SESSION_NAME", "other")],
+    );
     assert_eq!(shims.recorded("zellij").len(), 3);
     // The state files landed under the injected TMPDIR, not the real one.
     let state = dedup_leaf(shims.dir.path());
@@ -441,7 +467,10 @@ fn repo_and_branch_are_resolved_natively_without_spawning_git() {
     let argv = sent[0].args.join(" ");
     assert!(argv.contains(r#""repo":"pinky""#), "payload: {argv}");
     assert!(argv.contains(r#""branch":"feat/x""#), "payload: {argv}");
-    assert!(shims.recorded("git").is_empty(), "git must not be spawned for a walkable repo");
+    assert!(
+        shims.recorded("git").is_empty(),
+        "git must not be spawned for a walkable repo"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -454,9 +483,20 @@ fn dedup_state_prefers_xdg_runtime_dir_over_tmpdir() {
     shims.add_recorder("zellij");
     shims.add_fake_git("/home/u/myrepo", "main");
     let xdg = tempfile::tempdir().unwrap();
-    notify_deduped(&shims, "running", PRE_EDIT, &[("XDG_RUNTIME_DIR", xdg.path().to_str().unwrap())]);
-    assert!(dedup_leaf(xdg.path()).is_dir(), "state under XDG_RUNTIME_DIR");
-    assert!(!dedup_leaf(shims.dir.path()).exists(), "…and not under TMPDIR");
+    notify_deduped(
+        &shims,
+        "running",
+        PRE_EDIT,
+        &[("XDG_RUNTIME_DIR", xdg.path().to_str().unwrap())],
+    );
+    assert!(
+        dedup_leaf(xdg.path()).is_dir(),
+        "state under XDG_RUNTIME_DIR"
+    );
+    assert!(
+        !dedup_leaf(shims.dir.path()).exists(),
+        "…and not under TMPDIR"
+    );
 }
 
 #[test]
@@ -473,8 +513,16 @@ fn a_squatted_world_writable_dedup_dir_turns_dedup_off() {
     std::fs::set_permissions(&leaf, std::fs::Permissions::from_mode(0o777)).unwrap();
     notify_deduped(&shims, "running", PRE_EDIT, &[]);
     notify_deduped(&shims, "running", POST_EDIT, &[]);
-    assert_eq!(shims.recorded("zellij").len(), 2, "an untrusted dir means no dedup");
-    assert_eq!(std::fs::read_dir(&leaf).unwrap().count(), 0, "nothing written into it");
+    assert_eq!(
+        shims.recorded("zellij").len(),
+        2,
+        "an untrusted dir means no dedup"
+    );
+    assert_eq!(
+        std::fs::read_dir(&leaf).unwrap().count(),
+        0,
+        "nothing written into it"
+    );
 }
 
 #[test]
@@ -493,9 +541,16 @@ fn a_notify_invocation_clap_rejects_still_exits_zero_and_sends_nothing() {
         .write_stdin(PRE_EDIT)
         .output()
         .unwrap();
-    assert!(out.status.success(), "a malformed notify must exit 0, got {:?}", out.status);
+    assert!(
+        out.status.success(),
+        "a malformed notify must exit 0, got {:?}",
+        out.status
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("ignoring this notify invocation"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("ignoring this notify invocation"),
+        "stderr: {stderr}"
+    );
     assert!(shims.recorded("zellij").is_empty());
 
     // Every other subcommand keeps clap's contract: usage on stderr, exit 2.

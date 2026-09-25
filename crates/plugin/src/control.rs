@@ -24,8 +24,8 @@ pub(crate) fn parse(s: &str) -> Option<Verb> {
     match s.trim() {
         "attention-next" => Some(Verb::AttentionNext),
         "attention-prev" => Some(Verb::AttentionPrev),
-        "session-next"   => Some(Verb::SessionNext),
-        "session-prev"   => Some(Verb::SessionPrev),
+        "session-next" => Some(Verb::SessionNext),
+        "session-prev" => Some(Verb::SessionPrev),
         _ => None,
     }
 }
@@ -69,7 +69,10 @@ mod tests {
         let bind = format!("name \"{CMD_PIPE}\"; payload \"");
         let mut checked = 0;
         for chunk in doc.split(bind.as_str()).skip(1) {
-            let verb = chunk.split('"').next().expect("split yields at least one piece");
+            let verb = chunk
+                .split('"')
+                .next()
+                .expect("split yields at least one piece");
             assert!(
                 parse(verb).is_some(),
                 "configuration.md documents cmd verb {verb:?}, which control::parse rejects"

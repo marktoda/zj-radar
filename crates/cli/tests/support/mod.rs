@@ -136,7 +136,11 @@ impl ShimDir {
     /// and the payload on argv — not stdin.
     pub fn sole_pipe_argv(&self) -> String {
         let calls = self.recorded("zellij");
-        assert_eq!(calls.len(), 1, "expected exactly one zellij pipe broadcast: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected exactly one zellij pipe broadcast: {calls:?}"
+        );
         let c = &calls[0];
         assert!(
             c.args.contains(&"pipe".to_string()),

@@ -48,15 +48,21 @@ pub(crate) use wire_serialize;
 /// in how it treats an unknown token.
 macro_rules! wire_serde {
     // Default accessor names.
-    (lenient, $T:ty) => { $crate::wire::wire_serde!(lenient, $T, as_wire, from_wire); };
-    (strict,  $T:ty) => { $crate::wire::wire_serde!(strict,  $T, as_wire, from_wire); };
+    (lenient, $T:ty) => {
+        $crate::wire::wire_serde!(lenient, $T, as_wire, from_wire);
+    };
+    (strict,  $T:ty) => {
+        $crate::wire::wire_serde!(strict, $T, as_wire, from_wire);
+    };
 
     // lenient: `$from(&str) -> Self` — unknown tokens already fold into a fallback.
     (lenient, $T:ty, $to:ident, $from:ident) => {
         $crate::wire::wire_serialize!($T, $to);
         impl<'de> serde::Deserialize<'de> for $T {
             fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-                Ok(<$T>::$from(&<String as serde::Deserialize>::deserialize(de)?))
+                Ok(<$T>::$from(&<String as serde::Deserialize>::deserialize(
+                    de,
+                )?))
             }
         }
     };
@@ -207,8 +213,14 @@ mod tests {
     #[test]
     fn lenient_round_trips_known_and_folds_unknown_into_fallback() {
         assert_eq!(serde_json::to_string(&Mood::Loud).unwrap(), r#""loud""#);
-        assert_eq!(serde_json::from_str::<Mood>(r#""loud""#).unwrap(), Mood::Loud);
+        assert_eq!(
+            serde_json::from_str::<Mood>(r#""loud""#).unwrap(),
+            Mood::Loud
+        );
         // Unknown token deserializes to the fallback instead of erroring.
-        assert_eq!(serde_json::from_str::<Mood>(r#""???""#).unwrap(), Mood::Calm);
+        assert_eq!(
+            serde_json::from_str::<Mood>(r#""???""#).unwrap(),
+            Mood::Calm
+        );
     }
 }

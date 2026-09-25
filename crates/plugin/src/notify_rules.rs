@@ -24,7 +24,12 @@ pub struct Notification {
 /// The text hash keeps two different messages on the same pane+status (e.g. a
 /// second question) as distinct events.
 pub fn claim_key(n: &Notification) -> String {
-    format!("p{}.{}.{:08x}", n.pane_id, n.status.as_wire(), fnv1a(&n.title, &n.body))
+    format!(
+        "p{}.{}.{:08x}",
+        n.pane_id,
+        n.status.as_wire(),
+        fnv1a(&n.title, &n.body)
+    )
 }
 
 /// FNV-1a over title+body. Stability across *builds* is irrelevant — every
@@ -84,7 +89,12 @@ fn build(pane_id: u32, o: &TrackedObservation, status: Status) -> Notification {
     } else {
         format!("{phrase} — {}", o.msg)
     };
-    Notification { pane_id, status, title, body }
+    Notification {
+        pane_id,
+        status,
+        title,
+        body,
+    }
 }
 
 /// Emit a notification for each pane that transitioned INTO an attention status
@@ -164,12 +174,20 @@ mod tests {
     use super::*;
 
     fn obs(status: Status, repo: &str, branch: &str, msg: &str) -> TrackedObservation {
-        let mut o = TrackedObservation::command(status, repo.to_string(), msg.to_string(), crate::kind::Kind::Other, 1);
+        let mut o = TrackedObservation::command(
+            status,
+            repo.to_string(),
+            msg.to_string(),
+            crate::kind::Kind::Other,
+            1,
+        );
         o.branch = branch.to_string();
         o
     }
 
-    fn current<'a>(pairs: &'a [(u32, &'a TrackedObservation)]) -> BTreeMap<u32, &'a TrackedObservation> {
+    fn current<'a>(
+        pairs: &'a [(u32, &'a TrackedObservation)],
+    ) -> BTreeMap<u32, &'a TrackedObservation> {
         pairs.iter().copied().collect()
     }
 
@@ -212,7 +230,10 @@ mod tests {
         let pairs = [(7, &o)];
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
-        let cfg = Config { notify_when_focused: true, ..Config::default() };
+        let cfg = Config {
+            notify_when_focused: true,
+            ..Config::default()
+        };
         assert_eq!(diff(&prev, &cur, Some(7), &cfg).len(), 1);
     }
 
@@ -222,9 +243,15 @@ mod tests {
         let pairs = [(7, &o)];
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
-        let no_error = Config { notify_error: false, ..Config::default() };
+        let no_error = Config {
+            notify_error: false,
+            ..Config::default()
+        };
         assert!(diff(&prev, &cur, None, &no_error).is_empty());
-        let off = Config { notify: false, ..Config::default() };
+        let off = Config {
+            notify: false,
+            ..Config::default()
+        };
         assert!(diff(&prev, &cur, None, &off).is_empty());
     }
 
@@ -234,7 +261,10 @@ mod tests {
         let pairs = [(7, &o)];
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
-        let cfg = Config { notify_done: false, ..Config::default() };
+        let cfg = Config {
+            notify_done: false,
+            ..Config::default()
+        };
         assert!(
             diff(&prev, &cur, None, &cfg).is_empty(),
             "notify_done:false must suppress a Running→Done edge"
@@ -247,7 +277,10 @@ mod tests {
         let pairs = [(7, &o)];
         let cur = current(&pairs);
         let prev = BTreeMap::from([(7, Status::Running)]);
-        let cfg = Config { notify_pending: false, ..Config::default() };
+        let cfg = Config {
+            notify_pending: false,
+            ..Config::default()
+        };
         assert!(
             diff(&prev, &cur, None, &cfg).is_empty(),
             "notify_pending:false must suppress a Running→Pending edge"
@@ -331,8 +364,14 @@ mod tests {
         let plain = obs(Status::Done, "prod", "", "cargo build");
         let prev = BTreeMap::from([(7, Status::Running)]);
 
-        for (notify_remote, notify_done) in [(true, true), (true, false), (false, true), (false, false)] {
-            let cfg = Config { notify_remote, notify_done, ..Config::default() };
+        for (notify_remote, notify_done) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let cfg = Config {
+                notify_remote,
+                notify_done,
+                ..Config::default()
+            };
             let remote_pairs = [(7, &remote)];
             assert_eq!(
                 !diff(&prev, &current(&remote_pairs), None, &cfg).is_empty(),
@@ -384,8 +423,16 @@ mod tests {
         assert_eq!(argv[0], "sh");
         assert_eq!(argv[1], "-c");
         // The host script tries macOS first, then the Linux fallback.
-        assert!(argv[2].contains("osascript"), "macOS branch present: {}", argv[2]);
-        assert!(argv[2].contains("notify-send"), "Linux fallback present: {}", argv[2]);
+        assert!(
+            argv[2].contains("osascript"),
+            "macOS branch present: {}",
+            argv[2]
+        );
+        assert!(
+            argv[2].contains("notify-send"),
+            "Linux fallback present: {}",
+            argv[2]
+        );
         // Title/body ride as $1/$2 — argv[4]/argv[5], after the $0 label.
         assert_eq!(argv[3], "zj-radar");
         assert_eq!(argv[4], "pinky · main");

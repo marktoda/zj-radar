@@ -57,10 +57,10 @@ impl CheckItem {
 /// Warns don't fail: they're advice, not a broken install.
 pub(crate) fn check_codex(legacy_notify: bool) -> bool {
     let env = CodexEnv {
-        codex_on_path:    which("codex"),
+        codex_on_path: which("codex"),
         zj_radar_on_path: which("zj-radar"),
-        config_text:      codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
-        hooks_text:       codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        config_text: codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        hooks_text: codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok()),
     };
     let items = codex_check_items(&analyze_codex(&env), legacy_notify);
     println!("codex:");
@@ -157,11 +157,19 @@ pub(crate) fn zellij_check_items(f: &ZellijFacts, layout_name: &str) -> Vec<Chec
 
     // 5. producer — diagnosis, not a guess: say WHICH producers the doctor saw.
     items.push(if f.producers.is_empty() {
-        let routes: Vec<String> =
-            crate::agents::Agent::ALL.iter().map(|a| format!("`zj-radar setup {}`", a.source())).collect();
-        CheckItem::missing("producer", format!("no producer detected — run one of {}", routes.join(", ")))
+        let routes: Vec<String> = crate::agents::Agent::ALL
+            .iter()
+            .map(|a| format!("`zj-radar setup {}`", a.source()))
+            .collect();
+        CheckItem::missing(
+            "producer",
+            format!("no producer detected — run one of {}", routes.join(", ")),
+        )
     } else {
-        CheckItem::ok("producer", format!("wired: {}", crate::producers::names(&f.producers)))
+        CheckItem::ok(
+            "producer",
+            format!("wired: {}", crate::producers::names(&f.producers)),
+        )
     });
 
     // 6. managed config (only emit when true)
@@ -219,7 +227,10 @@ pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
         if wired {
             CheckItem::ok("plugin", format!("{CLAUDE_PLUGIN} plugin installed"))
         } else {
-            CheckItem::missing("plugin", format!("{CLAUDE_PLUGIN} not installed — run `zj-radar setup claude`"))
+            CheckItem::missing(
+                "plugin",
+                format!("{CLAUDE_PLUGIN} not installed — run `zj-radar setup claude`"),
+            )
         },
     ]
 }
@@ -229,10 +240,10 @@ pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
 /// dir; the doctor has two facts: the binary and our marker in the plugin file.
 pub(crate) fn check_opencode() -> bool {
     let env = OpencodeEnv {
-        opencode_on_path:   which("opencode"),
-        zj_radar_on_path:   which("zj-radar"),
-        plugin_text:        opencode_plugin_text(),
-        tui_plugin_text:    opencode_tui_plugin_text(),
+        opencode_on_path: which("opencode"),
+        zj_radar_on_path: which("zj-radar"),
+        plugin_text: opencode_plugin_text(),
+        tui_plugin_text: opencode_tui_plugin_text(),
     };
     let items = opencode_check_items(&analyze_opencode(&env));
     println!("opencode:");
@@ -279,11 +290,13 @@ fn opencode_bridge_item(name: &'static str, is_ours: Option<bool>) -> CheckItem 
 /// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_pi() -> bool {
     let pi_on_path = which("pi");
-    let pi_version = pi_on_path.then(|| version_output_bounded("pi", std::time::Duration::from_secs(5))).flatten();
+    let pi_version = pi_on_path
+        .then(|| version_output_bounded("pi", std::time::Duration::from_secs(5)))
+        .flatten();
     let env = PiEnv {
         pi_on_path,
         zj_radar_on_path: which("zj-radar"),
-        extension_text:   pi_extension_text(),
+        extension_text: pi_extension_text(),
         pi_version,
     };
     let items = pi_check_items(&analyze_pi(&env));
@@ -389,7 +402,9 @@ fn version_output_bounded(bin: &str, timeout: std::time::Duration) -> Option<Str
 /// Returns true when any item is `Missing` — see [`check_codex`].
 pub(crate) fn check_zellij(layout_name: Option<&str>) -> bool {
     // No resolvable config dir = nothing to inspect; the refusal is the report.
-    let Some(config_dir) = zellij_config_dir_or_report() else { return true };
+    let Some(config_dir) = zellij_config_dir_or_report() else {
+        return true;
+    };
     let (env, paths) = read_zellij_env(&config_dir, layout_name);
     // The inspected layout's NAME comes back on `paths` — the same resolution
     // the read used, so the report and the read can't name different layouts.
@@ -431,9 +446,10 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
     });
 
     items.push(match &f.hooks_feature {
-        CodexHooksFeature::Disabled => {
-            CheckItem::warn("hooks feature", "`[features].hooks = false` disables Codex hooks")
-        }
+        CodexHooksFeature::Disabled => CheckItem::warn(
+            "hooks feature",
+            "`[features].hooks = false` disables Codex hooks",
+        ),
         CodexHooksFeature::EnabledOrUnset => {
             CheckItem::ok("hooks feature", "enabled or unset in config.toml")
         }
@@ -452,10 +468,9 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
             CodexNotifyState::NotInstalled => {
                 CheckItem::missing("legacy notify", "Codex notify is not installed")
             }
-            CodexNotifyState::ConfigError(e) => CheckItem::warn(
-                "config.toml",
-                format!("config.toml is not valid TOML: {e}"),
-            ),
+            CodexNotifyState::ConfigError(e) => {
+                CheckItem::warn("config.toml", format!("config.toml is not valid TOML: {e}"))
+            }
         });
     } else {
         items.push(match &f.owned_hook_events {
@@ -465,7 +480,10 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
             }
             Some(Ok(count)) if *count > 0 => CheckItem::warn(
                 "hooks.json",
-                format!("partial zj-radar hook install ({count}/{})", CODEX_HOOK_EVENTS.len()),
+                format!(
+                    "partial zj-radar hook install ({count}/{})",
+                    CODEX_HOOK_EVENTS.len()
+                ),
             ),
             Some(Ok(_)) => {
                 CheckItem::missing("hooks.json", "zj-radar Codex hooks are not installed")
@@ -498,10 +516,10 @@ mod tests {
             o => panic!("{o:?}"),
         };
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      Some("model = \"x\"\n".to_string()),
-            hooks_text:       Some(hooks.to_string()),
+            config_text: Some("model = \"x\"\n".to_string()),
+            hooks_text: Some(hooks.to_string()),
         });
         let items = codex_check_items(&facts, false);
         assert!(items.contains(&CheckItem::ok("codex binary", "found on PATH")));
@@ -517,9 +535,16 @@ mod tests {
         // The trust reminder is a Note item, never a warn — an unconditional
         // warn made every healthy install read perma-Warn, and Notes are
         // ignored by the Missing exit-code logic.
-        let trust = items.iter().find(|item| item.name == "hook trust").expect("hook trust note");
+        let trust = items
+            .iter()
+            .find(|item| item.name == "hook trust")
+            .expect("hook trust note");
         assert_eq!(trust.level, CheckLevel::Note);
-        assert!(trust.detail.contains("/hooks"), "must point at `/hooks`: {}", trust.detail);
+        assert!(
+            trust.detail.contains("/hooks"),
+            "must point at `/hooks`: {}",
+            trust.detail
+        );
     }
 
     #[test]
@@ -529,10 +554,10 @@ mod tests {
             o => panic!("{o:?}"),
         };
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      Some("[features]\nhooks = false\n".to_string()),
-            hooks_text:       Some(hooks.to_string()),
+            config_text: Some("[features]\nhooks = false\n".to_string()),
+            hooks_text: Some(hooks.to_string()),
         });
         let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks feature"
@@ -557,10 +582,10 @@ mod tests {
           }
         }"#;
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      None,
-            hooks_text:       Some(partial.to_string()),
+            config_text: None,
+            hooks_text: Some(partial.to_string()),
         });
         let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks.json"
@@ -568,10 +593,10 @@ mod tests {
             && item.detail.contains("partial")));
 
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      None,
-            hooks_text:       Some("not json".to_string()),
+            config_text: None,
+            hooks_text: Some("not json".to_string()),
         });
         let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "hooks.json"
@@ -587,10 +612,10 @@ mod tests {
         };
         let config = "notify = [\"/other\", \"turn-ended\"]\n";
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      Some(config.to_string()),
-            hooks_text:       Some(hooks.to_string()),
+            config_text: Some(config.to_string()),
+            hooks_text: Some(hooks.to_string()),
         });
         let items = codex_check_items(&facts, false);
         assert!(items.iter().any(|item| item.name == "legacy notify"
@@ -601,10 +626,10 @@ mod tests {
     #[test]
     fn codex_check_legacy_notify_mode_reports_notify_slot() {
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      Some("notify = [\"zj-radar\", \"notify\", \"codex\"]\n".to_string()),
-            hooks_text:       None,
+            config_text: Some("notify = [\"zj-radar\", \"notify\", \"codex\"]\n".to_string()),
+            hooks_text: None,
         });
         let items = codex_check_items(&facts, true);
         assert!(items.contains(&CheckItem::ok(
@@ -613,10 +638,10 @@ mod tests {
         )));
 
         let facts = analyze_codex(&CodexEnv {
-            codex_on_path:    true,
+            codex_on_path: true,
             zj_radar_on_path: true,
-            config_text:      Some("notify = [\"/other\"]\n".to_string()),
-            hooks_text:       None,
+            config_text: Some("notify = [\"/other\"]\n".to_string()),
+            hooks_text: None,
         });
         let items = codex_check_items(&facts, true);
         assert!(items.iter().any(|item| item.name == "legacy notify"
@@ -632,16 +657,16 @@ mod tests {
     /// care about. (The raw-text→fact derivation is tested in `analyze_zellij_*`.)
     fn all_good_facts() -> ZellijFacts {
         ZellijFacts {
-            managed_alias_present:   false,
+            managed_alias_present: false,
             unmanaged_alias_present: true,
-            alias_is_store_path:     false,
-            wasm_present:            true,
-            has_rail:                Some(true),
-            empty_tab_bodies:        vec![],
-            granted:                 Some(true),
-            producers:               vec![crate::agents::Agent::Codex],
-            config_managed:          false,
-            zellij_version:          Some("zellij 0.44.3".to_string()),
+            alias_is_store_path: false,
+            wasm_present: true,
+            has_rail: Some(true),
+            empty_tab_bodies: vec![],
+            granted: Some(true),
+            producers: vec![crate::agents::Agent::Codex],
+            config_managed: false,
+            zellij_version: Some("zellij 0.44.3".to_string()),
         }
     }
 
@@ -652,12 +677,24 @@ mod tests {
     #[test]
     fn zellij_check_items_all_ok() {
         let items = all_good_check_items();
-        assert!(items.iter().any(|i| i.name == "zellij binary" && i.level == CheckLevel::Ok));
-        assert!(items.iter().any(|i| i.name == "alias" && i.level == CheckLevel::Ok));
-        assert!(items.iter().any(|i| i.name == "wasm" && i.level == CheckLevel::Ok));
-        assert!(items.iter().any(|i| i.name == "layout" && i.level == CheckLevel::Ok));
-        assert!(items.iter().any(|i| i.name == "grant" && i.level == CheckLevel::Ok));
-        assert!(items.iter().any(|i| i.name == "producer" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "alias" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "wasm" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "layout" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "grant" && i.level == CheckLevel::Ok));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "producer" && i.level == CheckLevel::Ok));
         // managed config not emitted when false
         assert!(!items.iter().any(|i| i.name == "managed config"));
     }
@@ -666,7 +703,10 @@ mod tests {
     fn zellij_check_flags_a_missing_or_mismatched_binary() {
         // No zellij on PATH: every other item is moot, and an all-ok report
         // on a zellij-less machine would be a --check lie.
-        let absent = ZellijFacts { zellij_version: None, ..all_good_facts() };
+        let absent = ZellijFacts {
+            zellij_version: None,
+            ..all_good_facts()
+        };
         assert!(zellij_check_items(&absent, "default")
             .iter()
             .any(|i| i.name == "zellij binary" && i.level == CheckLevel::Missing));
@@ -709,10 +749,19 @@ mod tests {
         let mut f = all_good_facts();
         f.alias_is_store_path = true;
         let items = zellij_check_items(&f, "default");
-        let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
+        let alias = items
+            .iter()
+            .find(|i| i.name == "alias")
+            .expect("alias item");
         assert_eq!(alias.level, CheckLevel::Warn, "nix-store alias must warn");
-        assert!(alias.detail.contains("nix/store"), "warn detail must mention nix/store");
-        assert!(alias.detail.contains("rebuild"), "warn detail must mention rebuild");
+        assert!(
+            alias.detail.contains("nix/store"),
+            "warn detail must mention nix/store"
+        );
+        assert!(
+            alias.detail.contains("rebuild"),
+            "warn detail must mention rebuild"
+        );
     }
 
     #[test]
@@ -720,9 +769,19 @@ mod tests {
         let mut f = all_good_facts();
         f.has_rail = Some(false);
         let items = zellij_check_items(&f, "default");
-        let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
-        assert_eq!(layout_item.level, CheckLevel::Missing, "layout without rail must be missing");
-        assert!(layout_item.detail.contains("setup zellij"), "hint must mention setup zellij");
+        let layout_item = items
+            .iter()
+            .find(|i| i.name == "layout")
+            .expect("layout item");
+        assert_eq!(
+            layout_item.level,
+            CheckLevel::Missing,
+            "layout without rail must be missing"
+        );
+        assert!(
+            layout_item.detail.contains("setup zellij"),
+            "hint must mention setup zellij"
+        );
     }
 
     #[test]
@@ -730,9 +789,19 @@ mod tests {
         let mut f = all_good_facts();
         f.granted = Some(false);
         let items = zellij_check_items(&f, "default");
-        let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
-        assert_eq!(grant.level, CheckLevel::Missing, "ungranted wasm must be missing");
-        assert!(grant.detail.contains("--grant"), "hint must mention --grant");
+        let grant = items
+            .iter()
+            .find(|i| i.name == "grant")
+            .expect("grant item");
+        assert_eq!(
+            grant.level,
+            CheckLevel::Missing,
+            "ungranted wasm must be missing"
+        );
+        assert!(
+            grant.detail.contains("--grant"),
+            "hint must mention --grant"
+        );
     }
 
     #[test]
@@ -740,9 +809,15 @@ mod tests {
         let mut f = all_good_facts();
         f.config_managed = true;
         let items = zellij_check_items(&f, "default");
-        let managed = items.iter().find(|i| i.name == "managed config").expect("managed config item");
+        let managed = items
+            .iter()
+            .find(|i| i.name == "managed config")
+            .expect("managed config item");
         assert_eq!(managed.level, CheckLevel::Warn, "managed config must warn");
-        assert!(managed.detail.contains("symlink"), "warn detail must mention symlink");
+        assert!(
+            managed.detail.contains("symlink"),
+            "warn detail must mention symlink"
+        );
     }
 
     #[test]
@@ -750,7 +825,10 @@ mod tests {
         let mut f = all_good_facts();
         f.unmanaged_alias_present = false;
         let items = zellij_check_items(&f, "default");
-        let alias = items.iter().find(|i| i.name == "alias").expect("alias item");
+        let alias = items
+            .iter()
+            .find(|i| i.name == "alias")
+            .expect("alias item");
         assert_eq!(alias.level, CheckLevel::Missing);
     }
 
@@ -759,8 +837,15 @@ mod tests {
         let mut f = all_good_facts();
         f.has_rail = None;
         let items = zellij_check_items(&f, "default");
-        let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
-        assert_eq!(layout_item.level, CheckLevel::Warn, "missing layout file should warn");
+        let layout_item = items
+            .iter()
+            .find(|i| i.name == "layout")
+            .expect("layout item");
+        assert_eq!(
+            layout_item.level,
+            CheckLevel::Warn,
+            "missing layout file should warn"
+        );
     }
 
     #[test]
@@ -768,28 +853,51 @@ mod tests {
         let mut f = all_good_facts();
         f.granted = None;
         let items = zellij_check_items(&f, "default");
-        let grant = items.iter().find(|i| i.name == "grant").expect("grant item");
-        assert_eq!(grant.level, CheckLevel::Warn, "no permissions.kdl should warn");
+        let grant = items
+            .iter()
+            .find(|i| i.name == "grant")
+            .expect("grant item");
+        assert_eq!(
+            grant.level,
+            CheckLevel::Warn,
+            "no permissions.kdl should warn"
+        );
     }
 
     #[test]
     fn zellij_check_items_no_producer_is_missing() {
-        let f = ZellijFacts { producers: vec![], ..all_good_facts() };
+        let f = ZellijFacts {
+            producers: vec![],
+            ..all_good_facts()
+        };
         let items = zellij_check_items(&f, "default");
-        let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
+        let producer = items
+            .iter()
+            .find(|i| i.name == "producer")
+            .expect("producer item");
         assert_eq!(producer.level, CheckLevel::Missing);
         for agent in crate::agents::Agent::ALL {
             let route = format!("`zj-radar setup {}`", agent.source());
-            assert!(producer.detail.contains(&route), "hint must name the {route} route: {}", producer.detail);
+            assert!(
+                producer.detail.contains(&route),
+                "hint must name the {route} route: {}",
+                producer.detail
+            );
         }
     }
 
     #[test]
     fn zellij_check_items_names_every_wired_producer() {
         use crate::agents::Agent;
-        let f = ZellijFacts { producers: vec![Agent::Claude, Agent::Opencode], ..all_good_facts() };
+        let f = ZellijFacts {
+            producers: vec![Agent::Claude, Agent::Opencode],
+            ..all_good_facts()
+        };
         let items = zellij_check_items(&f, "default");
-        let producer = items.iter().find(|i| i.name == "producer").expect("producer item");
+        let producer = items
+            .iter()
+            .find(|i| i.name == "producer")
+            .expect("producer item");
         assert_eq!(producer.level, CheckLevel::Ok);
         assert_eq!(producer.detail, "wired: claude, opencode");
     }
@@ -800,7 +908,10 @@ mod tests {
         let resolved = std::path::Path::new("/home/u/.config/zellij/config.kdl");
         // Unset or empty: no override in play, no item.
         assert_eq!(zellij_config_file_item(None, resolved), None);
-        assert_eq!(zellij_config_file_item(Some(OsString::new()), resolved), None);
+        assert_eq!(
+            zellij_config_file_item(Some(OsString::new()), resolved),
+            None
+        );
         // Pointing at the resolved path: consistent, no item.
         assert_eq!(
             zellij_config_file_item(
@@ -811,11 +922,18 @@ mod tests {
         );
         // Pointing elsewhere: Zellij reads a file setup never edits — warn,
         // naming both paths so the fix is actionable.
-        let item = zellij_config_file_item(Some(OsString::from("/etc/zellij/config.kdl")), resolved)
-            .expect("mismatched override must produce an item");
+        let item =
+            zellij_config_file_item(Some(OsString::from("/etc/zellij/config.kdl")), resolved)
+                .expect("mismatched override must produce an item");
         assert_eq!(item.level, CheckLevel::Warn, "advice, not a broken install");
-        assert!(item.detail.contains("/etc/zellij/config.kdl"), "must name the override");
-        assert!(item.detail.contains("/home/u/.config/zellij/config.kdl"), "must name the resolved path");
+        assert!(
+            item.detail.contains("/etc/zellij/config.kdl"),
+            "must name the override"
+        );
+        assert!(
+            item.detail.contains("/home/u/.config/zellij/config.kdl"),
+            "must name the resolved path"
+        );
         assert!(item.detail.contains("unset it"), "must say how to fix it");
     }
 
@@ -823,7 +941,17 @@ mod tests {
     fn zellij_check_items_order_is_stable() {
         let items = all_good_check_items();
         let names: Vec<&str> = items.iter().map(|i| i.name).collect();
-        assert_eq!(names, &["zellij binary", "alias", "wasm", "layout", "grant", "producer"]);
+        assert_eq!(
+            names,
+            &[
+                "zellij binary",
+                "alias",
+                "wasm",
+                "layout",
+                "grant",
+                "producer"
+            ]
+        );
     }
 
     #[test]
@@ -831,9 +959,15 @@ mod tests {
         // `--layout mine` used to report on "default layout" regardless — the
         // item must name the layout the doctor actually read, in every arm.
         for has_rail in [Some(true), Some(false), None] {
-            let f = ZellijFacts { has_rail, ..all_good_facts() };
+            let f = ZellijFacts {
+                has_rail,
+                ..all_good_facts()
+            };
             let items = zellij_check_items(&f, "mine");
-            let layout_item = items.iter().find(|i| i.name == "layout").expect("layout item");
+            let layout_item = items
+                .iter()
+                .find(|i| i.name == "layout")
+                .expect("layout item");
             assert!(
                 layout_item.detail.contains("`mine`"),
                 "has_rail={has_rail:?}: detail must name the layout: {}",
@@ -848,24 +982,52 @@ mod tests {
         // Zellij spawns no terminal for that tab, so the doctor must say which
         // tab (by the label `layout::empty_tab_bodies` produced) — as a warn,
         // not a failure: the rail keeps the tab alive, the user opens a pane.
-        let f = ZellijFacts { empty_tab_bodies: vec!["tab #1".into()], ..all_good_facts() };
+        let f = ZellijFacts {
+            empty_tab_bodies: vec!["tab #1".into()],
+            ..all_good_facts()
+        };
         let items = zellij_check_items(&f, "mine");
-        let item = items.iter().find(|i| i.name == "tab bodies").expect("tab bodies item");
+        let item = items
+            .iter()
+            .find(|i| i.name == "tab bodies")
+            .expect("tab bodies item");
         assert_eq!(item.level, CheckLevel::Warn);
-        assert!(item.detail.contains("`mine` declares 1 tab") && item.detail.contains("tab #1"), "{}", item.detail);
+        assert!(
+            item.detail.contains("`mine` declares 1 tab") && item.detail.contains("tab #1"),
+            "{}",
+            item.detail
+        );
 
-        let two = ZellijFacts { empty_tab_bodies: vec!["\"a\"".into(), "tab #2".into()], ..all_good_facts() };
+        let two = ZellijFacts {
+            empty_tab_bodies: vec!["\"a\"".into(), "tab #2".into()],
+            ..all_good_facts()
+        };
         let items = zellij_check_items(&two, "mine");
-        let detail = &items.iter().find(|i| i.name == "tab bodies").unwrap().detail;
-        assert!(detail.contains("2 tabs") && detail.contains("\"a\", tab #2"), "{detail}");
+        let detail = &items
+            .iter()
+            .find(|i| i.name == "tab bodies")
+            .unwrap()
+            .detail;
+        assert!(
+            detail.contains("2 tabs") && detail.contains("\"a\", tab #2"),
+            "{detail}"
+        );
 
         // Without the rail a body-less tab is fine — a top-level `children`
         // fills it — so the item must not appear at all.
         for has_rail in [Some(false), None] {
-            let f = ZellijFacts { has_rail, empty_tab_bodies: vec!["tab #1".into()], ..all_good_facts() };
-            assert!(zellij_check_items(&f, "mine").iter().all(|i| i.name != "tab bodies"));
+            let f = ZellijFacts {
+                has_rail,
+                empty_tab_bodies: vec!["tab #1".into()],
+                ..all_good_facts()
+            };
+            assert!(zellij_check_items(&f, "mine")
+                .iter()
+                .all(|i| i.name != "tab bodies"));
         }
-        assert!(all_good_check_items().iter().all(|i| i.name != "tab bodies"));
+        assert!(all_good_check_items()
+            .iter()
+            .all(|i| i.name != "tab bodies"));
     }
 
     #[test]
@@ -875,7 +1037,10 @@ mod tests {
         // it rather than re-pinning the literal here.
         let items = claude_check_items(true, true);
         assert!(items.contains(&CheckItem::ok("claude binary", "found on PATH")));
-        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
+        let plugin = items
+            .iter()
+            .find(|i| i.name == "plugin")
+            .expect("plugin item");
         assert_eq!(plugin.level, CheckLevel::Ok);
         assert!(
             plugin.detail.contains(CLAUDE_PLUGIN),
@@ -890,7 +1055,10 @@ mod tests {
         // Plugin absent → missing, with the remedy pinned so the hint the
         // doctor prints stays a real invocation.
         let items = claude_check_items(true, false);
-        let plugin = items.iter().find(|i| i.name == "plugin").expect("plugin item");
+        let plugin = items
+            .iter()
+            .find(|i| i.name == "plugin")
+            .expect("plugin item");
         assert_eq!(plugin.level, CheckLevel::Missing);
         assert!(
             plugin.detail.contains("run `zj-radar setup claude`"),
@@ -899,22 +1067,36 @@ mod tests {
         );
     }
 
-    fn opencode_facts(on_path: bool, plugin_text: Option<&str>, tui_plugin_text: Option<&str>) -> OpencodeFacts {
+    fn opencode_facts(
+        on_path: bool,
+        plugin_text: Option<&str>,
+        tui_plugin_text: Option<&str>,
+    ) -> OpencodeFacts {
         analyze_opencode(&OpencodeEnv {
-            opencode_on_path:   on_path,
-            zj_radar_on_path:   true,
-            plugin_text:        plugin_text.map(str::to_string),
-            tui_plugin_text:    tui_plugin_text.map(str::to_string),
+            opencode_on_path: on_path,
+            zj_radar_on_path: true,
+            plugin_text: plugin_text.map(str::to_string),
+            tui_plugin_text: tui_plugin_text.map(str::to_string),
         })
     }
 
     #[test]
     fn opencode_check_reports_ready_when_both_bridges_are_ours() {
-        let items = opencode_check_items(&opencode_facts(true, Some(OPENCODE_PLUGIN_JS), Some(OPENCODE_TUI_PLUGIN_JS)));
+        let items = opencode_check_items(&opencode_facts(
+            true,
+            Some(OPENCODE_PLUGIN_JS),
+            Some(OPENCODE_TUI_PLUGIN_JS),
+        ));
         assert!(items.contains(&CheckItem::ok("opencode binary", "found on PATH")));
         assert!(items.contains(&CheckItem::ok("zj-radar binary", "found on PATH")));
-        assert!(items.contains(&CheckItem::ok("plugin (opencode 1.x)", "zj-radar bridge plugin installed")));
-        assert!(items.contains(&CheckItem::ok("plugin (opencode 2.x)", "zj-radar bridge plugin installed")));
+        assert!(items.contains(&CheckItem::ok(
+            "plugin (opencode 1.x)",
+            "zj-radar bridge plugin installed"
+        )));
+        assert!(items.contains(&CheckItem::ok(
+            "plugin (opencode 2.x)",
+            "zj-radar bridge plugin installed"
+        )));
         assert!(items.iter().all(|i| i.level == CheckLevel::Ok), "{items:?}");
     }
 
@@ -927,8 +1109,16 @@ mod tests {
         for name in ["plugin (opencode 1.x)", "plugin (opencode 2.x)"] {
             let plugin = items.iter().find(|i| i.name == name).expect("plugin item");
             assert_eq!(plugin.level, CheckLevel::Missing);
-            assert!(plugin.detail.contains("dark"), "must name the dark-row consequence: {}", plugin.detail);
-            assert!(plugin.detail.contains("`zj-radar setup opencode`"), "{}", plugin.detail);
+            assert!(
+                plugin.detail.contains("dark"),
+                "must name the dark-row consequence: {}",
+                plugin.detail
+            );
+            assert!(
+                plugin.detail.contains("`zj-radar setup opencode`"),
+                "{}",
+                plugin.detail
+            );
         }
     }
 
@@ -937,38 +1127,66 @@ mod tests {
         // An install from a release before the 2.x bridge: 1.x file ours, no
         // TUI dir. The doctor must point at re-running setup, per bridge.
         let items = opencode_check_items(&opencode_facts(true, Some(OPENCODE_PLUGIN_JS), None));
-        assert!(items.contains(&CheckItem::ok("plugin (opencode 1.x)", "zj-radar bridge plugin installed")));
-        let tui = items.iter().find(|i| i.name == "plugin (opencode 2.x)").expect("tui item");
+        assert!(items.contains(&CheckItem::ok(
+            "plugin (opencode 1.x)",
+            "zj-radar bridge plugin installed"
+        )));
+        let tui = items
+            .iter()
+            .find(|i| i.name == "plugin (opencode 2.x)")
+            .expect("tui item");
         assert_eq!(tui.level, CheckLevel::Missing);
     }
 
     #[test]
     fn opencode_check_warns_on_foreign_plugin_file() {
-        let items = opencode_check_items(&opencode_facts(true, Some("// not ours\n"), Some("// not ours\n")));
+        let items = opencode_check_items(&opencode_facts(
+            true,
+            Some("// not ours\n"),
+            Some("// not ours\n"),
+        ));
         for name in ["plugin (opencode 1.x)", "plugin (opencode 2.x)"] {
             let plugin = items.iter().find(|i| i.name == name).expect("plugin item");
             assert_eq!(plugin.level, CheckLevel::Warn);
             assert!(plugin.detail.contains("--force"), "{}", plugin.detail);
         }
-        assert!(!items.iter().any(|i| i.level == CheckLevel::Missing), "a foreign file is a warn, not a fail");
+        assert!(
+            !items.iter().any(|i| i.level == CheckLevel::Missing),
+            "a foreign file is a warn, not a fail"
+        );
     }
 
     #[test]
     fn pi_check_warns_below_the_version_floor_only() {
-        let facts = |v| PiFacts { pi_on_path: true, zj_radar_on_path: true, extension_is_ours: Some(true), pi_version: v };
+        let facts = |v| PiFacts {
+            pi_on_path: true,
+            zj_radar_on_path: true,
+            extension_is_ours: Some(true),
+            pi_version: v,
+        };
         assert_eq!(pi_check_items(&facts(Some((0, 87, 1)))).len(), 3);
         assert_eq!(pi_check_items(&facts(None)).len(), 3);
         assert_eq!(pi_check_items(&facts(Some(PI_DIALOG_MIN_VERSION))).len(), 3);
         // Below the hard floor: both warns (no Done, and no dialog "needs you").
         let old = pi_check_items(&facts(Some((0, 79, 0))));
         assert_eq!(old.len(), 5);
-        assert!(old[3..].iter().all(|i| i.level == CheckLevel::Warn && i.name == "pi version"));
-        assert!(old[3].detail.contains("older than 0.80.4"), "{}", old[3].detail);
+        assert!(old[3..]
+            .iter()
+            .all(|i| i.level == CheckLevel::Warn && i.name == "pi version"));
+        assert!(
+            old[3].detail.contains("older than 0.80.4"),
+            "{}",
+            old[3].detail
+        );
         // Between the floors: only the dialog warn, its version formatted from the constant.
         let mid = pi_check_items(&facts(Some((0, 84, 3))));
         assert_eq!(mid.len(), 4);
         assert_eq!(mid[3].level, CheckLevel::Warn);
-        assert!(mid[3].detail.contains("older than 0.84.4") && mid[3].detail.contains("needs you"), "{}", mid[3].detail);
+        assert!(
+            mid[3].detail.contains("older than 0.84.4") && mid[3].detail.contains("needs you"),
+            "{}",
+            mid[3].detail
+        );
     }
 
     #[test]
@@ -977,26 +1195,39 @@ mod tests {
         // install without the binary on PATH must not fail `--check`.
         let pi = |ext: Option<&str>| {
             pi_check_items(&analyze_pi(&PiEnv {
-                pi_on_path:       false,
+                pi_on_path: false,
                 zj_radar_on_path: true,
-                extension_text:   ext.map(str::to_string),
-                pi_version:       None,
+                extension_text: ext.map(str::to_string),
+                pi_version: None,
             }))
         };
         assert_eq!(pi(Some(PI_EXTENSION_JS))[0].level, CheckLevel::Warn);
-        assert!(!pi(Some(PI_EXTENSION_JS)).iter().any(|i| i.level == CheckLevel::Missing));
-        assert_eq!(pi(None)[0].level, CheckLevel::Missing, "no binary AND no bridge is still Missing");
-        assert_eq!(pi(Some("// theirs\n"))[0].level, CheckLevel::Missing, "a foreign file isn't our install");
+        assert!(!pi(Some(PI_EXTENSION_JS))
+            .iter()
+            .any(|i| i.level == CheckLevel::Missing));
+        assert_eq!(
+            pi(None)[0].level,
+            CheckLevel::Missing,
+            "no binary AND no bridge is still Missing"
+        );
+        assert_eq!(
+            pi(Some("// theirs\n"))[0].level,
+            CheckLevel::Missing,
+            "a foreign file isn't our install"
+        );
 
         let oc = |plugin: Option<&str>, tui: Option<&str>| {
             opencode_check_items(&analyze_opencode(&OpencodeEnv {
-                opencode_on_path:   false,
-                zj_radar_on_path:   true,
-                plugin_text:        plugin.map(str::to_string),
-                tui_plugin_text:    tui.map(str::to_string),
+                opencode_on_path: false,
+                zj_radar_on_path: true,
+                plugin_text: plugin.map(str::to_string),
+                tui_plugin_text: tui.map(str::to_string),
             }))
         };
-        assert_eq!(oc(Some(OPENCODE_PLUGIN_JS), Some(OPENCODE_TUI_PLUGIN_JS))[0].level, CheckLevel::Warn);
+        assert_eq!(
+            oc(Some(OPENCODE_PLUGIN_JS), Some(OPENCODE_TUI_PLUGIN_JS))[0].level,
+            CheckLevel::Warn
+        );
         assert_eq!(oc(None, None)[0].level, CheckLevel::Missing);
     }
 
@@ -1015,7 +1246,11 @@ mod tests {
             zellij_version: None,
             ..all_good_facts()
         };
-        let warn_variants = ZellijFacts { has_rail: None, granted: None, ..all_missing() };
+        let warn_variants = ZellijFacts {
+            has_rail: None,
+            granted: None,
+            ..all_missing()
+        };
 
         let mut details: Vec<String> = Vec::new();
         for items in [
@@ -1024,36 +1259,36 @@ mod tests {
             claude_check_items(false, false),
             codex_check_items(
                 &analyze_codex(&CodexEnv {
-                    codex_on_path:    false,
+                    codex_on_path: false,
                     zj_radar_on_path: false,
-                    config_text:      None,
-                    hooks_text:       None,
+                    config_text: None,
+                    hooks_text: None,
                 }),
                 false,
             ),
             opencode_check_items(&analyze_opencode(&OpencodeEnv {
-                opencode_on_path:   false,
-                zj_radar_on_path:   false,
-                plugin_text:        None,
-                tui_plugin_text:    None,
+                opencode_on_path: false,
+                zj_radar_on_path: false,
+                plugin_text: None,
+                tui_plugin_text: None,
             })),
             opencode_check_items(&analyze_opencode(&OpencodeEnv {
-                opencode_on_path:   true,
-                zj_radar_on_path:   true,
-                plugin_text:        Some("// someone else's plugin\n".to_string()),
-                tui_plugin_text:    Some("// someone else's plugin\n".to_string()),
-            })),
-            pi_check_items(&analyze_pi(&PiEnv {
-                pi_on_path:       false,
-                zj_radar_on_path: false,
-                extension_text:   None,
-                pi_version:       None,
-            })),
-            pi_check_items(&analyze_pi(&PiEnv {
-                pi_on_path:       true,
+                opencode_on_path: true,
                 zj_radar_on_path: true,
-                extension_text:   Some("// someone else's extension\n".to_string()),
-                pi_version:       None,
+                plugin_text: Some("// someone else's plugin\n".to_string()),
+                tui_plugin_text: Some("// someone else's plugin\n".to_string()),
+            })),
+            pi_check_items(&analyze_pi(&PiEnv {
+                pi_on_path: false,
+                zj_radar_on_path: false,
+                extension_text: None,
+                pi_version: None,
+            })),
+            pi_check_items(&analyze_pi(&PiEnv {
+                pi_on_path: true,
+                zj_radar_on_path: true,
+                extension_text: Some("// someone else's extension\n".to_string()),
+                pi_version: None,
             })),
         ] {
             details.extend(items.into_iter().map(|i| i.detail));

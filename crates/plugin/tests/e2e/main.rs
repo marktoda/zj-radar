@@ -174,14 +174,24 @@ fn background_task_lines_render_on_the_live_rail() {
         "",
         r#"{"snapshot":false,"items":[{"id":"b1","state":"failed"}]}"#,
     ));
-    session.pipe_status(&payload("done", "tests failed", "", r#"{"snapshot":true,"items":[]}"#));
+    session.pipe_status(&payload(
+        "done",
+        "tests failed",
+        "",
+        r#"{"snapshot":true,"items":[]}"#,
+    ));
     let settled = session.wait_until(secs, |s| {
         let sb = sidebar_region(&s.screen(), 32);
-        sb.lines().any(|l| l.contains('┊') && l.contains('✗') && l.contains("Run tests")) && !sb.contains('⋯')
+        sb.lines()
+            .any(|l| l.contains('┊') && l.contains('✗') && l.contains("Run tests"))
+            && !sb.contains('⋯')
     });
     let sidebar = sidebar_region(&session.screen(), 32);
     eprintln!("[e2e] sidebar region (32 cols):\n{sidebar}");
-    assert!(settled, "the task should end as ✗ under a done agent (no ⋯);\nsidebar:\n{sidebar}");
+    assert!(
+        settled,
+        "the task should end as ✗ under a done agent (no ⋯);\nsidebar:\n{sidebar}"
+    );
 }
 
 /// Issue #46: a rail whose tab holds no terminal pane must not take the
@@ -215,7 +225,13 @@ fn rail_only_tab_keeps_the_session_alive() {
     assert!(
         session.is_alive() && !text.contains("Bye from Zellij"),
         "session died with only the rail in its tab; PTY tail:\n{}",
-        text.chars().rev().take(400).collect::<String>().chars().rev().collect::<String>()
+        text.chars()
+            .rev()
+            .take(400)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
     );
 
     // Recovery path: opening a pane splits the (still selectable, focused)
@@ -293,15 +309,21 @@ fn clicking_pending_glyph_acknowledges_the_pane() {
     });
     let screen = session.screen();
     let sidebar = sidebar_region(&screen, 32);
-    assert!(ready, "pending glyph must be visible before clicking; rail:\n{sidebar}");
+    assert!(
+        ready,
+        "pending glyph must be visible before clicking; rail:\n{sidebar}"
+    );
     let row = sidebar_row_index(&screen, 32, "approve glyph")
         .expect("the pending pane line must be visible");
-    let glyph_col = sidebar.lines().nth(row)
+    let glyph_col = sidebar
+        .lines()
+        .nth(row)
         .and_then(|line| {
             let prefix = line.split_once('✓')?.0;
             Some(unicode_width::UnicodeWidthStr::width(prefix))
         })
-        .expect("the pane line's exact checkmark column") as u16 + 1;
+        .expect("the pane line's exact checkmark column") as u16
+        + 1;
 
     // `click_at` is one-based screen space, whereas the runtime receives the
     // zero-based display-cell offset. The +1 is explicit at this boundary.
@@ -310,8 +332,16 @@ fn clicking_pending_glyph_acknowledges_the_pane() {
         !sidebar_region(&s.screen(), 32).contains('✓')
     });
     let after = sidebar_region(&session.screen(), 32);
-    eprintln!("[e2e] pending glyph click col={}, row={} rail after:\n{}", glyph_col, row + 1, after);
-    assert!(acknowledged, "exact glyph click must broadcast ack and remove its hotspot; rail:\n{after}");
+    eprintln!(
+        "[e2e] pending glyph click col={}, row={} rail after:\n{}",
+        glyph_col,
+        row + 1,
+        after
+    );
+    assert!(
+        acknowledged,
+        "exact glyph click must broadcast ack and remove its hotspot; rail:\n{after}"
+    );
 }
 
 /// Multi-agent scenario: pipe a running agent and a pending ("needs-you") agent
@@ -521,14 +551,8 @@ fn multi_pane_renders_one_line_per_pane() {
         .iter()
         .position(|l| l.contains("beta") || l.contains("taskb"));
 
-    eprintln!(
-        "[e2e] pane-A identifier on sidebar row: {:?}",
-        line_a
-    );
-    eprintln!(
-        "[e2e] pane-B identifier on sidebar row: {:?}",
-        line_b
-    );
+    eprintln!("[e2e] pane-A identifier on sidebar row: {:?}", line_a);
+    eprintln!("[e2e] pane-B identifier on sidebar row: {:?}", line_b);
 
     assert!(
         line_a.is_some(),
@@ -640,7 +664,10 @@ fn rendered_sidebar_paints_focused_card_with_text_and_tint() {
     //     in the real rendered frame.
     let card_bg = sidebar_row_bg_rgb(&screen, tab_idx as u16, 32);
     let header_bg = sidebar_row_bg_rgb(&screen, 0, 32);
-    eprintln!("[e2e] focused-card bg={:?}, header bg={:?}", card_bg, header_bg);
+    eprintln!(
+        "[e2e] focused-card bg={:?}, header bg={:?}",
+        card_bg, header_bg
+    );
     assert!(
         card_bg.is_some(),
         "focused card row must be painted with a truecolor surface in the real frame;\nsidebar:\n{sidebar}"
@@ -875,8 +902,8 @@ fn click_on_a_tab_row_switches_the_active_tab() {
     // is already active is a no-op). Assert the switch via dump-screen showing
     // tab 2's terminal — external to the rail's own rendering, so it proves the
     // SwitchTab effect reached Zellij.
-    let row2 = sidebar_row_index(&screen, 32, "beta")
-        .expect("tab 2 row must be locatable in the rail");
+    let row2 =
+        sidebar_row_index(&screen, 32, "beta").expect("tab 2 row must be locatable in the rail");
     let click_row = (row2 + 1) as u16;
     eprintln!(
         "[e2e] clicking tab 2 row at sidebar index {} (screen row {})",
@@ -1031,7 +1058,10 @@ fn command_activity_reaches_background_tab_instances() {
         }
     }
     eprintln!("[e2e] pane1(tab one)={pane1}  pane2(tab two)={pane2}");
-    assert_ne!(pane1, pane2, "could not switch to tab two to discover its pane");
+    assert_ne!(
+        pane1, pane2,
+        "could not switch to tab two to discover its pane"
+    );
 
     // Back to tab one, then run a plain foreground command in its terminal. This
     // exercises the *observed-command* path (`CommandChanged`) — no pipe, no pane
@@ -1229,7 +1259,11 @@ fn rail_paints_every_column_of_its_pane() {
     eprintln!("[e2e] header row=0, focused-card tab row={tab_idx}, detail row={detail_idx}");
 
     // Per-column background dump, columns 0..40, for both rows.
-    fn dump_row_bg(screen: &vt100::Screen, row: u16, upto: u16) -> Vec<(u16, vt100::Color, String)> {
+    fn dump_row_bg(
+        screen: &vt100::Screen,
+        row: u16,
+        upto: u16,
+    ) -> Vec<(u16, vt100::Color, String)> {
         (0..upto)
             .map(|c| {
                 let cell = screen.cell(row, c);
@@ -1269,8 +1303,14 @@ fn rail_paints_every_column_of_its_pane() {
     let header_dump = dump_row_bg(&screen, 0, 40);
     let card_dump = dump_row_bg(&screen, tab_idx, 40);
 
-    eprintln!("[e2e] === header row (0) per-column dump ===\n{}", fmt_dump(&header_dump));
-    eprintln!("[e2e] === focused-card row ({tab_idx}) per-column dump ===\n{}", fmt_dump(&card_dump));
+    eprintln!(
+        "[e2e] === header row (0) per-column dump ===\n{}",
+        fmt_dump(&header_dump)
+    );
+    eprintln!(
+        "[e2e] === focused-card row ({tab_idx}) per-column dump ===\n{}",
+        fmt_dump(&card_dump)
+    );
 
     let header_last = last_painted_col(&header_dump);
     let card_last = last_painted_col(&card_dump);
@@ -1390,7 +1430,10 @@ fn session_next_switches_to_the_session_with_attention() {
     let a = ZellijSession::start(&format!("zjr_xsess_a_{pid}"), &layout, &wasm, temp_home);
     eprintln!("[e2e] session A ({}) loaded", a.name);
     let b = a.start_sibling(&format!("zjr_xsess_b_{pid}"), &layout);
-    eprintln!("[e2e] session B ({}) loaded (sibling of A, shared private server)", b.name);
+    eprintln!(
+        "[e2e] session B ({}) loaded (sibling of A, shared private server)",
+        b.name
+    );
 
     // Give B a tracked agent needing attention. This is what B's plugin folds
     // into its own `Presence` (attention=1, running=0) and persists to the
@@ -1430,7 +1473,10 @@ fn session_next_switches_to_the_session_with_attention() {
     let saw_badge = a.wait_until(Duration::from_secs(10), |s| {
         sidebar_region(&s.screen(), 32).contains(&needle)
     });
-    eprintln!("[e2e] A's rail (32 cols):\n{}", sidebar_region(&a.screen(), 32));
+    eprintln!(
+        "[e2e] A's rail (32 cols):\n{}",
+        sidebar_region(&a.screen(), 32)
+    );
     assert!(
         saw_badge,
         "A's badge never showed {needle:?}. Either B never learned its own session name from \
@@ -1469,7 +1515,15 @@ fn session_next_switches_to_the_session_with_attention() {
     let marker = format!("ZPID={pane_b}");
     let switched = a.wait_until(Duration::from_secs(8), |s| s.pty_text().contains(&marker));
     if !switched {
-        let tail: String = a.pty_text().chars().rev().take(1000).collect::<String>().chars().rev().collect();
+        let tail: String = a
+            .pty_text()
+            .chars()
+            .rev()
+            .take(1000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         eprintln!("[e2e] A's PTY tail after failed switch wait:\n{tail}");
     }
     assert!(
@@ -1573,7 +1627,10 @@ fn dead_peer_presence_file_is_reaped_through_the_real_cache_mount() {
     let saw_peer = a.wait_until(Duration::from_secs(10), |s| {
         sidebar_region(&s.screen(), 32).contains(&b_name)
     });
-    eprintln!("[e2e] A's rail with B alive:\n{}", sidebar_region(&a.screen(), 32));
+    eprintln!(
+        "[e2e] A's rail with B alive:\n{}",
+        sidebar_region(&a.screen(), 32)
+    );
     assert!(
         saw_peer,
         "setup failed: A's badge never showed peer {b_name:?}, so this test could not go on to \
@@ -1620,7 +1677,10 @@ fn dead_peer_presence_file_is_reaped_through_the_real_cache_mount() {
     let reaped = a.wait_until(Duration::from_secs(20), |s| {
         !sidebar_region(&s.screen(), 32).contains(&b_name) && !presence.exists()
     });
-    eprintln!("[e2e] A's rail after backdating B:\n{}", sidebar_region(&a.screen(), 32));
+    eprintln!(
+        "[e2e] A's rail after backdating B:\n{}",
+        sidebar_region(&a.screen(), 32)
+    );
     assert!(
         reaped,
         "A never reaped dead peer {b_name:?} (badge still shows it: {}; file still on disk: \

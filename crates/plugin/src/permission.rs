@@ -103,7 +103,11 @@ pub(crate) enum Transition {
 impl PermissionState {
     /// The load-time transition. Decides per `policy`/`probe` and moves into the
     /// resulting state. (Production calls this once from `Unprompted`.)
-    pub(crate) fn on_load(&mut self, probe: &PermissionProbe, policy: PermissionPolicy) -> Transition {
+    pub(crate) fn on_load(
+        &mut self,
+        probe: &PermissionProbe,
+        policy: PermissionPolicy,
+    ) -> Transition {
         match decide(probe, policy) {
             Some(decision) => self.enter(decision),
             // No decision yet — this is a fresh entry into the waiting state.
@@ -118,13 +122,19 @@ impl PermissionState {
     /// is settled and yields `NoChange`. Each tick spends one unit of patience;
     /// a `Deferring` waiter that has exhausted it decides as `LockCoordinated`
     /// (see [`DEFER_PATIENCE_TICKS`]).
-    pub(crate) fn on_timer(&mut self, probe: &PermissionProbe, policy: PermissionPolicy) -> Transition {
+    pub(crate) fn on_timer(
+        &mut self,
+        probe: &PermissionProbe,
+        policy: PermissionPolicy,
+    ) -> Transition {
         let PermissionState::WaitingForPeer { ticks } = *self else {
             return Transition::NoChange;
         };
         let ticks = ticks.saturating_add(1);
         let effective = match policy {
-            PermissionPolicy::Deferring if ticks >= DEFER_PATIENCE_TICKS => PermissionPolicy::LockCoordinated,
+            PermissionPolicy::Deferring if ticks >= DEFER_PATIENCE_TICKS => {
+                PermissionPolicy::LockCoordinated
+            }
             other => other,
         };
         match decide(probe, effective) {
@@ -219,7 +229,10 @@ mod tests {
     use super::*;
 
     fn probe(marker: Option<PermissionMarker>, lock_acquired: bool) -> PermissionProbe {
-        PermissionProbe { marker, lock_acquired }
+        PermissionProbe {
+            marker,
+            lock_acquired,
+        }
     }
 
     /// Every (state-entry-point × policy × probe) maps to the documented next
@@ -230,25 +243,97 @@ mod tests {
         // (policy, marker, lock) -> (next state, transition)
         let cases = [
             // OnboardingPane: always request, ignores the probe entirely.
-            (OnboardingPane, None, false, PermissionState::Requesting, Transition::Requested),
-            (OnboardingPane, None, true, PermissionState::Requesting, Transition::Requested),
-            (OnboardingPane, Some(Denied), false, PermissionState::Requesting, Transition::Requested),
+            (
+                OnboardingPane,
+                None,
+                false,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
+            (
+                OnboardingPane,
+                None,
+                true,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
+            (
+                OnboardingPane,
+                Some(Denied),
+                false,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
             // Deferring: marker-only; the lock never self-elects at load.
-            (Deferring, None, true, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
-            (Deferring, None, false, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
-            (Deferring, Some(Granted), false, PermissionState::Requesting, Transition::Requested),
-            (Deferring, Some(Denied), false, PermissionState::Resolved { granted: false }, Transition::Resolved { granted: false }),
+            (
+                Deferring,
+                None,
+                true,
+                PermissionState::WaitingForPeer { ticks: 0 },
+                Transition::StillWaiting,
+            ),
+            (
+                Deferring,
+                None,
+                false,
+                PermissionState::WaitingForPeer { ticks: 0 },
+                Transition::StillWaiting,
+            ),
+            (
+                Deferring,
+                Some(Granted),
+                false,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
+            (
+                Deferring,
+                Some(Denied),
+                false,
+                PermissionState::Resolved { granted: false },
+                Transition::Resolved { granted: false },
+            ),
             // LockCoordinated: marker, else a held lock self-elects.
-            (LockCoordinated, Some(Granted), false, PermissionState::Requesting, Transition::Requested),
-            (LockCoordinated, Some(Denied), true, PermissionState::Resolved { granted: false }, Transition::Resolved { granted: false }),
-            (LockCoordinated, None, true, PermissionState::Requesting, Transition::Requested),
-            (LockCoordinated, None, false, PermissionState::WaitingForPeer { ticks: 0 }, Transition::StillWaiting),
+            (
+                LockCoordinated,
+                Some(Granted),
+                false,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
+            (
+                LockCoordinated,
+                Some(Denied),
+                true,
+                PermissionState::Resolved { granted: false },
+                Transition::Resolved { granted: false },
+            ),
+            (
+                LockCoordinated,
+                None,
+                true,
+                PermissionState::Requesting,
+                Transition::Requested,
+            ),
+            (
+                LockCoordinated,
+                None,
+                false,
+                PermissionState::WaitingForPeer { ticks: 0 },
+                Transition::StillWaiting,
+            ),
         ];
         for (policy, marker, lock, want_state, want_tr) in cases {
             let mut st = PermissionState::default();
             let tr = st.on_load(&probe(marker, lock), policy);
-            assert_eq!(tr, want_tr, "transition for {policy:?} marker={marker:?} lock={lock}");
-            assert_eq!(st, want_state, "state for {policy:?} marker={marker:?} lock={lock}");
+            assert_eq!(
+                tr, want_tr,
+                "transition for {policy:?} marker={marker:?} lock={lock}"
+            );
+            assert_eq!(
+                st, want_state,
+                "state for {policy:?} marker={marker:?} lock={lock}"
+            );
         }
     }
 
@@ -263,7 +348,11 @@ mod tests {
         ] {
             let mut st = settled;
             let tr = st.on_timer(&probe(Some(Granted), true), LockCoordinated);
-            assert_eq!(tr, Transition::NoChange, "settled {settled:?} must not move");
+            assert_eq!(
+                tr,
+                Transition::NoChange,
+                "settled {settled:?} must not move"
+            );
             assert_eq!(st, settled, "settled {settled:?} state unchanged");
         }
     }
@@ -296,22 +385,41 @@ mod tests {
     fn deferring_waiter_ignores_the_lock_but_takes_a_marker() {
         let mut st = PermissionState::WaitingForPeer { ticks: 0 };
         // A reclaimed lock must NOT promote a deferring rail (while patient).
-        assert_eq!(st.on_timer(&probe(None, true), Deferring), Transition::NoChange);
+        assert_eq!(
+            st.on_timer(&probe(None, true), Deferring),
+            Transition::NoChange
+        );
         assert_eq!(st, PermissionState::WaitingForPeer { ticks: 1 });
         // Only a landed marker unblocks it.
-        assert_eq!(st.on_timer(&probe(Some(Granted), false), Deferring), Transition::Requested);
+        assert_eq!(
+            st.on_timer(&probe(Some(Granted), false), Deferring),
+            Transition::Requested
+        );
         assert_eq!(st, PermissionState::Requesting);
     }
 
     #[test]
     fn deferring_waiter_escalates_to_the_lock_once_patience_runs_out() {
         // One tick shy of the threshold, a held lock still does not elect it…
-        let mut st = PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS - 2 };
-        assert_eq!(st.on_timer(&probe(None, true), Deferring), Transition::NoChange);
-        assert_eq!(st, PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS - 1 });
+        let mut st = PermissionState::WaitingForPeer {
+            ticks: DEFER_PATIENCE_TICKS - 2,
+        };
+        assert_eq!(
+            st.on_timer(&probe(None, true), Deferring),
+            Transition::NoChange
+        );
+        assert_eq!(
+            st,
+            PermissionState::WaitingForPeer {
+                ticks: DEFER_PATIENCE_TICKS - 1
+            }
+        );
         // …but the tick that exhausts patience decides as LockCoordinated:
         // the reclaimed lock self-elects and the request fires.
-        assert_eq!(st.on_timer(&probe(None, true), Deferring), Transition::Requested);
+        assert_eq!(
+            st.on_timer(&probe(None, true), Deferring),
+            Transition::Requested
+        );
         assert_eq!(st, PermissionState::Requesting);
     }
 
@@ -321,15 +429,30 @@ mod tests {
         // its prompt is live): keep waiting and re-check every tick, so the
         // escalation lands whenever the lock finally goes stale and is
         // reclaimed — never two prompts at once.
-        let mut st = PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS };
-        assert_eq!(st.on_timer(&probe(None, false), Deferring), Transition::NoChange);
-        assert_eq!(st, PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS + 1 });
-        assert_eq!(st.on_timer(&probe(None, true), Deferring), Transition::Requested);
+        let mut st = PermissionState::WaitingForPeer {
+            ticks: DEFER_PATIENCE_TICKS,
+        };
+        assert_eq!(
+            st.on_timer(&probe(None, false), Deferring),
+            Transition::NoChange
+        );
+        assert_eq!(
+            st,
+            PermissionState::WaitingForPeer {
+                ticks: DEFER_PATIENCE_TICKS + 1
+            }
+        );
+        assert_eq!(
+            st.on_timer(&probe(None, true), Deferring),
+            Transition::Requested
+        );
     }
 
     #[test]
     fn impatient_deferring_waiter_still_honors_a_denied_marker() {
-        let mut st = PermissionState::WaitingForPeer { ticks: DEFER_PATIENCE_TICKS };
+        let mut st = PermissionState::WaitingForPeer {
+            ticks: DEFER_PATIENCE_TICKS,
+        };
         assert_eq!(
             st.on_timer(&probe(Some(Denied), true), Deferring),
             Transition::Resolved { granted: false }
@@ -342,7 +465,10 @@ mod tests {
         // A session parked on the needs-permission face for u32::MAX ticks is
         // absurd, but wrapping to 0 would silently re-grant patience.
         let mut st = PermissionState::WaitingForPeer { ticks: u32::MAX };
-        assert_eq!(st.on_timer(&probe(None, false), Deferring), Transition::NoChange);
+        assert_eq!(
+            st.on_timer(&probe(None, false), Deferring),
+            Transition::NoChange
+        );
         assert_eq!(st, PermissionState::WaitingForPeer { ticks: u32::MAX });
     }
 

@@ -22,7 +22,9 @@ use crate::status::Status;
 /// bridge always passes `--status`, so this is the robustness/test path).
 fn status_from_event(event: &str) -> Option<Status> {
     match event {
-        "chat.message" | "tool.execute" | "needs_you.replied" | "session.execution" => Some(Status::Running),
+        "chat.message" | "tool.execute" | "needs_you.replied" | "session.execution" => {
+            Some(Status::Running)
+        }
         "permission.ask" | "question.ask" => Some(Status::Pending),
         "session.idle" => Some(Status::Done),
         "session.error" => Some(Status::Error),
@@ -41,9 +43,18 @@ const BRIDGE: Bridge = Bridge {
     tool_event: "tool.execute",
     prompt_event: "chat.message",
     tool_names: &[
-        ("read", "Read"), ("write", "Write"), ("edit", "Edit"), ("bash", "Bash"), ("shell", "Bash"),
-        ("grep", "Grep"), ("glob", "Glob"), ("webfetch", "WebFetch"), ("websearch", "WebSearch"),
-        ("task", "Task"), ("subagent", "Task"), ("todowrite", "TodoWrite"),
+        ("read", "Read"),
+        ("write", "Write"),
+        ("edit", "Edit"),
+        ("bash", "Bash"),
+        ("shell", "Bash"),
+        ("grep", "Grep"),
+        ("glob", "Glob"),
+        ("webfetch", "WebFetch"),
+        ("websearch", "WebSearch"),
+        ("task", "Task"),
+        ("subagent", "Task"),
+        ("todowrite", "TodoWrite"),
     ],
     arg_keys: &[("filePath", "file_path"), ("notebookPath", "notebook_path")],
 };
@@ -66,7 +77,11 @@ mod tests {
 
     #[test]
     fn explicit_status_passes_through() {
-        let u = derive(&intake(r#"{"event":"chat.message","prompt":"hi"}"#, Some("running"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"chat.message","prompt":"hi"}"#,
+            Some("running"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Running);
     }
 
@@ -120,7 +135,11 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(u.msg, "pushing");
-        let u = derive(&intake(r#"{"event":"tool.execute","tool":"subagent","tool_input":{}}"#, Some("running"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"tool.execute","tool":"subagent","tool_input":{}}"#,
+            Some("running"),
+        ))
+        .unwrap();
         assert_eq!(u.msg, "delegating");
 
         // The 2.x bridge's bare run-started refresh: running, baseline msg.
@@ -166,7 +185,11 @@ mod tests {
         // prompt; the bridge sends it as `question.ask`, and every reply edge
         // (permission.replied / question.replied / question.rejected) arrives
         // as one `needs_you.replied` running.
-        let u = derive(&intake(r#"{"event":"question.ask","message":"Which auth strategy?"}"#, None)).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"question.ask","message":"Which auth strategy?"}"#,
+            None,
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Pending);
         assert_eq!(u.msg, "Which auth strategy?");
         let u = derive(&intake(r#"{"event":"needs_you.replied"}"#, None)).unwrap();
@@ -177,8 +200,16 @@ mod tests {
     fn permission_ask_with_blank_title_is_dropped() {
         // The pending backstop: a permission with no title is not a real
         // "needs you" — drop it rather than paint a generic pending row.
-        assert!(derive(&intake(r#"{"event":"permission.ask","message":""}"#, Some("pending"))).is_none());
-        assert!(derive(&intake(r#"{"event":"permission.ask","message":"   "}"#, Some("pending"))).is_none());
+        assert!(derive(&intake(
+            r#"{"event":"permission.ask","message":""}"#,
+            Some("pending")
+        ))
+        .is_none());
+        assert!(derive(&intake(
+            r#"{"event":"permission.ask","message":"   "}"#,
+            Some("pending")
+        ))
+        .is_none());
     }
 
     #[test]
@@ -223,7 +254,11 @@ mod tests {
 
     #[test]
     fn session_error_with_blank_message_gets_neutral_label() {
-        let u = derive(&intake(r#"{"event":"session.error","message":""}"#, Some("error"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"session.error","message":""}"#,
+            Some("error"),
+        ))
+        .unwrap();
         assert_eq!(u.status, Status::Error);
         assert_eq!(u.msg, "errored");
     }
@@ -254,11 +289,18 @@ mod tests {
         // Robustness path: the bridge always passes --status, but deriving
         // from `event` keeps the adapter directly testable without it.
         assert_eq!(
-            derive(&intake(r#"{"event":"chat.message"}"#, None)).unwrap().status,
+            derive(&intake(r#"{"event":"chat.message"}"#, None))
+                .unwrap()
+                .status,
             Status::Running
         );
         assert_eq!(
-            derive(&intake(r#"{"event":"session.error","message":"boom"}"#, None)).unwrap().status,
+            derive(&intake(
+                r#"{"event":"session.error","message":"boom"}"#,
+                None
+            ))
+            .unwrap()
+            .status,
             Status::Error
         );
         assert!(derive(&intake(r#"{"event":"unknown"}"#, None)).is_none());
@@ -266,7 +308,11 @@ mod tests {
 
     #[test]
     fn cwd_absent_is_none() {
-        let u = derive(&intake(r#"{"event":"session.idle","message":"done"}"#, Some("done"))).unwrap();
+        let u = derive(&intake(
+            r#"{"event":"session.idle","message":"done"}"#,
+            Some("done"),
+        ))
+        .unwrap();
         assert_eq!(u.cwd, None);
     }
 }

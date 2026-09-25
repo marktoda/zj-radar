@@ -110,10 +110,10 @@ pub fn self_limiting_pipe_argv(payload: &str, timeout_secs: u64) -> Vec<String> 
         "sh".to_string(),
         "-c".to_string(),
         SELF_LIMITING_SEND.to_string(),
-        "zj-radar-pipe".to_string(), // $0 — a label for ps output
-        timeout_secs.to_string(),    // $1
+        "zj-radar-pipe".to_string(),  // $0 — a label for ps output
+        timeout_secs.to_string(),     // $1
         STATUS_PIPE_NAME.to_string(), // $2
-        payload.to_string(),         // $3
+        payload.to_string(),          // $3
     ]
 }
 
@@ -217,7 +217,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         install_shim(dir.path(), "#!/bin/sh\nexit 3\n");
         let status = run_wrapper(dir.path(), DEFAULT_PIPE_TIMEOUT_SECS);
-        assert_eq!(status.code(), Some(3), "wrapper must exit with the client's status");
+        assert_eq!(
+            status.code(),
+            Some(3),
+            "wrapper must exit with the client's status"
+        );
     }
 
     /// A client killed by the watchdog at the deadline was never confirmed
@@ -250,7 +254,11 @@ mod tests {
         // Hanging `zellij` shim that reports its own pid, then blocks. `exec`
         // so the reported pid IS the sleeper the watchdog must reap.
         let shim = dir.path().join("zellij");
-        std::fs::write(&shim, "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 60\n").unwrap();
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 60\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let argv = self_limiting_pipe_argv("{}", 1);
@@ -298,7 +306,9 @@ mod tests {
                 break; // reaped — the property holds
             }
             if std::time::Instant::now() >= deadline {
-                let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .status();
                 panic!("hung pipe client leaked past the watchdog deadline after spawner death");
             }
             std::thread::sleep(std::time::Duration::from_millis(100));

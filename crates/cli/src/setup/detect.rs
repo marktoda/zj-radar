@@ -94,7 +94,9 @@ pub(crate) fn resolve_layout_name(explicit: Option<&str>, config_text: Option<&s
 /// (`read_zellij_env`), so both inspect the layout Zellij actually loads
 /// (and the one a `--layout` install just wrote).
 pub(crate) fn resolve_layout_path(config_dir: &Path, layout_name: &str) -> PathBuf {
-    config_dir.join("layouts").join(format!("{layout_name}.kdl"))
+    config_dir
+        .join("layouts")
+        .join(format!("{layout_name}.kdl"))
 }
 
 pub(crate) fn strip_managed_zellij_alias(lines: &mut Vec<String>) {
@@ -208,7 +210,8 @@ mod tests {
 
     #[test]
     fn codex_hook_handler_is_ours_matches_command_or_windows_variant() {
-        let ours = serde_json::json!({"command": format!("{CODEX_HOOK_MARKER} zj-radar notify codex")});
+        let ours =
+            serde_json::json!({"command": format!("{CODEX_HOOK_MARKER} zj-radar notify codex")});
         assert!(codex_hook_handler_is_ours(&ours));
         let ours_windows = serde_json::json!({"commandWindows": format!("{CODEX_HOOK_MARKER} zj-radar notify codex")});
         assert!(codex_hook_handler_is_ours(&ours_windows));
@@ -247,13 +250,19 @@ mod tests {
         ];
         let before = lines.clone();
         strip_managed_zellij_alias(&mut lines);
-        assert_eq!(lines, before, "an unmatched BEGIN is malformed → no user content is deleted");
+        assert_eq!(
+            lines, before,
+            "an unmatched BEGIN is malformed → no user content is deleted"
+        );
     }
 
     #[test]
     fn strip_managed_zellij_alias_noop_when_absent() {
-        let mut lines: Vec<String> =
-            vec!["plugins {".to_string(), "    tab-bar location=\"zellij:tab-bar\"".to_string(), "}".to_string()];
+        let mut lines: Vec<String> = vec![
+            "plugins {".to_string(),
+            "    tab-bar location=\"zellij:tab-bar\"".to_string(),
+            "}".to_string(),
+        ];
         strip_managed_zellij_alias(&mut lines);
         assert_eq!(lines.len(), 3);
     }
@@ -268,7 +277,9 @@ mod tests {
     #[test]
     fn has_unmanaged_radar_alias_detects_bare_and_block_forms() {
         assert!(has_unmanaged_radar_alias(&in_plugins(&["radar"])));
-        assert!(has_unmanaged_radar_alias(&in_plugins(&["radar location=\"x\""])));
+        assert!(has_unmanaged_radar_alias(&in_plugins(&[
+            "radar location=\"x\""
+        ])));
         assert!(has_unmanaged_radar_alias(&in_plugins(&["radar{"])));
     }
 
@@ -276,7 +287,9 @@ mod tests {
     fn has_unmanaged_radar_alias_ignores_comments_and_unrelated_lines() {
         assert!(!has_unmanaged_radar_alias(&in_plugins(&["// radar"])));
         assert!(!has_unmanaged_radar_alias(&in_plugins(&["/- radar"])));
-        assert!(!has_unmanaged_radar_alias(&in_plugins(&["tab-bar location=\"zellij:tab-bar\""])));
+        assert!(!has_unmanaged_radar_alias(&in_plugins(&[
+            "tab-bar location=\"zellij:tab-bar\""
+        ])));
     }
 
     #[test]
@@ -303,13 +316,13 @@ mod tests {
     #[test]
     fn in_plugins_block_mask_tracks_nesting_and_one_liners() {
         let lines: Vec<String> = vec![
-            "plugins {".into(),         // 0: opener, not inside
-            "    radar {".into(),       // 1: inside
+            "plugins {".into(),            // 0: opener, not inside
+            "    radar {".into(),          // 1: inside
             "        naming \"x\"".into(), // 2: inside (nested)
-            "    }".into(),             // 3: inside
-            "}".into(),                 // 4: closer, not inside
-            "plugins {}".into(),        // 5: one-liner, nothing inside
-            "radar".into(),             // 6: outside
+            "    }".into(),                // 3: inside
+            "}".into(),                    // 4: closer, not inside
+            "plugins {}".into(),           // 5: one-liner, nothing inside
+            "radar".into(),                // 6: outside
         ];
         assert_eq!(
             in_plugins_block_mask(&lines),
@@ -323,7 +336,10 @@ mod tests {
             default_layout_name("theme \"nord\"\ndefault_layout \"main\"\n"),
             Some("main".to_string())
         );
-        assert_eq!(default_layout_name("default_layout compact\n"), Some("compact".to_string()));
+        assert_eq!(
+            default_layout_name("default_layout compact\n"),
+            Some("compact".to_string())
+        );
         // Commented-out (both KDL comment forms) and absent → None.
         assert_eq!(default_layout_name("// default_layout \"main\"\n"), None);
         assert_eq!(default_layout_name("/- default_layout \"main\"\n"), None);
@@ -342,7 +358,10 @@ mod tests {
         let config = Some("default_layout \"main\"\n");
         assert_eq!(resolve_layout_name(Some("mine"), config), "mine");
         assert_eq!(resolve_layout_name(None, config), "main");
-        assert_eq!(resolve_layout_name(None, Some("theme \"nord\"\n")), "default");
+        assert_eq!(
+            resolve_layout_name(None, Some("theme \"nord\"\n")),
+            "default"
+        );
         assert_eq!(resolve_layout_name(None, None), "default");
     }
 }

@@ -58,7 +58,9 @@ fn native_repo_branch(cwd: &Path) -> Option<(String, String)> {
             // one): any ancestor carrying a `HEAD` stays git's call. Absent
             // that, git would walk the same path and find nothing — skip the
             // three spawns (~15 ms, every hook in a non-repo cwd).
-            let maybe_git_dir = start.ancestors().any(|d| std::fs::symlink_metadata(d.join("HEAD")).is_ok());
+            let maybe_git_dir = start
+                .ancestors()
+                .any(|d| std::fs::symlink_metadata(d.join("HEAD")).is_ok());
             return (!maybe_git_dir).then(|| (String::new(), String::new()));
         }
     };
@@ -147,7 +149,11 @@ fn common_dir(git_dir: &Path) -> Option<PathBuf> {
 /// git would reject — defers to git.
 fn branch_from_head(git_dir: &Path) -> Option<String> {
     let head = git_dir.join("HEAD");
-    if std::fs::symlink_metadata(&head).ok()?.file_type().is_symlink() {
+    if std::fs::symlink_metadata(&head)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
         return None;
     }
     let body = std::fs::read_to_string(&head).ok()?;
@@ -187,7 +193,10 @@ fn repo_name_from_common_dir(common_dir: &str) -> Option<String> {
     if base == ".git" {
         // Repo root is the parent of the ".git" dir.
         let parent = trimmed[..trimmed.len() - base.len()].trim_end_matches('/');
-        parent.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
+        parent
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
     } else if let Some(stripped) = base.strip_suffix(".git") {
         // Bare repo "name.git".
         (!stripped.is_empty()).then(|| stripped.to_string())
@@ -331,13 +340,41 @@ mod tests {
         type Case<'a> = (&'a str, PathBuf, Option<(&'a str, &'a str)>);
         let cases: [Case; 10] = [
             ("repo root", pinky.clone(), Some(("pinky", "main"))),
-            ("nested subdir", pinky.join("src/deep"), Some(("pinky", "main"))),
-            ("worktree root → MAIN repo name, worktree's branch", wt.clone(), Some(("pinky", "fix/x"))),
-            ("worktree subdir", wt.join("crates"), Some(("pinky", "fix/x"))),
-            ("detached HEAD → empty branch", detached, Some(("detached", ""))),
-            ("bare repo → defer to git (no `.git` entry to find)", bare.clone(), None),
-            ("inside a bare repo → defer to git (an ancestor has HEAD)", bare.join("refs/heads"), None),
-            ("symbolic ref outside refs/heads → empty branch", bisecting, Some(("bisect", ""))),
+            (
+                "nested subdir",
+                pinky.join("src/deep"),
+                Some(("pinky", "main")),
+            ),
+            (
+                "worktree root → MAIN repo name, worktree's branch",
+                wt.clone(),
+                Some(("pinky", "fix/x")),
+            ),
+            (
+                "worktree subdir",
+                wt.join("crates"),
+                Some(("pinky", "fix/x")),
+            ),
+            (
+                "detached HEAD → empty branch",
+                detached,
+                Some(("detached", "")),
+            ),
+            (
+                "bare repo → defer to git (no `.git` entry to find)",
+                bare.clone(),
+                None,
+            ),
+            (
+                "inside a bare repo → defer to git (an ancestor has HEAD)",
+                bare.join("refs/heads"),
+                None,
+            ),
+            (
+                "symbolic ref outside refs/heads → empty branch",
+                bisecting,
+                Some(("bisect", "")),
+            ),
             // The one negative the walk proves: no `.git` and no `HEAD` up to `/`
             // — git's own answer, without spawning it.
             ("not a repo → definite negative", not_repo, Some(("", ""))),
@@ -421,8 +458,20 @@ mod tests {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
-            .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
             .current_dir(cwd)
             .args(args)
             .stdout(std::process::Stdio::null())
@@ -446,17 +495,29 @@ mod tests {
         let pinky = root.join("pinky");
         fs::create_dir_all(pinky.join("src/deep")).unwrap();
         assert!(git(&pinky, &["init", "-q"]));
-        assert!(git(&pinky, &["commit", "-q", "--allow-empty", "-m", "init"]));
+        assert!(git(
+            &pinky,
+            &["commit", "-q", "--allow-empty", "-m", "init"]
+        ));
         // Some gits ignore init.defaultBranch from -c; pin the name explicitly.
         assert!(git(&pinky, &["branch", "-M", "main"]));
         let wt = root.join("reply-register");
-        assert!(git(&pinky, &["worktree", "add", "-q", "-b", "fix/x", wt.to_str().unwrap()]));
+        assert!(git(
+            &pinky,
+            &["worktree", "add", "-q", "-b", "fix/x", wt.to_str().unwrap()]
+        ));
         fs::create_dir_all(wt.join("crates")).unwrap();
         let detached = root.join("detached");
-        assert!(git(root, &["clone", "-q", pinky.to_str().unwrap(), "detached"]));
+        assert!(git(
+            root,
+            &["clone", "-q", pinky.to_str().unwrap(), "detached"]
+        ));
         assert!(git(&detached, &["checkout", "-q", "--detach"]));
         let bare = root.join("acme.git");
-        assert!(git(root, &["clone", "-q", "--bare", pinky.to_str().unwrap(), "acme.git"]));
+        assert!(git(
+            root,
+            &["clone", "-q", "--bare", pinky.to_str().unwrap(), "acme.git"]
+        ));
 
         for cwd in [
             pinky.clone(),
@@ -466,7 +527,8 @@ mod tests {
             detached,
         ] {
             let cwd_s = cwd.to_str().unwrap();
-            let native = native_repo_branch(&cwd).unwrap_or_else(|| panic!("native declined a real repo: {cwd_s}"));
+            let native = native_repo_branch(&cwd)
+                .unwrap_or_else(|| panic!("native declined a real repo: {cwd_s}"));
             let spawned = spawn_repo_branch(cwd_s);
             assert_eq!(native, spawned, "cwd={cwd_s}");
         }
@@ -478,12 +540,21 @@ mod tests {
         let scratch = root.join("scratch");
         fs::create_dir_all(&scratch).unwrap();
         let scratch_s = scratch.to_str().unwrap();
-        assert_eq!(native_repo_branch(&scratch), Some((String::new(), String::new())));
+        assert_eq!(
+            native_repo_branch(&scratch),
+            Some((String::new(), String::new()))
+        );
         assert_eq!(spawn_repo_branch(scratch_s), (String::new(), String::new()));
         assert_eq!(repo_branch(bare_s), spawn_repo_branch(bare_s));
         assert_eq!(repo_branch(bare_s).0, "acme");
         // And the positive cases carry the values the table expects.
-        assert_eq!(native_repo_branch(&pinky), Some(("pinky".into(), "main".into())));
-        assert_eq!(native_repo_branch(&wt), Some(("pinky".into(), "fix/x".into())));
+        assert_eq!(
+            native_repo_branch(&pinky),
+            Some(("pinky".into(), "main".into()))
+        );
+        assert_eq!(
+            native_repo_branch(&wt),
+            Some(("pinky".into(), "fix/x".into()))
+        );
     }
 }

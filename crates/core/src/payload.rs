@@ -1,7 +1,9 @@
 //! Parse + sanitize the zj_radar.status.v1 pipe payload. No zellij-tile dependency.
 
 use crate::status::Status;
-use crate::task::{TaskBatch, TaskState, TaskUpdate, MAX_TASKS, MAX_TASK_ID_CHARS, MAX_TASK_LABEL_CHARS};
+use crate::task::{
+    TaskBatch, TaskState, TaskUpdate, MAX_TASKS, MAX_TASK_ID_CHARS, MAX_TASK_LABEL_CHARS,
+};
 use serde::Deserialize;
 
 /// Public-contract limit: payloads larger than this are rejected outright by
@@ -190,8 +192,13 @@ struct RawTask {
 /// The lenient half of the `tasks` contract: anything that isn't an object is
 /// absent; each item parses on its own and a bad one is skipped.
 fn parse_tasks(raw: Option<serde_json::Value>) -> Option<TaskBatch> {
-    let serde_json::Value::Object(mut obj) = raw? else { return None };
-    let snapshot = obj.get("snapshot").and_then(|v| v.as_bool()).unwrap_or(false);
+    let serde_json::Value::Object(mut obj) = raw? else {
+        return None;
+    };
+    let snapshot = obj
+        .get("snapshot")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let items = match obj.remove("items") {
         Some(serde_json::Value::Array(items)) => items,
         _ => Vec::new(),
@@ -616,7 +623,9 @@ mod tests {
         // The pipe NAME is the version authority (see the `Raw` comment above);
         // an otherwise-valid payload with a bogus `v` still parses as if it were
         // v1 — `Raw` has no `v` field, so serde silently drops it.
-        let got = p(r#"{"v":999,"pane":{"type":"terminal","id":1},"status":"running","repo":"pinky"}"#).unwrap();
+        let got =
+            p(r#"{"v":999,"pane":{"type":"terminal","id":1},"status":"running","repo":"pinky"}"#)
+                .unwrap();
         assert_eq!(got.pane_id, 1);
         assert_eq!(got.status, Status::Running);
         assert_eq!(got.repo, "pinky");
@@ -626,11 +635,15 @@ mod tests {
     fn parses_pane_id_boundaries() {
         // 0 and u32::MAX are both valid pane ids — neither overflows nor is special.
         assert_eq!(
-            p(r#"{"pane":{"type":"terminal","id":0},"status":"done"}"#).unwrap().pane_id,
+            p(r#"{"pane":{"type":"terminal","id":0},"status":"done"}"#)
+                .unwrap()
+                .pane_id,
             0
         );
         assert_eq!(
-            p(r#"{"pane":{"type":"terminal","id":4294967295},"status":"done"}"#).unwrap().pane_id,
+            p(r#"{"pane":{"type":"terminal","id":4294967295},"status":"done"}"#)
+                .unwrap()
+                .pane_id,
             u32::MAX
         );
     }
@@ -734,7 +747,7 @@ mod tests {
         assert_eq!(sanitize("abc\u{202e}def", 100), "abcdef"); // RLO
         assert_eq!(sanitize("a\u{200f}b\u{200e}c", 100), "abc"); // RLM / LRM
         assert_eq!(sanitize("x\u{2066}y\u{2069}z", 100), "xyz"); // LRI / PDI isolates
-        // The zero-width JOINER is preserved — it is load-bearing for emoji.
+                                                                 // The zero-width JOINER is preserved — it is load-bearing for emoji.
         let zwj = "👩\u{200d}💻";
         assert_eq!(sanitize(zwj, 100), zwj);
     }
@@ -824,8 +837,16 @@ mod tests {
         // False (every real producer event) emits no key at all — the pinned
         // bytes above prove existing payloads are unchanged. True rides the
         // wire and survives parse; absent defaults false (old producers).
-        let acked = to_wire(&StatusPayload { pane_id: 3, status: Status::Done, ack: true, ..Default::default() });
-        assert!(acked.ends_with(r#""ack":true}"#), "ack rides the wire when set: {acked}");
+        let acked = to_wire(&StatusPayload {
+            pane_id: 3,
+            status: Status::Done,
+            ack: true,
+            ..Default::default()
+        });
+        assert!(
+            acked.ends_with(r#""ack":true}"#),
+            "ack rides the wire when set: {acked}"
+        );
         assert!(parse(&acked).unwrap().ack);
         let got = p(r#"{"pane":{"type":"terminal","id":3},"status":"done"}"#).unwrap();
         assert!(!got.ack, "absent ack defaults false");
@@ -849,7 +870,11 @@ mod tests {
             task: "т".repeat(2 * MAX_PAYLOAD_BYTES),
             ..Default::default()
         });
-        assert!(json.len() <= MAX_PAYLOAD_BYTES, "payload is {} bytes", json.len());
+        assert!(
+            json.len() <= MAX_PAYLOAD_BYTES,
+            "payload is {} bytes",
+            json.len()
+        );
         let got = parse(&json).expect("capped wire output must parse");
         assert_eq!(got.status, Status::Done);
         assert_eq!(got.msg.chars().count(), MAX_MSG_CHARS);
@@ -863,7 +888,12 @@ mod tests {
             status: Status::Running,
             tasks: Some(TaskBatch {
                 snapshot: true,
-                items: vec![TaskUpdate { id: "b1".into(), state: TaskState::Running, label: "Run tests".into(), holds: true }],
+                items: vec![TaskUpdate {
+                    id: "b1".into(),
+                    state: TaskState::Running,
+                    label: "Run tests".into(),
+                    holds: true,
+                }],
             }),
             ..Default::default()
         });
@@ -888,9 +918,13 @@ mod tests {
         assert_eq!(got.msg, "m");
         let items = got.tasks.unwrap().items;
         assert_eq!(items.len(), 1);
-        assert_eq!((items[0].id.as_str(), items[0].state), ("ok", TaskState::Completed));
+        assert_eq!(
+            (items[0].id.as_str(), items[0].state),
+            ("ok", TaskState::Completed)
+        );
         for bad in [r#""oops""#, "[]", "3", "null"] {
-            let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","tasks":{bad}}}"#);
+            let raw =
+                format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"done","tasks":{bad}}}"#);
             assert_eq!(p(&raw).unwrap().tasks, None, "tasks = {bad}");
         }
     }
@@ -907,10 +941,17 @@ mod tests {
             pane_id: 1,
             status: Status::Running,
             msg: "m".repeat(2 * MAX_PAYLOAD_BYTES),
-            tasks: Some(TaskBatch { snapshot: true, items: vec![big; 3 * MAX_TASKS] }),
+            tasks: Some(TaskBatch {
+                snapshot: true,
+                items: vec![big; 3 * MAX_TASKS],
+            }),
             ..Default::default()
         });
-        assert!(json.len() <= MAX_PAYLOAD_BYTES, "payload is {} bytes", json.len());
+        assert!(
+            json.len() <= MAX_PAYLOAD_BYTES,
+            "payload is {} bytes",
+            json.len()
+        );
         let items = parse(&json).unwrap().tasks.unwrap().items;
         assert_eq!(items.len(), MAX_TASKS);
         assert_eq!(items[0].id.chars().count(), MAX_TASK_ID_CHARS);

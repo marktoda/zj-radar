@@ -304,7 +304,11 @@ mod tests {
     #[test]
     fn placeholder_titled_tab_stays_default_until_a_cwd_arrives_then_renames() {
         let mut namer = TabNamer::default();
-        let placeholder = PaneFacts { title: "Pane #1".into(), focused: true, ..PaneFacts::default() };
+        let placeholder = PaneFacts {
+            title: "Pane #1".into(),
+            focused: true,
+            ..PaneFacts::default()
+        };
 
         // No cwd fact yet: the placeholder title must produce NO rename — the
         // tab keeps Zellij's default (which stays overwritable) rather than
@@ -313,7 +317,10 @@ mod tests {
         assert_eq!(namer.rename(&tabs, NamingMode::Managed), Vec::new());
 
         // The cwd fact lands (bootstrap or CwdChanged): the tab takes it.
-        let with_cwd = PaneFacts { cwd: Some("/opt".into()), ..placeholder };
+        let with_cwd = PaneFacts {
+            cwd: Some("/opt".into()),
+            ..placeholder
+        };
         let tabs = vec![tab(1, "Tab #1", vec![with_cwd])];
         assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("opt"));
     }
@@ -457,7 +464,10 @@ mod tests {
     fn default_named_tab_gets_named_and_remembered() {
         let mut namer = TabNamer::default();
         let tabs = vec![tab(1, "Tab #1", vec![repo_pane("alpha", true)])];
-        assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("alpha"));
+        assert_eq!(
+            namer.rename(&tabs, NamingMode::Managed),
+            renamed_to("alpha")
+        );
         assert_eq!(namer.applied_name(TabId::new(1)), Some("alpha"));
     }
 
@@ -477,11 +487,17 @@ mod tests {
         // misread its own name as a manual rename and re-emit forever.
         let long = "a".repeat(50);
         let mut namer = TabNamer::default();
-        let out = namer.rename(&[tab(1, "Tab #1", vec![repo_pane(&long, true)])], NamingMode::Managed);
+        let out = namer.rename(
+            &[tab(1, "Tab #1", vec![repo_pane(&long, true)])],
+            NamingMode::Managed,
+        );
         let applied = out[0].name.clone();
         assert_eq!(applied.chars().count(), 40, "applied name is pre-capped");
         // The host echoes the sanitized name back: recognized as ours, settled.
-        let out = namer.rename(&[tab(1, &applied, vec![repo_pane(&long, true)])], NamingMode::Managed);
+        let out = namer.rename(
+            &[tab(1, &applied, vec![repo_pane(&long, true)])],
+            NamingMode::Managed,
+        );
         assert!(out.is_empty(), "no rename fight after the echo");
     }
 
@@ -521,7 +537,10 @@ mod tests {
             "Tab #1",
             vec![repo_pane("alpha", true), repo_pane("beta", false)],
         )];
-        assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("alpha"));
+        assert_eq!(
+            namer.rename(&tabs, NamingMode::Managed),
+            renamed_to("alpha")
+        );
         // Host echoes the rename; focus shifts to `beta`. `alpha` is still
         // justified by the other pane, so the name must NOT churn.
         let tabs = vec![tab(
@@ -567,7 +586,10 @@ mod tests {
             "Tab #1",
             vec![repo_pane("alpha", true), repo_pane("beta", false)],
         )];
-        assert_eq!(namer.rename(&tabs, NamingMode::Managed), renamed_to("alpha"));
+        assert_eq!(
+            namer.rename(&tabs, NamingMode::Managed),
+            renamed_to("alpha")
+        );
         // Host echoes; the `alpha` pane closes, leaving only `beta`. `alpha` is no
         // longer supported, so the tab re-picks from the survivor.
         let tabs = vec![tab(1, "alpha", vec![repo_pane("beta", true)])];

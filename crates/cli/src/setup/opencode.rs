@@ -6,9 +6,12 @@
 //! opencode version picks its bridge. Install, uninstall, `--check` and
 //! `run`'s detection all key on the header marker (`detect.rs`).
 
-use super::*;
 use super::detect::opencode_plugin_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{
+    plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan,
+    UninstallPlan,
+};
+use super::*;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -44,7 +47,10 @@ pub(crate) fn opencode_tui_plugin_text() -> Option<String> {
 /// Is either of our bridges on disk? The bare doctor's "opencode is set up
 /// here" signal for a PATH-less (bun/Nix-run) opencode.
 pub(crate) fn opencode_bridge_is_ours() -> bool {
-    [opencode_plugin_text(), opencode_tui_plugin_text()].iter().flatten().any(|t| opencode_plugin_is_ours(t))
+    [opencode_plugin_text(), opencode_tui_plugin_text()]
+        .iter()
+        .flatten()
+        .any(|t| opencode_plugin_is_ours(t))
 }
 
 fn opencode_plugins_dir() -> Option<PathBuf> {
@@ -52,7 +58,10 @@ fn opencode_plugins_dir() -> Option<PathBuf> {
 }
 
 fn opencode_config_dir() -> Option<PathBuf> {
-    opencode_config_dir_from(std::env::var_os("XDG_CONFIG_HOME"), std::env::var_os("HOME"))
+    opencode_config_dir_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
 }
 
 /// Resolve opencode's user config home: `$XDG_CONFIG_HOME/opencode` wins, else
@@ -67,14 +76,16 @@ fn opencode_config_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> Op
     if let Some(x) = xdg.filter(|x| !x.is_empty()) {
         return Some(PathBuf::from(x).join("opencode"));
     }
-    home.filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".config").join("opencode"))
+    home.filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join(".config").join("opencode"))
 }
 
 fn opencode_installed(opencode_on_path: bool) -> bool {
     opencode_installed_from(
         opencode_on_path,
         opencode_config_dir().is_some_and(|d| d.is_dir()),
-        opencode_plugin_path().is_some_and(|p| p.exists()) || opencode_tui_plugin_path().is_some_and(|p| p.exists()),
+        opencode_plugin_path().is_some_and(|p| p.exists())
+            || opencode_tui_plugin_path().is_some_and(|p| p.exists()),
     )
 }
 
@@ -88,8 +99,8 @@ fn opencode_installed_from(on_path: bool, config_dir_exists: bool, plugin_exists
 /// One vendored bridge: where it lives, what it must contain, what it is for.
 struct Bridge {
     /// "opencode 1.x" / "opencode 2.x" — for the user-facing lines.
-    line:     &'static str,
-    path:     PathBuf,
+    line: &'static str,
+    path: PathBuf,
     embedded: &'static str,
     existing: Existing,
 }
@@ -98,13 +109,26 @@ fn bridges() -> Option<Vec<Bridge>> {
     let plugin = opencode_plugin_path()?;
     let tui = opencode_tui_plugin_path()?;
     Some(vec![
-        Bridge { line: "opencode 1.x", existing: read_existing(&plugin), path: plugin, embedded: OPENCODE_PLUGIN_JS },
-        Bridge { line: "opencode 2.x", existing: read_existing(&tui), path: tui, embedded: OPENCODE_TUI_PLUGIN_JS },
+        Bridge {
+            line: "opencode 1.x",
+            existing: read_existing(&plugin),
+            path: plugin,
+            embedded: OPENCODE_PLUGIN_JS,
+        },
+        Bridge {
+            line: "opencode 2.x",
+            existing: read_existing(&tui),
+            path: tui,
+            embedded: OPENCODE_TUI_PLUGIN_JS,
+        },
     ])
 }
 
 fn paths_list(paths: impl Iterator<Item = PathBuf>) -> String {
-    paths.map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and ")
+    paths
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
@@ -137,8 +161,10 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
         return;
     }
 
-    let plans: Vec<InstallPlan> =
-        bridges.iter().map(|b| plan_install(&b.existing, b.embedded, opts.force, opencode_plugin_is_ours)).collect();
+    let plans: Vec<InstallPlan> = bridges
+        .iter()
+        .map(|b| plan_install(&b.existing, b.embedded, opts.force, opencode_plugin_is_ours))
+        .collect();
     // Refuse as a unit: a foreign file at either path is a stop, even when the
     // other would write cleanly — a half-installed pair is harder to reason
     // about than "nothing changed, here is why".
@@ -149,7 +175,11 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
         .map(|(b, _)| b)
         .collect();
     if !foreign.is_empty() {
-        let why = foreign.iter().map(|b| b.existing.refusal_reason(&b.path)).collect::<Vec<_>>().join("; ");
+        let why = foreign
+            .iter()
+            .map(|b| b.existing.refusal_reason(&b.path))
+            .collect::<Vec<_>>()
+            .join("; ");
         crate::exit::fail_report(
             "opencode",
             format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."),
@@ -180,7 +210,10 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
     // One consent step for the pair (the same `confirm` every other setup
     // write goes through): a non-tty run without -y skips rather than writing
     // unasked.
-    let prompt = format!("Write {}?", paths_list(to_write.iter().map(|b| b.path.clone())));
+    let prompt = format!(
+        "Write {}?",
+        paths_list(to_write.iter().map(|b| b.path.clone()))
+    );
     if !confirm(&prompt, opts.yes, opts.is_tty) {
         println!("opencode: skipped (declined)");
         return;
@@ -190,7 +223,11 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
             crate::exit::fail_report("opencode", format!("write failed — {e}"));
             return;
         }
-        println!("opencode: plugin installed ({}, {})", b.path.display(), b.line);
+        println!(
+            "opencode: plugin installed ({}, {})",
+            b.path.display(),
+            b.line
+        );
     }
     print_opencode_guidance(&facts, true);
 }
@@ -201,14 +238,25 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
         match plan_uninstall(&b.existing, opencode_plugin_is_ours) {
             UninstallPlan::Absent => {}
             UninstallPlan::NotOurs => {
-                println!("opencode: plugin not ours (marker absent) — leaving {}", b.path.display());
+                println!(
+                    "opencode: plugin not ours (marker absent) — leaving {}",
+                    b.path.display()
+                );
             }
             UninstallPlan::Remove => to_remove.push(b),
         }
     }
     if to_remove.is_empty() {
-        if bridges.iter().all(|b| matches!(plan_uninstall(&b.existing, opencode_plugin_is_ours), UninstallPlan::Absent)) {
-            println!("opencode: plugin not installed ({})", paths_list(bridges.iter().map(|b| b.path.clone())));
+        if bridges.iter().all(|b| {
+            matches!(
+                plan_uninstall(&b.existing, opencode_plugin_is_ours),
+                UninstallPlan::Absent
+            )
+        }) {
+            println!(
+                "opencode: plugin not installed ({})",
+                paths_list(bridges.iter().map(|b| b.path.clone()))
+            );
         }
         return;
     }
@@ -233,13 +281,19 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
         // uninstall leaves nothing of zj-radar behind); a foreign one — what
         // `--force` replaced — is the user's only copy, so it stays.
         if let Some(bak) = remove_backup_if_ours(&b.path, opencode_plugin_is_ours) {
-            println!("opencode: left {} (not ours — the file `--force` replaced)", bak.display());
+            println!(
+                "opencode: left {} (not ours — the file `--force` replaced)",
+                bak.display()
+            );
         }
         // The 2.x plugin directory is ours only while it held our file and
         // now holds nothing; `remove_dir` refuses a non-empty dir, which is
         // exactly the "someone else put something here" case where we must
         // leave it. An empty `zj-radar/` dir we never wrote into stays too.
-        if let Some(dir) = b.path.parent().filter(|d| d.file_name().is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME)) {
+        if let Some(dir) = b.path.parent().filter(|d| {
+            d.file_name()
+                .is_some_and(|n| n == OPENCODE_TUI_PLUGIN_DIR_NAME)
+        }) {
             let _ = std::fs::remove_dir(dir);
         }
     }
@@ -262,8 +316,8 @@ fn print_opencode_guidance(facts: &OpencodeFacts, wrote: bool) {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER, OPENCODE_PLUGIN_MARKER_PREFIX, OPENCODE_TUI_PLUGIN_JS,
-        OPENCODE_TUI_PLUGIN_MARKER,
+        OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER, OPENCODE_PLUGIN_MARKER_PREFIX,
+        OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER,
     };
     use super::{opencode_config_dir_from, opencode_installed_from};
     use std::ffi::OsString;
@@ -293,7 +347,10 @@ mod tests {
     fn opencode_config_dir_is_none_when_neither_resolves() {
         assert_eq!(opencode_config_dir_from(None, None), None);
         // Empty strings are treated as unset, not as the root path.
-        assert_eq!(opencode_config_dir_from(Some(OsString::new()), Some(OsString::new())), None);
+        assert_eq!(
+            opencode_config_dir_from(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
         assert_eq!(opencode_config_dir_from(None, Some(OsString::new())), None);
         // An empty XDG still lets a real HOME win.
         assert_eq!(
@@ -322,17 +379,26 @@ mod tests {
         assert!(OPENCODE_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
         assert!(OPENCODE_TUI_PLUGIN_MARKER.starts_with(OPENCODE_PLUGIN_MARKER_PREFIX));
         assert_ne!(OPENCODE_PLUGIN_MARKER, OPENCODE_TUI_PLUGIN_MARKER);
-        for (js, marker) in [(OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER), (OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER)] {
+        for (js, marker) in [
+            (OPENCODE_PLUGIN_JS, OPENCODE_PLUGIN_MARKER),
+            (OPENCODE_TUI_PLUGIN_JS, OPENCODE_TUI_PLUGIN_MARKER),
+        ] {
             assert!(
                 js.lines().next().is_some_and(|l| l.contains(marker)),
                 "the vendored plugin must carry the {marker} marker in its header line"
             );
-            assert!(js.contains("notify opencode"), "the bridge must spawn `zj-radar notify opencode`");
+            assert!(
+                js.contains("notify opencode"),
+                "the bridge must spawn `zj-radar notify opencode`"
+            );
             assert!(
                 !js.contains("spawnSync"),
                 "the bridge must never use spawnSync — it runs in opencode's process and would freeze the TUI"
             );
-            assert!(js.contains("ZELLIJ"), "the bridge must gate on $ZELLIJ (skip spawn when not under Zellij)");
+            assert!(
+                js.contains("ZELLIJ"),
+                "the bridge must gate on $ZELLIJ (skip spawn when not under Zellij)"
+            );
         }
     }
 
@@ -344,7 +410,9 @@ mod tests {
     #[test]
     fn embedded_tui_plugin_is_a_self_contained_v2_tui_definition() {
         assert!(
-            !OPENCODE_TUI_PLUGIN_JS.lines().any(|l| l.starts_with("import ")),
+            !OPENCODE_TUI_PLUGIN_JS
+                .lines()
+                .any(|l| l.starts_with("import ")),
             "the TUI bridge must not import: nothing resolves beside a bare plugins-dir file"
         );
         assert!(OPENCODE_TUI_PLUGIN_JS.contains("export default {"));

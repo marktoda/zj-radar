@@ -193,7 +193,11 @@ impl SnapshotWrite {
     /// `Now` on a real change, `None` otherwise — the shape every
     /// changed-flag call site wants.
     pub(crate) fn now_if(changed: bool) -> Self {
-        if changed { Self::Now } else { Self::None }
+        if changed {
+            Self::Now
+        } else {
+            Self::None
+        }
     }
 }
 
@@ -371,7 +375,9 @@ impl RadarState {
             // recede instantly (huge apparent tick delta) or never recede
             // (`tick` moving backwards relative to a `last_change_tick` far in
             // its "future"). `Error` is exempt — it has no TTL to re-base.
-            if observation.origin == ObservationOrigin::Command && observation.status == Status::Done {
+            if observation.origin == ObservationOrigin::Command
+                && observation.status == Status::Done
+            {
                 observation.last_change_tick = tick;
             }
             match observation.origin {
@@ -390,8 +396,17 @@ impl RadarState {
     pub(crate) fn snapshot_json(&self, existing: Option<&str>, tick: u64) -> String {
         // Both stores' observations carry their own `origin`, so the snapshot
         // module keys the merge on it — no need to tag the two iterators here.
-        let current = self.status.observations().chain(self.command.observations());
-        snapshot::to_json(current, self.live_panes.as_ref(), existing, tick, self.ledger.to_vec())
+        let current = self
+            .status
+            .observations()
+            .chain(self.command.observations());
+        snapshot::to_json(
+            current,
+            self.live_panes.as_ref(),
+            existing,
+            tick,
+            self.ledger.to_vec(),
+        )
     }
 
     /// Target tab position for an `attention-next`/`attention-prev` command, or
@@ -429,8 +444,11 @@ impl RadarState {
             }
         }
         let rows = std::rc::Rc::new(self.rows_uncached(now_tick));
-        *self.rows_memo.borrow_mut() =
-            Some(RowsMemo { generation: self.generation, lit_flashes, rows: rows.clone() });
+        *self.rows_memo.borrow_mut() = Some(RowsMemo {
+            generation: self.generation,
+            lit_flashes,
+            rows: rows.clone(),
+        });
         rows
     }
 
@@ -443,7 +461,10 @@ impl RadarState {
     /// only ever shrinks as t grows — two ticks with the same count have
     /// the same set.
     fn lit_flashes(&self, now_tick: u64) -> usize {
-        self.flash_until.values().filter(|&&until| now_tick < until).count()
+        self.flash_until
+            .values()
+            .filter(|&&until| now_tick < until)
+            .count()
     }
 
     fn rows_uncached(&self, now_tick: u64) -> Vec<TabRow> {
@@ -576,7 +597,10 @@ impl RadarState {
                 .command
                 .get(pane_id)
                 .is_some_and(|o| o.kind.is_remote() && o.status == Status::Running);
-            if let Some(displaced) = self.command.on_exit(pane_id, exit_status, Tick(tick), EpochSecs(now_epoch_s)) {
+            if let Some(displaced) =
+                self.command
+                    .on_exit(pane_id, exit_status, Tick(tick), EpochSecs(now_epoch_s))
+            {
                 self.ledger_receded(vec![(pane_id, displaced)], &old_index, &status_tracked);
                 displaced_any = true;
             }
@@ -617,13 +641,21 @@ impl RadarState {
             .filter(|id| !update.live.contains(id) && !absent_before.contains_key(id))
             .map(|id| (id, old_index.get(&id).cloned()))
             .collect();
-        let effective_live: HashSet<u32> =
-            update.live.iter().copied().chain(graced.keys().copied()).collect();
+        let effective_live: HashSet<u32> = update
+            .live
+            .iter()
+            .copied()
+            .chain(graced.keys().copied())
+            .collect();
         // A confirmed-gone pane left the topology one manifest ago, so
         // `old_index` no longer carries it — the ledger files its recede under
         // the tab identity captured at first absence instead.
         let mut prune_index = old_index;
-        prune_index.extend(absent_before.into_iter().filter_map(|(id, entry)| Some((id, entry?))));
+        prune_index.extend(
+            absent_before
+                .into_iter()
+                .filter_map(|(id, entry)| Some((id, entry?))),
+        );
         self.absent_once = graced;
         // A pane closing with an unreceded Done/Error still on it is a recede
         // edge for both stores; both prunes ledger against the pre-close
@@ -702,7 +734,9 @@ impl RadarState {
         // tab holds a changed pane writes (`persists_edges_for`). Without
         // this every instance read-merge-wrote the shared file for every
         // promotion/confirm/expiry.
-        let persist = changed_panes.iter().any(|&id| self.persists_edges_for(Some(id)));
+        let persist = changed_panes
+            .iter()
+            .any(|&id| self.persists_edges_for(Some(id)));
         TimerChange { changed, persist }
     }
 
@@ -864,16 +898,27 @@ impl RadarState {
         let label_only = prev_status == now_status
             && now_status == Some(Status::Running)
             && !tasks_changed
-            && self.status.get(pane_id).is_some_and(TrackedObservation::animating);
+            && self
+                .status
+                .get(pane_id)
+                .is_some_and(TrackedObservation::animating);
         // NOTE: we deliberately do NOT settle here. A pushed status is shown as-is;
         // focus no longer recedes or clears it. A completion clears only via a new
         // broadcast for the pane, the return-to-shell exit-clear
         // (`command_changed` → `clear_on_prompt_return`), or a prune.
         Some(RadarChange {
             render: !label_only,
-            snapshot: if label_only { SnapshotWrite::Deferred } else { SnapshotWrite::Now },
+            snapshot: if label_only {
+                SnapshotWrite::Deferred
+            } else {
+                SnapshotWrite::Now
+            },
             snapshot_pane: Some(pane_id),
-            renames: if repo_changed { self.rename_tabs(naming) } else { Vec::new() },
+            renames: if repo_changed {
+                self.rename_tabs(naming)
+            } else {
+                Vec::new()
+            },
             settle: false,
             ..RadarChange::default()
         })
@@ -1009,7 +1054,9 @@ impl RadarState {
     /// consumers (`tab_display`'s roll-up and `notify_views`) read through it, so
     /// the precedence can never be encoded two different ways and silently drift.
     fn resolve(&self, pane_id: u32) -> Option<&TrackedObservation> {
-        self.status.get(pane_id).or_else(|| self.command.get(pane_id))
+        self.status
+            .get(pane_id)
+            .or_else(|| self.command.get(pane_id))
     }
 
     /// Union of both stores' observations, keyed by pane id, for the notifier.
@@ -1049,7 +1096,11 @@ impl RadarState {
                     error: e.outcome == LedgerOutcome::Error,
                     tab_name: e.tab_name.clone(),
                     label: e.label.clone(),
-                    tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
+                    tab_position: self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == e.tab_id)
+                        .map(|t| t.position),
                 })
                 .collect(),
         );
@@ -1296,8 +1347,7 @@ impl RadarState {
         let mut others = Vec::new();
         for panes in self.tab_panes.values() {
             for p in panes {
-                if self.pane_cwd.contains_key(&p.id)
-                    || self.cwd_bootstrap_attempted.contains(&p.id)
+                if self.pane_cwd.contains_key(&p.id) || self.cwd_bootstrap_attempted.contains(&p.id)
                 {
                     continue;
                 }
@@ -1372,7 +1422,11 @@ impl RadarState {
     /// second lookup feeds the muted Interactive label from the command store's
     /// quiet pendings; `roll_up` owns the precedence between the two.
     fn tab_display(&self, panes: &[TerminalPane]) -> TabDisplay {
-        rollup::roll_up(panes, |id| self.resolve(id), |id| self.command.quiet_identity(id))
+        rollup::roll_up(
+            panes,
+            |id| self.resolve(id),
+            |id| self.command.quiet_identity(id),
+        )
     }
 
     /// Roll a tab up by position, treating an absent pane list as no panes.

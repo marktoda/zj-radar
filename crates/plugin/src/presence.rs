@@ -66,7 +66,7 @@ mod tests {
     fn parse_is_lenient_on_garbage_and_missing_fields() {
         assert_eq!(Presence::parse("not json"), None);
         assert_eq!(Presence::parse("{}"), None); // session_name is required
-        // Unknown fields are ignored; absent optionals default.
+                                                 // Unknown fields are ignored; absent optionals default.
         let p = Presence::parse(
             r#"{"session_name":"a","running":1,"attention":0,"future_field":true}"#,
         )
@@ -83,7 +83,12 @@ mod tests {
         // contract a corrupt peer file skips its badge entirely. Rejected,
         // never cleaned in place: the name is also the `SwitchSession`
         // identity, and a display-cleaned variant would diverge from it.
-        for name in ["\\u001b]0;pwned\\u0007work", "a\\u001b[31mred", "safe\\u202Eevil", "two\\nlines"] {
+        for name in [
+            "\\u001b]0;pwned\\u0007work",
+            "a\\u001b[31mred",
+            "safe\\u202Eevil",
+            "two\\nlines",
+        ] {
             let json = format!(r#"{{"session_name":"{name}","running":0,"attention":0}}"#);
             assert_eq!(Presence::parse(&json), None, "must reject {name}");
         }

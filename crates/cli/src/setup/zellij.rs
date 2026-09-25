@@ -84,7 +84,10 @@ pub(crate) fn run_grant(config_dir: &Path) {
 /// `zellij --version` stdout (trimmed), or `None` when the binary is absent
 /// or unrunnable — the raw read behind `ZellijEnv::zellij_version`.
 pub(crate) fn zellij_version_output() -> Option<String> {
-    let out = std::process::Command::new("zellij").arg("--version").output().ok()?;
+    let out = std::process::Command::new("zellij")
+        .arg("--version")
+        .output()
+        .ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -188,7 +191,10 @@ fn refresh_wasm(src: Option<&Path>, wasm_dest: &Path, dry_run: bool) {
     let bytes = match std::fs::read(src) {
         Ok(b) => b,
         Err(e) => {
-            crate::exit::fail_report("zellij", format!("could not read wasm {} — {e}", src.display()));
+            crate::exit::fail_report(
+                "zellij",
+                format!("could not read wasm {} — {e}", src.display()),
+            );
             return;
         }
     };
@@ -196,7 +202,11 @@ fn refresh_wasm(src: Option<&Path>, wasm_dest: &Path, dry_run: bool) {
         return;
     }
     if dry_run {
-        println!("zellij: would copy {} -> {} (dry-run)", src.display(), wasm_dest.display());
+        println!(
+            "zellij: would copy {} -> {} (dry-run)",
+            src.display(),
+            wasm_dest.display()
+        );
         return;
     }
     match crate::fsutil::atomic_write(wasm_dest, &bytes) {
@@ -252,7 +262,11 @@ pub(crate) fn setup_path(
         return SetupPath::Managed;
     }
     if !uninstall && !has_wasm_source {
-        return if inject || yes { SetupPath::LayoutOnlyInstall } else { SetupPath::RefuseNoWasm };
+        return if inject || yes {
+            SetupPath::LayoutOnlyInstall
+        } else {
+            SetupPath::RefuseNoWasm
+        };
     }
     // An uninstall with a config.kdl on disk still runs the full flow — the
     // alias may need stripping.
@@ -266,24 +280,31 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
     let (wasm, download): (Option<&Path>, bool) = match &opts.wasm_source {
         WasmSource::Path(p) => (Some(p.as_path()), false),
         WasmSource::Download => (None, true),
-        WasmSource::None    => (None, false),
+        WasmSource::None => (None, false),
     };
-    let dry_run     = opts.dry_run;
-    let yes         = opts.yes;
-    let force       = opts.force;
+    let dry_run = opts.dry_run;
+    let yes = opts.yes;
+    let force = opts.force;
     let inject_flag = opts.inject;
     let layout_name = opts.layout;
     // Tty-ness resolved once by the `setup::run` dispatcher; every consent
     // step below (`inject_mode`, `confirm`) takes it as a parameter rather
     // than probing stdin again mid-chain.
-    let is_tty      = opts.is_tty;
-    let Some(config_dir) = zellij_config_dir_or_report() else { return };
+    let is_tty = opts.is_tty;
+    let Some(config_dir) = zellij_config_dir_or_report() else {
+        return;
+    };
 
     // One reader, shared with `check` (`read_zellij_env`): current state into
     // Facts. The env's config text is reused below for the `edit_zellij`
     // splice; the resolved paths are what every write below aims at.
     let (env, paths) = read_zellij_env(&config_dir, layout_name);
-    let ZellijPaths { config_path, wasm_dest, layout_path, .. } = paths;
+    let ZellijPaths {
+        config_path,
+        wasm_dest,
+        layout_path,
+        ..
+    } = paths;
     let location = zellij_plugin_location(&wasm_dest);
     let facts = analyze_zellij(&env);
 
@@ -318,7 +339,8 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             // with a wasm already installed at the stable path, the grant can
             // be seeded without a wasm source — it is keyed by the
             // destination path, which exists.
-            if wasm_dest.is_file() && !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty) {
+            if wasm_dest.is_file() && !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty)
+            {
                 print_grant_hint_if_needed(&facts);
             }
             return;
@@ -372,15 +394,20 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 return;
             };
             if !src.is_file() {
-                crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
+                crate::exit::fail_report(
+                    "zellij",
+                    format!("refused — wasm not found at {}", src.display()),
+                );
                 return;
             }
         }
     }
 
     let existing = env.config_text.unwrap_or_default();
-    let Some(outcome) = edit_or_report("zellij", edit_zellij(&existing, &location, !uninstall, force))
-    else {
+    let Some(outcome) = edit_or_report(
+        "zellij",
+        edit_zellij(&existing, &location, !uninstall, force),
+    ) else {
         return;
     };
 
@@ -454,14 +481,25 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("create plugin dir failed — {e}"))?;
                 }
-                let src = src.ok_or("refused — pass --wasm <path-to-zj_radar.wasm> or --download")?;
+                let src =
+                    src.ok_or("refused — pass --wasm <path-to-zj_radar.wasm> or --download")?;
                 // Atomic (read + temp-file rename), not `fs::copy` onto the
                 // destination: a live session may load the wasm mid-copy.
-                let bytes = std::fs::read(src).map_err(|e| format!("could not read wasm {} — {e}", src.display()))?;
-                crate::fsutil::atomic_write(&wasm_dest, &bytes).map_err(|e| format!("wasm copy failed — {e}"))?;
+                let bytes = std::fs::read(src)
+                    .map_err(|e| format!("could not read wasm {} — {e}", src.display()))?;
+                crate::fsutil::atomic_write(&wasm_dest, &bytes)
+                    .map_err(|e| format!("wasm copy failed — {e}"))?;
                 Ok(())
             };
-            if !confirm_and_write("zellij", &config_path, &new, yes, is_tty, &prompt, copy_wasm) {
+            if !confirm_and_write(
+                "zellij",
+                &config_path,
+                &new,
+                yes,
+                is_tty,
+                &prompt,
+                copy_wasm,
+            ) {
                 return;
             }
             println!(
@@ -491,7 +529,13 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
 /// against this entry and the user never meets Zellij's native prompt, which
 /// is illegible at rail width (zellij#4749). Best-effort by design: every
 /// refusal degrades to the hint, never to a failed install.
-fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool, is_tty: bool) -> bool {
+fn run_preseed(
+    wasm_dest: &Path,
+    granted: Option<bool>,
+    yes: bool,
+    dry_run: bool,
+    is_tty: bool,
+) -> bool {
     use super::preseed::{merge_grant, Preseed};
     if granted == Some(true) {
         return true;
@@ -536,7 +580,9 @@ fn run_preseed(wasm_dest: &Path, granted: Option<bool>, yes: bool, dry_run: bool
     }
     if let Some(parent) = perms_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("zellij: warning — not pre-authorizing permissions (create cache dir failed: {e})");
+            eprintln!(
+                "zellij: warning — not pre-authorizing permissions (create cache dir failed: {e})"
+            );
             return false;
         }
     }
@@ -583,7 +629,9 @@ fn print_producer_hint_if_needed(facts: &ZellijFacts) {
     for agent in crate::agents::Agent::ALL {
         let name = agent.source();
         if which(name) && !facts.producers.contains(agent) {
-            println!("zellij: note: {name} found on PATH but not wired — run `zj-radar setup {name}`");
+            println!(
+                "zellij: note: {name} found on PATH but not wired — run `zj-radar setup {name}`"
+            );
         }
     }
 }
@@ -608,7 +656,13 @@ fn print_snippet_for(layout_path: &Path) {
 /// with consent, the full known-good layout is written fresh — a stock Zellij
 /// ships no layout file at all, so "paste this fragment" alone is a dead end
 /// (there is nothing to paste it into).
-fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: bool, is_tty: bool) {
+fn run_layout_inject(
+    layout_path: &Path,
+    inject_flag: bool,
+    yes: bool,
+    dry_run: bool,
+    is_tty: bool,
+) {
     let mode = inject_mode(inject_flag, yes, dry_run, is_tty);
 
     // Same Nix / home-manager guard config.kdl gets (`SetupPath::Managed`): the
@@ -635,7 +689,10 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             crate::exit::fail_report(
                 "zellij",
-                format!("could not read layout {} — {e}; leaving it untouched", layout_path.display()),
+                format!(
+                    "could not read layout {} — {e}; leaving it untouched",
+                    layout_path.display()
+                ),
             );
             eprintln!("        Add the rail manually using the snippet below.");
             print_paste_snippet(&crate::layout::analyze(""));
@@ -669,7 +726,10 @@ fn run_layout_inject(layout_path: &Path, inject_flag: bool, yes: bool, dry_run: 
 
     // Already injected → idempotent no-op for Inject/Prompt; snippet still accurate.
     if facts.has_rail {
-        println!("zellij: layout already has the rail ({})", layout_path.display());
+        println!(
+            "zellij: layout already has the rail ({})",
+            layout_path.display()
+        );
         return;
     }
 
@@ -706,7 +766,10 @@ fn create_full_layout(layout_path: &Path, dry_run: bool) {
         return;
     }
     match backup_then_write(layout_path, &layout) {
-        Ok(()) => println!("zellij: created {} with the rail layout", layout_path.display()),
+        Ok(()) => println!(
+            "zellij: created {} with the rail layout",
+            layout_path.display()
+        ),
         Err(e) => crate::exit::fail_report("zellij", format!("layout create failed — {e}")),
     }
 }
@@ -836,7 +899,10 @@ fn run_layout_uninstall(layout_path: &Path, dry_run: bool) {
         Err(e) => {
             crate::exit::fail_report(
                 "zellij",
-                format!("could not read layout {} — {e}; leaving it untouched", layout_path.display()),
+                format!(
+                    "could not read layout {} — {e}; leaving it untouched",
+                    layout_path.display()
+                ),
             );
             return;
         }
@@ -949,7 +1015,7 @@ mod tests {
     #[test]
     fn yes_takes_safe_default_snippet() {
         // --yes without --inject → Snippet regardless of tty
-        assert_eq!(inject_mode(false, true, false, true),  InjectMode::Snippet);
+        assert_eq!(inject_mode(false, true, false, true), InjectMode::Snippet);
         assert_eq!(inject_mode(false, true, false, false), InjectMode::Snippet);
     }
 
@@ -1002,24 +1068,34 @@ mod tests {
         // (uninstall, config_managed, has_wasm_source, inject, yes, config_exists)
         let cases = &[
             // A managed (symlinked) config wins over everything else.
-            ((false, true, true,  true,  true,  true ), Managed),
-            ((true,  true, false, false, false, true ), Managed),
+            ((false, true, true, true, true, true), Managed),
+            ((true, true, false, false, false, true), Managed),
             // Install, no wasm source: --inject or --yes → layout-only …
-            ((false, false, false, true,  false, true ), LayoutOnlyInstall),
-            ((false, false, false, false, true,  false), LayoutOnlyInstall),
+            ((false, false, false, true, false, true), LayoutOnlyInstall),
+            ((false, false, false, false, true, false), LayoutOnlyInstall),
             // … and a bare invocation refuses with guidance.
-            ((false, false, false, false, false, true ), RefuseNoWasm),
+            ((false, false, false, false, false, true), RefuseNoWasm),
             // Uninstall with no config.kdl on disk: only the layout can hold ours.
-            ((true,  false, false, false, false, false), LayoutOnlyUninstall),
+            (
+                (true, false, false, false, false, false),
+                LayoutOnlyUninstall,
+            ),
             // Uninstall with a config.kdl: full flow (the alias may need stripping).
-            ((true,  false, false, false, false, true ), Full),
+            ((true, false, false, false, false, true), Full),
             // Install with a wasm source: full flow, flags notwithstanding.
-            ((false, false, true,  false, false, false), Full),
-            ((false, false, true,  true,  true,  true ), Full),
+            ((false, false, true, false, false, false), Full),
+            ((false, false, true, true, true, true), Full),
         ];
         for ((uninstall, managed, has_wasm, inject, yes, config_exists), want) in cases {
             assert_eq!(
-                &setup_path(*uninstall, *managed, *has_wasm, *inject, *yes, *config_exists),
+                &setup_path(
+                    *uninstall,
+                    *managed,
+                    *has_wasm,
+                    *inject,
+                    *yes,
+                    *config_exists
+                ),
                 want,
                 "uninstall={uninstall} managed={managed} has_wasm={has_wasm} \
                  inject={inject} yes={yes} config_exists={config_exists}"
@@ -1037,7 +1113,10 @@ mod tests {
         let link = dir.path().join("config.kdl");
         symlink(&real, &link).unwrap();
         assert!(path_is_managed(&link), "symlink should be managed");
-        assert!(!path_is_managed(&real), "regular file should not be managed");
+        assert!(
+            !path_is_managed(&real),
+            "regular file should not be managed"
+        );
         // non-existent path is also not managed
         assert!(!path_is_managed(&dir.path().join("missing.kdl")));
     }

@@ -36,10 +36,22 @@ fn update_check_reports_current_cli_and_missing_wasm_without_network() {
         .get_output()
         .clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains(&format!("v{CURRENT}")), "should print the current version: {stdout}");
-    assert!(stdout.contains("up to date"), "cli line should say up to date: {stdout}");
-    assert!(stdout.contains("not installed"), "wasm line should say not installed: {stdout}");
-    assert!(stdout.contains("setup zellij --download"), "should point at the install command: {stdout}");
+    assert!(
+        stdout.contains(&format!("v{CURRENT}")),
+        "should print the current version: {stdout}"
+    );
+    assert!(
+        stdout.contains("up to date"),
+        "cli line should say up to date: {stdout}"
+    );
+    assert!(
+        stdout.contains("not installed"),
+        "wasm line should say not installed: {stdout}"
+    );
+    assert!(
+        stdout.contains("setup zellij --download"),
+        "should point at the install command: {stdout}"
+    );
 }
 
 #[test]
@@ -51,8 +63,14 @@ fn update_check_exits_nonzero_when_a_newer_release_is_pinned() {
         .get_output()
         .clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("99.0.0"), "should name the available version: {stdout}");
-    assert!(stdout.contains("zj-radar update"), "should point at the command that applies it: {stdout}");
+    assert!(
+        stdout.contains("99.0.0"),
+        "should name the available version: {stdout}"
+    );
+    assert!(
+        stdout.contains("zj-radar update"),
+        "should point at the command that applies it: {stdout}"
+    );
 }
 
 #[test]
@@ -66,8 +84,14 @@ fn update_refuses_a_pin_older_than_the_running_cli() {
         .get_output()
         .clone();
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("older"), "should explain the refusal: {stderr}");
-    assert!(stderr.contains("install.sh"), "should point at the installer for downgrades: {stderr}");
+    assert!(
+        stderr.contains("older"),
+        "should explain the refusal: {stderr}"
+    );
+    assert!(
+        stderr.contains("install.sh"),
+        "should point at the installer for downgrades: {stderr}"
+    );
 }
 
 #[test]
@@ -79,7 +103,10 @@ fn update_rejects_a_pin_that_is_not_a_plain_version() {
         .get_output()
         .clone();
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("MAJOR.MINOR.PATCH"), "should name the expected shape, not call it older: {stderr}");
+    assert!(
+        stderr.contains("MAJOR.MINOR.PATCH"),
+        "should name the expected shape, not call it older: {stderr}"
+    );
     assert!(!stderr.contains("older"), "{stderr}");
 }
 
@@ -104,7 +131,10 @@ fn update_leaves_a_symlinked_wasm_to_its_manager() {
         .get_output()
         .clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("managed"), "wasm line should say it is managed elsewhere: {stdout}");
+    assert!(
+        stdout.contains("managed"),
+        "wasm line should say it is managed elsewhere: {stdout}"
+    );
     assert!(!stdout.contains("differs"), "{stdout}");
 }
 
@@ -120,7 +150,10 @@ fn update_with_nothing_newer_does_not_reinstall_a_missing_wasm() {
     assert!(stdout.contains("up to date"), "{stdout}");
     // `update` moves what is installed; a missing sidebar is a setup job.
     assert!(stdout.contains("setup zellij --download"), "{stdout}");
-    assert!(!home.path().join(".config/zellij/plugins/zj_radar.wasm").exists());
+    assert!(!home
+        .path()
+        .join(".config/zellij/plugins/zj_radar.wasm")
+        .exists());
 }
 
 #[test]
@@ -164,9 +197,16 @@ fn update_refuses_to_overwrite_a_cargo_installed_binary() {
             Err(e) => panic!("spawning relocated binary failed: {e}"),
         }
     };
-    assert!(output.status.success(), "update should redirect (exit 0), got {:?}", output.status);
+    assert!(
+        output.status.success(),
+        "update should redirect (exit 0), got {:?}",
+        output.status
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("cargo install zj-radar"), "should hand off to cargo: {stdout}");
+    assert!(
+        stdout.contains("cargo install zj-radar"),
+        "should hand off to cargo: {stdout}"
+    );
     // The binary itself is untouched.
     assert_eq!(
         fs::read(&relocated).unwrap(),

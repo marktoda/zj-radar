@@ -159,36 +159,36 @@ pub(crate) fn wasm_source(wasm: Option<&Path>, download: bool) -> Result<WasmSou
     match (wasm, download) {
         (Some(_), true) => Err("pass either --wasm <path> or --download, not both".to_string()),
         (Some(p), false) => Ok(WasmSource::Path(p.to_path_buf())),
-        (None, true)     => Ok(WasmSource::Download),
-        (None, false)    => Ok(WasmSource::None),
+        (None, true) => Ok(WasmSource::Download),
+        (None, false) => Ok(WasmSource::None),
     }
 }
 
 pub(crate) struct ZellijSetupOpts<'a> {
     wasm_source: WasmSource,
-    force:       bool,
-    inject:      bool,
-    layout:      Option<&'a str>,
-    dry_run:     bool,
-    yes:         bool,
-    is_tty:      bool,
+    force: bool,
+    inject: bool,
+    layout: Option<&'a str>,
+    dry_run: bool,
+    yes: bool,
+    is_tty: bool,
 }
 
 pub(crate) struct CodexSetupOpts {
     legacy_notify: bool,
-    force:         bool,
-    dry_run:       bool,
-    yes:           bool,
-    is_tty:        bool,
+    force: bool,
+    dry_run: bool,
+    yes: bool,
+    is_tty: bool,
 }
 
 /// Options for the vendored-bridge targets (opencode, pi): both are "drop a
 /// marked file into the agent's auto-loaded dir", so they take the same knobs.
 pub(crate) struct BridgeSetupOpts {
-    pub force:   bool,
+    pub force: bool,
     pub dry_run: bool,
-    pub yes:     bool,
-    pub is_tty:  bool,
+    pub yes: bool,
+    pub is_tty: bool,
 }
 
 /// The single operation a `setup` invocation performs. Resolving this once makes
@@ -246,14 +246,14 @@ pub fn run(options: SetupOptions<'_>) {
     let want_opencode = bare || options.targets.iter().any(|a| a == "opencode");
     let want_claude = bare || options.targets.iter().any(|a| a == "claude");
     let want_pi = bare || options.targets.iter().any(|a| a == "pi");
-    let want_zellij = options.targets.iter().any(|a| a == "zellij")
-        || options.wasm.is_some()
-        || options.download;
-    for a in options
-        .targets
-        .iter()
-        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "zellij"))
-    {
+    let want_zellij =
+        options.targets.iter().any(|a| a == "zellij") || options.wasm.is_some() || options.download;
+    for a in options.targets.iter().filter(|a| {
+        !matches!(
+            a.as_str(),
+            "claude" | "codex" | "opencode" | "pi" | "zellij"
+        )
+    }) {
         crate::exit::fail_report("zj-radar", format!("setup does not support '{a}' (supported: claude, codex, opencode, pi, zellij). Skipping."));
     }
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
@@ -331,11 +331,11 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             ZellijSetupOpts {
                 wasm_source,
-                force:   options.force,
-                inject:  options.inject,
-                layout:  options.layout,
+                force: options.force,
+                inject: options.inject,
+                layout: options.layout,
                 dry_run: options.dry_run,
-                yes:     options.yes,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -345,9 +345,9 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             CodexSetupOpts {
                 legacy_notify: options.legacy_notify,
-                force:         options.force,
-                dry_run:       options.dry_run,
-                yes:           options.yes,
+                force: options.force,
+                dry_run: options.dry_run,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -359,9 +359,9 @@ pub fn run(options: SetupOptions<'_>) {
         setup_opencode(
             uninstall,
             BridgeSetupOpts {
-                force:   options.force,
+                force: options.force,
                 dry_run: options.dry_run,
-                yes:     options.yes,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -370,9 +370,9 @@ pub fn run(options: SetupOptions<'_>) {
         setup_pi(
             uninstall,
             BridgeSetupOpts {
-                force:   options.force,
+                force: options.force,
                 dry_run: options.dry_run,
-                yes:     options.yes,
+                yes: options.yes,
                 is_tty,
             },
         );
@@ -471,7 +471,10 @@ pub(crate) fn backup_then_write(path: &std::path::Path, contents: &str) -> std::
         std::fs::copy(path, path_with_suffix(path, BACKUP_SUFFIX)).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!("backup copy failed ({e}); {} left untouched", path.display()),
+                format!(
+                    "backup copy failed ({e}); {} left untouched",
+                    path.display()
+                ),
             )
         })?;
     }
@@ -493,18 +496,30 @@ mod tests {
     #[test]
     fn wasm_source_rejects_both_path_and_download() {
         let p = std::path::Path::new("/x.wasm");
-        assert!(matches!(wasm_source(Some(p), false), Ok(WasmSource::Path(_))));
+        assert!(matches!(
+            wasm_source(Some(p), false),
+            Ok(WasmSource::Path(_))
+        ));
         assert!(matches!(wasm_source(None, true), Ok(WasmSource::Download)));
         assert!(matches!(wasm_source(None, false), Ok(WasmSource::None)));
-        assert!(wasm_source(Some(p), true).is_err(), "both --wasm and --download must refuse");
+        assert!(
+            wasm_source(Some(p), true).is_err(),
+            "both --wasm and --download must refuse"
+        );
     }
 
     #[test]
     fn mode_precedence_grant_beats_check_beats_uninstall() {
         assert!(matches!(mode_from_flags(true, true, true), Mode::Grant));
         assert!(matches!(mode_from_flags(false, true, true), Mode::Check));
-        assert!(matches!(mode_from_flags(false, false, true), Mode::Uninstall));
-        assert!(matches!(mode_from_flags(false, false, false), Mode::Install));
+        assert!(matches!(
+            mode_from_flags(false, false, true),
+            Mode::Uninstall
+        ));
+        assert!(matches!(
+            mode_from_flags(false, false, false),
+            Mode::Install
+        ));
     }
 
     #[test]

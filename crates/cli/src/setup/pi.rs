@@ -3,9 +3,12 @@
 //! edit; a clean uninstall is one file delete. Install, uninstall, `--check`
 //! and producer detection all key on the header marker (`detect.rs`).
 
-use super::*;
 use super::detect::pi_extension_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{
+    plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan,
+    UninstallPlan,
+};
+use super::*;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -29,7 +32,10 @@ pub(crate) fn pi_extension_is_ours_on_disk() -> bool {
 }
 
 fn pi_agent_dir() -> Option<PathBuf> {
-    pi_agent_dir_from(std::env::var_os("PI_CODING_AGENT_DIR"), std::env::var_os("HOME"))
+    pi_agent_dir_from(
+        std::env::var_os("PI_CODING_AGENT_DIR"),
+        std::env::var_os("HOME"),
+    )
 }
 
 /// Resolve pi's agent dir the way pi's `getAgentDir()` does
@@ -56,20 +62,33 @@ fn pi_agent_dir_from(override_dir: Option<OsString>, home: Option<OsString>) -> 
 /// itself evidence pi is configured here, even before the dir exists on
 /// disk), an existing agent dir (a bun/Nix-run user may have no `pi` on
 /// PATH), or our bridge already there.
-fn pi_installed_from(on_path: bool, override_set: bool, agent_dir_exists: bool, extension_exists: bool) -> bool {
+fn pi_installed_from(
+    on_path: bool,
+    override_set: bool,
+    agent_dir_exists: bool,
+    extension_exists: bool,
+) -> bool {
     on_path || override_set || agent_dir_exists || extension_exists
 }
 
 pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     let (Some(agent_dir), Some(path)) = (pi_agent_dir(), pi_extension_path()) else {
-        crate::exit::fail_report("pi", "skipped — set $HOME or $PI_CODING_AGENT_DIR so pi's agent dir can be resolved");
+        crate::exit::fail_report(
+            "pi",
+            "skipped — set $HOME or $PI_CODING_AGENT_DIR so pi's agent dir can be resolved",
+        );
         return;
     };
     let existing = read_existing(&path);
     let pi_on_path = which("pi");
     let override_set = std::env::var_os("PI_CODING_AGENT_DIR").is_some_and(|d| !d.is_empty());
     if !uninstall
-        && !pi_installed_from(pi_on_path, override_set, agent_dir.is_dir(), !matches!(existing, Existing::Absent))
+        && !pi_installed_from(
+            pi_on_path,
+            override_set,
+            agent_dir.is_dir(),
+            !matches!(existing, Existing::Absent),
+        )
     {
         println!("pi: skipped (binary/agent dir not found)");
         return;
@@ -77,17 +96,26 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     let facts = analyze_pi(&PiEnv {
         pi_on_path,
         zj_radar_on_path: which("zj-radar"),
-        extension_text:   existing.text().map(str::to_string),
-        pi_version:       None,
+        extension_text: existing.text().map(str::to_string),
+        pi_version: None,
     });
 
     if uninstall {
         match plan_uninstall(&existing, pi_extension_is_ours) {
             UninstallPlan::Absent => println!("pi: extension not installed ({})", path.display()),
-            UninstallPlan::NotOurs => println!("pi: extension not ours (marker absent) — leaving {}", path.display()),
-            UninstallPlan::Remove if opts.dry_run => println!("--- would remove {} (dry-run) ---", path.display()),
+            UninstallPlan::NotOurs => println!(
+                "pi: extension not ours (marker absent) — leaving {}",
+                path.display()
+            ),
+            UninstallPlan::Remove if opts.dry_run => {
+                println!("--- would remove {} (dry-run) ---", path.display())
+            }
             UninstallPlan::Remove => {
-                if !confirm(&format!("Remove {}?", path.display()), opts.yes, opts.is_tty) {
+                if !confirm(
+                    &format!("Remove {}?", path.display()),
+                    opts.yes,
+                    opts.is_tty,
+                ) {
                     println!("pi: skipped (declined)");
                     return;
                 }
@@ -99,7 +127,10 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
                 // Its restore point goes too when ours (a stale-ours rewrite); a
                 // foreign one — what `--force` replaced — is the user's only copy.
                 if let Some(bak) = remove_backup_if_ours(&path, pi_extension_is_ours) {
-                    println!("pi: left {} (not ours — the file `--force` replaced)", bak.display());
+                    println!(
+                        "pi: left {} (not ours — the file `--force` replaced)",
+                        bak.display()
+                    );
                 }
             }
         }
@@ -109,7 +140,10 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
     match plan_install(&existing, PI_EXTENSION_JS, opts.force, pi_extension_is_ours) {
         InstallPlan::RefuseForeign => {
             let why = existing.refusal_reason(&path);
-            crate::exit::fail_report("pi", format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."));
+            crate::exit::fail_report(
+                "pi",
+                format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."),
+            );
         }
         InstallPlan::UpToDate => {
             println!("pi: extension already up to date ({})", path.display());
@@ -156,16 +190,35 @@ mod tests {
 
     #[test]
     fn pi_agent_dir_prefers_the_override_and_expands_tilde() {
-        assert_eq!(pi_agent_dir_from(Some(os("/x/pi")), Some(os("/home/u"))), Some(PathBuf::from("/x/pi")));
-        assert_eq!(pi_agent_dir_from(Some(os("~/p")), Some(os("/home/u"))), Some(PathBuf::from("/home/u/p")));
-        assert_eq!(pi_agent_dir_from(Some(os("~")), Some(os("/home/u"))), Some(PathBuf::from("/home/u")));
-        assert_eq!(pi_agent_dir_from(Some(os("~/p")), None), None, "a tilde override needs a HOME");
+        assert_eq!(
+            pi_agent_dir_from(Some(os("/x/pi")), Some(os("/home/u"))),
+            Some(PathBuf::from("/x/pi"))
+        );
+        assert_eq!(
+            pi_agent_dir_from(Some(os("~/p")), Some(os("/home/u"))),
+            Some(PathBuf::from("/home/u/p"))
+        );
+        assert_eq!(
+            pi_agent_dir_from(Some(os("~")), Some(os("/home/u"))),
+            Some(PathBuf::from("/home/u"))
+        );
+        assert_eq!(
+            pi_agent_dir_from(Some(os("~/p")), None),
+            None,
+            "a tilde override needs a HOME"
+        );
     }
 
     #[test]
     fn pi_agent_dir_falls_back_to_home_and_treats_empty_as_unset() {
-        assert_eq!(pi_agent_dir_from(None, Some(os("/home/u"))), Some(PathBuf::from("/home/u/.pi/agent")));
-        assert_eq!(pi_agent_dir_from(Some(OsString::new()), Some(os("/home/u"))), Some(PathBuf::from("/home/u/.pi/agent")));
+        assert_eq!(
+            pi_agent_dir_from(None, Some(os("/home/u"))),
+            Some(PathBuf::from("/home/u/.pi/agent"))
+        );
+        assert_eq!(
+            pi_agent_dir_from(Some(OsString::new()), Some(os("/home/u"))),
+            Some(PathBuf::from("/home/u/.pi/agent"))
+        );
         assert_eq!(pi_agent_dir_from(None, Some(OsString::new())), None);
         assert_eq!(pi_agent_dir_from(None, None), None);
     }
@@ -189,18 +242,32 @@ mod tests {
     #[test]
     fn embedded_extension_carries_marker_and_contract() {
         let js = super::super::PI_EXTENSION_JS;
-        assert!(super::super::PI_EXTENSION_MARKER.starts_with(super::super::PI_EXTENSION_MARKER_PREFIX));
-        assert!(js.lines().next().is_some_and(|l| l.contains(super::super::PI_EXTENSION_MARKER)));
+        assert!(
+            super::super::PI_EXTENSION_MARKER.starts_with(super::super::PI_EXTENSION_MARKER_PREFIX)
+        );
+        assert!(js
+            .lines()
+            .next()
+            .is_some_and(|l| l.contains(super::super::PI_EXTENSION_MARKER)));
         assert!(js.contains("\"notify\", \"pi\", \"--status\""));
-        assert!(!js.contains("spawnSync") && !js.contains("execSync"), "never block pi's event loop");
+        assert!(
+            !js.contains("spawnSync") && !js.contains("execSync"),
+            "never block pi's event loop"
+        );
         assert!(js.contains("ZELLIJ"), "must gate on $ZELLIJ");
-        assert!(js.contains("\"ignore\", \"ignore\""), "child stdout/stderr must never reach pi's TUI");
+        assert!(
+            js.contains("\"ignore\", \"ignore\""),
+            "child stdout/stderr must never reach pi's TUI"
+        );
         assert!(
             js.contains("stdin.on(\"error\""),
             "child.stdin needs an error listener or an async EPIPE crashes pi"
         );
         for line in js.lines().filter(|l| l.starts_with("import ")) {
-            assert!(line.contains("from \"node:"), "only node: builtins may be imported: {line}");
+            assert!(
+                line.contains("from \"node:"),
+                "only node: builtins may be imported: {line}"
+            );
         }
         assert!(js.contains("export default function"));
     }

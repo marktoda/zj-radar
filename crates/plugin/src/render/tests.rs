@@ -7,10 +7,24 @@ fn wait_tag_is_pending_only_minute_floored_and_frozen_at_saturation() {
     // Under a minute: a fresh ask needs no clock.
     assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_059), None);
     // Whole minutes from 1m up to the saturate window.
-    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_060).as_deref(), Some("1m"));
-    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_000 + 12 * 60 + 30).as_deref(), Some("12m"));
+    assert_eq!(
+        wait_tag(Status::Pending, Some(1_000), 1_060).as_deref(),
+        Some("1m")
+    );
+    assert_eq!(
+        wait_tag(Status::Pending, Some(1_000), 1_000 + 12 * 60 + 30).as_deref(),
+        Some("12m")
+    );
     // Frozen at 1h+ — the display never changes again (lets the timer disarm).
-    assert_eq!(wait_tag(Status::Pending, Some(1_000), 1_000 + crate::ledger::SATURATE_S).as_deref(), Some("1h+"));
+    assert_eq!(
+        wait_tag(
+            Status::Pending,
+            Some(1_000),
+            1_000 + crate::ledger::SATURATE_S
+        )
+        .as_deref(),
+        Some("1h+")
+    );
     // Non-pending statuses and unstamped rows (pre-upgrade snapshots): no tag.
     assert_eq!(wait_tag(Status::Running, Some(1_000), 9_999), None);
     assert_eq!(wait_tag(Status::Pending, None, 9_999), None);
@@ -22,9 +36,18 @@ fn wait_tag_is_pending_only_minute_floored_and_frozen_at_saturation() {
 fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
     // Jobs wear the stopwatch; the band matches wait_tag (shared minute_tag).
     assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 59), None);
-    assert_eq!(run_tag(Status::Running, Kind::Build, Some(0), 240).as_deref(), Some("4m"));
     assert_eq!(
-        run_tag(Status::Running, Kind::Command, Some(0), crate::ledger::SATURATE_S).as_deref(),
+        run_tag(Status::Running, Kind::Build, Some(0), 240).as_deref(),
+        Some("4m")
+    );
+    assert_eq!(
+        run_tag(
+            Status::Running,
+            Kind::Command,
+            Some(0),
+            crate::ledger::SATURATE_S
+        )
+        .as_deref(),
         Some("1h+"),
         "frozen at 1h+ — the display never changes again"
     );
@@ -32,7 +55,11 @@ fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
     // never complete: none of them is timed.
     assert_eq!(run_tag(Status::Running, Kind::Claude, Some(0), 9_999), None);
     assert_eq!(run_tag(Status::Running, Kind::Server, Some(0), 9_999), None);
-    assert_eq!(run_tag(Status::Running, Kind::Remote, Some(0), 9_999), None, "a connection does not wear a stopwatch");
+    assert_eq!(
+        run_tag(Status::Running, Kind::Remote, Some(0), 9_999),
+        None,
+        "a connection does not wear a stopwatch"
+    );
     // Non-Running statuses and unstamped panes (untracked): no tag.
     assert_eq!(run_tag(Status::Done, Kind::Build, Some(0), 9_999), None);
     assert_eq!(run_tag(Status::Running, Kind::Build, None, 9_999), None);
@@ -64,12 +91,7 @@ fn truncate_does_not_strand_a_zwj_before_the_ellipsis() {
     assert_eq!(truncate("abc", 3), "abc");
 }
 
-fn display(
-    status: Status,
-    done: usize,
-    total: usize,
-    detail: Option<PrimaryDetail>,
-) -> TabDisplay {
+fn display(status: Status, done: usize, total: usize, detail: Option<PrimaryDetail>) -> TabDisplay {
     // Production TabDisplays always carry the pane their detail was derived
     // FROM (`roll_up` computes `detail` from the highest-severity pane), and
     // the single-pane child line renders from that pane — mirror the
@@ -122,7 +144,14 @@ const FIXTURE_PANE_ID: u32 = 900;
 /// via struct update: `TabRow { active: true, ..tab(1, "web", d) }` — so a
 /// new `TabRow` field touches this constructor, not every fixture.
 fn tab(number: u32, name: impl Into<String>, display: TabDisplay) -> TabRow {
-    TabRow { number, name: name.into(), active: false, has_bell: false, flash: false, display }
+    TabRow {
+        number,
+        name: name.into(),
+        active: false,
+        has_bell: false,
+        flash: false,
+        display,
+    }
 }
 
 /// Base `PrimaryDetail` — the varying four (repo, branch, msg, status),
@@ -265,10 +294,7 @@ fn is_painted(line: &str) -> bool {
 #[test]
 fn header_is_title_then_rule_two_lines() {
     let rows = vec![tab(1, "a", display(Status::Running, 0, 0, None))];
-    assert_eq!(
-        header_lines(true, crate::config::Density::Compact, true),
-        2
-    );
+    assert_eq!(header_lines(true, crate::config::Density::Compact, true), 2);
     let s = render(&rows, &ro(24, 0));
     let mut lines = s.lines();
     let title = lines.next().unwrap();
@@ -292,10 +318,7 @@ fn header_absent_for_empty_rows() {
 fn header_present_for_empty_rows_with_ledger_history() {
     // Zero tracked tabs but a non-empty ledger is still "has_content" — the
     // header renders with an honest `·0` tab count (spec §9's floor).
-    assert_eq!(
-        header_lines(true, crate::config::Density::Compact, true),
-        2
-    );
+    assert_eq!(header_lines(true, crate::config::Density::Compact, true), 2);
 }
 
 #[test]
@@ -315,21 +338,25 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
 
     let detail = pd("repo", "main", "approve", Status::Pending);
     let rows = vec![
-        tab(1, "team", TabDisplay {
-            status: Status::Pending,
-            progress: ProgressCounts {
-                done: 0,
-                total: 2,
-                pending: 1,
+        tab(
+            1,
+            "team",
+            TabDisplay {
+                status: Status::Pending,
+                progress: ProgressCounts {
+                    done: 0,
+                    total: 2,
+                    pending: 1,
+                },
+                detail: Some(detail),
+                panes: vec![
+                    pe(10, Kind::Claude, Status::Pending, "approve"),
+                    pe(11, Kind::Claude, Status::Running, "tests"),
+                ],
+                animating: true,
+                remote: false,
             },
-            detail: Some(detail),
-            panes: vec![
-                pe(10, Kind::Claude, Status::Pending, "approve"),
-                pe(11, Kind::Claude, Status::Running, "tests"),
-            ],
-            animating: true,
-            remote: false,
-        }),
+        ),
         tab(2, "plain", display(Status::Idle, 0, 0, None)),
     ];
 
@@ -384,39 +411,55 @@ fn plain_tab_renders_name_only_no_second_line() {
 #[test]
 fn render_row_lines_by_state() {
     let opts = ro(40, 0);
-    let mk_row = |d: TabDisplay, active: bool| TabRow { active, ..tab(1, "t", d) };
+    let mk_row = |d: TabDisplay, active: bool| TabRow {
+        active,
+        ..tab(1, "t", d)
+    };
     let rl = |d: TabDisplay, active: bool| render_row(&mk_row(d, active), &opts).len();
 
     assert_eq!(rl(display(Status::Idle, 0, 0, None), false), 1);
 
-    let detail = |status, msg: &str| {
-        Some(pd("r", "b", msg, status))
-    };
+    let detail = |status, msg: &str| Some(pd("r", "b", msg, status));
     assert_eq!(
         rl(display(Status::Done, 1, 1, detail(Status::Done, "")), false),
         1
     );
     assert_eq!(
-        rl(display(Status::Running, 1, 1, detail(Status::Running, "x")), false),
+        rl(
+            display(Status::Running, 1, 1, detail(Status::Running, "x")),
+            false
+        ),
         2
     );
     assert_eq!(
-        rl(display(Status::Error, 1, 1, detail(Status::Error, "x")), false),
+        rl(
+            display(Status::Error, 1, 1, detail(Status::Error, "x")),
+            false
+        ),
         2
     );
     // Pending: no msg → 1 line (line 2 suppressed); with msg → 2 lines (mark + activity).
     // Old 3-line case (branch · needs you + quoted msg) is gone.
     assert_eq!(
-        rl(display(Status::Pending, 1, 1, detail(Status::Pending, "")), false),
+        rl(
+            display(Status::Pending, 1, 1, detail(Status::Pending, "")),
+            false
+        ),
         1
     );
     assert_eq!(
-        rl(display(Status::Pending, 1, 1, detail(Status::Pending, "go?")), false),
+        rl(
+            display(Status::Pending, 1, 1, detail(Status::Pending, "go?")),
+            false
+        ),
         2
     );
     // Running with no msg: only 1 line
     assert_eq!(
-        rl(display(Status::Running, 1, 1, detail(Status::Running, "")), false),
+        rl(
+            display(Status::Running, 1, 1, detail(Status::Running, "")),
+            false
+        ),
         1
     );
 }
@@ -424,7 +467,10 @@ fn render_row_lines_by_state() {
 #[test]
 fn active_row_has_accent_bar_idle_does_not() {
     let rows = vec![
-        TabRow { active: true, ..tab(1, "a", display(Status::Idle, 0, 0, None)) },
+        TabRow {
+            active: true,
+            ..tab(1, "a", display(Status::Idle, 0, 0, None))
+        },
         tab(2, "b", display(Status::Idle, 0, 0, None)),
     ];
     let s = render(&rows, &ro(24, 0));
@@ -437,8 +483,10 @@ fn active_row_has_accent_bar_idle_does_not() {
 #[test]
 fn active_and_waiting_row_bar_is_attention_not_accent() {
     let detail = pd("p", "fix", "", Status::Pending);
-    let rows = vec![TabRow { active: true,
-        ..tab(3, "pinky", display(Status::Pending, 0, 0, Some(detail))) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(3, "pinky", display(Status::Pending, 0, 0, Some(detail)))
+    }];
     let s = render(&rows, &ro(30, 5));
     let line1 = s.lines().nth(2).unwrap();
     assert!(line1.contains('▌'));
@@ -454,7 +502,11 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
     // "  ‹mark› " prefix with no activity. A Failed outcome DOES render a tag,
     // so it keeps its line 2 even with an empty msg.
     let row = |status, outcome| {
-        let d = PrimaryDetail { kind: Kind::Command, outcome, ..pd("r", "b", "", status) };
+        let d = PrimaryDetail {
+            kind: Kind::Command,
+            outcome,
+            ..pd("r", "b", "", status)
+        };
         tab(1, "n", display(status, 1, 1, Some(d)))
     };
 
@@ -466,9 +518,20 @@ fn empty_msg_ok_completion_emits_no_bare_mark_line() {
         ok_lines.iter().map(|l| &l.text).collect::<Vec<_>>()
     );
 
-    let failed_lines = render_row(&row(Status::Error, Some(ExitOutcome::Failed(Some(1)))), &ro(30, 0));
-    assert_eq!(failed_lines.len(), 2, "a Failed outcome still earns its line 2");
-    assert!(failed_lines[1].text.contains("exit 1"), "line 2 carries the tag: {:?}", failed_lines[1].text);
+    let failed_lines = render_row(
+        &row(Status::Error, Some(ExitOutcome::Failed(Some(1)))),
+        &ro(30, 0),
+    );
+    assert_eq!(
+        failed_lines.len(),
+        2,
+        "a Failed outcome still earns its line 2"
+    );
+    assert!(
+        failed_lines[1].text.contains("exit 1"),
+        "line 2 carries the tag: {:?}",
+        failed_lines[1].text
+    );
 }
 
 #[test]
@@ -519,7 +582,11 @@ fn idle_row_is_single_line_with_no_right_slot_text() {
 
 #[test]
 fn narrow_width_truncates_with_ellipsis() {
-    let rows = vec![tab(1, "a-very-long-tab-name-indeed", display(Status::Idle, 0, 0, None))];
+    let rows = vec![tab(
+        1,
+        "a-very-long-tab-name-indeed",
+        display(Status::Idle, 0, 0, None),
+    )];
     let s = render(&rows, &ro(12, 0));
     assert!(s.contains('…'));
 }
@@ -528,9 +595,20 @@ fn narrow_width_truncates_with_ellipsis() {
 fn no_emitted_line_exceeds_width() {
     let width = 20;
     // msg longer than width
-    let detail = pd("pinky", "fix/x", "abcdefghijklmnopqrstuvwxyz", Status::Running);
-    let rows = vec![TabRow { active: true, // exercises BOLD escapes too
-        ..tab(2, "a-very-long-tab-name-indeed", display(Status::Running, 2, 4, Some(detail))) }];
+    let detail = pd(
+        "pinky",
+        "fix/x",
+        "abcdefghijklmnopqrstuvwxyz",
+        Status::Running,
+    );
+    let rows = vec![TabRow {
+        active: true, // exercises BOLD escapes too
+        ..tab(
+            2,
+            "a-very-long-tab-name-indeed",
+            display(Status::Running, 2, 4, Some(detail)),
+        )
+    }];
     let s = render(&rows, &tight(&rows, ro(width, 14)));
     // header (2) + two tab lines emitted (Running+detail = 2 lines)
     assert_eq!(s.lines().count(), 4);
@@ -554,8 +632,14 @@ fn pending_detail_lines_never_exceed_width() {
         "should we proceed with this long question",
         Status::Pending,
     );
-    let rows = vec![TabRow { active: true,
-        ..tab(3, "a-long-tab-name", display(Status::Pending, 0, 1, Some(detail))) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            3,
+            "a-long-tab-name",
+            display(Status::Pending, 0, 1, Some(detail)),
+        )
+    }];
     for width in [16usize, 20, 24, 30] {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
@@ -577,8 +661,11 @@ fn bell_row_never_exceeds_width_even_when_extremely_narrow() {
     // bell used to spill 2 cells past the edge — breaking the width invariant
     // and the card-padding math. Every width down to 1 must still fit.
     for active in [true, false] {
-        let rows = vec![TabRow { active, has_bell: true,
-            ..tab(7, "infra", display(Status::Running, 0, 1, None)) }];
+        let rows = vec![TabRow {
+            active,
+            has_bell: true,
+            ..tab(7, "infra", display(Status::Running, 0, 1, None))
+        }];
         // From width 4 up: the bell bug reproduced here (prefix fits but the
         // 2-col bell spilled past the edge). Widths 1–3 are a separate,
         // pre-existing degenerate case (the spine+glyph alone can't fit a
@@ -615,7 +702,10 @@ fn done_has_no_warning_glyph() {
 
 #[test]
 fn bell_renders_marker() {
-    let rows = vec![TabRow { has_bell: true, ..tab(1, "t", display(Status::Idle, 0, 0, None)) }];
+    let rows = vec![TabRow {
+        has_bell: true,
+        ..tab(1, "t", display(Status::Idle, 0, 0, None))
+    }];
     assert!(render(&rows, &ro(24, 0)).contains('⚑'));
 }
 
@@ -649,7 +739,10 @@ fn no_remote_no_marker() {
 fn remote_and_bell_coexist_as_two_glyphs() {
     // Both present renders `⇄⚑` in priority order, in a 3-column slot.
     let d = with_remote(true, display(Status::Idle, 0, 0, None));
-    let rows = vec![TabRow { has_bell: true, ..tab(1, "t", d) }];
+    let rows = vec![TabRow {
+        has_bell: true,
+        ..tab(1, "t", d)
+    }];
     let s = render(&rows, &ro(24, 0));
     assert!(s.contains('⇄'), "remote marker present: {s:?}");
     assert!(s.contains('⚑'), "bell marker present: {s:?}");
@@ -665,7 +758,10 @@ fn remote_row_never_exceeds_width_even_when_extremely_narrow() {
     // marker slot must suppress itself rather than spill past the column edge.
     for active in [true, false] {
         let d = with_remote(true, display(Status::Running, 0, 1, None));
-        let rows = vec![TabRow { active, ..tab(7, "infra", d) }];
+        let rows = vec![TabRow {
+            active,
+            ..tab(7, "infra", d)
+        }];
         for width in 4usize..=16 {
             let s = render(&rows, &ro(width, 3));
             for line in s.lines() {
@@ -688,11 +784,17 @@ fn name_truncates_before_the_marker_slot() {
     // marker slot intact (documented priority: overflow marker > badge >
     // census — the tab name is lower priority still).
     let d = with_remote(true, display(Status::Idle, 0, 0, None));
-    let rows = vec![TabRow { has_bell: true, ..tab(1, "a-very-long-tab-name", d) }];
+    let rows = vec![TabRow {
+        has_bell: true,
+        ..tab(1, "a-very-long-tab-name", d)
+    }];
     let s = render(&rows, &ro(16, 0));
     let row_line = strip_sgr(s.lines().nth(2).unwrap_or(""));
     assert!(visible_width(&row_line) <= 16, "row fits: {row_line:?}");
-    assert!(row_line.contains('⇄'), "marker survives the squeeze: {row_line:?}");
+    assert!(
+        row_line.contains('⇄'),
+        "marker survives the squeeze: {row_line:?}"
+    );
 }
 
 #[test]
@@ -723,12 +825,17 @@ fn idle_row(n: u32) -> TabRow {
     tab(n, format!("t{}", n), display(Status::Idle, 0, 0, None))
 }
 
-
 #[test]
 fn overflow_folds_idle_into_strip_and_marks_header() {
     // 20 idle tabs, height only fits a few → fold.
     let rows: Vec<TabRow> = (1..=20).map(idle_row).collect();
-    let s = render(&rows, &RenderOpts { height: 6, ..ro(24, 0) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            height: 6,
+            ..ro(24, 0)
+        },
+    );
     assert!(s.contains("idle")); // "+N idle ▾" footer
     assert!(s.contains('▾'));
     assert!(s.lines().next().unwrap().contains('▲')); // header overflow marker
@@ -742,7 +849,13 @@ fn overflow_keeps_non_idle_rows_visible() {
     // an urgent waiting tab at the very end (high position)
     let d = pd("p", "x", "approve?", Status::Pending);
     rows.push(tab(19, "pinky", display(Status::Pending, 0, 1, Some(d))));
-    let s = render(&rows, &RenderOpts { height: 8, ..ro(30, 2) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            height: 8,
+            ..ro(30, 2)
+        },
+    );
     assert!(s.contains("pinky")); // urgent row never folded
     assert!(s.contains("approve?")); // activity (msg) survives on line 2
     assert!(s.contains('✳')); // Claude identity mark on line 2
@@ -751,7 +864,13 @@ fn overflow_keeps_non_idle_rows_visible() {
 #[test]
 fn no_overflow_when_everything_fits() {
     let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
-    let s = render(&rows, &RenderOpts { height: 40, ..ro(24, 0) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            height: 40,
+            ..ro(24, 0)
+        },
+    );
     assert!(!s.contains("idle ▾"));
     assert!(!s.lines().next().unwrap().contains('▲'));
 }
@@ -769,23 +888,38 @@ fn render_glyph_role_colors_are_present() {
         // idle — one line, no detail
         tab(1, "idle-tab", display(Status::Idle, 0, 0, None)),
         // running — two lines, with detail
-        TabRow { active: true,
-            ..tab(2, "run-tab", display(Status::Running, 1, 2, Some(mk_detail(Status::Running)))) },
+        TabRow {
+            active: true,
+            ..tab(
+                2,
+                "run-tab",
+                display(Status::Running, 1, 2, Some(mk_detail(Status::Running))),
+            )
+        },
         // pending with msg — three lines
-        tab(3, "pend-tab", display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending)))),
+        tab(
+            3,
+            "pend-tab",
+            display(Status::Pending, 0, 1, Some(mk_detail(Status::Pending))),
+        ),
         // done — one line
-        tab(4, "done-tab", display(Status::Done, 1, 1, Some(mk_detail(Status::Done)))),
+        tab(
+            4,
+            "done-tab",
+            display(Status::Done, 1, 1, Some(mk_detail(Status::Done))),
+        ),
         // error — two lines
-        tab(5, "err-tab", display(Status::Error, 0, 1, Some(mk_detail(Status::Error)))),
+        tab(
+            5,
+            "err-tab",
+            display(Status::Error, 0, 1, Some(mk_detail(Status::Error))),
+        ),
     ];
 
     let s = render(&rows, &ro(30, 7));
 
     // Compact density must NOT have card background bands.
-    assert!(
-        !is_painted(&s),
-        "Compact must not emit truecolor bg bands"
-    );
+    assert!(!is_painted(&s), "Compact must not emit truecolor bg bands");
     // Must NOT contain raw hex color literals
     assert!(
         !s.contains('#'),
@@ -826,7 +960,11 @@ fn pending_line2_shows_mark_and_activity() {
 
     // Case 1: pending with msg — 2 lines, mark + activity in attention color.
     let detail_with_msg = pd("proj", "fix", "approve the push?", Status::Pending);
-    let rows = vec![tab(1, "agents", display(Status::Pending, 0, 3, Some(detail_with_msg)))];
+    let rows = vec![tab(
+        1,
+        "agents",
+        display(Status::Pending, 0, 3, Some(detail_with_msg)),
+    )];
     let s = render(&rows, &ro(30, 0));
     // line 2 must show the mark and the activity text
     assert!(
@@ -856,7 +994,11 @@ fn pending_line2_shows_mark_and_activity() {
 
     // Case 2: pending without msg → 1 line only, no line 2.
     let detail_no_msg = pd("proj", "fix", "", Status::Pending);
-    let rows2 = [tab(2, "solo", display(Status::Pending, 0, 1, Some(detail_no_msg)))];
+    let rows2 = [tab(
+        2,
+        "solo",
+        display(Status::Pending, 0, 1, Some(detail_no_msg)),
+    )];
     // full_lines = 1 (no msg → no line 2)
     assert_eq!(render_row(&rows2[0], &ro(30, 0)).len(), 1);
 
@@ -867,7 +1009,11 @@ fn pending_line2_shows_mark_and_activity() {
         "a very long question that should be truncated appropriately here",
         Status::Pending,
     );
-    let rows3 = vec![tab(3, "multi", display(Status::Pending, 0, 5, Some(detail_long)))];
+    let rows3 = vec![tab(
+        3,
+        "multi",
+        display(Status::Pending, 0, 5, Some(detail_long)),
+    )];
     for width in [20usize, 24, 30] {
         let s3 = render(&rows3, &ro(width, 0));
         assert!(
@@ -894,19 +1040,28 @@ fn multi_pending_detail_never_exceeds_width() {
     // With msg:"" → no line 2, so only line 1 (the status line) is rendered.
     // This tests the width-safety of the first line at narrow widths.
     // (Kept as a regression guard; previously tested "N needs you" overflow.)
-    let detail = pd("averylongreponame", "feature/some-very-long-branch-name", "", Status::Pending);
-    let rows = vec![tab(1, "m", TabDisplay {
-        status: Status::Pending,
-        progress: ProgressCounts {
-            done: 0,
-            total: 1,
-            pending: 3,
+    let detail = pd(
+        "averylongreponame",
+        "feature/some-very-long-branch-name",
+        "",
+        Status::Pending,
+    );
+    let rows = vec![tab(
+        1,
+        "m",
+        TabDisplay {
+            status: Status::Pending,
+            progress: ProgressCounts {
+                done: 0,
+                total: 1,
+                pending: 3,
+            },
+            detail: Some(detail),
+            panes: vec![],
+            animating: false,
+            remote: false,
         },
-        detail: Some(detail),
-        panes: vec![],
-        animating: false,
-        remote: false,
-    })];
+    )];
     for width in [14usize, 16, 17, 20, 24] {
         let s = render(&rows, &ro(width, 0));
         for line in s.lines() {
@@ -960,8 +1115,23 @@ fn panel_faces_never_exceed_height() {
     // brand-new user sees. Clamp discipline must match the rail's.
     for height in [0usize, 1, 2, 3, 5, 7, 12, 100] {
         for (name, face) in [
-            ("onboarding", onboarding(&RenderOpts { height, ..ro(24, 0) })),
-            ("needs_permission", needs_permission(&RenderOpts { height, ..ro(24, 0) }, crate::config::GrantHint::CtrlY)),
+            (
+                "onboarding",
+                onboarding(&RenderOpts {
+                    height,
+                    ..ro(24, 0)
+                }),
+            ),
+            (
+                "needs_permission",
+                needs_permission(
+                    &RenderOpts {
+                        height,
+                        ..ro(24, 0)
+                    },
+                    crate::config::GrantHint::CtrlY,
+                ),
+            ),
         ] {
             assert!(
                 face.line_count() <= height,
@@ -993,7 +1163,13 @@ fn panel_faces_never_exceed_height() {
 fn idle_strip_never_exceeds_width() {
     let rows: Vec<TabRow> = (1..=30).map(idle_row).collect();
     for width in [18usize, 24, 30] {
-        let s = render(&rows, &RenderOpts { height: 6, ..ro(width, 0) });
+        let s = render(
+            &rows,
+            &RenderOpts {
+                height: 6,
+                ..ro(width, 0)
+            },
+        );
         // folding must have happened
         assert!(
             s.contains("idle ▾"),
@@ -1017,8 +1193,14 @@ fn cjk_and_emoji_names_never_exceed_width() {
     // CJK: each char is 2 display columns. "作業中デプロイ" = 7 chars = 14 cols.
     // Emoji in msg: 🚀 = 2 cols.
     let detail = pd("proj", "main", "🚀 deploying now", Status::Pending);
-    let rows = vec![TabRow { active: true,
-        ..tab(1, "作業中デプロイ", display(Status::Pending, 0, 1, Some(detail))) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "作業中デプロイ",
+            display(Status::Pending, 0, 1, Some(detail)),
+        )
+    }];
     for width in [16usize, 20, 24, 30] {
         let s = render(&rows, &ro(width, 5));
         for line in s.lines() {
@@ -1040,7 +1222,13 @@ fn header_false_emits_no_header_lines() {
         header_lines(false, crate::config::Density::Compact, true),
         0
     );
-    let s = render(&rows, &RenderOpts { header: false, ..ro(24, 0) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            header: false,
+            ..ro(24, 0)
+        },
+    );
     // No identity header: rows start at line 0, so no "RADAR"/"═" line.
     assert!(!s.contains("RADAR"));
     assert!(!s.contains('═'));
@@ -1090,30 +1278,49 @@ fn pe_task(id: u32, kind: Kind, status: Status, msg: &str, task: &str) -> PaneDi
 #[test]
 fn child_prefix_is_tree_connector_with_optional_spine() {
     let conn = Role::Muted.ansi(); // stand-in connector color
-    // Inactive: a leading space (no spine), then the connector, then a
-    // trailing space before the glyph — col 1 always holds the connector.
+                                   // Inactive: a leading space (no spine), then the connector, then a
+                                   // trailing space before the glyph — col 1 always holds the connector.
     let tee = child_prefix(false, Status::Running, Branch::Tee, conn);
-    assert!(tee.starts_with(' '), "inactive col 0 is a plain space: {tee:?}");
+    assert!(
+        tee.starts_with(' '),
+        "inactive col 0 is a plain space: {tee:?}"
+    );
     assert!(!tee.contains('▌'), "inactive has no spine: {tee:?}");
-    assert!(tee.contains('├') && tee.ends_with(' '), "tee connector + space: {tee:?}");
+    assert!(
+        tee.contains('├') && tee.ends_with(' '),
+        "tee connector + space: {tee:?}"
+    );
     let elbow = child_prefix(false, Status::Running, Branch::Elbow, conn);
     assert!(elbow.contains('└'), "elbow connector: {elbow:?}");
     // Active: an accent spine at col 0, hue tracking the tab status (mauve
     // accent normally, peach attention when waiting/error) — the same
     // spine_role coupling as the line-1 bar — then the connector + space.
     let running = child_prefix(true, Status::Running, Branch::Tee, conn);
-    assert!(running.starts_with(Role::Accent.ansi()), "accent spine: {running:?}");
-    assert!(running.contains('▌') && running.contains('├') && running.ends_with(' '),
-        "spine + connector + space: {running:?}");
-    assert!(child_prefix(true, Status::Error, Branch::Tee, conn).starts_with(Role::Attention.ansi()));
-    assert!(child_prefix(true, Status::Pending, Branch::Elbow, conn).starts_with(Role::Attention.ansi()));
+    assert!(
+        running.starts_with(Role::Accent.ansi()),
+        "accent spine: {running:?}"
+    );
+    assert!(
+        running.contains('▌') && running.contains('├') && running.ends_with(' '),
+        "spine + connector + space: {running:?}"
+    );
+    assert!(
+        child_prefix(true, Status::Error, Branch::Tee, conn).starts_with(Role::Attention.ansi())
+    );
+    assert!(child_prefix(true, Status::Pending, Branch::Elbow, conn)
+        .starts_with(Role::Attention.ansi()));
 }
 
 #[test]
 fn compose_activity_reserves_outcome_against_truncation() {
     let cmd_color = "\x1b[2m"; // stand-in; we assert on visible text + role
-    // Wide: command and full tag both intact.
-    let wide = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, cmd_color);
+                               // Wide: command and full tag both intact.
+    let wide = compose_activity(
+        "cargo build",
+        Some(ExitOutcome::Failed(Some(1))),
+        30,
+        cmd_color,
+    );
     assert!(wide.contains("cargo build"), "command shown: {:?}", wide);
     assert!(wide.contains("exit 1"), "full tag shown: {:?}", wide);
     assert!(wide.contains(Role::Error.ansi()), "tag is red: {:?}", wide);
@@ -1125,7 +1332,11 @@ fn compose_activity_reserves_outcome_against_truncation() {
         14,
         cmd_color,
     );
-    assert!(narrow.contains("exit 1"), "tag must survive truncation: {:?}", narrow);
+    assert!(
+        narrow.contains("exit 1"),
+        "tag must survive truncation: {:?}",
+        narrow
+    );
     assert!(
         narrow.contains('…') && !narrow.contains("integration"),
         "command is the part that truncates: {:?}",
@@ -1133,9 +1344,18 @@ fn compose_activity_reserves_outcome_against_truncation() {
     );
 
     // Extreme: only the irreducible glyph fits; command is dropped entirely.
-    let tiny = compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 2, cmd_color);
+    let tiny = compose_activity(
+        "cargo build",
+        Some(ExitOutcome::Failed(Some(1))),
+        2,
+        cmd_color,
+    );
     assert!(tiny.contains('✗'), "minimal glyph survives: {:?}", tiny);
-    assert!(!tiny.contains("cargo"), "command dropped at extreme width: {:?}", tiny);
+    assert!(
+        !tiny.contains("cargo"),
+        "command dropped at extreme width: {:?}",
+        tiny
+    );
 
     // Width-safety across the whole range (incl. a wide exit code).
     for avail in 1..=30 {
@@ -1159,25 +1379,48 @@ fn compose_activity_reserves_outcome_against_truncation() {
 fn done_command_line_has_no_trailing_tag_or_stray_sgr() {
     let s = compose_activity("cargo build", Some(ExitOutcome::Ok), 30, "\x1b[90m");
     let plain = strip_sgr(&s);
-    assert_eq!(plain, "cargo build", "no ✓ and no trailing space: {plain:?}");
-    assert!(!s.contains("\x1b[32m\x1b[0m"), "no empty green SGR pair: {s:?}");
+    assert_eq!(
+        plain, "cargo build",
+        "no ✓ and no trailing space: {plain:?}"
+    );
+    assert!(
+        !s.contains("\x1b[32m\x1b[0m"),
+        "no empty green SGR pair: {s:?}"
+    );
 }
 
 #[test]
 fn error_tag_is_exit_n_without_duplicate_cross() {
-    let s = strip_sgr(&compose_activity("cargo build", Some(ExitOutcome::Failed(Some(1))), 30, "\x1b[90m"));
+    let s = strip_sgr(&compose_activity(
+        "cargo build",
+        Some(ExitOutcome::Failed(Some(1))),
+        30,
+        "\x1b[90m",
+    ));
     assert_eq!(s, "cargo build exit 1");
-    let unknown = strip_sgr(&compose_activity("make", Some(ExitOutcome::Failed(None)), 30, "\x1b[90m"));
+    let unknown = strip_sgr(&compose_activity(
+        "make",
+        Some(ExitOutcome::Failed(None)),
+        30,
+        "\x1b[90m",
+    ));
     assert_eq!(unknown, "make ✗");
 }
 
 #[test]
 fn finished_command_line2_shows_role_colored_tag() {
     let mk = |status, outcome, msg: &str| {
-        let d = PrimaryDetail { kind: Kind::Build, outcome, ..pd("r", "", msg, status) };
+        let d = PrimaryDetail {
+            kind: Kind::Build,
+            outcome,
+            ..pd("r", "", msg, status)
+        };
         tab(1, "web", display(status, 1, 1, Some(d)))
     };
-    let done = render(&[mk(Status::Done, Some(ExitOutcome::Ok), "cargo build")], &ro(30, 0));
+    let done = render(
+        &[mk(Status::Done, Some(ExitOutcome::Ok), "cargo build")],
+        &ro(30, 0),
+    );
     let dline = done.lines().find(|l| l.contains("cargo build")).unwrap();
     assert!(
         !dline.contains('✓') && strip_sgr(dline).trim() == "└ ● ⚙ cargo build",
@@ -1186,7 +1429,11 @@ fn finished_command_line2_shows_role_colored_tag() {
     );
 
     let err = render(
-        &[mk(Status::Error, Some(ExitOutcome::Failed(Some(2))), "cargo build")],
+        &[mk(
+            Status::Error,
+            Some(ExitOutcome::Failed(Some(2))),
+            "cargo build",
+        )],
         &ro(30, 0),
     );
     let eline = err.lines().find(|l| l.contains("cargo build")).unwrap();
@@ -1213,7 +1460,11 @@ fn multi_pane_finished_command_shows_outcome_tag() {
         "no outcome tag on a done pane line: {:?}",
         line
     );
-    assert!(line.contains(Role::Success.ansi()), "pane glyph still green: {:?}", line);
+    assert!(
+        line.contains(Role::Success.ansi()),
+        "pane glyph still green: {:?}",
+        line
+    );
 }
 
 #[test]
@@ -1226,7 +1477,11 @@ fn nerd_set_renders_robot_mark_for_claude() {
     };
     let s = render(&rows, &opts);
     assert!(s.contains('\u{f06a9}'), "Nerd Claude mark (robot): {:?}", s);
-    assert!(!s.contains('✳'), "plain mark must not appear in Nerd set: {:?}", s);
+    assert!(
+        !s.contains('✳'),
+        "plain mark must not appear in Nerd set: {:?}",
+        s
+    );
 }
 
 /// Build a multi-pane TabDisplay from per-pane entries. The header status is the
@@ -1252,8 +1507,10 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
             status: pane_status,
             msg,
             ..
-        } if *pane_status == status => Some(PrimaryDetail { kind: *kind,
-            ..pd("r", "b", msg.clone(), *pane_status) }),
+        } if *pane_status == status => Some(PrimaryDetail {
+            kind: *kind,
+            ..pd("r", "b", msg.clone(), *pane_status)
+        }),
         _ => None,
     });
     // Mirror `roll_up`: any Running non-steady pane animates the tab.
@@ -1264,9 +1521,7 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         _ => false,
     });
     let remote = panes.iter().any(|p| match p {
-        PaneDisplay::Tracked { kind, status, .. } => {
-            *status == Status::Running && kind.is_remote()
-        }
+        PaneDisplay::Tracked { kind, status, .. } => *status == Status::Running && kind.is_remote(),
         _ => false,
     });
     TabDisplay {
@@ -1294,9 +1549,20 @@ fn multi_pane_render_row_counts_header_and_children() {
         pe(4, Kind::Claude, Status::Running, "z"),
     ]);
     let row_inactive = tab(1, "t", a.clone());
-    let row_active = TabRow { active: true, ..tab(1, "t", a) };
-    assert_eq!(render_row(&row_inactive, &opts).len(), 5, "header + 4 pane lines");
-    assert_eq!(render_row(&row_active, &opts).len(), 5, "same regardless of active");
+    let row_active = TabRow {
+        active: true,
+        ..tab(1, "t", a)
+    };
+    assert_eq!(
+        render_row(&row_inactive, &opts).len(),
+        5,
+        "header + 4 pane lines"
+    );
+    assert_eq!(
+        render_row(&row_active, &opts).len(),
+        5,
+        "same regardless of active"
+    );
 }
 
 #[test]
@@ -1312,7 +1578,7 @@ fn multi_pane_render_emits_header_child_and_collapse_lines() {
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect(); // skip header
-    // Header line shows the most-urgent pending glyph.
+                                                       // Header line shows the most-urgent pending glyph.
     assert!(
         body[0].contains('◆'),
         "header glyph is the most-urgent (pending): {:?}",
@@ -1357,8 +1623,16 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
     // body[0] = header, body[1] = pane1(Claude/Running x), body[2] = pane2(Codex/Running y)
     // No collapse line — each pane is on its own line.
     assert_eq!(body.len(), 3, "header + 2 pane lines: {:?}", s);
-    assert!(body[1].contains('⠋'), "pane1 shows running glyph: {:?}", body[1]);
-    assert!(body[2].contains('⠋'), "pane2 shows running glyph: {:?}", body[2]);
+    assert!(
+        body[1].contains('⠋'),
+        "pane1 shows running glyph: {:?}",
+        body[1]
+    );
+    assert!(
+        body[2].contains('⠋'),
+        "pane2 shows running glyph: {:?}",
+        body[2]
+    );
     assert!(!s.contains("2 working"), "no collapse line: {:?}", s);
 }
 
@@ -1366,21 +1640,25 @@ fn multi_pane_inactive_fully_collapsed_uses_roster_count_copy() {
 fn multi_pane_untracked_only_summary_names_panes() {
     // New design: 0 tracked panes → is_multi_pane = false → single-pane path.
     // Idle status → 1 line only (no detail line).
-    let row = tab(1, "shells", TabDisplay {
-        status: Status::Idle,
-        progress: ProgressCounts {
-            done: 0,
-            total: 0,
-            pending: 0,
+    let row = tab(
+        1,
+        "shells",
+        TabDisplay {
+            status: Status::Idle,
+            progress: ProgressCounts {
+                done: 0,
+                total: 0,
+                pending: 0,
+            },
+            detail: None,
+            panes: vec![
+                PaneDisplay::untracked(1, "shell"),
+                PaneDisplay::untracked(2, "logs"),
+            ],
+            animating: false,
+            remote: false,
         },
-        detail: None,
-        panes: vec![
-            PaneDisplay::untracked(1, "shell"),
-            PaneDisplay::untracked(2, "logs"),
-        ],
-        animating: false,
-        remote: false,
-    });
+    );
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1393,22 +1671,28 @@ fn multi_pane_untracked_only_summary_names_panes() {
 
 #[test]
 fn multi_pane_mixed_untracked_summary_names_panes() {
-    let row = tab(1, "mixed", TabDisplay {
-        status: Status::Running,
-        progress: ProgressCounts {
-            done: 0,
-            total: 1,
-            pending: 0,
+    let row = tab(
+        1,
+        "mixed",
+        TabDisplay {
+            status: Status::Running,
+            progress: ProgressCounts {
+                done: 0,
+                total: 1,
+                pending: 0,
+            },
+            detail: Some(PrimaryDetail {
+                kind: Kind::Codex,
+                ..pd("r", "b", "tests", Status::Running)
+            }),
+            panes: vec![
+                pe(1, Kind::Codex, Status::Running, "tests"),
+                PaneDisplay::untracked(2, "shell"),
+            ],
+            animating: true,
+            remote: false,
         },
-        detail: Some(PrimaryDetail { kind: Kind::Codex,
-            ..pd("r", "b", "tests", Status::Running) }),
-        panes: vec![
-            pe(1, Kind::Codex, Status::Running, "tests"),
-            PaneDisplay::untracked(2, "shell"),
-        ],
-        animating: true,
-        remote: false,
-    });
+    );
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
@@ -1417,7 +1701,11 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
     // Running with msg "tests" → 2 lines (header + detail).
     assert_eq!(body.len(), 2, "header + detail line: {:?}", s);
     // Line 2 is the detail line with the Codex mark ❉ and msg.
-    assert!(body[1].contains('❉'), "detail shows Codex mark: {:?}", body[1]);
+    assert!(
+        body[1].contains('❉'),
+        "detail shows Codex mark: {:?}",
+        body[1]
+    );
     assert!(body[1].contains("tests"), "detail shows msg: {:?}", body[1]);
     // No "2 panes" summary in the new design.
     assert!(!s.contains("2 panes"), "no summary: {:?}", s);
@@ -1431,22 +1719,33 @@ fn multi_pane_active_expands_all_no_collapse() {
         pe(1, Kind::Claude, Status::Running, "a"),
         pe(2, Kind::Claude, Status::Done, "b"),
     ]);
-    let row = TabRow { active: true, ..tab(1, "team", a) };
+    let row = TabRow {
+        active: true,
+        ..tab(1, "team", a)
+    };
     let rows = [row];
     let s = render(&rows, &tight(&rows, ro(30, 0)));
     let body: Vec<&str> = s.lines().skip(2).collect();
     // header + 2 pane lines, no collapse.
     assert_eq!(body.len(), 3, "active: header + 2 pane lines: {:?}", s);
-    assert!(
-        !s.contains("more working"),
-        "no collapse line: {:?}",
-        s
-    );
+    assert!(!s.contains("more working"), "no collapse line: {:?}", s);
     // Tree connectors present: first child is a tee, last child an elbow.
-    assert!(body[1].contains('├'), "first child uses a tee: {:?}", body[1]);
-    assert!(body[2].contains('└'), "last child uses an elbow: {:?}", body[2]);
+    assert!(
+        body[1].contains('├'),
+        "first child uses a tee: {:?}",
+        body[1]
+    );
+    assert!(
+        body[2].contains('└'),
+        "last child uses an elbow: {:?}",
+        body[2]
+    );
     // Active pane lines have the spine ▌ (at col 0, before the connector).
-    assert!(body[1].contains('▌'), "active pane line has spine: {:?}", body[1]);
+    assert!(
+        body[1].contains('▌'),
+        "active pane line has spine: {:?}",
+        body[1]
+    );
 }
 
 #[test]
@@ -1525,10 +1824,26 @@ fn overflow_compresses_calm_before_urgent() {
     let detail_pending = pd("urgent-proj", "fix/thing", "please review", Status::Pending);
 
     let rows = vec![
-        tab(1, "r1", display(Status::Running, 0, 1, Some(detail_running(1)))),
-        tab(2, "r2", display(Status::Running, 0, 1, Some(detail_running(2)))),
-        tab(3, "r3", display(Status::Running, 0, 1, Some(detail_running(3)))),
-        tab(4, "urgent", display(Status::Pending, 0, 1, Some(detail_pending))),
+        tab(
+            1,
+            "r1",
+            display(Status::Running, 0, 1, Some(detail_running(1))),
+        ),
+        tab(
+            2,
+            "r2",
+            display(Status::Running, 0, 1, Some(detail_running(2))),
+        ),
+        tab(
+            3,
+            "r3",
+            display(Status::Running, 0, 1, Some(detail_running(3))),
+        ),
+        tab(
+            4,
+            "urgent",
+            display(Status::Pending, 0, 1, Some(detail_pending)),
+        ),
     ];
 
     // Verify uncompressed sizes (new line-2 rule: pending+msg = 2, not 3).
@@ -1540,11 +1855,14 @@ fn overflow_compresses_calm_before_urgent() {
 
     // body_budget = 5 (height 7, header 2)
     let body_budget = 5usize;
-    let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
-        status: r.display.status,
-        full_lines: render_row(r, &opts_check).len(),
-        compact_lines: render_row(r, &opts_check).len(),
-    }).collect();
+    let metas: Vec<RowMeta> = rows
+        .iter()
+        .map(|r| RowMeta {
+            status: r.display.status,
+            full_lines: render_row(r, &opts_check).len(),
+            compact_lines: render_row(r, &opts_check).len(),
+        })
+        .collect();
     let (plan, strip_folded) = plan_overflow(&metas, body_budget);
     assert_eq!(strip_folded, 0, "no idle rows to strip");
     assert_eq!(plan.len(), 4, "all 4 rows kept");
@@ -1568,7 +1886,13 @@ fn overflow_compresses_calm_before_urgent() {
     );
 
     // Render and verify: Running rows have no detail line; urgent shows activity.
-    let s = render(&rows, &RenderOpts { height: 7, ..ro(30, 0) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            height: 7,
+            ..ro(30, 0)
+        },
+    );
     assert!(
         s.contains("please review"),
         "urgent row activity must survive"
@@ -1591,11 +1915,25 @@ fn overflow_compresses_calm_before_urgent() {
 fn overflow_all_one_line_when_extreme() {
     let detail = pd("r", "b", "msg", Status::Pending);
     let rows = vec![
-        tab(1, "pending", display(Status::Pending, 0, 1, Some(detail.clone()))),
-        tab(2, "run", display(Status::Running, 0, 1, Some(detail.clone()))),
+        tab(
+            1,
+            "pending",
+            display(Status::Pending, 0, 1, Some(detail.clone())),
+        ),
+        tab(
+            2,
+            "run",
+            display(Status::Running, 0, 1, Some(detail.clone())),
+        ),
     ];
     // height = 3 → body_budget = 1 (header=2). Each non-idle row at min 1 line.
-    let s = render(&rows, &RenderOpts { height: 3, ..ro(24, 0) });
+    let s = render(
+        &rows,
+        &RenderOpts {
+            height: 3,
+            ..ro(24, 0)
+        },
+    );
     let line_count = s.lines().count();
     assert!(
         line_count <= 3,
@@ -1604,11 +1942,14 @@ fn overflow_all_one_line_when_extreme() {
     );
     // No panic means the test passes. Also verify each body row is ≥ 1 line.
     let opts_check = ro(24, 0);
-    let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
-        status: r.display.status,
-        full_lines: render_row(r, &opts_check).len(),
-        compact_lines: render_row(r, &opts_check).len(),
-    }).collect();
+    let metas: Vec<RowMeta> = rows
+        .iter()
+        .map(|r| RowMeta {
+            status: r.display.status,
+            full_lines: render_row(r, &opts_check).len(),
+            compact_lines: render_row(r, &opts_check).len(),
+        })
+        .collect();
     let (plan, _) = plan_overflow(&metas, 1);
     for (_, lines) in &plan {
         assert!(*lines >= 1, "every planned row must have at least 1 line");
@@ -1619,7 +1960,11 @@ fn overflow_all_one_line_when_extreme() {
 
 /// Helper: comfortable-density RenderOpts at the given width/height.
 fn ro_comfortable(width: usize, height: usize) -> RenderOpts {
-    RenderOpts { height, density: crate::config::Density::Comfortable, ..ro(width, 0) }
+    RenderOpts {
+        height,
+        density: crate::config::Density::Comfortable,
+        ..ro(width, 0)
+    }
 }
 
 #[test]
@@ -1717,11 +2062,14 @@ fn gaps_dropped_under_overflow() {
     let rows: Vec<TabRow> = (1..=3).map(idle_row).collect();
     let height = 6; // body_budget = 4
     let opts_check = ro(24, 0);
-    let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
-        status: r.display.status,
-        full_lines: render_row(r, &opts_check).len(),
-        compact_lines: render_row(r, &opts_check).len(),
-    }).collect();
+    let metas: Vec<RowMeta> = rows
+        .iter()
+        .map(|r| RowMeta {
+            status: r.display.status,
+            full_lines: render_row(r, &opts_check).len(),
+            compact_lines: render_row(r, &opts_check).len(),
+        })
+        .collect();
     let (plan, strip, spacing) =
         plan_layout(&metas, height - 2, crate::config::Density::Comfortable);
     let gap_used = spacing.gap;
@@ -1753,11 +2101,14 @@ fn gaps_dropped_under_overflow() {
 fn plan_layout_compact_always_zero_gap() {
     let rows: Vec<TabRow> = (1..=5).map(idle_row).collect();
     let opts_check = ro(24, 0);
-    let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
-        status: r.display.status,
-        full_lines: render_row(r, &opts_check).len(),
-        compact_lines: render_row(r, &opts_check).len(),
-    }).collect();
+    let metas: Vec<RowMeta> = rows
+        .iter()
+        .map(|r| RowMeta {
+            status: r.display.status,
+            full_lines: render_row(r, &opts_check).len(),
+            compact_lines: render_row(r, &opts_check).len(),
+        })
+        .collect();
     // Even with very large budget, compact never adds gaps.
     let (_, _, spacing) = plan_layout(&metas, 100, crate::config::Density::Compact);
     assert_eq!(spacing.gap, 0, "Compact density must never produce gaps");
@@ -1768,11 +2119,14 @@ fn plan_layout_comfortable_gap_when_space_available() {
     // 2 idle rows, body_budget=10: 2 content + 2 gaps = 4 ≤ 10 → gap_used = 1.
     let rows: Vec<TabRow> = (1..=2).map(idle_row).collect();
     let opts_check = ro(24, 0);
-    let metas: Vec<RowMeta> = rows.iter().map(|r| RowMeta {
-        status: r.display.status,
-        full_lines: render_row(r, &opts_check).len(),
-        compact_lines: render_row(r, &opts_check).len(),
-    }).collect();
+    let metas: Vec<RowMeta> = rows
+        .iter()
+        .map(|r| RowMeta {
+            status: r.display.status,
+            full_lines: render_row(r, &opts_check).len(),
+            compact_lines: render_row(r, &opts_check).len(),
+        })
+        .collect();
     let (_, _, spacing) = plan_layout(&metas, 10, crate::config::Density::Comfortable);
     assert_eq!(spacing.gap, 1, "Comfortable with room should use gaps");
 }
@@ -1780,7 +2134,11 @@ fn plan_layout_comfortable_gap_when_space_available() {
 // ── Cards density background band tests ──
 
 fn ro_cards(width: usize, height: usize) -> RenderOpts {
-    RenderOpts { height, density: crate::config::Density::Cards, ..ro(width, 0) }
+    RenderOpts {
+        height,
+        density: crate::config::Density::Cards,
+        ..ro(width, 0)
+    }
 }
 
 #[test]
@@ -1790,7 +2148,10 @@ fn cards_paint_content_lines_with_bg() {
     let detail = pd("repo", "main", "working", Status::Running);
     let rows = vec![
         tab(1, "idle", display(Status::Idle, 0, 0, None)),
-        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
+        TabRow {
+            active: true,
+            ..tab(2, "work", display(Status::Running, 0, 1, Some(detail)))
+        },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     let lines: Vec<&str> = s.lines().collect();
@@ -1903,8 +2264,11 @@ fn active_card_bg_spans_full_width_on_every_line() {
     for width in [20usize, 24, 30] {
         for has_bell in [false, true] {
             let detail = pd("repo", "main", "working", Status::Running);
-            let rows = vec![TabRow { active: true, has_bell,
-                ..tab(1, "focus", display(Status::Running, 0, 1, Some(detail))) }];
+            let rows = vec![TabRow {
+                active: true,
+                has_bell,
+                ..tab(1, "focus", display(Status::Running, 0, 1, Some(detail)))
+            }];
             let raw = render(&rows, &ro_cards(width, 100));
             let lines: Vec<&str> = raw.lines().collect();
             // The active card is header (active band) + child detail line
@@ -1961,8 +2325,10 @@ fn cards_rearm_bg_after_resets() {
     // resets) under Cards: the active truecolor tint must re-arm after every reset,
     // so \x1b[0m\x1b[48;2;... (reset immediately followed by the truecolor band) appears.
     let detail = pd("pinky", "fix/x", "some work", Status::Running);
-    let rows = vec![TabRow { active: true,
-        ..tab(1, "agent", display(Status::Running, 0, 1, Some(detail))) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(1, "agent", display(Status::Running, 0, 1, Some(detail)))
+    }];
     let s = render(&rows, &ro_cards(30, 100));
     // After a role-reset (\x1b[0m) the active surface band must be re-armed
     // immediately, so the focused card stays painted across token boundaries.
@@ -1982,7 +2348,10 @@ fn cards_use_truecolor_not_256color() {
     let detail = pd("r", "b", "work", Status::Running);
     let rows = vec![
         tab(1, "idle", display(Status::Idle, 0, 0, None)),
-        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
+        TabRow {
+            active: true,
+            ..tab(2, "work", display(Status::Running, 0, 1, Some(detail)))
+        },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     // Card surfaces must emit truecolor backgrounds.
@@ -2011,7 +2380,10 @@ fn cards_left_chrome_is_single_column() {
     let detail = pd("r", "b", "x", Status::Running);
     let rows = vec![
         tab(1, "idle", display(Status::Idle, 0, 0, None)),
-        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
+        TabRow {
+            active: true,
+            ..tab(2, "work", display(Status::Running, 0, 1, Some(detail)))
+        },
     ];
     let s = render(&rows, &ro_cards(30, 100));
     let lines: Vec<String> = s.lines().map(strip_sgr).collect();
@@ -2046,7 +2418,10 @@ fn child_line_status_glyph_precedes_spaced_mark() {
         pe(1, Kind::Claude, Status::Running, "searching web"),
         pe(2, Kind::Claude, Status::Done, "done thing"),
     ]);
-    let row = TabRow { active: true, ..tab(1, "t", a) };
+    let row = TabRow {
+        active: true,
+        ..tab(1, "t", a)
+    };
     let s = render(&[row], &ro_cards(30, 100));
     // Find the running pane line (active → has spine ▌, contains ⠋ and ✳).
     let pane_lines: Vec<String> = s
@@ -2054,7 +2429,10 @@ fn child_line_status_glyph_precedes_spaced_mark() {
         .map(strip_sgr)
         .filter(|l| l.contains('⠋') && l.contains('✳'))
         .collect();
-    assert!(!pane_lines.is_empty(), "running pane line with mark not found");
+    assert!(
+        !pane_lines.is_empty(),
+        "running pane line with mark not found"
+    );
     let child = &pane_lines[0];
     let mark_idx = child.find('✳').expect("identity mark present");
     // A space immediately precedes and follows the mark.
@@ -2088,13 +2466,22 @@ fn comfortable_and_compact_emit_no_bg() {
     let detail = pd("r", "b", "working", Status::Running);
     let rows = vec![
         tab(1, "idle", display(Status::Idle, 0, 0, None)),
-        TabRow { active: true, ..tab(2, "work", display(Status::Running, 0, 1, Some(detail))) },
+        TabRow {
+            active: true,
+            ..tab(2, "work", display(Status::Running, 0, 1, Some(detail)))
+        },
     ];
     for density in [
         crate::config::Density::Comfortable,
         crate::config::Density::Compact,
     ] {
-        let s = render(&rows, &RenderOpts { density, ..ro(30, 0) });
+        let s = render(
+            &rows,
+            &RenderOpts {
+                density,
+                ..ro(30, 0)
+            },
+        );
         assert!(
             !is_painted(&s),
             "density {:?} must NOT emit a truecolor card band: {:?}",
@@ -2108,9 +2495,20 @@ fn comfortable_and_compact_emit_no_bg() {
 fn no_emitted_line_exceeds_width_cards() {
     // The no_emitted_line_exceeds_width invariant holds for Cards density too.
     let width = 20usize;
-    let detail = pd("pinky", "fix/x", "abcdefghijklmnopqrstuvwxyz", Status::Running);
-    let rows = vec![TabRow { active: true,
-        ..tab(2, "a-very-long-tab-name-indeed", display(Status::Running, 2, 4, Some(detail))) }];
+    let detail = pd(
+        "pinky",
+        "fix/x",
+        "abcdefghijklmnopqrstuvwxyz",
+        Status::Running,
+    );
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            2,
+            "a-very-long-tab-name-indeed",
+            display(Status::Running, 2, 4, Some(detail)),
+        )
+    }];
     let s = render(&rows, &ro_cards(width, 100));
     for line in s.lines() {
         assert!(
@@ -2146,7 +2544,10 @@ fn card_block_lines_is_content_plus_gap() {
     );
     // Comfortable: 1 content + 1 gap = 2.
     assert_eq!(
-        card_block_lines(full_lines, card_spacing(crate::config::Density::Comfortable)),
+        card_block_lines(
+            full_lines,
+            card_spacing(crate::config::Density::Comfortable)
+        ),
         2
     );
     // Compact: 1 content + 0 gap = 1.
@@ -2201,8 +2602,11 @@ fn flash_outranks_active_in_card_tint() {
     // `surface_flash`, not `surface_active`. The `Surface` oracle enum (used
     // by `tint_map`) has no `Flash` variant, so assert directly on the raw
     // ANSI background escape instead.
-    let rows = vec![TabRow { flash: true, active: true,
-        ..tab(1, "a", display(Status::Running, 0, 1, None)) }];
+    let rows = vec![TabRow {
+        flash: true,
+        active: true,
+        ..tab(1, "a", display(Status::Running, 0, 1, None))
+    }];
     let s = render(&rows, &ro_cards(24, 100));
     let lines: Vec<&str> = s.lines().collect();
     // line 0 = header (rail); line 1 = this row's card content.
@@ -2261,8 +2665,15 @@ fn cards_tint_per_row_class() {
     let detail = pd("repo", "main", "working", Status::Running);
     let rows = vec![
         tab(1, "idle", display(Status::Idle, 0, 0, None)),
-        tab(2, "agent", display(Status::Running, 0, 1, Some(detail.clone()))),
-        TabRow { active: true, ..tab(3, "focus", display(Status::Running, 0, 1, Some(detail))) },
+        tab(
+            2,
+            "agent",
+            display(Status::Running, 0, 1, Some(detail.clone())),
+        ),
+        TabRow {
+            active: true,
+            ..tab(3, "focus", display(Status::Running, 0, 1, Some(detail)))
+        },
     ];
     let s = render(&rows, &tight(&rows, ro_cards(30, 100)));
     // Cards header is 1 line (no rule); each card emits content then a
@@ -2293,10 +2704,17 @@ fn cards_active_multi_pane_children_use_subordinate_tint() {
     // Active multi-pane tabs should not paint every child row as selected:
     // the parent header owns the active tint; child rows step down to the
     // normal agent tint so the hierarchy remains legible.
-    let row = TabRow { active: true, ..tab(1, "team", display_multi(vec![
-        pe(1, Kind::Codex, Status::Running, "codex"),
-        pe(2, Kind::Test, Status::Running, "cargo test"),
-    ])) };
+    let row = TabRow {
+        active: true,
+        ..tab(
+            1,
+            "team",
+            display_multi(vec![
+                pe(1, Kind::Codex, Status::Running, "codex"),
+                pe(2, Kind::Test, Status::Running, "cargo test"),
+            ]),
+        )
+    };
     let s = render(&[row], &ro_cards(30, 100));
     let lines: Vec<&str> = s.lines().collect();
     // line 0 = header/rail, line 1 = tab parent, lines 2-3 = child panes.
@@ -2325,7 +2743,10 @@ fn cards_3tint_layout_snapshot() {
     let pending = pd("api", "fix", "", Status::Pending);
     let done = pd("worker", "", "", Status::Done);
     let rows = vec![
-        TabRow { active: true, ..tab(1, "Claude", display(Status::Running, 0, 1, Some(running))) },
+        TabRow {
+            active: true,
+            ..tab(1, "Claude", display(Status::Running, 0, 1, Some(running)))
+        },
         tab(2, "api", display(Status::Pending, 0, 1, Some(pending))),
         tab(3, "worker", display(Status::Done, 1, 1, Some(done))),
         tab(4, "Pane #1", display(Status::Idle, 0, 0, None)),
@@ -2614,7 +3035,10 @@ fn heartbeat_stays_off_for_a_service_only_rail() {
     // promises bounded work (docs/activity-model.md §1). The tab detail's
     // kind is the exact gate: the job-over-service tie-break guarantees the
     // detail is a job whenever any Running job exists.
-    let server = PrimaryDetail { kind: Kind::Server, ..pd("r", "b", "npm run dev", Status::Running) };
+    let server = PrimaryDetail {
+        kind: Kind::Server,
+        ..pd("r", "b", "npm run dev", Status::Running)
+    };
     let rows = vec![tab(1, "dev", display(Status::Running, 0, 1, Some(server)))];
     let s = render(&rows, &ro(20, 3));
     let rule = strip_sgr(s.lines().nth(1).unwrap());
@@ -2632,7 +3056,12 @@ fn heartbeat_absent_when_idle_and_in_cards() {
     let s = render(&idle_rows, &ro(10, 3));
     let rule = strip_sgr(s.lines().nth(1).unwrap());
     assert!(!rule.contains('◆'), "no heartbeat while idle: {:?}", rule);
-    assert_eq!(rule, "═".repeat(10), "rule unchanged while idle: {:?}", rule);
+    assert_eq!(
+        rule,
+        "═".repeat(10),
+        "rule unchanged while idle: {:?}",
+        rule
+    );
 
     // A Running row IS present, but density is Cards — no `═` rule line
     // exists at all, so there's nowhere for the heartbeat to appear.
@@ -2641,10 +3070,19 @@ fn heartbeat_absent_when_idle_and_in_cards() {
     cards_opts.density = crate::config::Density::Cards;
     let s = render(&running_rows, &cards_opts);
     let stripped = strip_sgr(&s);
-    assert!(!stripped.contains('◆'), "Cards has no rule to carry the heartbeat: {:?}", stripped);
+    assert!(
+        !stripped.contains('◆'),
+        "Cards has no rule to carry the heartbeat: {:?}",
+        stripped
+    );
     // Confirm the header is still just the one title line in Cards (no rule
     // line at all — see `header_lines`).
-    assert!(stripped.lines().next().unwrap().trim_end().contains("RADAR"));
+    assert!(stripped
+        .lines()
+        .next()
+        .unwrap()
+        .trim_end()
+        .contains("RADAR"));
 }
 
 // ── Color additivity guard ────────────────────────────────────────────────
@@ -2652,7 +3090,10 @@ fn heartbeat_absent_when_idle_and_in_cards() {
 #[test]
 fn color_is_purely_additive_over_a_fixed_layout() {
     let rows = vec![
-        TabRow { active: true, ..tab(1, "agent", display(Status::Pending, 0, 1, None)) },
+        TabRow {
+            active: true,
+            ..tab(1, "agent", display(Status::Pending, 0, 1, None))
+        },
         tab(2, "idle", display(Status::Idle, 0, 0, None)),
     ];
     let out = render(&rows, &ro(30, 0));
@@ -2715,7 +3156,10 @@ fn scenario_canonical() -> Vec<TabRow> {
     let pending = pd("api", "fix", "", Status::Pending);
     let done = pd("worker", "", "", Status::Done);
     vec![
-        TabRow { active: true, ..tab(1, "web", display(Status::Running, 0, 1, Some(running))) },
+        TabRow {
+            active: true,
+            ..tab(1, "web", display(Status::Running, 0, 1, Some(running)))
+        },
         tab(2, "api", display(Status::Pending, 0, 1, Some(pending))),
         tab(3, "worker", display(Status::Done, 1, 1, Some(done))),
         tab(4, "notes", display(Status::Idle, 0, 0, None)),
@@ -2728,7 +3172,12 @@ fn ro_full(
     density: crate::config::Density,
     glyphs: GlyphSet,
 ) -> RenderOpts {
-    RenderOpts { height, density, glyphs, ..ro(width, 0) }
+    RenderOpts {
+        height,
+        density,
+        glyphs,
+        ..ro(width, 0)
+    }
 }
 
 // ── Snapshot tests ──
@@ -2781,8 +3230,14 @@ fn snapshot_cards_narrow_width_grid() {
         "refactoring the auth middleware",
         Status::Running,
     );
-    let rows = vec![TabRow { active: true,
-        ..tab(1, "payments-service", display(Status::Running, 0, 1, Some(detail))) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "payments-service",
+            display(Status::Running, 0, 1, Some(detail)),
+        )
+    }];
     let opts = tight(
         &rows,
         ro_full(16, 100, crate::config::Density::Cards, GlyphSet::Plain),
@@ -2811,7 +3266,11 @@ fn snapshot_cards_nerd_glyphs_grid() {
 fn snapshot_overflow_fold_grid() {
     let mut rows: Vec<TabRow> = (1..=14).map(idle_row).collect();
     let urgent = pd("pinky", "fix", "approve?", Status::Pending);
-    rows.push(tab(15, "pinky", display(Status::Pending, 0, 1, Some(urgent))));
+    rows.push(tab(
+        15,
+        "pinky",
+        display(Status::Pending, 0, 1, Some(urgent)),
+    ));
     let raw = render(
         &rows,
         &ro_full(30, 8, crate::config::Density::Compact, GlyphSet::Plain),
@@ -2831,26 +3290,53 @@ fn snapshot_cards_multi_pane() {
         pe(2, Kind::Codex, Status::Pending, "approve?"),
         pe(3, Kind::Test, Status::Done, "cargo test"),
     ];
-    let rows = vec![TabRow { active: true, ..tab(1, "team", display_multi(panes)) }];
-    let opts = tight(&rows, ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain));
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(1, "team", display_multi(panes))
+    }];
+    let opts = tight(
+        &rows,
+        ro_full(30, 100, crate::config::Density::Cards, GlyphSet::Plain),
+    );
     let raw = render(&rows, &opts);
     insta::assert_snapshot!("cards_multi_pane_grid", grid(&raw, 30));
     insta::assert_snapshot!("cards_multi_pane_tint", tint_map(&raw));
 }
 
 /// One background task, for the task-line fixtures.
-fn bg_task(id: &str, label: &str, holds: bool, state: crate::task::TaskState, started: u64, ended: Option<u64>) -> crate::task::BgTask {
+fn bg_task(
+    id: &str,
+    label: &str,
+    holds: bool,
+    state: crate::task::TaskState,
+    started: u64,
+    ended: Option<u64>,
+) -> crate::task::BgTask {
     crate::task::BgTask {
-        id: id.into(), label: label.into(), holds, state, started_epoch_s: started, ended_epoch_s: ended,
+        id: id.into(),
+        label: label.into(),
+        holds,
+        state,
+        started_epoch_s: started,
+        ended_epoch_s: ended,
     }
 }
 
 /// An agent whose turn is over, waiting on `items`: steady `⋯` on the agent
 /// line, then the task lines.
 fn agent_waiting_on(id: u32, kind: Kind, items: Vec<crate::task::BgTask>) -> PaneDisplay {
-    let mut p = pe_task(id, kind, Status::Running, "waiting on Run the full integration test suite", "fix the flaky e2e retries");
+    let mut p = pe_task(
+        id,
+        kind,
+        Status::Running,
+        "waiting on Run the full integration test suite",
+        "fix the flaky e2e retries",
+    );
     if let PaneDisplay::Tracked { tasks, .. } = &mut p {
-        *tasks = crate::task::BgTasks { items, waiting: true };
+        *tasks = crate::task::BgTasks {
+            items,
+            waiting: true,
+        };
     }
     p
 }
@@ -2863,12 +3349,23 @@ fn agent_waiting_on(id: u32, kind: Kind, items: Vec<crate::task::BgTask>) -> Pan
 /// [`three_task_agent`].
 fn waiting_agent(id: u32, kind: Kind) -> PaneDisplay {
     use crate::task::TaskState;
-    agent_waiting_on(id, kind, vec![
-        bg_task("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
-        bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
-        bg_task("b2", "lint", false, TaskState::Failed, 100, Some(220)),
-        bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
-    ])
+    agent_waiting_on(
+        id,
+        kind,
+        vec![
+            bg_task(
+                "b1",
+                "Run the full integration test suite",
+                true,
+                TaskState::Running,
+                60,
+                None,
+            ),
+            bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
+            bg_task("b2", "lint", false, TaskState::Failed, 100, Some(220)),
+            bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
+        ],
+    )
 }
 
 /// Exactly `MAX_TASK_LINES` tasks, so nothing folds: the spinner for bounded
@@ -2877,37 +3374,98 @@ fn waiting_agent(id: u32, kind: Kind) -> PaneDisplay {
 /// "task".
 fn three_task_agent(id: u32, kind: Kind) -> PaneDisplay {
     use crate::task::TaskState;
-    agent_waiting_on(id, kind, vec![
-        bg_task("b1", "Run the full integration test suite", true, TaskState::Running, 60, None),
-        bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
-        bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
-    ])
+    agent_waiting_on(
+        id,
+        kind,
+        vec![
+            bg_task(
+                "b1",
+                "Run the full integration test suite",
+                true,
+                TaskState::Running,
+                60,
+                None,
+            ),
+            bg_task("d1", "npm run dev", false, TaskState::Running, 0, None),
+            bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
+        ],
+    )
 }
 
 #[test]
 fn snapshot_background_task_lines() {
-    let single = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&single, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let single = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "zj-radar",
+            display_multi(vec![waiting_agent(1, Kind::Claude)]),
+        )
+    }];
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &single,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
     let raw = render(&single, &opts);
     insta::assert_snapshot!("background_task_lines_single_grid", grid(&raw, 32));
 
-    let multi = vec![tab(2, "team", display_multi(vec![
-        waiting_agent(1, Kind::Claude),
-        pe(2, Kind::Test, Status::Done, "cargo test"),
-    ]))];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&multi, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let multi = vec![tab(
+        2,
+        "team",
+        display_multi(vec![
+            waiting_agent(1, Kind::Claude),
+            pe(2, Kind::Test, Status::Done, "cargo test"),
+        ]),
+    )];
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &multi,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
     let raw = render(&multi, &opts);
     insta::assert_snapshot!("background_task_lines_multi_grid", grid(&raw, 32));
 
-    let unfolded = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![three_task_agent(1, Kind::Claude)])) }];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&unfolded, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let unfolded = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "zj-radar",
+            display_multi(vec![three_task_agent(1, Kind::Claude)]),
+        )
+    }];
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &unfolded,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
     let raw = render(&unfolded, &opts);
     insta::assert_snapshot!("background_task_lines_unfolded_grid", grid(&raw, 32));
 }
 
 /// Re-state a `waiting_agent` fixture: status, msg, task, and `waiting`.
-fn restate(mut p: PaneDisplay, st: Status, new_msg: &str, new_task: &str, still_waiting: bool) -> PaneDisplay {
-    if let PaneDisplay::Tracked { status, msg, task, pending_epoch_s, tasks, .. } = &mut p {
+fn restate(
+    mut p: PaneDisplay,
+    st: Status,
+    new_msg: &str,
+    new_task: &str,
+    still_waiting: bool,
+) -> PaneDisplay {
+    if let PaneDisplay::Tracked {
+        status,
+        msg,
+        task,
+        pending_epoch_s,
+        tasks,
+        ..
+    } = &mut p
+    {
         *status = st;
         *msg = new_msg.into();
         *task = new_task.into();
@@ -2922,69 +3480,175 @@ fn snapshot_background_task_lines_under_other_states() {
     // A turn that ended on a question with tests still running: the `↳`
     // question comes first, then the task lines (fixed spinner frame — a
     // Pending row gets no Fast ticks).
-    let asked = restate(waiting_agent(1, Kind::Claude), Status::Pending, "Bump the version too?", "fix the flaky e2e retries", false);
+    let asked = restate(
+        waiting_agent(1, Kind::Claude),
+        Status::Pending,
+        "Bump the version too?",
+        "fix the flaky e2e retries",
+        false,
+    );
     let rows = vec![tab(1, "zj-radar", display_multi(vec![asked]))];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
-    insta::assert_snapshot!("background_task_lines_pending_grid", grid(&render(&rows, &opts), 32));
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &rows,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
+    insta::assert_snapshot!(
+        "background_task_lines_pending_grid",
+        grid(&render(&rows, &opts), 32)
+    );
 
     // A Done pane whose only content is its task summary still earns lines.
     let done = restate(waiting_agent(1, Kind::Claude), Status::Done, "", "", false);
     let rows = vec![tab(1, "zj-radar", display_multi(vec![done]))];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &rows,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
     let text = strip_sgr(&render(&rows, &opts));
     assert!(text.contains(TASK_GUIDE), "{text}");
 
     // Nerd glyphs: the waiting mark and the outcome glyphs swap sets.
-    let rows = vec![tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)]))];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Nerd)) };
-    insta::assert_snapshot!("background_task_lines_nerd_grid", grid(&render(&rows, &opts), 32));
+    let rows = vec![tab(
+        1,
+        "zj-radar",
+        display_multi(vec![waiting_agent(1, Kind::Claude)]),
+    )];
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &rows,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Nerd),
+        )
+    };
+    insta::assert_snapshot!(
+        "background_task_lines_nerd_grid",
+        grid(&render(&rows, &opts), 32)
+    );
 }
 
 #[test]
 fn background_task_lines_fold_into_a_count_when_narrow_or_short() {
-    let rows = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "zj-radar",
+            display_multi(vec![waiting_agent(1, Kind::Claude)]),
+        )
+    }];
     // Narrow: no task lines (the `+3` tag rides the identity, which the
     // width then clamps like any other tag).
-    let narrow = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
+    let narrow = render(
+        &rows,
+        &RenderOpts {
+            now_epoch_s: 300,
+            ..tight(
+                &rows,
+                ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain),
+            )
+        },
+    );
     let text = strip_sgr(&narrow);
     assert!(!text.contains(TASK_GUIDE), "{text}");
     // Short: the planner takes the compact form before squeezing the card.
-    let full_height = body_line_count(&rows, &[], &ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain));
-    let short = render(&rows, &RenderOpts { now_epoch_s: 300, ..ro_full(32, full_height - 1, crate::config::Density::Compact, GlyphSet::Plain) });
+    let full_height = body_line_count(
+        &rows,
+        &[],
+        &ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+    );
+    let short = render(
+        &rows,
+        &RenderOpts {
+            now_epoch_s: 300,
+            ..ro_full(
+                32,
+                full_height - 1,
+                crate::config::Density::Compact,
+                GlyphSet::Plain,
+            )
+        },
+    );
     let text = strip_sgr(&short);
     assert!(!text.contains(TASK_GUIDE), "{text}");
     // The count is running work + failures (2 + 1; the muted `·` ended task
     // is dropped), and the failure turns it red.
-    assert!(text.contains("fix the flaky") && text.contains("+3"), "the agent line survives with the count: {text}");
-    assert!(short.contains(&format!("{}+3", Role::Error.ansi())), "a failure colours the count red: {short:?}");
+    assert!(
+        text.contains("fix the flaky") && text.contains("+3"),
+        "the agent line survives with the count: {text}"
+    );
+    assert!(
+        short.contains(&format!("{}+3", Role::Error.ansi())),
+        "a failure colours the count red: {short:?}"
+    );
 }
 
 #[test]
 fn compact_task_count_is_neutral_without_failures_and_absent_when_all_settled() {
     use crate::task::TaskState;
     let compact_line = |items| {
-        let rows = vec![tab(1, "zj-radar", display_multi(vec![agent_waiting_on(1, Kind::Claude, items)]))];
-        let raw = render(&rows, &RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain)) });
-        raw.lines().find(|l| strip_sgr(l).contains("fix")).expect("agent line").to_string()
+        let rows = vec![tab(
+            1,
+            "zj-radar",
+            display_multi(vec![agent_waiting_on(1, Kind::Claude, items)]),
+        )];
+        let raw = render(
+            &rows,
+            &RenderOpts {
+                now_epoch_s: 300,
+                ..tight(
+                    &rows,
+                    ro_full(18, 100, crate::config::Density::Compact, GlyphSet::Plain),
+                )
+            },
+        );
+        raw.lines()
+            .find(|l| strip_sgr(l).contains("fix"))
+            .expect("agent line")
+            .to_string()
     };
     let running = compact_line(vec![
         bg_task("b1", "tests", true, TaskState::Running, 60, None),
         bg_task("b2", "lint", false, TaskState::Completed, 100, Some(220)),
     ]);
-    assert!(strip_sgr(&running).contains("+1"), "only the running task counts: {running:?}");
-    assert!(!running.contains(Role::Error.ansi()), "no failure: neutral count: {running:?}");
+    assert!(
+        strip_sgr(&running).contains("+1"),
+        "only the running task counts: {running:?}"
+    );
+    assert!(
+        !running.contains(Role::Error.ansi()),
+        "no failure: neutral count: {running:?}"
+    );
 
     let settled = compact_line(vec![
         bg_task("b2", "lint", false, TaskState::Completed, 100, Some(220)),
         bg_task("b3", "", false, TaskState::Ended, 100, Some(130)),
     ]);
-    assert!(!strip_sgr(&settled).contains('+'), "nothing live or failed: no tag: {settled:?}");
+    assert!(
+        !strip_sgr(&settled).contains('+'),
+        "nothing live or failed: no tag: {settled:?}"
+    );
 }
 
 #[test]
 fn task_lines_click_through_to_the_agent_pane() {
-    let rows = vec![tab(1, "zj-radar", display_multi(vec![waiting_agent(7, Kind::Claude)]))];
-    let opts = RenderOpts { now_epoch_s: 300, ..tight(&rows, ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)) };
+    let rows = vec![tab(
+        1,
+        "zj-radar",
+        display_multi(vec![waiting_agent(7, Kind::Claude)]),
+    )];
+    let opts = RenderOpts {
+        now_epoch_s: 300,
+        ..tight(
+            &rows,
+            ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain),
+        )
+    };
     let rail = render_rail(&rows, &[], &opts);
     let task_line_targets: Vec<_> = rail
         .ansi
@@ -2993,7 +3657,11 @@ fn task_lines_click_through_to_the_agent_pane() {
         .filter(|(l, _)| strip_sgr(l).contains(TASK_GUIDE))
         .map(|(_, t)| t.as_ref().and_then(|t| t.pane_id))
         .collect();
-    assert_eq!(task_line_targets, vec![Some(7), Some(7), Some(7)], "2 tasks + `+N more`, all on the agent pane");
+    assert_eq!(
+        task_line_targets,
+        vec![Some(7), Some(7), Some(7)],
+        "2 tasks + `+N more`, all on the agent pane"
+    );
 }
 
 /// Light terminal theme: the visible text is theme-independent (so `grid`
@@ -3052,7 +3720,11 @@ fn renders_many_tabs_high_counts_at_narrow_width_no_overflow() {
         .collect();
     for n in 6u32..=15 {
         let d = pd("r", "b", "", Status::Pending);
-        rows.push(tab(n, format!("t{}", n), display(Status::Pending, 0, 1, Some(d))));
+        rows.push(tab(
+            n,
+            format!("t{}", n),
+            display(Status::Pending, 0, 1, Some(d)),
+        ));
     }
     let s = render(
         &rows,
@@ -3104,9 +3776,20 @@ fn both_glyph_sets_keep_columns_within_width() {
 
 #[test]
 fn wide_and_combining_chars_do_not_break_alignment() {
-    let detail = pd("caf\u{00e9}", "", "测试 \u{1f680} e\u{0301}", Status::Running);
-    let rows = vec![TabRow { active: true,
-        ..tab(1, "测试caf\u{00e9}\u{1f680}", display(Status::Running, 0, 1, Some(detail))) }];
+    let detail = pd(
+        "caf\u{00e9}",
+        "",
+        "测试 \u{1f680} e\u{0301}",
+        Status::Running,
+    );
+    let rows = vec![TabRow {
+        active: true,
+        ..tab(
+            1,
+            "测试caf\u{00e9}\u{1f680}",
+            display(Status::Running, 0, 1, Some(detail)),
+        )
+    }];
     let width = 24u16;
     let raw = render(
         &rows,
@@ -3131,7 +3814,10 @@ fn wide_and_combining_chars_do_not_break_alignment() {
 #[test]
 fn footer_pins_to_the_floor_with_exact_height() {
     let rows = vec![idle_row(1)];
-    let opts = RenderOpts { height: 20, ..ro(24, 0) };
+    let opts = RenderOpts {
+        height: 20,
+        ..ro(24, 0)
+    };
     let s = render(&rows, &opts);
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(lines.len(), 20, "exact-height invariant: {:?}", s);
@@ -3148,7 +3834,11 @@ fn footer_pins_to_the_floor_with_exact_height() {
         "line -2 is the tally: {:?}",
         tally
     );
-    assert!(hint.contains("alt-[n] jump"), "line -1 is the hint: {:?}", hint);
+    assert!(
+        hint.contains("alt-[n] jump"),
+        "line -1 is the hint: {:?}",
+        hint
+    );
 }
 
 #[test]
@@ -3156,7 +3846,10 @@ fn budget_table_boundaries() {
     let rows = vec![idle_row(1)];
     let content_height = tight(&rows, ro(24, 0)).height; // header(2) + 1 content row = 3
     for leftover in 0..=8usize {
-        let opts = RenderOpts { height: content_height + leftover, ..ro(24, 0) };
+        let opts = RenderOpts {
+            height: content_height + leftover,
+            ..ro(24, 0)
+        };
         let s = render(&rows, &opts);
         let lines: Vec<&str> = s.lines().collect();
         let bottom = &lines[content_height.min(lines.len())..];
@@ -3166,12 +3859,7 @@ fn budget_table_boundaries() {
                 "leftover {leftover}: nothing renders: {:?}",
                 bottom
             ),
-            2 => assert_eq!(
-                bottom.len(),
-                2,
-                "leftover 2: rule + tally: {:?}",
-                bottom
-            ),
+            2 => assert_eq!(bottom.len(), 2, "leftover 2: rule + tally: {:?}", bottom),
             3 => assert_eq!(
                 bottom.len(),
                 3,
@@ -3210,7 +3898,10 @@ fn tally_counts_running_and_needs_you_not_done() {
         tab(3, "c", display(Status::Error, 0, 1, None)),
     ];
     let content_height = tight(&rows, ro(30, 0)).height;
-    let opts = RenderOpts { height: content_height + 3, ..ro(30, 0) };
+    let opts = RenderOpts {
+        height: content_height + 3,
+        ..ro(30, 0)
+    };
     let s = render(&rows, &opts);
     let lines: Vec<&str> = s.lines().collect();
     let tally = strip_sgr(lines[lines.len() - 2]);
@@ -3223,7 +3914,10 @@ fn tally_counts_running_and_needs_you_not_done() {
 fn tally_renders_zero_working_and_is_spinner_free() {
     let rows = vec![idle_row(1)];
     let content_height = tight(&rows, ro(24, 0)).height;
-    let opts = RenderOpts { height: content_height + 3, ..ro(24, 0) };
+    let opts = RenderOpts {
+        height: content_height + 3,
+        ..ro(24, 0)
+    };
     let s = render(&rows, &opts);
     let lines: Vec<&str> = s.lines().collect();
     let tally = strip_sgr(lines[lines.len() - 2]);
@@ -3268,7 +3962,11 @@ fn ledger_entries_render_newest_first_and_click_to_their_tab() {
 
     assert_eq!(
         rail.target_at_line(entry1_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: None, session: None }),
+        Some(RailTarget {
+            tab_position: 0,
+            pane_id: None,
+            session: None
+        }),
         "the newer, still-open entry is clickable to its tab"
     );
     assert_eq!(
@@ -3341,11 +4039,15 @@ fn ledger_display_caps_at_ten_entries_with_filler_above() {
     let shown = lines.iter().filter(|l| l.contains("job")).count();
     assert_eq!(shown, 10, "exactly LEDGER_DISPLAY_CAP entries: {lines:?}");
     assert!(
-        lines.iter().any(|l| l.contains("job0 ") || l.ends_with("job0")),
+        lines
+            .iter()
+            .any(|l| l.contains("job0 ") || l.ends_with("job0")),
         "newest entry survives the cut: {lines:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.contains("job10") || l.contains("job11")),
+        !lines
+            .iter()
+            .any(|l| l.contains("job10") || l.contains("job11")),
         "the two oldest entries are cut, not the newest: {lines:?}"
     );
 }
@@ -3364,7 +4066,10 @@ fn ledger_entry_line_clamps_at_extreme_narrow_widths() {
         tab_position: Some(0),
     };
     for width in 1..=7 {
-        let opts = RenderOpts { now_epoch_s: 1000, ..ro(width, 0) };
+        let opts = RenderOpts {
+            now_epoch_s: 1000,
+            ..ro(width, 0)
+        };
         let rendered = ledger_entry_line(&line, &opts);
         for text_line in rendered.text.lines() {
             assert!(
@@ -3389,12 +4094,21 @@ fn cards_never_lose_budget_to_the_bottom_region() {
         .map(|n| tab(n, format!("t{}", n), display(Status::Pending, 0, 1, None)))
         .collect();
     let opts = ro_cards(24, 10);
-    let leftover = opts.height.saturating_sub(body_line_count(&rows, &[], &opts));
-    assert!(leftover <= 1, "sanity: this scenario must leave no headroom: {leftover}");
+    let leftover = opts
+        .height
+        .saturating_sub(body_line_count(&rows, &[], &opts));
+    assert!(
+        leftover <= 1,
+        "sanity: this scenario must leave no headroom: {leftover}"
+    );
     assert!(render_bottom(&rows, &[], leftover, &opts).is_empty());
 
     let rail = render_rail(&rows, &[], &opts);
-    assert_eq!(rail.line_count(), 10, "the overflow plan alone fills the pane");
+    assert_eq!(
+        rail.line_count(),
+        10,
+        "the overflow plan alone fills the pane"
+    );
     assert!(
         !rail.ansi.contains("alt-[n] jump"),
         "no footer should be squeezed in when there's no room: {:?}",
@@ -3793,16 +4507,32 @@ fn single_running_pane_with_detail_is_two_content_lines() {
     let opts = ro(40, 0);
     let a = display_multi(vec![pe(10, Kind::Claude, Status::Running, "msg")]);
     let row = tab(1, "t", a);
-    assert_eq!(render_row(&row, &opts).len(), 2, "tab 0 should be 2 content lines");
+    assert_eq!(
+        render_row(&row, &opts).len(),
+        2,
+        "tab 0 should be 2 content lines"
+    );
 }
 
 #[test]
 fn from_lines_derives_ansi_and_targets_in_lockstep() {
-    let t = RailTarget { tab_position: 2, pane_id: None, session: None };
+    let t = RailTarget {
+        tab_position: 2,
+        pane_id: None,
+        session: None,
+    };
     let lines = vec![
         Line::new("alpha\n".into(), Some(t.clone()), LineBg::None),
-        Line::new("beta\n".into(),  None,    LineBg::None),
-        Line::new("gamma\n".into(), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }), LineBg::None),
+        Line::new("beta\n".into(), None, LineBg::None),
+        Line::new(
+            "gamma\n".into(),
+            Some(RailTarget {
+                tab_position: 3,
+                pane_id: Some(9),
+                session: None,
+            }),
+            LineBg::None,
+        ),
     ];
     let rr = RenderedRail::from_lines(lines);
     // ansi: joined, trailing newline popped.
@@ -3811,7 +4541,14 @@ fn from_lines_derives_ansi_and_targets_in_lockstep() {
     assert_eq!(rr.line_count(), 3);
     assert_eq!(rr.target_at_line(0), Some(t));
     assert_eq!(rr.target_at_line(1), None);
-    assert_eq!(rr.target_at_line(2), Some(RailTarget { tab_position: 3, pane_id: Some(9), session: None }));
+    assert_eq!(
+        rr.target_at_line(2),
+        Some(RailTarget {
+            tab_position: 3,
+            pane_id: Some(9),
+            session: None
+        })
+    );
     assert_eq!(rr.target_at_line(3), None);
     // Structural lockstep: every '\n'-terminated segment has a target slot.
     assert_eq!(rr.ansi.split('\n').count(), rr.line_count());
@@ -3835,50 +4572,119 @@ fn hotspot_metadata_survives_cards_finalize_and_excludes_question_and_overflow_l
     let mut panes = vec![pending];
     panes.extend((11..=17).map(|id| pe(id, Kind::Claude, Status::Running, "working")));
     let row = tab(1, "team", display_multi(panes));
-    let opts = RenderOpts { density: Density::Cards, ..ro(30, 0) };
+    let opts = RenderOpts {
+        density: Density::Cards,
+        ..ro(30, 0)
+    };
     let rail = render_rail(&[row], &[], &opts);
 
     let header = rail.ansi.lines().position(|l| l.contains("team")).unwrap() as isize;
-    let pane = rail.ansi.lines().position(|l| l.contains("ship it")).unwrap() as isize;
-    let question = rail.ansi.lines().position(|l| l.contains("approve?")).unwrap() as isize;
+    let pane = rail
+        .ansi
+        .lines()
+        .position(|l| l.contains("ship it"))
+        .unwrap() as isize;
+    let question = rail
+        .ansi
+        .lines()
+        .position(|l| l.contains("approve?"))
+        .unwrap() as isize;
     let more = rail.ansi.lines().position(|l| l.contains("more")).unwrap() as isize;
     assert_eq!(
         rail.hotspot_at_line(header),
-        Some((29, HotspotAction::Acknowledge {
-            target: RailTarget { tab_position: 0, pane_id: None, session: None },
-        })),
+        Some((
+            29,
+            HotspotAction::Acknowledge {
+                target: RailTarget {
+                    tab_position: 0,
+                    pane_id: None,
+                    session: None
+                },
+            }
+        )),
         "pending tab header gets ✓ after Cards finalize"
     );
     assert_eq!(
         rail.hotspot_at_line(pane),
-        Some((29, HotspotAction::Acknowledge {
-            target: RailTarget { tab_position: 0, pane_id: Some(10), session: None },
-        })),
+        Some((
+            29,
+            HotspotAction::Acknowledge {
+                target: RailTarget {
+                    tab_position: 0,
+                    pane_id: Some(10),
+                    session: None
+                },
+            }
+        )),
         "pending pane identity gets ✓ after Cards finalize"
     );
-    assert_eq!(rail.hotspot_at_line(question), None, "question continuation is never actionable");
-    assert_eq!(rail.hotspot_at_line(more), None, "+N more is never actionable");
+    assert_eq!(
+        rail.hotspot_at_line(question),
+        None,
+        "question continuation is never actionable"
+    );
+    assert_eq!(
+        rail.hotspot_at_line(more),
+        None,
+        "+N more is never actionable"
+    );
 }
 
 #[test]
 fn narrow_pending_rows_drop_the_glyph_and_its_hotspot_together() {
-    let row = tab(1, "a", display(Status::Pending, 0, 1, Some(pd("r", "b", "ask", Status::Pending))));
+    let row = tab(
+        1,
+        "a",
+        display(
+            Status::Pending,
+            0,
+            1,
+            Some(pd("r", "b", "ask", Status::Pending)),
+        ),
+    );
     let rail = render_rail(&[row], &[], &ro(5, 0));
     assert!(!rail.ansi.contains('✓'));
     for line in 0..rail.line_count() {
-        assert_eq!(rail.hotspot_at_line(line as isize), None, "narrow line {line} must not retain metadata");
+        assert_eq!(
+            rail.hotspot_at_line(line as isize),
+            None,
+            "narrow line {line} must not retain metadata"
+        );
     }
 }
 
 #[test]
 fn pending_hotspot_does_not_hide_an_independent_bell() {
-    let mut row = tab(1, "team", display(Status::Pending, 0, 1, Some(pd("r", "b", "approve", Status::Pending))));
+    let mut row = tab(
+        1,
+        "team",
+        display(
+            Status::Pending,
+            0,
+            1,
+            Some(pd("r", "b", "approve", Status::Pending)),
+        ),
+    );
     row.has_bell = true;
     let rail = render_rail(&[row], &[], &ro(30, 0));
-    let header = rail.ansi.lines().find(|line| line.contains("team")).unwrap();
-    assert!(header.contains('⚑'), "bell from another pane remains visible: {header:?}");
-    assert!(header.contains('✓'), "pending action remains visible: {header:?}");
-    assert_eq!(visible_width(header), 30, "combined bell+hotspot must stay within the rail");
+    let header = rail
+        .ansi
+        .lines()
+        .find(|line| line.contains("team"))
+        .unwrap();
+    assert!(
+        header.contains('⚑'),
+        "bell from another pane remains visible: {header:?}"
+    );
+    assert!(
+        header.contains('✓'),
+        "pending action remains visible: {header:?}"
+    );
+    assert_eq!(
+        visible_width(header),
+        30,
+        "combined bell+hotspot must stay within the rail"
+    );
 }
 
 #[test]
@@ -3924,14 +4730,19 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
     let panes: Vec<PaneDisplay> = (1u32..=8)
         .map(|id| pe(id, Kind::Claude, Status::Running, "working"))
         .collect();
-    let row = TabRow { active: true, ..tab(1, "team", display_multi(panes)) };
+    let row = TabRow {
+        active: true,
+        ..tab(1, "team", display_multi(panes))
+    };
     let s = render(&[row], &ro_cards(30, 100));
 
     // All pane child lines in an active multi-pane tab use the subordinate
     // agent surface — including the "+N more" line, NOT the brighter card
     // (active) header tint.
     // Find the "+2 more" line.
-    let more_line = s.lines().find(|l| l.contains("more"))
+    let more_line = s
+        .lines()
+        .find(|l| l.contains("more"))
         .expect("'+N more' summary line must be emitted when >6 panes");
 
     // The +more line must carry the active-child (agent) surface, not the card tint.
@@ -3944,12 +4755,14 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
 
     // Confirm a regular pane child line also carries the agent surface,
     // proving the +more line is consistent with its siblings.
-    let child_lines: Vec<&str> = s.lines()
+    let child_lines: Vec<&str> = s
+        .lines()
         .filter(|l| surface_of(l) == Surface::Agent && !l.contains("more"))
         .collect();
     assert!(
         !child_lines.is_empty(),
-        "there must be at least one visible pane child line carrying the agent surface: {:?}", s
+        "there must be at least one visible pane child line carrying the agent surface: {:?}",
+        s
     );
 }
 
@@ -3957,22 +4770,35 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
 fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
     let rail = tc_bg(theme.rail_bg);
-    let active_row = TabRow { active: true, ..tab(1, "a", display(Status::Running, 0, 1, None)) };
+    let active_row = TabRow {
+        active: true,
+        ..tab(1, "a", display(Status::Running, 0, 1, None))
+    };
     // `render_body` builds the map once per row (the per-frame rail/agent
     // escapes plus the row's card tint) and a line's escape is a lookup.
     let agent = tc_bg(theme.surface_agent);
-    let surfaces = Surfaces { rail: &rail, card: card_tint(&active_row, &theme), active_child: &agent };
+    let surfaces = Surfaces {
+        rail: &rail,
+        card: card_tint(&active_row, &theme),
+        active_child: &agent,
+    };
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
     assert_eq!(LineBg::None.escape(&surfaces), None);
     assert_eq!(LineBg::Rail.escape(&surfaces), Some(rail.as_str()));
-    assert_eq!(LineBg::Card.escape(&surfaces), Some(card_tint(&active_row, &theme).as_str()));
+    assert_eq!(
+        LineBg::Card.escape(&surfaces),
+        Some(card_tint(&active_row, &theme).as_str())
+    );
     assert_eq!(LineBg::ActiveChild.escape(&surfaces), Some(agent.as_str()));
     // The drift the `cards_active_more_line_*` regression guards: on an active
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
     // card tint (surface_active). One resolver makes that structural.
-    assert_ne!(LineBg::ActiveChild.escape(&surfaces), LineBg::Card.escape(&surfaces));
+    assert_ne!(
+        LineBg::ActiveChild.escape(&surfaces),
+        LineBg::Card.escape(&surfaces)
+    );
 }
 
 #[test]
@@ -3982,7 +4808,10 @@ fn visible_width_skips_sgr_and_controls_and_agrees_with_truncate_on_sequences() 
     assert_eq!(visible_width("abc\n"), 3);
     assert_eq!(visible_width("\x1b[38;2;1;2;3m─\x1b[0m\n"), 1);
     assert_eq!(visible_width("…\n"), 1);
-    assert_eq!(visible_width("\x1b[1mbold\x1b[0m and \x1b[31mred\x1b[0m"), 12);
+    assert_eq!(
+        visible_width("\x1b[1mbold\x1b[0m and \x1b[31mred\x1b[0m"),
+        12
+    );
     assert_eq!(visible_width(""), 0);
     // …a stray ESC contributes nothing and its tail stays text…
     assert_eq!(visible_width("a\x1bb"), 2);
@@ -3991,7 +4820,10 @@ fn visible_width_skips_sgr_and_controls_and_agrees_with_truncate_on_sequences() 
     // band correctly. The per-char sum this replaced said four.
     let family = "👨\u{200d}💻";
     assert_eq!(visible_width(family), UnicodeWidthStr::width(family));
-    assert_eq!(visible_width(&format!("\x1b[1m{family}\x1b[0m x")), UnicodeWidthStr::width(family) + 2);
+    assert_eq!(
+        visible_width(&format!("\x1b[1m{family}\x1b[0m x")),
+        UnicodeWidthStr::width(family) + 2
+    );
 }
 
 #[test]
@@ -4004,13 +4836,25 @@ fn paint_if_cards_paints_rail_lines_under_cards_only() {
     let line = || Line::new("hi\n".to_string(), None, LineBg::Rail);
 
     let painted = paint_if_cards(line(), true, 8, &rail);
-    assert_eq!(painted.text, paint_card_line("hi\n", 8, &rail), "Cards paints the panel base");
+    assert_eq!(
+        painted.text,
+        paint_card_line("hi\n", 8, &rail),
+        "Cards paints the panel base"
+    );
 
     let untouched = paint_if_cards(line(), false, 8, &rail);
-    assert_eq!(untouched.text, "hi\n", "outside Cards the line passes through");
+    assert_eq!(
+        untouched.text, "hi\n",
+        "outside Cards the line passes through"
+    );
 
     // A never-painted line stays unpainted even under Cards.
-    let none = paint_if_cards(Line::new("hi\n".to_string(), None, LineBg::None), true, 8, &rail);
+    let none = paint_if_cards(
+        Line::new("hi\n".to_string(), None, LineBg::None),
+        true,
+        8,
+        &rail,
+    );
     assert_eq!(none.text, "hi\n");
 }
 
@@ -4025,7 +4869,9 @@ fn seg_is_always_reset_terminated() {
     // The structural guarantee `paint_card_line`'s bg re-arm depends on: a
     // colored run can never escape un-RESET, whatever the color or content.
     assert!(Seg::new("\x1b[35m", "▌").to_string().ends_with("\x1b[0m"));
-    assert!(Seg::bold("\x1b[38;2;1;2;3m", "x y z").to_string().ends_with("\x1b[0m"));
+    assert!(Seg::bold("\x1b[38;2;1;2;3m", "x y z")
+        .to_string()
+        .ends_with("\x1b[0m"));
 }
 
 #[test]
@@ -4033,7 +4879,10 @@ fn needs_permission_face_is_distinct_and_actionable() {
     let opts = ro(24, 0); // existing test helper: RenderOpts at width 24
     let onboard = onboarding(&opts).ansi;
     let needs = needs_permission(&opts, crate::config::GrantHint::Generic).ansi;
-    assert_ne!(needs, onboard, "permission face must differ from idle onboarding");
+    assert_ne!(
+        needs, onboard,
+        "permission face must differ from idle onboarding"
+    );
     // The searched substrings ("Ctrl-y", "permission", "press y") contain no
     // characters that appear in SGR escape sequences (`\x1b`, `[`, digits, `;`,
     // `m`), so a plain `contains` on the raw ANSI string is valid without
@@ -4043,13 +4892,25 @@ fn needs_permission_face_is_distinct_and_actionable() {
     // that keybind only exists in run-owned configs. The generic wording
     // (focus + press y) is true everywhere: Zellij binds its native prompt to
     // a rail pane.
-    assert!(!needs.contains("Ctrl-y"), "default face must not promise an uninstalled keybind:\n{needs}");
-    assert!(needs.contains("press y"), "default face must name the universal grant action:\n{needs}");
-    assert!(needs.to_lowercase().contains("permission"), "must mention permission");
+    assert!(
+        !needs.contains("Ctrl-y"),
+        "default face must not promise an uninstalled keybind:\n{needs}"
+    );
+    assert!(
+        needs.contains("press y"),
+        "default face must name the universal grant action:\n{needs}"
+    );
+    assert!(
+        needs.to_lowercase().contains("permission"),
+        "must mention permission"
+    );
 
     // Run-owned configs pass `grant_hint "ctrl-y"` and get the float keybind.
     let ctrl_y = needs_permission(&ro(24, 0), crate::config::GrantHint::CtrlY).ansi;
-    assert!(ctrl_y.contains("Ctrl-y"), "run installs must name the grant keybind:\n{ctrl_y}");
+    assert!(
+        ctrl_y.contains("Ctrl-y"),
+        "run installs must name the grant keybind:\n{ctrl_y}"
+    );
     // Both variants keep the same height: three hint lines behind one face.
     assert_eq!(needs.matches('\n').count(), ctrl_y.matches('\n').count());
 }
@@ -4058,44 +4919,101 @@ fn needs_permission_face_is_distinct_and_actionable() {
 fn identity_and_detail_rules() {
     use super::identity_and_detail;
     // Task-less panes: today's behavior, no detail line — bit-identical rail.
-    assert_eq!(identity_and_detail(Status::Running, "", "editing x.rs"), ("editing x.rs", None));
-    assert_eq!(identity_and_detail(Status::Pending, "", "approve?"), ("approve?", None));
+    assert_eq!(
+        identity_and_detail(Status::Running, "", "editing x.rs"),
+        ("editing x.rs", None)
+    );
+    assert_eq!(
+        identity_and_detail(Status::Pending, "", "approve?"),
+        ("approve?", None)
+    );
     // Task is the identity in every state.
-    assert_eq!(identity_and_detail(Status::Running, "fix e2e", "editing x.rs"), ("fix e2e", None));
-    assert_eq!(identity_and_detail(Status::Done, "fix e2e", "All tests pass"), ("fix e2e", None));
+    assert_eq!(
+        identity_and_detail(Status::Running, "fix e2e", "editing x.rs"),
+        ("fix e2e", None)
+    );
+    assert_eq!(
+        identity_and_detail(Status::Done, "fix e2e", "All tests pass"),
+        ("fix e2e", None)
+    );
     // Actionable states get the question as a subordinate detail…
-    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "approve?"), ("fix e2e", Some("approve?")));
-    assert_eq!(identity_and_detail(Status::Error, "fix e2e", "boom"), ("fix e2e", Some("boom")));
+    assert_eq!(
+        identity_and_detail(Status::Pending, "fix e2e", "approve?"),
+        ("fix e2e", Some("approve?"))
+    );
+    assert_eq!(
+        identity_and_detail(Status::Error, "fix e2e", "boom"),
+        ("fix e2e", Some("boom"))
+    );
     // …unless it would duplicate the identity or is blank.
-    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "fix e2e"), ("fix e2e", None));
-    assert_eq!(identity_and_detail(Status::Pending, "fix e2e", "  "), ("fix e2e", None));
+    assert_eq!(
+        identity_and_detail(Status::Pending, "fix e2e", "fix e2e"),
+        ("fix e2e", None)
+    );
+    assert_eq!(
+        identity_and_detail(Status::Pending, "fix e2e", "  "),
+        ("fix e2e", None)
+    );
 }
 
 #[test]
 fn pending_pane_with_task_renders_identity_plus_question_line() {
     // Multi-pane tab: pending pane shows task on its line and the question on
     // a `↳` line that carries the SAME pane click target (lockstep).
-    let row = tab(1, "review", TabDisplay {
-        status: Status::Pending,
-        progress: ProgressCounts { done: 0, total: 2, pending: 1 },
-        detail: None,
-        panes: vec![
-            pe_task(10, Kind::Claude, Status::Pending, "approve git push?", "migrate schema"),
-            pe_task(11, Kind::Codex, Status::Running, "editing retry.rs", "write tests"),
-        ],
-        animating: true,
-        remote: false,
-    });
+    let row = tab(
+        1,
+        "review",
+        TabDisplay {
+            status: Status::Pending,
+            progress: ProgressCounts {
+                done: 0,
+                total: 2,
+                pending: 1,
+            },
+            detail: None,
+            panes: vec![
+                pe_task(
+                    10,
+                    Kind::Claude,
+                    Status::Pending,
+                    "approve git push?",
+                    "migrate schema",
+                ),
+                pe_task(
+                    11,
+                    Kind::Codex,
+                    Status::Running,
+                    "editing retry.rs",
+                    "write tests",
+                ),
+            ],
+            animating: true,
+            remote: false,
+        },
+    );
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));
     let grid = strip_sgr(&rendered.ansi); // use the file's existing ANSI-strip helper
-    assert!(grid.contains("├ ◆ ✳ migrate schema"), "task is the identity line:\n{grid}");
-    assert!(grid.contains("│   ↳ approve git push?"), "question is subordinate:\n{grid}");
-    assert!(grid.contains("└ ⠋ ❉ write tests"), "running pane shows task only:\n{grid}");
+    assert!(
+        grid.contains("├ ◆ ✳ migrate schema"),
+        "task is the identity line:\n{grid}"
+    );
+    assert!(
+        grid.contains("│   ↳ approve git push?"),
+        "question is subordinate:\n{grid}"
+    );
+    assert!(
+        grid.contains("└ ⠋ ❉ write tests"),
+        "running pane shows task only:\n{grid}"
+    );
     // Lockstep: the ↳ line click-jumps to the pending pane.
     let q_line = grid.lines().position(|l| l.contains('↳')).unwrap();
     assert_eq!(
         rendered.target_at_line(q_line as isize),
-        Some(RailTarget { tab_position: 0, pane_id: Some(10), session: None }),
+        Some(RailTarget {
+            tab_position: 0,
+            pane_id: Some(10),
+            session: None
+        }),
     );
 }
 
@@ -4121,7 +5039,10 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
             Some(l[..byte_idx].chars().count())
         })
         .collect();
-    assert_eq!(cols[0], cols[1], "active and inactive tab names must start at the same column:\n{ansi}");
+    assert_eq!(
+        cols[0], cols[1],
+        "active and inactive tab names must start at the same column:\n{ansi}"
+    );
 }
 
 // ── Long-runner easing ─────────────────────────────────────────────────────
@@ -4130,8 +5051,15 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
 fn spinner_eases_after_ten_minutes() {
     assert_eq!(spin_glyph(100, 0), crate::status::working_spin(100));
     let t = EASE_AFTER_TICKS + 100;
-    assert_eq!(spin_glyph(t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
-    assert_ne!(spin_glyph(t, 0), spin_glyph(t + 4, 0), "still blinks — alive, just calm");
+    assert_eq!(
+        spin_glyph(t, 0),
+        crate::status::working_spin(((t / 4) % 2) as usize)
+    );
+    assert_ne!(
+        spin_glyph(t, 0),
+        spin_glyph(t + 4, 0),
+        "still blinks — alive, just calm"
+    );
     assert_eq!(spin_glyph(t, 0), spin_glyph(t + 1, 0), "but not every tick");
 }
 
@@ -4160,7 +5088,10 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     // must render the eased two-frame blink glyph on line 1, not the
     // full-speed spinner — a strip_sgr grid check, per the brief.
     let now = EASE_AFTER_TICKS + 100;
-    let detail = PrimaryDetail { kind: Kind::Build, ..pd("r", "b", "long build", Status::Running) };
+    let detail = PrimaryDetail {
+        kind: Kind::Build,
+        ..pd("r", "b", "long build", Status::Running)
+    };
     let row = tab(1, "runner", display(Status::Running, 0, 1, Some(detail)));
     // `tight` drops the bottom-region footer (whose own tally spinner isn't
     // eased by this task and would otherwise pollute the full-speed check
@@ -4199,7 +5130,15 @@ fn badge_entry(
     attention_tab_position: Option<usize>,
     selected: bool,
 ) -> BadgeEntry {
-    stale_badge_entry(name, is_current, running, attention, attention_tab_position, selected, false)
+    stale_badge_entry(
+        name,
+        is_current,
+        running,
+        attention,
+        attention_tab_position,
+        selected,
+        false,
+    )
 }
 /// As `badge_entry`, with an explicit trailing `stale` flag — for the
 /// dimmed/clickable/skip-cycle pins.
@@ -4226,7 +5165,10 @@ fn stale_badge_entry(
 #[test]
 fn badge_absent_with_single_session_and_lockstep_with_many() {
     let solo = vec![badge_entry("work", true, 1, 0, None, false)];
-    assert!(render_session_badge(&solo, &ro(24, 0)).is_empty(), "solo session renders nothing");
+    assert!(
+        render_session_badge(&solo, &ro(24, 0)).is_empty(),
+        "solo session renders nothing"
+    );
 
     let many = vec![
         badge_entry("work", true, 3, 0, None, false),
@@ -4238,7 +5180,10 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
     // `render_session_badge`), so the section reads distinct from the cards
     // below it.
     assert_eq!(lines.len(), 3, "2 badge lines + 1 blank separator line");
-    assert_eq!(lines[0].target, None, "own session line is not a cross-session click");
+    assert_eq!(
+        lines[0].target, None,
+        "own session line is not a cross-session click"
+    );
     let t = lines[1].target.clone().expect("peer line is clickable");
     assert_eq!(t.session.as_deref(), Some("alpha"));
     assert_eq!(t.tab_position, 2);
@@ -4299,7 +5244,8 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     let lines = render_session_badge(&many, &ro(24, 0));
     let t = lines[1].target.clone().expect("peer line is clickable");
     assert_eq!(
-        t.session_tab_position(), None,
+        t.session_tab_position(),
+        None,
         "no attention tab must decode back to None, not Some(0)"
     );
 
@@ -4310,7 +5256,8 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
     let lines = render_session_badge(&with_attention, &ro(24, 0));
     let t = lines[1].target.clone().expect("peer line is clickable");
     assert_eq!(
-        t.session_tab_position(), Some(0),
+        t.session_tab_position(),
+        Some(0),
         "attention genuinely at tab 0 must still resolve to Some(0)"
     );
 }
@@ -4327,7 +5274,11 @@ fn badge_encodes_missing_attention_as_a_sentinel_not_tab_zero() {
 fn stale_badge_entry_renders_dimmed_but_stays_clickable() {
     let opts = ro(24, 0);
     let idle_color = tc_fg(opts.theme.idle_text);
-    let stale_color = tc_fg(crate::theme::blend(opts.theme.idle_text, opts.theme.rail_bg, 0.5));
+    let stale_color = tc_fg(crate::theme::blend(
+        opts.theme.idle_text,
+        opts.theme.rail_bg,
+        0.5,
+    ));
 
     let entries = vec![
         badge_entry("work", true, 0, 0, None, false),
@@ -4337,7 +5288,10 @@ fn stale_badge_entry_renders_dimmed_but_stays_clickable() {
 
     // Still fully clickable — a click on a stale entry is a deliberate act;
     // `entry.stale` only ever affects color, never the target.
-    let t = lines[1].target.clone().expect("a stale peer line must still be clickable");
+    let t = lines[1]
+        .target
+        .clone()
+        .expect("a stale peer line must still be clickable");
     assert_eq!(t.session.as_deref(), Some("alpha"));
 
     // Its label paints in the receded stale color, not the ordinary muted
@@ -4361,7 +5315,11 @@ fn stale_entry_undims_once_superseded_by_a_fresh_entry() {
     // pins a line to stale forever.
     let opts = ro(24, 0);
     let idle_color = tc_fg(opts.theme.idle_text);
-    let stale_color = tc_fg(crate::theme::blend(opts.theme.idle_text, opts.theme.rail_bg, 0.5));
+    let stale_color = tc_fg(crate::theme::blend(
+        opts.theme.idle_text,
+        opts.theme.rail_bg,
+        0.5,
+    ));
 
     let stale_entries = vec![
         badge_entry("work", true, 0, 0, None, false),

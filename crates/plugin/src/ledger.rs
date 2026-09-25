@@ -75,7 +75,14 @@ impl LedgerEntry {
         } else {
             obs.msg.clone()
         };
-        Some(LedgerEntry { at_epoch_s, outcome, tab_id, tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"), label, pane_id })
+        Some(LedgerEntry {
+            at_epoch_s,
+            outcome,
+            tab_id,
+            tab_name: sanitized_or(tab_name, MAX_TAB_NAME_CHARS, "tab"),
+            label,
+            pane_id,
+        })
     }
 
     /// Re-scrub the free-text fields. Live entries are built from
@@ -140,7 +147,11 @@ impl Ledger {
     /// because a match by definition lies within MERGE_WINDOW_S: whichever
     /// stamp wins, rendered ages differ by ≤4s and re-merging still matches.
     pub(crate) fn push(&mut self, entry: LedgerEntry) -> bool {
-        if self.entries.iter().any(|existing| is_same_event(existing, &entry)) {
+        if self
+            .entries
+            .iter()
+            .any(|existing| is_same_event(existing, &entry))
+        {
             return false;
         }
         self.entries.push_front(entry);
@@ -174,7 +185,9 @@ impl Ledger {
 
     /// Any entry still younger than SATURATE_S? (Drives the Slow cadence.)
     pub(crate) fn any_unsaturated(&self, now_epoch_s: u64) -> bool {
-        self.entries.iter().any(|e| now_epoch_s.saturating_sub(e.at_epoch_s) < SATURATE_S)
+        self.entries
+            .iter()
+            .any(|e| now_epoch_s.saturating_sub(e.at_epoch_s) < SATURATE_S)
     }
 
     /// Union of two rings: nearest-neighbor match on (pane, outcome, label)
@@ -224,7 +237,12 @@ pub(crate) fn minute_tag(age: u64) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn obs(status: Status, origin: ObservationOrigin, msg: &str, completed_epoch_s: Option<u64>) -> TrackedObservation {
+    fn obs(
+        status: Status,
+        origin: ObservationOrigin,
+        msg: &str,
+        completed_epoch_s: Option<u64>,
+    ) -> TrackedObservation {
         TrackedObservation {
             origin,
             status,
@@ -244,7 +262,14 @@ mod tests {
     }
 
     fn entry(pane_id: u32, outcome: LedgerOutcome, label: &str, at_epoch_s: u64) -> LedgerEntry {
-        LedgerEntry { at_epoch_s, outcome, tab_id: TabId::new(0), tab_name: "tab".into(), label: label.to_string(), pane_id }
+        LedgerEntry {
+            at_epoch_s,
+            outcome,
+            tab_id: TabId::new(0),
+            tab_name: "tab".into(),
+            label: label.to_string(),
+            pane_id,
+        }
     }
 
     #[test]
@@ -252,7 +277,11 @@ mod tests {
         // Entries loaded off disk may predate intake sanitization; the scrub
         // strips ANSI/controls and folds newlines like every other intake.
         let e = entry(1, LedgerOutcome::Done, "did\nthings\x1b[31m", 5);
-        let e = LedgerEntry { tab_name: "ev\x1b[2Jil\ntab".into(), ..e }.sanitized();
+        let e = LedgerEntry {
+            tab_name: "ev\x1b[2Jil\ntab".into(),
+            ..e
+        }
+        .sanitized();
         assert_eq!(e.tab_name, "evil tab");
         assert_eq!(e.label, "did things");
 
@@ -267,7 +296,12 @@ mod tests {
     #[test]
     fn from_observation_maps_command_and_agent_labels() {
         // Command-origin: msg passes through untouched.
-        let o = obs(Status::Done, ObservationOrigin::Command, "cargo test", Some(100));
+        let o = obs(
+            Status::Done,
+            ObservationOrigin::Command,
+            "cargo test",
+            Some(100),
+        );
         let e = LedgerEntry::from_observation(1, &o, TabId::new(0), "work").unwrap();
         assert_eq!(e.label, "cargo test");
         assert_eq!(e.outcome, LedgerOutcome::Done);
@@ -288,7 +322,12 @@ mod tests {
 
         // Agent-origin (status pipe) with an empty message falls back to
         // "turn done".
-        let o = obs(Status::Error, ObservationOrigin::StatusPipe, "   ", Some(200));
+        let o = obs(
+            Status::Error,
+            ObservationOrigin::StatusPipe,
+            "   ",
+            Some(200),
+        );
         let e = LedgerEntry::from_observation(2, &o, TabId::new(1), "").unwrap();
         assert_eq!(e.label, "turn done");
         assert_eq!(e.outcome, LedgerOutcome::Error);
@@ -296,16 +335,31 @@ mod tests {
         assert_eq!(e.tab_name, "tab");
 
         // Agent-origin with a real message passes it through.
-        let o = obs(Status::Done, ObservationOrigin::StatusPipe, "reviewed PR", Some(300));
+        let o = obs(
+            Status::Done,
+            ObservationOrigin::StatusPipe,
+            "reviewed PR",
+            Some(300),
+        );
         let e = LedgerEntry::from_observation(3, &o, TabId::new(0), "work").unwrap();
         assert_eq!(e.label, "reviewed PR");
 
         // Running (not a completion) never ledgers, even with a stamp.
-        let o = obs(Status::Running, ObservationOrigin::StatusPipe, "busy", Some(400));
+        let o = obs(
+            Status::Running,
+            ObservationOrigin::StatusPipe,
+            "busy",
+            Some(400),
+        );
         assert!(LedgerEntry::from_observation(4, &o, TabId::new(0), "work").is_none());
 
         // Done without a completion stamp (pre-v3 snapshot transient) skips too.
-        let o = obs(Status::Done, ObservationOrigin::Command, "cargo build", None);
+        let o = obs(
+            Status::Done,
+            ObservationOrigin::Command,
+            "cargo build",
+            None,
+        );
         assert!(LedgerEntry::from_observation(5, &o, TabId::new(0), "work").is_none());
     }
 
@@ -318,7 +372,11 @@ mod tests {
         // Same (pane, outcome, label) 2s later is the same event — rejected.
         assert!(!ledger.push(entry(1, LedgerOutcome::Done, "cargo test", 102)));
         assert_eq!(ledger.entries().count(), 1);
-        assert_eq!(ledger.to_vec()[0].at_epoch_s, 100, "the original stamp is kept, not the dup's");
+        assert_eq!(
+            ledger.to_vec()[0].at_epoch_s,
+            100,
+            "the original stamp is kept, not the dup's"
+        );
 
         // A different label on the same pane is a distinct event.
         assert!(ledger.push(entry(1, LedgerOutcome::Done, "cargo build", 103)));
@@ -328,12 +386,20 @@ mod tests {
         // survive dedup) cap the ring at 32, keeping the newest.
         let mut ledger = Ledger::default();
         for i in 0..40u32 {
-            assert!(ledger.push(entry(i, LedgerOutcome::Done, "cargo test", 1000 + i as u64 * 10)));
+            assert!(ledger.push(entry(
+                i,
+                LedgerOutcome::Done,
+                "cargo test",
+                1000 + i as u64 * 10
+            )));
         }
         assert_eq!(ledger.entries().count(), LEDGER_CAP);
         let newest = ledger.entries().next().unwrap();
         assert_eq!(newest.pane_id, 39, "newest push stays at the front");
-        assert!(ledger.entries().all(|e| e.pane_id >= 8), "the oldest 8 were evicted");
+        assert!(
+            ledger.entries().all(|e| e.pane_id >= 8),
+            "the oldest 8 were evicted"
+        );
     }
 
     #[test]
@@ -348,7 +414,10 @@ mod tests {
         assert_eq!(merged[0].at_epoch_s, 8001);
 
         // merge(a, a) == a for an already-deduped, sorted-desc ring.
-        let a = vec![entry(1, LedgerOutcome::Done, "x", 300), entry(2, LedgerOutcome::Error, "y", 100)];
+        let a = vec![
+            entry(1, LedgerOutcome::Done, "x", 300),
+            entry(2, LedgerOutcome::Error, "y", 100),
+        ];
         assert_eq!(Ledger::merge(a.clone(), a.clone()), a);
 
         // Distinct completions more than MERGE_WINDOW_S apart both survive.
@@ -369,7 +438,10 @@ mod tests {
         let a = vec![entry(1, LedgerOutcome::Done, "cargo test", 1000)];
         let b = vec![entry(1, LedgerOutcome::Done, "cargo test", 1004)];
         let merged = Ledger::merge(a, b);
-        assert_eq!(merged, vec![entry(1, LedgerOutcome::Done, "cargo test", 1004)]);
+        assert_eq!(
+            merged,
+            vec![entry(1, LedgerOutcome::Done, "cargo test", 1004)]
+        );
     }
 
     #[test]
@@ -384,8 +456,9 @@ mod tests {
         let got: Vec<u64> = ledger.entries().map(|e| e.at_epoch_s).collect();
         assert_eq!(got, vec![200, 100, 50]);
 
-        let oversized: Vec<LedgerEntry> =
-            (0..40u32).map(|i| entry(i, LedgerOutcome::Done, "x", i as u64)).collect();
+        let oversized: Vec<LedgerEntry> = (0..40u32)
+            .map(|i| entry(i, LedgerOutcome::Done, "x", i as u64))
+            .collect();
         ledger.replace(oversized);
         assert_eq!(ledger.to_vec().len(), LEDGER_CAP);
     }
@@ -393,7 +466,10 @@ mod tests {
     #[test]
     fn any_unsaturated_reflects_age() {
         let ledger = Ledger::default();
-        assert!(!ledger.any_unsaturated(1_000_000), "an empty ledger has nothing left to age out");
+        assert!(
+            !ledger.any_unsaturated(1_000_000),
+            "an empty ledger has nothing left to age out"
+        );
 
         let mut ledger = Ledger::default();
         ledger.push(entry(1, LedgerOutcome::Done, "x", 1000));

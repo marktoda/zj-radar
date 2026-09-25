@@ -15,7 +15,10 @@ fn wasm_release_url(version: &str) -> String {
 /// Any asset of the `v{version}` GitHub release — the one place the URL shape
 /// lives (the wasm here, the CLI tarball in `update`).
 pub(crate) fn release_asset_url(version: &str, asset: &str) -> String {
-    format!("https://github.com/{}/releases/download/v{version}/{asset}", repo_slug())
+    format!(
+        "https://github.com/{}/releases/download/v{version}/{asset}",
+        repo_slug()
+    )
 }
 
 /// The `.sha256` sidecar published next to the wasm asset (same release, same
@@ -50,8 +53,15 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
     // Progress is prose → stderr: `run` reaches this download BEFORE its
     // `--print-cmd` branch prints, so anything on stdout here would be
     // captured by `$(zj-radar run --print-cmd)` and corrupt the command.
-    eprintln!("zj-radar: downloading wasm {version} from {}", wasm_release_url(version));
-    download_verified_asset(&wasm_release_url(version), dest, &format!("zj_radar.wasm v{version}"))
+    eprintln!(
+        "zj-radar: downloading wasm {version} from {}",
+        wasm_release_url(version)
+    );
+    download_verified_asset(
+        &wasm_release_url(version),
+        dest,
+        &format!("zj_radar.wasm v{version}"),
+    )
 }
 
 /// Fetch a release asset at `url` to `dest` (creating its parent dir) and
@@ -65,7 +75,11 @@ pub(crate) fn download_wasm_to(version: &str, dest: &Path) -> Result<(), String>
 /// so an interrupted transfer straight to `dest` would leave a partial file
 /// that the `exists()`/up-to-date gates treat as a valid asset forever after —
 /// and Zellij would then load a partial wasm with permissions.
-pub(crate) fn download_verified_asset(url: &str, dest: &Path, describe: &str) -> Result<(), String> {
+pub(crate) fn download_verified_asset(
+    url: &str,
+    dest: &Path,
+    describe: &str,
+) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed — {e}"))?;
     }
@@ -109,7 +123,9 @@ pub(crate) fn fetch_published_sha256(sidecar_url: &str, stage_at: &Path) -> Opti
     if !try_download(sidecar_url, stage_at) {
         return None;
     }
-    let expected = std::fs::read_to_string(stage_at).ok().and_then(|s| parse_sha256(&s));
+    let expected = std::fs::read_to_string(stage_at)
+        .ok()
+        .and_then(|s| parse_sha256(&s));
     let _ = std::fs::remove_file(stage_at);
     expected
 }
@@ -174,7 +190,11 @@ pub(crate) fn compute_sha256(path: &Path) -> Option<String> {
     let out = if which("sha256sum") {
         Command::new("sha256sum").arg(path).output().ok()?
     } else if which("shasum") {
-        Command::new("shasum").args(["-a", "256"]).arg(path).output().ok()?
+        Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(path)
+            .output()
+            .ok()?
     } else {
         return None;
     };
@@ -200,18 +220,23 @@ pub(crate) fn download_wasm(version: &str) -> Result<PathBuf, String> {
 pub(crate) fn private_download_dir() -> Result<PathBuf, String> {
     let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let dir = std::env::temp_dir().join(format!("zj-radar-{user}"));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create download dir failed — {e}"))?;
-    let meta = std::fs::symlink_metadata(&dir)
-        .map_err(|e| format!("stat download dir failed — {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create download dir failed — {e}"))?;
+    let meta =
+        std::fs::symlink_metadata(&dir).map_err(|e| format!("stat download dir failed — {e}"))?;
     if !meta.is_dir() {
-        return Err(format!("{} exists but is not a directory — refusing to stage downloads there", dir.display()));
+        return Err(format!(
+            "{} exists but is not a directory — refusing to stage downloads there",
+            dir.display()
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            format!("could not make {} private (chmod 700: {e}) — refusing to stage downloads there", dir.display())
+            format!(
+                "could not make {} private (chmod 700: {e}) — refusing to stage downloads there",
+                dir.display()
+            )
         })?;
     }
     Ok(dir)
@@ -225,7 +250,16 @@ fn run_download(url: &str, dest: &Path) -> Result<(), String> {
         let status = Command::new("curl")
             // `--proto-redir =https` too: `--proto` alone doesn't constrain
             // redirect targets, and `-L` follows them.
-            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fL", url, "-o"])
+            .args([
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--tlsv1.2",
+                "-fL",
+                url,
+                "-o",
+            ])
             .arg(dest)
             .status()
             .map_err(|e| format!("failed to run curl — {e}"))?;
@@ -262,7 +296,16 @@ fn try_download(url: &str, dest: &Path) -> bool {
     use std::process::Command;
     if which("curl") {
         return Command::new("curl")
-            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fsSL", url, "-o"])
+            .args([
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--tlsv1.2",
+                "-fsSL",
+                url,
+                "-o",
+            ])
             .arg(dest)
             .status()
             .map(|s| s.success())
@@ -314,7 +357,10 @@ mod tests {
     fn parse_sha256_takes_the_digest_token_and_lowercases() {
         let digest = "a".repeat(64);
         // `sha256sum` line format: "<hex>  <name>".
-        assert_eq!(parse_sha256(&format!("{digest}  zj_radar.wasm")), Some(digest.clone()));
+        assert_eq!(
+            parse_sha256(&format!("{digest}  zj_radar.wasm")),
+            Some(digest.clone())
+        );
         // A bare digest with surrounding whitespace/newline.
         assert_eq!(parse_sha256(&format!("  {digest}\n")), Some(digest.clone()));
         // Uppercase hex is normalized to lowercase for comparison.
@@ -350,7 +396,10 @@ mod tests {
         // tool on PATH, where the checksum guard already degrades to a TLS-only
         // warning, so an absent tool is not a failure.
         if let Some(hex) = got {
-            assert_eq!(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+            assert_eq!(
+                hex,
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
         }
     }
 }

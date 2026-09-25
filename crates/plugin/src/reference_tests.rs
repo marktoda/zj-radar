@@ -47,7 +47,11 @@ fn parse_cases(doc: &str) -> Vec<Case> {
                 current_input.take(),
                 current_expect.take(),
             ) {
-                cases.push(Case { id, input: inp, expect: exp });
+                cases.push(Case {
+                    id,
+                    input: inp,
+                    expect: exp,
+                });
             }
             current_id = Some(raw_line[3..].trim().to_string());
             current_input = None;
@@ -83,7 +87,11 @@ fn parse_cases(doc: &str) -> Vec<Case> {
                     current_input.clone(),
                     current_expect.take(),
                 ) {
-                    cases.push(Case { id, input: inp, expect: exp });
+                    cases.push(Case {
+                        id,
+                        input: inp,
+                        expect: exp,
+                    });
                     current_input = None;
                 }
             }
@@ -101,7 +109,11 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 
     // Final flush (end-of-file)
     if let (Some(id), Some(inp), Some(exp)) = (current_id, current_input, current_expect) {
-        cases.push(Case { id, input: inp, expect: exp });
+        cases.push(Case {
+            id,
+            input: inp,
+            expect: exp,
+        });
     }
 
     cases
@@ -182,7 +194,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     }
 
     struct TabSpec {
-        pos: usize,   // 1-based DSL position (e.g. `tab 1 "shell"` -> pos=1)
+        pos: usize, // 1-based DSL position (e.g. `tab 1 "shell"` -> pos=1)
         name: String,
         active: bool,
         has_bell: bool,
@@ -409,7 +421,9 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
                     } else if let Ok(n) = code_str.parse::<i32>() {
                         exit_code = Some(Some(n));
                     } else {
-                        panic!("reference DSL: bad exit code '{code_str}' — must be an integer or '?'");
+                        panic!(
+                            "reference DSL: bad exit code '{code_str}' — must be an integer or '?'"
+                        );
                     }
                     trailer = "";
                 } else {
@@ -446,13 +460,16 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     // 1. tabs_changed: one RadarTab per DSL tab.
     // DSL pos is 1-based (e.g. `tab 1 "shell"`); rows() returns number = position+1,
     // so we store position = pos - 1 to get the right display number.
-    let radar_tabs: Vec<RadarTab> = tabs.iter().map(|spec| RadarTab {
-        id: TabId::new(spec.pos),
-        position: spec.pos.saturating_sub(1),
-        name: spec.name.clone(),
-        active: spec.active,
-        has_bell: spec.has_bell,
-    }).collect();
+    let radar_tabs: Vec<RadarTab> = tabs
+        .iter()
+        .map(|spec| RadarTab {
+            id: TabId::new(spec.pos),
+            position: spec.pos.saturating_sub(1),
+            name: spec.name.clone(),
+            active: spec.active,
+            has_bell: spec.has_bell,
+        })
+        .collect();
     radar.tabs_changed(radar_tabs);
 
     // 2. panes_changed: register all panes as live terminal panes.
@@ -461,14 +478,18 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
 
     for spec in &tabs {
         let position = spec.pos.saturating_sub(1);
-        let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
-            live.insert(p.pane_id);
-            TerminalPane {
-                id: p.pane_id,
-                title: p.msg.clone(),
-                focused_in_tab: false,
-            }
-        }).collect();
+        let terminal_panes: Vec<TerminalPane> = spec
+            .panes
+            .iter()
+            .map(|p| {
+                live.insert(p.pane_id);
+                TerminalPane {
+                    id: p.pane_id,
+                    title: p.msg.clone(),
+                    focused_in_tab: false,
+                }
+            })
+            .collect();
         if !terminal_panes.is_empty() {
             tab_panes.insert(position, terminal_panes);
         }
@@ -578,14 +599,18 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         let mut live2: HashSet<u32> = HashSet::new();
         for spec in &tabs {
             let position = spec.pos.saturating_sub(1);
-            let terminal_panes: Vec<TerminalPane> = spec.panes.iter().map(|p| {
-                live2.insert(p.pane_id);
-                TerminalPane {
-                    id: p.pane_id,
-                    title: p.msg.clone(),
-                    focused_in_tab: false,
-                }
-            }).collect();
+            let terminal_panes: Vec<TerminalPane> = spec
+                .panes
+                .iter()
+                .map(|p| {
+                    live2.insert(p.pane_id);
+                    TerminalPane {
+                        id: p.pane_id,
+                        title: p.msg.clone(),
+                        focused_in_tab: false,
+                    }
+                })
+                .collect();
             if !terminal_panes.is_empty() {
                 tab_panes2.insert(position, terminal_panes);
             }
@@ -659,8 +684,7 @@ fn rail_reference_matches() {
     // one Case. Count openers the way the parser does (the whole trimmed line
     // is the fence tag) so the inline mentions in the doc's prose — set off in
     // four-backtick spans, never alone on a line — don't count.
-    let fence_openers =
-        |tag: &str| doc.lines().filter(|l| l.trim_start() == tag).count();
+    let fence_openers = |tag: &str| doc.lines().filter(|l| l.trim_start() == tag).count();
     for tag in ["```rail-input", "```rail-expect"] {
         assert_eq!(
             cases.len(),
@@ -674,7 +698,10 @@ fn rail_reference_matches() {
             tag,
         );
     }
-    assert!(!cases.is_empty(), "docs/rail-reference.md yielded zero scenarios");
+    assert!(
+        !cases.is_empty(),
+        "docs/rail-reference.md yielded zero scenarios"
+    );
 
     let mut failures = Vec::new();
     for case in &cases {
@@ -698,4 +725,3 @@ fn rail_reference_matches() {
         failures.join("\n\n")
     );
 }
-

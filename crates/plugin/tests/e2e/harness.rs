@@ -147,7 +147,8 @@ impl IsolatedEnvironment {
 
     fn zellij_cache_dir(&self) -> std::path::PathBuf {
         if cfg!(target_os = "macos") {
-            self.home().join("Library/Caches/org.Zellij-Contributors.Zellij")
+            self.home()
+                .join("Library/Caches/org.Zellij-Contributors.Zellij")
         } else {
             self.cache_home().join("zellij")
         }
@@ -242,10 +243,12 @@ impl ZellijSession {
         assert_zellij_version();
 
         // Kill any previous session with this name to avoid conflicts.
-        let _ = isolated.command("zellij")
+        let _ = isolated
+            .command("zellij")
             .args(["delete-session", name, "--force"])
             .output();
-        let _ = isolated.command("zellij")
+        let _ = isolated
+            .command("zellij")
             .args(["kill-session", name])
             .output();
         std::thread::sleep(Duration::from_millis(300));
@@ -365,8 +368,7 @@ impl ZellijSession {
         panic!(
             "zellij session '{}' never showed plugin header; PTY tail:\n{}",
             self.name,
-            self
-                .pty_text()
+            self.pty_text()
                 .chars()
                 .rev()
                 .take(200)
@@ -384,7 +386,9 @@ impl ZellijSession {
     /// typically gets pane_id=0, but we verify at runtime to be safe.
     pub fn discover_terminal_pane_id(&self) -> u32 {
         // Inject: echo "ZPID=$ZELLIJ_PANE_ID"
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -394,7 +398,9 @@ impl ZellijSession {
             ])
             .output();
         // Send Enter (keycode 13).
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args(["--session", &self.name, "action", "write", "13"])
             .output();
         std::thread::sleep(Duration::from_millis(800));
@@ -423,7 +429,9 @@ impl ZellijSession {
         std::thread::sleep(Duration::from_millis(300));
 
         // Inject `echo ZPID2=$ZELLIJ_PANE_ID` into the newly focused pane.
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -432,7 +440,9 @@ impl ZellijSession {
                 r#"echo "ZPID2=$ZELLIJ_PANE_ID""#,
             ])
             .output();
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args(["--session", &self.name, "action", "write", "13"])
             .output();
         std::thread::sleep(Duration::from_millis(600));
@@ -449,7 +459,8 @@ impl ZellijSession {
 
     /// Inject a `zellij action` sub-command into the session.
     fn action(&self, args: &[&str]) -> std::process::Output {
-        self.isolated.command("zellij")
+        self.isolated
+            .command("zellij")
             .args(["--session", &self.name, "action"])
             .args(args)
             .output()
@@ -458,7 +469,9 @@ impl ZellijSession {
 
     /// Send a `zj_radar.status.v1` pipe message to the plugin.
     pub fn pipe_status(&self, json: &str) {
-        let out = self.isolated.command("zellij")
+        let out = self
+            .isolated
+            .command("zellij")
             .args([
                 "--session",
                 &self.name,
@@ -511,9 +524,7 @@ impl ZellijSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit());
-        let mut child = command
-            .spawn()
-            .expect("spawn notify.sh");
+        let mut child = command.spawn().expect("spawn notify.sh");
         child
             .stdin
             .as_mut()
@@ -660,7 +671,9 @@ impl ZellijSession {
     /// Unlike sidebar text, this does not read any plugin instance's possibly
     /// stale render; `query-tab-names` asks the session host directly.
     pub fn tab_names(&self) -> Vec<String> {
-        let output = self.isolated.command("zellij")
+        let output = self
+            .isolated
+            .command("zellij")
             .args(["--session", &self.name, "action", "query-tab-names"])
             .output()
             .expect("zellij query-tab-names failed to spawn");
@@ -681,7 +694,9 @@ impl ZellijSession {
     /// Exposed so the isolation regression can prove the spawned session is
     /// present privately while absent from the ambient/default server.
     pub fn isolated_session_names(&self) -> Vec<String> {
-        let output = self.isolated.command("zellij")
+        let output = self
+            .isolated
+            .command("zellij")
             .args(["list-sessions", "--short", "--no-formatting"])
             .output()
             .expect("isolated zellij list-sessions failed to spawn");
@@ -726,10 +741,14 @@ fn assert_zellij_version() {
 
 impl Drop for ZellijSession {
     fn drop(&mut self) {
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args(["delete-session", &self.name, "--force"])
             .output();
-        let _ = self.isolated.command("zellij")
+        let _ = self
+            .isolated
+            .command("zellij")
             .args(["kill-session", &self.name])
             .output();
         // `isolated` drops here, removing its cache/config/data/socket roots.

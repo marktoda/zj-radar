@@ -129,7 +129,10 @@ fn pending_is_only_counted_for_tracked_panes() {
 
     let display = roll_up(&panes, resolver(&map), |_| None);
 
-    assert_eq!(display.progress.total, 0, "an un-tracked pane is not in total");
+    assert_eq!(
+        display.progress.total, 0,
+        "an un-tracked pane is not in total"
+    );
     assert_eq!(
         display.progress.pending, 0,
         "pending must not count a pane excluded from total"
@@ -139,7 +142,10 @@ fn pending_is_only_counted_for_tracked_panes() {
 
 #[test]
 fn pane_outcome_maps_finished_commands_only() {
-    assert_eq!(pane_outcome(&command_obs(Status::Done, Some(0))), Some(ExitOutcome::Ok));
+    assert_eq!(
+        pane_outcome(&command_obs(Status::Done, Some(0))),
+        Some(ExitOutcome::Ok)
+    );
     assert_eq!(
         pane_outcome(&command_obs(Status::Error, Some(2))),
         Some(ExitOutcome::Failed(Some(2)))
@@ -170,7 +176,13 @@ fn tracked_pane_display_carries_last_change_tick_as_since_tick() {
 #[test]
 fn task_threads_through_to_pane_display_and_primary_detail() {
     let panes = [pane(1, "shell")];
-    let mut obs = TrackedObservation::command(Status::Pending, "r".into(), "approve?".into(), Kind::Claude, 3);
+    let mut obs = TrackedObservation::command(
+        Status::Pending,
+        "r".into(),
+        "approve?".into(),
+        Kind::Claude,
+        3,
+    );
     obs.origin = ObservationOrigin::StatusPipe;
     obs.task = "fix flaky e2e".into();
     let display = roll_up(&panes, |id| (id == 1).then_some(&obs), |_| None);
@@ -207,7 +219,10 @@ fn arb_status() -> impl Strategy<Value = Status> {
 
 fn pane_specs() -> impl Strategy<Value = Vec<Spec>> {
     let spec = proptest::option::of((
-        prop_oneof![Just(ObservationOrigin::StatusPipe), Just(ObservationOrigin::Command)],
+        prop_oneof![
+            Just(ObservationOrigin::StatusPipe),
+            Just(ObservationOrigin::Command)
+        ],
         arb_status(),
         any::<bool>(),
         0u64..50,
@@ -342,7 +357,11 @@ fn quiet_identity_renders_interactive_where_untracked_would_be() {
     let display = roll_up(&panes, |_| None, quiet_nvim(1));
     assert_eq!(
         display.panes[0],
-        PaneDisplay::Interactive { pane_id: 1, kind: Kind::Command, msg: "nvim".into() }
+        PaneDisplay::Interactive {
+            pane_id: 1,
+            kind: Kind::Command,
+            msg: "nvim".into()
+        }
     );
     // Pure context: no counts, no severity, no detail.
     assert_eq!(display.status, Status::Idle);
@@ -360,12 +379,20 @@ fn quiet_identity_replaces_an_idle_observations_muted_row_but_keeps_counts() {
     let panes = [pane(1, "shell")];
     let display = roll_up(&panes, resolver(&map), quiet_nvim(1));
     assert!(display.panes[0].is_interactive());
-    assert_eq!(display.progress.total, 1, "ever_active stickiness is untouched");
+    assert_eq!(
+        display.progress.total, 1,
+        "ever_active stickiness is untouched"
+    );
 }
 
 #[test]
 fn quiet_identity_never_outranks_a_live_observation() {
-    for status in [Status::Running, Status::Pending, Status::Done, Status::Error] {
+    for status in [
+        Status::Running,
+        Status::Pending,
+        Status::Done,
+        Status::Error,
+    ] {
         let mut map = HashMap::new();
         map.insert(1, obs(ObservationOrigin::StatusPipe, status, 1));
         let panes = [pane(1, "shell")];
@@ -385,8 +412,17 @@ fn animating_tracks_running_jobs_not_services_and_sits_outside_the_ever_active_g
     let panes = [pane(1, "p")];
     let mut map = HashMap::new();
     map.insert(1, obs(ObservationOrigin::Command, Status::Running, 1)); // Kind::Build — a job
-    assert!(roll_up(&panes, resolver(&map), |_| None).animating, "a running job animates");
-    map.insert(1, TrackedObservation { kind: Kind::Server, ..obs(ObservationOrigin::Command, Status::Running, 1) });
+    assert!(
+        roll_up(&panes, resolver(&map), |_| None).animating,
+        "a running job animates"
+    );
+    map.insert(
+        1,
+        TrackedObservation {
+            kind: Kind::Server,
+            ..obs(ObservationOrigin::Command, Status::Running, 1)
+        },
+    );
     assert!(
         !roll_up(&panes, resolver(&map), |_| None).animating,
         "a running service holds the steady mark — no sweep"
@@ -404,8 +440,14 @@ fn animating_tracks_running_jobs_not_services_and_sits_outside_the_ever_active_g
     map.insert(1, stale);
     let display = roll_up(&panes, resolver(&map), |_| None);
     assert_eq!(display.progress.total, 0, "not counted");
-    assert!(!display.panes[0].is_tracked(), "renders untracked — no spinner row of its own");
-    assert!(display.animating, "yet the sweep arms — `animating` sits outside the ever_active gate");
+    assert!(
+        !display.panes[0].is_tracked(),
+        "renders untracked — no spinner row of its own"
+    );
+    assert!(
+        display.animating,
+        "yet the sweep arms — `animating` sits outside the ever_active gate"
+    );
 }
 
 #[test]
@@ -416,8 +458,14 @@ fn primary_detail_tie_break_prefers_a_job_over_a_service() {
     // pins the middle key of (status, job, tick): drop it and the recency
     // tie-break hands the header to the server's steady mark.
     let mut map = HashMap::new();
-    let build = TrackedObservation { kind: Kind::Build, ..obs(ObservationOrigin::Command, Status::Running, 1) };
-    let server = TrackedObservation { kind: Kind::Server, ..obs(ObservationOrigin::Command, Status::Running, 9) };
+    let build = TrackedObservation {
+        kind: Kind::Build,
+        ..obs(ObservationOrigin::Command, Status::Running, 1)
+    };
+    let server = TrackedObservation {
+        kind: Kind::Server,
+        ..obs(ObservationOrigin::Command, Status::Running, 9)
+    };
     map.insert(1, build);
     map.insert(2, server);
     let panes = [pane(1, "build"), pane(2, "dev")];
@@ -435,8 +483,14 @@ fn primary_detail_tie_break_prefers_a_job_over_a_remote_session() {
     // Same tie-break, remote flavor: a spinning build outranks a connected
     // ssh session for the tab's primary detail (docs/activity-model.md §3).
     let mut map = HashMap::new();
-    let build = TrackedObservation { kind: Kind::Build, ..obs(ObservationOrigin::Command, Status::Running, 1) };
-    let remote = TrackedObservation { kind: Kind::Remote, ..obs(ObservationOrigin::Command, Status::Running, 9) };
+    let build = TrackedObservation {
+        kind: Kind::Build,
+        ..obs(ObservationOrigin::Command, Status::Running, 1)
+    };
+    let remote = TrackedObservation {
+        kind: Kind::Remote,
+        ..obs(ObservationOrigin::Command, Status::Running, 9)
+    };
     map.insert(1, build);
     map.insert(2, remote);
     let panes = [pane(1, "build"), pane(2, "ssh")];
@@ -451,23 +505,40 @@ fn remote_field_set_only_while_a_remote_pane_is_running() {
     // marker still shows a live ssh session in the same tab.
     let mut map = HashMap::new();
     let job = obs(ObservationOrigin::Command, Status::Running, 1);
-    let remote = TrackedObservation { kind: Kind::Remote, ..obs(ObservationOrigin::Command, Status::Running, 2) };
+    let remote = TrackedObservation {
+        kind: Kind::Remote,
+        ..obs(ObservationOrigin::Command, Status::Running, 2)
+    };
     map.insert(1, job);
     map.insert(2, remote);
     let panes = [pane(1, "build"), pane(2, "ssh")];
     let display = roll_up(&panes, resolver(&map), |_| None);
-    assert!(display.remote, "a connected remote pane sets the tab-level fact");
-    assert_eq!(display.detail.unwrap().kind, Kind::Build, "severity winner is unaffected");
+    assert!(
+        display.remote,
+        "a connected remote pane sets the tab-level fact"
+    );
+    assert_eq!(
+        display.detail.unwrap().kind,
+        Kind::Build,
+        "severity winner is unaffected"
+    );
 
     // Not merely "was remote": a Done remote session clears it.
     map.get_mut(&2).unwrap().status = Status::Done;
     let display = roll_up(&panes, resolver(&map), |_| None);
-    assert!(!display.remote, "a disconnected session clears the tab marker");
+    assert!(
+        !display.remote,
+        "a disconnected session clears the tab marker"
+    );
 }
 
 #[test]
 fn interactive_earns_a_pane_line_but_is_not_tracked() {
-    let d = PaneDisplay::Interactive { pane_id: 7, kind: Kind::Command, msg: "nvim".into() };
+    let d = PaneDisplay::Interactive {
+        pane_id: 7,
+        kind: Kind::Command,
+        msg: "nvim".into(),
+    };
     assert!(d.earns_pane_line());
     assert!(d.is_interactive());
     assert!(!d.is_tracked());

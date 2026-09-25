@@ -62,7 +62,9 @@ pub(crate) fn setup_codex(uninstall: bool, opts: CodexSetupOpts) {
 
 fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     // `setup_codex` already refused when no home resolves, so this is Some.
-    let Some(path) = codex_hooks_path() else { return };
+    let Some(path) = codex_hooks_path() else {
+        return;
+    };
     let codex_on_path = which("codex");
     if !uninstall && !codex_installed(codex_on_path) {
         println!("codex: skipped (binary/config not found)");
@@ -72,8 +74,8 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     let env = CodexEnv {
         codex_on_path,
         zj_radar_on_path: which("zj-radar"),
-        config_text:      codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
-        hooks_text:       Some(existing.clone()),
+        config_text: codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        hooks_text: Some(existing.clone()),
     };
     let facts = analyze_codex(&env);
     let Some(outcome) = edit_or_report("codex", edit_codex_hooks(&existing, !uninstall)) else {
@@ -114,7 +116,9 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
 
 fn setup_codex_notify(uninstall: bool, dry_run: bool, yes: bool, force: bool, is_tty: bool) {
     // `setup_codex` already refused when no home resolves, so this is Some.
-    let Some(path) = codex_config_path() else { return };
+    let Some(path) = codex_config_path() else {
+        return;
+    };
     if !uninstall && !codex_installed(which("codex")) {
         println!("codex: skipped (binary/config not found)");
         return;
@@ -199,7 +203,10 @@ mod tests {
         // Neither set → None (never a relative `.codex` in the CWD).
         assert_eq!(codex_home_from(None, None), None);
         // Empty strings are treated as unset, not as the root path.
-        assert_eq!(codex_home_from(Some(OsString::new()), Some(OsString::new())), None);
+        assert_eq!(
+            codex_home_from(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
         assert_eq!(codex_home_from(None, Some(OsString::new())), None);
         // An empty CODEX_HOME still lets a real HOME win.
         assert_eq!(

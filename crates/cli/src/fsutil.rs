@@ -27,7 +27,12 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// unlinked — the link itself, not its target — and the create retried once.
 fn write_new(tmp: &Path, contents: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(tmp);
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+    };
     let mut file = match open() {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
             std::fs::remove_file(tmp)?;
@@ -86,7 +91,14 @@ mod tests {
         std::os::unix::fs::symlink(&victim, tmp_sibling(&target)).unwrap();
         atomic_write(&target, b"hello").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
-        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched", "the link's target was never written");
-        assert!(!std::fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"untouched",
+            "the link's target was never written"
+        );
+        assert!(!std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }

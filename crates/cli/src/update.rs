@@ -76,7 +76,9 @@ pub fn run(options: UpdateOptions) {
         let behind = if cli_behind {
             Some(format!("v{target} is available"))
         } else if wasm_stale {
-            Some(format!("the installed sidebar wasm does not match v{target}"))
+            Some(format!(
+                "the installed sidebar wasm does not match v{target}"
+            ))
         } else {
             None
         };
@@ -109,7 +111,10 @@ pub fn run(options: UpdateOptions) {
         match std::env::current_exe() {
             Ok(exe) => exe,
             Err(e) => {
-                crate::exit::fail_report("update", format!("could not locate this executable — {e}"));
+                crate::exit::fail_report(
+                    "update",
+                    format!("could not locate this executable — {e}"),
+                );
                 return;
             }
         }
@@ -117,7 +122,8 @@ pub fn run(options: UpdateOptions) {
 
     // The pin travels with the re-exec so a release landing between the
     // lookup above and this step can't split the two halves across versions.
-    if refresh_wasm && rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]) && wasm_stale {
+    if refresh_wasm && rerun(&exe, &target, &["setup", "zellij", "--download", "-y"]) && wasm_stale
+    {
         println!("zj-radar: restart Zellij (or open a new session) to load the updated sidebar");
     }
     if cli_behind {
@@ -155,15 +161,19 @@ pub fn run(options: UpdateOptions) {
 fn wasm_status_line(wasm: &WasmState, target: &str, check: bool) -> String {
     match wasm {
         WasmState::NotInstalled => {
-            "wasm: not installed — run `zj-radar setup zellij --download` to add the sidebar".to_string()
+            "wasm: not installed — run `zj-radar setup zellij --download` to add the sidebar"
+                .to_string()
         }
         WasmState::Managed => {
-            "wasm: a symlink (managed by Nix / home-manager) — update it through your Nix config".to_string()
+            "wasm: a symlink (managed by Nix / home-manager) — update it through your Nix config"
+                .to_string()
         }
         WasmState::Current => format!("wasm: matches v{target} (up to date)"),
         WasmState::Stale if check => format!("wasm: differs from v{target}"),
         WasmState::Stale => format!("wasm: differs from v{target} — will be refreshed"),
-        WasmState::Unknown(why) if check => format!("wasm: could not compare against v{target} ({why})"),
+        WasmState::Unknown(why) if check => {
+            format!("wasm: could not compare against v{target} ({why})")
+        }
         WasmState::Unknown(why) => format!("wasm: could not compare ({why}) — will be refreshed"),
     }
 }
@@ -190,7 +200,10 @@ fn rerun(exe: &Path, target: &str, args: &[&str]) -> bool {
     {
         Ok(s) if s.success() => true,
         Ok(s) => {
-            crate::exit::fail_report("update", format!("`zj-radar {}` exited with {s}", args.join(" ")));
+            crate::exit::fail_report(
+                "update",
+                format!("`zj-radar {}` exited with {s}", args.join(" ")),
+            );
             false
         }
         Err(e) => {
@@ -223,10 +236,24 @@ fn target_version() -> Result<String, String> {
 /// redirect (HEAD only, no API call — so no token, no rate-limit budget).
 fn latest_release_version() -> Result<String, String> {
     use std::process::Command;
-    let url = format!("https://github.com/{}/releases/latest", crate::setup::repo_slug());
+    let url = format!(
+        "https://github.com/{}/releases/latest",
+        crate::setup::repo_slug()
+    );
     let effective = if crate::setup::which("curl") {
         let out = Command::new("curl")
-            .args(["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "-fsSLI", "-o", "/dev/null", "-w", "%{url_effective}"])
+            .args([
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--tlsv1.2",
+                "-fsSLI",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{url_effective}",
+            ])
             .arg(&url)
             .output()
             .map_err(|e| format!("failed to run curl — {e}"))?;
@@ -272,7 +299,8 @@ fn wasm_state(target: &str) -> WasmState {
         Ok(dir) => dir.join(format!("{}.sha256", crate::WASM_FILE_NAME)),
         Err(e) => return WasmState::Unknown(e),
     };
-    let Some(expected) = crate::setup::fetch_published_sha256(&crate::setup::wasm_checksum_url(target), &sidecar)
+    let Some(expected) =
+        crate::setup::fetch_published_sha256(&crate::setup::wasm_checksum_url(target), &sidecar)
     else {
         return WasmState::Unknown(format!("no published checksum for v{target}"));
     };
@@ -325,9 +353,13 @@ fn self_replace(target: &str) -> Result<Option<PathBuf>, String> {
     let tarball = staging.join(format!("zj-radar-{triple}.tar.gz"));
     let url = cli_release_url(target, triple);
     eprintln!("zj-radar: downloading zj-radar v{target} ({triple}) from {url}");
-    let installed = crate::setup::download_verified_asset(&url, &tarball, &format!("zj-radar v{target} ({triple})"))
-        .and_then(|()| extract_cli_tarball(&tarball, &staging))
-        .and_then(|bin| replace_binary(&bin, &exe));
+    let installed = crate::setup::download_verified_asset(
+        &url,
+        &tarball,
+        &format!("zj-radar v{target} ({triple})"),
+    )
+    .and_then(|()| extract_cli_tarball(&tarball, &staging))
+    .and_then(|bin| replace_binary(&bin, &exe));
     let _ = std::fs::remove_dir_all(&staging);
     installed?;
     println!("zj-radar: installed v{target} to {}", exe.display());
@@ -353,7 +385,11 @@ pub(crate) enum InstallKind {
 /// Classify `exe` (already canonicalized by the caller) against the two
 /// package-manager locations we refuse to write into. `cargo_home` is
 /// `$CARGO_HOME` when set; the default `~/.cargo` derives from `home`.
-pub(crate) fn classify_install(exe: &Path, cargo_home: Option<&Path>, home: Option<&Path>) -> InstallKind {
+pub(crate) fn classify_install(
+    exe: &Path,
+    cargo_home: Option<&Path>,
+    home: Option<&Path>,
+) -> InstallKind {
     if exe.starts_with("/nix/store") {
         return InstallKind::Nix;
     }
@@ -380,7 +416,9 @@ pub(crate) fn classify_install(exe: &Path, cargo_home: Option<&Path>, home: Opti
 /// releases index) or the tag isn't a plain `MAJOR.MINOR.PATCH` version we can
 /// compare against. A leading `v` is optional, matching `ZJ_RADAR_VERSION`.
 pub(crate) fn tag_from_latest_redirect(url_effective: &str) -> Option<String> {
-    let (_, tag) = url_effective.trim_end_matches('/').rsplit_once("/releases/tag/")?;
+    let (_, tag) = url_effective
+        .trim_end_matches('/')
+        .rsplit_once("/releases/tag/")?;
     let version = tag.trim_start_matches('v');
     parse_version(version).map(|_| version.to_string())
 }
@@ -442,7 +480,10 @@ pub(crate) fn extract_cli_tarball(tarball: &Path, out: &Path) -> Result<PathBuf,
     }
     let bin = out.join("zj-radar");
     if !bin.is_file() {
-        return Err(format!("archive {} did not contain a zj-radar binary", tarball.display()));
+        return Err(format!(
+            "archive {} did not contain a zj-radar binary",
+            tarball.display()
+        ));
     }
     Ok(bin)
 }
@@ -459,7 +500,12 @@ pub(crate) fn replace_binary(fresh: &Path, current: &Path) -> Result<(), String>
     };
     let staged = current.with_file_name(format!("{name}.new"));
     let result = std::fs::copy(fresh, &staged)
-        .map_err(|e| format!("staging into {} failed — {e}", current.parent().unwrap_or(current).display()))
+        .map_err(|e| {
+            format!(
+                "staging into {} failed — {e}",
+                current.parent().unwrap_or(current).display()
+            )
+        })
         .and_then(|_| {
             #[cfg(unix)]
             {
@@ -497,19 +543,34 @@ mod tests {
     #[test]
     fn tag_from_latest_redirect_rejects_non_tag_urls() {
         // No releases yet: GitHub serves the releases index instead of redirecting.
-        assert_eq!(tag_from_latest_redirect("https://github.com/o/r/releases"), None);
-        assert_eq!(tag_from_latest_redirect("https://github.com/o/r/releases/latest"), None);
+        assert_eq!(
+            tag_from_latest_redirect("https://github.com/o/r/releases"),
+            None
+        );
+        assert_eq!(
+            tag_from_latest_redirect("https://github.com/o/r/releases/latest"),
+            None
+        );
         assert_eq!(tag_from_latest_redirect(""), None);
         // A tag that isn't a version is not something we can compare against.
-        assert_eq!(tag_from_latest_redirect("https://github.com/o/r/releases/tag/nightly"), None);
+        assert_eq!(
+            tag_from_latest_redirect("https://github.com/o/r/releases/tag/nightly"),
+            None
+        );
     }
 
     #[test]
     fn wasm_status_line_promises_a_refresh_only_when_one_will_happen() {
         let unknown = WasmState::Unknown("no published checksum".to_string());
         let line = wasm_status_line(&unknown, "0.6.0", true);
-        assert!(line.contains("could not compare") && line.contains("no published checksum"), "{line}");
-        assert!(!line.contains("refreshed"), "--check writes nothing: {line}");
+        assert!(
+            line.contains("could not compare") && line.contains("no published checksum"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("refreshed"),
+            "--check writes nothing: {line}"
+        );
         assert!(!wasm_status_line(&WasmState::Stale, "0.6.0", true).contains("refreshed"));
         assert!(wasm_status_line(&unknown, "0.6.0", false).contains("will be refreshed"));
         assert!(wasm_status_line(&WasmState::Stale, "0.6.0", false).contains("will be refreshed"));
@@ -538,7 +599,10 @@ mod tests {
     #[test]
     fn classify_install_recognizes_nix_store_paths() {
         let exe = Path::new("/nix/store/abc123-zj-radar-cli-0.5.0/bin/zj-radar");
-        assert_eq!(classify_install(exe, None, Some(Path::new("/home/u"))), InstallKind::Nix);
+        assert_eq!(
+            classify_install(exe, None, Some(Path::new("/home/u"))),
+            InstallKind::Nix
+        );
     }
 
     #[test]
@@ -546,7 +610,10 @@ mod tests {
         let home = Path::new("/home/u");
         // Explicit CARGO_HOME wins.
         let exe = Path::new("/opt/cargo/bin/zj-radar");
-        assert_eq!(classify_install(exe, Some(Path::new("/opt/cargo")), Some(home)), InstallKind::Cargo);
+        assert_eq!(
+            classify_install(exe, Some(Path::new("/opt/cargo")), Some(home)),
+            InstallKind::Cargo
+        );
         // Default ~/.cargo/bin when CARGO_HOME is unset.
         let exe = Path::new("/home/u/.cargo/bin/zj-radar");
         assert_eq!(classify_install(exe, None, Some(home)), InstallKind::Cargo);
@@ -565,7 +632,11 @@ mod tests {
         );
         // A `.cargo` directory elsewhere in the path is not cargo's bin dir.
         assert_eq!(
-            classify_install(Path::new("/home/u/.cargo-backup/zj-radar"), None, Some(home)),
+            classify_install(
+                Path::new("/home/u/.cargo-backup/zj-radar"),
+                None,
+                Some(home)
+            ),
             InstallKind::SelfManaged
         );
     }
@@ -581,7 +652,9 @@ mod tests {
     #[test]
     fn wasm_refresh_runs_only_for_a_real_file_that_differs_or_cannot_be_compared() {
         assert!(needs_wasm_refresh(&WasmState::Stale));
-        assert!(needs_wasm_refresh(&WasmState::Unknown("no checksum".into())));
+        assert!(needs_wasm_refresh(&WasmState::Unknown(
+            "no checksum".into()
+        )));
         // Current: nothing to do. NotInstalled: a setup job, not ours. Managed:
         // home-manager's — writing through the symlink is the bug this guards.
         assert!(!needs_wasm_refresh(&WasmState::Current));
@@ -606,7 +679,11 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&current).unwrap().permissions().mode();
-            assert_eq!(mode & 0o111, 0o111, "installed binary must be executable (mode {mode:o})");
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "installed binary must be executable (mode {mode:o})"
+            );
         }
         // No staging leftovers next to the binary.
         let siblings: Vec<_> = std::fs::read_dir(current.parent().unwrap())
@@ -624,7 +701,10 @@ mod tests {
         // A destination whose parent doesn't exist can't be renamed into.
         let current = dir.path().join("missing-dir").join("zj-radar");
         let err = replace_binary(&fresh, &current).unwrap_err();
-        assert!(err.contains("missing-dir"), "error should name the destination: {err}");
+        assert!(
+            err.contains("missing-dir"),
+            "error should name the destination: {err}"
+        );
     }
 
     /// Build a `.tar.gz` holding the given entries with the system `tar`, the
@@ -663,7 +743,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tarball = make_tarball(dir.path(), &[("README", b"nope")]);
         let err = extract_cli_tarball(&tarball, &dir.path().join("out")).unwrap_err();
-        assert!(err.contains("zj-radar"), "error should say what was missing: {err}");
+        assert!(
+            err.contains("zj-radar"),
+            "error should say what was missing: {err}"
+        );
     }
 
     #[test]

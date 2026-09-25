@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::setup::detect::{
-    codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours,
-    strip_managed_zellij_alias,
+    codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line,
+    notify_is_ours, strip_managed_zellij_alias,
 };
 
 use serde::{Deserialize, Serialize};
@@ -358,7 +358,10 @@ fn expand_one_line_plugins_block(lines: &mut Vec<String>) {
             continue;
         };
         let line = lines[i].clone();
-        let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let indent: String = line
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
         let inner = line[open + 1..close].trim().to_string();
         let mut repl = vec![line[..=open].to_string()];
         if !inner.is_empty() {
@@ -717,8 +720,14 @@ mod tests {
             Some("Bash"),
             "foreign group metadata must be preserved:\n{s}"
         );
-        assert!(s.contains("echo foreign"), "foreign handler must survive:\n{s}");
-        assert!(s.contains(CODEX_HOOK_MARKER), "our hook must be added:\n{s}");
+        assert!(
+            s.contains("echo foreign"),
+            "foreign handler must survive:\n{s}"
+        );
+        assert!(
+            s.contains(CODEX_HOOK_MARKER),
+            "our hook must be added:\n{s}"
+        );
     }
 
     #[test]
@@ -744,13 +753,22 @@ mod tests {
         );
         // Braces inside strings don't count; the string's braces are skipped
         // but the real closing brace after it is still seen.
-        assert_eq!(kdl_line_braces(r#"radar name="{not a block}" {"#), vec![(27, Brace::Open)]);
+        assert_eq!(
+            kdl_line_braces(r#"radar name="{not a block}" {"#),
+            vec![(27, Brace::Open)]
+        );
         // An escaped quote does not close the string.
-        assert_eq!(kdl_line_braces(r#"radar x="a\"{" {"#), vec![(15, Brace::Open)]);
+        assert_eq!(
+            kdl_line_braces(r#"radar x="a\"{" {"#),
+            vec![(15, Brace::Open)]
+        );
         // Everything after a `//` line comment is ignored…
         assert_eq!(kdl_line_braces("plugins { // }"), vec![(8, Brace::Open)]);
         // …but a `//` inside a string is content, not a comment.
-        assert_eq!(kdl_line_braces(r#"radar url="https://x" {"#), vec![(22, Brace::Open)]);
+        assert_eq!(
+            kdl_line_braces(r#"radar url="https://x" {"#),
+            vec![(22, Brace::Open)]
+        );
     }
 
     #[test]
@@ -807,9 +825,7 @@ mod tests {
     }
 
     fn assert_radar_inside_plugins(config: &str) {
-        let doc: kdl::KdlDocument = config
-            .parse()
-            .expect("edited config must stay valid KDL");
+        let doc: kdl::KdlDocument = config.parse().expect("edited config must stay valid KDL");
         assert!(
             plugins_block_has_radar(&doc),
             "radar alias must land inside a `plugins` block:\n{config}"
@@ -861,10 +877,11 @@ mod tests {
     /// over an expanded block is byte-identical after the first install.
     #[test]
     fn zellij_one_line_plugins_block_install_is_idempotent() {
-        let once = match edit_zellij("plugins {}\n", "file:/tmp/zj_radar.wasm", true, false).unwrap() {
-            Outcome::Changed(s) => s,
-            other => panic!("expected Changed, got {other:?}"),
-        };
+        let once =
+            match edit_zellij("plugins {}\n", "file:/tmp/zj_radar.wasm", true, false).unwrap() {
+                Outcome::Changed(s) => s,
+                other => panic!("expected Changed, got {other:?}"),
+            };
         assert!(matches!(
             edit_zellij(&once, "file:/tmp/zj_radar.wasm", true, false).unwrap(),
             Outcome::Unchanged

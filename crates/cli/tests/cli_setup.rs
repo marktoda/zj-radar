@@ -9,8 +9,8 @@
 mod support;
 
 use assert_cmd::Command;
-use support::{ShimDir, HOOK_MARKER};
 use std::fs;
+use support::{ShimDir, HOOK_MARKER};
 use tempfile::TempDir;
 
 /// Returns a fresh tempdir with an empty hooks.json pre-created so that
@@ -205,7 +205,14 @@ fn setup_zellij_refuses_wasm_and_download_together() {
 
     let assert = Command::cargo_bin("zj-radar")
         .unwrap()
-        .args(["setup", "zellij", "--wasm", "/tmp/x.wasm", "--download", "--yes"])
+        .args([
+            "setup",
+            "zellij",
+            "--wasm",
+            "/tmp/x.wasm",
+            "--download",
+            "--yes",
+        ])
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
         .assert();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -335,7 +342,11 @@ fn checksum_mismatch_refuses_to_install_the_wasm() {
 
     // Nothing installed at the destination, and no staged bytes left behind.
     assert!(
-        !config_dir.path().join("plugins").join("zj_radar.wasm").exists(),
+        !config_dir
+            .path()
+            .join("plugins")
+            .join("zj_radar.wasm")
+            .exists(),
         "a checksum mismatch must not leave an installed wasm"
     );
     // Keep only download artifacts: `zellij --version` (real zellij is on PATH
@@ -369,7 +380,11 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
     let layouts = config_dir.path().join("layouts");
     fs::create_dir_all(&layouts).unwrap();
     // main.kdl HAS the rail; other.kdl does not.
-    fs::write(layouts.join("main.kdl"), "layout {\n    pane\n    // zj-radar:wrap begin\n}\n").unwrap();
+    fs::write(
+        layouts.join("main.kdl"),
+        "layout {\n    pane\n    // zj-radar:wrap begin\n}\n",
+    )
+    .unwrap();
     fs::write(layouts.join("other.kdl"), "layout {\n    pane\n}\n").unwrap();
 
     let check = |extra: &[&str]| {
@@ -435,9 +450,18 @@ fn check_exit_code_gates_and_bare_check_covers_zellij_and_detected_codex() {
     shim.add_recorder("codex");
     let output = bare_check(&home, shim.dir.path().as_os_str());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("zellij:"), "bare --check must report the zellij half; got:\n{stdout}");
-    assert!(stdout.contains("codex:"), "codex is on PATH, so bare --check must report it; got:\n{stdout}");
-    assert!(!output.status.success(), "missing items must exit non-zero so scripts can gate on the doctor");
+    assert!(
+        stdout.contains("zellij:"),
+        "bare --check must report the zellij half; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("codex:"),
+        "codex is on PATH, so bare --check must report it; got:\n{stdout}"
+    );
+    assert!(
+        !output.status.success(),
+        "missing items must exit non-zero so scripts can gate on the doctor"
+    );
 }
 
 #[test]
@@ -451,7 +475,10 @@ fn bare_check_skips_agents_that_are_not_present() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("zellij:"), "{stdout}");
     for agent in ["codex:", "claude:", "opencode:", "pi:"] {
-        assert!(!stdout.contains(agent), "absent agent reported ({agent}); got:\n{stdout}");
+        assert!(
+            !stdout.contains(agent),
+            "absent agent reported ({agent}); got:\n{stdout}"
+        );
     }
     assert!(!stdout.contains("missing codex binary"), "{stdout}");
 }
@@ -475,7 +502,10 @@ fn bare_check_includes_a_path_less_pi_whose_bridge_is_installed() {
     let output = bare_check(&home, empty_path.path().as_os_str());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pi:"), "{stdout}");
-    assert!(stdout.contains("warn pi binary: not found on PATH"), "{stdout}");
+    assert!(
+        stdout.contains("warn pi binary: not found on PATH"),
+        "{stdout}"
+    );
     assert!(stdout.contains("ok extension"), "{stdout}");
 }
 
@@ -540,7 +570,9 @@ fn setup_zellij_inject_creates_full_layout_when_none_exists() {
         "created layout must carry the swap layouts; got:\n{created}"
     );
     assert!(
-        !layout_path.with_file_name("default.kdl.zj-radar.bak").exists(),
+        !layout_path
+            .with_file_name("default.kdl.zj-radar.bak")
+            .exists(),
         "a freshly created layout has no original to back up"
     );
 }
@@ -572,7 +604,10 @@ fn setup_zellij_yes_never_creates_a_layout_file() {
 fn setup_zellij_inject_writes_rail_and_bak() {
     let config_dir = isolated_zellij_config(FIXTURE_LAYOUT);
     let layout_path = config_dir.path().join("layouts").join("default.kdl");
-    let bak_path    = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
+    let bak_path = config_dir
+        .path()
+        .join("layouts")
+        .join("default.kdl.zj-radar.bak");
 
     Command::cargo_bin("zj-radar")
         .unwrap()
@@ -602,10 +637,7 @@ fn setup_zellij_inject_writes_rail_and_bak() {
 
     // The backup must be the original fixture.
     let bak = fs::read_to_string(&bak_path).unwrap();
-    assert_eq!(
-        bak, FIXTURE_LAYOUT,
-        ".bak must contain the original layout"
-    );
+    assert_eq!(bak, FIXTURE_LAYOUT, ".bak must contain the original layout");
 }
 
 // ── --inject with existing swaps skips swap blocks, prints advisory ────────────
@@ -656,7 +688,8 @@ layout {
         "--inject must add the ui template; got:\n{injected}"
     );
     assert_eq!(
-        injected.matches("swap_tiled_layout").count(), 1,
+        injected.matches("swap_tiled_layout").count(),
+        1,
         "the user's lone swap block must remain the only one; got:\n{injected}"
     );
 
@@ -763,7 +796,10 @@ fn setup_zellij_uninstall_deletes_layout_setup_created_whole() {
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
         .assert()
         .success();
-    assert!(layout_path.exists(), "prerequisite: --inject must have created the layout");
+    assert!(
+        layout_path.exists(),
+        "prerequisite: --inject must have created the layout"
+    );
 
     Command::cargo_bin("zj-radar")
         .unwrap()
@@ -832,7 +868,10 @@ fn setup_zellij_uninstall_advises_on_edited_whole_created_layout() {
 fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     let config_dir = isolated_zellij_config(FIXTURE_LAYOUT);
     let layout_path = config_dir.path().join("layouts").join("default.kdl");
-    let bak_path    = config_dir.path().join("layouts").join("default.kdl.zj-radar.bak");
+    let bak_path = config_dir
+        .path()
+        .join("layouts")
+        .join("default.kdl.zj-radar.bak");
 
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
@@ -848,10 +887,7 @@ fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
     // Layout must be unchanged.
     let after = fs::read_to_string(&layout_path).unwrap();
     assert_eq!(after, FIXTURE_LAYOUT, "dry-run must not modify the layout");
-    assert!(
-        !bak_path.exists(),
-        "dry-run must not create a .bak file"
-    );
+    assert!(!bak_path.exists(), "dry-run must not create a .bak file");
 
     // stdout must show what would change.
     assert!(
@@ -895,7 +931,13 @@ fn setup_zellij_unchanged_arm_hints_producer_when_not_wired() {
     let run = || {
         Command::cargo_bin("zj-radar")
             .unwrap()
-            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .args([
+                "setup",
+                "zellij",
+                "--wasm",
+                wasm_path.to_str().unwrap(),
+                "--yes",
+            ])
             .env("ZELLIJ_CONFIG_DIR", config_dir.path())
             .env("HOME", home.path())
             .assert()
@@ -937,7 +979,13 @@ fn setup_zellij_unchanged_arm_silent_when_producer_wired() {
     let run = || {
         Command::cargo_bin("zj-radar")
             .unwrap()
-            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .args([
+                "setup",
+                "zellij",
+                "--wasm",
+                wasm_path.to_str().unwrap(),
+                "--yes",
+            ])
             .env("ZELLIJ_CONFIG_DIR", config_dir.path())
             .env("HOME", home.path())
             .assert()
@@ -1001,7 +1049,13 @@ fn setup_zellij_skips_grant_hint_when_already_granted() {
         }
         let output = Command::cargo_bin("zj-radar")
             .unwrap()
-            .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+            .args([
+                "setup",
+                "zellij",
+                "--wasm",
+                wasm_path.to_str().unwrap(),
+                "--yes",
+            ])
             .env("ZELLIJ_CONFIG_DIR", config_dir.path())
             .env("HOME", home.path())
             .env("XDG_CACHE_HOME", home.path().join(".cache"))
@@ -1067,7 +1121,13 @@ fn preseed_install(seed_permissions: Option<&str>) -> (TempDir, TempDir, String,
     }
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
-        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"])
+        .args([
+            "setup",
+            "zellij",
+            "--wasm",
+            wasm_path.to_str().unwrap(),
+            "--yes",
+        ])
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
@@ -1080,8 +1140,12 @@ fn preseed_install(seed_permissions: Option<&str>) -> (TempDir, TempDir, String,
     (config_dir, home, stdout, stderr)
 }
 
-const FULL_PERMISSION_SET: [&str; 4] =
-    ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
+const FULL_PERMISSION_SET: [&str; 4] = [
+    "ReadApplicationState",
+    "ReadCliPipes",
+    "ChangeApplicationState",
+    "RunCommands",
+];
 
 #[test]
 fn setup_zellij_preseeds_grant_on_install() {
@@ -1095,7 +1159,10 @@ fn setup_zellij_preseeds_grant_on_install() {
         "grant must be keyed by the absolute wasm destination:\n{perms}"
     );
     for perm in FULL_PERMISSION_SET {
-        assert!(perms.contains(perm), "{perm} missing from the grant:\n{perms}");
+        assert!(
+            perms.contains(perm),
+            "{perm} missing from the grant:\n{perms}"
+        );
     }
     assert!(
         stdout.contains("pre-authorized"),
@@ -1121,7 +1188,8 @@ fn setup_zellij_preseeds_grant_on_install() {
 
 #[test]
 fn setup_zellij_preseed_preserves_foreign_entries() {
-    let foreign = "\"/nix/store/abc-room.wasm\" {\n    ReadApplicationState\n    ChangeApplicationState\n}\n";
+    let foreign =
+        "\"/nix/store/abc-room.wasm\" {\n    ReadApplicationState\n    ChangeApplicationState\n}\n";
     let (config_dir, home, _, _) = preseed_install(Some(foreign));
     let wasm_dest = config_dir.path().join("plugins").join("zj_radar.wasm");
 
@@ -1173,7 +1241,13 @@ fn setup_zellij_dry_run_would_preseed_but_writes_nothing() {
     let home = TempDir::new().unwrap();
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
-        .args(["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--dry-run"])
+        .args([
+            "setup",
+            "zellij",
+            "--wasm",
+            wasm_path.to_str().unwrap(),
+            "--dry-run",
+        ])
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
@@ -1274,7 +1348,10 @@ fn setup_zellij_never_writes_a_symlinked_layout() {
     );
     let link = layouts.join("default.kdl");
     assert!(
-        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "--inject must not replace the symlink with a regular file"
     );
     assert_eq!(
@@ -1298,7 +1375,10 @@ fn setup_zellij_never_writes_a_symlinked_layout() {
         "--uninstall must refuse a symlinked layout out loud; stderr:\n{stderr}"
     );
     assert!(
-        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "--uninstall must leave the symlink in place"
     );
     assert_eq!(
@@ -1491,7 +1571,10 @@ fn claude_home(wired: bool) -> TempDir {
 }
 
 fn claude_args(shim: &ShimDir) -> Vec<String> {
-    shim.recorded("claude").into_iter().map(|r| r.args.join(" ")).collect()
+    shim.recorded("claude")
+        .into_iter()
+        .map(|r| r.args.join(" "))
+        .collect()
 }
 
 #[test]
@@ -1535,7 +1618,10 @@ fn setup_claude_already_wired_is_a_no_op() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(claude_args(&shim).is_empty(), "no plugin CLI calls when already wired");
+    assert!(
+        claude_args(&shim).is_empty(),
+        "no plugin CLI calls when already wired"
+    );
     assert!(stdout.contains("already wired"), "stdout:\n{stdout}");
 }
 
@@ -1554,7 +1640,10 @@ fn setup_claude_dry_run_runs_nothing() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(claude_args(&shim).is_empty(), "dry-run must not invoke the plugin CLI");
+    assert!(
+        claude_args(&shim).is_empty(),
+        "dry-run must not invoke the plugin CLI"
+    );
     assert!(
         stdout.contains("plugin marketplace add") && stdout.contains("plugin install"),
         "dry-run must announce both commands; stdout:\n{stdout}"
@@ -1609,7 +1698,11 @@ fn claude_detection_honors_claude_config_dir() {
     let home = claude_home(false); // nothing under ~/.claude
     let config = TempDir::new().unwrap();
     fs::create_dir_all(config.path().join("plugins")).unwrap();
-    fs::write(config.path().join("plugins/installed_plugins.json"), r#"{"plugins":["zj-radar-claude"]}"#).unwrap();
+    fs::write(
+        config.path().join("plugins/installed_plugins.json"),
+        r#"{"plugins":["zj-radar-claude"]}"#,
+    )
+    .unwrap();
     let output = Command::cargo_bin("zj-radar")
         .unwrap()
         .args(["setup", "claude", "--check"])
@@ -1621,7 +1714,10 @@ fn claude_detection_honors_claude_config_dir() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("ok plugin: zj-radar-claude plugin installed"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("ok plugin: zj-radar-claude plugin installed"),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1644,8 +1740,14 @@ fn setup_claude_without_consent_runs_nothing() {
         .get_output()
         .clone();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(claude_args(&shim).is_empty(), "unconfirmed consent must not invoke the plugin CLI");
-    assert!(stdout.contains("no tty"), "the skip must say how to consent non-interactively; stdout:\n{stdout}");
+    assert!(
+        claude_args(&shim).is_empty(),
+        "unconfirmed consent must not invoke the plugin CLI"
+    );
+    assert!(
+        stdout.contains("no tty"),
+        "the skip must say how to consent non-interactively; stdout:\n{stdout}"
+    );
     assert!(stdout.contains("skipped (declined)"), "stdout:\n{stdout}");
 }
 
@@ -1670,11 +1772,24 @@ fn setup_zellij_uninstall_deletes_a_v013_authored_layout() {
             .assert()
             .success();
     };
-    run(&["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--inject", "--yes"]);
+    run(&[
+        "setup",
+        "zellij",
+        "--wasm",
+        wasm_path.to_str().unwrap(),
+        "--inject",
+        "--yes",
+    ]);
     let layout_path = config_dir.path().join("layouts/default.kdl");
     let current = fs::read_to_string(&layout_path).unwrap();
-    let legacy = current.replace("    tab focus=true {", "    tab name=\"shell\" focus=true {");
-    assert_ne!(current, legacy, "fixture must actually differ (tab line drifted?)");
+    let legacy = current.replace(
+        "    tab focus=true {",
+        "    tab name=\"shell\" focus=true {",
+    );
+    assert_ne!(
+        current, legacy,
+        "fixture must actually differ (tab line drifted?)"
+    );
     fs::write(&layout_path, &legacy).unwrap();
 
     run(&["setup", "zellij", "--uninstall", "--yes"]);
@@ -1703,7 +1818,14 @@ fn setup_zellij_yes_preseeds_when_wasm_already_installed() {
             .assert()
             .success();
     };
-    run(&["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--inject", "--yes"]);
+    run(&[
+        "setup",
+        "zellij",
+        "--wasm",
+        wasm_path.to_str().unwrap(),
+        "--inject",
+        "--yes",
+    ]);
     fs::remove_file(permissions_path(home.path())).unwrap(); // grant lost (e.g. answered n once)
 
     run(&["setup", "zellij", "--yes"]); // the doctor's advertised recovery
@@ -1721,7 +1843,13 @@ fn setup_zellij_dry_run_never_contradicts_itself_about_the_grant() {
     let wasm_path = wasm_dir.path().join("zj_radar.wasm");
     let home = TempDir::new().unwrap();
     let run = |extra: &[&str]| {
-        let mut args = vec!["setup", "zellij", "--wasm", wasm_path.to_str().unwrap(), "--yes"];
+        let mut args = vec![
+            "setup",
+            "zellij",
+            "--wasm",
+            wasm_path.to_str().unwrap(),
+            "--yes",
+        ];
         args.extend_from_slice(extra);
         Command::cargo_bin("zj-radar")
             .unwrap()
@@ -1795,17 +1923,37 @@ fn setup_opencode_installs_both_marked_bridges_and_is_idempotent() {
 
     opencode_cmd(&xdg, &["--yes"]).success();
     let first = fs::read_to_string(&plugin).unwrap();
-    assert!(first.contains(OPENCODE_MARKER), "install must write the marked 1.x bridge: {first:?}");
+    assert!(
+        first.contains(OPENCODE_MARKER),
+        "install must write the marked 1.x bridge: {first:?}"
+    );
     let first_tui = fs::read_to_string(&tui).unwrap();
-    assert!(first_tui.contains(OPENCODE_TUI_MARKER), "install must write the marked 2.x TUI bridge: {first_tui:?}");
+    assert!(
+        first_tui.contains(OPENCODE_TUI_MARKER),
+        "install must write the marked 2.x TUI bridge: {first_tui:?}"
+    );
     assert!(!bak.exists(), "a fresh install has nothing to back up");
 
-    let out = opencode_cmd(&xdg, &["--yes"]).success().get_output().clone();
-    assert_eq!(fs::read_to_string(&plugin).unwrap(), first, "second run must be a no-op");
-    assert_eq!(fs::read_to_string(&tui).unwrap(), first_tui, "second run must be a no-op");
+    let out = opencode_cmd(&xdg, &["--yes"])
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(
+        fs::read_to_string(&plugin).unwrap(),
+        first,
+        "second run must be a no-op"
+    );
+    assert_eq!(
+        fs::read_to_string(&tui).unwrap(),
+        first_tui,
+        "second run must be a no-op"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("already up to date"), "stdout:\n{stdout}");
-    assert!(!stdout.contains("restart opencode"), "nothing was written, so no restart hint:\n{stdout}");
+    assert!(
+        !stdout.contains("restart opencode"),
+        "nothing was written, so no restart hint:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1819,11 +1967,22 @@ fn setup_opencode_upgrades_a_pre_2x_install_by_adding_the_tui_bridge() {
     fs::remove_file(&tui).unwrap();
     fs::remove_dir(tui.parent().unwrap()).unwrap();
 
-    let out = opencode_cmd(&xdg, &["--yes"]).success().get_output().clone();
-    assert!(fs::read_to_string(&tui).unwrap().contains(OPENCODE_TUI_MARKER));
-    assert!(!plugin.with_file_name("zj-radar.js.zj-radar.bak").exists(), "the current 1.x file was not rewritten");
+    let out = opencode_cmd(&xdg, &["--yes"])
+        .success()
+        .get_output()
+        .clone();
+    assert!(fs::read_to_string(&tui)
+        .unwrap()
+        .contains(OPENCODE_TUI_MARKER));
+    assert!(
+        !plugin.with_file_name("zj-radar.js.zj-radar.bak").exists(),
+        "the current 1.x file was not rewritten"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("opencode 2.x"), "the install line names the bridge it added:\n{stdout}");
+    assert!(
+        stdout.contains("opencode 2.x"),
+        "the install line names the bridge it added:\n{stdout}"
+    );
     assert!(stdout.contains("restart opencode"), "stdout:\n{stdout}");
 }
 
@@ -1834,22 +1993,44 @@ fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
     fs::write(&plugin, "export const Other = async () => ({});\n").unwrap();
 
     opencode_cmd(&xdg, &["--yes"]).failure();
-    assert!(!fs::read_to_string(&plugin).unwrap().contains(OPENCODE_MARKER), "refused: file untouched");
-    assert!(!opencode_tui_plugin(&xdg).exists(), "a refusal is all-or-nothing: the 2.x bridge is not written either");
+    assert!(
+        !fs::read_to_string(&plugin)
+            .unwrap()
+            .contains(OPENCODE_MARKER),
+        "refused: file untouched"
+    );
+    assert!(
+        !opencode_tui_plugin(&xdg).exists(),
+        "a refusal is all-or-nothing: the 2.x bridge is not written either"
+    );
 
     opencode_cmd(&xdg, &["--yes", "--force"]).success();
-    assert!(fs::read_to_string(&plugin).unwrap().contains(OPENCODE_MARKER));
+    assert!(fs::read_to_string(&plugin)
+        .unwrap()
+        .contains(OPENCODE_MARKER));
     let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
-    assert!(bak.exists(), "--force over a foreign file keeps a restore point");
+    assert!(
+        bak.exists(),
+        "--force over a foreign file keeps a restore point"
+    );
     assert!(opencode_tui_plugin(&xdg).exists());
 
     // Uninstall removes our bridges, but that restore point is the user's only
     // copy of their plugin — it must survive, and be mentioned.
-    let out = opencode_cmd(&xdg, &["--uninstall", "--yes"]).success().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--uninstall", "--yes"])
+        .success()
+        .get_output()
+        .clone();
     assert!(!plugin.exists());
-    assert_eq!(fs::read_to_string(&bak).unwrap(), "export const Other = async () => ({});\n");
+    assert_eq!(
+        fs::read_to_string(&bak).unwrap(),
+        "export const Other = async () => ({});\n"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(&format!("left {}", bak.display())), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("left {}", bak.display())),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1861,14 +2042,25 @@ fn setup_opencode_refuses_a_foreign_tui_plugin_unless_forced() {
     fs::create_dir_all(tui.parent().unwrap()).unwrap();
     fs::write(&tui, "export default { id: \"other\", setup() {} };\n").unwrap();
 
-    let out = opencode_cmd(&xdg, &["--yes"]).failure().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--yes"])
+        .failure()
+        .get_output()
+        .clone();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("zj-radar/tui.js"), "stderr:\n{stderr}");
-    assert!(!plugin.exists(), "a refusal is all-or-nothing: the 1.x bridge is not written either");
+    assert!(
+        !plugin.exists(),
+        "a refusal is all-or-nothing: the 1.x bridge is not written either"
+    );
 
     opencode_cmd(&xdg, &["--yes", "--force"]).success();
-    assert!(fs::read_to_string(&tui).unwrap().contains(OPENCODE_TUI_MARKER));
-    assert!(tui.with_file_name("tui.js.zj-radar.bak").exists(), "--force over a foreign file keeps a restore point");
+    assert!(fs::read_to_string(&tui)
+        .unwrap()
+        .contains(OPENCODE_TUI_MARKER));
+    assert!(
+        tui.with_file_name("tui.js.zj-radar.bak").exists(),
+        "--force over a foreign file keeps a restore point"
+    );
 }
 
 #[test]
@@ -1879,15 +2071,27 @@ fn setup_opencode_uninstall_removes_both_bridges_their_backups_and_the_dir() {
     fs::write(&plugin, format!("// {OPENCODE_MARKER}\n// stale ours\n")).unwrap();
     opencode_cmd(&xdg, &["--yes"]).success(); // stale-ours rewrite leaves a .bak
     let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
-    assert!(bak.exists(), "precondition: the rewrite backed up the stale bridge");
+    assert!(
+        bak.exists(),
+        "precondition: the rewrite backed up the stale bridge"
+    );
     assert!(tui.exists());
 
     opencode_cmd(&xdg, &["--uninstall", "--yes"]).success();
     assert!(!plugin.exists(), "uninstall removes the 1.x bridge");
-    assert!(!bak.exists(), "uninstall removes its backup too — a clean uninstall leaves nothing of ours");
+    assert!(
+        !bak.exists(),
+        "uninstall removes its backup too — a clean uninstall leaves nothing of ours"
+    );
     assert!(!tui.exists(), "uninstall removes the 2.x bridge");
-    assert!(!tui.parent().unwrap().exists(), "and its now-empty plugin directory");
-    assert!(plugin.parent().unwrap().exists(), "opencode's own plugins dir is not ours to remove");
+    assert!(
+        !tui.parent().unwrap().exists(),
+        "and its now-empty plugin directory"
+    );
+    assert!(
+        plugin.parent().unwrap().exists(),
+        "opencode's own plugins dir is not ours to remove"
+    );
 }
 
 #[test]
@@ -1901,7 +2105,10 @@ fn setup_opencode_uninstall_leaves_a_shared_plugin_dir_with_foreign_files() {
     opencode_cmd(&xdg, &["--uninstall", "--yes"]).success();
     assert!(!tui.exists());
     assert!(theirs.exists(), "a file we didn't write is left alone");
-    assert!(tui.parent().unwrap().exists(), "so the directory holding it stays too");
+    assert!(
+        tui.parent().unwrap().exists(),
+        "so the directory holding it stays too"
+    );
 }
 
 #[test]
@@ -1910,7 +2117,10 @@ fn setup_opencode_uninstall_without_consent_leaves_the_bridge() {
     opencode_cmd(&xdg, &["--yes"]).success();
 
     // Non-tty, no -y: same skip as every other setup write/remove.
-    let out = opencode_cmd(&xdg, &["--uninstall"]).success().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--uninstall"])
+        .success()
+        .get_output()
+        .clone();
     assert!(plugin.exists(), "declined uninstall must not delete");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("skipped"), "stdout:\n{stdout}");
@@ -1919,12 +2129,24 @@ fn setup_opencode_uninstall_without_consent_leaves_the_bridge() {
 #[test]
 fn setup_opencode_dry_run_writes_nothing() {
     let (xdg, plugin) = isolated_opencode_xdg();
-    let out = opencode_cmd(&xdg, &["--dry-run"]).success().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--dry-run"])
+        .success()
+        .get_output()
+        .clone();
     assert!(!plugin.exists());
-    assert!(!plugin.parent().unwrap().exists(), "dry-run must not create the plugins dir either");
+    assert!(
+        !plugin.parent().unwrap().exists(),
+        "dry-run must not create the plugins dir either"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(OPENCODE_MARKER), "dry-run prints the 1.x bridge:\n{stdout}");
-    assert!(stdout.contains(OPENCODE_TUI_MARKER), "dry-run prints the 2.x bridge:\n{stdout}");
+    assert!(
+        stdout.contains(OPENCODE_MARKER),
+        "dry-run prints the 1.x bridge:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(OPENCODE_TUI_MARKER),
+        "dry-run prints the 2.x bridge:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1933,17 +2155,38 @@ fn setup_opencode_check_reports_the_bridge_state() {
     // `opencode` binary item drops to a warn once our bridge is installed —
     // setup accepts a PATH-less opencode); the plugin items are what flip.
     let (xdg, _plugin) = isolated_opencode_xdg();
-    let out = opencode_cmd(&xdg, &["--check"]).failure().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--check"])
+        .failure()
+        .get_output()
+        .clone();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("missing plugin (opencode 1.x):"), "stdout:\n{stdout}");
-    assert!(stdout.contains("missing plugin (opencode 2.x):"), "stdout:\n{stdout}");
-    assert!(stdout.contains("`zj-radar setup opencode`"), "the remedy must be named:\n{stdout}");
+    assert!(
+        stdout.contains("missing plugin (opencode 1.x):"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("missing plugin (opencode 2.x):"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("`zj-radar setup opencode`"),
+        "the remedy must be named:\n{stdout}"
+    );
 
     opencode_cmd(&xdg, &["--yes"]).success();
-    let out = opencode_cmd(&xdg, &["--check"]).failure().get_output().clone();
+    let out = opencode_cmd(&xdg, &["--check"])
+        .failure()
+        .get_output()
+        .clone();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("ok plugin (opencode 1.x): zj-radar bridge plugin installed"), "stdout:\n{stdout}");
-    assert!(stdout.contains("ok plugin (opencode 2.x): zj-radar bridge plugin installed"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("ok plugin (opencode 1.x): zj-radar bridge plugin installed"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ok plugin (opencode 2.x): zj-radar bridge plugin installed"),
+        "stdout:\n{stdout}"
+    );
 }
 
 // ── pi: the vendored bridge extension under $PI_CODING_AGENT_DIR/extensions ──
@@ -1977,13 +2220,23 @@ fn setup_pi_installs_the_marked_extension_and_is_idempotent() {
     let (home, ext) = isolated_pi_home();
     pi_cmd(&home, &["--yes"]).success();
     let first = fs::read_to_string(&ext).unwrap();
-    assert!(first.lines().next().unwrap().contains(PI_MARKER), "{first:?}");
+    assert!(
+        first.lines().next().unwrap().contains(PI_MARKER),
+        "{first:?}"
+    );
 
     let out = pi_cmd(&home, &["--yes"]).success().get_output().clone();
-    assert_eq!(fs::read_to_string(&ext).unwrap(), first, "second run must be a no-op");
+    assert_eq!(
+        fs::read_to_string(&ext).unwrap(),
+        first,
+        "second run must be a no-op"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("already up to date"), "stdout:\n{stdout}");
-    assert!(!stdout.contains("restart pi"), "nothing written, so no restart hint:\n{stdout}");
+    assert!(
+        !stdout.contains("restart pi"),
+        "nothing written, so no restart hint:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1998,8 +2251,14 @@ fn setup_pi_honors_pi_coding_agent_dir_with_tilde() {
         .env("PATH", empty_path.path())
         .assert()
         .success();
-    assert!(home.path().join("custom-pi/extensions/zj-radar.js").exists());
-    assert!(!default_ext.exists(), "the override replaces the default dir");
+    assert!(home
+        .path()
+        .join("custom-pi/extensions/zj-radar.js")
+        .exists());
+    assert!(
+        !default_ext.exists(),
+        "the override replaces the default dir"
+    );
 }
 
 #[test]
@@ -2036,11 +2295,17 @@ fn setup_pi_refuses_a_foreign_file_unless_forced() {
     fs::write(&ext, "export default function (pi) {}\n").unwrap();
 
     pi_cmd(&home, &["--yes"]).failure();
-    assert!(!fs::read_to_string(&ext).unwrap().contains(PI_MARKER), "refused: file untouched");
+    assert!(
+        !fs::read_to_string(&ext).unwrap().contains(PI_MARKER),
+        "refused: file untouched"
+    );
 
     pi_cmd(&home, &["--yes", "--force"]).success();
     assert!(fs::read_to_string(&ext).unwrap().contains(PI_MARKER));
-    assert!(ext.with_file_name("zj-radar.js.zj-radar.bak").exists(), "--force keeps a restore point");
+    assert!(
+        ext.with_file_name("zj-radar.js.zj-radar.bak").exists(),
+        "--force keeps a restore point"
+    );
 }
 
 #[test]
@@ -2055,7 +2320,10 @@ fn setup_pi_uninstall_removes_only_ours_and_its_backup() {
     pi_cmd(&home, &["--uninstall", "--yes"]).success();
     assert!(!ext.exists());
     assert!(!bak.exists());
-    assert!(ext.parent().unwrap().exists(), "pi's own extensions dir is not ours to remove");
+    assert!(
+        ext.parent().unwrap().exists(),
+        "pi's own extensions dir is not ours to remove"
+    );
 
     fs::write(&ext, "export default function (pi) {}\n").unwrap();
     pi_cmd(&home, &["--uninstall", "--yes"]).success();
@@ -2073,11 +2341,21 @@ fn setup_pi_uninstall_keeps_the_backup_of_a_forced_over_foreign_file() {
     pi_cmd(&home, &["--yes", "--force"]).success();
     let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
 
-    let out = pi_cmd(&home, &["--uninstall", "--yes"]).success().get_output().clone();
+    let out = pi_cmd(&home, &["--uninstall", "--yes"])
+        .success()
+        .get_output()
+        .clone();
     assert!(!ext.exists(), "our bridge is removed");
-    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the foreign backup survives");
+    assert_eq!(
+        fs::read_to_string(&bak).unwrap(),
+        theirs,
+        "the foreign backup survives"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(&format!("left {}", bak.display())), "the kept backup is mentioned:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("left {}", bak.display())),
+        "the kept backup is mentioned:\n{stdout}"
+    );
 }
 
 #[test]
@@ -2086,7 +2364,10 @@ fn setup_pi_check_reports_missing_then_ok() {
     let out = pi_cmd(&home, &["--check"]).failure().get_output().clone();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("pi:"), "{stdout}");
-    assert!(stdout.contains("bridge extension not installed"), "{stdout}");
+    assert!(
+        stdout.contains("bridge extension not installed"),
+        "{stdout}"
+    );
     pi_cmd(&home, &["--yes"]).success();
     let out = pi_cmd(&home, &["--check"]).get_output().clone();
     assert!(String::from_utf8_lossy(&out.stdout).contains("zj-radar bridge extension installed"));
@@ -2123,10 +2404,20 @@ fn setup_zellij_rerun_with_a_different_wasm_replaces_the_installed_one() {
     setup_zellij_wasm(&config_dir, &a).success();
     assert_eq!(fs::read(&dest).unwrap(), b"\0asm-A");
 
-    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
-    assert_eq!(fs::read(&dest).unwrap(), b"\0asm-B", "second run must install the new wasm");
+    let out = setup_zellij_wasm(&config_dir, &b)
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(
+        fs::read(&dest).unwrap(),
+        b"\0asm-B",
+        "second run must install the new wasm"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("wasm updated"), "should say the wasm was refreshed: {stdout}");
+    assert!(
+        stdout.contains("wasm updated"),
+        "should say the wasm was refreshed: {stdout}"
+    );
 }
 
 #[test]
@@ -2139,8 +2430,15 @@ fn setup_zellij_rerun_with_the_same_wasm_does_not_rewrite() {
 
     setup_zellij_wasm(&config_dir, &a).success();
     let before = fs::metadata(&dest).unwrap().modified().unwrap();
-    let out = setup_zellij_wasm(&config_dir, &a).success().get_output().clone();
-    assert_eq!(fs::metadata(&dest).unwrap().modified().unwrap(), before, "identical bytes must not rewrite");
+    let out = setup_zellij_wasm(&config_dir, &a)
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(
+        fs::metadata(&dest).unwrap().modified().unwrap(),
+        before,
+        "identical bytes must not rewrite"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("wasm updated"), "{stdout}");
 }
@@ -2166,9 +2464,25 @@ fn setup_zellij_rerun_never_writes_through_a_symlinked_wasm() {
     fs::remove_file(&dest).unwrap();
     std::os::unix::fs::symlink(&store, &dest).unwrap();
 
-    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
-    assert!(fs::symlink_metadata(&dest).unwrap().file_type().is_symlink(), "symlink must survive");
-    assert_eq!(fs::read(&store).unwrap(), b"\0asm-STORE", "store target must be untouched");
+    let out = setup_zellij_wasm(&config_dir, &b)
+        .success()
+        .get_output()
+        .clone();
+    assert!(
+        fs::symlink_metadata(&dest)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "symlink must survive"
+    );
+    assert_eq!(
+        fs::read(&store).unwrap(),
+        b"\0asm-STORE",
+        "store target must be untouched"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Nix"), "should explain why the wasm was skipped: {stderr}");
+    assert!(
+        stderr.contains("Nix"),
+        "should explain why the wasm was skipped: {stderr}"
+    );
 }

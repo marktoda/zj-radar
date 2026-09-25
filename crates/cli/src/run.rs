@@ -30,11 +30,17 @@ const GRANT_HINT: &str = "First run: a permission prompt opens — press y to en
 /// (empty or all-symbol input), falls back to `"radar"` rather than emitting a
 /// degenerate all-dashes name.
 pub(crate) fn session_name(cwd: &Path, name_override: Option<&str>) -> String {
-    let base = name_override
-        .unwrap_or_else(|| cwd.file_name().and_then(|s| s.to_str()).unwrap_or(""));
+    let base =
+        name_override.unwrap_or_else(|| cwd.file_name().and_then(|s| s.to_str()).unwrap_or(""));
     let sanitized: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Trim the dash a trailing folded char leaves ("My Proj!" → "My-Proj",
     // not "My-Proj-") — pure cosmetics for the session list.
@@ -132,8 +138,12 @@ pub(crate) fn grant_float_args(session: &str, wasm_path: &Path) -> Vec<String> {
 
 /// Every permission the plugin requests on load — keep in lockstep with the
 /// `Effect::RequestPermission` list in `crates/plugin/src/lib.rs`.
-pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] =
-    ["ReadApplicationState", "ReadCliPipes", "ChangeApplicationState", "RunCommands"];
+pub(crate) const REQUIRED_PLUGIN_PERMISSIONS: [&str; 4] = [
+    "ReadApplicationState",
+    "ReadCliPipes",
+    "ChangeApplicationState",
+    "RunCommands",
+];
 
 /// True iff `permissions.kdl`'s EFFECTIVE grant for `wasm_abs_path` covers the
 /// full permission set the plugin requests. Zellij keys grants by the literal
@@ -157,7 +167,10 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
     let needle = format!("\"{wasm_abs_path}\"");
     let mut lines = permissions_kdl.lines().map(str::trim_start);
     let mut last: Option<Vec<String>> = None;
-    while let Some(header) = lines.by_ref().find(|l| l.starts_with(&needle) && l.contains('{')) {
+    while let Some(header) = lines
+        .by_ref()
+        .find(|l| l.starts_with(&needle) && l.contains('{'))
+    {
         let body = &header[header.find('{').map_or(0, |i| i + 1)..];
         last = Some(match body.find('}') {
             Some(end) => body[..end]
@@ -173,7 +186,9 @@ pub(crate) fn wasm_is_granted(permissions_kdl: &str, wasm_abs_path: &str) -> boo
         });
     }
     last.is_some_and(|granted| {
-        REQUIRED_PLUGIN_PERMISSIONS.iter().all(|required| granted.iter().any(|t| t == required))
+        REQUIRED_PLUGIN_PERMISSIONS
+            .iter()
+            .all(|required| granted.iter().any(|t| t == required))
     })
 }
 
@@ -189,7 +204,13 @@ pub(crate) fn shell_join(args: &[String]) -> String {
 }
 
 fn shell_quote(arg: &str) -> String {
-    let safe = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',' | b'@' | b'+');
+    let safe = |b: u8| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',' | b'@' | b'+'
+            )
+    };
     if !arg.is_empty() && arg.bytes().all(safe) {
         arg.to_string()
     } else {
@@ -207,7 +228,11 @@ pub(crate) fn owned_config_dir_in(data_dir: &Path) -> PathBuf {
 /// Zellij's `permissions.kdl` rooted under `cache_dir`. The sub-folder differs
 /// between macOS (`org.Zellij-Contributors.Zellij`) and Linux (`zellij`).
 pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
-    let folder = if is_macos { "org.Zellij-Contributors.Zellij" } else { "zellij" };
+    let folder = if is_macos {
+        "org.Zellij-Contributors.Zellij"
+    } else {
+        "zellij"
+    };
     cache_dir.join(folder).join("permissions.kdl")
 }
 
@@ -316,12 +341,18 @@ pub(crate) fn materialize(
         && layout_path.exists()
         && onboarding_layout_path.exists();
     if up_to_date {
-        return Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path });
+        return Ok(Materialized {
+            config_dir: dir.to_path_buf(),
+            wasm_path,
+        });
     }
 
     // The token sits inside a KDL string (`location="file:@WASM@"`), so the
     // path is escaped — a `"` in a data-dir path must not end the string.
-    let config = assets.config_template.replace("@WASM@", &crate::setup::kdl_string(&wasm_path.to_string_lossy()));
+    let config = assets.config_template.replace(
+        "@WASM@",
+        &crate::setup::kdl_string(&wasm_path.to_string_lossy()),
+    );
     // Write the embedded wasm if we have it; otherwise leave wasm_path for the
     // caller to populate (download). The `up_to_date` check above already gates
     // on wasm_path.exists(), so a not-yet-downloaded wasm never short-circuits.
@@ -332,7 +363,10 @@ pub(crate) fn materialize(
     atomic_write(&layout_path, assets.layout.as_bytes())?;
     atomic_write(&onboarding_layout_path, assets.onboarding_layout.as_bytes())?;
     atomic_write(&marker, marker_value.as_bytes())?;
-    Ok(Materialized { config_dir: dir.to_path_buf(), wasm_path })
+    Ok(Materialized {
+        config_dir: dir.to_path_buf(),
+        wasm_path,
+    })
 }
 
 // ── Embedded assets ──────────────────────────────────────────────────────────
@@ -491,7 +525,11 @@ fn session_is_live(name: &str) -> bool {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == name))
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.trim() == name)
+        })
 }
 
 /// True iff a session named `name` has a RUNNING server right now (not merely
@@ -589,7 +627,10 @@ pub fn run(opts: RunOptions) {
     let materialized = match materialize(&dir, env!("CARGO_PKG_VERSION"), &embedded_assets()) {
         Ok(m) => m,
         Err(e) => {
-            crate::exit::fail_report("zj-radar", format!("failed to set up config dir {}: {e}", dir.display()));
+            crate::exit::fail_report(
+                "zj-radar",
+                format!("failed to set up config dir {}: {e}", dir.display()),
+            );
             return;
         }
     };
@@ -605,12 +646,15 @@ pub fn run(opts: RunOptions) {
     // Atomic (read + temp-file rename via `atomic_write`), not `fs::copy` onto
     // the destination: a live session may load the wasm mid-copy otherwise.
     if let Some(wasm) = std::env::var_os("ZJ_RADAR_WASM").filter(|w| !w.is_empty()) {
-        let copied = std::fs::read(&wasm)
-            .and_then(|bytes| atomic_write(&materialized.wasm_path, &bytes));
+        let copied =
+            std::fs::read(&wasm).and_then(|bytes| atomic_write(&materialized.wasm_path, &bytes));
         if let Err(e) = copied {
             crate::exit::fail_report(
                 "zj-radar",
-                format!("copying ZJ_RADAR_WASM ({}) failed — {e}", Path::new(&wasm).display()),
+                format!(
+                    "copying ZJ_RADAR_WASM ({}) failed — {e}",
+                    Path::new(&wasm).display()
+                ),
             );
             return;
         }
@@ -795,12 +839,21 @@ mod tests {
 
     #[test]
     fn session_name_sanitizes_falls_back_and_overrides() {
-        assert_eq!(session_name(Path::new("/Users/m/dev/zj-radar"), None), "zj-radar");
-        assert_eq!(session_name(Path::new("/Users/m/dev/My Proj!"), None), "My-Proj");
+        assert_eq!(
+            session_name(Path::new("/Users/m/dev/zj-radar"), None),
+            "zj-radar"
+        );
+        assert_eq!(
+            session_name(Path::new("/Users/m/dev/My Proj!"), None),
+            "My-Proj"
+        );
         assert_eq!(session_name(Path::new("/"), None), "radar");
         // All-symbol basename: nothing alphanumeric survives -> fall back, not "---".
         assert_eq!(session_name(Path::new("/Users/m/%%%"), None), "radar");
-        assert_eq!(session_name(Path::new("/Users/m/dev/foo"), Some("bar")), "bar");
+        assert_eq!(
+            session_name(Path::new("/Users/m/dev/foo"), Some("bar")),
+            "bar"
+        );
     }
 
     #[test]
@@ -823,15 +876,30 @@ mod tests {
         // `--print-cmd` output, which can't carry env changes.
         assert_eq!(
             create_session_args(Path::new("/cfg"), "foo", "radar"),
-            vec!["--config", "/cfg/config.kdl", "--config-dir", "/cfg",
-                 "--session", "foo", "--new-session-with-layout", "radar"]
+            vec![
+                "--config",
+                "/cfg/config.kdl",
+                "--config-dir",
+                "/cfg",
+                "--session",
+                "foo",
+                "--new-session-with-layout",
+                "radar"
+            ]
         );
         // The owned config on attach is load-bearing: a resurrected session is
         // a NEW server whose config (Ctrl-y grant keybind included) comes from
         // the attaching client, not from the session's creation.
         assert_eq!(
             attach_session_args(Path::new("/cfg"), "foo"),
-            vec!["--config", "/cfg/config.kdl", "--config-dir", "/cfg", "attach", "foo"]
+            vec![
+                "--config",
+                "/cfg/config.kdl",
+                "--config-dir",
+                "/cfg",
+                "attach",
+                "foo"
+            ]
         );
     }
 
@@ -839,14 +907,21 @@ mod tests {
     fn running_line_parse_scans_only_the_tail_for_exited() {
         // A dead session appends `(EXITED - attach to resurrect)` after the name.
         assert!(!line_is_running_session(
-            "proj [Created 5m ago] (EXITED - attach to resurrect)", "proj"
+            "proj [Created 5m ago] (EXITED - attach to resurrect)",
+            "proj"
         ));
         // Live lines — bare or `(current)`-tagged — are running.
         assert!(line_is_running_session("proj [Created 2s ago]", "proj"));
-        assert!(line_is_running_session("proj [Created 5m ago] (current)", "proj"));
+        assert!(line_is_running_session(
+            "proj [Created 5m ago] (current)",
+            "proj"
+        ));
         // Hostile-but-legal name: session names allow uppercase, so a LIVE
         // session literally named `EXITED-tests` must not read as dead.
-        assert!(line_is_running_session("EXITED-tests [Created 2s ago]", "EXITED-tests"));
+        assert!(line_is_running_session(
+            "EXITED-tests [Created 2s ago]",
+            "EXITED-tests"
+        ));
         // The name must match the whole first token, and only its own line.
         assert!(!line_is_running_session("proj-2 [Created 5m ago]", "proj"));
         assert!(!line_is_running_session("other [Created 5m ago]", "proj"));
@@ -857,7 +932,9 @@ mod tests {
         assert!(session_layout_defers(
             "layout {\n  pane {\n    plugin location=\"file:/x.wasm\" {\n      defer_permission \"true\"\n    }\n  }\n}\n"
         ));
-        assert!(!session_layout_defers("layout { pane { plugin location=\"file:/x.wasm\" } }\n"));
+        assert!(!session_layout_defers(
+            "layout { pane { plugin location=\"file:/x.wasm\" } }\n"
+        ));
         // The granted-era plain layout never carries the flag.
         assert!(!session_layout_defers(LAYOUT));
         // Our onboarding layout always does — the pair this probe exists for.
@@ -889,17 +966,25 @@ mod tests {
     fn shell_join_quotes_what_a_shell_would_split_or_expand() {
         let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Plain flags and paths pass through bare.
-        assert_eq!(shell_join(&s(&["attach", "--config-dir", "/cfg", "foo"])),
-                   "attach --config-dir /cfg foo");
+        assert_eq!(
+            shell_join(&s(&["attach", "--config-dir", "/cfg", "foo"])),
+            "attach --config-dir /cfg foo"
+        );
         // The macOS owned-config path — the case this helper exists for.
         assert_eq!(
-            shell_join(&s(&["--config-dir", "/Users/m/Library/Application Support/zj-radar/zellij"])),
+            shell_join(&s(&[
+                "--config-dir",
+                "/Users/m/Library/Application Support/zj-radar/zellij"
+            ])),
             "--config-dir '/Users/m/Library/Application Support/zj-radar/zellij'"
         );
         // Embedded single quote uses the POSIX '\'' idiom; empty arg stays visible.
         assert_eq!(shell_join(&s(&["it's", ""])), r"'it'\''s' ''");
         // Shell metacharacters (globs, vars, semicolons) get quoted, not trusted.
-        assert_eq!(shell_join(&s(&["a b", "$HOME", "*;rm"])), "'a b' '$HOME' '*;rm'");
+        assert_eq!(
+            shell_join(&s(&["a b", "$HOME", "*;rm"])),
+            "'a b' '$HOME' '*;rm'"
+        );
     }
 
     #[test]
@@ -909,9 +994,15 @@ mod tests {
         assert!(!wasm_is_granted(SAMPLE, "/some/other/zj_radar.wasm"));
         assert!(!wasm_is_granted("", p));
         // A quoted path with no opening brace is not a grant block.
-        assert!(!wasm_is_granted("\"/x/zj_radar.wasm\"\n", "/x/zj_radar.wasm"));
+        assert!(!wasm_is_granted(
+            "\"/x/zj_radar.wasm\"\n",
+            "/x/zj_radar.wasm"
+        ));
         // The closing quote in the needle prevents matching a longer path it prefixes.
-        assert!(!wasm_is_granted("\"/x/zj_radar.wasm.bak\" {\n}\n", "/x/zj_radar.wasm"));
+        assert!(!wasm_is_granted(
+            "\"/x/zj_radar.wasm.bak\" {\n}\n",
+            "/x/zj_radar.wasm"
+        ));
     }
 
     #[test]
@@ -937,8 +1028,14 @@ mod tests {
             "\"{p}\" {{\n    ReadApplicationState\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n}}\n"
         );
         let partial = format!("\"{p}\" {{\n    ReadApplicationState\n}}\n");
-        assert!(wasm_is_granted(&format!("{partial}{full}"), p), "stale partial + later full = granted");
-        assert!(!wasm_is_granted(&format!("{full}{partial}"), p), "later partial overrides the full block");
+        assert!(
+            wasm_is_granted(&format!("{partial}{full}"), p),
+            "stale partial + later full = granted"
+        );
+        assert!(
+            !wasm_is_granted(&format!("{full}{partial}"), p),
+            "later partial overrides the full block"
+        );
     }
 
     #[test]
@@ -950,7 +1047,10 @@ mod tests {
         let inline_full = format!(
             "\"{p}\" {{ ReadApplicationState; ReadCliPipes; ChangeApplicationState; RunCommands }}\n"
         );
-        assert!(wasm_is_granted(&inline_full, p), "inline full block is a grant");
+        assert!(
+            wasm_is_granted(&inline_full, p),
+            "inline full block is a grant"
+        );
         let inline_partial_then_foreign = format!(
             "\"{p}\" {{ ReadApplicationState }}\n\
              \"/other.wasm\" {{\n    ReadCliPipes\n    ChangeApplicationState\n    RunCommands\n    ReadApplicationState\n}}\n"
@@ -963,7 +1063,10 @@ mod tests {
 
     #[test]
     fn locators_compose_expected_paths() {
-        assert_eq!(owned_config_dir_in(Path::new("/data")), Path::new("/data/zj-radar/zellij"));
+        assert_eq!(
+            owned_config_dir_in(Path::new("/data")),
+            Path::new("/data/zj-radar/zellij")
+        );
         assert_eq!(
             permissions_path_in(Path::new("/cache"), true),
             Path::new("/cache/org.Zellij-Contributors.Zellij/permissions.kdl")
@@ -996,11 +1099,23 @@ mod tests {
         let m = materialize(&dir, "0.1.0", &assets).unwrap();
         // No embedded wasm → materialize must not fabricate the file; `run`
         // downloads it. Config/layout/marker are still written.
-        assert!(!m.wasm_path.exists(), "must not create a wasm file when none is embedded");
+        assert!(
+            !m.wasm_path.exists(),
+            "must not create a wasm file when none is embedded"
+        );
         assert!(dir.join("config.kdl").exists(), "config still written");
-        assert!(dir.join("layouts/radar.kdl").exists(), "layout still written");
-        assert!(dir.join("layouts/radar-onboarding.kdl").exists(), "onboarding layout written");
-        assert!(dir.join(".zj-radar-version").exists(), "marker still written");
+        assert!(
+            dir.join("layouts/radar.kdl").exists(),
+            "layout still written"
+        );
+        assert!(
+            dir.join("layouts/radar-onboarding.kdl").exists(),
+            "onboarding layout written"
+        );
+        assert!(
+            dir.join(".zj-radar-version").exists(),
+            "marker still written"
+        );
     }
 
     #[test]
@@ -1029,13 +1144,18 @@ mod tests {
         let dir = d.path().join("we\"ird").join("zellij");
         let m = materialize(&dir, "0.1.0", &test_assets()).unwrap();
         let cfg = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
-        let doc: kdl::KdlDocument = cfg.parse().unwrap_or_else(|e| panic!("config must parse ({e}):\n{cfg}"));
+        let doc: kdl::KdlDocument = cfg
+            .parse()
+            .unwrap_or_else(|e| panic!("config must parse ({e}):\n{cfg}"));
         let radar = doc
             .get("plugins")
             .and_then(|p| p.children())
             .and_then(|c| c.get("radar"))
             .expect("radar alias");
-        let location = radar.get("location").and_then(|v| v.as_string()).expect("location string");
+        let location = radar
+            .get("location")
+            .and_then(|v| v.as_string())
+            .expect("location string");
         assert_eq!(location, format!("file:{}", m.wasm_path.display()));
     }
 
@@ -1065,7 +1185,10 @@ mod tests {
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
         std::fs::remove_file(dir.join("config.kdl")).unwrap();
         materialize(&dir, "0.1.0", &test_assets()).unwrap();
-        assert!(dir.join("config.kdl").exists(), "deleted file must be restored");
+        assert!(
+            dir.join("config.kdl").exists(),
+            "deleted file must be restored"
+        );
     }
 
     #[test]
@@ -1086,18 +1209,33 @@ mod tests {
         // marker really means "same version, same assets".
         let base = asset_marker("0.1.0", &test_assets());
         assert_eq!(base, asset_marker("0.1.0", &test_assets()));
-        assert!(base.starts_with("0.1.0-"), "marker leads with the crate version: {base}");
+        assert!(
+            base.starts_with("0.1.0-"),
+            "marker leads with the crate version: {base}"
+        );
         // Structural staleness: editing ANY of the three embedded text assets
         // changes the marker — no release-discipline version bump required.
         let mut config_edit = test_assets();
         config_edit.config_template = "plugins { radar location=\"file:@WASM@\" { edited } }\n";
-        assert_ne!(base, asset_marker("0.1.0", &config_edit), "config.kdl edit must change the marker");
+        assert_ne!(
+            base,
+            asset_marker("0.1.0", &config_edit),
+            "config.kdl edit must change the marker"
+        );
         let mut layout_edit = test_assets();
         layout_edit.layout = "layout { tab { pane; pane } }\n";
-        assert_ne!(base, asset_marker("0.1.0", &layout_edit), "radar.kdl edit must change the marker");
+        assert_ne!(
+            base,
+            asset_marker("0.1.0", &layout_edit),
+            "radar.kdl edit must change the marker"
+        );
         let mut onboarding_edit = test_assets();
         onboarding_edit.onboarding_layout = "layout { tab { pane } }\n";
-        assert_ne!(base, asset_marker("0.1.0", &onboarding_edit), "onboarding edit must change the marker");
+        assert_ne!(
+            base,
+            asset_marker("0.1.0", &onboarding_edit),
+            "onboarding edit must change the marker"
+        );
         // And a plain version bump still re-materializes, as before.
         assert_ne!(base, asset_marker("0.2.0", &test_assets()));
     }
@@ -1121,9 +1259,18 @@ mod tests {
 
     #[test]
     fn bundled_layout_has_swaps_and_alias() {
-        assert!(LAYOUT.contains("swap_tiled_layout"), "rail layout must declare swaps");
-        assert!(LAYOUT.contains("location=\"radar\""), "rail must use the radar alias");
-        assert!(CONFIG_TEMPLATE.contains("@WASM@"), "config template needs the @WASM@ token");
+        assert!(
+            LAYOUT.contains("swap_tiled_layout"),
+            "rail layout must declare swaps"
+        );
+        assert!(
+            LAYOUT.contains("location=\"radar\""),
+            "rail must use the radar alias"
+        );
+        assert!(
+            CONFIG_TEMPLATE.contains("@WASM@"),
+            "config template needs the @WASM@ token"
+        );
     }
 
     #[test]
@@ -1133,12 +1280,18 @@ mod tests {
         // because `attach_session_args` passes `--config-dir` back to this
         // owned config — creation and every later attach/resurrect alike. It
         // must launch the radar plugin floating in the onboarding role.
-        assert!(CONFIG_TEMPLATE.contains("bind \"Ctrl y\""), "config must bind the grant escape hatch");
+        assert!(
+            CONFIG_TEMPLATE.contains("bind \"Ctrl y\""),
+            "config must bind the grant escape hatch"
+        );
         assert!(
             CONFIG_TEMPLATE.contains("LaunchOrFocusPlugin \"radar\""),
             "keybind must launch the radar plugin"
         );
-        assert!(CONFIG_TEMPLATE.contains("floating true"), "grant pane must be floating to be legible");
+        assert!(
+            CONFIG_TEMPLATE.contains("floating true"),
+            "grant pane must be floating to be legible"
+        );
         assert!(
             CONFIG_TEMPLATE.contains("role \"onboarding\""),
             "grant float must use the onboarding role so it owns the prompt and closes on grant"
@@ -1172,7 +1325,9 @@ mod tests {
         // binds alone can't keep. `JumpHint` stays config-gated (default
         // hidden) for users whose setups do deliver the chord.
         assert!(
-            CONFIG_TEMPLATE.lines().all(|l| !l.trim_start().starts_with("jump_hint")),
+            CONFIG_TEMPLATE
+                .lines()
+                .all(|l| !l.trim_start().starts_with("jump_hint")),
             "the alias must not advertise the alt-[n] chord — interception \
              upstream of Zellij makes the hint machine-dependent"
         );
@@ -1218,14 +1373,17 @@ mod tests {
             inside_zellij: false,
             resurrect_layout_defers: false,
             permissions_kdl: granted.then(|| {
-                format!("\"{wasm}\" {{\n    {}\n}}\n", REQUIRED_PLUGIN_PERMISSIONS.join("\n    "))
+                format!(
+                    "\"{wasm}\" {{\n    {}\n}}\n",
+                    REQUIRED_PLUGIN_PERMISSIONS.join("\n    ")
+                )
             }),
             producers: ProducerTexts {
-                codex_hooks:         codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
-                claude_plugins:      claude.then(|| "zj-radar-claude".to_string()),
-                opencode_plugin:     opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
+                codex_hooks: codex.then(|| format!("{CODEX_HOOK_MARKER} zj-radar notify codex")),
+                claude_plugins: claude.then(|| "zj-radar-claude".to_string()),
+                opencode_plugin: opencode.then(|| format!("// {OPENCODE_PLUGIN_MARKER}\n")),
                 opencode_tui_plugin: None,
-                pi_extension:        None,
+                pi_extension: None,
             },
         }
     }
@@ -1248,9 +1406,16 @@ mod tests {
         let p = plan_run(&facts(false, true, false));
         assert_eq!(
             p.args,
-            create_session_args(Path::new("/data/zj-radar/zellij"), "proj", "radar-onboarding")
+            create_session_args(
+                Path::new("/data/zj-radar/zellij"),
+                "proj",
+                "radar-onboarding"
+            )
         );
-        assert!(p.pre_attach.is_none(), "create path carries the float in its layout, not a dispatch");
+        assert!(
+            p.pre_attach.is_none(),
+            "create path carries the float in its layout, not a dispatch"
+        );
     }
 
     #[test]
@@ -1258,7 +1423,10 @@ mod tests {
         let mut f = facts(true, true, false);
         f.session_exists = true;
         let p = plan_run(&f);
-        assert_eq!(p.args, attach_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
+        assert_eq!(
+            p.args,
+            attach_session_args(Path::new("/data/zj-radar/zellij"), "proj")
+        );
     }
 
     #[test]
@@ -1284,7 +1452,10 @@ mod tests {
 
         f.session_exists = false;
         f.session_owned = false;
-        assert!(!plan_run(&f).foreign_session, "create path is never foreign");
+        assert!(
+            !plan_run(&f).foreign_session,
+            "create path is never foreign"
+        );
     }
 
     #[test]
@@ -1297,7 +1468,11 @@ mod tests {
 
         let p = plan_run(&facts4(true, false, false, false));
         assert_eq!(p.advisories.len(), 1, "{:?}", p.advisories);
-        assert!(p.advisories[0].contains("zj-radar setup opencode"), "{}", p.advisories[0]);
+        assert!(
+            p.advisories[0].contains("zj-radar setup opencode"),
+            "{}",
+            p.advisories[0]
+        );
     }
 
     #[test]
@@ -1323,10 +1498,19 @@ mod tests {
         );
         assert_eq!(
             p.pre_attach.as_deref(),
-            Some(grant_float_args("proj", Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")).as_slice()),
+            Some(
+                grant_float_args(
+                    "proj",
+                    Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")
+                )
+                .as_slice()
+            ),
             "live attach dispatches the grant float before attaching"
         );
-        assert!(p.post_attach_watch.is_none(), "a live server needs no post-attach watch");
+        assert!(
+            p.post_attach_watch.is_none(),
+            "a live server needs no post-attach watch"
+        );
     }
 
     #[test]
@@ -1338,11 +1522,23 @@ mod tests {
         f.session_exists = true;
         f.session_running = false; // resurrectable, not running
         let p = plan_run(&f);
-        assert_eq!(p.args, attach_session_args(Path::new("/data/zj-radar/zellij"), "proj"));
-        assert!(p.pre_attach.is_none(), "no live server → nothing to dispatch to yet");
+        assert_eq!(
+            p.args,
+            attach_session_args(Path::new("/data/zj-radar/zellij"), "proj")
+        );
+        assert!(
+            p.pre_attach.is_none(),
+            "no live server → nothing to dispatch to yet"
+        );
         assert_eq!(
             p.post_attach_watch.as_deref(),
-            Some(grant_float_args("proj", Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")).as_slice()),
+            Some(
+                grant_float_args(
+                    "proj",
+                    Path::new("/data/zj-radar/zellij/plugins/zj_radar.wasm")
+                )
+                .as_slice()
+            ),
             "dead ungranted attach must plan the post-resurrect float dispatch"
         );
     }
@@ -1359,7 +1555,10 @@ mod tests {
         f.session_running = false;
         f.resurrect_layout_defers = true;
         let p = plan_run(&f);
-        assert!(p.post_attach_watch.is_some(), "granted + deferring layout still needs the float");
+        assert!(
+            p.post_attach_watch.is_some(),
+            "granted + deferring layout still needs the float"
+        );
         // Same facts but a healthy (non-deferring) cached layout: no watch, no
         // float flash on plain granted resurrects.
         f.resurrect_layout_defers = false;
@@ -1383,8 +1582,14 @@ mod tests {
         let p = plan_run(&facts(false, true, false));
         assert_eq!(p.advisories.len(), 1);
         assert!(p.advisories[0].contains("press y"), "names the grant key");
-        assert!(p.advisories[0].contains("Ctrl-y"), "names the resurrect fallback");
-        assert!(!p.advisories[0].contains("center"), "no stale center-float promise");
+        assert!(
+            p.advisories[0].contains("Ctrl-y"),
+            "names the resurrect fallback"
+        );
+        assert!(
+            !p.advisories[0].contains("center"),
+            "no stale center-float promise"
+        );
     }
 
     #[test]
@@ -1404,7 +1609,10 @@ mod tests {
     fn plan_run_advises_both_when_nothing_set_up() {
         let p = plan_run(&facts(false, false, false));
         assert_eq!(p.advisories.len(), 2);
-        assert!(p.advisories[0].contains("press y"), "grant hint comes first");
+        assert!(
+            p.advisories[0].contains("press y"),
+            "grant hint comes first"
+        );
         assert!(p.advisories[1].contains("zj-radar setup"));
     }
 }

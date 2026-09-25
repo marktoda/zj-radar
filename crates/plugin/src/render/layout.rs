@@ -89,10 +89,7 @@ pub(crate) fn plan_overflow(rows: &[RowMeta], body_budget: usize) -> (Vec<(usize
         .filter(|(_, r)| r.status != Status::Idle)
         .map(|(i, _)| i)
         .collect();
-    let folded_count = rows
-        .iter()
-        .filter(|r| r.status == Status::Idle)
-        .count();
+    let folded_count = rows.iter().filter(|r| r.status == Status::Idle).count();
 
     // Each kept row starts at its full (uncompressed) line count.
     let mut planned: Vec<(usize, usize)> = non_idle_idx
