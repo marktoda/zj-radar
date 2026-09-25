@@ -59,6 +59,27 @@ pub(crate) fn remove_backup_if_ours(path: &std::path::Path, is_ours: fn(&str) ->
     }
 }
 
+/// Write the embedded bridge over `path` (holding `existing`) — the vendored
+/// counterpart of [`super::backup_then_write`]. The `.bak` exists to protect
+/// content that is not ours, so one rule on top: when the file being replaced
+/// IS ours and a `.bak` that is NOT ours already sits beside it (what an
+/// earlier `--force` over the user's own file left), skip the backup rather
+/// than copy our bridge over the user's only copy of theirs — an
+/// `--uninstall` would then read the `.bak` as ours and delete it.
+pub(crate) fn write_bridge(
+    path: &std::path::Path,
+    contents: &str,
+    existing: &Existing,
+    is_ours: fn(&str) -> bool,
+) -> std::io::Result<()> {
+    let replacing_ours = existing.text().is_some_and(is_ours);
+    let bak = super::path_with_suffix(path, super::BACKUP_SUFFIX);
+    if replacing_ours && plan_uninstall(&read_existing(&bak), is_ours) == UninstallPlan::NotOurs {
+        return crate::fsutil::atomic_write(path, contents.as_bytes());
+    }
+    super::backup_then_write(path, contents)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InstallPlan {
     /// Ours and byte-identical to the embedded bridge.

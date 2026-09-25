@@ -8,7 +8,7 @@
 
 use super::*;
 use super::detect::opencode_plugin_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -186,7 +186,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
         return;
     }
     for b in &to_write {
-        if let Err(e) = backup_then_write(&b.path, b.embedded) {
+        if let Err(e) = write_bridge(&b.path, b.embedded, &b.existing, opencode_plugin_is_ours) {
             crate::exit::fail_report("opencode", format!("write failed — {e}"));
             return;
         }

@@ -5,7 +5,7 @@
 
 use super::*;
 use super::detect::pi_extension_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -124,7 +124,7 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
                 println!("pi: skipped (declined)");
                 return;
             }
-            if let Err(e) = backup_then_write(&path, PI_EXTENSION_JS) {
+            if let Err(e) = write_bridge(&path, PI_EXTENSION_JS, &existing, pi_extension_is_ours) {
                 crate::exit::fail_report("pi", format!("write failed — {e}"));
                 return;
             }

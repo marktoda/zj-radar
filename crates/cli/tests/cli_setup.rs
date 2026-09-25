@@ -2081,6 +2081,50 @@ fn setup_pi_uninstall_keeps_the_backup_of_a_forced_over_foreign_file() {
 }
 
 #[test]
+fn setup_pi_rewrite_after_force_never_clobbers_the_foreign_backup() {
+    // `--force` over the user's own zj-radar.js leaves THEIR file as the .bak.
+    // A later rewrite of our (now stale) bridge — e.g. via `zj-radar update` —
+    // must not copy our file over it, or `--uninstall` would read the .bak as
+    // ours and delete the user's only copy.
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    let theirs = "// my own extension\n";
+    fs::write(&ext, theirs).unwrap();
+    pi_cmd(&home, &["--yes", "--force"]).success();
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs);
+
+    let mut stale = fs::read_to_string(&ext).unwrap();
+    stale.push_str("// stale\n");
+    fs::write(&ext, stale).unwrap();
+    pi_cmd(&home, &["--yes"]).success();
+    assert!(!fs::read_to_string(&ext).unwrap().contains("// stale"), "the stale bridge was rewritten");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the rewrite must not clobber the foreign backup");
+
+    pi_cmd(&home, &["--uninstall", "--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "uninstall keeps the user's only copy");
+}
+
+#[test]
+fn setup_opencode_rewrite_after_force_never_clobbers_the_foreign_backup() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    let theirs = "export const Mine = async () => ({});\n";
+    fs::write(&plugin, theirs).unwrap();
+    opencode_cmd(&xdg, &["--yes", "--force"]).success();
+    let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
+
+    let mut stale = fs::read_to_string(&plugin).unwrap();
+    stale.push_str("// stale\n");
+    fs::write(&plugin, stale).unwrap();
+    opencode_cmd(&xdg, &["--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the rewrite must not clobber the foreign backup");
+
+    opencode_cmd(&xdg, &["--uninstall", "--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "uninstall keeps the user's only copy");
+}
+
+#[test]
 fn setup_pi_check_reports_missing_then_ok() {
     let (home, _ext) = isolated_pi_home();
     let out = pi_cmd(&home, &["--check"]).failure().get_output().clone();
