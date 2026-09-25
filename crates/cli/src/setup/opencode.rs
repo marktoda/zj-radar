@@ -8,7 +8,7 @@
 
 use super::*;
 use super::detect::opencode_plugin_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, dry_run_backup_line, kept_backup_line, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -186,7 +186,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
         return;
     }
     for b in &to_write {
-        if let Err(e) = backup_then_write(&b.path, b.embedded) {
+        if let Err(e) = write_bridge(&b.path, b.embedded, &b.existing, opencode_plugin_is_ours) {
             crate::exit::fail_report("opencode", format!("write failed — {e}"));
             return;
         }
@@ -215,6 +215,9 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
     let listed = paths_list(to_remove.iter().map(|b| b.path.clone()));
     if opts.dry_run {
         println!("--- would remove {listed} (dry-run) ---");
+        for line in to_remove.iter().filter_map(|b| dry_run_backup_line("opencode", &b.path, opencode_plugin_is_ours)) {
+            println!("{line}");
+        }
         return;
     }
     // Same consent step as every other setup write/remove: a non-tty run
@@ -233,7 +236,7 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
         // uninstall leaves nothing of zj-radar behind); a foreign one — what
         // `--force` replaced — is the user's only copy, so it stays.
         if let Some(bak) = remove_backup_if_ours(&b.path, opencode_plugin_is_ours) {
-            println!("opencode: left {} (not ours — the file `--force` replaced)", bak.display());
+            println!("{}", kept_backup_line("opencode", &bak, &b.path, false));
         }
         // The 2.x plugin directory is ours only while it held our file and
         // now holds nothing; `remove_dir` refuses a non-empty dir, which is

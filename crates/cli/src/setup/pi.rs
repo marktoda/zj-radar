@@ -5,7 +5,7 @@
 
 use super::*;
 use super::detect::pi_extension_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, dry_run_backup_line, kept_backup_line, remove_backup_if_ours, write_bridge, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -85,7 +85,12 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
         match plan_uninstall(&existing, pi_extension_is_ours) {
             UninstallPlan::Absent => println!("pi: extension not installed ({})", path.display()),
             UninstallPlan::NotOurs => println!("pi: extension not ours (marker absent) — leaving {}", path.display()),
-            UninstallPlan::Remove if opts.dry_run => println!("--- would remove {} (dry-run) ---", path.display()),
+            UninstallPlan::Remove if opts.dry_run => {
+                println!("--- would remove {} (dry-run) ---", path.display());
+                if let Some(line) = dry_run_backup_line("pi", &path, pi_extension_is_ours) {
+                    println!("{line}");
+                }
+            }
             UninstallPlan::Remove => {
                 if !confirm(&format!("Remove {}?", path.display()), opts.yes, opts.is_tty) {
                     println!("pi: skipped (declined)");
@@ -99,7 +104,7 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
                 // Its restore point goes too when ours (a stale-ours rewrite); a
                 // foreign one — what `--force` replaced — is the user's only copy.
                 if let Some(bak) = remove_backup_if_ours(&path, pi_extension_is_ours) {
-                    println!("pi: left {} (not ours — the file `--force` replaced)", bak.display());
+                    println!("{}", kept_backup_line("pi", &bak, &path, false));
                 }
             }
         }
@@ -124,7 +129,7 @@ pub(crate) fn setup_pi(uninstall: bool, opts: BridgeSetupOpts) {
                 println!("pi: skipped (declined)");
                 return;
             }
-            if let Err(e) = backup_then_write(&path, PI_EXTENSION_JS) {
+            if let Err(e) = write_bridge(&path, PI_EXTENSION_JS, &existing, pi_extension_is_ours) {
                 crate::exit::fail_report("pi", format!("write failed — {e}"));
                 return;
             }

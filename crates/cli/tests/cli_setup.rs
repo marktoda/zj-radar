@@ -479,6 +479,30 @@ fn bare_check_includes_a_path_less_pi_whose_bridge_is_installed() {
     assert!(stdout.contains("ok extension"), "{stdout}");
 }
 
+#[test]
+fn bare_check_warns_not_fails_for_a_path_less_codex_whose_hooks_are_installed() {
+    // `setup codex` accepts a Codex with no binary on PATH (its hooks.json on
+    // disk is the signal); the doctor must then warn about the binary, like
+    // the pi/opencode bridges, instead of reporting it Missing.
+    let home = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::write(home.path().join(".codex/hooks.json"), "{}").unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("HOME", home.path())
+        .env_remove("CODEX_HOME")
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+    let output = bare_check(&home, empty_path.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("codex:"), "{stdout}");
+    assert!(stdout.contains("warn codex binary: not found on PATH"), "{stdout}");
+    assert!(!stdout.contains("missing codex binary"), "{stdout}");
+}
+
 // ── Layout injection tests ────────────────────────────────────────────────────
 //
 // `setup zellij --inject` (no --wasm / --download) takes the inject-only path:
@@ -1843,13 +1867,20 @@ fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
     assert!(bak.exists(), "--force over a foreign file keeps a restore point");
     assert!(opencode_tui_plugin(&xdg).exists());
 
+    // The dry run already names the backup it would leave.
+    let out = opencode_cmd(&xdg, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would leave {}", bak.display())), "stdout:\n{stdout}");
+
     // Uninstall removes our bridges, but that restore point is the user's only
-    // copy of their plugin — it must survive, and be mentioned.
+    // copy of their plugin — it must survive, and be mentioned with its
+    // restore command.
     let out = opencode_cmd(&xdg, &["--uninstall", "--yes"]).success().get_output().clone();
     assert!(!plugin.exists());
     assert_eq!(fs::read_to_string(&bak).unwrap(), "export const Other = async () => ({});\n");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(&format!("left {}", bak.display())), "stdout:\n{stdout}");
+    assert!(stdout.contains(&format!("`mv {} {}` to restore it", bak.display(), plugin.display())), "stdout:\n{stdout}");
 }
 
 #[test]
@@ -2073,11 +2104,77 @@ fn setup_pi_uninstall_keeps_the_backup_of_a_forced_over_foreign_file() {
     pi_cmd(&home, &["--yes", "--force"]).success();
     let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
 
+    // The dry run names the backup it would leave, and how to restore it.
+    let out = pi_cmd(&home, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would leave {}", bak.display())), "stdout:\n{stdout}");
+    assert!(ext.exists(), "dry-run removes nothing");
+
     let out = pi_cmd(&home, &["--uninstall", "--yes"]).success().get_output().clone();
     assert!(!ext.exists(), "our bridge is removed");
     assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the foreign backup survives");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(&format!("left {}", bak.display())), "the kept backup is mentioned:\n{stdout}");
+    let restore = format!("`mv {} {}` to restore it", bak.display(), ext.display());
+    assert!(stdout.contains(&restore), "the restore command is spelled out:\n{stdout}");
+}
+
+#[test]
+fn setup_pi_uninstall_dry_run_names_our_backup_it_would_remove() {
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    fs::write(&ext, format!("// {PI_MARKER}\n// stale ours\n")).unwrap();
+    pi_cmd(&home, &["--yes"]).success(); // stale-ours rewrite leaves our .bak
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+
+    let out = pi_cmd(&home, &["--uninstall", "--dry-run"]).success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("would remove {} (dry-run)", bak.display())), "stdout:\n{stdout}");
+    assert!(bak.exists(), "dry-run removes nothing");
+}
+
+#[test]
+fn setup_pi_rewrite_after_force_never_clobbers_the_foreign_backup() {
+    // `--force` over the user's own zj-radar.js leaves THEIR file as the .bak.
+    // A later rewrite of our (now stale) bridge — e.g. via `zj-radar update` —
+    // must not copy our file over it, or `--uninstall` would read the .bak as
+    // ours and delete the user's only copy.
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    let theirs = "// my own extension\n";
+    fs::write(&ext, theirs).unwrap();
+    pi_cmd(&home, &["--yes", "--force"]).success();
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs);
+
+    let mut stale = fs::read_to_string(&ext).unwrap();
+    stale.push_str("// stale\n");
+    fs::write(&ext, stale).unwrap();
+    pi_cmd(&home, &["--yes"]).success();
+    assert!(!fs::read_to_string(&ext).unwrap().contains("// stale"), "the stale bridge was rewritten");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the rewrite must not clobber the foreign backup");
+
+    pi_cmd(&home, &["--uninstall", "--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "uninstall keeps the user's only copy");
+}
+
+#[test]
+fn setup_opencode_rewrite_after_force_never_clobbers_the_foreign_backup() {
+    let (xdg, plugin) = isolated_opencode_xdg();
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    let theirs = "export const Mine = async () => ({});\n";
+    fs::write(&plugin, theirs).unwrap();
+    opencode_cmd(&xdg, &["--yes", "--force"]).success();
+    let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
+
+    let mut stale = fs::read_to_string(&plugin).unwrap();
+    stale.push_str("// stale\n");
+    fs::write(&plugin, stale).unwrap();
+    opencode_cmd(&xdg, &["--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the rewrite must not clobber the foreign backup");
+
+    opencode_cmd(&xdg, &["--uninstall", "--yes"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "uninstall keeps the user's only copy");
 }
 
 #[test]

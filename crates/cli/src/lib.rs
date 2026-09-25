@@ -132,14 +132,14 @@ enum Command {
         /// Show what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Skip the confirmation prompt. The doctor's remedy hints print the
-        /// short form (`setup zellij -y`), so the alias must exist for them
-        /// to be copy-pasteable.
+        /// Skip the confirmation prompt.
+        // The doctor's remedy hints print the short form (`setup zellij -y`),
+        // so the alias must exist for them to be copy-pasteable.
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Check setup status without writing files. Conflicts with
-        /// `--uninstall`: silently running the doctor instead of uninstalling
-        /// would read as "uninstalled".
+        /// Check setup status without writing files.
+        // Conflicts with --uninstall: silently running the doctor instead of
+        // uninstalling would read as "uninstalled".
         #[arg(long, conflicts_with = "uninstall")]
         check: bool,
         /// Use Codex's legacy single-slot notify config instead of hooks.json.
@@ -158,8 +158,9 @@ enum Command {
         layout: Option<String>,
         /// Open the plugin in a focused floating pane so Zellij can prompt for
         /// permissions (one-time grant). Exits after launching; does not run the
-        /// wasm/alias/inject steps. Conflicts with `dry_run`/`check` too: the
-        /// grant launches a real pane, which a "write nothing" flag must not.
+        /// wasm/alias/inject steps.
+        // Conflicts with dry_run/check too: the grant launches a real pane,
+        // which a "write nothing" flag must not.
         #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall", "dry_run", "check"])]
         grant: bool,
     },

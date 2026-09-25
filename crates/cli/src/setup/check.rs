@@ -245,6 +245,7 @@ pub(crate) fn opencode_check_items(f: &OpencodeFacts) -> Vec<CheckItem> {
             "opencode binary",
             f.opencode_on_path,
             f.plugin_is_ours == Some(true) || f.tui_plugin_is_ours == Some(true),
+            "the bridge is installed",
         ),
         if f.zj_radar_on_path {
             CheckItem::ok("zj-radar binary", "found on PATH")
@@ -291,17 +292,18 @@ pub(crate) fn check_pi() -> bool {
     print_check_items(&items)
 }
 
-/// The agent-binary item for a vendored-bridge agent. Missing from PATH is
-/// only `Missing` when our bridge isn't installed either: `setup` accepts a
-/// PATH-less (bun/Nix-run) agent, so with our bridge in place a missing binary
-/// is advice, not a broken install — `setup <agent> --check` must not exit 1
-/// for a working setup.
-fn agent_binary_item(name: &'static str, on_path: bool, bridge_is_ours: bool) -> CheckItem {
-    match (on_path, bridge_is_ours) {
+/// The agent-binary item for an instrumented agent. Missing from PATH is
+/// only `Missing` when our wiring (bridge, hooks, notify slot) isn't installed
+/// either: `setup` accepts a PATH-less (bun/Nix-run) agent, so with our wiring
+/// in place a missing binary is advice, not a broken install —
+/// `setup <agent> --check` must not exit 1 for a working setup. `wired_detail`
+/// names what is installed, for the warn line.
+fn agent_binary_item(name: &'static str, on_path: bool, wired: bool, wired_detail: &str) -> CheckItem {
+    match (on_path, wired) {
         (true, _) => CheckItem::ok(name, "found on PATH"),
         (false, true) => CheckItem::warn(
             name,
-            "not found on PATH — fine if you launch it another way (bun, Nix); the bridge is installed",
+            format!("not found on PATH — fine if you launch it another way (bun, Nix); {wired_detail}"),
         ),
         (false, false) => CheckItem::missing(name, "not found on PATH"),
     }
@@ -309,7 +311,7 @@ fn agent_binary_item(name: &'static str, on_path: bool, bridge_is_ours: bool) ->
 
 pub(crate) fn pi_check_items(f: &PiFacts) -> Vec<CheckItem> {
     let mut items = vec![
-        agent_binary_item("pi binary", f.pi_on_path, f.extension_is_ours == Some(true)),
+        agent_binary_item("pi binary", f.pi_on_path, f.extension_is_ours == Some(true), "the bridge is installed"),
         if f.zj_radar_on_path {
             CheckItem::ok("zj-radar binary", "found on PATH")
         } else {
@@ -419,11 +421,12 @@ fn print_check_items(items: &[CheckItem]) -> bool {
 
 pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<CheckItem> {
     let mut items = Vec::new();
-    items.push(if f.codex_on_path {
-        CheckItem::ok("codex binary", "found on PATH")
-    } else {
-        CheckItem::missing("codex binary", "not found on PATH")
-    });
+    // `setup codex` accepts a PATH-less Codex (its config/hooks on disk), so
+    // with our wiring in place — every owned hook event, or our notify slot —
+    // the missing binary is a warn, the same rule as the bridge agents.
+    let wired = matches!(f.owned_hook_events, Some(Ok(n)) if n == CODEX_HOOK_EVENTS.len())
+        || matches!(f.notify, CodexNotifyState::Ours);
+    items.push(agent_binary_item("codex binary", f.codex_on_path, wired, "zj-radar is wired into Codex"));
     items.push(if f.zj_radar_on_path {
         CheckItem::ok("zj-radar binary", "found on PATH")
     } else {
@@ -520,6 +523,31 @@ mod tests {
         let trust = items.iter().find(|item| item.name == "hook trust").expect("hook trust note");
         assert_eq!(trust.level, CheckLevel::Note);
         assert!(trust.detail.contains("/hooks"), "must point at `/hooks`: {}", trust.detail);
+    }
+
+    #[test]
+    fn codex_binary_off_path_is_a_warn_only_once_wired() {
+        let hooks = match edit_codex_hooks("", true).unwrap() {
+            Outcome::Changed(s) => s,
+            o => panic!("{o:?}"),
+        };
+        let binary = |hooks_text: Option<String>, config_text: Option<String>, legacy: bool| {
+            let facts = analyze_codex(&CodexEnv {
+                codex_on_path: false,
+                zj_radar_on_path: true,
+                config_text,
+                hooks_text,
+            });
+            codex_check_items(&facts, legacy).into_iter().find(|i| i.name == "codex binary").unwrap().level
+        };
+        // All owned hook events installed → a PATH-less Codex is advice.
+        assert_eq!(binary(Some(hooks.to_string()), None, false), CheckLevel::Warn);
+        // Our legacy notify slot counts as wired too.
+        let notify = "notify = [\"zj-radar\", \"notify\", \"codex\"]\n".to_string();
+        assert_eq!(binary(None, Some(notify), true), CheckLevel::Warn);
+        // Nothing of ours (or only a config.toml) → still Missing.
+        assert_eq!(binary(None, Some("model = \"x\"\n".to_string()), false), CheckLevel::Missing);
+        assert_eq!(binary(Some("{}".to_string()), None, false), CheckLevel::Missing);
     }
 
     #[test]

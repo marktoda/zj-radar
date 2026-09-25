@@ -66,7 +66,10 @@ fn append_block(text: &str, wasm_abs_path: &str) -> String {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str(&format!("\"{wasm_abs_path}\" {{\n"));
+    // Escaped like every other KDL string we emit (and like `wasm_is_granted`
+    // spells the key it looks for); `merge_grant` refuses the paths where
+    // this would matter, so today it is a no-op — but never an unescaped key.
+    out.push_str(&format!("\"{}\" {{\n", super::kdl_string(wasm_abs_path)));
     for perm in REQUIRED_PLUGIN_PERMISSIONS {
         out.push_str("    ");
         out.push_str(perm);
@@ -197,6 +200,14 @@ mod tests {
         };
         assert!(block_grants_all(&out, spaced), "spaced path must be quoted intact:\n{out}");
         assert!(out.parse::<kdl::KdlDocument>().is_ok());
+    }
+
+    #[test]
+    fn unquotable_paths_are_refused_up_front() {
+        for p in [r#"/x/we"ird.wasm"#, r"/x/back\slash.wasm", "/x/new\nline.wasm"] {
+            let err = merge_grant(None, p).unwrap_err();
+            assert!(err.contains("unquotable"), "{p:?}: {err}");
+        }
     }
 
     #[test]
