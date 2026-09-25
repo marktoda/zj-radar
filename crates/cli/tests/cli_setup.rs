@@ -479,6 +479,30 @@ fn bare_check_includes_a_path_less_pi_whose_bridge_is_installed() {
     assert!(stdout.contains("ok extension"), "{stdout}");
 }
 
+#[test]
+fn bare_check_warns_not_fails_for_a_path_less_codex_whose_hooks_are_installed() {
+    // `setup codex` accepts a Codex with no binary on PATH (its hooks.json on
+    // disk is the signal); the doctor must then warn about the binary, like
+    // the pi/opencode bridges, instead of reporting it Missing.
+    let home = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::write(home.path().join(".codex/hooks.json"), "{}").unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("HOME", home.path())
+        .env_remove("CODEX_HOME")
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+    let output = bare_check(&home, empty_path.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("codex:"), "{stdout}");
+    assert!(stdout.contains("warn codex binary: not found on PATH"), "{stdout}");
+    assert!(!stdout.contains("missing codex binary"), "{stdout}");
+}
+
 // ── Layout injection tests ────────────────────────────────────────────────────
 //
 // `setup zellij --inject` (no --wasm / --download) takes the inject-only path:
