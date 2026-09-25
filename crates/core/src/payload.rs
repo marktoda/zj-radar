@@ -142,6 +142,8 @@ pub struct StatusPayload {
     /// malformed item (unknown `state` included) is skipped, never failing
     /// the payload. Capped at `MAX_TASKS` items, ids at `MAX_TASK_ID_CHARS`,
     /// labels at `MAX_TASK_LABEL_CHARS`; an item with an empty id is dropped.
+    /// A snapshot with more than `MAX_TASKS` items is downgraded to a delta
+    /// (truncated, it is no longer the complete running set).
     pub tasks: Option<TaskBatch>,
 }
 
@@ -196,7 +198,7 @@ fn parse_tasks(raw: Option<serde_json::Value>) -> Option<TaskBatch> {
         Some(serde_json::Value::Array(items)) => items,
         _ => Vec::new(),
     };
-    let items = items
+    let mut items: Vec<TaskUpdate> = items
         .into_iter()
         .filter_map(|item| serde_json::from_value::<RawTask>(item).ok())
         .filter_map(|t| {
@@ -208,9 +210,14 @@ fn parse_tasks(raw: Option<serde_json::Value>) -> Option<TaskBatch> {
                 holds: t.holds,
             })
         })
-        .take(MAX_TASKS)
+        .take(MAX_TASKS + 1)
         .collect();
-    Some(TaskBatch { items, snapshot })
+    // A truncated snapshot is no longer the complete running set: applied as
+    // one, it would end every stored running task the cap dropped. Keep the
+    // upserts, drop the authority.
+    let truncated = items.len() > MAX_TASKS;
+    items.truncate(MAX_TASKS);
+    Some(TaskBatch { items, snapshot: snapshot && !truncated })
 }
 // Note: the retired clear-on-focus hint key is silently ignored (serde drops
 // unknown fields) — no longer consumed, kept tolerated on the wire for back-compat
@@ -505,7 +512,8 @@ pub fn to_wire(p: &StatusPayload) -> String {
         task: cap_chars(&p.task, MAX_WIRE_FIELD_CHARS),
         ack: p.ack,
         tasks: p.tasks.as_ref().map(|b| WireTasks {
-            snapshot: b.snapshot,
+            // Capping a snapshot's items drops its authority (see `parse_tasks`).
+            snapshot: b.snapshot && b.items.len() <= MAX_TASKS,
             items: b
                 .items
                 .iter()
@@ -916,6 +924,36 @@ mod tests {
         assert_eq!(items[0].id.chars().count(), MAX_TASK_ID_CHARS);
         assert!(items[0].label.chars().count() <= MAX_TASK_LABEL_CHARS);
         assert!(!items[0].label.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn an_oversized_snapshot_is_downgraded_to_a_delta_on_both_sides() {
+        let item = |i: usize| TaskUpdate { id: format!("b{i}"), state: TaskState::Running, label: String::new(), holds: true };
+        let wire = |n: usize| to_wire(&StatusPayload {
+            pane_id: 1,
+            status: Status::Running,
+            tasks: Some(TaskBatch { snapshot: true, items: (0..n).map(item).collect() }),
+            ..Default::default()
+        });
+        // Exactly at the cap the snapshot keeps its authority...
+        assert!(parse(&wire(MAX_TASKS)).unwrap().tasks.unwrap().snapshot);
+        // ...one past it, the producer drops the flag as it truncates.
+        let over = wire(MAX_TASKS + 1);
+        assert!(over.contains(r#""snapshot":false"#), "{over}");
+
+        // A foreign producer that sends an oversized snapshot anyway: the
+        // parser truncates and downgrades, so the dropped items stay running.
+        let items: Vec<String> = (0..=MAX_TASKS).map(|i| format!(r#"{{"id":"b{i}","state":"running"}}"#)).collect();
+        let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#, items.join(","));
+        let got = p(&raw).unwrap().tasks.unwrap();
+        assert_eq!(got.items.len(), MAX_TASKS);
+        assert!(!got.snapshot, "a truncated snapshot is not the complete running set");
+        // Skipped malformed items don't count toward the cap.
+        let mut items = items;
+        items.pop();
+        items.push(r#"{"id":"","state":"running"}"#.into());
+        let raw = format!(r#"{{"pane":{{"type":"terminal","id":1}},"status":"running","tasks":{{"snapshot":true,"items":[{}]}}}}"#, items.join(","));
+        assert!(p(&raw).unwrap().tasks.unwrap().snapshot);
     }
 
     proptest::proptest! {

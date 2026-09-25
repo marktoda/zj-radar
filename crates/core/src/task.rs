@@ -72,7 +72,9 @@ pub struct TaskUpdate {
 
 /// The `tasks` field: a batch of upserts, optionally an authoritative
 /// snapshot. A snapshot is the complete *running* set: every stored running
-/// task it omits has ended (with no outcome — [`TaskState::Ended`]).
+/// task it omits has ended (with no outcome — [`TaskState::Ended`]). The
+/// wire codec clears `snapshot` on a batch it truncates to [`MAX_TASKS`], so
+/// a capped item is never mistaken for an omitted one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TaskBatch {
     pub items: Vec<TaskUpdate>,

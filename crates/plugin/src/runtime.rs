@@ -128,8 +128,9 @@ pub(crate) enum Effect {
     SetSelectable(bool),
     SetTimeout(Cadence),
     /// Write the shared snapshot: lib.rs reads the existing file, merges
-    /// (`snapshot_json`), and writes it back. Emitted only by the edge's
-    /// owner — `RadarState::persists_edges_for`.
+    /// (`snapshot_json`), and writes it back. For pushed edges, emitted only
+    /// by the edge's owner (`RadarState::persists_edges_for`); timer edges
+    /// are written by every instance (`RadarState::timer`).
     PersistSnapshot,
     PersistPermissionMarker(PermissionMarker),
     RenameTab { tab_id: TabId, name: String },

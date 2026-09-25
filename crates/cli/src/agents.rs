@@ -13,6 +13,8 @@ mod claude;
 mod codex;
 mod opencode;
 mod pi;
+#[cfg(test)]
+mod service_cases;
 
 pub(crate) use claude::bg_agents::{relevant as bg_agents_relevant, BgAgents};
 
@@ -292,30 +294,56 @@ pub(crate) fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|base| !base.is_empty())
 }
 
-/// Command-line phrases that mark a backgrounded shell as a long-lived
-/// service (a dev server, a watcher, a followed log, a tunnel) rather than
-/// bounded work, matched on the lowercased command as whole shell words
-/// ([`contains_command_phrase`]: a path's last component counts, but a
-/// `_`/`-`/`.`/`:` prefix or a `/`/`-`/`_`/`.`/`:` suffix doesn't, so
-/// `pytest tests/test_serve.py`, `go test ./serve/...`, `make dev-deps` and
-/// `npm run dev:migrate` end; `cargo test -p serve` is a known false hit).
-/// A false hit
-/// is costly: a task's `holds` only ever drops (`core::task`), so it
-/// permanently shows the row done early and may fire an early "finished"
-/// notification; a miss holds the row "waiting on …" until the next `Stop`.
-/// So every entry is specific: `server` alone is absent ("run the server
-/// tests", `cargo test -p server` end), and the single words that are
-/// services only in some positions — `vite`, `--watch` — are token rules in
-/// [`shell_is_service`], not phrases. Aligned with `core::command`'s
-/// `Kind::Server` words (`serve`, and npm/make/just `dev`/`start`/`server`).
-/// Mirrored in notify.sh's `SERVICE_PHRASES`; phrases stay `[a-z0-9 .-]`
-/// (the parity suite pins both — the fallback escapes the `.`).
+/// Command phrases that mark a backgrounded shell as a long-lived service (a
+/// dev server, a watcher, a followed log, a tunnel) rather than bounded work.
+/// Each is a space-separated token sequence matched only at a *command
+/// position* of a segment ([`segment_is_service`]): the tokens starting at
+/// its head or at its command word must begin with the phrase's tokens, the
+/// first compared as a basename without `@version` (`bin/rails s`,
+/// `./venv/bin/uvicorn`, `npx nodemon@3`). Nothing elsewhere in a segment —
+/// a directory, a file, an argument — ever matches, so `cd serve`,
+/// `go test ./serve`, `pytest tests/test_serve.py`, `make dev-deps` and
+/// `npm run dev:migrate` end. A false hit is costly: a task's `holds` only
+/// ever drops (`core::task`), so it permanently shows the row done early and
+/// may fire an early "finished" notification; a miss holds the row "waiting
+/// on …" until the next `Stop`. So every entry is specific, and the words
+/// that are services only with some arguments — `vite`, `--watch`,
+/// `docker compose up` — are rules in [`segment_is_service`]. Aligned with
+/// `core::command`'s `Kind::Server` words. Mirrored in notify.sh's
+/// `SERVICE_PHRASES`; entries stay `[a-z0-9 .-]` (parity.bats pins both lists
+/// and runs the shared case corpus, `agents/service_cases.rs`, through both
+/// producers).
 pub(crate) const SERVICE_PHRASES: &[&str] = &[
-    "run dev", "run start", "npm start", "pnpm start", "yarn start", "bun start",
-    "pnpm dev", "yarn dev", "bun dev", "next dev", "make dev", "just dev",
-    "make server", "just server", "serve", "http.server", "runserver", "rails s",
-    "rails server", "flask run", "uvicorn", "gunicorn", "nodemon", "cargo watch",
-    "watchexec", "port-forward", "tail -f", "compose up",
+    "run dev", "run start", "run serve", "npm start", "pnpm start", "yarn start", "bun start",
+    "pnpm dev", "yarn dev", "bun dev", "next dev", "next start", "make dev", "just dev",
+    "make server", "just server", "serve", "http-server", "mkdocs serve", "jekyll serve",
+    "hugo server", "hugo serve", "ng serve", "php artisan serve", "python -m http.server",
+    "python3 -m http.server", "manage.py runserver", "python manage.py runserver",
+    "python3 manage.py runserver", "http.server", "rails s", "rails server", "flask run", "uvicorn", "gunicorn",
+    "nodemon", "cargo watch", "watchexec", "kubectl port-forward", "tail -f",
+];
+
+/// Words that run the rest of their segment as a command (`nohup npm run dev`,
+/// `bash -c "vite"`): skipped, with any flags, to find a segment's head.
+/// Mirrored in notify.sh's `SERVICE_WRAPPERS`.
+pub(crate) const SERVICE_WRAPPERS: &[&str] = &[
+    "env", "nohup", "exec", "sudo", "time", "timeout", "nice", "xargs", "command", "bash", "sh", "zsh",
+];
+
+/// Package and script runners, skipped with their flags from a segment's head
+/// to its command word (`pnpm exec vite`, `bun x vite`, `bundle exec jekyll
+/// serve`, `uv run uvicorn`, `pnpm --filter web dev`). Mirrored in notify.sh's
+/// `SERVICE_RUNNERS`.
+pub(crate) const SERVICE_RUNNERS: &[&str] = &[
+    "npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx", "bundle", "uv", "poetry",
+    "pipenv", "run",
+];
+
+/// Runner flags whose value is the next token, skipped with it
+/// (`npx -p vite vite build` runs `vite build`). Mirrored in notify.sh's
+/// `SERVICE_VALUE_FLAGS`.
+pub(crate) const SERVICE_VALUE_FLAGS: &[&str] = &[
+    "-p", "--package", "--prefix", "--dir", "--cwd", "--filter", "--workspace",
 ];
 
 /// Phrases that mark a service by the model-written task description
@@ -327,74 +355,122 @@ pub(crate) const SERVICE_DESCRIPTION_PHRASES: &[&str] = &[
     "dev server", "development server", "start server", "start the server", "watch mode",
 ];
 
-/// Characters that end a shell word in [`contains_command_phrase`]: ASCII
-/// whitespace and shell punctuation. Mirrored in notify.sh's `$re`.
-const COMMAND_PHRASE_EDGES: &[char] = &[' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '"', '\'', '`'];
+/// Characters that split a command line into segments, each run as its own
+/// command: `&`, `|`, `;`, newline, CR, and the subshell / substitution
+/// delimiters `(`, `)`, `` ` ``. Mirrored in notify.sh's `segments`.
+const SEGMENT_SEPARATORS: &[char] = &['&', '|', ';', '\n', '\r', '(', ')', '`'];
 
-/// Does `cmd` contain `phrase` as whole shell words? Left of it: the start,
-/// a [`COMMAND_PHRASE_EDGES`] char, or `/` (so `bin/rails s` and
-/// `./node_modules/.bin/…` match); right of it: the end or an edge char —
-/// never `/`, `-`, `_`, `.`, `:` (so `test_serve.py`, `./serve/...`,
-/// `dev-deps` and `dev:migrate` don't).
-fn contains_command_phrase(cmd: &str, phrase: &str) -> bool {
-    let edge = |c: Option<char>| c.is_none_or(|c| COMMAND_PHRASE_EDGES.contains(&c));
-    cmd.match_indices(phrase).any(|(i, _)| {
-        let before = cmd[..i].chars().next_back();
-        (before == Some('/') || edge(before)) && edge(cmd[i + phrase.len()..].chars().next())
-    })
-}
+/// Characters that split a segment into tokens: space, tab, and quotes (so
+/// `bash -c "npm run dev"` reads as `bash -c npm run dev`). Mirrored in
+/// notify.sh's `toks`.
+const TOKEN_SEPARATORS: &[char] = &[' ', '\t', '"', '\''];
 
-/// The token rules for words that are services only in some positions: a
-/// `vite` that is a segment's *command word* (after any package runner —
-/// `npx`, `pnpm exec`, `bun x`, … — and its flags; any path, `@version`
-/// ignored) unless its next token is `build`, and a `--watch`/`--watchall`
-/// flag unless set `=false`/`=0` (`jest --watch=false` ends) or the
-/// segment's command word is `gh`, or `kubectl` running `rollout status`,
-/// whose `--watch` waits on something bounded (`gh pr checks 57 --watch`,
-/// `kubectl rollout status deploy/x --watch`; `gh run watch` has no flag at
-/// all). Other `kubectl … --watch` (`get pods --watch`) streams forever. Segments split on `&`, `|`,
-/// `;`, so `cd web && vite` is a service while `pnpm add -D vite` and
-/// `cd packages/vite && pnpm test` are not. `cmd` is lowercased.
-fn service_tokens(cmd: &str) -> bool {
-    const RUNNERS: &[&str] = &["npx", "bunx", "pnpm", "yarn", "bun", "npm", "exec", "x", "dlx"];
-    cmd.split(['&', '|', ';']).any(|segment| {
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
-        let word = tokens.iter().position(|t| !t.starts_with('-') && !RUNNERS.contains(t));
-        let command = word.and_then(|i| basename(tokens[i])).and_then(|b| b.split('@').next());
-        let vite = command == Some("vite") && word.and_then(|i| tokens.get(i + 1)) != Some(&"build");
-        let rollout_status = tokens.windows(2).any(|w| w == ["rollout", "status"]);
-        let bounded_watch = command == Some("gh") || (command == Some("kubectl") && rollout_status);
-        let watch = !bounded_watch && tokens.iter().any(|t| {
-            let (flag, value) = t.split_once('=').map_or((*t, None), |(f, v)| (f, Some(v)));
-            matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
+/// Does this segment (of a lowercased command) run a service? Its tokens are
+/// read at two command positions only:
+///
+/// - the **head**: the first token that isn't an env assignment (`foo=1`), a
+///   [`SERVICE_WRAPPERS`] word, a flag or a number (`timeout 60`);
+/// - the **command word**: from the head, past [`SERVICE_RUNNERS`] and their
+///   flags ([`SERVICE_VALUE_FLAGS`] skip their value too); for `python -m X`,
+///   the module `X`.
+///
+/// Phrase tokens compare by basename (`backend/manage.py runserver`).
+///
+/// A service is a [`SERVICE_PHRASES`] entry at either position; a `dev` or
+/// `start` script right after a runner word or runner-flag value (`npm run
+/// dev`, `pnpm --filter web dev`, `yarn start`); `kubectl … port-forward`; a
+/// `vite`
+/// command word without a `build` argument; `docker compose up` /
+/// `docker-compose up` at either position without `-d`, `--detach`,
+/// `--abort-on-container-exit` or `--exit-code-from` (those end); or a
+/// `--watch`/`--watchall` flag not set `=false`/`=0` or followed by a
+/// `false`/`0` token, unless the command word is `gh`, or `kubectl` running
+/// `rollout status`, whose `--watch` waits on something bounded. Quotes are
+/// token breaks, not grouping, so a separator inside a quoted argument still
+/// splits (`git commit -m "a; npm start"` is a known false hit).
+fn segment_is_service(segment: &str) -> bool {
+    fn word(token: &str) -> &str {
+        let base = token.rsplit('/').next().unwrap_or(token);
+        base.split('@').next().unwrap_or("")
+    }
+    fn assignment(token: &str) -> bool {
+        token.split_once('=').is_some_and(|(name, _)| {
+            name.starts_with(|c: char| c == '_' || c.is_ascii_lowercase())
+                && name.chars().all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+    }
+    // A wrapper's numeric argument (`timeout 60`, `nice -n 10`) is no head.
+    fn number(token: &str) -> bool {
+        let digits = token.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(token);
+        digits.starts_with(|c: char| c.is_ascii_digit()) && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    }
+    let t: Vec<&str> = segment.split(TOKEN_SEPARATORS).filter(|s| !s.is_empty()).collect();
+    let Some(head) = t
+        .iter()
+        .position(|s| !(assignment(s) || SERVICE_WRAPPERS.contains(s) || s.starts_with('-') || number(s)))
+    else {
+        return false;
+    };
+    let mut cw = head;
+    while let Some(&s) = t.get(cw) {
+        if SERVICE_VALUE_FLAGS.contains(&s) {
+            cw += 2;
+        } else if SERVICE_RUNNERS.contains(&s) || s.starts_with('-') {
+            cw += 1;
+        } else {
+            break;
+        }
+    }
+    // `python -m uvicorn`: the module is the command word.
+    if t.get(cw).is_some_and(|s| word(s).starts_with("python")) && t.get(cw + 1) == Some(&"-m") {
+        cw += 2;
+    }
+    let command = t.get(cw).map_or("", |s| word(s));
+    let at = |i: usize, phrase: &[&str]| {
+        phrase.iter().enumerate().all(|(k, p)| t.get(i + k).map(|s| word(s)) == Some(p))
+    };
+    let starts = |phrase: &[&str]| at(head, phrase) || at(cw, phrase);
+    let phrase = SERVICE_PHRASES.iter().any(|p| starts(&p.split(' ').collect::<Vec<_>>()));
+    // A `dev`/`start` script only right after a runner word or a runner
+    // flag's value (`pnpm --filter web dev`) — never the value of an unknown
+    // flag (`uv run --extra dev pytest`).
+    let via_runner = cw > head
+        && (SERVICE_RUNNERS.contains(&t[cw - 1]) || (cw >= 2 && SERVICE_VALUE_FLAGS.contains(&t[cw - 2])));
+    let script = via_runner && matches!(command, "dev" | "start");
+    let vite = command == "vite" && !t[cw + 1..].contains(&"build");
+    let compose = (starts(&["docker", "compose", "up"]) || starts(&["docker-compose", "up"]))
+        && !t.iter().any(|s| {
+            matches!(*s, "-d" | "--detach" | "--abort-on-container-exit") || s.starts_with("--exit-code-from")
         });
-        vite || watch
-    })
+    // `kubectl -n prod port-forward …`: flags may precede the verb.
+    let port_forward = word(t[head]) == "kubectl" && t.contains(&"port-forward");
+    let rollout_status = t.windows(2).any(|w| w == ["rollout", "status"]);
+    let bounded_watch = command == "gh" || (command == "kubectl" && rollout_status);
+    let watch = !bounded_watch && t.iter().enumerate().any(|(i, s)| {
+        let (flag, value) = s.split_once('=').map_or((*s, t.get(i + 1).copied()), |(f, v)| (f, Some(v)));
+        matches!(flag, "--watch" | "--watchall") && !matches!(value, Some("false" | "0"))
+    });
+    phrase || script || port_forward || vite || compose || watch
 }
 
 /// Is this backgrounded shell a service — something that may never exit on
-/// its own, so the agent must not be held "running" on it? Its command
-/// matching a [`SERVICE_PHRASES`] entry or [`service_tokens`], or its
-/// description a [`SERVICE_DESCRIPTION_PHRASES`] entry, makes it one. With
-/// no command, the description decides alone; with neither, nothing says the
-/// work is bounded, so it is treated as a service (never spin on the
-/// unknowable).
+/// its own, so the agent must not be held "running" on it? A command decides
+/// alone: any of its segments ([`SEGMENT_SEPARATORS`]) running a service
+/// ([`segment_is_service`]) makes it one, whatever its description says.
+/// Only with no command does the description decide (a
+/// [`SERVICE_DESCRIPTION_PHRASES`] entry, as prose words); with neither,
+/// nothing says the work is bounded, so it is treated as a service (never
+/// spin on the unknowable).
 pub(crate) fn shell_is_service(command: Option<&str>, description: Option<&str>) -> bool {
     fn nonblank(s: Option<&str>) -> Option<&str> {
         s.filter(|s| !s.trim().is_empty())
     }
-    let described = |d: &str| {
-        let d = d.to_lowercase();
-        SERVICE_DESCRIPTION_PHRASES.iter().any(|p| contains_word(&d, p))
-    };
     match (nonblank(command), nonblank(description)) {
-        (Some(cmd), desc) => {
-            let cmd = cmd.to_lowercase();
-            SERVICE_PHRASES.iter().any(|p| contains_command_phrase(&cmd, p))
-                || service_tokens(&cmd)
-                || desc.is_some_and(described)
+        (Some(cmd), _) => cmd.to_ascii_lowercase().split(SEGMENT_SEPARATORS).any(segment_is_service),
+        (None, Some(desc)) => {
+            let d = desc.to_lowercase();
+            SERVICE_DESCRIPTION_PHRASES.iter().any(|p| contains_word(&d, p))
         }
-        (None, Some(desc)) => described(desc),
         (None, None) => true,
     }
 }
@@ -436,6 +512,27 @@ fn bash_activity(tool_input: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use crate::kind::Kind;
+
+    /// The shared service corpus (`agents/service_cases.rs`); parity.bats runs
+    /// the same lines through both producers, so notify.sh's jq can't drift.
+    #[test]
+    fn shell_is_service_matches_the_shared_corpus() {
+        let decode = |s: &str| s.replace("\\t", "\t").replace("\\n", "\n");
+        let mut cases = 0;
+        for line in service_cases::SERVICE_CASES.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let mut fields = line.split('\t');
+            let want = match fields.next() {
+                Some("service") => true,
+                Some("bounded") => false,
+                other => panic!("bad expectation {other:?} in {line:?}"),
+            };
+            let command = fields.next().map(decode).filter(|c| !c.is_empty());
+            let description = fields.next().filter(|d| !d.is_empty());
+            assert_eq!(shell_is_service(command.as_deref(), description), want, "{line:?}");
+            cases += 1;
+        }
+        assert!(cases > 100, "corpus parse broke: {cases} cases");
+    }
 
     // ── Coherence guards: the agent vocabulary is a subset of `Kind` ──────────
 

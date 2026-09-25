@@ -291,21 +291,33 @@ fi
 # The turn ended but work it backgrounded is still running and will wake the
 # model when it finishes: stay running with a "waiting on …" msg (parity with
 # waiting_msg in agents/claude/background.rs). Running subagents, workflows
-# and teammates hold; shells hold unless their command is a service (a
-# SERVICE_PHRASES entry as whole shell words — contains_command_phrase's
-# edges: left = start, whitespace, shell punctuation or `/`; right = end,
-# whitespace or shell punctuation, never `/ - _ . :` — or service_tokens'
-# rules per `&`/`|`/`;` segment: a `vite` command word (past package runners
-# and flags) not followed by `build`, a `--watch`/`--watchall` flag not
-# `=false`/`=0` unless the command word is `gh`, or `kubectl` running
-# `rollout status`) or their
-# description has a SERVICE_DESCRIPTION_PHRASES entry (prose word edges) —
-# both lists are agents.rs's, welded by parity.bats, as are
-# shell_is_service's rules: no command → the description alone decides,
-# neither → no hold. Anything else doesn't hold. The label is the task's
+# and teammates hold; shells hold unless they are a service, by
+# shell_is_service's rules (agents.rs), mirrored here in jq:
+#
+# - A command decides alone. It splits into segments on `& | ; ( ) \``,
+#   newline and CR; each segment into tokens on space, tab and quotes. A
+#   segment's head is its first token that isn't an env assignment, a
+#   SERVICE_WRAPPERS word, a flag or a number; its command word follows from
+#   the head past SERVICE_RUNNERS and flags (SERVICE_VALUE_FLAGS skip their
+#   value), or is X in `python -m X`. Phrase tokens compare by basename.
+#   A segment is a service when a SERVICE_PHRASES entry's tokens start at the
+#   head or the command word (first token by basename, `@version` dropped),
+#   the command word is a `dev`/`start` script right after a runner word or
+#   runner-flag value, `kubectl … port-forward`, the
+#   command word is `vite` with no `build` argument, `docker compose up`
+#   / `docker-compose up` starts there without `-d`/`--detach`/
+#   `--abort-on-container-exit`/`--exit-code-from`, or a `--watch`/
+#   `--watchall` flag isn't `=false`/`=0` or followed by `false`/`0` (exempt
+#   when the command word is `gh`, or `kubectl` with `rollout status`).
+# - No command → the description decides (a SERVICE_DESCRIPTION_PHRASES entry,
+#   prose word edges); neither → no hold.
+#
+# Every list is agents.rs's, welded by parity.bats, which also runs the
+# shared case corpus (crates/cli/src/agents/service_cases.rs) through both
+# producers. Anything else doesn't hold. The label is the task's
 # description, else its command's first-token basename. jq's `test` is
-# Oniguruma, so the phrases stay regex-metachar-free apart from `.`, which
-# is escaped below.
+# Oniguruma, so the description phrases stay regex-metachar-free apart from
+# `.`, which is escaped below.
 #
 # Deliberately NOT here: the background-task *lines* (the wire's `tasks`
 # batch). They need the `zj-radar` CLI — this fallback keeps the waiting
@@ -315,27 +327,54 @@ fi
 # (agents/claude/bg_agents.rs): it needs per-pane markers of launched agent
 # ids, so this stateless fallback reports them, and they can overwrite
 # "waiting on …".
-SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|make dev|just dev|make server|just server|serve|http.server|runserver|rails s|rails server|flask run|uvicorn|gunicorn|nodemon|cargo watch|watchexec|port-forward|tail -f|compose up"
+SERVICE_PHRASES="run dev|run start|run serve|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|next start|make dev|just dev|make server|just server|serve|http-server|mkdocs serve|jekyll serve|hugo server|hugo serve|ng serve|php artisan serve|python -m http.server|python3 -m http.server|manage.py runserver|python manage.py runserver|python3 manage.py runserver|http.server|rails s|rails server|flask run|uvicorn|gunicorn|nodemon|cargo watch|watchexec|kubectl port-forward|tail -f"
+SERVICE_WRAPPERS="env|nohup|exec|sudo|time|timeout|nice|xargs|command|bash|sh|zsh"
+SERVICE_RUNNERS="npx|bunx|pnpm|yarn|bun|npm|exec|x|dlx|bundle|uv|poetry|pipenv|run"
+SERVICE_VALUE_FLAGS="-p|--package|--prefix|--dir|--cwd|--filter|--workspace"
 SERVICE_DESCRIPTION_PHRASES="dev server|development server|start server|start the server|watch mode"
 waiting=""
 if [[ "$status" == "done" ]]; then
     # shellcheck disable=SC2016 # jq variables, expanded by jq, not the shell
     waiting="$(jq -r \
-        --arg re "(^|[ \\t\\n\\r;&|()\"'\`/])(${SERVICE_PHRASES//./\\.})([ \\t\\n\\r;&|()\"'\`]|$)" \
+        --arg phrases "$SERVICE_PHRASES" --arg wrappers "$SERVICE_WRAPPERS" \
+        --arg runners "$SERVICE_RUNNERS" --arg vflags "$SERVICE_VALUE_FLAGS" \
+        --arg segre "[&|;\\n\\r()\`]" --arg tokre "[ \\t\"']+" \
         --arg dre "(^|[^a-z0-9])(${SERVICE_DESCRIPTION_PHRASES//./\\.})([^a-z0-9]|$)" '
         def str: if type == "string" then . else "" end;
-        def toks: [splits("\\s+") | select(. != "")];
-        def runner: . as $x | any(("npx","bunx","pnpm","yarn","bun","npm","exec","x","dlx"); . == $x);
-        def seg: toks as $t
-            | ([range(0; $t | length) | select($t[.] | (startswith("-") or runner) | not)] | first) as $i
-            | {t: $t, i: $i, w: (if $i == null then null else ($t[$i] | split("/") | last | split("@") | first) end)};
-        def vite: .w == "vite" and .t[.i + 1] != "build";
-        def rollout: .t as $t | any(range(0; ($t | length) - 1); $t[.] == "rollout" and $t[. + 1] == "status");
-        def watchflag: (.w == "gh" or (.w == "kubectl" and rollout) | not) and (.t | any(.[]; split("=") as $p
-            | ($p[0] == "--watch" or $p[0] == "--watchall")
-              and (($p | length) == 1 or (($p[1:] | join("=")) as $v | $v != "false" and $v != "0"))));
-        def segsvc: any(splits("[&|;]") | seg; vite or watchflag);
-        def svc: ascii_downcase | (test($re) or segsvc);
+        def among($list): . as $x | any($list | split("|")[]; . == $x);
+        def word: ((split("/") | last) // "") | ((split("@") | first) // "");
+        def cwalk($t): . as $i
+            | if $i >= ($t | length) then $i
+              elif ($t[$i] | among($vflags)) then ($i + 2 | cwalk($t))
+              elif ($t[$i] | among($runners) or startswith("-")) then ($i + 1 | cwalk($t))
+              else $i end;
+        def at($t; $i; $p): all(range(0; $p | length); (($t[$i + .] // null) | if . == null then null else word end) == $p[.]);
+        def segsvc: [splits($tokre) | select(. != "")] as $t
+            | ([range(0; $t | length) | select($t[.]
+                | (test("^[a-z_][a-z0-9_]*=") or among($wrappers) or startswith("-")
+                   or test("^[0-9][0-9.]*[smhd]?$")) | not)] | first) as $h
+            | if $h == null then false else
+              ($h | cwalk($t)) as $c0
+              | (if (($t[$c0] // "") | word | startswith("python")) and $t[$c0 + 1] == "-m"
+                 then $c0 + 2 else $c0 end) as $c
+              | (($t[$c] // "") | word) as $cmd
+              | def starts($p): at($t; $h; $p) or at($t; $c; $p);
+              any($phrases | split("|")[] | split(" "); starts(.))
+              or ($c > $h and ($cmd == "dev" or $cmd == "start")
+                  and (($t[$c - 1] | among($runners)) or ($c >= 2 and ($t[$c - 2] | among($vflags)))))
+              or ((($t[$h] // "") | word) == "kubectl" and any($t[]; . == "port-forward"))
+              or ($cmd == "vite" and (any($t[$c + 1:][]; . == "build") | not))
+              or ((starts(["docker", "compose", "up"]) or starts(["docker-compose", "up"]))
+                  and (any($t[]; . == "-d" or . == "--detach" or . == "--abort-on-container-exit"
+                              or startswith("--exit-code-from")) | not))
+              or ((($cmd == "gh") or ($cmd == "kubectl"
+                     and any(range(0; ($t | length) - 1); $t[.] == "rollout" and $t[. + 1] == "status")) | not)
+                  and any(range(0; $t | length); . as $i | ($t[$i] | split("=")) as $p
+                      | ($p[0] == "--watch" or $p[0] == "--watchall")
+                        and ((if ($p | length) == 1 then $t[$i + 1] else ($p[1:] | join("=")) end) as $v
+                             | $v != "false" and $v != "0")))
+              end;
+        def svc: ascii_downcase | any(splits($segre); segsvc);
         def dsvc: ascii_downcase | test($dre);
         def blank: test("\\S") | not;
         [ (.background_tasks // empty) | arrays | .[] | objects
@@ -346,7 +385,7 @@ if [[ "$status" == "done" ]]; then
           | select(.type == "subagent" or .type == "workflow" or .type == "teammate"
                    or (.type == "shell"
                        and (if ($c | blank) then (($raw_d | blank) or ($raw_d | dsvc)) | not
-                            else (($c | svc) or ($raw_d | dsvc)) | not end)))
+                            else ($c | svc) | not end)))
           | ($raw_d | gsub("^\\s+|\\s+$"; "")) as $d
           | if $d != "" then $d
             else ([$c | splits("\\s+") | select(. != "")] | .[0] // "" | split("/") | last // "")

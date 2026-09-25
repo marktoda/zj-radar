@@ -178,11 +178,7 @@ pub(crate) fn path_is_managed(path: &Path) -> bool {
 fn refresh_wasm(src: Option<&Path>, wasm_dest: &Path, dry_run: bool) {
     let Some(src) = src else { return }; // no wasm source: uninstall, or a dry-run --download
     if path_is_managed(wasm_dest) {
-        eprintln!(
-            "zellij: wasm at {} is a symlink (managed by Nix / home-manager) — zj-radar will not \
-             overwrite it; update the wasm via your Nix config instead. See docs/install.md.",
-            wasm_dest.display()
-        );
+        print_managed_wasm_notice(wasm_dest);
         return;
     }
     let bytes = match std::fs::read(src) {
@@ -203,6 +199,51 @@ fn refresh_wasm(src: Option<&Path>, wasm_dest: &Path, dry_run: bool) {
         Ok(()) => println!("zellij: wasm updated at {}", wasm_dest.display()),
         Err(e) => crate::exit::fail_report("zellij", format!("wasm copy failed — {e}")),
     }
+}
+
+fn print_managed_wasm_notice(wasm_dest: &Path) {
+    eprintln!(
+        "zellij: wasm at {} is a symlink (managed by Nix / home-manager) — zj-radar will not \
+         overwrite it; update the wasm via your Nix config instead. See docs/install.md.",
+        wasm_dest.display()
+    );
+}
+
+/// Resolve an install's wasm source: the `--wasm` path, or a `--download`
+/// fetch of the wasm matching this CLI's version. Under `--dry-run` the fetch
+/// is skipped ("write nothing" must also mean "works offline") and announced
+/// instead: `Ok(None)`. `Err(())` once the refusal has been reported.
+fn resolve_wasm_src(wasm: Option<&Path>, download: bool, dry_run: bool, wasm_dest: &Path) -> Result<Option<PathBuf>, ()> {
+    if download && dry_run {
+        println!(
+            "zellij: would download zj_radar.wasm v{} -> {} (dry-run)",
+            wasm_download_version(),
+            wasm_dest.display()
+        );
+        return Ok(None);
+    }
+    let src = if download {
+        match download_wasm(&wasm_download_version()) {
+            Ok(path) => path,
+            Err(e) => {
+                crate::exit::fail_report("zellij", format!("refused — {e}"));
+                return Err(());
+            }
+        }
+    } else {
+        // Callers only resolve with a wasm source (see `setup_path`), so the
+        // None arm is defensive only.
+        let Some(p) = wasm else {
+            crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
+            return Err(());
+        };
+        p.to_path_buf()
+    };
+    if !src.is_file() {
+        crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
+        return Err(());
+    }
+    Ok(Some(src))
 }
 
 /// Refusal for a bare `setup zellij` with no wasm source: name the install
@@ -309,6 +350,17 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                 run_layout_uninstall(&layout_path, dry_run);
             } else {
                 print_snippet_for(&layout_path);
+                // The wasm is not the managed file: a curl-installed wasm at
+                // the stable path beside a home-manager config.kdl still
+                // refreshes (`update` re-runs exactly this), unless the wasm
+                // is itself a symlink — Nix's to move.
+                if wasm.is_some() || download {
+                    if path_is_managed(&wasm_dest) {
+                        print_managed_wasm_notice(&wasm_dest);
+                    } else if let Ok(src) = resolve_wasm_src(wasm, download, dry_run, &wasm_dest) {
+                        refresh_wasm(src.as_deref(), &wasm_dest, dry_run);
+                    }
+                }
             }
             return;
         }
@@ -334,49 +386,18 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
         SetupPath::Full => {}
     }
 
-    // Resolve the wasm source: an explicit --wasm path, or --download (fetch the
-    // wasm matching this CLI's version). `downloaded` outlives the borrow in `src`.
-    // Under --dry-run the fetch is skipped ("write nothing" must also mean "works
-    // offline"): the config splice below needs only the *destination* path, and
-    // the dry-run arm never copies — `src` stays None, announced here instead.
-    let downloaded: PathBuf;
-    let src: Option<&Path> = if uninstall || (download && dry_run) {
+    // Resolve the wasm source (see `resolve_wasm_src`). Under --dry-run
+    // --download `src` stays None: the config splice below needs only the
+    // *destination* path, and the dry-run arm never copies.
+    let src_buf = if uninstall {
         None
-    } else if download {
-        match download_wasm(&wasm_download_version()) {
-            Ok(path) => {
-                downloaded = path;
-                Some(downloaded.as_path())
-            }
-            Err(e) => {
-                crate::exit::fail_report("zellij", format!("refused — {e}"));
-                return;
-            }
-        }
     } else {
-        wasm
-    };
-
-    if !uninstall {
-        if download && dry_run {
-            println!(
-                "zellij: would download zj_radar.wasm v{} -> {} (dry-run)",
-                wasm_download_version(),
-                wasm_dest.display()
-            );
-        } else {
-            // `SetupPath::Full` guarantees a wasm source on install (see
-            // `setup_path`), so the None arm is defensive only.
-            let Some(src) = src else {
-                crate::exit::fail_report("zellij", NO_WASM_REFUSAL);
-                return;
-            };
-            if !src.is_file() {
-                crate::exit::fail_report("zellij", format!("refused — wasm not found at {}", src.display()));
-                return;
-            }
+        match resolve_wasm_src(wasm, download, dry_run, &wasm_dest) {
+            Ok(src) => src,
+            Err(()) => return,
         }
-    }
+    };
+    let src = src_buf.as_deref();
 
     let existing = env.config_text.unwrap_or_default();
     let Some(outcome) = edit_or_report("zellij", edit_zellij(&existing, &location, !uninstall, force))

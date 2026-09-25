@@ -33,11 +33,10 @@ fn derive_hook_update(v: &Value) -> Option<AgentUpdate> {
             )
         }
         "PermissionRequest" => (Status::Pending, permission_message(v)),
-        "SubagentStart" => (Status::Running, "delegating".to_string()),
-        "SubagentStop" => (
-            Status::Running,
-            last_assistant_message(v).unwrap_or_else(|| "delegating".into()),
-        ),
+        // A SubagentStop's `last_assistant_message` is the subagent's report,
+        // never the running msg (only a `Stop`'s is): the main turn is still
+        // going, so it stays "delegating" (same rule as Claude's).
+        "SubagentStart" | "SubagentStop" => (Status::Running, "delegating".to_string()),
         "Stop" => turn_end(last_assistant_message(v).unwrap_or_default()),
         _ => return None,
     };
@@ -87,8 +86,7 @@ fn permission_message(v: &Value) -> String {
 }
 
 /// The non-blank `last_assistant_message`, or `None` — a blank one is as
-/// good as absent (a SubagentStop falls back to "delegating", not a blank
-/// active row).
+/// good as absent.
 fn last_assistant_message(v: &Value) -> Option<String> {
     v.get("last_assistant_message")
         .and_then(|x| x.as_str())
@@ -207,10 +205,10 @@ mod tests {
               "last_assistant_message": "reviewed the tests"
             }"#,
         );
+        // The subagent's report is never the running msg.
         assert_eq!(u.status, Status::Running);
-        assert_eq!(u.msg, "reviewed the tests");
+        assert_eq!(u.msg, "delegating");
 
-        // A blank message is as good as absent: never a blank active row.
         for blank in [r#""""#, r#""  ""#] {
             let u = update(&format!(r#"{{"hook_event_name": "SubagentStop", "last_assistant_message": {blank}}}"#));
             assert_eq!((u.status, u.msg.as_str()), (Status::Running, "delegating"), "{blank}");

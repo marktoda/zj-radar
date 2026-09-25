@@ -123,10 +123,10 @@ seam is the versioned pipe payload.
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going); its `last_assistant_message` (the subagent's report) is never the message, only a `Stop`'s is |
 | A **background** subagent's own `PreToolUse` / `PostToolUse` / `SubagentStop` | nothing: the CLI records the `agentId` the parent's launch returns (one marker file per id beside the dedup records) and drops that agent's hooks, which would otherwise overwrite the parent's `waiting on …` or `pending` row. Foreground subagents report as above. Limit: a permission prompt a background subagent raises keeps the row `pending` until the parent's next hook or that subagent's completion wake. The bash fallback keeps no state and reports them. |
-| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `vite` (not `vite build`), `uvicorn`, `http.server`, `--watch` flags (not on `gh` or `kubectl rollout status`, whose watches end), `cargo watch`, `port-forward`, `tail -f`, …, matched on the task's command as whole shell words, so `test_serve.py`, `./serve/...` and `dev-deps` don't count; descriptions match only multi-word phrases such as "dev server" or "watch mode") and unknown task types don't hold the row. Limit: a snapshot shell entry without a `command` is judged by its description alone, and core only ever lowers a task's hold, so a task the launch classified as a service but the snapshot can't may show `waiting on …` with a working spinner until the next Stop. Every Stop also carries the running set as a `tasks` snapshot; a `PostToolUse` that backgrounds work carries its start, and a `<task-notification>` `UserPromptSubmit` carries each outcome (see `crates/core/src/task.rs`). |
+| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service shells and unknown task types don't hold the row. A shell's command alone decides whether it is a service, read only at command positions: it splits on `&`, `|`, `;`, newline, CR, `(`, `)` and backticks; each segment's *head* is its first word past env assignments, wrappers (`env`, `nohup`, `sudo`, `bash -c`, …) and flags, and its *command word* follows past package runners (`npx`, `pnpm exec`, `bun x`, `bundle exec`, …) and their flags (`-p`/`--package`-style flags skip their value). A segment is a service when a phrase (`npm start`, `run dev`, `serve`, `rails s`, `python -m http.server`, `uvicorn`, `cargo watch`, `kubectl port-forward`, `tail -f`, …) starts at either position, its command word is `vite` with no `build` argument, `docker compose up` starts there without `-d`/`--detach`/`--abort-on-container-exit`/`--exit-code-from`, or it has a `--watch`/`--watchall` flag not switched off (`=false`/`=0`/a following `false`/`0`) and its command word isn't `gh` or `kubectl … rollout status` (whose watches end). Words anywhere else never count, so `cd serve && cargo test`, `pytest tests/test_serve.py` and `make dev-deps` hold. The shared case corpus is `crates/cli/src/agents/service_cases.rs`. Limit: a snapshot shell entry without a `command` is judged by its description alone (multi-word phrases such as "dev server" or "watch mode"), and core only ever lowers a task's hold, so a task the launch classified as a service but the snapshot can't may show `waiting on …` with a working spinner until the next Stop. Every Stop also carries the running set as a `tasks` snapshot; a `PostToolUse` that backgrounds work carries its start, and a `<task-notification>` `UserPromptSubmit` carries each outcome (see `crates/core/src/task.rs`). |
 | Claude `SessionStart` (`source: "clear"`) | `idle` (resets the row on `/clear`) |
 | Claude `SessionEnd` | `idle` |
-| Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
+| Codex `UserPromptSubmit` / tool hooks / subagents | `running`; `SubagentStart` / `SubagentStop` say `delegating` (a SubagentStop's `last_assistant_message` is the subagent's report, never the message, as with Claude) |
 | Codex `PermissionRequest` | `pending` |
 | Codex `Stop` / legacy `agent-turn-complete` | `done`, or `pending` when the last assistant message ends in a question (same rule as Claude's `Stop`) |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
@@ -250,14 +250,17 @@ mounts it as the plugin-URL-scoped folder shared across instances), then
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance holds the same converged stores after a broadcast, so one write per
-edge is the whole snapshot: the instance whose tab holds the edge's pane
-writes, and edges with no nameable owner are written by everyone
-(`RadarState::persists_edges_for`). Ownership rather than visibility, because
-Zellij spawns fresh plugin instances — seeded from this file — for every
-client that attaches, while the detached client's hidden instances are what
-kept it current meanwhile. Overlapping writers produce identical content, so
-races are benign. With persistence off, late sidebars start empty until the
-next broadcast.
+edge is the whole snapshot. For a pushed edge the instance whose tab holds
+the edge's pane writes, and edges with no nameable owner are written by
+everyone (`RadarState::persists_edges_for`). Ownership rather than visibility,
+because Zellij spawns fresh plugin instances — seeded from this file — for
+every client that attaches, while the detached client's hidden instances are
+what kept it current meanwhile. Timer edges (debounced promotion, Done
+confirm, TTL recede, stale-Running expiry) are the exception: every instance
+writes them. Instances tick on unaligned phases, so a lagging sibling's
+own-pane write can briefly put pre-confirm state back in the file; its own
+timer write repairs it (`RadarState::timer`). With persistence off, late
+sidebars start empty until the next broadcast.
 
 ## 6. Plugin ↔ Zellij wiring
 

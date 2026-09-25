@@ -503,6 +503,91 @@ fn bare_check_warns_not_fails_for_a_path_less_codex_whose_hooks_are_installed() 
     assert!(!stdout.contains("missing codex binary"), "{stdout}");
 }
 
+// ── Codex --legacy-notify: detection, backup, and restore ─────────────────────
+
+fn codex_cmd(codex_home: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("zj-radar").unwrap().args(args).env("CODEX_HOME", codex_home.path()).assert()
+}
+
+#[test]
+fn bare_check_counts_a_legacy_notify_codex_as_a_wired_producer() {
+    // `--legacy-notify` writes no hooks.json; the doctor must still see Codex
+    // as wired (the zellij `producer` item) and grade the notify route instead
+    // of reporting hooks.json missing.
+    let home = TempDir::new().unwrap();
+    let shim = ShimDir::new();
+    shim.add_recorder("codex");
+    shim.add_recorder("zj-radar");
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::write(home.path().join(".codex/config.toml"), "model = \"x\"\n").unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--legacy-notify", "-y"])
+        .env("HOME", home.path())
+        .env_remove("CODEX_HOME")
+        .env("PATH", shim.dir.path())
+        .assert()
+        .success();
+    let output = bare_check(&home, shim.dir.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok producer: wired: codex"), "{stdout}");
+    assert!(stdout.contains("ok legacy notify: zj-radar owns Codex notify"), "{stdout}");
+    assert!(!stdout.contains("hooks.json"), "{stdout}");
+}
+
+#[test]
+fn legacy_notify_uninstall_restores_the_notifier_force_replaced() {
+    let codex_home = TempDir::new().unwrap();
+    let config = codex_home.path().join("config.toml");
+    let bak = codex_home.path().join("config.toml.zj-radar.bak");
+    let original = "notify = [\"my-notifier\", \"--flag\"]\nmodel = \"x\"\n";
+    fs::write(&config, original).unwrap();
+
+    codex_cmd(&codex_home, &["setup", "codex", "--legacy-notify", "--force", "-y"]).success();
+    assert!(fs::read_to_string(&config).unwrap().contains("\"zj-radar\", \"notify\", \"codex\""));
+    assert_eq!(fs::read_to_string(&bak).unwrap(), original);
+
+    let out = codex_cmd(&codex_home, &["setup", "codex", "--legacy-notify", "--uninstall", "-y"]).success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(stdout.contains("previous notify restored"), "{stdout}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), original, "the user's notifier is back in the slot");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), original, "the .bak must never be overwritten with our line");
+}
+
+#[test]
+fn legacy_notify_rewrite_never_clobbers_a_foreign_backup() {
+    // The .bak holds the user's notifier; replacing our own slot (a hand-edit
+    // of another key, then re-running --force) must not copy ours over it.
+    let codex_home = TempDir::new().unwrap();
+    let config = codex_home.path().join("config.toml");
+    let bak = codex_home.path().join("config.toml.zj-radar.bak");
+    let original = "notify = [\"my-notifier\"]\n";
+    fs::write(&config, original).unwrap();
+    codex_cmd(&codex_home, &["setup", "codex", "--legacy-notify", "--force", "-y"]).success();
+    // Our slot now, but uninstall + reinstall churn must keep the .bak theirs.
+    fs::write(&config, "notify = [\"zj-radar\", \"notify\", \"codex\"]\nmodel = \"y\"\n").unwrap();
+    codex_cmd(&codex_home, &["setup", "codex", "--legacy-notify", "--uninstall", "-y"]).success();
+    assert_eq!(fs::read_to_string(&bak).unwrap(), original);
+    assert_eq!(fs::read_to_string(&config).unwrap(), "notify = [\"my-notifier\"]\nmodel = \"y\"\n");
+}
+
+#[test]
+fn setup_codex_refuses_an_unreadable_config_instead_of_treating_it_as_empty() {
+    // A directory where the file should be: present, unreadable. Treating it
+    // as empty (the old `unwrap_or_default`) would write ours over it.
+    let codex_home = isolated_codex_home();
+    fs::create_dir(codex_home.path().join("config.toml")).unwrap();
+    let out = codex_cmd(&codex_home, &["setup", "codex", "--legacy-notify", "-y"]).failure();
+    assert!(String::from_utf8_lossy(&out.get_output().stderr).contains("could not be read"));
+    assert!(codex_home.path().join("config.toml").is_dir());
+
+    let codex_home = TempDir::new().unwrap();
+    fs::write(codex_home.path().join("config.toml"), "model = \"x\"\n").unwrap();
+    fs::create_dir(codex_home.path().join("hooks.json")).unwrap();
+    let out = codex_cmd(&codex_home, &["setup", "codex", "-y"]).failure();
+    assert!(String::from_utf8_lossy(&out.get_output().stderr).contains("could not be read"));
+}
+
 // ── Layout injection tests ────────────────────────────────────────────────────
 //
 // `setup zellij --inject` (no --wasm / --download) takes the inject-only path:
@@ -882,6 +967,54 @@ fn setup_zellij_inject_dry_run_prints_and_does_not_write() {
         stdout.contains("dry-run"),
         "dry-run output must mention dry-run; stdout:\n{stdout}"
     );
+}
+
+#[test]
+fn setup_zellij_inject_honors_a_default_layout_given_as_a_path() {
+    // Zellij takes a PATH in `default_layout`; the name rule appended a second
+    // `.kdl` and offered to create a bogus `/…/mine.kdl.kdl`.
+    let config_dir = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    let mine = elsewhere.path().join("mine.kdl");
+    fs::write(&mine, FIXTURE_LAYOUT).unwrap();
+    fs::write(
+        config_dir.path().join("config.kdl"),
+        format!("default_layout \"{}\"\n", mine.display()),
+    )
+    .unwrap();
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject", "-y"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("mine.kdl.kdl"), "{stdout}");
+    assert!(!elsewhere.path().join("mine.kdl.kdl").exists());
+    assert!(fs::read_to_string(&mine).unwrap().contains("plugin location=\"radar\""), "rail injected into the path");
+}
+
+#[test]
+fn setup_zellij_inject_honors_layout_dir_for_a_named_layout() {
+    let config_dir = TempDir::new().unwrap();
+    let layouts = TempDir::new().unwrap();
+    let main = layouts.path().join("main.kdl");
+    fs::write(&main, FIXTURE_LAYOUT).unwrap();
+    fs::write(
+        config_dir.path().join("config.kdl"),
+        format!("layout_dir \"{}\"\ndefault_layout \"main\"\n", layouts.path().display()),
+    )
+    .unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "zellij", "--inject", "-y"])
+        .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .assert()
+        .success();
+    assert!(fs::read_to_string(&main).unwrap().contains("plugin location=\"radar\""));
+    assert!(!config_dir.path().join("layouts").join("main.kdl").exists(), "no bogus file under the config dir");
 }
 
 // ── zellij producer hint on the success tail ─────────────────────────────────
@@ -1599,9 +1732,35 @@ fn setup_claude_uninstall_runs_plugin_uninstall() {
         .success();
     assert_eq!(
         claude_args(&shim),
-        vec!["plugin uninstall zj-radar-claude".to_string()],
+        vec!["plugin uninstall zj-radar-claude@zj-radar".to_string()],
         "uninstall must go through the plugin CLI too"
     );
+}
+
+#[test]
+fn claude_check_passes_a_path_less_claude_whose_plugin_is_installed() {
+    // Claude Code's local install is an alias to ~/.claude/local/claude,
+    // never on PATH: with the plugin installed, `setup claude --check` must
+    // warn (exit 0), and the bare doctor must include Claude at all.
+    let home = claude_home(true);
+    let shim = ShimDir::new();
+    shim.add_recorder("zj-radar");
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--check"])
+        .env("HOME", home.path())
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env("PATH", shim.dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("warn claude binary: not found on PATH"), "{stdout}");
+    let output = bare_check(&home, shim.dir.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("claude:"), "{stdout}");
+    assert!(!stdout.contains("missing claude binary"), "{stdout}");
 }
 
 #[test]
@@ -2268,4 +2427,38 @@ fn setup_zellij_rerun_never_writes_through_a_symlinked_wasm() {
     assert_eq!(fs::read(&store).unwrap(), b"\0asm-STORE", "store target must be untouched");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Nix"), "should explain why the wasm was skipped: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_zellij_refreshes_the_wasm_beside_a_symlinked_config() {
+    // home-manager owns config.kdl (a symlink), but the wasm at the stable
+    // path is a plain file (curl-installed): the managed config must not stop
+    // the wasm refresh, or `update` reads "stale" forever and promises a
+    // restart that loads nothing new.
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let managed = src.path().join("hm-config.kdl");
+    fs::write(&managed, "// generated by home-manager\n").unwrap();
+    std::os::unix::fs::symlink(&managed, config_dir.path().join("config.kdl")).unwrap();
+    let dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, b"\0asm-OLD").unwrap();
+    let b = src.path().join("b.wasm");
+    fs::write(&b, b"\0asm-B").unwrap();
+
+    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
+    assert_eq!(fs::read(&dest).unwrap(), b"\0asm-B", "the wasm is not the managed file");
+    assert_eq!(fs::read_to_string(&managed).unwrap(), "// generated by home-manager\n", "config untouched");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("wasm updated"));
+
+    // A symlinked wasm beside the symlinked config stays Nix's to move.
+    let store = src.path().join("store.wasm");
+    fs::write(&store, b"\0asm-STORE").unwrap();
+    fs::remove_file(&dest).unwrap();
+    std::os::unix::fs::symlink(&store, &dest).unwrap();
+    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
+    assert_eq!(fs::read(&store).unwrap(), b"\0asm-STORE");
+    assert!(fs::symlink_metadata(&dest).unwrap().file_type().is_symlink());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("wasm at"), "should name the skipped wasm");
 }

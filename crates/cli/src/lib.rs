@@ -86,9 +86,9 @@ enum Command {
         /// `generic` (any script — pass explicit `--status`/`--msg`/`--task`
         /// flags, no hook payload needed).
         agent: String,
-        /// Hook payload as a trailing argument (codex). Claude, opencode and pi pass it on stdin instead.
+        /// Hook payload as a trailing argument (Codex's legacy notify slot). Hooks and bridges pass it on stdin instead.
         input: Option<String>,
-        /// Explicit status (claude hooks pass this; required for `generic`):
+        /// Explicit status (hooks and bridges pass this; required for `generic`):
         /// running | pending | done | error | idle.
         #[arg(long)]
         status: Option<String>,

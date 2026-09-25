@@ -113,8 +113,12 @@ fn uninstall_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
         println!("claude: already removed ({CLAUDE_PLUGIN} plugin not installed)");
         return;
     }
+    // The qualified id, exactly as `install_claude` installed it (and as
+    // installed_plugins.json keys it): a bare name is ambiguous when another
+    // marketplace ships a plugin of the same name.
+    let plugin_id = claude_plugin_id();
     if dry_run {
-        println!("claude: would run `claude plugin uninstall {CLAUDE_PLUGIN}` (dry-run)");
+        println!("claude: would run `claude plugin uninstall {plugin_id}` (dry-run)");
         return;
     }
     if !which("claude") {
@@ -129,7 +133,7 @@ fn uninstall_claude(wired: bool, dry_run: bool, yes: bool, is_tty: bool) {
         println!("claude: skipped (declined)");
         return;
     }
-    if let Err(e) = run_claude(&["plugin", "uninstall", CLAUDE_PLUGIN]) {
+    if let Err(e) = run_claude(&["plugin", "uninstall", &plugin_id]) {
         crate::exit::fail_report("claude", format!("plugin uninstall failed — {e}"));
         return;
     }

@@ -211,11 +211,15 @@ pub(crate) fn check_claude() -> bool {
 
 pub(crate) fn claude_check_items(on_path: bool, wired: bool) -> Vec<CheckItem> {
     vec![
-        if on_path {
-            CheckItem::ok("claude binary", "found on PATH")
-        } else {
-            CheckItem::missing("claude binary", "not found on PATH")
-        },
+        // Claude Code's local install is a shell alias to
+        // `~/.claude/local/claude`, never on PATH — so with the plugin
+        // installed, a PATH-less binary is advice, like the bridge agents.
+        agent_binary_item(
+            "claude binary",
+            on_path,
+            wired,
+            "the plugin is installed (a local install runs via a shell alias)",
+        ),
         if wired {
             CheckItem::ok("plugin", format!("{CLAUDE_PLUGIN} plugin installed"))
         } else {
@@ -427,6 +431,13 @@ pub(crate) fn codex_check_items(f: &CodexFacts, legacy_notify: bool) -> Vec<Chec
     let wired = matches!(f.owned_hook_events, Some(Ok(n)) if n == CODEX_HOOK_EVENTS.len())
         || matches!(f.notify, CodexNotifyState::Ours);
     items.push(agent_binary_item("codex binary", f.codex_on_path, wired, "zj-radar is wired into Codex"));
+    // A `--legacy-notify` install has no hooks to grade: with our notify slot
+    // in place and none of our hooks, report the notify route even when the
+    // check didn't pass the flag (the bare doctor never does), so a working
+    // notify-only setup doesn't read "hooks.json missing".
+    let legacy_notify = legacy_notify
+        || (matches!(f.notify, CodexNotifyState::Ours)
+            && !matches!(f.owned_hook_events, Some(Ok(n)) if n > 0));
     items.push(if f.zj_radar_on_path {
         CheckItem::ok("zj-radar binary", "found on PATH")
     } else {
@@ -548,6 +559,22 @@ mod tests {
         // Nothing of ours (or only a config.toml) → still Missing.
         assert_eq!(binary(None, Some("model = \"x\"\n".to_string()), false), CheckLevel::Missing);
         assert_eq!(binary(Some("{}".to_string()), None, false), CheckLevel::Missing);
+    }
+
+    #[test]
+    fn codex_check_grades_a_notify_only_install_without_the_flag() {
+        // The bare doctor never passes --legacy-notify: our notify slot and no
+        // hooks of ours must still grade as the notify route, not "missing".
+        let facts = analyze_codex(&CodexEnv {
+            codex_on_path:    true,
+            zj_radar_on_path: true,
+            config_text:      Some("notify = [\"zj-radar\", \"notify\", \"codex\"]\n".to_string()),
+            hooks_text:       None,
+        });
+        let items = codex_check_items(&facts, false);
+        assert!(items.contains(&CheckItem::ok("legacy notify", "zj-radar owns Codex notify")), "{items:?}");
+        assert!(items.iter().all(|i| i.level != CheckLevel::Missing), "{items:?}");
+        assert!(items.iter().all(|i| i.name != "hooks.json"), "{items:?}");
     }
 
     #[test]
@@ -911,8 +938,13 @@ mod tests {
             plugin.detail
         );
 
-        // Binary absent → missing.
+        // Binary absent but the plugin installed → a warn (Claude Code's
+        // local install is an alias, never on PATH); absent and unwired →
+        // missing.
         let items = claude_check_items(false, true);
+        let binary = items.iter().find(|i| i.name == "claude binary").unwrap();
+        assert_eq!(binary.level, CheckLevel::Warn, "{binary:?}");
+        let items = claude_check_items(false, false);
         assert!(items.contains(&CheckItem::missing("claude binary", "not found on PATH")));
 
         // Plugin absent → missing, with the remedy pinned so the hint the
