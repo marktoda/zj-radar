@@ -1783,9 +1783,12 @@ fn ttl_recede_lands_in_the_ledger_with_completion_stamp() {
     assert_eq!(radar.command(1).unwrap().status, Status::Done);
     assert!(radar.ledger_is_empty(), "still inside the TTL window — nothing has receded yet");
 
+    let before = radar.ledger_lines();
+    assert!(std::rc::Rc::ptr_eq(&before, &radar.ledger_lines()), "no mutation: the memo hits");
     radar.timer(confirm_tick + DONE_TTL_TICKS, 900); // TTL recede
 
     let lines = radar.ledger_lines();
+    assert!(before.is_empty(), "the pre-recede memo is not reused after the push");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].label, "cargo build");
     assert!(!lines[0].error);

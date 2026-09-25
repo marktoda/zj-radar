@@ -438,7 +438,7 @@ pub(crate) struct PluginRuntime {
 }
 
 /// See [`PluginRuntime::last_render_key`].
-type RenderKey = (std::rc::Rc<Vec<TabRow>>, Vec<LedgerLine>, Vec<BadgeEntry>, theme::DerivedColors);
+type RenderKey = (std::rc::Rc<Vec<TabRow>>, std::rc::Rc<Vec<LedgerLine>>, Vec<BadgeEntry>, theme::DerivedColors);
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -1047,8 +1047,8 @@ impl PluginRuntime {
 
     /// The content-derived inputs a `render()` at this instant would draw
     /// from — everything except geometry and the wall-clock animation frame.
-    /// `rows()` is memoized on the radar generation, so consulting this per
-    /// event costs a compare, not a rollup.
+    /// `rows()` and `ledger_lines()` are memoized on the radar generation, so
+    /// consulting this per event costs a compare, not a rollup.
     fn current_render_key(&self) -> RenderKey {
         (
             self.radar.rows(self.tick),

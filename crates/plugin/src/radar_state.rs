@@ -315,6 +315,12 @@ pub(crate) struct RadarState {
     /// render paths; the plugin is single-threaded by construction (one wasm
     /// instance per tab).
     rows_memo: std::cell::RefCell<Option<RowsMemo>>,
+    /// Memo for [`ledger_lines`](Self::ledger_lines), keyed on `generation`
+    /// alone: its inputs are the ledger (every push bumps the generation —
+    /// see `ledger_receded`; a snapshot load touches) and `tabs` (for the
+    /// live tab-position lookup). The render gate consults it on every
+    /// render-requesting event in every instance.
+    ledger_memo: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<LedgerLine>>)>>,
 }
 
 /// The [`RadarState::rows_memo`] entry: the generation and the count of
@@ -332,7 +338,8 @@ impl RadarState {
     /// that mutates something `rows()` reads must call this (the memo makes a
     /// missed call a *stale rail* bug, not just a slow one — keep the call
     /// sites audited against `rows`'s inputs: `tabs`, `tab_panes`,
-    /// `flash_until`, and both stores).
+    /// `flash_until`, and both stores — plus the ledger, for the
+    /// [`ledger_lines`](Self::ledger_lines) memo).
     fn touch(&mut self) {
         self.generation += 1;
     }
@@ -1042,18 +1049,27 @@ impl RadarState {
     /// position is a *live* lookup of the stored `tab_id` against `self.tabs`
     /// — `None` once that tab has closed, which the renderer reads as
     /// click-inert (the ledger itself never forgets an entry just because its
-    /// tab went away).
-    pub(crate) fn ledger_lines(&self) -> Vec<LedgerLine> {
-        self.ledger
-            .entries()
-            .map(|e| LedgerLine {
-                at_epoch_s: e.at_epoch_s,
-                error: e.outcome == LedgerOutcome::Error,
-                tab_name: e.tab_name.clone(),
-                label: e.label.clone(),
-                tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
-            })
-            .collect()
+    /// tab went away). Memoized on the generation, like [`rows`](Self::rows).
+    pub(crate) fn ledger_lines(&self) -> std::rc::Rc<Vec<LedgerLine>> {
+        if let Some((generation, lines)) = self.ledger_memo.borrow().as_ref() {
+            if *generation == self.generation {
+                return lines.clone();
+            }
+        }
+        let lines: std::rc::Rc<Vec<LedgerLine>> = std::rc::Rc::new(
+            self.ledger
+                .entries()
+                .map(|e| LedgerLine {
+                    at_epoch_s: e.at_epoch_s,
+                    error: e.outcome == LedgerOutcome::Error,
+                    tab_name: e.tab_name.clone(),
+                    label: e.label.clone(),
+                    tab_position: self.tabs.iter().find(|t| t.id == e.tab_id).map(|t| t.position),
+                })
+                .collect(),
+        );
+        *self.ledger_memo.borrow_mut() = Some((self.generation, lines.clone()));
+        lines
     }
 
     /// Any ledger entry still younger than the saturate window — drives the
@@ -1189,7 +1205,12 @@ impl RadarState {
                 continue;
             };
             if let Some(entry) = LedgerEntry::from_observation(pane_id, &obs, *tab_id, tab_name) {
-                self.ledger.push(entry);
+                // The `ledger_lines` memo keys on the generation; a recede
+                // edge almost always touches anyway, but the memo must not
+                // depend on that.
+                if self.ledger.push(entry) {
+                    self.touch();
+                }
             }
         }
     }
