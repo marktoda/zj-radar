@@ -335,6 +335,9 @@ pub(crate) struct PiFacts {
 
 /// The oldest pi whose events the bridge needs (`agent_settled`).
 pub(crate) const PI_MIN_VERSION: (u32, u32, u32) = (0, 80, 4);
+/// The oldest pi whose extension dialogs the bridge can see, so they surface
+/// as "needs you" (docs/producers.md → pi). Older pis still work otherwise.
+pub(crate) const PI_DIALOG_MIN_VERSION: (u32, u32, u32) = (0, 84, 4);
 
 pub(crate) fn analyze_pi(env: &PiEnv) -> PiFacts {
     PiFacts {
@@ -346,6 +349,12 @@ pub(crate) fn analyze_pi(env: &PiEnv) -> PiFacts {
 }
 
 /// The first whitespace token of `text` that reads as `[v]X.Y.Z[-pre]`.
+///
+/// Deliberately looser than `update.rs`'s `parse_version`: this reads a
+/// third-party tool's free-form `--version` banner ("pi v0.80.4", a prerelease
+/// suffix) to grade a floor, where a best-effort parse is right; that one
+/// compares zj-radar's own release tags before replacing a binary, so it
+/// accepts only a bare `MAJOR.MINOR.PATCH` and fails closed.
 fn parse_semver(text: &str) -> Option<(u32, u32, u32)> {
     text.split_whitespace().find_map(|tok| {
         let tok = tok.trim_start_matches('v');

@@ -8,7 +8,7 @@
 
 use super::*;
 use super::detect::opencode_plugin_is_ours;
-use super::vendored::{plan_install, plan_uninstall, read_existing, Existing, InstallPlan, UninstallPlan};
+use super::vendored::{plan_install, plan_uninstall, read_existing, remove_backup_if_ours, Existing, InstallPlan, UninstallPlan};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -39,6 +39,12 @@ pub(crate) fn opencode_plugin_text() -> Option<String> {
 
 pub(crate) fn opencode_tui_plugin_text() -> Option<String> {
     opencode_tui_plugin_path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+/// Is either of our bridges on disk? The bare doctor's "opencode is set up
+/// here" signal for a PATH-less (bun/Nix-run) opencode.
+pub(crate) fn opencode_bridge_is_ours() -> bool {
+    [opencode_plugin_text(), opencode_tui_plugin_text()].iter().flatten().any(|t| opencode_plugin_is_ours(t))
 }
 
 fn opencode_plugins_dir() -> Option<PathBuf> {
@@ -101,7 +107,7 @@ fn paths_list(paths: impl Iterator<Item = PathBuf>) -> String {
     paths.map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and ")
 }
 
-pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
+pub(crate) fn setup_opencode(uninstall: bool, opts: BridgeSetupOpts) {
     if opencode_config_dir().is_none() {
         crate::exit::fail_report(
             "opencode",
@@ -143,14 +149,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
         .map(|(b, _)| b)
         .collect();
     if !foreign.is_empty() {
-        let why = foreign
-            .iter()
-            .map(|b| match &b.existing {
-                Existing::Unreadable(e) => format!("{} could not be read ({e})", b.path.display()),
-                _ => format!("{} is not ours (no marker)", b.path.display()),
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
+        let why = foreign.iter().map(|b| b.existing.refusal_reason(&b.path)).collect::<Vec<_>>().join("; ");
         crate::exit::fail_report(
             "opencode",
             format!("{why}. Refusing to overwrite it.\nRe-run with --force to replace it."),
@@ -196,7 +195,7 @@ pub(crate) fn setup_opencode(uninstall: bool, opts: OpencodeSetupOpts) {
     print_opencode_guidance(&facts, true);
 }
 
-fn uninstall_opencode(bridges: &[Bridge], opts: &OpencodeSetupOpts) {
+fn uninstall_opencode(bridges: &[Bridge], opts: &BridgeSetupOpts) {
     let mut to_remove: Vec<&Bridge> = Vec::new();
     for b in bridges {
         match plan_uninstall(&b.existing, opencode_plugin_is_ours) {
@@ -229,10 +228,13 @@ fn uninstall_opencode(bridges: &[Bridge], opts: &OpencodeSetupOpts) {
             crate::exit::fail_report("opencode", format!("remove failed — {e}"));
             continue;
         }
-        // The rewrite path's restore point is ours too: a clean uninstall
-        // leaves nothing of zj-radar in opencode's plugins dir.
-        let _ = std::fs::remove_file(path_with_suffix(&b.path, BACKUP_SUFFIX));
         println!("opencode: plugin removed ({})", b.path.display());
+        // The rewrite path's restore point goes too when it is ours (a clean
+        // uninstall leaves nothing of zj-radar behind); a foreign one — what
+        // `--force` replaced — is the user's only copy, so it stays.
+        if let Some(bak) = remove_backup_if_ours(&b.path, opencode_plugin_is_ours) {
+            println!("opencode: left {} (not ours — the file `--force` replaced)", bak.display());
+        }
         // The 2.x plugin directory is ours only while it held our file and
         // now holds nothing; `remove_dir` refuses a non-empty dir, which is
         // exactly the "someone else put something here" case where we must

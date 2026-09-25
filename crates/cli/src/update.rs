@@ -69,17 +69,7 @@ pub fn run(options: UpdateOptions) {
     }
 
     let wasm = wasm_state(&target);
-    match &wasm {
-        WasmState::NotInstalled => {
-            println!("wasm: not installed — run `zj-radar setup zellij --download` to add the sidebar")
-        }
-        WasmState::Managed => {
-            println!("wasm: a symlink (managed by Nix / home-manager) — update it through your Nix config")
-        }
-        WasmState::Current => println!("wasm: matches v{target} (up to date)"),
-        WasmState::Stale => println!("wasm: differs from v{target} — will be refreshed"),
-        WasmState::Unknown(why) => println!("wasm: could not compare ({why}) — will be refreshed"),
-    }
+    println!("{}", wasm_status_line(&wasm, &target, options.check));
 
     let wasm_stale = wasm == WasmState::Stale;
     if options.check {
@@ -132,8 +122,9 @@ pub fn run(options: UpdateOptions) {
     }
     if cli_behind {
         // Re-wire only the producers already wired — a release may have changed
-        // the codex hook shape or the vendored opencode bridge — never one the
-        // user hasn't chosen (bare `setup` would install for every agent on PATH).
+        // the codex hook shape or the vendored opencode/pi bridges — never one
+        // the user hasn't chosen (bare `setup` would install for every agent on
+        // PATH).
         let wired = crate::producers::ProducerTexts::read().wired();
         if !wired.is_empty() {
             let mut args = vec!["setup"];
@@ -141,7 +132,10 @@ pub fn run(options: UpdateOptions) {
             args.push("-y");
             rerun(&exe, &target, &args);
         }
-        println!("zj-radar: the Claude Code plugin updates from inside Claude — `/plugin update zj-radar-claude@zj-radar`");
+        println!(
+            "zj-radar: the Claude Code plugin updates from inside Claude — `/plugin update {}`",
+            crate::setup::claude_plugin_id()
+        );
     }
     // The doctor's exit code grades install completeness (a machine with no
     // producer wired reads "missing"), not this update — its items are the
@@ -152,6 +146,25 @@ pub fn run(options: UpdateOptions) {
         .status()
     {
         crate::exit::fail_report("update", format!("could not run {} — {e}", exe.display()));
+    }
+}
+
+/// The `wasm:` report line. Only a real `update` re-runs `setup zellij
+/// --download`, so only it may promise a refresh — `--check` writes nothing,
+/// and saying "will be refreshed" there reads as if it had.
+fn wasm_status_line(wasm: &WasmState, target: &str, check: bool) -> String {
+    match wasm {
+        WasmState::NotInstalled => {
+            "wasm: not installed — run `zj-radar setup zellij --download` to add the sidebar".to_string()
+        }
+        WasmState::Managed => {
+            "wasm: a symlink (managed by Nix / home-manager) — update it through your Nix config".to_string()
+        }
+        WasmState::Current => format!("wasm: matches v{target} (up to date)"),
+        WasmState::Stale if check => format!("wasm: differs from v{target}"),
+        WasmState::Stale => format!("wasm: differs from v{target} — will be refreshed"),
+        WasmState::Unknown(why) if check => format!("wasm: could not compare against v{target} ({why})"),
+        WasmState::Unknown(why) => format!("wasm: could not compare ({why}) — will be refreshed"),
     }
 }
 
@@ -489,6 +502,17 @@ mod tests {
         assert_eq!(tag_from_latest_redirect(""), None);
         // A tag that isn't a version is not something we can compare against.
         assert_eq!(tag_from_latest_redirect("https://github.com/o/r/releases/tag/nightly"), None);
+    }
+
+    #[test]
+    fn wasm_status_line_promises_a_refresh_only_when_one_will_happen() {
+        let unknown = WasmState::Unknown("no published checksum".to_string());
+        let line = wasm_status_line(&unknown, "0.6.0", true);
+        assert!(line.contains("could not compare") && line.contains("no published checksum"), "{line}");
+        assert!(!line.contains("refreshed"), "--check writes nothing: {line}");
+        assert!(!wasm_status_line(&WasmState::Stale, "0.6.0", true).contains("refreshed"));
+        assert!(wasm_status_line(&unknown, "0.6.0", false).contains("will be refreshed"));
+        assert!(wasm_status_line(&WasmState::Stale, "0.6.0", false).contains("will be refreshed"));
     }
 
     #[test]

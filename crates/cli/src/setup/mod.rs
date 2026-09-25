@@ -182,14 +182,9 @@ pub(crate) struct CodexSetupOpts {
     is_tty:        bool,
 }
 
-pub(crate) struct OpencodeSetupOpts {
-    pub force:   bool,
-    pub dry_run: bool,
-    pub yes:     bool,
-    pub is_tty:  bool,
-}
-
-pub(crate) struct PiSetupOpts {
+/// Options for the vendored-bridge targets (opencode, pi): both are "drop a
+/// marked file into the agent's auto-loaded dir", so they take the same knobs.
+pub(crate) struct BridgeSetupOpts {
     pub force:   bool,
     pub dry_run: bool,
     pub yes:     bool,
@@ -245,16 +240,11 @@ pub fn run(options: SetupOptions<'_>) {
     }
 
     let bare = options.targets.is_empty() && options.wasm.is_none() && !options.download;
+    // Bare `setup` = detected agents only: every agent target joins there,
+    // and each `setup_*` itself skips gracefully when its agent is absent.
     let want_codex = bare || options.targets.iter().any(|a| a == "codex");
-    // Bare `setup` = detected agents only: claude and opencode join codex
-    // there, and each `setup_*` itself skips gracefully when the binary is
-    // absent.
     let want_opencode = bare || options.targets.iter().any(|a| a == "opencode");
-    // Bare `setup` = detected agents only: claude joins codex there, and
-    // `setup_claude` itself skips gracefully when the binary is absent.
     let want_claude = bare || options.targets.iter().any(|a| a == "claude");
-    // Bare `setup` = detected agents only: pi joins the others there, and
-    // `setup_pi` itself skips gracefully when the binary/agent dir is absent.
     let want_pi = bare || options.targets.iter().any(|a| a == "pi");
     let want_zellij = options.targets.iter().any(|a| a == "zellij")
         || options.wasm.is_some()
@@ -283,32 +273,29 @@ pub fn run(options: SetupOptions<'_>) {
     }
 
     if mode == Mode::Check {
-        // Bare `--check` is the doctor: inspect BOTH halves. (A bare *install*
-        // defaults to codex-only because a zellij install needs a wasm source;
-        // checking needs none, and a user asking "is my install healthy?"
-        // wants the rail's state too, not silence about it.)
+        // Bare `--check` is the doctor: it inspects the zellij half (checking
+        // needs no wasm source, and "is my install healthy?" wants the rail's
+        // state too) plus every DETECTED agent. An explicit target always
+        // reports; the bare doctor includes an agent only when it is present
+        // here (binary on PATH, or its config/bridge already installed), so a
+        // machine without that agent isn't failed by it. `update` runs this
+        // same bare doctor.
         let both = options.targets.is_empty();
+        let explicit = |t: &str| options.targets.iter().any(|a| a == t);
         let mut missing = false;
         if want_zellij || both {
             missing |= check_zellij(options.layout);
         }
-        if want_codex || both {
+        if explicit("codex") || (both && codex_installed(which("codex"))) {
             missing |= check_codex(options.legacy_notify);
         }
-        // Explicit `setup claude --check` always reports; the bare doctor
-        // includes claude only when the binary is present (detected agents),
-        // so a claude-less machine's doctor isn't failed by an agent it
-        // doesn't have.
-        if options.targets.iter().any(|a| a == "claude") || (both && which("claude")) {
+        if explicit("claude") || (both && which("claude")) {
             missing |= check_claude();
         }
-        // opencode's doctor is binary-gated the same way: a machine without
-        // opencode shouldn't be failed by an agent it doesn't have.
-        if options.targets.iter().any(|a| a == "opencode") || (both && which("opencode")) {
+        if explicit("opencode") || (both && (which("opencode") || opencode_bridge_is_ours())) {
             missing |= check_opencode();
         }
-        // pi's doctor is binary-gated like opencode's.
-        if options.targets.iter().any(|a| a == "pi") || (both && which("pi")) {
+        if explicit("pi") || (both && (which("pi") || pi_extension_is_ours_on_disk())) {
             missing |= check_pi();
         }
         if missing {
@@ -370,7 +357,7 @@ pub fn run(options: SetupOptions<'_>) {
     if want_opencode {
         setup_opencode(
             uninstall,
-            OpencodeSetupOpts {
+            BridgeSetupOpts {
                 force:   options.force,
                 dry_run: options.dry_run,
                 yes:     options.yes,
@@ -381,7 +368,7 @@ pub fn run(options: SetupOptions<'_>) {
     if want_pi {
         setup_pi(
             uninstall,
-            PiSetupOpts {
+            BridgeSetupOpts {
                 force:   options.force,
                 dry_run: options.dry_run,
                 yes:     options.yes,
@@ -394,7 +381,7 @@ pub fn run(options: SetupOptions<'_>) {
 /// The shared preamble for every `setup_*` step: turn an editor's
 /// `Result<Outcome, String>` into an `Option<Outcome>`, reporting a refusal as the
 /// standard `{label}: refused — {e}` line and yielding `None` so the caller bails.
-/// Centralizes the one diagnostic all three orchestrators printed by hand.
+/// Centralizes the one diagnostic every orchestrator would otherwise print by hand.
 pub(crate) fn edit_or_report(label: &str, edit: Result<Outcome, String>) -> Option<Outcome> {
     match edit {
         Ok(outcome) => Some(outcome),

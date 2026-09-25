@@ -404,31 +404,79 @@ fn check_inspects_the_configs_default_layout_and_honors_layout_flag() {
 
 // ── Test: the doctor is scriptable ───────────────────────────────────────────
 // Missing items set the exit code (`setup --check && zj-radar run` can gate),
-// and a bare `setup --check` covers BOTH halves instead of silently skipping
-// the zellij section the way a bare install (which needs a wasm source) does.
+// and a bare `setup --check` covers the zellij half (instead of silently
+// skipping it the way a bare install, which needs a wasm source, does) plus
+// every DETECTED agent — and only those.
 
-#[test]
-fn check_exit_code_gates_and_bare_check_covers_both_targets() {
+/// A bare `setup --check` in a hermetic env: PATH is `path`, HOME is `home`,
+/// and every agent-location override is scrubbed so the host's own installs
+/// can't leak in.
+fn bare_check(home: &TempDir, path: &std::ffi::OsStr) -> std::process::Output {
     let config_dir = TempDir::new().unwrap(); // empty: the zellij half is all Missing
-    let output = Command::cargo_bin("zj-radar")
+    Command::cargo_bin("zj-radar")
         .unwrap()
         .args(["setup", "--check"])
         .env("ZELLIJ_CONFIG_DIR", config_dir.path())
+        .env("HOME", home.path())
+        .env("PATH", path)
+        .env_remove("CODEX_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("PI_CODING_AGENT_DIR")
+        .env_remove("ZELLIJ_CONFIG_FILE")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn check_exit_code_gates_and_bare_check_covers_zellij_and_detected_codex() {
+    let home = TempDir::new().unwrap();
+    let shim = ShimDir::new();
+    shim.add_recorder("codex");
+    let output = bare_check(&home, shim.dir.path().as_os_str());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("zellij:"),
-        "bare --check must report the zellij half; got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("codex:"),
-        "bare --check must report the codex half; got:\n{stdout}"
-    );
-    assert!(
-        !output.status.success(),
-        "missing items must exit non-zero so scripts can gate on the doctor"
-    );
+    assert!(stdout.contains("zellij:"), "bare --check must report the zellij half; got:\n{stdout}");
+    assert!(stdout.contains("codex:"), "codex is on PATH, so bare --check must report it; got:\n{stdout}");
+    assert!(!output.status.success(), "missing items must exit non-zero so scripts can gate on the doctor");
+}
+
+#[test]
+fn bare_check_skips_agents_that_are_not_present() {
+    // No codex/claude/opencode/pi binary, config, or bridge: the bare doctor
+    // (which `update` also runs) must not fail the machine over agents it
+    // doesn't have. The exit code still reflects the (empty) zellij half.
+    let home = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    let output = bare_check(&home, empty_path.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("zellij:"), "{stdout}");
+    for agent in ["codex:", "claude:", "opencode:", "pi:"] {
+        assert!(!stdout.contains(agent), "absent agent reported ({agent}); got:\n{stdout}");
+    }
+    assert!(!stdout.contains("missing codex binary"), "{stdout}");
+}
+
+#[test]
+fn bare_check_includes_a_path_less_pi_whose_bridge_is_installed() {
+    // `setup pi` accepts a bun/Nix-run pi with no `pi` on PATH; once our
+    // extension is there, the bare doctor must look at it, and the missing
+    // binary is advice (warn), not a failure.
+    let home = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    fs::create_dir_all(home.path().join(".pi/agent")).unwrap();
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "pi", "--yes"])
+        .env("HOME", home.path())
+        .env_remove("PI_CODING_AGENT_DIR")
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+    let output = bare_check(&home, empty_path.path().as_os_str());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pi:"), "{stdout}");
+    assert!(stdout.contains("warn pi binary: not found on PATH"), "{stdout}");
+    assert!(stdout.contains("ok extension"), "{stdout}");
 }
 
 // ── Layout injection tests ────────────────────────────────────────────────────
@@ -1553,6 +1601,30 @@ fn setup_claude_skips_when_binary_missing() {
 }
 
 #[test]
+fn claude_detection_honors_claude_config_dir() {
+    // The plugin manifest lives under `$CLAUDE_CONFIG_DIR` when set, not
+    // `~/.claude` — the doctor must read it there.
+    let shim = ShimDir::new();
+    shim.add_recorder("claude");
+    let home = claude_home(false); // nothing under ~/.claude
+    let config = TempDir::new().unwrap();
+    fs::create_dir_all(config.path().join("plugins")).unwrap();
+    fs::write(config.path().join("plugins/installed_plugins.json"), r#"{"plugins":["zj-radar-claude"]}"#).unwrap();
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "claude", "--check"])
+        .env("PATH", shim.path_env())
+        .env("HOME", home.path())
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok plugin: zj-radar-claude plugin installed"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn setup_claude_without_consent_runs_nothing() {
     // Piped stdin means no tty at the boundary probe, so `confirm` takes the
     // safe "no" without reading (answered-y/-n and EOF-decline live in
@@ -1770,6 +1842,14 @@ fn setup_opencode_refuses_a_foreign_plugin_unless_forced() {
     let bak = plugin.with_file_name("zj-radar.js.zj-radar.bak");
     assert!(bak.exists(), "--force over a foreign file keeps a restore point");
     assert!(opencode_tui_plugin(&xdg).exists());
+
+    // Uninstall removes our bridges, but that restore point is the user's only
+    // copy of their plugin — it must survive, and be mentioned.
+    let out = opencode_cmd(&xdg, &["--uninstall", "--yes"]).success().get_output().clone();
+    assert!(!plugin.exists());
+    assert_eq!(fs::read_to_string(&bak).unwrap(), "export const Other = async () => ({});\n");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("left {}", bak.display())), "stdout:\n{stdout}");
 }
 
 #[test]
@@ -1849,8 +1929,9 @@ fn setup_opencode_dry_run_writes_nothing() {
 
 #[test]
 fn setup_opencode_check_reports_the_bridge_state() {
-    // The binary item stays Missing here (no `opencode` on the test PATH), so
-    // the doctor exits non-zero throughout; the plugin item is what flips.
+    // No `zj-radar` on the test PATH keeps the doctor non-zero throughout (the
+    // `opencode` binary item drops to a warn once our bridge is installed —
+    // setup accepts a PATH-less opencode); the plugin items are what flip.
     let (xdg, _plugin) = isolated_opencode_xdg();
     let out = opencode_cmd(&xdg, &["--check"]).failure().get_output().clone();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1979,6 +2060,24 @@ fn setup_pi_uninstall_removes_only_ours_and_its_backup() {
     fs::write(&ext, "export default function (pi) {}\n").unwrap();
     pi_cmd(&home, &["--uninstall", "--yes"]).success();
     assert!(ext.exists(), "a foreign file is never removed");
+}
+
+#[test]
+fn setup_pi_uninstall_keeps_the_backup_of_a_forced_over_foreign_file() {
+    // After `--force` over someone else's extension, the .bak is the user's
+    // only copy of it — uninstall removes our bridge but must leave that.
+    let (home, ext) = isolated_pi_home();
+    fs::create_dir_all(ext.parent().unwrap()).unwrap();
+    let theirs = "export default function (pi) {}\n";
+    fs::write(&ext, theirs).unwrap();
+    pi_cmd(&home, &["--yes", "--force"]).success();
+    let bak = ext.with_file_name("zj-radar.js.zj-radar.bak");
+
+    let out = pi_cmd(&home, &["--uninstall", "--yes"]).success().get_output().clone();
+    assert!(!ext.exists(), "our bridge is removed");
+    assert_eq!(fs::read_to_string(&bak).unwrap(), theirs, "the foreign backup survives");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&format!("left {}", bak.display())), "the kept backup is mentioned:\n{stdout}");
 }
 
 #[test]
