@@ -277,7 +277,8 @@ pub fn run(options: SetupOptions<'_>) {
         // needs no wasm source, and "is my install healthy?" wants the rail's
         // state too) plus every DETECTED agent. An explicit target always
         // reports; the bare doctor includes an agent only when it is present
-        // here (binary on PATH, or its config/bridge already installed), so a
+        // here (binary on PATH; for codex/opencode/pi also its config/bridge
+        // already installed — claude is gated on the binary alone), so a
         // machine without that agent isn't failed by it. `update` runs this
         // same bare doctor.
         let both = options.targets.is_empty();

@@ -127,9 +127,8 @@ seam is the versioned pipe payload.
 | Claude `SessionEnd` | `idle` |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
 | Codex `PermissionRequest` | `pending` |
-| Codex `Stop` | `done` |
+| Codex `Stop` / legacy `agent-turn-complete` | `done`, or `pending` when the last assistant message ends in a question (same rule as Claude's `Stop`) |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
-| Codex legacy `agent-turn-complete` | `done` |
 | Opencode events | [`producers.md`](producers.md#opencode) |
 | pi events | [`producers.md`](producers.md#pi) |
 | Observed command exiting nonzero | `error` |
