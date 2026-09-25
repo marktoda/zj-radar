@@ -157,14 +157,6 @@ file_activity() { # $1 = verb, $2 = jq path to the file path → tool_activity
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
     hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
-    # A subagent's own tool calls (the hook carries a non-empty `agent_id`)
-    # fire on the parent's pane: as running broadcasts they clobbered the
-    # parent's "waiting on …" / needs-you row. Send nothing (parity with
-    # in_subagent in agents/claude.rs, which explains the accepted costs).
-    if [[ "$hook_event" == "PreToolUse" || "$hook_event" == "PostToolUse" ]] \
-        && [[ "$(jq -r '.agent_id | strings' <<<"$input" 2>/dev/null || true)" != "" ]]; then
-        exit 0
-    fi
     # UserPromptSubmit: capture the first non-empty prompt line as the sticky
     # task label (mirrors task_from_prompt in agents.rs). Slash commands,
     # harness-injected tag lines (e.g. <task-notification>), and bare acks
@@ -303,7 +295,10 @@ fi
 # Deliberately NOT here: the background-task *lines* (the wire's `tasks`
 # batch). They need the `zj-radar` CLI — this fallback keeps the waiting
 # status honest, but mirroring the whole task protocol in jq would double
-# every future change to it for a degraded path.
+# every future change to it for a degraded path. Likewise the CLI-only
+# drop of a *background* subagent's own tool hooks (agents/claude/
+# bg_agents.rs): it needs a per-pane record of launched agent ids, so this
+# stateless fallback reports them, and they can overwrite "waiting on …".
 SERVICE_PHRASES="run dev|run start|npm start|pnpm start|yarn start|bun start|pnpm dev|yarn dev|bun dev|next dev|make dev|just dev|make server|just server|serve|http.server|runserver|rails s|rails server|flask run|uvicorn|gunicorn|vite|nodemon|watch|port-forward|tail -f|compose up|dev server|start server|start the server"
 waiting=""
 if [[ "$status" == "done" ]]; then

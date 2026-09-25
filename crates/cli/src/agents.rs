@@ -14,6 +14,8 @@ mod codex;
 mod opencode;
 mod pi;
 
+pub(crate) use claude::bg_agents::BgAgents;
+
 use crate::payload::MAX_WIRE_FIELD_CHARS;
 use crate::status::Status;
 use serde_json::Value;

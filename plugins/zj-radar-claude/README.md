@@ -35,10 +35,13 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
 | `SessionEnd` | `idle` (clears the row when the Claude session exits) |
 
-A subagent's own `PreToolUse`/`PostToolUse` hooks (they carry `agent_id`)
-send nothing: they fire on the parent's pane, and a background subagent's
-tool calls would otherwise overwrite the parent's "waiting on …" or `needs
-you` row. The parent's own hooks mark the subagent's start and end.
+A *background* subagent's own `PreToolUse`/`PostToolUse` hooks send
+nothing: they fire on the parent's pane after its turn ends and would
+overwrite the parent's "waiting on …" or `needs you` row. The CLI
+recognises them by the `agentId` of the parent's background launch, and
+keeps a small per-pane record of those ids. Foreground subagents report
+as usual, so a permission answered inside one clears `needs you` right
+away. The bash fallback keeps no record and reports every subagent hook.
 
 Background work (`run_in_background` shells, background subagents) also gets
 its own `┊` lines under the pane: a spinner while it runs, `●`/`✗` when it

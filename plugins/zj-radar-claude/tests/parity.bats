@@ -390,17 +390,48 @@ teardown() { teardown_fakes; }
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = done ]
 }
 
-@test "parity: a subagent's own tool hooks send nothing in both" {
-  # A background subagent's tool calls fire on the parent's pane (with
-  # `agent_id`) and must not clobber its waiting / needs-you row.
-  parity_noop '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}' running
-  parity_noop '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"backgroundTaskId":"b1"}}' running
-  # A blank or non-string agent_id is the parent's own hook; SubagentStop
-  # (which also carries agent_id) is the parent-side edge and still reports.
-  parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":"","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}' running
+@test "parity: a subagent's tool hooks report in both (no background launch recorded)" {
+  # A foreground subagent's hooks carry `agent_id` and must keep reporting —
+  # its PostToolUse is the Pending-recovery edge. (parity cases run with no
+  # session, so the CLI has no background-agent record: see the cli case below.)
+  parity_case '{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}' running
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = "reading a.rs" ]
-  parity_case '{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","agent_id":7,"tool_name":"Grep","tool_input":{}}' running
   parity_case '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose"}' running
+}
+
+@test "cli: a background subagent's own tool hooks send nothing (bash fallback diverges)" {
+  # CLI-only by design (notify.sh documents it next to the tasks note): the
+  # CLI records the parent's async_launched agentId per (session, pane) and
+  # drops that agent's Pre/PostToolUse; the stateless fallback reports them.
+  export ZELLIJ_SESSION_NAME="bats-session" XDG_RUNTIME_DIR="$FAKEBIN/state" TMPDIR="$FAKEBIN/state"
+  mkdir -p "$FAKEBIN/state"
+  local launch='{"hook_event_name":"PostToolUse","cwd":"/tmp","tool_name":"Agent","tool_input":{"run_in_background":true},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"a1139"}}'
+  local bg='{"hook_event_name":"PreToolUse","cwd":"/tmp","agent_id":"a1139","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}'
+  local fg='{"hook_event_name":"PreToolUse","cwd":"/tmp","agent_id":"a0000","tool_name":"Read","tool_input":{"file_path":"/x/a.rs"}}'
+  echo "$launch" | "$CLI" notify claude --status running
+  rm -f "$RECORD"
+  echo "$bg" | "$CLI" notify claude --status running
+  [ ! -s "$RECORD" ] || { echo "cli reported a background agent's hook"; return 1; }
+  echo "$fg" | "$CLI" notify claude --status running
+  [ "$(last_payload | jq -r '.msg')" = "reading a.rs" ]
+  rm -f "$RECORD"
+  echo "$bg" | "$SCRIPT" running
+  [ "$(last_payload | jq -r '.msg')" = "reading a.rs" ]
+  # SubagentStop reports and forgets the id; a corrupt record fails open.
+  rm -f "$RECORD"
+  echo '{"hook_event_name":"SubagentStop","cwd":"/tmp","agent_id":"a1139"}' | "$CLI" notify claude --status running
+  [ -s "$RECORD" ]
+  rm -f "$RECORD"
+  echo "$bg" | "$CLI" notify claude --status running
+  [ -s "$RECORD" ]
+  echo "$launch" | "$CLI" notify claude --status running
+  local f; for f in "$FAKEBIN"/state/zj-radar-dedup/bg-agents.*; do
+    [ -f "$f" ] || { echo "no record written under the test state dir"; return 1; }
+    printf 'junk' >"$f"
+  done
+  rm -f "$RECORD"
+  echo "$bg" | "$CLI" notify claude --status running
+  [ -s "$RECORD" ]
 }
 
 @test "parity: Agent tool reads as delegating" {

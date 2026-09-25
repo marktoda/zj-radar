@@ -169,7 +169,7 @@ pub fn unix_now() -> u64 {
 /// without XDG, where a foreign dir just makes every write fail open). Its
 /// own leaf, not `zj-radar/`: on Linux that is the plugin's `/tmp/zj-radar`
 /// session-file root, whose presence scans read the directory.
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("zj-radar-dedup")
@@ -178,7 +178,7 @@ fn state_dir() -> PathBuf {
 /// Zellij session names are free text; fold anything outside a filename-safe
 /// set to `_` and cap the length so the path stays short (macOS `sun_path`
 /// budgets taught this repo to respect short runtime paths).
-fn sanitize(session: &str) -> String {
+pub(crate) fn sanitize(session: &str) -> String {
     session
         .chars()
         .take(64)
