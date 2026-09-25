@@ -62,7 +62,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 │ pi          → extension → native CLI            (running/pending/done/error) │
 │ any script  → zj-radar notify generic                                   │
 └───────────────────────────┬─────────────────────────────────────────────┘
-   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack}
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack,tasks}
    broadcast by name, through the bounded self-limiting argv (§5).
    The plugin is a caller too: the ✓ gesture echoes an ack:true payload here.
                             │
@@ -130,8 +130,8 @@ seam is the versioned pipe payload.
 | Codex `Stop` | `done` |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
 | Codex legacy `agent-turn-complete` | `done` |
-| Opencode events | see §7 |
-| pi events | see §7 |
+| Opencode events | [`producers.md`](producers.md#opencode) |
+| pi events | [`producers.md`](producers.md#pi) |
 | Observed command exiting nonzero | `error` |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
@@ -189,7 +189,11 @@ on the name and keeps its own copy of the state.
   "branch": "fix/x",
   "msg": "running tests…",
   "task": "fix the flaky auth test",  // optional sticky label
-  "ack": false }                      // optional: "user already saw this", notifier stays silent
+  "ack": false,                       // optional: "user already saw this", notifier stays silent
+  "tasks": {                          // optional background-task batch (upserts by id)
+    "snapshot": true,                 //   true = the complete running set
+    "items": [ { "id": "b1", "state": "running",   // running | completed | failed | killed | ended
+                 "label": "Run tests", "holds": true } ] } }
 ```
 
 Field rules for producers are in
