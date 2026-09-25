@@ -16,7 +16,8 @@
 // ASYNC SPAWN ONLY — never a synchronous spawn: the extension runs in pi's
 // process, and pi awaits every handler in turn, so handlers enqueue and
 // return at once. The one exception is `session_shutdown`, which drains the
-// queue (bounded) because pi calls process.exit right after it.
+// queue (bounded): pi awaits it before tearing the session down — via
+// process.exit on `quit`, or in-process on new/resume/fork/reload.
 //
 // pi loads extensions with moduleCache:false — every runtime (/new, reload)
 // gets a fresh instance of this module — so the queue lives on globalThis:
@@ -30,6 +31,26 @@ import { spawn as nodeSpawn } from "node:child_process";
 
 const KILL_AFTER_MS = 10_000;
 const DRAIN_BOUND_MS = 1_500;
+
+// The only tool_input keys the Rust side ever reads: `tool_activity` and
+// `bash_activity` (crates/cli/src/agents.rs) read `file_path`/`notebook_path`/
+// `command`; `normalize_tool_args` (crates/cli/src/agents/pi.rs) renames pi's
+// `path` to `file_path` before that lookup. Keep this list in sync with those
+// readers — a `write` tool's `content` arg alone can run hundreds of KB, and
+// nothing downstream ever looks past this set.
+const TOOL_INPUT_KEYS = ["path", "file_path", "notebook_path", "command"];
+
+// Trim a tool call's args down to the keys the Rust adapter reads, dropping
+// everything else (large payload fields, non-string values). Non-object args
+// (or none) become `undefined` so the field is omitted entirely.
+function trimToolInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const out = {};
+  for (const key of TOOL_INPUT_KEYS) {
+    if (typeof args[key] === "string") out[key] = args[key];
+  }
+  return out;
+}
 
 function shared() {
   const key = Symbol.for("zj-radar.pi");
@@ -102,6 +123,11 @@ function notify(s, status, payload) {
     }, KILL_AFTER_MS);
     // A reaper must never keep pi's process alive on its own.
     timer.unref?.();
+    // EPIPE (writing to a child that already exited without reading stdin)
+    // arrives asynchronously as an `error` event on child.stdin, not a
+    // synchronous throw from write()/end() — unhandled, it's an uncaught
+    // exception that tears down pi's whole TUI. Attach before writing.
+    if (child.stdin && typeof child.stdin.on === "function") child.stdin.on("error", () => {});
     try {
       child.stdin.write(JSON.stringify(payload));
       child.stdin.end();
@@ -178,7 +204,7 @@ export default function (pi) {
   });
 
   on("tool_execution_start", (event) => {
-    send("running", { event: "tool", tool: event.toolName, tool_input: event.args });
+    send("running", { event: "tool", tool: event.toolName, tool_input: trimToolInput(event.args) });
   });
 
   on("message_end", (event) => {
@@ -221,7 +247,10 @@ export default function (pi) {
 
   on("session_shutdown", (event) => {
     if (event.reason === "quit") send("idle", { event: "session.end" });
-    // Awaited by pi, then process.exit — drain (bounded) for every reason.
+    // pi awaits this before proceeding: on `quit` it then calls process.exit;
+    // on new/resume/fork/reload it tears this session down instead. Either
+    // way the drain (bounded) runs first, so a slow child can delay e.g.
+    // /new by up to DRAIN_BOUND_MS.
     return drain();
   });
 }

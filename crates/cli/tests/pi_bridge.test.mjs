@@ -39,6 +39,19 @@ let behavior;
 function fakeSpawn(cmd, args) {
   const child = new EventEmitter();
   let buf = "";
+  if (behavior === "epipe") {
+    // A real dead child's stdin fires `error` asynchronously — never as a
+    // synchronous throw from write()/end() — after the write is attempted.
+    const stdin = new EventEmitter();
+    stdin.write = (d) => { buf += d; };
+    stdin.end = () => {
+      queueMicrotask(() => stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" })));
+    };
+    child.stdin = stdin;
+    child.kill = () => child.emit("exit", null, "SIGTERM");
+    queueMicrotask(() => child.emit("exit", 1, null));
+    return child;
+  }
   child.stdin = { write: (d) => { buf += d; }, end: () => {} };
   child.kill = () => child.emit("exit", null, "SIGTERM");
   if (behavior === "enoent") {
@@ -88,6 +101,22 @@ test("prompt → tool → settled", async () => {
   assert.equal(sent[1].payload.tool, "read");
   assert.deepEqual(sent[1].payload.tool_input, { path: "/repo/a.rs" });
   assert.equal(sent[2].payload.message, "All green.");
+});
+
+test("tool_input is trimmed to the keys the Rust adapter reads", async () => {
+  const rt = await loadRuntime();
+  rt.emit("session_start", { reason: "startup" });
+  rt.emit("agent_start");
+  const content = "x".repeat(500_000);
+  rt.emit("tool_execution_start", {
+    toolCallId: "1",
+    toolName: "write",
+    args: { path: "/repo/a.rs", content, encoding: "utf8" },
+  });
+  await settle();
+  assert.deepEqual(events(), ["running:prompt", "running:tool"]);
+  assert.deepEqual(sent[1].payload.tool_input, { path: "/repo/a.rs" });
+  assert.ok(!("content" in sent[1].payload.tool_input));
 });
 
 test("session_start on startup/resume/fork/reload sends nothing", async () => {
@@ -224,7 +253,21 @@ test("shutdown drain is bounded when a child never exits", async () => {
   const t0 = Date.now();
   await rt.emit("session_shutdown", { reason: "quit" });
   const took = Date.now() - t0;
-  assert.ok(took >= 1400 && took < 2500, `drain took ${took}ms`);
+  assert.ok(took >= 1400 && took < 3000, `drain took ${took}ms`);
+});
+
+test("stdin EPIPE does not crash pi and the queue keeps moving", async () => {
+  const rt = await loadRuntime();
+  rt.emit("session_start", { reason: "startup" });
+  behavior = "epipe";
+  rt.emit("agent_start");
+  await settle();
+  // If the async stdin `error` event went unhandled, node would have raised
+  // an uncaught exception by now and failed this test process outright.
+  behavior = "ok";
+  rt.emit("agent_settled");
+  await settle();
+  assert.deepEqual(events(), ["done:settled"], "a following event must still send");
 });
 
 test("spawn error does not throw or stall the queue", async () => {

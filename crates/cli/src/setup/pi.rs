@@ -188,6 +188,10 @@ mod tests {
         assert!(!js.contains("spawnSync") && !js.contains("execSync"), "never block pi's event loop");
         assert!(js.contains("ZELLIJ"), "must gate on $ZELLIJ");
         assert!(js.contains("\"ignore\", \"ignore\""), "child stdout/stderr must never reach pi's TUI");
+        assert!(
+            js.contains("stdin.on(\"error\""),
+            "child.stdin needs an error listener or an async EPIPE crashes pi"
+        );
         for line in js.lines().filter(|l| l.starts_with("import ")) {
             assert!(line.contains("from \"node:"), "only node: builtins may be imported: {line}");
         }
