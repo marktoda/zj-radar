@@ -52,6 +52,15 @@ fn notify_deduped(shims: &ShimDir, status: &str, hook: &str, extra_env: &[(&str,
     cmd.write_stdin(hook).assert().success();
 }
 
+/// The per-user dedup leaf the CLI uses under `base`: `zj-radar-dedup-<uid>`,
+/// with the uid read off a file this test process creates.
+fn dedup_leaf(base: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let probe = tempfile::NamedTempFile::new().unwrap();
+    let uid = probe.as_file().metadata().unwrap().uid();
+    base.join(format!("zj-radar-dedup-{uid}"))
+}
+
 const PRE_EDIT: &str = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
 const POST_EDIT: &str = r#"{"hook_event_name":"PostToolUse","cwd":"/home/u/myrepo","tool_name":"Edit","tool_input":{"file_path":"/home/u/myrepo/src/auth.rs"}}"#;
 
@@ -156,7 +165,7 @@ fn dedup_state_is_scoped_per_pane_and_session() {
     notify_deduped(&shims, "running", POST_EDIT, &[("ZELLIJ_SESSION_NAME", "other")]);
     assert_eq!(shims.recorded("zellij").len(), 3);
     // The state files landed under the injected TMPDIR, not the real one.
-    let state = shims.dir.path().join("zj-radar-dedup");
+    let state = dedup_leaf(shims.dir.path());
     let mut names: Vec<_> = std::fs::read_dir(&state)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -446,8 +455,26 @@ fn dedup_state_prefers_xdg_runtime_dir_over_tmpdir() {
     shims.add_fake_git("/home/u/myrepo", "main");
     let xdg = tempfile::tempdir().unwrap();
     notify_deduped(&shims, "running", PRE_EDIT, &[("XDG_RUNTIME_DIR", xdg.path().to_str().unwrap())]);
-    assert!(xdg.path().join("zj-radar-dedup").is_dir(), "state under XDG_RUNTIME_DIR");
-    assert!(!shims.dir.path().join("zj-radar-dedup").exists(), "…and not under TMPDIR");
+    assert!(dedup_leaf(xdg.path()).is_dir(), "state under XDG_RUNTIME_DIR");
+    assert!(!dedup_leaf(shims.dir.path()).exists(), "…and not under TMPDIR");
+}
+
+#[test]
+fn a_squatted_world_writable_dedup_dir_turns_dedup_off() {
+    // Another local user pre-creates the leaf in a shared /tmp (0777) to plant
+    // records or symlinks in it: the CLI must not trust the dir at all —
+    // every payload is sent — rather than let a planted record mute a pane.
+    use std::os::unix::fs::PermissionsExt;
+    let shims = ShimDir::new();
+    shims.add_recorder("zellij");
+    shims.add_fake_git("/home/u/myrepo", "main");
+    let leaf = dedup_leaf(shims.dir.path());
+    std::fs::create_dir(&leaf).unwrap();
+    std::fs::set_permissions(&leaf, std::fs::Permissions::from_mode(0o777)).unwrap();
+    notify_deduped(&shims, "running", PRE_EDIT, &[]);
+    notify_deduped(&shims, "running", POST_EDIT, &[]);
+    assert_eq!(shims.recorded("zellij").len(), 2, "an untrusted dir means no dedup");
+    assert_eq!(std::fs::read_dir(&leaf).unwrap().count(), 0, "nothing written into it");
 }
 
 #[test]

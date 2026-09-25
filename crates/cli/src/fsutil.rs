@@ -17,8 +17,25 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = tmp_sibling(path);
-    std::fs::write(&tmp, contents)?;
+    write_new(&tmp, contents)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Write `contents` to a file that must not exist yet (`O_CREAT|O_EXCL`), so
+/// a symlink planted at the temp name is never followed into someone else's
+/// file. A leftover at that name (a crashed writer that had our pid) is
+/// unlinked — the link itself, not its target — and the create retried once.
+fn write_new(tmp: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(tmp);
+    let mut file = match open() {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(tmp)?;
+            open()?
+        }
+        other => other?,
+    };
+    file.write_all(contents)
 }
 
 /// `<path>.zj-radar.<pid>.tmp` — a sibling so the final `rename` stays on one
@@ -58,5 +75,18 @@ mod tests {
         atomic_write(&target, b"first").unwrap();
         atomic_write(&target, b"second").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"second");
+    }
+
+    #[test]
+    fn a_symlink_at_the_temp_name_is_replaced_not_followed() {
+        let d = tempdir().unwrap();
+        let victim = d.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        let target = d.path().join("c.txt");
+        std::os::unix::fs::symlink(&victim, tmp_sibling(&target)).unwrap();
+        atomic_write(&target, b"hello").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched", "the link's target was never written");
+        assert!(!std::fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
     }
 }
