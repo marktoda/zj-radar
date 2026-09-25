@@ -62,7 +62,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 │ pi          → extension → native CLI            (running/pending/done/error) │
 │ any script  → zj-radar notify generic                                   │
 └───────────────────────────┬─────────────────────────────────────────────┘
-   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack}
+   zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack,tasks}
    broadcast by name, through the bounded self-limiting argv (§5).
    The plugin is a caller too: the ✓ gesture echoes an ack:true payload here.
                             │
@@ -122,7 +122,7 @@ seam is the versioned pipe payload.
 | Claude `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `running`. A `PostToolUse` that backgrounded work and a `<task-notification>` wake carry a background-task batch and are never deduped. Otherwise `PostToolUse` usually duplicates `PreToolUse`: the CLI drops the identical repeat before spending anything (§5, *Last-sent dedup*) and the plugin no-ops any that still arrive. It stays registered because it is the Pending → Running recovery edge after a mid-turn permission answer — that one differs from the last-sent `pending`, so it is never dropped. |
 | Claude `Notification` (`permission_prompt` / `elicitation_dialog`) | `pending` |
 | Claude `SubagentStop` | `running` (the main turn is still going) |
-| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `tail -f`, …) and unknown task types don't hold the row. Every Stop also carries the running set as a `tasks` snapshot; a `PostToolUse` that backgrounds work carries its start, and a `<task-notification>` `UserPromptSubmit` carries each outcome (see `crates/core/src/task.rs`). |
+| Claude `Stop` | `done`, except: a Stop whose last assistant message ends in a question maps to `pending` (the question becomes the message); otherwise a Stop whose `background_tasks` still lists bounded work (a running shell that isn't a service, a subagent, a workflow) maps to `running` with a `waiting on …` message. Each finished task wakes the model, so the next Stop carries the refreshed list and the real `done`. Monitors, crons, service-looking shells (`run dev`, `serve`, `vite`, `uvicorn`, `http.server`, watch modes, `port-forward`, `tail -f`, …, matched on the task's command and its description) and unknown task types don't hold the row. Every Stop also carries the running set as a `tasks` snapshot; a `PostToolUse` that backgrounds work carries its start, and a `<task-notification>` `UserPromptSubmit` carries each outcome (see `crates/core/src/task.rs`). |
 | Claude `SessionStart` (`source: "clear"`) | `idle` (resets the row on `/clear`) |
 | Claude `SessionEnd` | `idle` |
 | Codex `UserPromptSubmit` / tool hooks / subagents | `running` |
@@ -130,8 +130,8 @@ seam is the versioned pipe payload.
 | Codex `Stop` | `done` |
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
 | Codex legacy `agent-turn-complete` | `done` |
-| Opencode events | see §7 |
-| pi events | see §7 |
+| Opencode events | [`producers.md`](producers.md#opencode) |
+| pi events | [`producers.md`](producers.md#pi) |
 | Observed command exiting nonzero | `error` |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
@@ -189,7 +189,11 @@ on the name and keeps its own copy of the state.
   "branch": "fix/x",
   "msg": "running tests…",
   "task": "fix the flaky auth test",  // optional sticky label
-  "ack": false }                      // optional: "user already saw this", notifier stays silent
+  "ack": false,                       // optional: "user already saw this", notifier stays silent
+  "tasks": {                          // optional background-task batch (upserts by id)
+    "snapshot": true,                 //   true = the complete running set
+    "items": [ { "id": "b1", "state": "running",   // running | completed | failed | killed | ended
+                 "label": "Run tests", "holds": true } ] } }
 ```
 
 Field rules for producers are in

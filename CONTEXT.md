@@ -76,16 +76,14 @@ Work an agent started that runs without its attention: a backgrounded test
 run, a background subagent, a dev server. It rides the status contract's
 optional `tasks` batch (upserts by id, optionally a running-set snapshot) and
 is folded by the one merge rule, `BgTasks::apply` in `crates/core/src/task.rs`,
-called from `StatusStore::apply`. `holds` splits bounded work (the agent will
-be woken when it ends; it spins) from services (never hold; steady `▸`). A
-reported outcome is final; a task a snapshot drops with no outcome is `Ended`
-(muted, never a false green). *Waiting* is per payload: a `running` whose
-snapshot still has holding work means the turn is over and the agent waits.
-Rendered as `┊` sub-lines under the pane line (`render::emit_task_lines`);
-never feeds the roll-up, counts, or notifications. Only Claude reports tasks
-today, and only through the CLI (`crates/cli/src/agents/claude/background.rs`;
-the bash fallback mirrors the waiting status but not the tasks). Not the activity
-model's *Job*, which is a class of observed command.
+called from `StatusStore::apply`. `holds` splits bounded work (the agent
+waits on it) from services. Rendered as `┊` sub-lines under the pane line
+(`render::emit_task_lines`); never feeds the roll-up, counts, or
+notifications. Only Claude reports tasks today, through the CLI
+(`crates/cli/src/agents/claude/background.rs`). Wire rules:
+[`producers.md`](docs/producers.md#writing-your-own-producer); rendering:
+[`activity-model.md`](docs/activity-model.md). Not the activity model's *Job*,
+which is a class of observed command.
 
 ## Information source
 

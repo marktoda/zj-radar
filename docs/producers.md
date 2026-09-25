@@ -140,7 +140,12 @@ Bridge internals (event coalescing, subagent filtering, the marker) are in
 
 ## pi
 
-`zj-radar setup pi` vendors a bridge extension to
+```sh
+zj-radar setup pi
+zj-radar setup pi --check   # flags a missing extension or a pi older than 0.80.4
+```
+
+This vendors a bridge extension to
 `~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/`).
 pi auto-loads it; restart pi or run `/reload`. Requires pi ≥ 0.80.4
 (`@earendil-works/pi-coding-agent`; the older `@mariozechner/…` package is
@@ -158,7 +163,7 @@ deprecated). Extension-dialog "needs you" requires ≥ 0.84.4.
 pi has no built-in permission prompts, so "needs you" appears only when an
 extension opens a dialog (`permission-gate`, `question`, …) or pi's final
 message ends with a question. The bridge reports only in the interactive TUI
-(`ctx.mode === "tui"`) under Zellij. `pi --no-extensions` disables it; a
+(`ctx.mode === "tui"`) under Zellij (`$ZELLIJ` set). `pi --no-extensions` disables it; a
 project-local `.pi/extensions/zj-radar.js` copy would double-report — keep the
 bridge global. `npx pi` / `pnpm dlx pi` launches are not recognized as pi (the
 launcher is the pane's command).
@@ -282,7 +287,8 @@ Three rules keep you safe:
 1. **Put a deadline on every send.** The bundled producers use 5 seconds for
    status edges (`done`/`pending`/`error`/`idle`) and 2 seconds for `running`
    heartbeats; a dropped heartbeat is replaced by the next event, a dropped
-   edge loses real state. `ZJ_RADAR_PIPE_TIMEOUT` (whole seconds, max 3600)
+   edge loses real state. A `running` that carries `tasks` is an edge (5
+   seconds). `ZJ_RADAR_PIPE_TIMEOUT` (whole seconds, max 3600)
    overrides both. Killing the client past its deadline loses nothing; the
    message is already queued server-side.
 2. **Make the deadline survive your own death.** Hook runners kill their

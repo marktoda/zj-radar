@@ -82,6 +82,9 @@ manual setup, and the full removal list are in
 - Your Zellij stays yours: no new terminal, no tmux wrapper, no orchestrator.
 - Shell commands show up too. Builds and tests spin with an elapsed tag, dev
   servers hold a steady `▸`, editors and pagers stay quiet.
+- Background work an agent started (a backgrounded test run, a subagent, a
+  dev server) gets its own lines under the agent's row. Claude Code only for
+  now, and it needs the `zj-radar` CLI on `PATH`.
 - Desktop notifications when a background agent finishes or needs you.
 - Running several Zellij sessions? Each rail lists the others with live counts
   and click-to-switch.

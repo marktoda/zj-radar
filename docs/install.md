@@ -227,11 +227,17 @@ Items are `ok`, `warn`, or `missing`:
 - **layout**: the default layout contains the rail.
 - **grant**: `permissions.kdl` grants the wasm path.
 - **producer**: which of the Claude plugin, Codex hooks, Opencode bridge, and
-  pi extension are wired.
+  pi extension are wired. The Claude plugin is found under
+  `$CLAUDE_CONFIG_DIR` (default `~/.claude`).
 - **managed config** (only when `config.kdl` is a symlink, as under
   home-manager): direct edits may be overwritten.
 - **config env** (only when `$ZELLIJ_CONFIG_FILE` points elsewhere): Zellij
   reads that file, not the one setup edits.
+
+`zj-radar setup <agent> --check` checks one producer's wiring. Bare
+`zj-radar setup --check` checks the sidebar plus every agent it detects, so an
+agent you don't use never fails it. A pi or opencode binary missing from
+`PATH` while our bridge is installed is a `warn`, not a `missing`.
 
 ## Upgrade (`zj-radar update`)
 
@@ -348,8 +354,8 @@ config-dir entries with them.
 | Per-session plugin state under Zellij's cache, `/tmp/zj-radar` fallback | the running plugin | self-pruning after 24 h; safe to delete anytime |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
 | `zj-radar-claude` plugin + `zj-radar` marketplace entry in Claude Code's plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; marketplace entry stays: `claude plugin marketplace remove zj-radar` |
-| `$XDG_CONFIG_HOME/opencode/plugins/zj-radar.js` (or `~/.config/opencode/plugins/zj-radar.js`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (only when the marker is present) |
-| `~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/zj-radar.js`) | `setup pi` | **reversed** by `setup pi --uninstall` (only when the marker is present) |
+| `plugins/zj-radar.js` (1.x) and `plugins/zj-radar/tui.js` (2.x) under `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (each only when the marker is present), along with its `.zj-radar.bak` and the emptied `zj-radar/` dir |
+| `~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/zj-radar.js`) | `setup pi` | **reversed** by `setup pi --uninstall` (only when the marker is present), along with its `.zj-radar.bak` |
 
 Complete removal:
 
