@@ -52,6 +52,39 @@ function trimToolInput(args) {
   return out;
 }
 
+// Free-text cap for `prompt`/`message` before they are serialized and piped.
+// The Rust side bounds every wire field at MAX_WIRE_FIELD_CHARS (512) anyway;
+// this only stops a 20 MB paste from being stringified and written to a child
+// on every event. Generous so neither reader loses what it looks at.
+const TEXT_CAP = 4096;
+
+// A string slice that never leaves a lone UTF-16 surrogate at either cut:
+// JSON.stringify would escape it as `\udXXX`, which serde_json rejects — the
+// whole payload would fail to parse and the event would be silently lost.
+function sliceWhole(s, start, end) {
+  let a = start;
+  let b = end;
+  if (a > 0 && a < s.length && isLow(s.charCodeAt(a))) a++;
+  if (b > a && b < s.length && isLow(s.charCodeAt(b))) b--;
+  return s.slice(a, b);
+}
+function isLow(c) { return c >= 0xdc00 && c <= 0xdfff; }
+
+// The prompt's reader (`task_from_prompt`) takes its first non-empty line:
+// keep the head.
+function capHead(s) {
+  return s.length <= TEXT_CAP ? s : sliceWhole(s, 0, TEXT_CAP);
+}
+
+// A message has two readers: the rail's msg (the head) and the trailing-
+// question remap (`trailing_question`, the last non-empty line): keep both
+// ends, joined on a line break so the tail's last line stays the last line.
+function capHeadTail(s) {
+  if (s.length <= TEXT_CAP) return s;
+  const half = TEXT_CAP / 2;
+  return `${sliceWhole(s, 0, half)}\n…\n${sliceWhole(s, s.length - half, s.length)}`;
+}
+
 function shared() {
   const key = Symbol.for("zj-radar.pi");
   const s = (globalThis[key] ??= {});
@@ -165,7 +198,11 @@ export default function (pi) {
   let last = null;
 
   const send = (status, payload) => {
-    if (armed) enqueue(status, { ...payload, cwd });
+    if (!armed) return;
+    const out = { ...payload, cwd };
+    if (typeof out.prompt === "string") out.prompt = capHead(out.prompt);
+    if (typeof out.message === "string") out.message = capHeadTail(out.message);
+    enqueue(status, out);
   };
   // Every handler is wrapped: a bridge bug must never throw into pi.
   const on = (name, fn) => pi.on(name, (event, ctx) => {
@@ -177,12 +214,16 @@ export default function (pi) {
   on("session_start", (event, ctx) => {
     armed = ctx.mode === "tui" && Boolean(process.env.ZELLIJ);
     cwd = typeof ctx.cwd === "string" && ctx.cwd ? ctx.cwd : process.cwd();
+    // A different session (new/resume/fork) must not inherit the previous
+    // one's settled state: an idle dialog closed before its first turn would
+    // otherwise restore another session's done/error. Only startup (nothing
+    // to inherit) and reload (same session) keep it.
+    if (event.reason !== "startup" && event.reason !== "reload") {
+      shared().lastSettled = { status: "idle", message: "" };
+    }
     // Only /new resets the row (Claude wires only SessionStart{clear});
     // startup/resume/fork/reload wait for the first real event.
-    if (event.reason === "new") {
-      shared().lastSettled = { status: "idle", message: "" };
-      send("idle", { event: "session.new" });
-    }
+    if (event.reason === "new") send("idle", { event: "session.new" });
   });
 
   on("input", (event) => {
@@ -241,7 +282,7 @@ export default function (pi) {
       settled = { status: "done", message };
       send("done", { event: "settled", message });
     }
-    shared().lastSettled = settled;
+    shared().lastSettled = { status: settled.status, message: capHeadTail(settled.message) };
     last = null;
   });
 

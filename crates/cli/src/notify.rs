@@ -149,7 +149,7 @@ fn generic_update(status: Option<&str>, msg: Option<&str>, task: Option<&str>) -
 }
 
 /// The shared broadcast tail, the choke point every producer path (`run`,
-/// `run_generic`, hence claude/codex/opencode/generic) funnels through: drop
+/// `run_generic`, hence claude/codex/opencode/pi/generic) funnels through: drop
 /// a redundant `running` repeat, resolve cwd → repo/branch, build the wire
 /// payload, `zellij pipe` it (or print it under `--dry-run`), and on a
 /// confirmed delivery record it as this pane's last-sent.
@@ -223,10 +223,21 @@ fn broadcast(pane_id: u32, update: AgentUpdate, source: &str, dry_run: bool) {
 /// corner (`core::pipe`'s accepted residual); it bounds the hook, which is
 /// what the runner needs. Never panics.
 fn send(payload: &str, status: Status, edge: bool) -> bool {
+    send_with(payload, pipe_send_timeout(status, edge), None)
+}
+
+/// [`send`] with the deadline resolved and, for tests, the child's `PATH`
+/// (`Some`) — passed per-`Command` rather than through the process-global
+/// env, which a multi-threaded test binary cannot safely mutate.
+fn send_with(payload: &str, timeout: std::time::Duration, path: Option<&std::ffi::OsStr>) -> bool {
     use wait_timeout::ChildExt;
-    let timeout = pipe_send_timeout(status, edge);
     let argv = crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs());
-    let Ok(mut child) = Command::new(&argv[0])
+    let mut cmd = Command::new(&argv[0]);
+    if let Some(path) = path {
+        // The program (`sh`) resolves through the child's PATH when set here.
+        cmd.env("PATH", path);
+    }
+    let Ok(mut child) = cmd
         .args(&argv[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -254,7 +265,7 @@ fn send(payload: &str, status: Status, edge: bool) -> bool {
 /// `RUNNING_PIPE_TIMEOUT_SECS`, while the once-per-turn edges keep the full
 /// `DEFAULT_PIPE_TIMEOUT_SECS` — dropping an edge loses real state. Keying
 /// the default here (instead of per-entry env prefixes in hooks.json) gives
-/// every producer — claude, codex, opencode, generic — the policy from one seam.
+/// every producer — claude, codex, opencode, pi, generic — the policy from one seam.
 /// Clamped to an hour so `timeout + 1 s` (the send's backstop) cannot
 /// overflow `Duration` — this module promises the calling hook never sees
 /// a panic.
@@ -367,37 +378,24 @@ exec sleep 30
         let mut path = dir.path().as_os_str().to_owned();
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
-        // `sh` resolves through PATH inside `send` (the argv's program is
-        // `sh`), so a shim dir first on PATH intercepts it. Cap 1 s → the
+        // `sh` resolves through the child's PATH (the argv's program is
+        // `sh`), so a shim dir first on it intercepts. Cap 1 s → the
         // backstop fires at 2 s.
         let start = std::time::Instant::now();
-        let delivered = temp_env(&[("PATH", path.to_str().unwrap()), ("ZJ_RADAR_PIPE_TIMEOUT", "1")], || {
-            send("{}", Status::Running, false)
-        });
+        let delivered = send_with("{}", std::time::Duration::from_secs(1), Some(&path));
         assert!(!delivered, "a hung wrapper is not a delivery");
+        // The backstop (cap + 1 s) fired: proof the per-Command PATH reached
+        // the shim rather than a real `sh` that failed fast.
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(1900),
+            "returned before the backstop ({}ms) — the shim never ran",
+            start.elapsed().as_millis()
+        );
         assert!(
             start.elapsed() < std::time::Duration::from_secs(10),
             "send rode the child instead of the backstop ({}ms)",
             start.elapsed().as_millis()
         );
-    }
-
-    /// Run `f` with the given environment variables set, restoring the
-    /// previous values afterwards (tests in this module are the only
-    /// writers, and cargo runs them in one process).
-    fn temp_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
-        let saved: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var_os(k))).collect();
-        for (k, v) in vars {
-            std::env::set_var(k, v);
-        }
-        let out = f();
-        for (k, v) in saved {
-            match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
-            }
-        }
-        out
     }
 
     // --- generic producer ---
