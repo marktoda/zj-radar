@@ -28,8 +28,9 @@ triggers it is ideal:
 - zj-radar version / commit:
 - Zellij version (`zellij --version`):
 - OS:
-- Producer: Claude Code plugin / Codex / native CLI / custom (`zj_radar.status.v1`)
-- Installed via: build from source / Nix / release artifact
+- Producer: Claude Code plugin / Codex / Opencode / pi / `notify generic` / custom (`zj_radar.status.v1`)
+- Installed via: `install.sh` / `cargo install` / Nix / release artifact / build from source
+- `zj-radar setup --check` output:
 
 ## Notes
 
