@@ -543,7 +543,7 @@ tab 1 "pinky"
 
 ## W. Cards density — multi-pane `af` tab (active, exercises active-child bg path)
 
-**Render-derived.** Multi-pane tab at `density cards` with `active`. The focused tab gets the `▌` spine on all rows (identical content to M but in Cards density). Active child rows use the `surface_agent` bg tint (not visible in stripped grid). Sanity-checked: spine + glyphs + marks + msgs correct.
+**Render-derived.** Multi-pane tab at `density cards` with `active`. The focused tab gets the `▌` spine on all rows (identical content to M but in Cards density). Active child rows use the `surface_agent` bg tint, except the tab's focused pane, whose lines take the brighter `surface_active` band so the pane you're in stands out (neither visible in stripped grid). Sanity-checked: spine + glyphs + marks + msgs correct.
 
 <!-- render-derived: grid captured from the real renderer, sanity-checked -->
 ```rail-input

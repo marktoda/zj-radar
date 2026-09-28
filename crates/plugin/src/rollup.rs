@@ -240,6 +240,12 @@ pub(crate) struct TabDisplay {
     /// winner (`detail`) can only be one of them. Drives the tab's right-aligned
     /// `⇄` marker.
     pub remote: bool,
+    /// The tab's focused terminal pane (Zellij tracks one per tab), copied
+    /// from [`TerminalPane::focused_in_tab`]. Render-only: the active tab's
+    /// multi-pane roster paints this pane's line on the brighter surface so
+    /// you can see which pane you're in. It never feeds status, counts, or
+    /// severity — focus doesn't drive rail state (`CONTEXT.md`).
+    pub focused_pane: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -353,6 +359,7 @@ pub(crate) fn roll_up<'a, 'q>(
         panes: pane_displays,
         animating,
         remote,
+        focused_pane: panes.iter().find(|p| p.focused_in_tab).map(|p| p.id),
     }
 }
 

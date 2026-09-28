@@ -45,6 +45,23 @@ fn empty_panes_roll_up_to_idle() {
 }
 
 #[test]
+fn focused_pane_is_carried_through_without_touching_the_roll_up() {
+    let mut map = HashMap::new();
+    map.insert(1, obs(ObservationOrigin::StatusPipe, Status::Running, 1));
+    map.insert(2, obs(ObservationOrigin::StatusPipe, Status::Running, 2));
+    let unfocused = [pane(1, "a"), pane(2, "b")];
+    let focused = [pane(1, "a"), TerminalPane { focused_in_tab: true, ..pane(2, "b") }];
+
+    let base = roll_up(&unfocused, resolver(&map), |_| None);
+    let display = roll_up(&focused, resolver(&map), |_| None);
+
+    assert_eq!(base.focused_pane, None);
+    assert_eq!(display.focused_pane, Some(2));
+    // Render-only: focus changes nothing else about the tab.
+    assert_eq!(TabDisplay { focused_pane: None, ..display }, base);
+}
+
+#[test]
 fn untracked_panes_are_shown_but_not_counted() {
     let mut map = HashMap::new();
     map.insert(1, obs(ObservationOrigin::StatusPipe, Status::Running, 1));

@@ -97,6 +97,7 @@ fn display(status: Status, done: usize, total: usize, detail: Option<PrimaryDeta
         panes,
         animating,
         remote,
+        focused_pane: None,
     }
 }
 
@@ -298,6 +299,7 @@ fn rendered_rail_tracks_targets_for_each_emitted_line() {
                 ],
                 animating: true,
                 remote: false,
+                focused_pane: None,
             },
         ),
         tab(2, "plain", display(Status::Idle, 0, 0, None)),
@@ -782,6 +784,7 @@ fn multi_pending_detail_never_exceeds_width() {
             panes: vec![],
             animating: false,
             remote: false,
+            focused_pane: None,
         },
     )];
     for width in [14usize, 16, 17, 20, 24] {
@@ -1096,7 +1099,15 @@ fn display_multi(panes: Vec<PaneDisplay>) -> TabDisplay {
         PaneDisplay::Tracked { kind, status, .. } => *status == Status::Running && kind.is_remote(),
         _ => false,
     });
-    TabDisplay { status, progress: ProgressCounts { done, total, pending }, detail, panes, animating, remote }
+    TabDisplay {
+        status,
+        progress: ProgressCounts { done, total, pending },
+        detail,
+        panes,
+        animating,
+        remote,
+        focused_pane: None,
+    }
 }
 
 #[test]
@@ -1173,6 +1184,7 @@ fn multi_pane_untracked_only_summary_names_panes() {
             panes: vec![PaneDisplay::untracked(1, "shell"), PaneDisplay::untracked(2, "logs")],
             animating: false,
             remote: false,
+            focused_pane: None,
         },
     );
     let rows = [row];
@@ -1197,6 +1209,7 @@ fn multi_pane_mixed_untracked_summary_names_panes() {
             panes: vec![pe(1, Kind::Codex, Status::Running, "tests"), PaneDisplay::untracked(2, "shell")],
             animating: true,
             remote: false,
+            focused_pane: None,
         },
     );
     let rows = [row];
@@ -3506,6 +3519,60 @@ fn cards_active_more_line_uses_active_child_surface_not_card_tint() {
     );
 }
 
+/// A four-pane "quad" tab with the given focused pane. Pane 3 is Pending with
+/// a distinct question so it also emits a subordinate `↳` detail line.
+fn quad_with_focus(focused: Option<u32>) -> TabDisplay {
+    let mut panes: Vec<PaneDisplay> =
+        (1u32..=4).map(|id| pe(id, Kind::Claude, Status::Running, &format!("work-{id}"))).collect();
+    if let PaneDisplay::Tracked { status, task, msg, .. } = &mut panes[2] {
+        *status = Status::Pending;
+        *task = "work-3".into();
+        *msg = "allow edit?".into();
+    }
+    TabDisplay { focused_pane: focused, ..display_multi(panes) }
+}
+
+#[test]
+fn cards_focused_pane_lines_take_the_bright_surface_in_the_active_tab() {
+    let row = TabRow { active: true, ..tab(1, "quad", quad_with_focus(Some(3))) };
+    let s = render(&[row], &ro_cards(40, 100));
+    let line = |needle: &str| s.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle}: {s:?}"));
+
+    // The focused pane's identity AND its `↳` detail line are lifted to the
+    // header's bright band; every sibling keeps the subordinate agent band.
+    assert_eq!(surface_of(line("work-3")), Surface::Active);
+    assert_eq!(surface_of(line("allow edit?")), Surface::Active);
+    for sibling in ["work-1", "work-2", "work-4"] {
+        assert_eq!(surface_of(line(sibling)), Surface::Agent, "{sibling}");
+    }
+}
+
+#[test]
+fn cards_focus_cue_is_active_tab_multi_pane_only() {
+    // Inactive tab: Zellij still reports a focused pane per tab, but it's not
+    // where you are — no pane line takes the bright band.
+    let row = TabRow { active: false, ..tab(1, "quad", quad_with_focus(Some(3))) };
+    let s = render(&[row], &ro_cards(40, 100));
+    for needle in ["work-1", "work-2", "work-3", "work-4"] {
+        let l = s.lines().find(|l| l.contains(needle)).unwrap();
+        assert_ne!(surface_of(l), Surface::Active, "{needle} in an inactive tab");
+    }
+
+    // Single-pane active tab: the focused pane is the only pane — no cue, the
+    // line keeps the subordinate band exactly as before.
+    let single =
+        TabDisplay { focused_pane: Some(1), ..display_multi(vec![pe(1, Kind::Claude, Status::Running, "solo")]) };
+    let row = TabRow { active: true, ..tab(1, "one", single) };
+    let s = render(&[row], &ro_cards(40, 100));
+    let l = s.lines().find(|l| l.contains("solo")).unwrap();
+    assert_eq!(surface_of(l), Surface::Agent);
+
+    // Focus on a pane with no line (a plain shell earns none): the roster
+    // renders exactly as with no focus reported at all.
+    let row = |f| TabRow { active: true, ..tab(1, "quad", quad_with_focus(f)) };
+    assert_eq!(render(&[row(None)], &ro_cards(40, 100)), render(&[row(Some(99))], &ro_cards(40, 100)));
+}
+
 #[test]
 fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     let theme = DerivedColors::default();
@@ -3514,7 +3581,9 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     // `render_body` builds the map once per row (the per-frame rail/agent
     // escapes plus the row's card tint) and a line's escape is a lookup.
     let agent = tc_bg(theme.surface_agent);
-    let surfaces = Surfaces { rail: &rail, card: card_tint(&active_row, &theme), active_child: &agent };
+    let focused = tc_bg(theme.surface_active);
+    let surfaces =
+        Surfaces { rail: &rail, card: card_tint(&active_row, &theme), active_child: &agent, focused_child: &focused };
 
     // Each class resolves to exactly the surface the old inline logic used —
     // asserted against the existing helpers, not hard-coded RGB.
@@ -3526,6 +3595,9 @@ fn line_bg_escape_is_the_one_home_for_the_surface_map() {
     // row a child line (ActiveChild → surface_agent) must NOT resolve to the
     // card tint (surface_active). One resolver makes that structural.
     assert_ne!(LineBg::ActiveChild.escape(&surfaces), LineBg::Card.escape(&surfaces));
+    // The focus cue lifts the focused child back to the bright surface.
+    assert_eq!(LineBg::FocusedChild.escape(&surfaces), Some(focused.as_str()));
+    assert_ne!(LineBg::FocusedChild.escape(&surfaces), LineBg::ActiveChild.escape(&surfaces));
 }
 
 #[test]
@@ -3638,6 +3710,7 @@ fn pending_pane_with_task_renders_identity_plus_question_line() {
             ],
             animating: true,
             remote: false,
+            focused_pane: None,
         },
     );
     let rendered = render_rail(&[row], &[], &ro_comfortable(32, 40));

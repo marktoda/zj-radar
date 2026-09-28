@@ -53,7 +53,10 @@ in exactly one place, `RadarState::resolve`, which both `tab_display` and
 Focus never drives rail state. A finished pane's status clears only through
 shared inputs (a new broadcast, the return-to-shell exit-clear, a prune), so
 every tab's instance converges. `note_focus` records the focused pane only so
-the notifier can stay quiet about it. Pruning has a one-manifest grace
+the notifier can stay quiet about it. Focus may shape paint, never state:
+in Cards density the active tab's focused pane line takes the bright
+`surface_active` band (`TabDisplay::focused_pane`, from the same
+`PaneUpdate` every instance sees). Pruning has a one-manifest grace
 (`absent_once`); see design.md → *Per-pane to per-tab aggregation*.
 
 ## Status contract

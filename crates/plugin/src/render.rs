@@ -358,22 +358,25 @@ impl RailTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineBg {
     None,
-    Rail,        // dark panel base (rail_bg): header, gaps, idle strip
-    Card,        // this row's card surface (card_tint of the owning row)
-    ActiveChild, // active multi-pane child line (surface_agent)
+    Rail,         // dark panel base (rail_bg): header, gaps, idle strip
+    Card,         // this row's card surface (card_tint of the owning row)
+    ActiveChild,  // active multi-pane child line (surface_agent)
+    FocusedChild, // the focused pane's lines in an active multi-pane tab (surface_active)
 }
 
 /// The three surface escapes a row's lines can paint onto — the row-surface
 /// map's one home. `Card` is the row's own tint (`card_tint`, in priority
 /// order flash, active, agent, idle); `ActiveChild` is `surface_agent`
 /// regardless of the row (the split the `cards_active_more_line_*` drift
-/// guards pin); `Rail` is the panel base. Built once per row (`card`) from
+/// guards pin); `FocusedChild` is `surface_active`, lifting the focused
+/// pane's lines back up to the header's band; `Rail` is the panel base. Built once per row (`card`) from
 /// per-frame escapes (`rail`, `active_child`), so [`LineBg::escape`] is a
 /// lookup, not an allocation per line per frame.
 struct Surfaces<'a> {
     rail: &'a str,
     card: String,
     active_child: &'a str,
+    focused_child: &'a str,
 }
 
 impl LineBg {
@@ -390,6 +393,7 @@ impl LineBg {
             LineBg::Rail => Some(surfaces.rail),
             LineBg::Card => Some(&surfaces.card),
             LineBg::ActiveChild => Some(surfaces.active_child),
+            LineBg::FocusedChild => Some(surfaces.focused_child),
         }
     }
 }
@@ -930,7 +934,18 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
     //
     // Returns the pane's lines plus how many of them are task lines.
     let child_bg = if row.active { LineBg::ActiveChild } else { LineBg::Card };
+    // Focus cue: in the active tab's multi-pane roster, the focused pane's
+    // lines (identity, `↳` detail, task lines) climb back to the header's
+    // bright surface, so the pane you're typing into stands out from its
+    // siblings. Single-pane tabs and inactive tabs never take it — there the
+    // focused pane is either obvious or not where you are.
+    let highlight_focus = row.active && is_multi_pane(&row.display);
     let pane_lines = |pane: &PaneDisplay, branch: Branch, skip_silent: bool| -> (Vec<Line>, usize) {
+        let child_bg = if highlight_focus && row.display.focused_pane == Some(pane.pane_id()) {
+            LineBg::FocusedChild
+        } else {
+            child_bg
+        };
         let pane_status = pane.render_status();
         let (identity, detail) = identity_and_detail(pane_status, pane.task(), pane.msg());
         if skip_silent {
@@ -1860,6 +1875,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // Body: one card block per kept row. The inter-card gap is the same
     // rail-based blank on every row, so it is painted once and cloned.
     let active_child = tc_bg(opts.theme.surface_agent);
+    let focused_child = tc_bg(opts.theme.surface_active);
     let mut gap = paint_if_cards(Line::new("\n".to_string(), None, LineBg::Rail), cards, width, &rail);
     gap.bg = LineBg::None;
     for &(i, budget) in &plan {
@@ -1869,8 +1885,12 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         // rides inside the value, so Cards finalization cannot forget it when
         // `Line` grows another lockstep field. Outside Cards density nothing
         // paints, so the map is never built at all.
-        let surfaces =
-            cards.then(|| Surfaces { rail: &rail, card: card_tint(row, &opts.theme), active_child: &active_child });
+        let surfaces = cards.then(|| Surfaces {
+            rail: &rail,
+            card: card_tint(row, &opts.theme),
+            active_child: &active_child,
+            focused_child: &focused_child,
+        });
         let finalize = |line: Line| -> Line {
             let mut line = match surfaces.as_ref().and_then(|s| line.bg.escape(s)) {
                 Some(esc) => line.painted(width, esc),
