@@ -130,8 +130,9 @@ is hidden.
 - **Click a session line** to switch to that session, landing on its attention
   tab if it has one. **Click a peer tab or agent row** to switch to that tab.
   The agent row does not focus a particular pane inside the peer tab.
-- The tree reserves room for local tabs, so a short rail may omit some peer
-  children. Session lines always remain visible. An older zj-radar instance
+- Peer tab and agent rows only use the height left after your local tabs, the
+  ledger, and the footer, so a short rail shows fewer of them (or none).
+  Session lines always remain visible. An older zj-radar instance
   publishes counts but no tab children until its plugin is reloaded.
 - **`session-next` / `session-prev`** move a highlight through the same order.
   The switch happens about a second after your last tap; landing back on your

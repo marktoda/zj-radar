@@ -3898,6 +3898,23 @@ fn badge_absent_with_single_session_and_lockstep_with_many() {
     assert_eq!(lines[2].target, None, "separator line is click-inert");
 }
 
+/// A peer entry whose presence carries `tabs` tabs of `agents` running
+/// Claude panes each (tab `t` at position `t`, named `t{t}`, panes `a{t}.{p}`).
+fn peer_with_tree(name: &str, tabs: usize, agents: usize) -> BadgeEntry {
+    use crate::presence::{PresencePane, PresenceTab};
+    let mut peer = badge_entry(name, false, tabs * agents, 0, None, false);
+    peer.tabs = (0..tabs)
+        .map(|t| PresenceTab {
+            position: t,
+            name: format!("t{t}"),
+            panes: (0..agents)
+                .map(|p| PresencePane { kind: "claude".into(), status: "running".into(), label: format!("a{t}.{p}") })
+                .collect(),
+        })
+        .collect();
+    peer
+}
+
 #[test]
 fn peer_session_tree_lists_tabs_and_agents_with_tab_targets() {
     use crate::presence::{PresencePane, PresenceTab};
@@ -3907,15 +3924,95 @@ fn peer_session_tree_lists_tabs_and_agents_with_tab_targets() {
         name: "PR 8577".into(),
         panes: vec![PresencePane { kind: "claude".into(), status: "running".into(), label: "reviewing CI".into() }],
     }];
-    let lines = render_session_badge(&[badge_entry("work", true, 0, 0, None, false), peer], &ro(36, 18));
-    assert_eq!(lines.len(), 5);
-    assert!(lines[2].text.contains("PR 8577"));
-    assert!(lines[3].text.contains("reviewing CI"));
-    for line in &lines[2..4] {
+    let lines = render_peer_children(&peer, usize::MAX, &ro(36, 18));
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].text.contains("└ ") && lines[0].text.contains("PR 8577"));
+    assert!(lines[1].text.contains("└ ") && lines[1].text.contains("reviewing CI"));
+    for line in &lines {
         let target = line.target.as_ref().expect("peer child is clickable");
         assert_eq!(target.session.as_deref(), Some("review"));
         assert_eq!(target.session_tab_position(), Some(2));
     }
+}
+
+#[test]
+fn clipped_peer_tree_ends_on_an_elbow() {
+    // 2 tabs × 2 agents = 6 lines; a 4-line budget shows t0, a0.0, a0.1, t1.
+    // The last shown tab and the last shown pane of each tab take `└`, even
+    // though more exist past the cut.
+    let lines = render_peer_children(&peer_with_tree("p", 2, 2), 4, &ro(36, 0));
+    let text: Vec<String> = lines.iter().map(|l| super::test_util::grid(&l.text, 36)).collect();
+    assert_eq!(text.len(), 4, "{text:?}");
+    assert!(text[0].starts_with("  ├ ") && text[0].contains("t0"), "{text:?}");
+    assert!(text[1].starts_with("    ├ ") && text[1].contains("a0.0"), "{text:?}");
+    assert!(text[2].starts_with("    └ ") && text[2].contains("a0.1"), "{text:?}");
+    assert!(text[3].starts_with("  └ ") && text[3].contains("t1"), "{text:?}");
+    assert!(render_peer_children(&peer_with_tree("p", 2, 2), 0, &ro(36, 0)).is_empty());
+}
+
+#[test]
+fn peer_tree_never_squeezes_local_tabs_ledger_or_footer() {
+    // The review repro: 40-line rail, a peer with 10 tabs × 3 agents (40 tree
+    // lines). The peer tree must only take what the local cards and the
+    // bottom region leave over.
+    let rows: Vec<TabRow> = (1..=4)
+        .map(|n| {
+            tab(
+                n,
+                format!("local{n}"),
+                display(Status::Running, 0, 1, Some(pd("r", "b", format!("job{n}"), Status::Running))),
+            )
+        })
+        .collect();
+    let ledger = vec![crate::rollup::LedgerLine {
+        at_epoch_s: 0,
+        error: false,
+        tab_name: "gone".into(),
+        label: "needs-you-entry".into(),
+        tab_position: None,
+    }];
+    let badge = vec![badge_entry("work", true, 4, 0, None, false), peer_with_tree("peer", 10, 3)];
+    let opts = RenderOpts { height: 40, density: crate::config::Density::Cards, badge, ..ro(32, 0) };
+    let rail = render_rail(&rows, &ledger, &opts);
+    let text = super::test_util::grid(&rail.ansi, 32);
+
+    for n in 1..=4 {
+        assert!(text.contains(&format!("job{n}")), "local tab {n} must keep its card:\n{text}");
+    }
+    assert!(!text.contains("idle ▾"), "no local tab may fold into the idle strip:\n{text}");
+    assert!(text.contains("needs-you-entry"), "the ledger must survive:\n{text}");
+    assert!(text.contains("working"), "the footer tally must survive:\n{text}");
+    assert!(text.contains("peer"), "the peer heading always renders:\n{text}");
+    assert!(text.contains("t0"), "leftover room still shows some of the peer tree:\n{text}");
+    assert!(!text.contains("a9.2"), "the peer tree is clipped, not the local content:\n{text}");
+    assert_eq!(rail.line_count(), 40);
+}
+
+#[test]
+fn peers_never_head_the_local_cards_before_the_own_session_is_known() {
+    // Before `set_own` runs the badge can hold only peers. Neither may take the
+    // current-session slot above the local cards: both headings (and their
+    // trees) render below them.
+    let rows = vec![tab(1, "local", display(Status::Running, 0, 1, Some(pd("r", "b", "localjob", Status::Running))))];
+    let badge = vec![peer_with_tree("alpha", 1, 1), peer_with_tree("beta", 1, 1)];
+    let opts = RenderOpts { height: 40, density: crate::config::Density::Cards, badge, ..ro(32, 0) };
+    let text = super::test_util::grid(&render_rail(&rows, &[], &opts).ansi, 32);
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{text}"));
+    assert!(at("localjob") < at("alpha"), "a peer must not head the local cards:\n{text}");
+    assert!(at("alpha") < at("a0.0"), "alpha's tree stays under its own heading:\n{text}");
+    assert!(at("a0.0") < at("beta"), "peer trees stay grouped:\n{text}");
+}
+
+#[test]
+fn idle_strip_sits_under_the_local_cards_not_the_peer_tree() {
+    // Enough idle local tabs on a short rail to fold into the strip.
+    let rows: Vec<TabRow> = (1..=20).map(|n| tab(n, format!("idle{n}"), display(Status::Idle, 0, 0, None))).collect();
+    let badge = vec![badge_entry("work", true, 0, 0, None, false), peer_with_tree("peer", 1, 1)];
+    let opts = RenderOpts { height: 16, density: crate::config::Density::Cards, badge, ..ro(32, 0) };
+    let text = super::test_util::grid(&render_rail(&rows, &[], &opts).ansi, 32);
+    let strip = text.find("idle ▾").unwrap_or_else(|| panic!("expected an idle strip:\n{text}"));
+    let peer = text.find("peer").unwrap_or_else(|| panic!("peer heading missing:\n{text}"));
+    assert!(strip < peer, "the strip summarizes local tabs, so it precedes the peer tree:\n{text}");
 }
 
 #[test]

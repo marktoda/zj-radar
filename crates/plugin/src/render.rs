@@ -1753,10 +1753,9 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
     let accent = Role::Accent.ansi();
     let running_glyph = Status::Running.glyph_for(opts.glyphs);
     let attention_glyph = Status::Pending.glyph_for(opts.glyphs);
-    let mut child_budget = opts.height.saturating_sub(entries.len() + 6);
     let mut lines: Vec<Line> = entries
         .iter()
-        .flat_map(|entry| {
+        .map(|entry| {
             let hotspot =
                 (entry.stale && !entry.is_current).then(|| HotspotAction::DismissPresence { name: entry.name.clone() });
             let hotspot = HotspotSlot::new(width, BADGE_LINE_HOTSPOT_MIN, hotspot);
@@ -1796,53 +1795,71 @@ fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> 
                 (!entry.is_current).then(|| RailTarget::for_session(entry.name.clone(), entry.attention_tab_position));
             let line = Line::new(text, target, LineBg::Rail);
             let hotspot_color = if entry.selected { accent } else { &stale };
-            let mut group = vec![hotspot.finish(line, hotspot_color)];
-            // Local tabs already appear below the badge with full pane detail.
-            // Peer tabs are a read-only tree from the bounded presence file.
-            if !entry.is_current {
-                for (tab_index, tab) in entry.tabs.iter().enumerate() {
-                    if child_budget == 0 {
-                        break;
-                    }
-                    child_budget -= 1;
-                    let connector = if tab_index + 1 == entry.tabs.len() { "└" } else { "├" };
-                    let tab_status =
-                        tab.panes.iter().map(|pane| Status::from_wire(&pane.status)).max().unwrap_or(Status::Idle);
-                    let glyph = tab_status.glyph_for(opts.glyphs);
-                    let label = format!("{} {}", glyph, tab.name);
-                    let text = prefixed_line(
-                        width,
-                        4,
-                        || format!("  {connector} {label}"),
-                        |avail| format!("  {connector} {}", Seg::new(&idle, truncate(&label, avail))),
-                    );
-                    let target = RailTarget::for_session(entry.name.clone(), Some(tab.position));
-                    group.push(Line::new(text, Some(target), LineBg::Rail));
-                    for (pane_index, pane) in tab.panes.iter().enumerate() {
-                        if child_budget == 0 {
-                            break;
-                        }
-                        child_budget -= 1;
-                        let branch = if pane_index + 1 == tab.panes.len() { "└" } else { "├" };
-                        let status = Status::from_wire(&pane.status).glyph_for(opts.glyphs);
-                        let kind = Kind::from_source(&pane.kind).mark(opts.glyphs);
-                        let label = format!("{status} {kind} {}", pane.label);
-                        let text = prefixed_line(
-                            width,
-                            6,
-                            || format!("    {branch} {label}"),
-                            |avail| format!("    {branch} {}", Seg::new(&idle, truncate(&label, avail))),
-                        );
-                        let target = RailTarget::for_session(entry.name.clone(), Some(tab.position));
-                        group.push(Line::new(text, Some(target), LineBg::Rail));
-                    }
-                }
-            }
-            group
+            hotspot.finish(line, hotspot_color)
         })
         .collect();
     lines.push(Line::new("\n".to_string(), None, LineBg::Rail));
     lines
+}
+
+/// A peer session's read-only tab tree (from its bounded presence file):
+/// one line per tab, then one per agent pane under it, at most `budget`
+/// lines in tree order. Every line targets the peer session at that tab.
+/// Local tabs never come through here — they render as full cards.
+///
+/// Connectors are judged on what is SHOWN: when `budget` cuts the tree, the
+/// last visible tab/pane takes `└`, so a clipped tree never ends on a
+/// dangling `├`.
+fn render_peer_children(entry: &BadgeEntry, budget: usize, opts: &RenderOpts) -> Vec<Line> {
+    let width = opts.width;
+    let idle = tc_fg(opts.theme.idle_text);
+    // Tree order, clipped: `(tab, None)` is a tab line, `(tab, Some(pane))`
+    // one of its agent lines.
+    let shown: Vec<(usize, Option<usize>)> = entry
+        .tabs
+        .iter()
+        .enumerate()
+        .flat_map(|(t, tab)| std::iter::once((t, None)).chain((0..tab.panes.len()).map(move |p| (t, Some(p)))))
+        .take(budget)
+        .collect();
+    let last_tab = shown.last().map(|&(t, _)| t);
+    shown
+        .iter()
+        .enumerate()
+        .map(|(i, &(t, pane))| {
+            let tab = &entry.tabs[t];
+            let target = RailTarget::for_session(entry.name.clone(), Some(tab.position));
+            let text = match pane {
+                None => {
+                    let connector = if Some(t) == last_tab { "└" } else { "├" };
+                    let tab_status =
+                        tab.panes.iter().map(|pane| Status::from_wire(&pane.status)).max().unwrap_or(Status::Idle);
+                    let label = format!("{} {}", tab_status.glyph_for(opts.glyphs), tab.name);
+                    prefixed_line(
+                        width,
+                        4,
+                        || format!("  {connector} {label}"),
+                        |avail| format!("  {connector} {}", Seg::new(&idle, truncate(&label, avail))),
+                    )
+                }
+                Some(p) => {
+                    let pane = &tab.panes[p];
+                    let last_in_tab = !matches!(shown.get(i + 1), Some(&(next, Some(_))) if next == t);
+                    let branch = if last_in_tab { "└" } else { "├" };
+                    let status = Status::from_wire(&pane.status).glyph_for(opts.glyphs);
+                    let kind = Kind::from_source(&pane.kind).mark(opts.glyphs);
+                    let label = format!("{status} {kind} {}", pane.label);
+                    prefixed_line(
+                        width,
+                        6,
+                        || format!("    {branch} {label}"),
+                        |avail| format!("    {branch} {}", Seg::new(&idle, truncate(&label, avail))),
+                    )
+                }
+            };
+            Line::new(text, Some(target), LineBg::Rail)
+        })
+        .collect()
 }
 
 /// Produce the idle-strip line as a raw (unpainted) `Line` value.
@@ -1878,8 +1895,30 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // actually get once the badge lines land above them, and the final
     // `flat.truncate(opts.height)` in `render_rail` would silently eat into
     // the footer/last row rather than the folding math accounting for it.
-    let mut badge_lines = render_session_badge(&opts.badge, opts);
-    let own_badge = (!badge_lines.is_empty()).then(|| badge_lines.remove(0));
+    //
+    // The session tree splits the badge around the local cards: the CURRENT
+    // session's heading sits above them (it heads its own cards), and every
+    // peer heading — plus the trailing separator — follows them. The current
+    // heading is found by `is_current`, never by position: until the own
+    // session name is known, the badge can hold only peers, and none of them
+    // may head the local cards. Headings (one line per entry, then the
+    // separator, in `entries` order) are always reserved; peer *children* are
+    // not — they take only what's left once the cards and bottom region have
+    // theirs (below).
+    let mut own_badge = None;
+    let mut peer_headings: Vec<(Line, &BadgeEntry)> = Vec::new();
+    let mut headings = render_session_badge(&opts.badge, opts).into_iter();
+    for entry in &opts.badge {
+        let Some(line) = headings.next() else { break };
+        if entry.is_current {
+            own_badge = Some(line);
+        } else {
+            peer_headings.push((line, entry));
+        }
+    }
+    let badge_spacer = headings.next();
+    let badge_heading_lines =
+        usize::from(own_badge.is_some()) + peer_headings.len() + usize::from(badge_spacer.is_some());
 
     let (mut blocks, metas): (Vec<Vec<Line>>, Vec<RowMeta>) = rows
         .iter()
@@ -1893,8 +1932,15 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     let body_budget = opts
         .height
         .saturating_sub(header_lines(opts.header, opts.density, has_content))
-        .saturating_sub(badge_lines.len() + usize::from(own_badge.is_some()));
+        .saturating_sub(badge_heading_lines);
     let (plan, strip_folded, spacing) = plan_layout(&metas, body_budget, opts.density);
+    // Peer children are the lowest-priority lines on the rail: they get only
+    // what the planned cards (+ gaps + idle strip) and the bottom region
+    // (footer, and the ledger when there is one) leave over, so a peer's tree
+    // can never fold a local tab or push the ledger/footer off the rail.
+    let cards_lines =
+        plan.iter().map(|&(_, b)| b).sum::<usize>() + spacing.gap * plan.len() + usize::from(strip_folded > 0);
+    let mut child_budget = body_budget.saturating_sub(cards_lines + bottom_reserve(ledger, opts));
     let overflow = plan.len() < rows.len();
     // Drives the header-rule heartbeat — a plain `any()`, not a
     // count, so it's a distinct question from `footer_tally`'s "how many are
@@ -1974,12 +2020,24 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         }
     }
 
-    for line in badge_lines {
+    // Idle strip — directly under the local cards it summarizes, before any
+    // peer tree, so the folded count never reads as a peer's.
+    for line in render_strip(strip_folded, opts) {
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
-    // Idle strip.
-    for line in render_strip(strip_folded, opts) {
+    // Peer sessions (in badge order: attention first), each heading followed
+    // by as much of its tab tree as the leftover `child_budget` allows —
+    // earlier peers fill first, and headings always render.
+    for (heading, entry) in peer_headings {
+        flat.push(paint_if_cards(heading, cards, width, &rail));
+        let children = render_peer_children(entry, child_budget, opts);
+        child_budget -= children.len();
+        for line in children {
+            flat.push(paint_if_cards(line, cards, width, &rail));
+        }
+    }
+    if let Some(line) = badge_spacer {
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
@@ -2142,6 +2200,21 @@ const LEDGER_DISPLAY_CAP: usize = 10;
 /// | 3..=f | full footer(f) |
 /// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
 /// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
+/// The footer's height: rule + tally, plus the jump hint when enabled.
+/// `render_bottom` debug-asserts it against the footer it actually builds.
+fn footer_len(opts: &RenderOpts) -> usize {
+    2 + usize::from(opts.jump_hint)
+}
+
+/// The height [`render_bottom`] needs to show everything it has: the footer,
+/// plus — when there is ledger history — the ledger rule, its entries (up to
+/// [`LEDGER_DISPLAY_CAP`]), and the spacer. `render_body` holds this back
+/// from peer tab trees, so a peer's tree never squeezes the ledger or footer.
+fn bottom_reserve(ledger: &[LedgerLine], opts: &RenderOpts) -> usize {
+    let entries = ledger.len().min(LEDGER_DISPLAY_CAP);
+    footer_len(opts) + if entries > 0 { 2 + entries } else { 0 }
+}
+
 fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
     // Build the footer once and derive `f` from what was actually built, so
     // the budget math and the emitted lines can never disagree on the
@@ -2152,6 +2225,7 @@ fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: 
         footer.push(footer_hint(opts));
     }
     let f = footer.len();
+    debug_assert_eq!(f, footer_len(opts), "footer_len must count exactly the footer built here");
     match leftover {
         0 | 1 => vec![],
         // Squeezed (n < f): pin the top of the footer — rule + tally survive,
