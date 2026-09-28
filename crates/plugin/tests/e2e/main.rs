@@ -18,6 +18,7 @@
 mod harness;
 
 use harness::*;
+use std::time::Duration;
 
 /// The harness itself is an E2E dependency: every test must run on a private
 /// Zellij server, even when the caller already has a live server and exports
@@ -520,6 +521,72 @@ fn multi_pane_renders_one_line_per_pane() {
     );
 
     eprintln!("[e2e] PASS: two panes rendered on distinct sidebar lines (row {:?} vs row {:?})", line_a, line_b);
+}
+
+/// Focus cue, on the real frame: in the active multi-pane tab the focused
+/// pane's line is painted on the header's bright band and its sibling on the
+/// dimmer child band — and the cue follows `zellij action focus-next-pane`.
+/// Also probes what focusing the rail itself does to the cue.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn focused_pane_line_is_highlighted_and_follows_focus() {
+    let wasm = plugin_wasm_path();
+    assert!(wasm.exists(), "Plugin wasm not found at {:?}", wasm);
+
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_focus_{}", std::process::id());
+    let layout = sidebar_layout_two_terminal(&wasm);
+    let session = ZellijSession::start(&session_name, &layout, &wasm, temp_home);
+
+    let pane_a = session.discover_terminal_pane_id();
+    let pane_b = session.discover_next_pane_id().unwrap_or(pane_a + 1);
+    eprintln!("[e2e] pane_a={pane_a} (focused) pane_b={pane_b}");
+    for (id, msg) in [(pane_a, "taska"), (pane_b, "taskb")] {
+        session.pipe_status(&format!(
+            r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{id}}},"status":"running","msg":"{msg}"}}"#
+        ));
+    }
+    assert!(session.wait_for_sidebar(32, "taskb", Duration::from_secs(5)), "both panes must render");
+
+    // (row bg of pane A's line, row bg of pane B's line, row bg of the tab header)
+    let bands = |s: &ZellijSession| {
+        let screen = s.screen();
+        let a = sidebar_row_index(&screen, 32, "taska").expect("taska row");
+        let b = sidebar_row_index(&screen, 32, "taskb").expect("taskb row");
+        let header = a.min(b) - 1;
+        let bg = |row: usize| sidebar_row_bg_rgb(&screen, row as u16, 32);
+        (bg(a), bg(b), bg(header), sidebar_region(&screen, 32))
+    };
+
+    // Pane A focused: A takes the header's band, B the dimmer child band.
+    let lit_a = |s: &ZellijSession| {
+        let (a, b, h, _) = bands(s);
+        a == h && b != h
+    };
+    let ok = session.wait_until(Duration::from_secs(3), lit_a);
+    let (a, b, h, sidebar) = bands(&session);
+    eprintln!("[e2e] focus A: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+    assert!(ok, "focused pane A must share the header band, B must not: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+
+    // Move focus to B: the highlight must follow.
+    session.run_action_checked(&["focus-next-pane"]);
+    let lit_b = |s: &ZellijSession| {
+        let (a, b, h, _) = bands(s);
+        b == h && a != h
+    };
+    let ok = session.wait_until(Duration::from_secs(3), lit_b);
+    let (a, b, h, sidebar) = bands(&session);
+    eprintln!("[e2e] focus B: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+    assert!(ok, "after focus-next-pane, B must take the header band: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+
+    // Clicking an empty rail row must not blank the cue: the rail is
+    // unselectable once a terminal shares its tab (`desired_selectable`), so
+    // the click never moves focus off pane B.
+    session.click_at(10, 22);
+    std::thread::sleep(Duration::from_millis(800));
+    let (a, b, h, sidebar) = bands(&session);
+    eprintln!("[e2e] after rail click: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+    assert!(b == h && a != h, "a rail click must leave B highlighted: a={a:?} b={b:?} header={h:?}\n{sidebar}");
 }
 
 /// Rendered-output fidelity: assert on the ACTUAL cells Zellij painted — both
