@@ -25,7 +25,22 @@ use crate::task::BgTasks;
 pub(crate) struct TerminalPane {
     pub id: u32,
     pub title: String,
+    /// Zellij's `PaneInfo::is_focused`: focused *in its layer* (tiled or
+    /// floating), so a tab can hold two — resolve with [`effective_focus`].
     pub focused_in_tab: bool,
+    /// A floating (not tiled) pane.
+    pub floating: bool,
+}
+
+/// The one pane of a tab the user is actually in. Zellij reports focus per
+/// layer, so a tab with a floating pane can report a focused tiled pane AND a
+/// focused floating one; the floating layer holds the user's focus only while
+/// it is shown (`TabInfo::are_floating_panes_visible`). A shown layer with no
+/// focused floating *terminal* (a floating plugin, say) falls back to the
+/// tiled focus.
+pub(crate) fn effective_focus(panes: &[TerminalPane], floating_visible: bool) -> Option<u32> {
+    let focused_in = |floating: bool| panes.iter().find(|p| p.focused_in_tab && p.floating == floating).map(|p| p.id);
+    floating_visible.then(|| focused_in(true)).flatten().or_else(|| focused_in(false))
 }
 
 /// The end-result of a finished *command* pane, shown as a tag after the
@@ -240,8 +255,9 @@ pub(crate) struct TabDisplay {
     /// winner (`detail`) can only be one of them. Drives the tab's right-aligned
     /// `⇄` marker.
     pub remote: bool,
-    /// The tab's focused terminal pane (Zellij tracks one per tab), copied
-    /// from [`TerminalPane::focused_in_tab`]. Render-only: the active tab's
+    /// The tab's focused terminal pane ([`effective_focus`]). `roll_up` knows
+    /// only panes, not the tab's floating-layer visibility, so it leaves this
+    /// `None` and `RadarState::tab_display_for` fills it. Render-only: the active tab's
     /// multi-pane roster paints this pane's line on the brighter surface so
     /// you can see which pane you're in. It never feeds status, counts, or
     /// severity — focus doesn't drive rail state (`CONTEXT.md`).
@@ -359,7 +375,7 @@ pub(crate) fn roll_up<'a, 'q>(
         panes: pane_displays,
         animating,
         remote,
-        focused_pane: panes.iter().find(|p| p.focused_in_tab).map(|p| p.id),
+        focused_pane: None,
     }
 }
 

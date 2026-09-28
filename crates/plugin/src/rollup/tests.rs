@@ -2,7 +2,7 @@ use super::*;
 use std::collections::HashMap;
 
 fn pane(id: u32, title: &str) -> TerminalPane {
-    TerminalPane { id, title: title.to_string(), focused_in_tab: false }
+    TerminalPane { floating: false, id, title: title.to_string(), focused_in_tab: false }
 }
 
 fn obs(origin: ObservationOrigin, status: Status, tick: u64) -> TrackedObservation {
@@ -45,20 +45,29 @@ fn empty_panes_roll_up_to_idle() {
 }
 
 #[test]
-fn focused_pane_is_carried_through_without_touching_the_roll_up() {
+fn roll_up_is_focus_blind() {
+    // Focus is render-only and resolved by the caller (it needs the tab's
+    // floating-layer visibility): focusing a pane changes nothing roll_up makes.
     let mut map = HashMap::new();
     map.insert(1, obs(ObservationOrigin::StatusPipe, Status::Running, 1));
     map.insert(2, obs(ObservationOrigin::StatusPipe, Status::Running, 2));
     let unfocused = [pane(1, "a"), pane(2, "b")];
     let focused = [pane(1, "a"), TerminalPane { focused_in_tab: true, ..pane(2, "b") }];
+    assert_eq!(roll_up(&focused, resolver(&map), |_| None), roll_up(&unfocused, resolver(&map), |_| None));
+}
 
-    let base = roll_up(&unfocused, resolver(&map), |_| None);
-    let display = roll_up(&focused, resolver(&map), |_| None);
-
-    assert_eq!(base.focused_pane, None);
-    assert_eq!(display.focused_pane, Some(2));
-    // Render-only: focus changes nothing else about the tab.
-    assert_eq!(TabDisplay { focused_pane: None, ..display }, base);
+#[test]
+fn effective_focus_resolves_zellijs_per_layer_focus() {
+    let tiled = TerminalPane { focused_in_tab: true, ..pane(1, "tiled") };
+    let floating = TerminalPane { focused_in_tab: true, floating: true, ..pane(2, "float") };
+    let both = [tiled.clone(), floating.clone()];
+    // Two panes report focus (one per layer): the shown floating layer wins…
+    assert_eq!(effective_focus(&both, true), Some(2));
+    // …a hidden one never does, even though its pane still says focused.
+    assert_eq!(effective_focus(&both, false), Some(1));
+    // Shown floating layer with no focused floating terminal: tiled focus.
+    assert_eq!(effective_focus(&[tiled, TerminalPane { floating: true, ..pane(3, "f") }], true), Some(1));
+    assert_eq!(effective_focus(&[pane(1, "a")], true), None);
 }
 
 #[test]

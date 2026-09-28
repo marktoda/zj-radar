@@ -177,7 +177,8 @@ plugin pane, resolved to a stable `TabId`. The once-per-pane cwd bootstrap
 
 ## Cross-session presence
 
-How one session's rail learns another's counts without asking Zellij. Each
+How one session's rail learns another's counts (and, with `session_tree` on,
+its tab/agent tree) without asking Zellij. Each
 plugin writes `zj-radar.presence.<zellij_pid>.json` into the shared `/cache`
 root (`session_files.rs`); peers read the directory on every Slow tick and on
 decimated Fast ticks, and feed `Sessions` (`sessions.rs`), pure state that

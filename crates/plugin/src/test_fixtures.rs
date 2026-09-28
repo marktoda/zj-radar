@@ -16,7 +16,7 @@ use crate::status::Status;
 /// A tab whose `TabId` is decoupled from its position — for suites that
 /// exercise id-vs-position semantics. Everyone else wants [`tab`].
 pub(crate) fn tab_with_id(id: usize, position: usize, name: &str, active: bool) -> RadarTab {
-    RadarTab { id: TabId::new(id), position, name: name.into(), active, has_bell: false }
+    RadarTab { floating_visible: false, id: TabId::new(id), position, name: name.into(), active, has_bell: false }
 }
 
 /// The common-case tab: `TabId` derived from its position (`position + 1`),

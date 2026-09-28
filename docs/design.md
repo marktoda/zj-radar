@@ -426,7 +426,7 @@ and `Kind::from_source`, pinned by `source_round_trips_through_kind`.
 
 ## 8. Timer and cadence
 
-Zellij's timer is one-shot, so the plugin re-arms it each tick at one of two
+Zellij's timer is one-shot, so the plugin re-arms it each fire at one of three
 speeds or not at all (`PluginRuntime::desired_cadence`):
 
 - **Fast (1 Hz)** while there is tick-windowed work: the permission flow still
@@ -587,15 +587,31 @@ is a live lookup, so a closed tab's line is click-inert rather than forgotten.
 One session's rail shows counts for every other zj-radar session on the host,
 with click or cycle to switch, without ever calling Zellij's session list.
 Pure state in `sessions.rs`, file IO in `session_files.rs`, wiring in
-`runtime.rs`, render in `render.rs::render_session_badge`.
+`runtime.rs`, render in `render.rs::render_session_badge` (headings) and
+`render_peer_children` (the `session_tree` tree).
 
 **Presence files.** Each plugin writes `zj-radar.presence.<zellij_pid>.json`
 (`{session_name, running, attention, attention_tab_position,
-updated_epoch_s}`) into the shared `/cache` root, temp-file plus atomic rename.
+updated_epoch_s, tabs}`) into the shared `/cache` root, temp-file plus atomic rename.
 Writes are content-edge-gated (the timestamp is excluded from the compare) and
 withheld while `own_session_name` is empty. `running` and `attention` count
 live status-origin panes only; command activity is excluded. The local rail's
 rows, header badge, and footer stay tab-level summaries.
+
+**Session tree (`session_tree`, opt-in).** With the option on, `tabs` carries
+a display-only tree, `[{position, name, panes: [{kind, status, label}]}]`, of
+agent panes only. It's capped at 64 tabs, 16 panes per tab and 96-char labels.
+`Presence::parse` rejects the whole file if any field fails to survive
+`payload::sanitize` unchanged or a cap is exceeded, as it already did for the
+session name. Off, `tabs` is empty, so the file and its write rate are exactly
+as before: the tree changes with every agent label, while the counts don't,
+which is why it isn't published unconditionally. A live `config.v1` toggle
+republishes at once. On screen, the current session's heading sits above the
+local cards and each peer's heading and tree follow the cards and the idle
+strip. Peer rows are the lowest-priority lines on the rail: they get only the
+height left after the planned cards and the bottom region (footer, plus the
+ledger when present), so a large peer can never fold a local tab or push the
+ledger off.
 
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
 rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger

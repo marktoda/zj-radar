@@ -626,6 +626,45 @@ fn focused_pane_line_is_highlighted_and_follows_focus() {
     let (a, b, h, sidebar) = bands(&session);
     eprintln!("[e2e] after rail click: a={a:?} b={b:?} header={h:?}\n{sidebar}");
     assert!(b == h && a != h, "a rail click must leave B highlighted: a={a:?} b={b:?} header={h:?}\n{sidebar}");
+
+    // A floating pane: Zellij reports focus per layer, so tiled B keeps
+    // `is_focused` while the floating pane is focused too. The shown floating
+    // layer holds the user's focus — the cue must move to it.
+    session.run_action_checked(&["new-pane", "--floating"]);
+    std::thread::sleep(Duration::from_millis(800));
+    session.run_action_checked(&["write-chars", r#"echo "ZPIDF=$ZELLIJ_PANE_ID""#]);
+    session.run_action_checked(&["write", "13"]);
+    std::thread::sleep(Duration::from_millis(800));
+    let dump = session.dump_screen();
+    let pane_f: u32 = dump
+        .split("ZPIDF=")
+        .filter_map(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
+        .last()
+        .unwrap_or_else(|| panic!("floating pane id not found in dump: {dump:?}"));
+    eprintln!("[e2e] floating pane_f={pane_f}");
+    session.pipe_status(&format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_f}}},"status":"running","msg":"taskf"}}"#
+    ));
+    let bands3 = |s: &ZellijSession| {
+        let screen = s.screen();
+        let row = |needle| sidebar_row_index(&screen, 32, needle);
+        let (a, b, f) = (row("taska")?, row("taskb")?, row("taskf")?);
+        let bg = |r: usize| sidebar_row_bg_rgb(&screen, r as u16, 32);
+        Some((bg(a), bg(b), bg(f), bg(a.min(b).min(f) - 1), sidebar_region(&screen, 32)))
+    };
+    let lit_f = |s: &ZellijSession| bands3(s).is_some_and(|(a, b, f, h, _)| f == h && a != h && b != h);
+    let ok = session.wait_until(Duration::from_secs(4), lit_f);
+    let state = bands3(&session);
+    eprintln!("[e2e] floating focused: {state:?}");
+    assert!(ok, "a focused, shown floating pane takes the cue: {state:?}");
+
+    // Hide the floating layer: focus is back on tiled B.
+    session.run_action_checked(&["toggle-floating-panes"]);
+    let lit_b_again = |s: &ZellijSession| bands3(s).is_some_and(|(a, b, f, h, _)| b == h && a != h && f != h);
+    let ok = session.wait_until(Duration::from_secs(4), lit_b_again);
+    let state = bands3(&session);
+    eprintln!("[e2e] floating hidden: {state:?}");
+    assert!(ok, "with the floating layer hidden, tiled B holds the cue again: {state:?}");
 }
 
 /// Rendered-output fidelity: assert on the ACTUAL cells Zellij painted — both

@@ -3985,22 +3985,31 @@ fn peer_tree_never_squeezes_local_tabs_ledger_or_footer() {
         label: "needs-you-entry".into(),
         tab_position: None,
     }];
-    let badge = vec![badge_entry("work", true, 4, 0, None, false), peer_with_tree("peer", 10, 3)];
-    let opts =
-        RenderOpts { height: 40, density: crate::config::Density::Cards, badge, session_tree: true, ..ro(32, 0) };
-    let rail = render_rail(&rows, &ledger, &opts);
-    let text = super::test_util::grid(&rail.ansi, 32);
+    // Every density (Cards: 1-line header; Compact/Comfortable: 2) and both
+    // footer heights (`jump_hint`: 2 or 3 lines) — the budget arithmetic
+    // (`header_lines`, `footer_len`, `bottom_reserve`) differs across all of them.
+    use crate::config::Density;
+    for density in [Density::Cards, Density::Comfortable, Density::Compact] {
+        for jump_hint in [false, true] {
+            let badge = vec![badge_entry("work", true, 4, 0, None, false), peer_with_tree("peer", 10, 3)];
+            let opts = RenderOpts { height: 40, density, jump_hint, badge, session_tree: true, ..ro(32, 0) };
+            let rail = render_rail(&rows, &ledger, &opts);
+            let text = super::test_util::grid(&rail.ansi, 32);
+            let case = format!("{density:?} jump_hint={jump_hint}");
 
-    for n in 1..=4 {
-        assert!(text.contains(&format!("job{n}")), "local tab {n} must keep its card:\n{text}");
+            for n in 1..=4 {
+                assert!(text.contains(&format!("job{n}")), "{case}: local tab {n} must keep its card:\n{text}");
+            }
+            assert!(!text.contains("idle ▾"), "{case}: no local tab may fold into the idle strip:\n{text}");
+            assert!(text.contains("needs-you-entry"), "{case}: the ledger must survive:\n{text}");
+            assert!(text.contains("working"), "{case}: the footer tally must survive:\n{text}");
+            assert_eq!(text.contains("jump"), jump_hint, "{case}: the hint line follows jump_hint:\n{text}");
+            assert!(text.contains("peer"), "{case}: the peer heading always renders:\n{text}");
+            assert!(text.contains("t0"), "{case}: leftover room still shows some of the peer tree:\n{text}");
+            assert!(!text.contains("a9.2"), "{case}: the peer tree is clipped, not the local content:\n{text}");
+            assert_eq!(rail.line_count(), 40, "{case}");
+        }
     }
-    assert!(!text.contains("idle ▾"), "no local tab may fold into the idle strip:\n{text}");
-    assert!(text.contains("needs-you-entry"), "the ledger must survive:\n{text}");
-    assert!(text.contains("working"), "the footer tally must survive:\n{text}");
-    assert!(text.contains("peer"), "the peer heading always renders:\n{text}");
-    assert!(text.contains("t0"), "leftover room still shows some of the peer tree:\n{text}");
-    assert!(!text.contains("a9.2"), "the peer tree is clipped, not the local content:\n{text}");
-    assert_eq!(rail.line_count(), 40);
 }
 
 #[test]

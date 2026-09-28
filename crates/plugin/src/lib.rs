@@ -364,6 +364,7 @@ impl ZellijPlugin for State {
                         name: t.name,
                         active: t.active,
                         has_bell: t.has_bell_notification,
+                        floating_visible: t.are_floating_panes_visible,
                     })
                     .collect();
                 let outcome = self.runtime.tabs_changed(tabs);
@@ -389,6 +390,7 @@ impl ZellijPlugin for State {
                             title: p.title,
                             is_plugin: p.is_plugin,
                             is_focused: p.is_focused,
+                            is_floating: p.is_floating,
                             default_bg: p.default_bg,
                             default_fg: p.default_fg,
                             exited: p.exited,

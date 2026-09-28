@@ -71,6 +71,9 @@ pub(crate) struct RadarTab {
     pub name: String,
     pub active: bool,
     pub has_bell: bool,
+    /// `TabInfo::are_floating_panes_visible` — whether a focused floating
+    /// pane holds the user's focus (`rollup::effective_focus`).
+    pub floating_visible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +94,7 @@ pub(crate) struct RawPane {
     pub title: String,
     pub is_plugin: bool,
     pub is_focused: bool,
+    pub is_floating: bool,
     pub default_bg: Option<String>,
     pub default_fg: Option<String>,
     pub exited: bool,
@@ -137,6 +141,7 @@ impl PaneUpdate {
                 id: p.id,
                 title,
                 focused_in_tab: p.is_focused,
+                floating: p.is_floating,
             });
             live.insert(p.id);
             if p.exited {
@@ -1202,7 +1207,7 @@ impl RadarState {
     fn focused_terminal_in_active_tab(&self) -> Option<u32> {
         let active = self.tabs.iter().find(|tab| tab.active)?;
         let panes = self.tab_panes.get(&active.position)?;
-        panes.iter().find(|pane| pane.focused_in_tab).map(|pane| pane.id)
+        self.focused_pane_at(active.position, panes)
     }
 
     /// Live terminal panes whose cwd we have neither learned (via `CwdChanged`)
@@ -1303,7 +1308,14 @@ impl RadarState {
     fn tab_display_for(&self, position: usize) -> TabDisplay {
         let empty = Vec::new();
         let panes = self.tab_panes.get(&position).unwrap_or(&empty);
-        self.tab_display(panes)
+        TabDisplay { focused_pane: self.focused_pane_at(position, panes), ..self.tab_display(panes) }
+    }
+
+    /// The pane the user is in on the tab at `position` — per-layer focus
+    /// resolved against that tab's floating-layer visibility.
+    fn focused_pane_at(&self, position: usize, panes: &[TerminalPane]) -> Option<u32> {
+        let floating_visible = self.tabs.iter().find(|t| t.position == position).is_some_and(|t| t.floating_visible);
+        rollup::effective_focus(panes, floating_visible)
     }
 }
 

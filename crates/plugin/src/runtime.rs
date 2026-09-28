@@ -617,7 +617,13 @@ impl PluginRuntime {
         // `Cadence::Frame` arm) is frame-only until the real time it and its
         // predecessors reported adds up to a second; that fire runs the full
         // tick below. Summing reported elapsed (not counting fires) keeps
-        // `tick` at ~1 Hz through late fires and Frame↔Fast switches.
+        // `tick` at ~1 Hz through late fires and Frame↔Fast switches. Not
+        // exactly 1 Hz: Zellij's elapsed is the timer's sleep alone, so each
+        // fire's processing and re-arm go uncounted — a tick costs
+        // `1s + fires × overhead`. At ~1ms per frame (bench-wasm) that is a
+        // few ms per tick more than the plain Fast chain's one fire, a
+        // sub-percent skew against hidden siblings that the grace/TTL windows
+        // (seconds wide) absorb.
         self.frame += 1;
         if elapsed_s + SUBTICK_SLACK_S < Cadence::Fast.seconds() {
             self.subtick_elapsed_s += elapsed_s;
@@ -1108,7 +1114,14 @@ impl PluginRuntime {
         let Some(kv) = crate::config::overrides_from_json(raw) else {
             return Outcome::none();
         };
+        let session_tree_was = self.config.session_tree;
         self.config.apply_overrides(&kv);
+        // `session_tree` shapes the presence *content* (the tab tree is
+        // published only with it on) without moving the radar generation, so
+        // force `project` to re-derive — exactly as a session-name change does.
+        if self.config.session_tree != session_tree_was {
+            self.presence_gen = None;
+        }
         // Re-apply the interactive set level-triggered: an `interactive_commands`
         // override must demote an already-promoted Running TUI row NOW — it will
         // never fire another CommandChanged until it exits. A sweep that changed

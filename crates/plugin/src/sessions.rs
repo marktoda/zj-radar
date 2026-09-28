@@ -348,7 +348,9 @@ impl Sessions {
                 is_current: s.is_current,
                 selected: selected_name == Some(s.presence.session_name.as_str()),
                 stale: s.stale,
-                tabs: s.presence.tabs.clone(),
+                // The current session's own tree never renders (its tabs are
+                // the local cards), so skip cloning it on every badge build.
+                tabs: if s.is_current { Vec::new() } else { s.presence.tabs.clone() },
             })
             .collect()
     }

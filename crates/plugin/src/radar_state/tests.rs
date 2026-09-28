@@ -301,6 +301,20 @@ fn active_tab_focus_is_the_only_global_focus_transition() {
 }
 
 #[test]
+fn a_shown_floating_pane_holds_focus_for_the_highlight_and_the_notifier() {
+    // Zellij reports focus per layer: tiled pane 1 AND floating pane 2 both
+    // say focused. Which one the user is in depends on the tab's layer.
+    let floating = TerminalPane { floating: true, ..focused_pane(2) };
+    for (shown, want) in [(true, 2), (false, 1)] {
+        let mut radar = RadarState::default();
+        radar.tabs_changed(vec![RadarTab { floating_visible: shown, ..tab(10, 0, "a", true) }]);
+        radar.set_tab_panes_for_position(0, vec![focused_pane(1), floating.clone()]);
+        assert_eq!(radar.rows(0)[0].display.focused_pane, Some(want), "floating shown={shown}");
+        assert_eq!(radar.focused_terminal_in_active_tab(), Some(want), "floating shown={shown}");
+    }
+}
+
+#[test]
 fn rename_ownership_follows_stable_tab_id_across_reorder() {
     let mut radar = RadarState::default();
     radar.tabs_changed(vec![tab(10, 0, "Tab #1", true), tab(20, 1, "custom", false)]);
@@ -425,7 +439,7 @@ fn panes_changed_persists_only_on_exit_displace_or_prune() {
     // A Done sits on pane 7; the same topology re-reports with only a title
     // change — still nothing displaced or pruned.
     radar.status_mut().apply(payload_in_repo(7, Status::Done, "repo"), 2, 100);
-    let retitled = TerminalPane { id: 7, title: "retitled".into(), focused_in_tab: true };
+    let retitled = TerminalPane { floating: false, id: 7, title: "retitled".into(), focused_in_tab: true };
     let change = radar.panes_changed(pane_update(HashMap::from([(0, vec![retitled])])), 3, 0, config::NamingMode::Off);
     assert!(change.snapshot != SnapshotWrite::Now, "title-only churn must not persist");
 
@@ -1184,9 +1198,30 @@ fn next_attention_tab_skips_running_and_idle() {
     let mut st = RadarState::default();
     // 3 tabs at positions 0,1,2; tab 0 active.
     st.tabs_changed(vec![
-        RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false },
-        RadarTab { id: TabId::new(2), position: 1, name: "b".into(), active: false, has_bell: false },
-        RadarTab { id: TabId::new(3), position: 2, name: "c".into(), active: false, has_bell: false },
+        RadarTab {
+            floating_visible: false,
+            id: TabId::new(1),
+            position: 0,
+            name: "a".into(),
+            active: true,
+            has_bell: false,
+        },
+        RadarTab {
+            floating_visible: false,
+            id: TabId::new(2),
+            position: 1,
+            name: "b".into(),
+            active: false,
+            has_bell: false,
+        },
+        RadarTab {
+            floating_visible: false,
+            id: TabId::new(3),
+            position: 2,
+            name: "c".into(),
+            active: false,
+            has_bell: false,
+        },
     ]);
     // tab 0: running (not attention); tab 1: pending (attention); tab 2: idle.
     st.set_tab_panes_for_position(0, vec![pane(10)]);
@@ -1201,7 +1236,14 @@ fn next_attention_tab_skips_running_and_idle() {
 #[test]
 fn next_attention_tab_none_when_no_attention() {
     let mut st = RadarState::default();
-    st.tabs_changed(vec![RadarTab { id: TabId::new(1), position: 0, name: "a".into(), active: true, has_bell: false }]);
+    st.tabs_changed(vec![RadarTab {
+        floating_visible: false,
+        id: TabId::new(1),
+        position: 0,
+        name: "a".into(),
+        active: true,
+        has_bell: false,
+    }]);
     st.set_tab_panes_for_position(0, vec![pane(10)]);
     st.status_mut().apply(payload_in_repo(10, Status::Running, ""), 1, 0);
     assert_eq!(st.next_attention_tab(Direction::Next), None);
@@ -1347,7 +1389,7 @@ proptest! {
                         .iter()
                         .filter(|p| seen.insert(**p))
                         .enumerate()
-                        .map(|(idx, &p)| RadarTab {
+                        .map(|(idx, &p)| RadarTab { floating_visible: false,
                             id: TabId::new(p + 1),
                             position: p,
                             name: format!("t{p}"),
@@ -1362,7 +1404,7 @@ proptest! {
                     for (pos, ids) in layout {
                         let panes = ids
                             .iter()
-                            .map(|&id| TerminalPane {
+                            .map(|&id| TerminalPane { floating: false,
                                 id,
                                 title: format!("p{id}"),
                                 // Mark the drawn focus pane focused_in_tab. When the
@@ -1530,6 +1572,7 @@ proptest! {
 
 fn raw_pane(id: u32, tab_pos: usize) -> RawPane {
     RawPane {
+        is_floating: false,
         tab_pos,
         id,
         title: String::new(),

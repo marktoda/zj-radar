@@ -852,6 +852,24 @@ fn render_with_badge(rt: &mut PluginRuntime, peer: (String, u64)) {
 }
 
 #[test]
+fn live_session_tree_toggle_republishes_presence_at_once() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+    rt.status_pipe(&payload_json(7, "running"));
+
+    // The toggle moves presence content (the tab tree) without touching radar
+    // state — it must still publish on the spot, not at the next heartbeat.
+    let on = rt.config_pipe(r#"{"session_tree":true}"#);
+    assert!(on.effects.iter().any(presence_edge), "turning the tree on publishes, got {:?}", on.effects);
+    assert!(!rt.own_presence().tabs.is_empty());
+    let off = rt.config_pipe(r#"{"session_tree":false}"#);
+    assert!(off.effects.iter().any(presence_edge), "turning it off withdraws the tree, got {:?}", off.effects);
+    // An unrelated override moves nothing presence-shaped.
+    let other = rt.config_pipe(r#"{"glyphs":"nerd"}"#);
+    assert!(!other.effects.iter().any(presence_edge), "got {:?}", other.effects);
+}
+
+#[test]
 fn status_edge_persists_presence_once_and_not_on_identical_state() {
     let mut rt = runtime_with_granted_permission();
     drive_tabs_and_panes(&mut rt);

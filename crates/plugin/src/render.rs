@@ -178,8 +178,9 @@ pub struct RenderOpts {
     /// neutral-dark fallback until the terminal reports its bg/fg via PaneInfo.
     pub theme: DerivedColors,
     /// Wall-clock epoch seconds "now", for ledger age formatting
-    /// (`ledger::format_age`). Distinct from `now_tick` (the render/animation
-    /// clock) — ages are wall-clock, not tick-relative.
+    /// (`ledger::format_age`). Distinct from `now_tick` (the per-instance
+    /// seconds clock) and `now_frame` (the spinner's animation clock) — ages
+    /// are wall-clock, not tick-relative.
     pub now_epoch_s: u64,
     /// Whether the footer may advertise the `alt-[n] jump` chord. Zellij owns
     /// keybinds, not the plugin, so this is config-driven honesty (the
@@ -191,13 +192,13 @@ pub struct RenderOpts {
     /// truly delivers the chord may claim it; everything else omits the hint
     /// line rather than promising a chord that does nothing.
     pub jump_hint: bool,
-    /// The cross-session badge, current-first (`Sessions::badge()`'s
-    /// contract) — rendered by [`render_session_badge`] as zero lines
-    /// whenever `len() <= 1` (only this session, or no peer presence has
-    /// crossed the shared `/cache` root yet), so every caller that never
-    /// populates this (every
-    /// pre-existing test, and any host that hasn't wired the session
-    /// plumbing) renders byte-identical to before this field existed.
+    /// The cross-session badge, current-first once the own session name is
+    /// known (`Sessions::badge()`'s contract). Its headings come from
+    /// [`render_session_badge`] and, with `session_tree` on, each peer's tab
+    /// tree from [`render_peer_children`]; `render_body` places both. Zero
+    /// lines whenever `len() <= 1` (only this session, or no peer presence
+    /// has crossed the shared `/cache` root yet), so every caller that never
+    /// populates this renders byte-identical to before this field existed.
     pub badge: Vec<BadgeEntry>,
     /// `task_lines` config: full `┊` task lines, only the compact `+N` count,
     /// or nothing.
@@ -1711,8 +1712,10 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 
 /// The cross-session badge: one line per session `Sessions::badge()` tracks
 /// (current-first, per its ordering contract — this function trusts that
-/// order and does not re-sort), inserted between the header and the first
-/// card. Renders ZERO lines when `entries.len() <= 1` — only the current
+/// order and does not re-sort) — the headings only; with `session_tree` on,
+/// [`render_peer_children`] draws each peer's tree and `render_body` splits
+/// the headings around the local cards (see the separator note below).
+/// Renders ZERO lines when `entries.len() <= 1` — only the current
 /// session, or no peer presence has crossed the shared `/cache` root yet —
 /// so the feature is invisible until there's genuinely something
 /// cross-session to show, and
@@ -1756,9 +1759,11 @@ fn header_rule(width: usize, now_tick: u64, working: bool, accent: &str) -> Stri
 /// emitted lines" stays a single fact instead of two functions agreeing on
 /// it. It rides through the same `Vec<Line>` as every other badge line (empty
 /// text via `Line::new`, no click target, `LineBg::Rail` — the same class the
-/// per-entry lines use), so `render_body`'s `badge_lines.len()` subtraction
-/// from the body budget and the `for line in badge_lines` paint loop pick it
-/// up for free, exactly as they do the entry lines above it.
+/// per-entry lines use): one line per entry in `entries` order, then the
+/// separator. `render_body` relies on that shape to split the lines — the
+/// whole block above the cards by default, or with `session_tree` the
+/// current heading above them and the peer headings plus separator below —
+/// and reserves all of them (`badge_heading_lines`) out of the body budget.
 fn render_session_badge(entries: &[BadgeEntry], opts: &RenderOpts) -> Vec<Line> {
     if entries.len() <= 1 {
         return vec![];
@@ -2211,6 +2216,21 @@ fn ledger_entry_line(line: &LedgerLine, opts: &RenderOpts) -> Line {
 /// keeps `ledger::LEDGER_CAP` (32) entries for cross-instance merge/dedup.
 const LEDGER_DISPLAY_CAP: usize = 10;
 
+/// The footer's height: rule + tally, plus the jump hint when enabled.
+/// `render_bottom` debug-asserts it against the footer it actually builds.
+fn footer_len(opts: &RenderOpts) -> usize {
+    2 + usize::from(opts.jump_hint)
+}
+
+/// The height [`render_bottom`] needs to show everything it has: the footer,
+/// plus — when there is ledger history — the ledger rule, its entries (up to
+/// [`LEDGER_DISPLAY_CAP`]), and the spacer. `render_body` holds this back
+/// from peer tab trees, so a peer's tree never squeezes the ledger or footer.
+fn bottom_reserve(ledger: &[LedgerLine], opts: &RenderOpts) -> usize {
+    let entries = ledger.len().min(LEDGER_DISPLAY_CAP);
+    footer_len(opts) + if entries > 0 { 2 + entries } else { 0 }
+}
+
 /// The bottom region per the spec §9 budget table. `leftover` = height minus
 /// everything already in `flat` (i.e. `render_body`'s footprint). Returns
 /// lines ordered top→bottom (filler … ledger rule, entries newest-first,
@@ -2229,21 +2249,6 @@ const LEDGER_DISPLAY_CAP: usize = 10;
 /// | 3..=f | full footer(f) |
 /// | >f, ledger empty or too tight | (leftover−f) filler + footer(f) |
 /// | ≥f+3, ledger non-empty | filler + ledger rule + `min(len, leftover−f−2, LEDGER_DISPLAY_CAP)` entries + spacer + footer(f) |
-/// The footer's height: rule + tally, plus the jump hint when enabled.
-/// `render_bottom` debug-asserts it against the footer it actually builds.
-fn footer_len(opts: &RenderOpts) -> usize {
-    2 + usize::from(opts.jump_hint)
-}
-
-/// The height [`render_bottom`] needs to show everything it has: the footer,
-/// plus — when there is ledger history — the ledger rule, its entries (up to
-/// [`LEDGER_DISPLAY_CAP`]), and the spacer. `render_body` holds this back
-/// from peer tab trees, so a peer's tree never squeezes the ledger or footer.
-fn bottom_reserve(ledger: &[LedgerLine], opts: &RenderOpts) -> usize {
-    let entries = ledger.len().min(LEDGER_DISPLAY_CAP);
-    footer_len(opts) + if entries > 0 { 2 + entries } else { 0 }
-}
-
 fn render_bottom(rows: &[TabRow], ledger: &[LedgerLine], leftover: usize, opts: &RenderOpts) -> Vec<Line> {
     // Build the footer once and derive `f` from what was actually built, so
     // the budget math and the emitted lines can never disagree on the

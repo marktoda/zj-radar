@@ -87,7 +87,7 @@ manual setup, and the full removal list are in
   now, and it needs the `zj-radar` CLI on `PATH`.
 - Desktop notifications when an agent in another tab or pane finishes or needs you.
 - Running several Zellij sessions? Each rail lists the others with live counts
-  and click-to-switch.
+  and click-to-switch (`session_tree true` expands each into its tabs and agents).
 
 What every glyph and line means:
 [`docs/using.md`](https://github.com/marktoda/zj-radar/blob/main/docs/using.md).
@@ -123,6 +123,9 @@ plugins {
         notify_when_focused false  // suppress when the pane is focused
         interactive_commands ""    // extra editors/pagers/TUIs to keep quiet
         remote_commands ""         // extra remote-session launchers
+        spinner_fps 4              // working-spinner frames/s (1 = once a second)
+        task_lines "lines"         // background tasks: lines · count · off
+        session_tree false         // expand other sessions into tabs + agents
     }
 }
 ```
