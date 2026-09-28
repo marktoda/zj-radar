@@ -42,9 +42,9 @@ fn run_tag_is_running_jobs_only_same_minute_band_as_wait_tag() {
 fn running_glyph_holds_steady_for_service_and_remote() {
     // The steady mark, not a spinner, for both members of the Service ∪
     // Remote (`is_steady`) union — an ordinary job still spins.
-    assert_eq!(running_glyph(Kind::Server, 5, 0), '▸');
-    assert_eq!(running_glyph(Kind::Remote, 5, 0), '▸');
-    assert_ne!(running_glyph(Kind::Build, 5, 0), '▸');
+    assert_eq!(running_glyph(Kind::Server, 5, 5, 0), '▸');
+    assert_eq!(running_glyph(Kind::Remote, 5, 5, 0), '▸');
+    assert_ne!(running_glyph(Kind::Build, 5, 5, 0), '▸');
 }
 
 #[test]
@@ -139,6 +139,8 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         width,
         height: 100,
         now_tick,
+        // The 1 Hz case: the spinner frame moves in step with the tick.
+        now_frame: now_tick,
         glyphs: GlyphSet::Plain,
         header: true,
         density: crate::config::Density::Compact,
@@ -3793,11 +3795,22 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
 
 #[test]
 fn spinner_eases_after_ten_minutes() {
-    assert_eq!(spin_glyph(100, 0), crate::status::working_spin(100));
+    assert_eq!(spin_glyph(100, 100, 0), crate::status::working_spin(100));
     let t = EASE_AFTER_TICKS + 100;
-    assert_eq!(spin_glyph(t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
-    assert_ne!(spin_glyph(t, 0), spin_glyph(t + 4, 0), "still blinks — alive, just calm");
-    assert_eq!(spin_glyph(t, 0), spin_glyph(t + 1, 0), "but not every tick");
+    assert_eq!(spin_glyph(t, t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
+    assert_ne!(spin_glyph(t, t, 0), spin_glyph(t + 4, t + 4, 0), "still blinks — alive, just calm");
+    assert_eq!(spin_glyph(t, t, 0), spin_glyph(t + 1, t + 1, 0), "but not every tick");
+}
+
+#[test]
+fn full_speed_spinner_follows_the_frame_clock_and_the_eased_blink_does_not() {
+    // Same tick, successive frames (`spinner_fps` > 1): the full-speed
+    // spinner steps each frame…
+    assert_eq!(spin_glyph(10, 40, 0), crate::status::working_spin(40));
+    assert_ne!(spin_glyph(10, 40, 0), spin_glyph(10, 41, 0), "a frame fire moves the spinner");
+    // …while the eased blink stays on the tick: frames never quicken it.
+    let t = EASE_AFTER_TICKS + 100;
+    assert_eq!(spin_glyph(t, 4 * t, 0), spin_glyph(t, 4 * t + 1, 0), "the calm blink ignores frames");
 }
 
 #[test]
@@ -3808,12 +3821,12 @@ fn spin_glyph_ease_boundary_is_strictly_greater_than() {
     // very next tick crosses into the eased two-frame blink. This pins the
     // spec's "older than" reading of the threshold, not "at least as old as".
     assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS, 0),
+        spin_glyph(EASE_AFTER_TICKS, EASE_AFTER_TICKS, 0),
         crate::status::working_spin(EASE_AFTER_TICKS as usize),
         "exactly at the threshold is still full speed"
     );
     assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS + 1, 0),
+        spin_glyph(EASE_AFTER_TICKS + 1, EASE_AFTER_TICKS + 1, 0),
         crate::status::working_spin((((EASE_AFTER_TICKS + 1) / 4) % 2) as usize),
         "one tick past the threshold is already eased"
     );
@@ -3834,7 +3847,7 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     let opts = tight(&rows, ro(40, now));
     let out = render(&rows, &opts);
     let grid = strip_sgr(&out);
-    let expected = spin_glyph(now, 0);
+    let expected = spin_glyph(now, now, 0);
     let full_speed = crate::status::working_spin(now as usize);
     assert_ne!(expected, full_speed, "sanity: the threshold must actually change the glyph at this tick");
     assert!(grid.contains(expected), "eased glyph must appear in the rendered row:\n{grid}");

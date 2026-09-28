@@ -202,7 +202,17 @@ pub struct Config {
     /// Opt-in: off keeps the compact one-line-per-session badge and publishes
     /// no tab tree in this session's presence file.
     pub session_tree: bool,
+    /// Spinner frames per second while a visible rail has full-speed work
+    /// spinning (`runtime::Cadence::Frame`). `1` is the plain 1 Hz tick;
+    /// clamped to `1..=MAX_SPINNER_FPS`.
+    pub spinner_fps: u32,
 }
+
+/// Default spinner rate: a 10-frame braille loop in 2.5s instead of 10s.
+pub const DEFAULT_SPINNER_FPS: u32 = 4;
+/// Ceiling for `spinner_fps`: each frame is a full rail repaint, and past
+/// ~10 Hz a braille spinner reads as a blur rather than as motion.
+pub const MAX_SPINNER_FPS: u32 = 10;
 
 impl Default for Config {
     fn default() -> Self {
@@ -225,8 +235,15 @@ impl Default for Config {
             notify_remote: true,
             notify_when_focused: false,
             session_tree: false,
+            spinner_fps: DEFAULT_SPINNER_FPS,
         }
     }
+}
+
+/// A whole frames-per-second value, clamped to `1..=MAX_SPINNER_FPS` (so `0`
+/// means "slowest", not "never tick"). Non-numbers are rejected.
+fn parse_fps(v: &str) -> Option<u32> {
+    v.trim().parse::<u32>().ok().map(|n| n.clamp(1, MAX_SPINNER_FPS))
 }
 
 fn parse_bool(v: &str) -> Option<bool> {
@@ -318,6 +335,7 @@ config_fields! {
     notify_remote:       "notify_remote"       => parse_bool,
     notify_when_focused: "notify_when_focused" => parse_bool,
     session_tree:        "session_tree"        => parse_bool,
+    spinner_fps:         "spinner_fps"         => parse_fps,
 }
 
 /// Flatten a JSON object of config overrides into the flat `BTreeMap<String,
@@ -637,6 +655,17 @@ mod tests {
         assert!(!Config::default().session_tree);
         assert!(Config::from_map(&map(&[("session_tree", "true")])).session_tree);
         assert!(!Config::from_map(&map(&[("session_tree", "garbage")])).session_tree);
+    }
+
+    #[test]
+    fn spinner_fps_defaults_on_and_clamps() {
+        assert_eq!(Config::default().spinner_fps, DEFAULT_SPINNER_FPS);
+        let fps = |v| Config::from_map(&map(&[("spinner_fps", v)])).spinner_fps;
+        assert_eq!(fps("1"), 1, "opt-out: the plain 1 Hz tick");
+        assert_eq!(fps("8"), 8);
+        assert_eq!(fps("0"), 1, "0 clamps up, never 'no ticks'");
+        assert_eq!(fps("999"), MAX_SPINNER_FPS);
+        assert_eq!(fps("fast"), DEFAULT_SPINNER_FPS, "garbage keeps the default");
     }
 
     #[test]

@@ -648,6 +648,10 @@ fn bench(wasm: &Path, shape: &Shape) -> Bench {
             if i % 2 == 0 { p.update(&command_changed(pane_id(2, 1), &["cargo", "test"], true)) } else { p.update(&command_changed(pane_id(2, 1), &["zsh"], true)) }
         }),
         scenario("timer: fast tick, visible", shape, &mut plugin, |p, _| p.update(&timer(1.0))),
+        // A `spinner_fps 4` frame fire: 3 of every 4 are frame-only (re-arm +
+        // repaint), the 4th completes a second and runs the tick; the
+        // median reports the frame-only cost.
+        scenario("timer: spinner frame, visible", shape, &mut plugin, |p, _| p.update(&timer(0.25))),
         scenario("render: direct", shape, &mut plugin, |p, _| p.render(shape.rows, shape.cols)),
     ];
     let mut rows = rows;

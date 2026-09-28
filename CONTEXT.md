@@ -133,7 +133,9 @@ flag; `project` fires `notify_effects` on it.
 ## Cadence
 
 How often the one-shot timer re-fires (`PluginRuntime::desired_cadence`):
-Fast (1 Hz) while there is tick-windowed work, Slow (once a minute) while only
+Fast (1 Hz) while there is tick-windowed work, subdivided into spinner frames
+(`spinner_fps`) while a visible rail has full-speed work spinning — frames
+repaint, but the tick still runs once a second — Slow (once a minute) while only
 minute-granular ages change or a presence heartbeat is owed, and disarmed
 otherwise. Service rows, remote rows, and interactive rows never pin Fast.
 Trigger lists: design.md → *Timer and cadence*.

@@ -437,6 +437,16 @@ speeds or not at all (`PluginRuntime::desired_cadence`):
   pending cross-session cycle selection awaiting its idle-commit; and the
   scheduled one-shots (promotable pendings awaiting debounce, tentative Dones
   awaiting confirm, stale-Running grace clocks).
+- **Frame (`spinner_fps`, default 4 Hz)** is Fast subdivided for the
+  spinner, used instead of Fast only while this rail is visible, granted, and
+  something spins at full speed (animating and not yet eased,
+  `RadarState::has_full_speed_spinner`). Each fire advances the render-only
+  `frame` clock and repaints; the full tick runs only once the fires'
+  reported elapsed adds up to a second, so `tick` keeps meaning seconds for
+  every grace/TTL/interval clock. Only a Slow arm is ever topped up (to Fast
+  or Frame): two sub-second fires in flight could not be told apart by
+  elapsed, so a Fast↔Frame switch waits for the in-flight fire. Hidden rails,
+  eased long-runners, and `spinner_fps 1` stay on plain Fast.
 - **Slow (once a minute)** once none of that holds but a minute-granular age
   is still changing (an unsaturated ledger entry or pending wait tag), and
   unconditionally while `own_session_name` is known, because the Slow tick's

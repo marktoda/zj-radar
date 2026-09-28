@@ -101,22 +101,24 @@ const TASK_LINES_MIN_WIDTH: usize = 20;
 /// hold [`SERVICE_GLYPH`], jobs spin (easing to a slow blink — see
 /// [`spin_glyph`]). The single owner of the steady/job glyph split, shared by
 /// the tab header and the pane lines.
-fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
+fn running_glyph(kind: Kind, now_tick: u64, now_frame: u64, since_tick: u64) -> char {
     if kind.is_steady() {
         SERVICE_GLYPH
     } else {
-        spin_glyph(now_tick, since_tick)
+        spin_glyph(now_tick, now_frame, since_tick)
     }
 }
 
-/// Spinner frame for a Running glyph: full speed normally; after
-/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
-/// long-runner signals "still going, nothing new" instead of anxiety.
-fn spin_glyph(now_tick: u64, since_tick: u64) -> char {
+/// Spinner frame for a Running glyph: full speed normally — one braille
+/// frame per `now_frame` step, i.e. `spinner_fps` frames a second; after
+/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th *tick*, so
+/// its calm pace ignores the frame rate) — a long-runner signals "still
+/// going, nothing new" instead of anxiety.
+fn spin_glyph(now_tick: u64, now_frame: u64, since_tick: u64) -> char {
     if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
         crate::status::working_spin(((now_tick / 4) % 2) as usize)
     } else {
-        crate::status::working_spin(now_tick as usize)
+        crate::status::working_spin(now_frame as usize)
     }
 }
 
@@ -161,6 +163,11 @@ pub struct RenderOpts {
     pub width: usize,
     pub height: usize,
     pub now_tick: u64,
+    /// The spinner's animation clock (`PluginRuntime::frame`): advances on
+    /// every timer fire, so `spinner_fps` times a second while frames are
+    /// armed. Only the full-speed spinner reads it; everything time-shaped
+    /// (eased blink, header sweep, run tags) stays on `now_tick`.
+    pub now_frame: u64,
     pub glyphs: GlyphSet,
     /// Whether to render the " RADAR" identity header block.
     pub header: bool,
@@ -770,7 +777,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         let detail = row.display.detail.as_ref();
         let since_tick = detail.map(|d| d.since_tick).unwrap_or(now_tick);
         let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
-        running_glyph(kind, now_tick, since_tick)
+        running_glyph(kind, now_tick, opts.now_frame, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -1228,7 +1235,9 @@ fn task_prefixed_line(ctx: &TaskLineCtx, plain_tail: &str, styled_tail: impl FnO
 fn emit_task_line(task: &BgTask, ctx: &TaskLineCtx) -> String {
     let opts = ctx.opts;
     let (glyph, role) = match (task.state, task.holds) {
-        (TaskState::Running, true) if ctx.animating => (spin_glyph(opts.now_tick, ctx.since_tick), Role::Working),
+        (TaskState::Running, true) if ctx.animating => {
+            (spin_glyph(opts.now_tick, opts.now_frame, ctx.since_tick), Role::Working)
+        }
         (TaskState::Running, true) => (crate::status::working_spin(0), Role::Working),
         (TaskState::Running, false) => (SERVICE_GLYPH, Role::Working),
         (TaskState::Completed, _) => (Status::Done.glyph_for(opts.glyphs), Role::Success),
@@ -1363,7 +1372,7 @@ fn emit_pane_line(
         waiting_glyph(opts.glyphs)
     } else if status == Status::Running {
         let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
-        running_glyph(pane.kind(), opts.now_tick, since_tick)
+        running_glyph(pane.kind(), opts.now_tick, opts.now_frame, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };

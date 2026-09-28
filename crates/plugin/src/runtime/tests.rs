@@ -8,8 +8,11 @@ use crate::status::{GlyphSet, Status};
 use crate::test_fixtures::{pane, payload_for, tab};
 use std::collections::{HashMap, HashSet};
 
+/// The shared test config pins `spinner_fps` to 1: the cadence/timer-chain
+/// suite is about the 1 Hz chain (`Cadence::Fast`), so sub-second frames are
+/// opted into only by the frame tests (`frame_*`) that exercise them.
 fn config() -> config::Config {
-    config::Config { naming: NamingMode::Off, density: Density::Compact, ..config::Config::default() }
+    config::Config { naming: NamingMode::Off, density: Density::Compact, spinner_fps: 1, ..config::Config::default() }
 }
 
 fn runtime_with_config(config: config::Config) -> PluginRuntime {
@@ -2087,6 +2090,107 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
         "the heartbeat chain re-arms itself, got {:?}",
         slow.effects
     );
+}
+
+// ── spinner frames (`spinner_fps`, `Cadence::Frame`) ─────────────────────────
+
+/// A granted, visible rail at `spinner_fps 4` with one Running agent on
+/// pane 5 — the state that wants sub-second spinner frames.
+fn spinning_runtime() -> PluginRuntime {
+    let mut rt = granted_runtime();
+    rt.config.spinner_fps = 4;
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(5)]);
+    rt.status_pipe(&payload::to_wire(&payload_for(5, Status::Running)));
+    rt
+}
+
+const FRAME_S: f64 = 0.25;
+
+fn fire(rt: &mut PluginRuntime, elapsed_s: f64) -> Outcome {
+    rt.timer(PermissionProbe::default(), elapsed_s, crate::clock::now_epoch_s())
+}
+
+#[test]
+fn frame_cadence_arms_for_a_visible_full_speed_spinner() {
+    let rt = spinning_runtime();
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Frame(4)));
+    assert_eq!(Cadence::Frame(4).seconds(), FRAME_S);
+}
+
+#[test]
+fn frame_fires_advance_the_spinner_and_every_second_runs_one_tick() {
+    let mut rt = spinning_runtime();
+    let (tick0, frame0) = (rt.tick, rt.frame);
+    for n in 1..=3 {
+        let out = fire(&mut rt, FRAME_S);
+        assert_eq!(rt.tick, tick0, "frame {n} is frame-only: the seconds clock holds");
+        assert_eq!(rt.frame, frame0 + n);
+        assert!(out.render, "a frame repaints");
+        assert_eq!(out.effects, vec![Effect::SetTimeout(Cadence::Frame(4))], "and only re-arms");
+    }
+    // The fourth quarter-second completes a second: the full tick runs.
+    fire(&mut rt, FRAME_S);
+    assert_eq!((rt.tick, rt.frame), (tick0 + 1, frame0 + 4));
+    // Over a longer run the tick stays ~1 Hz.
+    for _ in 0..40 {
+        fire(&mut rt, FRAME_S);
+    }
+    assert_eq!((rt.tick, rt.frame), (tick0 + 11, frame0 + 44));
+}
+
+#[test]
+fn a_late_frame_fire_still_ticks_on_real_elapsed_time() {
+    let mut rt = spinning_runtime();
+    let tick0 = rt.tick;
+    fire(&mut rt, FRAME_S);
+    fire(&mut rt, 0.8); // a scheduler hiccup: 1.05s have really passed
+    assert_eq!(rt.tick, tick0 + 1, "ticks follow real time, not the fire count");
+}
+
+#[test]
+fn frames_stand_down_when_hidden_eased_or_opted_out() {
+    // Hidden: the next fire re-arms plain Fast and paints nothing.
+    let mut rt = spinning_runtime();
+    rt.visibility_changed(false);
+    let out = fire(&mut rt, FRAME_S);
+    assert!(!out.render, "a hidden rail paints no frame");
+    assert_eq!(out.effects, vec![Effect::SetTimeout(Cadence::Fast)]);
+
+    // Opted out: `spinner_fps 1` is the plain 1 Hz chain.
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(5)]);
+    rt.status_pipe(&payload::to_wire(&payload_for(5, Status::Running)));
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast));
+
+    // Eased: past EASE_AFTER_TICKS the glyph blinks per tick, so frames between
+    // ticks would repaint an identical rail.
+    let mut rt = spinning_runtime();
+    rt.tick += crate::render::EASE_AFTER_TICKS + 1;
+    assert!(!rt.radar.has_full_speed_spinner(rt.tick));
+    for _ in 0..4 {
+        fire(&mut rt, FRAME_S);
+    }
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast));
+}
+
+#[test]
+fn fast_to_frame_never_tops_up_a_second_sub_second_chain() {
+    // Fast-armed (hidden), then revealed: the in-flight 1s fire must be the
+    // one that switches to Frame — a top-up would leave two sub-5s fires in
+    // flight that `on_fire` could never tell apart.
+    let mut rt = spinning_runtime();
+    rt.visibility_changed(false);
+    fire(&mut rt, FRAME_S); // re-arms Fast
+    let reveal = rt.visibility_changed(true);
+    assert!(
+        !reveal.effects.iter().any(|e| matches!(e, Effect::SetTimeout(_))),
+        "no top-up on reveal, got {:?}",
+        reveal.effects
+    );
+    let out = fire(&mut rt, Cadence::Fast.seconds());
+    assert!(out.effects.contains(&Effect::SetTimeout(Cadence::Frame(4))), "the live fire switches cadence");
 }
 
 #[test]

@@ -58,11 +58,16 @@ use std::collections::BTreeMap;
 /// How urgently the one-shot timer should re-fire. `Fast` is the 1 Hz tick
 /// that drives animation and debounce/TTL bookkeeping; `Slow` backs off to a
 /// once-a-minute heartbeat when nothing needs per-second resolution but a
-/// ledger age is still changing. `desired_cadence` selects between the two
-/// (or `None` to fully disarm).
+/// ledger age is still changing. `Frame(fps)` is `Fast` subdivided for the
+/// spinner: armed only while this rail is visible and something spins at
+/// full speed, it fires `fps` times a second, and `timer` still runs the
+/// full tick only once per real second — the in-between fires just advance
+/// the spinner and repaint. `desired_cadence` selects among them (or `None`
+/// to fully disarm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cadence {
     Fast,
+    Frame(u32),
     Slow,
 }
 
@@ -70,10 +75,17 @@ impl Cadence {
     pub(crate) fn seconds(self) -> f64 {
         match self {
             Cadence::Fast => 1.0,
+            Cadence::Frame(fps) => 1.0 / f64::from(fps.max(1)),
             Cadence::Slow => 60.0,
         }
     }
 }
+
+/// Slack for "a full second has accumulated" in `timer`'s frame math: four
+/// 0.25s fires must sum to a tick despite float rounding and scheduler
+/// jitter, and a frame fire that lands a hair early must not be mistaken for
+/// a tick's worth.
+const SUBTICK_SLACK_S: f64 = 0.05;
 
 /// A `Timer` fire whose reported elapsed exceeds this came from a Slow (60s)
 /// arm. Fast fires report ~1s and Slow ~60s, so any threshold safely between
@@ -290,9 +302,15 @@ impl TimerChain {
     /// waiting for the (harmless, spurious) slow fire to notice. Every other
     /// transition — first arm, already-correct cadence, nothing desired — is
     /// a no-op.
+    ///
+    /// Only a Slow arm is ever topped up — to `Fast` or `Frame` alike. Two
+    /// sub-second-to-1s fires in flight could never be told apart (staleness
+    /// is read off a fire's elapsed, and only a Slow fire's is distinctive),
+    /// so a `Fast`↔`Frame` switch waits for the in-flight fire (≤1s) to
+    /// re-arm at the new cadence instead.
     fn arm(&mut self, desired: Option<Cadence>) -> Option<Cadence> {
         let arm = match (self.armed, desired) {
-            (Some(Cadence::Slow), Some(Cadence::Fast)) => Some(Cadence::Fast),
+            (Some(Cadence::Slow), Some(c @ (Cadence::Fast | Cadence::Frame(_)))) => Some(c),
             (None, Some(cadence)) => Some(cadence),
             _ => None,
         };
@@ -350,6 +368,16 @@ impl TimerChain {
 pub(crate) struct PluginRuntime {
     pub(crate) radar: RadarState,
     pub(crate) tick: u64,
+    /// The spinner's animation clock: +1 on EVERY live timer fire, ticks and
+    /// sub-second frame fires alike (`Cadence::Frame`). At 1 Hz it moves in
+    /// step with `tick`; at `spinner_fps` N it moves N× per tick. Render-only
+    /// — nothing but the spinner glyph reads it, so `tick` keeps meaning
+    /// "seconds" for every grace/TTL/interval clock.
+    frame: u64,
+    /// Real seconds accumulated by frame fires since the last tick. A frame
+    /// fire whose total reaches a second runs the full tick instead — so the
+    /// tick rate stays ~1 Hz no matter the frame rate (see `timer`).
+    subtick_elapsed_s: f64,
     /// The one-shot `SetTimeout` chain — see [`TimerChain`]. Every arm goes
     /// through `arm_timer_if_needed` (`begin_permission_flow` and `project`
     /// both arm through it); every fire retires through `timer`.
@@ -585,6 +613,19 @@ impl PluginRuntime {
         if let Fire::Stale = self.timer_chain.on_fire(elapsed_s) {
             return Outcome::none();
         }
+        // Every live fire advances the spinner. A sub-second fire (a
+        // `Cadence::Frame` arm) is frame-only until the real time it and its
+        // predecessors reported adds up to a second; that fire runs the full
+        // tick below. Summing reported elapsed (not counting fires) keeps
+        // `tick` at ~1 Hz through late fires and Frame↔Fast switches.
+        self.frame += 1;
+        if elapsed_s + SUBTICK_SLACK_S < Cadence::Fast.seconds() {
+            self.subtick_elapsed_s += elapsed_s;
+            if self.subtick_elapsed_s + SUBTICK_SLACK_S < Cadence::Fast.seconds() {
+                return self.frame_fire(now_epoch_s);
+            }
+        }
+        self.subtick_elapsed_s = 0.0;
         // Which arm produced this live fire. `elapsed_s` is the same signal
         // `TimerChain::on_fire` just consumed for staleness: Fast fires
         // report ~1s, Slow ~60s, and `STALE_FIRE_ELAPSED_S` sits safely
@@ -673,6 +714,18 @@ impl PluginRuntime {
             ..RadarChange::default()
         };
         self.project(effects, change, now)
+    }
+
+    /// A frame-only fire: nothing changed but the spinner's frame, so skip
+    /// every per-tick duty (store timers, presence scans, settle, persists)
+    /// and just re-arm and repaint. The repaint bypasses `project`'s rows-diff
+    /// gate by construction — the rows are identical, the frame is not — and
+    /// honors the visibility gate (a rail that went hidden mid-frame paints
+    /// nothing; its re-arm then falls back to `Fast`).
+    fn frame_fire(&mut self, now_epoch_s: u64) -> Outcome {
+        let mut effects = Vec::new();
+        self.arm_timer_if_needed(now_epoch_s, &mut effects);
+        Outcome::with_effects(!self.hidden, effects)
     }
 
     pub(crate) fn mouse_click(&mut self, line: isize, col: usize) -> Outcome {
@@ -1095,6 +1148,7 @@ impl PluginRuntime {
             width: width.max(1),
             height,
             now_tick: self.tick,
+            now_frame: self.frame,
             glyphs: self.config.glyphs,
             header: self.config.header,
             density: self.config.density,
@@ -1243,7 +1297,7 @@ impl PluginRuntime {
             // disarmed) chain.
             || self.sessions.wants_fast_cadence()
         {
-            Some(Cadence::Fast)
+            Some(self.fast_cadence())
         } else if self.radar.ledger_any_unsaturated(now_epoch_s)
             || self.radar.pending_wait_unsaturated(now_epoch_s)
             // A known name means this session has published a presence file
@@ -1270,6 +1324,20 @@ impl PluginRuntime {
             Some(Cadence::Slow)
         } else {
             None
+        }
+    }
+
+    /// The fast cadence to arm: `Frame(spinner_fps)` when sub-second spinner
+    /// frames would actually show — a rate above 1, this rail on screen (a
+    /// hidden rail paints nothing, so it stays on the plain 1 Hz tick its
+    /// grace clocks need), granted (the needs-permission face has no
+    /// spinner), and something spinning at full speed — else plain `Fast`.
+    fn fast_cadence(&self) -> Cadence {
+        let fps = self.config.spinner_fps;
+        if fps > 1 && !self.hidden && self.permission.granted() && self.radar.has_full_speed_spinner(self.tick) {
+            Cadence::Frame(fps)
+        } else {
+            Cadence::Fast
         }
     }
 

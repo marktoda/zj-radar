@@ -839,6 +839,19 @@ impl RadarState {
         self.status.needs_ticks() || self.command.needs_ticks()
     }
 
+    /// Some observation spins at full speed right now: animating
+    /// ([`TrackedObservation::animating`]) and not yet eased to the slow blink
+    /// (`render::EASE_AFTER_TICKS`). The one reason to paint sub-second
+    /// spinner frames (`spinner_fps`): an eased blink or a steady row moves
+    /// at most once per tick, so frames between ticks would redraw an
+    /// identical rail.
+    pub(crate) fn has_full_speed_spinner(&self, now_tick: u64) -> bool {
+        let spinning = |o: &TrackedObservation| {
+            o.animating() && now_tick.saturating_sub(o.last_change_tick) <= crate::render::EASE_AFTER_TICKS
+        };
+        self.status.observations().any(|(_, o)| spinning(o)) || self.command.observations().any(|(_, o)| spinning(o))
+    }
+
     /// Apply the user's `interactive_commands` extras to the command store
     /// (level-triggered — see `CommandStore::set_interactive_extras`). Called
     /// after snapshot load and on every `config.v1` override, so both a

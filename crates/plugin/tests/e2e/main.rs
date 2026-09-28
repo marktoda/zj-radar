@@ -112,6 +112,45 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
+/// `spinner_fps` (default 4) on the real frame: a running agent's spinner
+/// must step several times a second, not once. Samples the rendered spinner
+/// glyph every ~100ms for 2s and counts the changes: the 1 Hz spinner makes
+/// ~2, the 4 Hz one ~8.
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn spinner_steps_several_times_a_second_by_default() {
+    let wasm = plugin_wasm_path();
+    assert!(wasm.exists(), "Plugin wasm not found at {:?}", wasm);
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_fps_{}", std::process::id());
+    let session = ZellijSession::start(&session_name, &sidebar_layout(&wasm), &wasm, temp_home);
+    let pane_id = session.discover_terminal_pane_id();
+    session.pipe_status(&format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","msg":"spinning"}}"#
+    ));
+    assert!(session.wait_for_sidebar(32, "spinning", Duration::from_secs(5)), "the agent row must render");
+
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let glyph = |s: &ZellijSession| {
+        let screen = s.screen();
+        let row = sidebar_row_index(&screen, 32, "spinning")?;
+        sidebar_region(&screen, 32).lines().nth(row)?.chars().find(|c| SPINNER.contains(c))
+    };
+    let mut seen = Vec::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        if let Some(g) = glyph(&session) {
+            if seen.last() != Some(&g) {
+                seen.push(g);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let changes = seen.len().saturating_sub(1);
+    eprintln!("[e2e] spinner sequence over 2s: {seen:?} ({changes} changes)");
+    assert!(changes >= 5, "a 4 Hz spinner changes ~8 times in 2s (1 Hz: ~2); saw {changes}: {seen:?}");
+}
+
 /// Background tasks end to end through the real wasm plugin: the payload
 /// sequence a Claude turn produces when it backgrounds a test run (launch,
 /// turn-end snapshot while it still runs, the failure outcome from the

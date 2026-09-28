@@ -33,6 +33,7 @@ the field as it was, so a typo never resets a setting.
 | `header` | `true` · `false` | `true` | Show the ` RADAR` header and tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set. `nerd` needs a Nerd Font. |
 | `jump_hint` | `alt-n` · `hidden` | `hidden` | Footer advertises ` alt-[n] jump`. See note 2. |
+| `spinner_fps` | `1`–`10` | `4` | Frames per second of the working spinner on the visible rail. `1` steps once a second (the pre-0.9 pace). Each frame repaints the rail; hidden tabs and agents running past 10 minutes (whose spinner eases to a slow blink) never animate faster than once a second. |
 | `task_lines` | `lines` · `count` · `off` | `lines` | How an agent's background tasks show: a `┊` line per task, only a `+N` count on the agent's row, or nothing. See [`using.md`](using.md). |
 | `notify` | `true` · `false` | `true` | Master switch for desktop notifications. |
 | `notify_done` | `true` · `false` | `true` | Notify on transition to `done`. |
