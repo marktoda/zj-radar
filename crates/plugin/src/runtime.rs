@@ -959,8 +959,12 @@ impl PluginRuntime {
             attention,
             attention_tab_position,
             updated_epoch_s: self.last_now_epoch_s,
+            // The tab tree is published only with `session_tree` on: off keeps
+            // the presence file (and its write rate — a tree moves on every
+            // agent label, counts don't) exactly as before the tree existed.
             tabs: rows
                 .iter()
+                .filter(|_| self.config.session_tree)
                 .take(MAX_TABS)
                 .map(|row| PresenceTab {
                     position: row.tab_position(),
@@ -1099,6 +1103,7 @@ impl PluginRuntime {
             jump_hint: self.config.jump_hint.shows(),
             badge: self.sessions.badge(),
             task_lines: self.config.task_lines,
+            session_tree: self.config.session_tree,
         }
     }
 
@@ -1113,7 +1118,7 @@ impl PluginRuntime {
         self.last_render_key = Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
-        } else if tabrows.is_empty() && self.radar.ledger_is_empty() && opts.badge.len() <= 1 {
+        } else if tabrows.is_empty() && self.radar.ledger_is_empty() && !opts.shows_peer_tree() {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &ledger, &opts)

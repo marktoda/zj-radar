@@ -197,6 +197,11 @@ pub struct Config {
     /// disconnects (`notify_rules::enabled`).
     pub notify_remote: bool,
     pub notify_when_focused: bool,
+    /// Expand the cross-session badge into a session tree: each peer's tabs
+    /// and agent rows under its heading (`render::render_peer_children`).
+    /// Opt-in: off keeps the compact one-line-per-session badge and publishes
+    /// no tab tree in this session's presence file.
+    pub session_tree: bool,
 }
 
 impl Default for Config {
@@ -219,6 +224,7 @@ impl Default for Config {
             notify_pending: true,
             notify_remote: true,
             notify_when_focused: false,
+            session_tree: false,
         }
     }
 }
@@ -311,6 +317,7 @@ config_fields! {
     notify_pending:      "notify_pending"      => parse_bool,
     notify_remote:       "notify_remote"       => parse_bool,
     notify_when_focused: "notify_when_focused" => parse_bool,
+    session_tree:        "session_tree"        => parse_bool,
 }
 
 /// Flatten a JSON object of config overrides into the flat `BTreeMap<String,
@@ -623,6 +630,13 @@ mod tests {
             assert_eq!(Config::from_map(&map(&[("task_lines", v)])).task_lines, want, "{v}");
         }
         assert_eq!(Config::from_map(&map(&[("task_lines", "nope")])).task_lines, TaskLines::Lines);
+    }
+
+    #[test]
+    fn session_tree_is_opt_in() {
+        assert!(!Config::default().session_tree);
+        assert!(Config::from_map(&map(&[("session_tree", "true")])).session_tree);
+        assert!(!Config::from_map(&map(&[("session_tree", "garbage")])).session_tree);
     }
 
     #[test]

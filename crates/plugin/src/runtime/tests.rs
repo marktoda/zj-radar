@@ -878,6 +878,25 @@ fn own_presence_counts_live_status_panes_not_tab_rollups_or_unseated_payloads() 
 }
 
 #[test]
+fn own_presence_publishes_the_tab_tree_only_with_session_tree_on() {
+    let setup = |session_tree: bool| {
+        let mut rt = runtime_with_granted_permission();
+        rt.config.session_tree = session_tree;
+        rt.tabs_changed(vec![tab(0, "pair", true)]);
+        rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+        rt.status_pipe(&payload_json(10, "running"));
+        rt.own_presence()
+    };
+    let off = setup(false);
+    assert_eq!(off.running, 1, "counts publish either way");
+    assert!(off.tabs.is_empty(), "off: no tree, so no extra presence writes per agent label");
+
+    let on = setup(true);
+    assert_eq!(on.tabs.len(), 1);
+    assert_eq!(on.tabs[0].panes.len(), 1, "the agent pane rides the tree");
+}
+
+#[test]
 fn own_presence_excludes_command_attention_and_uses_the_first_status_tab() {
     let mut rt = runtime_with_granted_permission();
     rt.tabs_changed(vec![tab(0, "command", false), tab(3, "agent", true)]);
@@ -1006,14 +1025,41 @@ fn session_cycle_arms_fast_cadence_for_the_idle_commit() {
 }
 
 #[test]
-fn empty_local_session_still_shows_peer_tree() {
+fn empty_local_session_shows_the_peer_tree_only_with_session_tree_on() {
+    let peer =
+        r#"{"session_name":"peer","running":0,"attention":0,"tabs":[{"position":0,"name":"review","panes":[]}] }"#;
+
+    // Off (default): no local tabs and no ledger is still onboarding — the
+    // compact badge alone never justified a rail.
     let mut rt = runtime_with_granted_permission();
-    rt.presences_changed(vec![fresh(
-        r#"{"session_name":"peer","running":0,"attention":0,"tabs":[{"position":0,"name":"review","panes":[]}] }"#,
-    )]);
+    rt.presences_changed(vec![fresh(peer)]);
+    assert!(!rt.render(20, 80).contains("review"), "off: no peer tree");
+
+    // On: the peer tree alone is navigation worth a rail.
+    let mut rt = runtime_with_granted_permission();
+    rt.config.session_tree = true;
+    rt.presences_changed(vec![fresh(peer)]);
     let ansi = rt.render(20, 80);
     assert!(ansi.contains("peer"), "badge={:?} ansi={ansi:?}", rt.sessions.badge());
     assert!(ansi.contains("review"));
+}
+
+#[test]
+fn session_tree_moves_peer_lines_below_the_local_cards() {
+    // Same bookkeeping as `clicking_a_session_line_emits_switch_session`, tree
+    // on: line 0 = title, 1 = rule, 2 = own "work" heading, 3 = local tab,
+    // 4 = peer "alpha" heading (clickable).
+    let mut rt = runtime_with_granted_permission();
+    rt.config.session_tree = true;
+    rt.tabs_changed(vec![tab(0, "team", false)]);
+    rt.presences_changed(vec![fresh(
+        r#"{"session_name":"alpha","running":0,"attention":1,"attention_tab_position":2}"#,
+    )]);
+    rt.render(100, 80);
+
+    assert_eq!(rt.mouse_click(2, 0), Outcome::default(), "own heading is click-inert");
+    let peer_click = rt.mouse_click(4, 0);
+    assert_eq!(peer_click.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]);
 }
 
 #[test]
@@ -1024,8 +1070,8 @@ fn clicking_a_session_line_emits_switch_session() {
     // `render_records_targets_and_mouse_click_returns_host_effect`'s line-index
     // bookkeeping: Compact density + header:true is a 2-line header (title,
     // rule — "line 2 = tab header" there), so with the badge inserted here:
-    // line 0 = title, 1 = rule, 2 = own "work" badge line (click-inert),
-    // 3 = local tab, 4 = peer "alpha" badge line (clickable).
+    // line 0 = title, 1 = rule, 2 = own "work" badge line (click-inert, no
+    // cross-session target), 3 = peer "alpha" badge line (clickable).
     let mut rt = runtime_with_granted_permission(); // own session name "work"
     rt.tabs_changed(vec![tab(0, "team", false)]);
     rt.presences_changed(vec![fresh(
@@ -1038,7 +1084,7 @@ fn clicking_a_session_line_emits_switch_session() {
     let own_click = rt.mouse_click(2, 0);
     assert_eq!(own_click, Outcome::default(), "the own-session badge line has no click target, got {:?}", own_click);
 
-    let peer_click = rt.mouse_click(4, 0);
+    let peer_click = rt.mouse_click(3, 0);
     assert_eq!(peer_click.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: Some(2) }]);
 }
 
@@ -1047,7 +1093,7 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
 
-    let out = rt.mouse_right_click(4, 0);
+    let out = rt.mouse_right_click(3, 0);
 
     assert_eq!(out, Outcome { render: true, effects: vec![Effect::DismissPresence { name: "alpha".into() }] });
     assert!(
@@ -1060,11 +1106,11 @@ fn right_click_on_stale_session_line_dismisses_and_emits_delete_effect() {
 fn left_click_on_stale_badge_glyph_dismisses_but_the_row_body_still_switches() {
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(r#"{"session_name":"alpha","running":0,"attention":1}"#));
-    let (start_col, _) = rt.last_rendered.hotspot_at_line(4).expect("stale peer badge must carry a dismiss glyph");
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3).expect("stale peer badge must carry a dismiss glyph");
 
-    let body = rt.mouse_click(4, start_col - 1);
+    let body = rt.mouse_click(3, start_col - 1);
     assert_eq!(body.effects, vec![Effect::SwitchSession { name: "alpha".into(), tab_position: None }]);
-    let dismiss = rt.mouse_click(4, start_col);
+    let dismiss = rt.mouse_click(3, start_col);
     assert_eq!(dismiss.effects, vec![Effect::DismissPresence { name: "alpha".into() }]);
     assert!(dismiss.render, "dismiss removes the stale peer locally at once");
 }
@@ -1081,11 +1127,11 @@ fn raced_away_dismiss_glyph_consumes_the_click_instead_of_switching_sessions() {
     let json = r#"{"session_name":"alpha","running":0,"attention":1}"#;
     let mut rt = runtime_with_granted_permission();
     render_with_badge(&mut rt, stale(json));
-    let (start_col, _) = rt.last_rendered.hotspot_at_line(4).expect("stale peer badge must carry a dismiss glyph");
+    let (start_col, _) = rt.last_rendered.hotspot_at_line(3).expect("stale peer badge must carry a dismiss glyph");
 
     rt.presences_changed(vec![fresh(json)]); // alpha heartbeats back to life
 
-    let out = rt.mouse_click(4, start_col);
+    let out = rt.mouse_click(3, start_col);
     assert_eq!(out, Outcome::default(), "a raced-away dismiss must consume the click, not switch sessions");
     assert!(
         rt.sessions.badge().iter().any(|b| b.name == "alpha"),

@@ -40,6 +40,7 @@ the field as it was, so a typo never resets a setting.
 | `notify_pending` | `true` · `false` | `true` | Notify on transition to `pending`. |
 | `notify_remote` | `true` · `false` | `true` | Notify when a remote session (`ssh`, `mosh`, …) disconnects. Independent of `notify_done`/`notify_error`: a disconnect answers to this toggle alone, so silencing routine completions keeps disconnects, and `notify_remote false` silences only disconnects. |
 | `notify_when_focused` | `true` · `false` | `false` | Also notify for the focused pane. |
+| `session_tree` | `true` · `false` | `false` | Expand the cross-session badge into a tree of each other session's tabs and agents. Off keeps one line per session. See [`using.md`](using.md#cross-session-badge). |
 | `interactive_commands` | comma/space-separated exe names | *(empty)* | Extra programs to treat as interactive: never a spinning row, only a muted label. Extends the built-in set of editors, pagers, and TUIs. Applies live. See [`activity-model.md`](activity-model.md). |
 | `remote_commands` | comma/space-separated exe names | *(empty)* | Extra programs to treat as remote-session launchers (steady mark, tab `⇄` marker, disconnect notification). Matched by program name alone, arguments ignored. Extends the built-in set (`ssh`, `mosh`, `mosh-client`, `autossh`, `et`). Applies live. See [`activity-model.md`](activity-model.md). |
 

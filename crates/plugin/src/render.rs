@@ -195,6 +195,20 @@ pub struct RenderOpts {
     /// `task_lines` config: full `┊` task lines, only the compact `+N` count,
     /// or nothing.
     pub task_lines: crate::config::TaskLines,
+    /// `session_tree` config: expand the badge into a session tree — the
+    /// current session's heading above its cards, each peer's heading and
+    /// read-only tab/agent tree below them. Off (the default) keeps the
+    /// compact badge block above the cards.
+    pub session_tree: bool,
+}
+
+impl RenderOpts {
+    /// There is a peer tree to draw: the tree is on and a peer exists. Alone
+    /// it justifies a rail (`render_rail`/`onboarding`'s "nothing to show"
+    /// gates), since a session with no local tabs can still navigate peers.
+    pub(crate) fn shows_peer_tree(&self) -> bool {
+        self.session_tree && self.badge.len() > 1
+    }
 }
 
 /// Presentation for the roll-up's `ExitOutcome` tag. The enum itself lives in
@@ -1887,7 +1901,7 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // Zero tabs with a non-empty ledger still has something to show (spec §9's
     // floor: header + bottom region, no cards) — the header must not vanish
     // just because `rows` is empty.
-    let has_content = !rows.is_empty() || !ledger.is_empty() || opts.badge.len() > 1;
+    let has_content = !rows.is_empty() || !ledger.is_empty() || opts.shows_peer_tree();
 
     // Built (and its line count reserved out of `body_budget`) BEFORE
     // `plan_layout` runs, exactly like `header_lines` above it — otherwise
@@ -1905,20 +1919,25 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
     // separator, in `entries` order) are always reserved; peer *children* are
     // not — they take only what's left once the cards and bottom region have
     // theirs (below).
-    let mut own_badge = None;
+    //
+    // With `session_tree` off the badge stays one compact block — every
+    // heading, then the separator — above the cards, and no peer children.
+    let mut top_badge: Vec<Line> = Vec::new();
     let mut peer_headings: Vec<(Line, &BadgeEntry)> = Vec::new();
     let mut headings = render_session_badge(&opts.badge, opts).into_iter();
     for entry in &opts.badge {
         let Some(line) = headings.next() else { break };
-        if entry.is_current {
-            own_badge = Some(line);
+        if entry.is_current || !opts.session_tree {
+            top_badge.push(line);
         } else {
             peer_headings.push((line, entry));
         }
     }
-    let badge_spacer = headings.next();
-    let badge_heading_lines =
-        usize::from(own_badge.is_some()) + peer_headings.len() + usize::from(badge_spacer.is_some());
+    let mut badge_spacer = headings.next();
+    if !opts.session_tree {
+        top_badge.extend(badge_spacer.take());
+    }
+    let badge_heading_lines = top_badge.len() + peer_headings.len() + usize::from(badge_spacer.is_some());
 
     let (mut blocks, metas): (Vec<Vec<Line>>, Vec<RowMeta>) = rows
         .iter()
@@ -1966,9 +1985,10 @@ fn render_body(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) -> Vec
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
-    // The current session heads its own live tab cards. Peer sessions and
-    // their child tabs come after those cards, keeping the tree grouped.
-    if let Some(line) = own_badge {
+    // Tree on: the current session heads its own live tab cards, and peer
+    // sessions with their child tabs come after those cards, keeping the tree
+    // grouped. Tree off: the whole compact badge block, as before the tree.
+    for line in top_badge {
         flat.push(paint_if_cards(line, cards, width, &rail));
     }
 
@@ -2266,7 +2286,7 @@ pub fn render_rail(rows: &[TabRow], ledger: &[LedgerLine], opts: &RenderOpts) ->
     // — the caller routes that case to `onboarding` instead (spec §7/§9). Zero
     // rows with a non-empty ledger still renders: header + bottom region, no
     // cards.
-    if rows.is_empty() && ledger.is_empty() && opts.badge.len() <= 1 {
+    if rows.is_empty() && ledger.is_empty() && !opts.shows_peer_tree() {
         return RenderedRail::from_lines(vec![]);
     }
     let cards = opts.density == Density::Cards;

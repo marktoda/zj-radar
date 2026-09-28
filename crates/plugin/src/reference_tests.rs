@@ -595,6 +595,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         // as every rail-reference.md fixture predates this field.
         badge: vec![],
         task_lines: crate::config::TaskLines::default(),
+        session_tree: false,
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no
