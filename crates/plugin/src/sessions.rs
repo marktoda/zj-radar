@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use crate::presence::Presence;
+use crate::presence::{Presence, PresenceTab};
 use crate::radar_state::Direction;
 
 /// How long a peer's presence file may sit unrefreshed before its badge row
@@ -117,6 +117,7 @@ pub(crate) struct BadgeEntry {
     pub is_current: bool,
     pub selected: bool,
     pub stale: bool,
+    pub tabs: Vec<PresenceTab>,
 }
 
 /// Where a committed cycle gesture lands — enough for the runtime to switch
@@ -347,6 +348,7 @@ impl Sessions {
                 is_current: s.is_current,
                 selected: selected_name == Some(s.presence.session_name.as_str()),
                 stale: s.stale,
+                tabs: s.presence.tabs.clone(),
             })
             .collect()
     }
@@ -418,6 +420,7 @@ mod tests {
             attention: 0,
             attention_tab_position: None,
             updated_epoch_s: 0,
+            tabs: vec![],
         }
     }
     /// Fresh (age 0) peer presence, the shape most tests want.
@@ -440,6 +443,7 @@ mod tests {
             attention: 0,
             attention_tab_position: None,
             updated_epoch_s: 0,
+            tabs: vec![],
         });
         // (Bound rather than chained straight off `s.badge()`: the literal
         // brief snippet borrows from a temporary `Vec<BadgeEntry>` that would
@@ -604,6 +608,7 @@ mod tests {
             attention: 0,
             attention_tab_position: None,
             updated_epoch_s: 0,
+            tabs: vec![],
         };
         assert!(s.set_own(p.clone()), "first own-count report changes the badge");
         // Same badge-relevant fields, different updated_epoch_s (not part of
@@ -614,6 +619,7 @@ mod tests {
             attention: 0,
             attention_tab_position: None,
             updated_epoch_s: 99,
+            tabs: vec![],
         };
         assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
     }
@@ -784,6 +790,7 @@ mod tests {
             attention: 0,
             attention_tab_position: None,
             updated_epoch_s: 50,
+            tabs: vec![],
         });
         s.update_presences(vec![(
             r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(),

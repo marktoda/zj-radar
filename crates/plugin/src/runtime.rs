@@ -45,7 +45,7 @@
 use crate::config;
 use crate::control::Verb;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
-use crate::presence::Presence;
+use crate::presence::{Presence, PresencePane, PresenceTab, MAX_LABEL_CHARS, MAX_PANES_PER_TAB, MAX_TABS};
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
@@ -959,6 +959,29 @@ impl PluginRuntime {
             attention,
             attention_tab_position,
             updated_epoch_s: self.last_now_epoch_s,
+            tabs: rows
+                .iter()
+                .take(MAX_TABS)
+                .map(|row| PresenceTab {
+                    position: row.tab_position(),
+                    name: crate::payload::sanitize(&row.name, MAX_LABEL_CHARS),
+                    panes: row
+                        .display
+                        .panes
+                        .iter()
+                        .filter(|pane| pane.kind().is_agent())
+                        .take(MAX_PANES_PER_TAB)
+                        .map(|pane| PresencePane {
+                            kind: pane.kind().as_source().to_string(),
+                            status: pane.render_status().as_wire().to_string(),
+                            label: crate::payload::sanitize(
+                                if pane.task().is_empty() { pane.kind().as_source() } else { pane.task() },
+                                MAX_LABEL_CHARS,
+                            ),
+                        })
+                        .collect(),
+                })
+                .collect(),
         }
     }
 
@@ -1090,7 +1113,7 @@ impl PluginRuntime {
         self.last_render_key = Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
-        } else if tabrows.is_empty() && self.radar.ledger_is_empty() {
+        } else if tabrows.is_empty() && self.radar.ledger_is_empty() && opts.badge.len() <= 1 {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &ledger, &opts)
