@@ -33,6 +33,7 @@ the field as it was, so a typo never resets a setting.
 | `header` | `true` · `false` | `true` | Show the ` RADAR` header and tab count. |
 | `glyphs` | `plain` · `nerd` | `plain` | Status glyph set. `nerd` needs a Nerd Font. |
 | `jump_hint` | `alt-n` · `hidden` | `hidden` | Footer advertises ` alt-[n] jump`. See note 2. |
+| `task_lines` | `lines` · `count` · `off` | `lines` | How an agent's background tasks show: a `┊` line per task, only a `+N` count on the agent's row, or nothing. See [`using.md`](using.md). |
 | `notify` | `true` · `false` | `true` | Master switch for desktop notifications. |
 | `notify_done` | `true` · `false` | `true` | Notify on transition to `done`. |
 | `notify_error` | `true` · `false` | `true` | Notify on transition to `error`. |

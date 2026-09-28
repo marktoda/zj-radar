@@ -54,7 +54,9 @@ is over and only that work remains, the agent's own glyph turns to a steady
 when the outcome is unknown, and stay listed until your next prompt. At most
 three lines show per pane (the rest fold into `┊ +N more`); on a short or
 narrow rail they fold into a `+N` count on the pane row, error-coloured when
-one failed. Claude only, for now, and it needs the `zj-radar` CLI installed.
+one failed. Set `task_lines count` to always show just that count, or
+`task_lines off` to hide background tasks (the agent's `⋯` stays). Claude
+only, for now, and it needs the `zj-radar` CLI installed.
 The full semantics are in [`activity-model.md`](activity-model.md).
 
 **Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✦` gemini ·

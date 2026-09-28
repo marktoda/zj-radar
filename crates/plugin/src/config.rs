@@ -132,6 +132,31 @@ impl JumpHint {
     }
 }
 
+/// How an agent's background tasks (`core::task`) show under its pane row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TaskLines {
+    /// Default: one `┊` line per task (the compact `+N` tag still takes over
+    /// on a short or narrow rail).
+    #[default]
+    Lines,
+    /// Always the compact `+N` count on the pane row, never task lines.
+    Count,
+    /// No task lines or count. The agent's `⋯` waiting glyph stays: it is the
+    /// pane's own status, not a task line.
+    Off,
+}
+
+impl TaskLines {
+    pub fn from_config(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "lines" | "on" | "true" => Some(TaskLines::Lines),
+            "count" => Some(TaskLines::Count),
+            "off" | "false" | "hidden" => Some(TaskLines::Off),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Config {
     pub naming: NamingMode,
@@ -143,6 +168,8 @@ pub struct Config {
     pub grant_hint: GrantHint,
     /// Whether the footer advertises the `alt-[n] jump` chord.
     pub jump_hint: JumpHint,
+    /// How background tasks show under an agent's pane row.
+    pub task_lines: TaskLines,
     /// Set on the onboarding layout's rail instances: never fire our own
     /// permission request — wait for the floating onboarding pane to win the
     /// grant, so Zellij binds its prompt to the float, not the rail.
@@ -182,6 +209,7 @@ impl Default for Config {
             role: Role::default(),
             grant_hint: GrantHint::default(),
             jump_hint: JumpHint::default(),
+            task_lines: TaskLines::default(),
             defer_permission: false,
             interactive_commands: BTreeSet::new(),
             remote_commands: BTreeSet::new(),
@@ -272,6 +300,7 @@ config_fields! {
     role:       "role"       => Role::from_config,
     grant_hint: "grant_hint" => GrantHint::from_config,
     jump_hint:  "jump_hint"  => JumpHint::from_config,
+    task_lines: "task_lines" => TaskLines::from_config,
     header:              "header"              => parse_bool,
     defer_permission:    "defer_permission"    => parse_bool,
     interactive_commands: "interactive_commands" => parse_name_set,
@@ -585,6 +614,15 @@ mod tests {
         assert!(!c.notify_pending);
         assert!(!c.notify_remote);
         assert!(c.notify_when_focused);
+    }
+
+    #[test]
+    fn task_lines_parse_and_default_to_lines() {
+        assert_eq!(Config::default().task_lines, TaskLines::Lines);
+        for (v, want) in [("lines", TaskLines::Lines), ("count", TaskLines::Count), ("off", TaskLines::Off)] {
+            assert_eq!(Config::from_map(&map(&[("task_lines", v)])).task_lines, want, "{v}");
+        }
+        assert_eq!(Config::from_map(&map(&[("task_lines", "nope")])).task_lines, TaskLines::Lines);
     }
 
     #[test]

@@ -146,6 +146,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         now_epoch_s: 0,
         jump_hint: true,
         badge: vec![],
+        task_lines: crate::config::TaskLines::default(),
     }
 }
 
@@ -2609,6 +2610,42 @@ fn background_task_lines_fold_into_a_count_when_narrow_or_short() {
     // is dropped), and the failure turns it red.
     assert!(text.contains("fix the flaky") && text.contains("+3"), "the agent line survives with the count: {text}");
     assert!(short.contains(&format!("{}+3", Role::Error.ansi())), "a failure colours the count red: {short:?}");
+}
+
+#[test]
+fn task_lines_config_picks_lines_count_or_nothing() {
+    use crate::config::TaskLines;
+    let rows = vec![TabRow { active: true, ..tab(1, "zj-radar", display_multi(vec![waiting_agent(1, Kind::Claude)])) }];
+    let render_with = |mode| {
+        let opts = RenderOpts {
+            now_epoch_s: 300,
+            task_lines: mode,
+            ..ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain)
+        };
+        strip_sgr(&render(&rows, &opts))
+    };
+
+    let lines = render_with(TaskLines::Lines);
+    assert!(lines.contains(TASK_GUIDE), "default draws task lines:\n{lines}");
+
+    // Count: the compact form on a tall, wide rail — no lines, the `+N` tag.
+    let count = render_with(TaskLines::Count);
+    assert!(!count.contains(TASK_GUIDE), "count draws no task lines:\n{count}");
+    assert!(count.contains("fix the flaky") && count.contains("+3"), "count keeps the tag:\n{count}");
+
+    // Off: neither lines nor tag; the agent row itself (and its `⋯` waiting
+    // glyph, the pane's own status) stays.
+    let off = render_with(TaskLines::Off);
+    assert!(!off.contains(TASK_GUIDE) && !off.contains("+3"), "off hides tasks entirely:\n{off}");
+    assert!(off.contains("fix the flaky") && off.contains('⋯'), "off keeps the agent row:\n{off}");
+
+    // Off: a Done pane whose only content was its task summary goes silent,
+    // like any other idle-content single pane.
+    let done = restate(waiting_agent(1, Kind::Claude), Status::Done, "", "", false);
+    let rows = vec![tab(1, "zj-radar", display_multi(vec![done]))];
+    let opts =
+        RenderOpts { task_lines: TaskLines::Off, ..ro_full(32, 100, crate::config::Density::Compact, GlyphSet::Plain) };
+    assert!(!strip_sgr(&render(&rows, &opts)).contains(TASK_GUIDE));
 }
 
 #[test]

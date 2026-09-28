@@ -1075,6 +1075,7 @@ impl PluginRuntime {
             now_epoch_s: crate::clock::now_epoch_s(),
             jump_hint: self.config.jump_hint.shows(),
             badge: self.sessions.badge(),
+            task_lines: self.config.task_lines,
         }
     }
 

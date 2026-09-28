@@ -192,6 +192,9 @@ pub struct RenderOpts {
     /// pre-existing test, and any host that hasn't wired the session
     /// plumbing) renders byte-identical to before this field existed.
     pub badge: Vec<BadgeEntry>,
+    /// `task_lines` config: full `┊` task lines, only the compact `+N` count,
+    /// or nothing.
+    pub task_lines: crate::config::TaskLines,
 }
 
 /// Presentation for the roll-up's `ExitOutcome` tag. The enum itself lives in
@@ -901,9 +904,16 @@ fn render_row(row: &TabRow, opts: &RenderOpts) -> Vec<Line> {
 /// (`compact`, chosen by `plan_overflow` when the rail is short, and always
 /// below [`TASK_LINES_MIN_WIDTH`]) folds each pane's tasks into a `+N` tag on
 /// its identity line, so the planner can drop task lines before it squeezes
-/// anything the card owns.
+/// anything the card owns. `task_lines count` pins the compact form (so the
+/// full form IS compact and the planner never re-renders); `off` hides tasks
+/// from both forms — no lines, no tag, and they don't make a pane "say
+/// something".
 fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>, usize) {
-    let compact = compact || opts.width < TASK_LINES_MIN_WIDTH;
+    use crate::config::TaskLines;
+    let compact = compact || opts.width < TASK_LINES_MIN_WIDTH || opts.task_lines == TaskLines::Count;
+    fn shown_tasks(pane: &PaneDisplay, mode: TaskLines) -> Option<&BgTasks> {
+        pane.tasks().filter(|_| mode != TaskLines::Off)
+    }
     let mut task_line_count = 0usize;
     let mut lines: Vec<Line> = Vec::new();
     let width = opts.width;
@@ -951,7 +961,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         if skip_silent {
             let says_something = !identity.trim().is_empty()
                 || pane.outcome().is_some_and(|o| o.renders_tag())
-                || pane.tasks().is_some();
+                || shown_tasks(pane, opts.task_lines).is_some();
             // `status()` (not `render_status()`) is the gate on purpose: an
             // *observation* resting at Idle is silent, while an Interactive
             // pane has no observation-status at all — its muted label IS its
@@ -969,7 +979,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
         );
         // Compact form: the pane's background tasks survive as a count,
         // reserved on the line so the identity absorbs any truncation.
-        let tasks_tag = pane.tasks().filter(|_| compact).and_then(compact_tasks_tag);
+        let tasks_tag = shown_tasks(pane, opts.task_lines).filter(|_| compact).and_then(compact_tasks_tag);
         let pane_target =
             RailTarget { tab_position: tab_target.tab_position, pane_id: Some(pane.pane_id()), session: None };
         let hotspot = pane
@@ -1001,7 +1011,7 @@ fn render_row_form(row: &TabRow, opts: &RenderOpts, compact: bool) -> (Vec<Line>
             let text = emit_pane_detail_line(q, row.active, st, pane_status, branch, &idle_color, width);
             out.push(Line::new(text, Some(pane_target.clone()), child_bg));
         }
-        if let Some(tasks) = pane.tasks().filter(|_| !compact) {
+        if let Some(tasks) = shown_tasks(pane, opts.task_lines).filter(|_| !compact) {
             let ctx = TaskLineCtx {
                 opts,
                 tab_active: row.active,
