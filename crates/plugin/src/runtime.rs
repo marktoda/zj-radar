@@ -1013,39 +1013,53 @@ impl PluginRuntime {
             }
         }
         Presence {
-            v: 0,
+            v: crate::presence::PRESENCE_VERSION,
             session_name: self.own_session_name.clone(),
             running,
             attention,
             attention_tab_position,
             updated_epoch_s: self.last_now_epoch_s,
-            // The tab tree is published only with `session_tree` on: off keeps
-            // the presence file (and its write rate — a tree moves on every
-            // agent label, counts don't) exactly as before the tree existed.
+            // Tracked panes only, ALWAYS — `session_tree` is display-only
+            // (peers strip trees on read, `Sessions::set_show_trees`). Shells
+            // and Interactive panes are excluded: noise for `zj-radar state`
+            // and an edge on every pane open/close. Status-origin panes sort
+            // ahead of commands (stable) before the cap, so agents are never
+            // truncated behind a tab full of builds.
             tabs: rows
                 .iter()
-                .filter(|_| self.config.session_tree)
                 .take(MAX_TABS)
-                .map(|row| PresenceTab {
-                    position: row.tab_position(),
-                    name: crate::payload::sanitize(&row.name, MAX_LABEL_CHARS),
-                    panes: row
-                        .display
-                        .panes
-                        .iter()
-                        .filter(|pane| pane.kind().is_agent())
-                        .take(MAX_PANES_PER_TAB)
-                        .map(|pane| PresencePane {
-                            pane_id: None,
-                            origin: None,
-                            kind: pane.kind().as_source().to_string(),
-                            status: pane.render_status().as_wire().to_string(),
-                            label: crate::payload::sanitize(
-                                if pane.task().is_empty() { pane.kind().as_source() } else { pane.task() },
-                                MAX_LABEL_CHARS,
-                            ),
-                        })
-                        .collect(),
+                .map(|row| {
+                    let mut tracked: Vec<_> = row.display.panes.iter().filter(|p| p.status().is_some()).collect();
+                    tracked.sort_by_key(|p| !p.is_status_origin());
+                    PresenceTab {
+                        position: row.tab_position(),
+                        name: crate::payload::sanitize(&row.name, MAX_LABEL_CHARS),
+                        panes: tracked
+                            .into_iter()
+                            .take(MAX_PANES_PER_TAB)
+                            .map(|pane| {
+                                let status_origin = pane.is_status_origin();
+                                // Agents: the sticky task (falls back to the
+                                // kind). Commands: the command line — stable
+                                // for the command's life, unlike an agent's
+                                // per-tool `msg`.
+                                let label = if !status_origin {
+                                    pane.msg()
+                                } else if pane.task().is_empty() {
+                                    pane.kind().as_source()
+                                } else {
+                                    pane.task()
+                                };
+                                PresencePane {
+                                    pane_id: Some(pane.pane_id()),
+                                    origin: Some(if status_origin { "status" } else { "command" }.to_string()),
+                                    kind: pane.kind().as_source().to_string(),
+                                    status: pane.render_status().as_wire().to_string(),
+                                    label: crate::payload::sanitize(label, MAX_LABEL_CHARS),
+                                }
+                            })
+                            .collect(),
+                    }
                 })
                 .collect(),
         }
@@ -1117,14 +1131,7 @@ impl PluginRuntime {
         let Some(kv) = crate::config::overrides_from_json(raw) else {
             return Outcome::none();
         };
-        let session_tree_was = self.config.session_tree;
         self.config.apply_overrides(&kv);
-        // `session_tree` shapes the presence *content* (the tab tree is
-        // published only with it on) without moving the radar generation, so
-        // force `project` to re-derive — exactly as a session-name change does.
-        if self.config.session_tree != session_tree_was {
-            self.presence_gen = None;
-        }
         // Re-apply the interactive set level-triggered: an `interactive_commands`
         // override must demote an already-promoted Running TUI row NOW — it will
         // never fire another CommandChanged until it exits. A sweep that changed

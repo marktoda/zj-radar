@@ -852,24 +852,6 @@ fn render_with_badge(rt: &mut PluginRuntime, peer: (String, u64)) {
 }
 
 #[test]
-fn live_session_tree_toggle_republishes_presence_at_once() {
-    let mut rt = runtime_with_granted_permission();
-    drive_tabs_and_panes(&mut rt);
-    rt.status_pipe(&payload_json(7, "running"));
-
-    // The toggle moves presence content (the tab tree) without touching radar
-    // state — it must still publish on the spot, not at the next heartbeat.
-    let on = rt.config_pipe(r#"{"session_tree":true}"#);
-    assert!(on.effects.iter().any(presence_edge), "turning the tree on publishes, got {:?}", on.effects);
-    assert!(!rt.own_presence().tabs.is_empty());
-    let off = rt.config_pipe(r#"{"session_tree":false}"#);
-    assert!(off.effects.iter().any(presence_edge), "turning it off withdraws the tree, got {:?}", off.effects);
-    // An unrelated override moves nothing presence-shaped.
-    let other = rt.config_pipe(r#"{"glyphs":"nerd"}"#);
-    assert!(!other.effects.iter().any(presence_edge), "got {:?}", other.effects);
-}
-
-#[test]
 fn status_edge_persists_presence_once_and_not_on_identical_state() {
     let mut rt = runtime_with_granted_permission();
     drive_tabs_and_panes(&mut rt);
@@ -899,22 +881,68 @@ fn own_presence_counts_live_status_panes_not_tab_rollups_or_unseated_payloads() 
 }
 
 #[test]
-fn own_presence_publishes_the_tab_tree_only_with_session_tree_on() {
-    let setup = |session_tree: bool| {
-        let mut rt = runtime_with_granted_permission();
-        rt.config.session_tree = session_tree;
-        rt.tabs_changed(vec![tab(0, "pair", true)]);
-        rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
-        rt.status_pipe(&payload_json(10, "running"));
-        rt.own_presence()
-    };
-    let off = setup(false);
-    assert_eq!(off.running, 1, "counts publish either way");
-    assert!(off.tabs.is_empty(), "off: no tree, so no extra presence writes per agent label");
+fn own_presence_publishes_tracked_panes_regardless_of_session_tree() {
+    let mut rt = runtime_with_granted_permission();
+    assert!(!rt.config.session_tree, "default is off");
+    rt.tabs_changed(vec![tab(0, "pair", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
+    rt.status_pipe(&payload_json(10, "running"));
+    // pane 11 is a plain shell: untracked, never published.
 
-    let on = setup(true);
-    assert_eq!(on.tabs.len(), 1);
-    assert_eq!(on.tabs[0].panes.len(), 1, "the agent pane rides the tree");
+    let own = rt.own_presence();
+    assert_eq!(own.v, crate::presence::PRESENCE_VERSION);
+    assert_eq!(own.tabs.len(), 1);
+    let panes = &own.tabs[0].panes;
+    assert_eq!(panes.len(), 1, "untracked shell excluded, got {panes:?}");
+    assert_eq!(panes[0].pane_id, Some(10));
+    assert_eq!(panes[0].origin.as_deref(), Some("status"));
+    assert_eq!(panes[0].status, "running");
+}
+
+#[test]
+fn own_presence_includes_command_panes_labeled_by_command() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "build", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    let cmd = vec!["cargo".to_string(), "test".to_string()];
+    rt.radar.command_mut().on_command_changed(10, &cmd, true, None, rt.tick);
+    let _ = rt.radar.command_mut().on_exit(10, Some(1), Tick(rt.tick), EpochSecs(0));
+
+    let own = rt.own_presence();
+    let pane = &own.tabs[0].panes[0];
+    assert_eq!(pane.origin.as_deref(), Some("command"));
+    assert_eq!(pane.status, "error");
+    assert!(pane.label.contains("cargo test"), "command label is the command line, got {:?}", pane.label);
+    assert_eq!(own.attention, 0, "command errors stay out of the attention count");
+}
+
+#[test]
+fn agents_survive_the_pane_cap_ahead_of_commands() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "busy", true)]);
+    // 20 command panes seated BEFORE the agent in manifest order.
+    let ids: Vec<u32> = (100..120).chain([7]).collect();
+    rt.radar.set_tab_panes_for_position(0, ids.iter().copied().map(pane).collect());
+    let cmd = vec!["cargo".to_string(), "build".to_string()];
+    for id in 100..120 {
+        rt.radar.command_mut().on_command_changed(id, &cmd, true, None, rt.tick);
+        let _ = rt.radar.command_mut().on_exit(id, Some(0), Tick(rt.tick), EpochSecs(0));
+    }
+    rt.status_pipe(&payload_json(7, "pending"));
+
+    let panes = &rt.own_presence().tabs[0].panes;
+    assert_eq!(panes.len(), crate::presence::MAX_PANES_PER_TAB);
+    assert_eq!(panes[0].pane_id, Some(7), "status-origin panes sort first, before the cap");
+}
+
+#[test]
+fn session_tree_toggle_no_longer_moves_presence() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+    rt.status_pipe(&payload_json(7, "running"));
+    let on = rt.config_pipe(r#"{"session_tree":true}"#);
+    assert!(!on.effects.iter().any(presence_edge), "display-only toggle, got {:?}", on.effects);
+    assert!(on.render, "the toggle still repaints");
 }
 
 #[test]
