@@ -3725,6 +3725,30 @@ fn mode_change_with_show_mode_on_repaints_once_per_distinct_mode() {
 }
 
 #[test]
+fn a_nameless_mode_update_with_show_mode_off_is_a_no_op() {
+    // The production path for a `ModeUpdate` that carries no session name:
+    // with the label off it must stay the no-op it was before `mode_changed`.
+    let mut rt = mode_runtime(false);
+    let out = rt.mode_changed(None, crate::mode::Mode::Locked);
+    assert!(!out.render, "got {:?}", out.effects);
+    assert!(out.effects.is_empty(), "got {:?}", out.effects);
+}
+
+#[test]
+fn the_first_named_mode_update_claims_the_writer_and_paints_the_label() {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.config.show_mode = true;
+    drive_tabs_and_panes(&mut rt);
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal);
+    assert!(claims(&out), "learning the name claims the writer token, got {:?}", out.effects);
+    assert!(out.render, "and the first shown mode repaints");
+}
+
+#[test]
 fn mode_change_on_a_hidden_rail_requests_no_render() {
     let mut rt = mode_runtime(true);
     let _ = rt.visibility_changed(false);
