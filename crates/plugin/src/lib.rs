@@ -218,7 +218,17 @@ impl State {
                     }
                 }
                 Effect::PersistPresence { unless_fresher_than } => {
-                    self.session_files.persist_presence(unless_fresher_than, || self.runtime.presence_json())
+                    self.session_files.persist_presence(unless_fresher_than, runtime::PRESENCE_RESCUE_AFTER, || {
+                        self.runtime.presence_json()
+                    })
+                }
+                Effect::ClaimPresenceWriter => {
+                    // A takeover means the file holds another instance's
+                    // (possibly frozen) view: republish ours, re-entrantly.
+                    if self.session_files.claim_presence_writer() {
+                        let outcome = self.runtime.presence_writer_acquired();
+                        render |= self.handle_outcome(outcome);
+                    }
                 }
                 Effect::ReadPresences => {
                     let raw =

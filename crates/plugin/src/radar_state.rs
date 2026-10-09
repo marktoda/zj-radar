@@ -915,27 +915,6 @@ impl RadarState {
         self.tab_of_pane(pane).is_none_or(|tab_id| tab_id == own)
     }
 
-    /// Whether THIS instance publishes presence content edges: the rail in
-    /// the lowest-position tab. Presence is one file per session and every
-    /// instance derives identical content from converged stores, so one
-    /// writer suffices; unlike the snapshot's per-pane rule this also covers
-    /// session-wide edges (timer-promoted commands, renames), which would
-    /// otherwise fan out to every tab. Unresolved own tab → write (never
-    /// nobody). The liveness heartbeat is NOT gated by this — every instance
-    /// runs it, deduped host-side by mtime.
-    ///
-    /// If the lowest-position tab has no zj-radar rail, nobody writes content
-    /// edges: content then reaches disk only through the all-instance
-    /// heartbeat (which serializes full content), so it can be up to
-    /// `PRESENCE_HEARTBEAT_S` (60s) stale. `setup`/`run` put the rail in every
-    /// tab, so that layout is off the supported path.
-    pub(crate) fn writes_presence_content(&self) -> bool {
-        let Some(own) = self.naming_tab_id else {
-            return true;
-        };
-        self.tabs.iter().min_by_key(|tab| tab.position).is_none_or(|first| first.id == own)
-    }
-
     /// The tab currently seating `pane_id`, by the `tabs × tab_panes` position
     /// join — a single-tab lookup with no allocation, for edge paths;
     /// `pane_tab_index` is the same join materialized for whole-topology

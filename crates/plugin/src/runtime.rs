@@ -118,19 +118,41 @@ const PRESENCE_READ_TICK_INTERVAL: u64 = 5;
 const PRESENCE_HEARTBEAT_S: u64 = 60;
 
 /// How recent a sibling's presence write must be for a heartbeat to skip
-/// (`Effect::PersistPresence { unless_fresher_than: Some(_) }`). Every
-/// instance stamps its own clock on a skip, so the worst case for the file
-/// is one writer disappearing right after a sibling skipped: the file then
-/// ages `PRESENCE_HEARTBEAT_S` plus this window before the sibling is due.
-/// A quarter keeps that bound (75 s) under `sessions::STALE_AFTER_SECS`
-/// (90 s) with margin; a half would sit exactly on it.
+/// (`Effect::PersistPresence { unless_fresher_than: Some(_) }`) — the
+/// presence-writer token HOLDER's window (a non-holder uses
+/// [`PRESENCE_RESCUE_AFTER`]). Every instance stamps its own clock on a
+/// skip, so the holder's worst-case write gap is `PRESENCE_HEARTBEAT_S`
+/// plus this window. A quarter keeps that bound (75 s) under
+/// `sessions::STALE_AFTER_SECS` (90 s) with margin; a half would sit
+/// exactly on it.
 const PRESENCE_HEARTBEAT_SKIP: std::time::Duration = std::time::Duration::from_secs(PRESENCE_HEARTBEAT_S / 4);
+
+/// File age past which a NON-holder of the presence-writer token writes
+/// anyway — the rescue heartbeat (`SessionFiles::persist_presence`'s
+/// `rescue_after`). A non-holder's view of other tabs may be frozen (hidden
+/// rails get no manifests), so it must not overwrite a live holder; but if
+/// the holder has gone quiet (its instance died, or the token names a
+/// closed tab's rail and no tab has been activated since), the file must
+/// still not age into a reap. Set to the holder's own worst-case write gap
+/// (`PRESENCE_HEARTBEAT_S` plus the skip window), so a live holder never
+/// triggers a rescue, yet still under `sessions::STALE_AFTER_SECS`. A
+/// non-holder gets a write opportunity at least every
+/// `PRESENCE_HEARTBEAT_S` (a heartbeat, or a content edge — which for a
+/// non-holder is also only a rescue), so after holder loss the file ages at
+/// most `PRESENCE_RESCUE_AFTER + PRESENCE_HEARTBEAT_S` (135 s): it may dim
+/// briefly, but a live session is never reaped.
+pub(crate) const PRESENCE_RESCUE_AFTER: std::time::Duration =
+    std::time::Duration::from_secs(PRESENCE_HEARTBEAT_S + PRESENCE_HEARTBEAT_SKIP.as_secs());
 
 // The liveness ladder's safety argument IS this ordering — writes beat the
 // dim threshold even when a sibling's skip delays them by one window, and
 // dimming long precedes the file-deleting reap.
 const _: () = assert!(PRESENCE_HEARTBEAT_S + PRESENCE_HEARTBEAT_SKIP.as_secs() < crate::sessions::STALE_AFTER_SECS);
 const _: () = assert!(crate::sessions::STALE_AFTER_SECS < crate::sessions::DEAD_AFTER_SECS);
+// Rescue: never while a live holder keeps its cadence, always before a reap.
+const _: () = assert!(PRESENCE_HEARTBEAT_S < PRESENCE_RESCUE_AFTER.as_secs());
+const _: () = assert!(PRESENCE_RESCUE_AFTER.as_secs() < crate::sessions::STALE_AFTER_SECS);
+const _: () = assert!(PRESENCE_RESCUE_AFTER.as_secs() + PRESENCE_HEARTBEAT_S < crate::sessions::DEAD_AFTER_SECS);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
@@ -188,12 +210,13 @@ pub(crate) enum Effect {
     /// Publish this session's own [`Presence`] for peer rails to read —
     /// lib.rs does `files.persist_presence(unless_fresher_than, || runtime.presence_json())`.
     /// Decided in one place, `project`: a presence *content* edge (a count
-    /// moved, the name was learned) writes unconditionally
-    /// (`unless_fresher_than: None`); the level-triggered liveness heartbeat
-    /// ([`PRESENCE_HEARTBEAT_S`]) passes `Some(window)` and the host skips
-    /// the write when the pid-keyed file's mtime is already younger than
-    /// that — every tab's instance runs the same clock against one file,
-    /// and a sibling's write already proved this session alive.
+    /// moved, the name was learned) passes `unless_fresher_than: None`; the
+    /// level-triggered liveness heartbeat ([`PRESENCE_HEARTBEAT_S`]) passes
+    /// `Some(window)`. The host gates both on the presence-writer token
+    /// (`Effect::ClaimPresenceWriter`): the holder writes a content edge
+    /// unconditionally and skips a heartbeat when the pid-keyed file's mtime
+    /// is younger than `window`; for a non-holder either is only a rescue,
+    /// written when the file is older than [`PRESENCE_RESCUE_AFTER`].
     PersistPresence {
         unless_fresher_than: Option<std::time::Duration>,
     },
@@ -205,6 +228,19 @@ pub(crate) enum Effect {
     /// notices a peer went stale or dead — plus one scan per
     /// `PRESENCE_READ_TICK_INTERVAL` Fast ticks (every tick mid-cycle).
     ReadPresences,
+    /// Make this instance the session's presence *content* writer — lib.rs
+    /// does `files.claim_presence_writer()` (the `zj-radar.<pid>.presence-writer`
+    /// token, see its doc) and, on a takeover, re-enters through
+    /// [`presence_writer_acquired`](PluginRuntime::presence_writer_acquired)
+    /// so the file gets THIS instance's view. Emitted whenever this rail is
+    /// the active view: at `load` (a fresh instance counts as visible), on a
+    /// `Visible(true)` reveal, and on every `TabUpdate`/`PaneUpdate` (Zellij
+    /// sends those to the active tab's plugins only). Never on going hidden,
+    /// ticks or broadcasts. Every manifest rather than only transitions, so a
+    /// rail that receives one always ends up holding the token — e.g. after
+    /// a background tab's rail finished loading (and claimed) later than the
+    /// active rail; a claim of a token already held is one small read.
+    ClaimPresenceWriter,
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
     /// Emitted by `timer` when `Sessions::tick` reports an idle commit.
@@ -462,7 +498,10 @@ pub(crate) struct PluginRuntime {
     /// client's *active* tab only, so receiving one proves this instance
     /// visible and clears the flag even if a `Visible(true)` was lost — a
     /// wrongly-hidden rail would be a stale screen, so the bias is toward
-    /// visible.
+    /// visible. The same events (a reveal, a manifest) are when a rail claims
+    /// the presence-writer token (`Effect::ClaimPresenceWriter`): a hidden
+    /// rail's topology is frozen, so it never claims, but it keeps a token it
+    /// already holds — after a detach the last-active rail goes on publishing.
     hidden: bool,
     /// The tab position the latest manifest located this plugin's own pane
     /// in (`None` until one has). Refreshed by `own_plugin_tab_changed` on
@@ -621,7 +660,11 @@ impl PluginRuntime {
         // Seed the notification baseline from the restored snapshot so that
         // pre-existing completions never fire a spurious Notify effect.
         self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
-        self.begin_permission_flow(permission)
+        let mut out = self.begin_permission_flow(permission);
+        // Zellij sends no `Visible` at load, so a fresh instance counts as the
+        // active view (see `Effect::ClaimPresenceWriter`).
+        out.effects.insert(0, Effect::ClaimPresenceWriter);
+        out
     }
 
     pub(crate) fn build_rows(&self) -> std::rc::Rc<Vec<TabRow>> {
@@ -677,7 +720,7 @@ impl PluginRuntime {
         if !had_naming_tab && self.radar.has_naming_tab() {
             change.renames = self.radar.recompute_renames(self.config.naming);
         }
-        self.project(vec![], change, crate::clock::now_epoch_s())
+        self.project(vec![Effect::ClaimPresenceWriter], change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
@@ -690,7 +733,7 @@ impl PluginRuntime {
         // entry for our own tab position IS a terminal neighbor. Latch only.
         self.own_tab_saw_terminal |=
             self.own_tab_position.is_some_and(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
-        let mut effects = Vec::new();
+        let mut effects = vec![Effect::ClaimPresenceWriter]; // the active view (see the effect)
         self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
         self.project(effects, change, now)
@@ -1053,7 +1096,7 @@ impl PluginRuntime {
             return Outcome::none(); // going dark, or already in that state
         }
         let change = RadarChange { render: true, force_render: true, ..RadarChange::default() };
-        self.project(vec![], change, self.last_now_epoch_s)
+        self.project(vec![Effect::ClaimPresenceWriter], change, self.last_now_epoch_s)
     }
 
     /// A fresh read of every peer session's presence file, each paired with
@@ -1070,6 +1113,17 @@ impl PluginRuntime {
     /// safe because the on-disk delete spares our own live file by *path*
     /// identity (`SessionFiles::remove_presences_matching`'s own-file
     /// exclusion), never by name.
+    /// The glue's read-back for `Effect::ClaimPresenceWriter` when the claim
+    /// took the token over: the presence file holds another instance's view
+    /// (possibly a frozen hidden one), so republish this instance's content
+    /// even though it did not move — drop the fingerprint cache and project,
+    /// which emits the content edge.
+    pub(crate) fn presence_writer_acquired(&mut self) -> Outcome {
+        self.last_presence = None;
+        self.presence_gen = None;
+        self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
+    }
+
     pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
         self.sessions.set_show_trees(self.config.session_tree);
         let update = self.sessions.update_presences(raw);
@@ -1639,12 +1693,16 @@ impl PluginRuntime {
         // same clock against one pid-keyed file. The stamp records
         // intent-to-write, not a confirmed write: lib.rs's persist is
         // best-effort, and a failed one self-heals within the 90s staleness
-        // window (the next overdue pass re-publishes). Content edges are
-        // written by one instance (`writes_presence_content`); a follower's
-        // moved content reaches disk via the leader's identical write, and a
-        // follower stamps nothing so its heartbeat clock is unaffected.
+        // window (the next overdue pass re-publishes). Every instance whose
+        // content moved emits the edge; the host writes it only for the
+        // holder of the presence-writer token (`Effect::ClaimPresenceWriter`)
+        // — the most recently active rail, whose topology is the freshest. A
+        // non-holder's content edge or heartbeat is only a rescue
+        // (`PRESENCE_RESCUE_AFTER`), which is why stamping here is right for
+        // every instance: either kind is one write opportunity under that
+        // instance's role.
         if !self.own_session_name.is_empty() {
-            if content_moved && self.radar.writes_presence_content() {
+            if content_moved {
                 fx.push(Effect::PersistPresence { unless_fresher_than: None });
                 self.last_presence_write_epoch_s = now_epoch_s;
             } else if now_epoch_s.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S {

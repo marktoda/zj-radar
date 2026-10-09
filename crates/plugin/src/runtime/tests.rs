@@ -101,7 +101,12 @@ fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
             // SetTimeout keeps a paint trigger alive so the needs_permission
             // screen reaches the rail before the user grants (pre-grant
             // Zellij sends no state events to trigger a render).
-            effects: vec![Effect::RequestPermission, Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true),],
+            effects: vec![
+                Effect::ClaimPresenceWriter,
+                Effect::RequestPermission,
+                Effect::SetTimeout(Cadence::Fast),
+                Effect::SetSelectable(true),
+            ],
         }
     );
 }
@@ -172,7 +177,10 @@ fn load_denied_marker_records_denial_without_requesting_permission() {
     assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
     // A denied rail never receives a manifest, so it never learns of a
     // terminal neighbor and stays selectable (see `desired_selectable`).
-    assert_eq!(outcome, Outcome { render: false, effects: vec![Effect::SetSelectable(true)] });
+    assert_eq!(
+        outcome,
+        Outcome { render: false, effects: vec![Effect::ClaimPresenceWriter, Effect::SetSelectable(true)] }
+    );
 }
 
 #[test]
@@ -261,7 +269,10 @@ fn peer_waits_then_requests_after_granted_marker() {
     let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
     // Selectable, not passive: no manifest has shown a terminal neighbor yet.
-    assert_eq!(load.effects, vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]);
+    assert_eq!(
+        load.effects,
+        vec![Effect::ClaimPresenceWriter, Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]
+    );
 
     let timer = runtime.timer_fast(PermissionProbe { marker: Some(PermissionMarker::Granted), lock_acquired: false });
 
@@ -3359,42 +3370,122 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
     assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
 }
 
-#[test]
-fn only_the_first_tabs_instance_writes_presence_content_edges() {
-    let mut leader = two_tab_runtime_owning_tab_0();
-    let edge = leader.status_pipe(&payload_json(8, "pending"));
-    assert!(edge.effects.iter().any(presence_edge), "tab 0's rail writes, got {:?}", edge.effects);
+// ── Presence-writer token (C1): the active view publishes ──
+//
+// Content edges are emitted by every instance whose fingerprint moved; the
+// glue writes only for the holder of the `zj-radar.<pid>.presence-writer`
+// token (`SessionFiles::persist_presence`). A rail claims it whenever it is
+// the active view: load, `Visible(true)`, and every manifest.
 
+fn claims(out: &Outcome) -> bool {
+    out.effects.contains(&Effect::ClaimPresenceWriter)
+}
+
+#[test]
+fn a_rail_claims_the_presence_writer_whenever_it_is_the_active_view() {
+    let mut rt = PluginRuntime::default();
+    let load = rt.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
+    assert!(claims(&load), "a fresh instance counts as visible, got {:?}", load.effects);
+    rt.permission = PermissionState::Resolved { granted: true };
+    rt.session_name_changed(Some("work".into()));
+
+    let visible_manifest = rt.tabs_changed(vec![tab(0, "a", true)]);
+    assert!(claims(&visible_manifest), "every manifest claims (the glue dedups a held token)");
+
+    let hide = rt.visibility_changed(false);
+    assert!(!claims(&hide), "going hidden never claims, got {:?}", hide.effects);
+    let reveal = rt.visibility_changed(true);
+    assert!(claims(&reveal), "Visible(true) after hidden claims, got {:?}", reveal.effects);
+
+    rt.visibility_changed(false);
+    let tab_update = rt.tabs_changed(vec![tab(0, "a", true)]);
+    assert!(claims(&tab_update), "a TabUpdate after hidden claims, got {:?}", tab_update.effects);
+
+    rt.visibility_changed(false);
+    let pane_update = rt.panes_changed(manifest_with_pane_7());
+    assert!(claims(&pane_update), "a PaneUpdate after hidden claims, got {:?}", pane_update.effects);
+
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert!(!claims(&tick), "ticks and broadcasts never claim");
+    let edge = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!claims(&edge));
+}
+
+#[test]
+fn the_active_rail_publishes_a_pane_its_hidden_sibling_never_saw() {
+    // C1 regression (reproduced by the final review): the old leader rule
+    // made tab 0's rail the content writer, but a hidden rail's topology is
+    // frozen — a pane opened in another tab after the user left tab 0 never
+    // reaches it, so its going pending was published by nobody.
+    let before = manifest(HashMap::from([(0, vec![pane(7)])]));
+    let after = manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])]));
+
+    // Tab 0's rail: active once, then the user left — frozen at one tab.
+    let mut stale = runtime_with_granted_permission();
+    stale.tabs_changed(vec![tab(0, "a", true)]);
+    stale.own_plugin_tab_changed(Some(0));
+    stale.panes_changed(before);
+    stale.visibility_changed(false);
+
+    // Tab 1's rail: the user is here and opens pane 9.
+    let mut active = runtime_with_granted_permission();
+    active.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    active.own_plugin_tab_changed(Some(1));
+    let claim = active.panes_changed(after);
+    assert!(claims(&claim), "the active rail holds the token, got {:?}", claim.effects);
+
+    // The broadcast reaches both instances.
+    stale.status_pipe(&payload_json(9, "pending"));
+    let edge = active.status_pipe(&payload_json(9, "pending"));
+    assert!(edge.effects.iter().any(presence_edge), "the holder emits the content write, got {:?}", edge.effects);
+    let published = crate::presence::Presence::parse(&active.presence_json()).expect("valid presence");
+    assert_eq!(published.attention, 1, "the pending pane 9 is published");
+
+    let frozen = crate::presence::Presence::parse(&stale.presence_json()).expect("valid presence");
+    assert_eq!(frozen.attention, 0, "the hidden view is blind to pane 9 — why it must not write content");
+}
+
+#[test]
+fn acquiring_the_writer_token_republishes_this_instances_view() {
+    // A takeover (`claim_presence_writer` returned true) means the file holds
+    // ANOTHER instance's view; republish ours even though our own content
+    // did not move.
+    let mut rt = two_tab_runtime_owning_tab_0();
+    rt.status_pipe(&payload_json(7, "pending"));
+    let quiet = rt.project(vec![], RadarChange::default(), crate::clock::now_epoch_s());
+    assert!(!quiet.effects.iter().any(presence_edge), "nothing moved, got {:?}", quiet.effects);
+
+    let acquired = rt.presence_writer_acquired();
+    assert!(acquired.effects.iter().any(presence_edge), "takeover republishes, got {:?}", acquired.effects);
+}
+
+#[test]
+fn every_instance_emits_its_moved_content_and_the_token_decides_host_side() {
+    // No position-based leader any more: a rail in tab 1 emits the content
+    // edge too; `SessionFiles::persist_presence` drops it unless it holds the
+    // token (and then a content edge is only a rescue opportunity).
     let mut follower = runtime_with_granted_permission();
     follower.tabs_changed(vec![tab(0, "mine", false), tab(1, "theirs", true)]);
     follower.radar.set_tab_panes_for_position(0, vec![pane(7)]);
     follower.radar.set_tab_panes_for_position(1, vec![pane(8)]);
     follower.own_plugin_tab_changed(Some(1));
-    let stamp = follower.last_presence_write_epoch_s;
     let edge = follower.status_pipe(&payload_json(7, "pending"));
-    assert!(!edge.effects.iter().any(presence_edge), "tab 1's rail leaves content to tab 0, got {:?}", edge.effects);
-    assert_eq!(follower.last_presence_write_epoch_s, stamp, "a follower stamps nothing on a content edge");
+    assert!(edge.effects.iter().any(presence_edge), "got {:?}", edge.effects);
 }
 
 #[test]
-fn an_unresolved_instance_still_writes_presence() {
-    let mut rt = runtime_with_granted_permission();
-    drive_tabs_and_panes(&mut rt); // own tab never resolved
-    let edge = rt.status_pipe(&payload_json(7, "running"));
-    assert!(edge.effects.iter().any(presence_edge), "never nobody, got {:?}", edge.effects);
-}
-
-#[test]
-fn followers_still_heartbeat() {
+fn every_instance_heartbeats_holder_or_not() {
+    // Liveness stays everyone's job at the effect level; the host turns a
+    // non-holder's heartbeat into a rescue (writes only past
+    // `PRESENCE_RESCUE_AFTER`), so a stale view lands only when the holder
+    // has gone quiet.
     let mut follower = runtime_with_granted_permission();
     follower.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
     follower.own_plugin_tab_changed(Some(1));
-    // `tabs_changed` ran before the own tab resolved, so that instance wrote
-    // (and stamped) with the real clock; rewind the stamp so the synthetic
-    // 10_000s clock is past the heartbeat window.
+    // Rewind the stamp so the synthetic 10_000s clock is past the window.
     follower.last_presence_write_epoch_s = 0;
     let out = follower.project(vec![], RadarChange::default(), 10_000);
-    assert!(out.effects.iter().any(presence_heartbeat), "liveness is everyone's job, got {:?}", out.effects);
+    assert!(out.effects.iter().any(presence_heartbeat), "got {:?}", out.effects);
 }
 
 #[test]
