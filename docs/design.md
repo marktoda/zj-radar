@@ -591,27 +591,41 @@ Pure state in `sessions.rs`, file IO in `session_files.rs`, wiring in
 `render_peer_children` (the `session_tree` tree).
 
 **Presence files.** Each plugin writes `zj-radar.presence.<zellij_pid>.json`
-(`{session_name, running, attention, attention_tab_position,
-updated_epoch_s, tabs}`) into the shared `/cache` root, temp-file plus atomic rename.
-Writes are content-edge-gated (the timestamp is excluded from the compare) and
-withheld while `own_session_name` is empty. `running` and `attention` count
-live status-origin panes only; command activity is excluded. The local rail's
-rows, header badge, and footer stay tab-level summaries.
+(`v`, `session_name`, `running`, `attention`, `attention_tab_position`,
+`updated_epoch_s`, `tabs`) into the shared `/cache` root, temp-file plus atomic
+rename; the wire format is in [`producers.md`](producers.md#presence-file-and-state---json),
+the types in `crates/core/src/presence.rs`. Writes are content-edge-gated and
+withheld while `own_session_name` is empty. The gate compares a fingerprint
+over the published fields (`own_presence_fingerprint`, pinned by a lockstep
+test); the counts come from one `presence_counts` helper. `running` and
+`attention` count live status-origin panes only; command activity is excluded.
+The local rail's rows, header badge, and footer stay tab-level summaries.
 
-**Session tree (`session_tree`, opt-in).** With the option on, `tabs` carries
-a display-only tree, `[{position, name, panes: [{kind, status, label}]}]`, of
-agent panes only. It's capped at 64 tabs, 16 panes per tab and 96-char labels.
-`Presence::parse` rejects the whole file if any field fails to survive
-`payload::sanitize` unchanged or a cap is exceeded, as it already did for the
-session name. Off, `tabs` is empty, so the file and its write rate are exactly
-as before: the tree changes with every agent label, while the counts don't,
-which is why it isn't published unconditionally. A live `config.v1` toggle
-republishes at once. On screen, the current session's heading sits above the
-local cards and each peer's heading and tree follow the cards and the idle
-strip. Peer rows are the lowest-priority lines on the rail: they get only the
-height left after the planned cards and the bottom region (footer, plus the
-ledger when present), so a large peer can never fold a local tab or push the
-ledger off.
+**Tabs are always published.** `tabs` is `[{position, name, panes: [{pane_id,
+origin, kind, status, label}]}]` over tracked panes (agents and observed
+commands), status-origin first so the 16-pane cap drops commands before
+agents. Caps are 64 tabs, 16 panes per tab, 96-char labels. `Presence::parse`
+truncates over-cap content and rejects the whole file if any field fails to
+survive `payload::sanitize` unchanged. `zj-radar state` is why the tree is
+unconditional: it is a public read surface, and `session_tree` is display-only.
+
+**Single writer.** Content changes are written by one rail per session, the
+one in the lowest-position tab (`RadarState::writes_presence_content`); the
+others never write content. Every rail still heartbeats, deduped by mtime. If
+the lowest tab has no rail, content is refreshed only by the heartbeat. The
+cost is about +230k wasm fuel per real status edge on the writing rail
+(against 0.9.0: own-tab edge +14%, other-tab edge +69%; relabel, pane_update
+and tick flat), and followers no longer write at all.
+
+**Session tree (`session_tree`, display-only).** The option only decides
+whether this rail draws peers' trees. Off, `Sessions::set_show_trees` drops
+peers' trees on read, so their tree-only edges never repaint this rail. On,
+`Sessions::badge()` keeps only agent panes. On screen, the current session's
+heading sits above the local cards and each peer's heading and tree follow the
+cards and the idle strip. Peer rows are the lowest-priority lines on the rail:
+they get only the height left after the planned cards and the bottom region
+(footer, plus the ledger when present), so a large peer can never fold a local
+tab or push the ledger off.
 
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
 rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
