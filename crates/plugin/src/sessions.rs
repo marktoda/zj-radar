@@ -137,9 +137,24 @@ pub(crate) struct Sessions {
     peers: Vec<Peer>,
     own: Option<Presence>,
     selection: Option<SelectionState>,
+    /// Mirrors the local `session_tree` option. Off, peer trees are dropped
+    /// from the badge — and so from `update_presences`' `changed` compare
+    /// and the render key — so a peer's label edges never repaint a rail
+    /// that doesn't draw them. Peers publish trees unconditionally (v1).
+    show_trees: bool,
 }
 
 impl Sessions {
+    /// Sync the local `session_tree` option. Returns whether the badge changed.
+    pub(crate) fn set_show_trees(&mut self, on: bool) -> bool {
+        if self.show_trees == on {
+            return false;
+        }
+        let before = self.badge();
+        self.show_trees = on;
+        self.badge() != before
+    }
+
     /// Replace the peer set with a fresh read of every OTHER session's
     /// presence file, each paired with its file's mtime age in seconds
     /// (`session_files::read_peer_presences`'s `age_secs` — no longer
@@ -330,8 +345,26 @@ impl Sessions {
                 selected: selected_name == Some(s.presence.session_name.as_str()),
                 stale: s.stale,
                 // The current session's own tree never renders (its tabs are
-                // the local cards), so skip cloning it on every badge build.
-                tabs: if s.is_current { Vec::new() } else { s.presence.tabs.clone() },
+                // the local cards). Peer trees only when shown, agent panes
+                // only — the filter sits here, upstream of the tab glyph and
+                // the line budget in `render_peer_children`.
+                tabs: if s.is_current || !self.show_trees {
+                    Vec::new()
+                } else {
+                    s.presence
+                        .tabs
+                        .iter()
+                        .map(|tab| PresenceTab {
+                            panes: tab
+                                .panes
+                                .iter()
+                                .filter(|p| crate::kind::Kind::from_source(&p.kind).is_agent())
+                                .cloned()
+                                .collect(),
+                            ..tab.clone()
+                        })
+                        .collect()
+                },
             })
             .collect()
     }
@@ -395,6 +428,37 @@ impl Sessions {
 mod tests {
     use super::*;
     use crate::radar_state::Direction;
+
+    fn peer_with_tree(label: &str) -> (String, u64) {
+        let json = serde_json::json!({
+            "v": 1, "session_name": "alpha", "running": 1, "attention": 0, "updated_epoch_s": 10,
+            "tabs": [{"position": 0, "name": "t", "panes": [
+                {"pane_id": 3, "origin": "status", "kind": "claude", "status": "running", "label": label},
+                {"pane_id": 4, "origin": "command", "kind": "test", "status": "running", "label": "cargo test"}
+            ]}]
+        });
+        (json.to_string(), 0)
+    }
+
+    #[test]
+    fn peer_tree_edges_do_not_change_the_badge_with_trees_off() {
+        let mut s = Sessions::default();
+        s.update_presences(vec![peer_with_tree("one")]);
+        let update = s.update_presences(vec![peer_with_tree("two")]);
+        assert!(!update.changed, "a label edge in a tree nobody shows must not repaint");
+        assert!(s.badge().iter().all(|e| e.tabs.is_empty()));
+    }
+
+    #[test]
+    fn shown_peer_trees_list_agent_panes_only() {
+        let mut s = Sessions::default();
+        s.update_presences(vec![peer_with_tree("one")]);
+        assert!(s.set_show_trees(true), "turning trees on changes the badge");
+        let entry = s.badge().into_iter().find(|e| e.name == "alpha").unwrap();
+        assert_eq!(entry.tabs[0].panes.len(), 1);
+        assert_eq!(entry.tabs[0].panes[0].kind, "claude");
+        assert!(s.update_presences(vec![peer_with_tree("two")]).changed, "with trees on, label edges repaint");
+    }
 
     fn own(name: &str) -> Presence {
         Presence {

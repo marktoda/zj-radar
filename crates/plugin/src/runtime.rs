@@ -497,6 +497,7 @@ impl PluginRuntime {
         permission: PermissionProbe,
     ) -> Outcome {
         self.config = config;
+        self.sessions.set_show_trees(self.config.session_tree);
         // Load's single clock capture, stored eagerly (and reused by
         // `begin_permission_flow`'s arm below, keeping one "now" per event):
         // `session_name_changed` — often the very next event in — has no
@@ -970,6 +971,7 @@ impl PluginRuntime {
     /// identity (`SessionFiles::remove_presences_matching`'s own-file
     /// exclusion), never by name.
     pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
+        self.sessions.set_show_trees(self.config.session_tree);
         let update = self.sessions.update_presences(raw);
         let change = RadarChange { render: update.changed, ..RadarChange::default() };
         let mut out = self.project(vec![], change, self.last_now_epoch_s);
@@ -1132,6 +1134,9 @@ impl PluginRuntime {
             return Outcome::none();
         };
         self.config.apply_overrides(&kv);
+        // Display-only now (peers always publish trees): just re-derive the
+        // badge; `force_render` below repaints.
+        self.sessions.set_show_trees(self.config.session_tree);
         // Re-apply the interactive set level-triggered: an `interactive_commands`
         // override must demote an already-promoted Running TUI row NOW — it will
         // never fire another CommandChanged until it exits. A sweep that changed
