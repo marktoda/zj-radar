@@ -189,11 +189,16 @@ pub(crate) fn owned_config_dir_in(data_dir: &Path) -> PathBuf {
     data_dir.join("zj-radar").join("zellij")
 }
 
-/// Zellij's `permissions.kdl` rooted under `cache_dir`. The sub-folder differs
-/// between macOS (`org.Zellij-Contributors.Zellij`) and Linux (`zellij`).
+/// Zellij's cache root under `cache_dir` — `permissions.kdl` and every
+/// plugin's `/cache` mount live below it. The folder differs between macOS
+/// (`org.Zellij-Contributors.Zellij`) and Linux (`zellij`).
+pub(crate) fn zellij_cache_root_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
+    cache_dir.join(if is_macos { "org.Zellij-Contributors.Zellij" } else { "zellij" })
+}
+
+/// Zellij's `permissions.kdl` rooted under `cache_dir`.
 pub(crate) fn permissions_path_in(cache_dir: &Path, is_macos: bool) -> PathBuf {
-    let folder = if is_macos { "org.Zellij-Contributors.Zellij" } else { "zellij" };
-    cache_dir.join(folder).join("permissions.kdl")
+    zellij_cache_root_in(cache_dir, is_macos).join("permissions.kdl")
 }
 
 /// Platform-resolved owned config dir, or `None` if the data dir is unknown.

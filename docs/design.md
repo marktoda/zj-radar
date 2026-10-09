@@ -103,8 +103,8 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
         │ Effects: SwitchTab, ShowPane, RenameTab, RequestPermission,
         │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
         │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd,
-        │ Notify, PersistPresence, ReadPresences, DismissPresence,
-        │ SwitchSession, BroadcastStatus, CloseSelf
+        │ Notify, PersistPresence, ClaimPresenceWriter, ReadPresences,
+        │ DismissPresence, SwitchSession, BroadcastStatus, CloseSelf
         ▼
 ```
 
@@ -246,7 +246,8 @@ its stores into a snapshot on every state edge and seeds itself from it in
 its write to the next Fast tick (`SnapshotWrite::Deferred`) instead of hitting
 disk per tool hook. `SessionFiles` picks the root: `/cache` first (Zellij
 mounts it as the plugin-URL-scoped folder shared across instances), then
-`/tmp/zj-radar`, then persistence off. `/data` is not used: it is scoped per
+`/tmp/zj-radar` (a WASI mount of the host's `$TMPDIR/zellij-<uid>`), then
+persistence off. `/data` is not used: it is scoped per
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance holds the same converged stores after a broadcast, so one write per
@@ -591,38 +592,78 @@ Pure state in `sessions.rs`, file IO in `session_files.rs`, wiring in
 `render_peer_children` (the `session_tree` tree).
 
 **Presence files.** Each plugin writes `zj-radar.presence.<zellij_pid>.json`
-(`{session_name, running, attention, attention_tab_position,
-updated_epoch_s, tabs}`) into the shared `/cache` root, temp-file plus atomic rename.
-Writes are content-edge-gated (the timestamp is excluded from the compare) and
-withheld while `own_session_name` is empty. `running` and `attention` count
-live status-origin panes only; command activity is excluded. The local rail's
-rows, header badge, and footer stay tab-level summaries.
+(`v`, `session_name`, `running`, `attention`, `attention_tab_position`,
+`updated_epoch_s`, `tabs`) into the shared `/cache` root, temp-file plus atomic
+rename; the wire format is in [`producers.md`](producers.md#presence-file-and-state---json),
+the types in `crates/core/src/presence.rs`. Writes are content-edge-gated and
+withheld while `own_session_name` is empty. The gate compares a fingerprint
+over the published fields (`own_presence_fingerprint`, pinned by a lockstep
+test); the counts come from one `presence_counts` helper. `running` and
+`attention` count live status-origin panes only; command activity is excluded.
+The local rail's rows, header badge, and footer stay tab-level summaries.
 
-**Session tree (`session_tree`, opt-in).** With the option on, `tabs` carries
-a display-only tree, `[{position, name, panes: [{kind, status, label}]}]`, of
-agent panes only. It's capped at 64 tabs, 16 panes per tab and 96-char labels.
-`Presence::parse` rejects the whole file if any field fails to survive
-`payload::sanitize` unchanged or a cap is exceeded, as it already did for the
-session name. Off, `tabs` is empty, so the file and its write rate are exactly
-as before: the tree changes with every agent label, while the counts don't,
-which is why it isn't published unconditionally. A live `config.v1` toggle
-republishes at once. On screen, the current session's heading sits above the
-local cards and each peer's heading and tree follow the cards and the idle
-strip. Peer rows are the lowest-priority lines on the rail: they get only the
-height left after the planned cards and the bottom region (footer, plus the
-ledger when present), so a large peer can never fold a local tab or push the
-ledger off.
+**Tabs are always published.** `tabs` is `[{position, name, panes: [{pane_id,
+origin, kind, status, label}]}]` over tracked panes (agents and observed
+commands), status-origin first so the 16-pane cap drops commands before
+agents. Caps are 64 tabs, 16 panes per tab, 96-char labels. `Presence::parse`
+truncates over-cap content and rejects the whole file if any field fails to
+survive `payload::sanitize` unchanged. `zj-radar state` is why the tree is
+unconditional: it is a public read surface, and `session_tree` is display-only.
+
+**Single writer: the presence-writer token.** Content must come from the rail
+with the freshest topology, and that is the most recently active one: Zellij
+sends `TabUpdate`/`PaneUpdate` only to the active tab's plugins, so a hidden
+rail's tab/pane view is frozen (a pane opened elsewhere after the user left is
+invisible to it). The token `zj-radar.<pid>.presence-writer` sits next to the
+presence file in the shared root and holds the writer's plugin id. A rail
+claims it (`Effect::ClaimPresenceWriter`) whenever it is the active view and
+knows its session name: when the name is first learned (`ModeUpdate`, which
+also reaches only the active tab), on `Visible(true)`, and on every manifest.
+A nameless rail never claims: presence writes are withheld without a name, so
+a rail loaded in a background tab (no `ModeUpdate` yet) holding the token
+would drop the active rail's edges. A claim of a token already held is one
+small read; a takeover rewrites the token and republishes the new holder's
+view (`PluginRuntime::presence_writer_acquired`), since the file holds another
+rail's, and the glue skips the batch's own content write after it. Every rail
+whose content fingerprint moved emits the content edge, and
+`SessionFiles::persist_presence` writes it only for the holder (one token read
+per edge). After a detach the last-active rail keeps the token, so a detached
+session keeps publishing status edges against its at-detach topology. Two
+clients on different tabs are both fresh, so either may hold it: a manifest
+claim leaves a foreign token younger than 5 s alone
+(`PRESENCE_WRITER_TAKEOVER_FLOOR`), which stops them trading it on every
+manifest, while a reveal or first naming preempts. The token is pid-scoped
+like the snapshot, so the snapshot sweep owns it and no presence read path
+ever sees it; because a stable holder never rewrites it, the sweep ages it by
+its session's presence file (heartbeated), not its own mtime. The cost is
+about +230k wasm fuel per real status edge on the writing rail (the tree
+serialize); non-holders pay the fingerprint and one token read.
+
+**Session tree (`session_tree`, display-only).** The option only decides
+whether this rail draws peers' trees. Off, `Sessions::set_show_trees` drops
+peers' trees on read, so their tree-only edges never repaint this rail. On,
+`Sessions::badge()` keeps only agent panes. On screen, the current session's
+heading sits above the local cards and each peer's heading and tree follow the
+cards and the idle strip. Peer rows are the lowest-priority lines on the rail:
+they get only the height left after the planned cards and the bottom region
+(footer, plus the ledger when present), so a large peer can never fold a local
+tab or push the ledger off.
 
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
-rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
+rewrites its file about every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
 in `project` that bypasses the content gate and, unlike the snapshot, the
 visibility gate: a detached session is alive). Every tab's instance runs that
 clock against the one pid-keyed file, so the heartbeat is a
 `PersistPresence` with an `unless_fresher_than` window the host honors by
-stat: a file already younger than a quarter of the interval is left alone —
-one stat instead of N writes, and the quarter keeps the file's worst-case age
-(one period plus one window) under the 90 s stale threshold. Content edges
-write unconditionally. Peers read the directory on every
+stat. The token holder leaves a file younger than a quarter of the interval
+alone, which keeps its worst-case write gap (one period plus one window, 75 s)
+under the 90 s stale threshold; its content edges write unconditionally.
+Followers do heartbeat, but only as a rescue: a non-holder's heartbeat or
+content edge writes only when the file is older than `PRESENCE_RESCUE_AFTER`
+(75 s, the holder's worst-case gap), so a stale hidden view never overwrites a
+live holder, yet a session whose holder vanished (instance died, or a closed
+tab's rail with no tab activated since) still refreshes within 135 s: it may
+dim briefly but is never reaped. Peers read the directory on every
 Slow (60 s) tick, and on every fifth Fast tick except mid-cycle; the Slow read
 is what lets an idle rail grade a peer at all, since ages are captured at read
 time. `Sessions::update_presences` grades each file's age: fresh (≤ 90 s),

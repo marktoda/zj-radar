@@ -1,0 +1,10 @@
+---
+source: crates/cli/src/state.rs
+expression: render_human(&s)
+---
+main (current)  ▶2  !1
+  tab 1 api
+      14 claude   pending  fix login
+      15 codex    running  refactor
+old  (stale, 120s)
+  tab 0 t

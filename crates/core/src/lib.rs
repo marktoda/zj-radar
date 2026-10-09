@@ -49,6 +49,8 @@ pub mod kind;
 pub mod observation;
 pub mod payload;
 pub mod pipe;
+#[doc(hidden)]
+pub mod presence;
 pub mod status;
 pub mod task;
 mod wire;

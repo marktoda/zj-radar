@@ -1,6 +1,6 @@
 //! Native CLI (`zj-radar`): the host front door for the sidebar.
 //!
-//! Four subcommands, one per module:
+//! Five subcommands, one per module:
 //! - `notify <agent>` ([`notify`]) — the *pushed* information source. Reads an
 //!   agent's hook payload and broadcasts a `zj_radar.status.v1` update. Each
 //!   agent is a peer adapter behind the [`agents::Agent::derive`] seam, so
@@ -14,6 +14,7 @@
 //! - `update` ([`update`]) — move the CLI and the sidebar wasm to a newer
 //!   release together (self-replace, then re-exec `setup zellij --download`);
 //!   hands Nix/cargo-managed binaries back to their package manager.
+//! - `state` ([`state`]) — read-only view of every live session's presence file, for scripts.
 
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.
@@ -37,6 +38,7 @@ mod notify;
 mod producers;
 mod run;
 mod setup;
+mod state;
 mod update;
 
 /// Process-wide failure flag. The setup/run orchestrators report refusals and
@@ -172,6 +174,22 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Print what the radar knows: live sessions, tabs, and tracked panes,
+    /// read from the rails' presence files (never queries Zellij).
+    State {
+        /// Machine-readable JSON (`{"v":1,"sessions":[…]}`).
+        #[arg(long)]
+        json: bool,
+        /// Only agent panes that need you (pending or error); exits 1 if none.
+        #[arg(long)]
+        needs_attention: bool,
+        /// With --needs-attention, also consider stale sessions (no heartbeat for >90s).
+        #[arg(long, requires = "needs_attention")]
+        include_stale: bool,
+        /// Only this session.
+        #[arg(long, value_name = "NAME")]
+        session: Option<String>,
+    },
 }
 
 /// CLI entry point (called by `src/main.rs`). Returns the process exit code:
@@ -233,6 +251,9 @@ pub fn run() -> std::process::ExitCode {
         }
         Command::Update { check } => {
             update::run(update::UpdateOptions { check });
+        }
+        Command::State { json, needs_attention, include_stale, session } => {
+            return state::run(state::StateOptions { json, needs_attention, include_stale, session });
         }
     }
     if exit::failed() {

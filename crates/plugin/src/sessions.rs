@@ -36,28 +36,9 @@ use std::collections::HashMap;
 use crate::presence::{Presence, PresenceTab};
 use crate::radar_state::Direction;
 
-/// How long a peer's presence file may sit unrefreshed before its badge row
-/// dims to stale. `runtime.rs`'s timer heartbeats an idle-but-alive
-/// session's own file at least once per Slow (60s) tick, so 90s gives 50%
-/// margin against a single missed beat before flagging it — generous
-/// enough that ordinary scheduler jitter never flickers an entry, but a
-/// session that's genuinely gone quiet reads as such promptly. A missed
-/// beat marks stale; only [`DEAD_AFTER_SECS`] reaps (see the module doc).
-pub(crate) const STALE_AFTER_SECS: u64 = 90;
-
-/// How old a peer's presence file must be before the entry is judged dead:
-/// reaped from the badge and reported back ([`PresenceUpdate::dead`]) so
-/// the runtime unlinks the file. Five missed 60s heartbeats past the write
-/// guarantee (`runtime.rs`'s `PRESENCE_HEARTBEAT_S`). The gap over
-/// [`STALE_AFTER_SECS`] is deliberate: stale must stay twitchy — a dim at
-/// 90s is cheap, self-correcting cosmetics — while dead must be
-/// conservative, because a reap also unlinks the on-disk file. Machine-sleep
-/// caveat: right after a wake every file looks old for up to one heartbeat,
-/// so a false reap of a live peer is possible — and harmless, because
-/// dismissal is non-destructive by construction (see `dismiss`'s doc): the
-/// live session's next heartbeat republishes its file and the entry
-/// returns, fresh.
-pub(crate) const DEAD_AFTER_SECS: u64 = 300;
+// Liveness thresholds are shared with the CLI's `state` command — see
+// `zj_radar_core::presence::{STALE_AFTER_SECS, DEAD_AFTER_SECS}` for the rationale.
+pub(crate) use crate::presence::{DEAD_AFTER_SECS, STALE_AFTER_SECS};
 
 /// A peer's [`Presence`] plus its presence file's mtime age at the last
 /// read (see the module doc). `age_secs` is a snapshot from that read, not
@@ -156,9 +137,24 @@ pub(crate) struct Sessions {
     peers: Vec<Peer>,
     own: Option<Presence>,
     selection: Option<SelectionState>,
+    /// Mirrors the local `session_tree` option. Off, peer trees are dropped
+    /// from the badge — and so from `update_presences`' `changed` compare
+    /// and the render key — so a peer's label edges never repaint a rail
+    /// that doesn't draw them. Peers publish trees unconditionally (v1).
+    show_trees: bool,
 }
 
 impl Sessions {
+    /// Sync the local `session_tree` option. Returns whether the badge changed.
+    pub(crate) fn set_show_trees(&mut self, on: bool) -> bool {
+        if self.show_trees == on {
+            return false;
+        }
+        let before = self.badge();
+        self.show_trees = on;
+        self.badge() != before
+    }
+
     /// Replace the peer set with a fresh read of every OTHER session's
     /// presence file, each paired with its file's mtime age in seconds
     /// (`session_files::read_peer_presences`'s `age_secs` — no longer
@@ -219,8 +215,10 @@ impl Sessions {
     /// Record this session's own counts (never read from a peer file — the
     /// current session knows its own state directly). The single path for
     /// own counts into the badge — the runtime calls this every time it
-    /// recomputes `own_presence()`, not just on a name change, so the own
-    /// row stays live as running/attention move.
+    /// re-derives presence (`own_presence_fingerprint`), not just on a name
+    /// change, so the own row stays live as running/attention move. Receives
+    /// a counts-only `Presence` (empty `tabs`): the current session's own
+    /// tree is never rendered, so it is not cloned in.
     pub(crate) fn set_own(&mut self, p: Presence) -> bool {
         let before = self.badge();
         self.own = Some(p);
@@ -349,8 +347,26 @@ impl Sessions {
                 selected: selected_name == Some(s.presence.session_name.as_str()),
                 stale: s.stale,
                 // The current session's own tree never renders (its tabs are
-                // the local cards), so skip cloning it on every badge build.
-                tabs: if s.is_current { Vec::new() } else { s.presence.tabs.clone() },
+                // the local cards). Peer trees only when shown, agent panes
+                // only — the filter sits here, upstream of the tab glyph and
+                // the line budget in `render_peer_children`.
+                tabs: if s.is_current || !self.show_trees {
+                    Vec::new()
+                } else {
+                    s.presence
+                        .tabs
+                        .iter()
+                        .map(|tab| PresenceTab {
+                            panes: tab
+                                .panes
+                                .iter()
+                                .filter(|p| crate::kind::Kind::from_source(&p.kind).is_agent())
+                                .cloned()
+                                .collect(),
+                            ..tab.clone()
+                        })
+                        .collect()
+                },
             })
             .collect()
     }
@@ -415,6 +431,37 @@ mod tests {
     use super::*;
     use crate::radar_state::Direction;
 
+    fn peer_with_tree(label: &str) -> (String, u64) {
+        let json = serde_json::json!({
+            "v": 1, "session_name": "alpha", "running": 1, "attention": 0, "updated_epoch_s": 10,
+            "tabs": [{"position": 0, "name": "t", "panes": [
+                {"pane_id": 3, "origin": "status", "kind": "claude", "status": "running", "label": label},
+                {"pane_id": 4, "origin": "command", "kind": "test", "status": "running", "label": "cargo test"}
+            ]}]
+        });
+        (json.to_string(), 0)
+    }
+
+    #[test]
+    fn peer_tree_edges_do_not_change_the_badge_with_trees_off() {
+        let mut s = Sessions::default();
+        s.update_presences(vec![peer_with_tree("one")]);
+        let update = s.update_presences(vec![peer_with_tree("two")]);
+        assert!(!update.changed, "a label edge in a tree nobody shows must not repaint");
+        assert!(s.badge().iter().all(|e| e.tabs.is_empty()));
+    }
+
+    #[test]
+    fn shown_peer_trees_list_agent_panes_only() {
+        let mut s = Sessions::default();
+        s.update_presences(vec![peer_with_tree("one")]);
+        assert!(s.set_show_trees(true), "turning trees on changes the badge");
+        let entry = s.badge().into_iter().find(|e| e.name == "alpha").unwrap();
+        assert_eq!(entry.tabs[0].panes.len(), 1);
+        assert_eq!(entry.tabs[0].panes[0].kind, "claude");
+        assert!(s.update_presences(vec![peer_with_tree("two")]).changed, "with trees on, label edges repaint");
+    }
+
     fn own(name: &str) -> Presence {
         Presence {
             session_name: name.into(),
@@ -423,6 +470,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         }
     }
     /// Fresh (age 0) peer presence, the shape most tests want.
@@ -446,6 +494,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         });
         // (Bound rather than chained straight off `s.badge()`: the literal
         // brief snippet borrows from a temporary `Vec<BadgeEntry>` that would
@@ -611,6 +660,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         };
         assert!(s.set_own(p.clone()), "first own-count report changes the badge");
         // Same badge-relevant fields, different updated_epoch_s (not part of
@@ -622,6 +672,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 99,
             tabs: vec![],
+            ..Default::default()
         };
         assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
     }
@@ -793,6 +844,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 50,
             tabs: vec![],
+            ..Default::default()
         });
         s.update_presences(vec![(
             r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(),

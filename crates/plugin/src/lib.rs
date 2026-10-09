@@ -181,6 +181,11 @@ impl State {
     /// comment) rather than folding it in here.
     fn handle_effects(&mut self, effects: Vec<Effect>) -> bool {
         let mut render = false;
+        // Set when a token takeover's re-entrant republish just wrote this
+        // instance's presence: a later `PersistPresence` in the same batch
+        // would serialize and write the identical tree again (the JSON is
+        // derived lazily from the same runtime state), so it is skipped.
+        let mut presence_republished = false;
         for effect in effects {
             match effect {
                 // Keep in lockstep with REQUIRED_PLUGIN_PERMISSIONS in
@@ -217,8 +222,22 @@ impl State {
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
+                Effect::PersistPresence { .. } if presence_republished => {}
                 Effect::PersistPresence { unless_fresher_than } => {
-                    self.session_files.persist_presence(unless_fresher_than, || self.runtime.presence_json())
+                    self.session_files.persist_presence(unless_fresher_than, runtime::PRESENCE_RESCUE_AFTER, || {
+                        self.runtime.presence_json()
+                    })
+                }
+                Effect::ClaimPresenceWriter { preempt } => {
+                    // A takeover means the file holds another instance's
+                    // (possibly frozen) view: republish ours, re-entrantly.
+                    // The runtime emits the claim ahead of `project`'s own
+                    // presence effect, so the flag covers the outer write.
+                    if self.session_files.claim_presence_writer(preempt) {
+                        let outcome = self.runtime.presence_writer_acquired();
+                        render |= self.handle_outcome(outcome);
+                        presence_republished = true;
+                    }
                 }
                 Effect::ReadPresences => {
                     let raw =

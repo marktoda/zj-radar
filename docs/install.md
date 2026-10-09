@@ -352,7 +352,7 @@ config-dir entries with them.
 | `~/.config/zellij/plugins/zj_radar.wasm` | `setup zellij --wasm/--download` | left in place; `rm` it |
 | `permissions.kdl` grant entry (macOS `~/Library/Caches/org.Zellij-Contributors.Zellij/`, Linux `~/.cache/zellij/`) | `setup zellij` with your consent, or Zellij when you answer `y` | left in place (Zellij also writes this file); delete the `zj_radar.wasm` block |
 | `run`'s config dir (macOS `~/Library/Application Support/zj-radar/`, Linux `~/.local/share/zj-radar/`) | `zj-radar run` | not touched by `setup`; `rm -r` it, it holds only re-materializable assets and session markers |
-| Per-session plugin state under Zellij's cache, `/tmp/zj-radar` fallback | the running plugin | self-pruning after 24 h; safe to delete anytime |
+| Per-session plugin state under Zellij's cache, fallback `$TMPDIR/zellij-<uid>/zj-radar` (`/tmp/zellij-<uid>/zj-radar` when `$TMPDIR` is unset) | the running plugin | self-pruning after 24 h; safe to delete anytime |
 | `zj-radar-dedup-<uid>/` under `$XDG_RUNTIME_DIR` (else `$TMPDIR`/`/tmp`): send-dedup records and background-subagent markers | `zj-radar notify` | self-expiring; safe to delete anytime (0.7.x left a `zj-radar-dedup/` there too) |
 | `$CODEX_HOME/hooks.json` entries (+ optional `notify` slot in `config.toml`) | `setup codex` | **reversed** by `setup codex --uninstall` |
 | `zj-radar-claude` plugin + `zj-radar` marketplace entry in Claude Code's plugin store | `setup claude` | plugin **reversed** by `setup claude --uninstall`; marketplace entry stays: `claude plugin marketplace remove zj-radar` |

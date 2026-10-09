@@ -852,24 +852,6 @@ fn render_with_badge(rt: &mut PluginRuntime, peer: (String, u64)) {
 }
 
 #[test]
-fn live_session_tree_toggle_republishes_presence_at_once() {
-    let mut rt = runtime_with_granted_permission();
-    drive_tabs_and_panes(&mut rt);
-    rt.status_pipe(&payload_json(7, "running"));
-
-    // The toggle moves presence content (the tab tree) without touching radar
-    // state — it must still publish on the spot, not at the next heartbeat.
-    let on = rt.config_pipe(r#"{"session_tree":true}"#);
-    assert!(on.effects.iter().any(presence_edge), "turning the tree on publishes, got {:?}", on.effects);
-    assert!(!rt.own_presence().tabs.is_empty());
-    let off = rt.config_pipe(r#"{"session_tree":false}"#);
-    assert!(off.effects.iter().any(presence_edge), "turning it off withdraws the tree, got {:?}", off.effects);
-    // An unrelated override moves nothing presence-shaped.
-    let other = rt.config_pipe(r#"{"glyphs":"nerd"}"#);
-    assert!(!other.effects.iter().any(presence_edge), "got {:?}", other.effects);
-}
-
-#[test]
 fn status_edge_persists_presence_once_and_not_on_identical_state() {
     let mut rt = runtime_with_granted_permission();
     drive_tabs_and_panes(&mut rt);
@@ -899,22 +881,68 @@ fn own_presence_counts_live_status_panes_not_tab_rollups_or_unseated_payloads() 
 }
 
 #[test]
-fn own_presence_publishes_the_tab_tree_only_with_session_tree_on() {
-    let setup = |session_tree: bool| {
-        let mut rt = runtime_with_granted_permission();
-        rt.config.session_tree = session_tree;
-        rt.tabs_changed(vec![tab(0, "pair", true)]);
-        rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
-        rt.status_pipe(&payload_json(10, "running"));
-        rt.own_presence()
-    };
-    let off = setup(false);
-    assert_eq!(off.running, 1, "counts publish either way");
-    assert!(off.tabs.is_empty(), "off: no tree, so no extra presence writes per agent label");
+fn own_presence_publishes_tracked_panes_regardless_of_session_tree() {
+    let mut rt = runtime_with_granted_permission();
+    assert!(!rt.config.session_tree, "default is off");
+    rt.tabs_changed(vec![tab(0, "pair", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10), pane(11)]);
+    rt.status_pipe(&payload_json(10, "running"));
+    // pane 11 is a plain shell: untracked, never published.
 
-    let on = setup(true);
-    assert_eq!(on.tabs.len(), 1);
-    assert_eq!(on.tabs[0].panes.len(), 1, "the agent pane rides the tree");
+    let own = rt.own_presence();
+    assert_eq!(own.v, crate::presence::PRESENCE_VERSION);
+    assert_eq!(own.tabs.len(), 1);
+    let panes = &own.tabs[0].panes;
+    assert_eq!(panes.len(), 1, "untracked shell excluded, got {panes:?}");
+    assert_eq!(panes[0].pane_id, Some(10));
+    assert_eq!(panes[0].origin.as_deref(), Some("status"));
+    assert_eq!(panes[0].status, "running");
+}
+
+#[test]
+fn own_presence_includes_command_panes_labeled_by_command() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "build", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    let cmd = vec!["cargo".to_string(), "test".to_string()];
+    rt.radar.command_mut().on_command_changed(10, &cmd, true, None, rt.tick);
+    let _ = rt.radar.command_mut().on_exit(10, Some(1), Tick(rt.tick), EpochSecs(0));
+
+    let own = rt.own_presence();
+    let pane = &own.tabs[0].panes[0];
+    assert_eq!(pane.origin.as_deref(), Some("command"));
+    assert_eq!(pane.status, "error");
+    assert!(pane.label.contains("cargo test"), "command label is the command line, got {:?}", pane.label);
+    assert_eq!(own.attention, 0, "command errors stay out of the attention count");
+}
+
+#[test]
+fn agents_survive_the_pane_cap_ahead_of_commands() {
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "busy", true)]);
+    // 20 command panes seated BEFORE the agent in manifest order.
+    let ids: Vec<u32> = (100..120).chain([7]).collect();
+    rt.radar.set_tab_panes_for_position(0, ids.iter().copied().map(pane).collect());
+    let cmd = vec!["cargo".to_string(), "build".to_string()];
+    for id in 100..120 {
+        rt.radar.command_mut().on_command_changed(id, &cmd, true, None, rt.tick);
+        let _ = rt.radar.command_mut().on_exit(id, Some(0), Tick(rt.tick), EpochSecs(0));
+    }
+    rt.status_pipe(&payload_json(7, "pending"));
+
+    let panes = &rt.own_presence().tabs[0].panes;
+    assert_eq!(panes.len(), crate::presence::MAX_PANES_PER_TAB);
+    assert_eq!(panes[0].pane_id, Some(7), "status-origin panes sort first, before the cap");
+}
+
+#[test]
+fn session_tree_toggle_no_longer_moves_presence() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt);
+    rt.status_pipe(&payload_json(7, "running"));
+    let on = rt.config_pipe(r#"{"session_tree":true}"#);
+    assert!(!on.effects.iter().any(presence_edge), "display-only toggle, got {:?}", on.effects);
+    assert!(on.render, "the toggle still repaints");
 }
 
 #[test]
@@ -3329,4 +3357,328 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
 
     let granted = runtime.permission_result(true);
     assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
+}
+
+// ── Presence-writer token (C1): the active view publishes ──
+//
+// Content edges are emitted by every instance whose fingerprint moved; the
+// glue writes only for the holder of the `zj-radar.<pid>.presence-writer`
+// token (`SessionFiles::persist_presence`). A rail claims it whenever it is
+// the active view: load, `Visible(true)`, and every manifest.
+
+fn claims(out: &Outcome) -> bool {
+    out.effects.iter().any(|e| matches!(e, Effect::ClaimPresenceWriter { .. }))
+}
+
+fn claim(out: &Outcome) -> Option<bool> {
+    out.effects.iter().find_map(|e| match e {
+        Effect::ClaimPresenceWriter { preempt } => Some(*preempt),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_rail_claims_the_presence_writer_whenever_it_is_the_active_view() {
+    let mut rt = PluginRuntime::default();
+    let load = rt.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
+    assert!(!claims(&load), "no name at load yet, so nothing to publish: no claim, got {:?}", load.effects);
+    rt.permission = PermissionState::Resolved { granted: true };
+    let named = rt.session_name_changed(Some("work".into()));
+    assert_eq!(claim(&named), Some(true), "learning the name claims, preempting; got {:?}", named.effects);
+    let renamed = rt.session_name_changed(Some("work".into()));
+    assert!(!claims(&renamed), "a repeat ModeUpdate is no claim, got {:?}", renamed.effects);
+
+    let visible_manifest = rt.tabs_changed(vec![tab(0, "a", true)]);
+    assert_eq!(claim(&visible_manifest), Some(false), "every manifest claims, floor-respecting");
+
+    let hide = rt.visibility_changed(false);
+    assert!(!claims(&hide), "going hidden never claims, got {:?}", hide.effects);
+    let reveal = rt.visibility_changed(true);
+    assert_eq!(claim(&reveal), Some(true), "Visible(true) after hidden claims, preempting; got {:?}", reveal.effects);
+
+    rt.visibility_changed(false);
+    let tab_update = rt.tabs_changed(vec![tab(0, "a", true)]);
+    assert!(claims(&tab_update), "a TabUpdate after hidden claims, got {:?}", tab_update.effects);
+
+    rt.visibility_changed(false);
+    let pane_update = rt.panes_changed(manifest_with_pane_7());
+    assert!(claims(&pane_update), "a PaneUpdate after hidden claims, got {:?}", pane_update.effects);
+
+    let tick = rt.timer_fast(PermissionProbe::default());
+    assert!(!claims(&tick), "ticks and broadcasts never claim");
+    let edge = rt.status_pipe(&payload_json(7, "running"));
+    assert!(!claims(&edge));
+}
+
+#[test]
+fn a_nameless_rail_never_claims_the_presence_writer() {
+    // A rail loaded in a background tab gets no ModeUpdate, so it has no
+    // name — and `project` withholds every presence write without one. Were
+    // it to hold the token, the active rail's content edges would be dropped
+    // (non-holder) and nobody would publish until the next manifest.
+    let mut rt = granted_runtime();
+    assert!(!claims(&rt.tabs_changed(vec![tab(0, "a", true)])));
+    assert!(!claims(&rt.panes_changed(manifest_with_pane_7())));
+    rt.visibility_changed(false);
+    assert!(!claims(&rt.visibility_changed(true)), "a nameless reveal does not claim");
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(claims(&named), "the moment it can publish, it claims; got {:?}", named.effects);
+}
+
+#[test]
+fn a_hidden_rail_learning_its_name_does_not_claim() {
+    // Its topology is frozen; only an active-view event may take the token.
+    let mut rt = granted_runtime();
+    rt.visibility_changed(false);
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(!claims(&named), "got {:?}", named.effects);
+    assert_eq!(claim(&rt.visibility_changed(true)), Some(true), "it claims on reveal instead");
+}
+
+#[test]
+fn the_claim_precedes_the_content_edge_in_one_batch() {
+    // lib.rs skips a batch's `PersistPresence` after a takeover already
+    // republished (P6) — sound only if the claim is handled first.
+    let mut rt = runtime_with_granted_permission();
+    rt.own_plugin_tab_changed(Some(0));
+    let out = rt.panes_changed(manifest_with_pane_7());
+    let at = |f: &dyn Fn(&Effect) -> bool| out.effects.iter().position(f);
+    let claim_at = at(&|e| matches!(e, Effect::ClaimPresenceWriter { .. })).expect("a manifest claims");
+    let edge_at = at(&|e| matches!(e, Effect::PersistPresence { .. })).expect("the new pane moves content");
+    assert!(claim_at < edge_at, "got {:?}", out.effects);
+}
+
+/// The lib.rs glue for the two presence effects, against real files: a
+/// claim that took the token over re-enters `presence_writer_acquired`, and
+/// `PersistPresence` goes through the token gate.
+fn apply_presence_effects(rt: &mut PluginRuntime, files: &crate::session_files::SessionFiles, out: Outcome) {
+    for effect in out.effects {
+        match effect {
+            Effect::ClaimPresenceWriter { preempt } => {
+                if files.claim_presence_writer(preempt) {
+                    let acquired = rt.presence_writer_acquired();
+                    apply_presence_effects(rt, files, acquired);
+                }
+            }
+            Effect::PersistPresence { unless_fresher_than } => {
+                files.persist_presence(unless_fresher_than, PRESENCE_RESCUE_AFTER, || rt.presence_json())
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn the_active_rail_publishes_a_pane_its_hidden_sibling_never_saw() {
+    // C1 regression (reproduced by the final review): the old leader rule
+    // made tab 0's rail the content writer, but a hidden rail's topology is
+    // frozen — a pane opened in another tab after the user left tab 0 never
+    // reaches it, so its going pending was published by nobody. Driven
+    // through the real token files: under the old blind-leader rule the
+    // stale rail's write lands last (attention 0); with an active rail that
+    // never took the token, its edge is dropped as a non-holder's over a
+    // fresh file (attention 0 again).
+    let dir = tempfile::tempdir().unwrap();
+    let stale_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 1, 100);
+    let active_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 2, 100);
+    let before = manifest(HashMap::from([(0, vec![pane(7)])]));
+    let after = manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])]));
+
+    // Tab 0's rail: active once (claims, publishes), then the user left.
+    let mut stale = runtime_with_granted_permission();
+    let out = stale.tabs_changed(vec![tab(0, "a", true)]);
+    apply_presence_effects(&mut stale, &stale_files, out);
+    stale.own_plugin_tab_changed(Some(0));
+    let out = stale.panes_changed(before);
+    apply_presence_effects(&mut stale, &stale_files, out);
+    assert!(stale_files.holds_presence_writer(), "setup: tab 0's rail held the token");
+    stale.visibility_changed(false);
+    // Some time on tab 0 passed since its claim (past the takeover floor).
+    let token = dir.path().join("zj-radar.100.presence-writer");
+    std::fs::File::options()
+        .write(true)
+        .open(&token)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+        .unwrap();
+
+    // Tab 1's rail: the user is here and opens pane 9.
+    let mut active = runtime_with_granted_permission();
+    active.own_plugin_tab_changed(Some(1));
+    let out = active.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    apply_presence_effects(&mut active, &active_files, out);
+    let out = active.panes_changed(after);
+    apply_presence_effects(&mut active, &active_files, out);
+
+    // Each broadcast reaches both instances; the frozen one is applied last.
+    // Pane 9 going pending moves only the active view; pane 7 going running
+    // moves both, so the frozen rail emits a content edge of its own.
+    for (payload, frozen_moves) in [(payload_json(9, "pending"), false), (payload_json(7, "running"), true)] {
+        let out = active.status_pipe(&payload);
+        apply_presence_effects(&mut active, &active_files, out);
+        let out = stale.status_pipe(&payload);
+        assert_eq!(out.effects.iter().any(presence_edge), frozen_moves, "setup: {payload}");
+        apply_presence_effects(&mut stale, &stale_files, out);
+    }
+
+    let on_disk = std::fs::read_to_string(dir.path().join("zj-radar.presence.100.json")).unwrap();
+    let published = crate::presence::Presence::parse(&on_disk).expect("valid presence");
+    assert_eq!((published.attention, published.running), (1, 1), "the active view (pane 9 pending) is what peers read");
+    assert!(active_files.holds_presence_writer() && !stale_files.holds_presence_writer());
+    let frozen = crate::presence::Presence::parse(&stale.presence_json()).expect("valid presence");
+    assert_eq!(frozen.attention, 0, "the hidden view is blind to pane 9 — why it must not write content");
+}
+
+#[test]
+fn acquiring_the_writer_token_republishes_this_instances_view() {
+    // A takeover (`claim_presence_writer` returned true) means the file holds
+    // ANOTHER instance's view; republish ours even though our own content
+    // did not move.
+    let mut rt = two_tab_runtime_owning_tab_0();
+    rt.status_pipe(&payload_json(7, "pending"));
+    let quiet = rt.project(vec![], RadarChange::default(), crate::clock::now_epoch_s());
+    assert!(!quiet.effects.iter().any(presence_edge), "nothing moved, got {:?}", quiet.effects);
+
+    let acquired = rt.presence_writer_acquired();
+    assert!(acquired.effects.iter().any(presence_edge), "takeover republishes, got {:?}", acquired.effects);
+}
+
+#[test]
+fn every_instance_emits_its_moved_content_and_the_token_decides_host_side() {
+    // No position-based leader any more: a rail in tab 1 emits the content
+    // edge too; `SessionFiles::persist_presence` drops it unless it holds the
+    // token (and then a content edge is only a rescue opportunity).
+    let mut follower = runtime_with_granted_permission();
+    follower.tabs_changed(vec![tab(0, "mine", false), tab(1, "theirs", true)]);
+    follower.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    follower.radar.set_tab_panes_for_position(1, vec![pane(8)]);
+    follower.own_plugin_tab_changed(Some(1));
+    let edge = follower.status_pipe(&payload_json(7, "pending"));
+    assert!(edge.effects.iter().any(presence_edge), "got {:?}", edge.effects);
+}
+
+#[test]
+fn every_instance_heartbeats_holder_or_not() {
+    // Liveness stays everyone's job at the effect level; the host turns a
+    // non-holder's heartbeat into a rescue (writes only past
+    // `PRESENCE_RESCUE_AFTER`), so a stale view lands only when the holder
+    // has gone quiet.
+    let mut follower = runtime_with_granted_permission();
+    follower.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    follower.own_plugin_tab_changed(Some(1));
+    // Rewind the stamp so the synthetic 10_000s clock is past the window.
+    follower.last_presence_write_epoch_s = 0;
+    let out = follower.project(vec![], RadarChange::default(), 10_000);
+    assert!(out.effects.iter().any(presence_heartbeat), "got {:?}", out.effects);
+}
+
+#[test]
+fn an_agent_msg_only_relabel_is_not_a_presence_edge_but_task_and_status_are() {
+    // An agent's published label is its sticky task, never its per-tool
+    // `msg`, so a msg-only relabel moves the radar generation without moving
+    // presence content. The fingerprint must see that (no write), and must
+    // still fire for every field that IS published.
+    let mut rt = two_tab_runtime_owning_tab_0();
+    let base = |rt: &mut PluginRuntime, edit: &dyn Fn(&mut payload::StatusPayload)| {
+        let mut p = payload_for(7, Status::Running);
+        edit(&mut p);
+        rt.status_pipe(&payload::to_wire(&p))
+    };
+    let first = base(&mut rt, &|_| {});
+    assert!(first.effects.iter().any(presence_edge), "setup, got {:?}", first.effects);
+
+    let relabel = base(&mut rt, &|p| p.msg = "reading files".into());
+    assert!(!relabel.effects.iter().any(presence_edge), "msg-only relabel, got {:?}", relabel.effects);
+
+    let task = base(&mut rt, &|p| p.task = "fix the bug".into());
+    assert!(task.effects.iter().any(presence_edge), "task is published, got {:?}", task.effects);
+
+    let done = rt.status_pipe(&payload_json(7, "done"));
+    assert!(done.effects.iter().any(presence_edge), "status is published, got {:?}", done.effects);
+}
+
+#[test]
+fn presence_fingerprint_moves_exactly_when_published_content_does() {
+    // Lockstep pin for `own_presence_fingerprint` vs `own_presence`: after
+    // every mutation, "the published content (epoch zeroed) changed" must
+    // equal "the fingerprint changed". A field added to `own_presence` but
+    // not hashed fails here (missed edge); a hashed field that isn't
+    // published fails as a spurious edge.
+    fn observe(rt: &PluginRuntime) -> (Presence, u64) {
+        let mut p = rt.own_presence();
+        p.updated_epoch_s = 0;
+        (p, rt.own_presence_fingerprint().1)
+    }
+    fn step(rt: &mut PluginRuntime, what: &str, expect_change: bool, f: &dyn Fn(&mut PluginRuntime)) {
+        let (before, fp_before) = observe(rt);
+        f(rt);
+        let (after, fp_after) = observe(rt);
+        assert_eq!(before != after, fp_before != fp_after, "{what}: content change and fingerprint change disagree");
+        assert_eq!(before != after, expect_change, "{what}: unexpected content change state");
+    }
+    let send = |rt: &mut PluginRuntime, id: u32, status: Status, msg: &str, task: &str| {
+        let mut p = payload_for(id, status);
+        p.msg = msg.into();
+        p.task = task.into();
+        rt.status_pipe(&payload::to_wire(&p));
+    };
+
+    let mut rt = two_tab_runtime_owning_tab_0();
+    step(&mut rt, "agent starts", true, &|rt| {
+        send(rt, 7, Status::Running, "a", "");
+    });
+    step(&mut rt, "status change", true, &|rt| {
+        send(rt, 7, Status::Pending, "a", "");
+    });
+    step(&mut rt, "agent task change", true, &|rt| {
+        send(rt, 7, Status::Pending, "a", "fix the bug");
+    });
+    step(&mut rt, "msg-only relabel", false, &|rt| {
+        send(rt, 7, Status::Pending, "reading files", "fix the bug");
+    });
+    step(&mut rt, "second agent in tab 1", true, &|rt| {
+        send(rt, 8, Status::Running, "b", "");
+    });
+    rt.radar.set_tab_panes_for_position(1, vec![pane(8), pane(9)]);
+    step(&mut rt, "command start", true, &|rt| {
+        rt.command_changed(9, &["cargo".to_string(), "test".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
+    step(&mut rt, "command exit", true, &|rt| {
+        rt.command_changed(9, &["zsh".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
+    step(&mut rt, "tab rename", true, &|rt| {
+        rt.tabs_changed(vec![tab(0, "renamed", true), tab(1, "theirs", false)]);
+    });
+    step(&mut rt, "pane moves between tabs", true, &|rt| {
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7), pane(8)]);
+        rt.radar.set_tab_panes_for_position(1, vec![]);
+        rt.project(vec![], RadarChange::default(), 1);
+    });
+    step(&mut rt, "tab close", true, &|rt| {
+        rt.tabs_changed(vec![tab(0, "renamed", true)]);
+    });
+
+    // The per-tab cap: 16 agents fill tab 0, so a 17th TRACKED pane that
+    // sorts behind them (a command) is cut before publishing — content and
+    // fingerprint both unchanged (the fingerprint walks the same capped
+    // iterator, `presence_panes`).
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "mine", true)]);
+    rt.radar.set_tab_panes_for_position(0, (100..117).map(pane).collect());
+    rt.own_plugin_tab_changed(Some(1));
+    for id in 100..116 {
+        send(&mut rt, id, Status::Done, "x", "");
+    }
+    step(&mut rt, "17th tracked pane past the cap", false, &|rt| {
+        rt.command_changed(116, &["cargo".to_string(), "test".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
 }

@@ -133,9 +133,9 @@ and needs-you agent-pane counts. With a single session the badge is invisible.
   still appear). Click a peer tab or agent row to switch to that tab; it does
   not focus a particular pane there. Peer rows only use the height left after
   your local tabs, the ledger, and the footer, so a short rail shows fewer of
-  them (or none); session lines always remain visible. A session publishes
-  its tree only when it has the option on, so set it in every session's
-  config.
+  them (or none); session lines always remain visible. Every session
+  publishes its tree; `session_tree` controls whether *your* rail draws
+  peers' trees.
 - **`session-next` / `session-prev`** move a highlight through the same order.
   The switch happens about a second after your last tap; landing back on your
   own session cancels.
@@ -146,6 +146,27 @@ and needs-you agent-pane counts. With a single session the badge is invisible.
 Sessions find each other through Zellij's shared plugin cache directory. If no
 writable shared directory exists, the badge never appears and nothing else
 changes.
+
+## Scripting: `zj-radar state`
+
+`zj-radar state` prints what the radar knows about every live session: its
+tabs and the panes the radar tracks (agents and observed commands). It reads
+the files each rail publishes and never queries Zellij; `age_s` says how old
+each session's data is (rails refresh about every 60 s; stale after 90 s).
+
+```sh
+zj-radar state                     # human-readable
+zj-radar state --json              # {"v":1,"sessions":[...]}, schema in producers.md
+zj-radar state --needs-attention   # agent panes waiting on you; exit 1 if none
+zj-radar state --session work
+```
+
+Example: `if zj-radar state --needs-attention >/dev/null; then notify-send "an agent needs you"; fi`.
+
+Pane detail needs sessions running this release's plugin: after upgrading,
+restart existing sessions or start new ones; older rails publish counts only. The
+`--needs-attention` and stale rules, exit codes, the JSON schema, and known
+limits are in [`producers.md`](producers.md#presence-file-and-state---json).
 
 ## Notifications
 
