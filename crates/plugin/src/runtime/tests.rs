@@ -3370,8 +3370,10 @@ fn only_the_first_tabs_instance_writes_presence_content_edges() {
     follower.radar.set_tab_panes_for_position(0, vec![pane(7)]);
     follower.radar.set_tab_panes_for_position(1, vec![pane(8)]);
     follower.own_plugin_tab_changed(Some(1));
+    let stamp = follower.last_presence_write_epoch_s;
     let edge = follower.status_pipe(&payload_json(7, "pending"));
     assert!(!edge.effects.iter().any(presence_edge), "tab 1's rail leaves content to tab 0, got {:?}", edge.effects);
+    assert_eq!(follower.last_presence_write_epoch_s, stamp, "a follower stamps nothing on a content edge");
 }
 
 #[test]
@@ -3418,4 +3420,90 @@ fn an_agent_msg_only_relabel_is_not_a_presence_edge_but_task_and_status_are() {
 
     let done = rt.status_pipe(&payload_json(7, "done"));
     assert!(done.effects.iter().any(presence_edge), "status is published, got {:?}", done.effects);
+}
+
+#[test]
+fn presence_fingerprint_moves_exactly_when_published_content_does() {
+    // Lockstep pin for `own_presence_fingerprint` vs `own_presence`: after
+    // every mutation, "the published content (epoch zeroed) changed" must
+    // equal "the fingerprint changed". A field added to `own_presence` but
+    // not hashed fails here (missed edge); a hashed field that isn't
+    // published fails as a spurious edge.
+    fn observe(rt: &PluginRuntime) -> (Presence, u64) {
+        let mut p = rt.own_presence();
+        p.updated_epoch_s = 0;
+        (p, rt.own_presence_fingerprint().1)
+    }
+    fn step(rt: &mut PluginRuntime, what: &str, expect_change: bool, f: &dyn Fn(&mut PluginRuntime)) {
+        let (before, fp_before) = observe(rt);
+        f(rt);
+        let (after, fp_after) = observe(rt);
+        assert_eq!(before != after, fp_before != fp_after, "{what}: content change and fingerprint change disagree");
+        assert_eq!(before != after, expect_change, "{what}: unexpected content change state");
+    }
+    let send = |rt: &mut PluginRuntime, id: u32, status: Status, msg: &str, task: &str| {
+        let mut p = payload_for(id, status);
+        p.msg = msg.into();
+        p.task = task.into();
+        rt.status_pipe(&payload::to_wire(&p));
+    };
+
+    let mut rt = two_tab_runtime_owning_tab_0();
+    step(&mut rt, "agent starts", true, &|rt| {
+        send(rt, 7, Status::Running, "a", "");
+    });
+    step(&mut rt, "status change", true, &|rt| {
+        send(rt, 7, Status::Pending, "a", "");
+    });
+    step(&mut rt, "agent task change", true, &|rt| {
+        send(rt, 7, Status::Pending, "a", "fix the bug");
+    });
+    step(&mut rt, "msg-only relabel", false, &|rt| {
+        send(rt, 7, Status::Pending, "reading files", "fix the bug");
+    });
+    step(&mut rt, "second agent in tab 1", true, &|rt| {
+        send(rt, 8, Status::Running, "b", "");
+    });
+    rt.radar.set_tab_panes_for_position(1, vec![pane(8), pane(9)]);
+    step(&mut rt, "command start", true, &|rt| {
+        rt.command_changed(9, &["cargo".to_string(), "test".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
+    step(&mut rt, "command exit", true, &|rt| {
+        rt.command_changed(9, &["zsh".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
+    step(&mut rt, "tab rename", true, &|rt| {
+        rt.tabs_changed(vec![tab(0, "renamed", true), tab(1, "theirs", false)]);
+    });
+    step(&mut rt, "pane moves between tabs", true, &|rt| {
+        rt.radar.set_tab_panes_for_position(0, vec![pane(7), pane(8)]);
+        rt.radar.set_tab_panes_for_position(1, vec![]);
+        rt.project(vec![], RadarChange::default(), 1);
+    });
+    step(&mut rt, "tab close", true, &|rt| {
+        rt.tabs_changed(vec![tab(0, "renamed", true)]);
+    });
+
+    // The per-tab cap: 16 agents fill tab 0, so a 17th TRACKED pane that
+    // sorts behind them (a command) is cut before publishing — content and
+    // fingerprint both unchanged (the fingerprint walks the same capped
+    // iterator, `presence_panes`).
+    let mut rt = runtime_with_granted_permission();
+    rt.tabs_changed(vec![tab(0, "mine", true)]);
+    rt.radar.set_tab_panes_for_position(0, (100..117).map(pane).collect());
+    rt.own_plugin_tab_changed(Some(1));
+    for id in 100..116 {
+        send(&mut rt, id, Status::Done, "x", "");
+    }
+    step(&mut rt, "17th tracked pane past the cap", false, &|rt| {
+        rt.command_changed(116, &["cargo".to_string(), "test".to_string()], true);
+        for _ in 0..=DEBOUNCE_TICKS {
+            rt.timer_fast(PermissionProbe::default());
+        }
+    });
 }

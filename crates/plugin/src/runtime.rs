@@ -507,6 +507,8 @@ impl FxHasher {
 
 impl std::hash::Hasher for FxHasher {
     fn write(&mut self, bytes: &[u8]) {
+        // Length first, so zero-padded tails and chunk boundaries can't alias.
+        self.add(bytes.len() as u64);
         let mut chunks = bytes.chunks_exact(8);
         for c in &mut chunks {
             self.add(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]));
@@ -532,6 +534,35 @@ impl std::hash::Hasher for FxHasher {
     fn finish(&self) -> u64 {
         self.0
     }
+}
+
+/// The ONE derivation of presence's counts, shared by `own_presence` and its
+/// fingerprint so they cannot disagree. Presence is deliberately pane-level
+/// while the rail itself remains tab-rolled-up. `rows()` is already
+/// constrained by the current pane topology, so a pre-topology payload or
+/// stale store id cannot inflate cross-session counts; command observations
+/// are excluded at this seam (`is_status_origin`), not inferred later from a
+/// tab's dominant status. `attention_tab_position` is the first
+/// (lowest-position) row that `needs_you()`.
+fn presence_counts(rows: &[TabRow]) -> (usize, usize, Option<usize>) {
+    let mut running = 0usize;
+    let mut attention = 0usize;
+    let mut attention_tab_position = None;
+    for r in rows {
+        let mut tab_attention = 0usize;
+        for p in r.display.panes.iter().filter(|p| p.is_status_origin()) {
+            match p.status() {
+                Some(Status::Running) => running += 1,
+                Some(st) if st.needs_you() => tab_attention += 1,
+                _ => {}
+            }
+        }
+        if tab_attention > 0 {
+            attention += tab_attention;
+            attention_tab_position.get_or_insert(r.tab_position());
+        }
+    }
+    (running, attention, attention_tab_position)
 }
 
 /// The panes a tab publishes in presence: tracked ones only (shells and
@@ -1057,32 +1088,7 @@ impl PluginRuntime {
     /// `Sessions`/`BadgeEntry` expect for a same-repo jump-on-arrival.
     fn own_presence(&self) -> Presence {
         let rows = self.radar.rows(self.tick);
-        // Presence is deliberately pane-level while the rail itself remains
-        // tab-rolled-up. `rows()` is already constrained by the current pane
-        // topology, so a pre-topology payload or stale store id cannot inflate
-        // cross-session counts; command observations are excluded at this
-        // seam, not inferred later from a tab's dominant status.
-        let running = rows
-            .iter()
-            .flat_map(|r| &r.display.panes)
-            .filter(|p| p.is_status_origin() && p.status() == Some(Status::Running))
-            .count();
-        let mut attention = 0usize;
-        let mut attention_tab_position = None;
-        for r in rows.iter() {
-            let tab_attention = r
-                .display
-                .panes
-                .iter()
-                .filter(|p| p.is_status_origin() && p.status().is_some_and(Status::needs_you))
-                .count();
-            if tab_attention > 0 {
-                attention += tab_attention;
-                if attention_tab_position.is_none() {
-                    attention_tab_position = Some(r.tab_position());
-                }
-            }
-        }
+        let (running, attention, attention_tab_position) = presence_counts(&rows);
         Presence {
             v: crate::presence::PRESENCE_VERSION,
             session_name: self.own_session_name.clone(),
@@ -1130,26 +1136,16 @@ impl PluginRuntime {
     /// change; the converse (raw differs, sanitized equal) costs at most one
     /// redundant write. The counts-only value is all `Sessions::set_own`
     /// needs — the current session's own tree is never rendered.
+    ///
+    /// Every published `PresencePane`/`PresenceTab` field must be hashed
+    /// here; `presence_fingerprint_moves_exactly_when_published_content_does`
+    /// pins it.
     fn own_presence_fingerprint(&self) -> (Presence, u64) {
         use std::hash::Hash;
         let rows = self.radar.rows(self.tick);
         let mut h = FxHasher::default();
-        let mut running = 0usize;
-        let mut attention = 0usize;
-        let mut attention_tab_position = None;
+        let (running, attention, attention_tab_position) = presence_counts(&rows);
         for (i, r) in rows.iter().enumerate() {
-            let mut tab_attention = 0usize;
-            for p in r.display.panes.iter().filter(|p| p.is_status_origin()) {
-                match p.status() {
-                    Some(Status::Running) => running += 1,
-                    Some(st) if st.needs_you() => tab_attention += 1,
-                    _ => {}
-                }
-            }
-            if tab_attention > 0 {
-                attention += tab_attention;
-                attention_tab_position.get_or_insert(r.tab_position());
-            }
             if i < MAX_TABS {
                 (r.tab_position(), &r.name).hash(&mut h);
                 for pane in presence_panes(r) {

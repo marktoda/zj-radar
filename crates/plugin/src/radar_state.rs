@@ -923,6 +923,12 @@ impl RadarState {
     /// otherwise fan out to every tab. Unresolved own tab → write (never
     /// nobody). The liveness heartbeat is NOT gated by this — every instance
     /// runs it, deduped host-side by mtime.
+    ///
+    /// If the lowest-position tab has no zj-radar rail, nobody writes content
+    /// edges: content then reaches disk only through the all-instance
+    /// heartbeat (which serializes full content), so it can be up to
+    /// `PRESENCE_HEARTBEAT_S` (60s) stale. `setup`/`run` put the rail in every
+    /// tab, so that layout is off the supported path.
     pub(crate) fn writes_presence_content(&self) -> bool {
         let Some(own) = self.naming_tab_id else {
             return true;

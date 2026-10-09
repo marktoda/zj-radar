@@ -215,8 +215,10 @@ impl Sessions {
     /// Record this session's own counts (never read from a peer file — the
     /// current session knows its own state directly). The single path for
     /// own counts into the badge — the runtime calls this every time it
-    /// recomputes `own_presence()`, not just on a name change, so the own
-    /// row stays live as running/attention move.
+    /// re-derives presence (`own_presence_fingerprint`), not just on a name
+    /// change, so the own row stays live as running/attention move. Receives
+    /// a counts-only `Presence` (empty `tabs`): the current session's own
+    /// tree is never rendered, so it is not cloned in.
     pub(crate) fn set_own(&mut self, p: Presence) -> bool {
         let before = self.badge();
         self.own = Some(p);
