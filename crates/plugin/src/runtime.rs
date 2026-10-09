@@ -407,7 +407,9 @@ pub(crate) struct PluginRuntime {
     /// `presence_json()` returns when the host actually handles the effect,
     /// so it reads as "epoch of the last content edge", not "epoch of the
     /// last tick".
-    last_presence: Option<Presence>,
+    /// Held as an allocation-free fingerprint of the published content
+    /// (`own_presence_fingerprint`), not a cloned `Presence` tree.
+    last_presence: Option<u64>,
     /// The most recent `now_epoch_s` any entry point has captured. Reused
     /// (never re-read from the clock) by call paths that have no epoch of
     /// their own to work with — `presence_json`, `session_name_changed`,
@@ -488,6 +490,73 @@ pub(crate) struct PluginRuntime {
 
 /// See [`PluginRuntime::last_render_key`].
 type RenderKey = (std::rc::Rc<Vec<TabRow>>, std::rc::Rc<Vec<LedgerLine>>, Vec<BadgeEntry>, theme::DerivedColors);
+
+/// Word-at-a-time multiply-rotate hasher (the rustc "Fx" scheme) for
+/// `own_presence_fingerprint`. SipHash's rounds are the dominant cost of the
+/// fingerprint under the wasm interpreter; this is an equality fingerprint
+/// over trusted, locally derived strings, so DoS resistance buys nothing.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl FxHasher {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(Self::K);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.add(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]));
+        }
+        let mut tail = 0u64;
+        for (i, b) in chunks.remainder().iter().enumerate() {
+            tail |= u64::from(*b) << (8 * i);
+        }
+        self.add(tail);
+    }
+    fn write_u8(&mut self, n: u8) {
+        self.add(u64::from(n));
+    }
+    fn write_u32(&mut self, n: u32) {
+        self.add(u64::from(n));
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// The panes a tab publishes in presence: tracked ones only (shells and
+/// Interactive panes are noise), status-origin ahead of commands so agents
+/// are never truncated behind a tab full of builds, capped per tab. Shared by
+/// `own_presence` and its fingerprint so the two cannot drift.
+fn presence_panes(row: &TabRow) -> impl Iterator<Item = &crate::rollup::PaneDisplay> {
+    let tracked = || row.display.panes.iter().filter(|p| p.status().is_some());
+    tracked()
+        .filter(|p| p.is_status_origin())
+        .chain(tracked().filter(|p| !p.is_status_origin()))
+        .take(MAX_PANES_PER_TAB)
+}
+
+/// Agents: the sticky task (falls back to the kind). Commands: the command
+/// line — stable for the command's life, unlike an agent's per-tool `msg`.
+fn presence_label(pane: &crate::rollup::PaneDisplay) -> &str {
+    if !pane.is_status_origin() {
+        pane.msg()
+    } else if pane.task().is_empty() {
+        pane.kind().as_source()
+    } else {
+        pane.task()
+    }
+}
 
 impl PluginRuntime {
     pub(crate) fn load(
@@ -1030,41 +1099,79 @@ impl PluginRuntime {
             tabs: rows
                 .iter()
                 .take(MAX_TABS)
-                .map(|row| {
-                    let mut tracked: Vec<_> = row.display.panes.iter().filter(|p| p.status().is_some()).collect();
-                    tracked.sort_by_key(|p| !p.is_status_origin());
-                    PresenceTab {
-                        position: row.tab_position(),
-                        name: crate::payload::sanitize(&row.name, MAX_LABEL_CHARS),
-                        panes: tracked
-                            .into_iter()
-                            .take(MAX_PANES_PER_TAB)
-                            .map(|pane| {
-                                let status_origin = pane.is_status_origin();
-                                // Agents: the sticky task (falls back to the
-                                // kind). Commands: the command line — stable
-                                // for the command's life, unlike an agent's
-                                // per-tool `msg`.
-                                let label = if !status_origin {
-                                    pane.msg()
-                                } else if pane.task().is_empty() {
-                                    pane.kind().as_source()
-                                } else {
-                                    pane.task()
-                                };
-                                PresencePane {
-                                    pane_id: Some(pane.pane_id()),
-                                    origin: Some(if status_origin { "status" } else { "command" }.to_string()),
-                                    kind: pane.kind().as_source().to_string(),
-                                    status: pane.render_status().as_wire().to_string(),
-                                    label: crate::payload::sanitize(label, MAX_LABEL_CHARS),
-                                }
-                            })
-                            .collect(),
-                    }
+                .map(|row| PresenceTab {
+                    position: row.tab_position(),
+                    name: crate::payload::sanitize(&row.name, MAX_LABEL_CHARS),
+                    panes: presence_panes(row)
+                        .map(|pane| {
+                            let status_origin = pane.is_status_origin();
+                            PresencePane {
+                                pane_id: Some(pane.pane_id()),
+                                origin: Some(if status_origin { "status" } else { "command" }.to_string()),
+                                kind: pane.kind().as_source().to_string(),
+                                status: pane.render_status().as_wire().to_string(),
+                                label: crate::payload::sanitize(presence_label(pane), MAX_LABEL_CHARS),
+                            }
+                        })
+                        .collect(),
                 })
                 .collect(),
         }
+    }
+
+    /// Counts-only own presence plus an allocation-free fingerprint of the
+    /// full published content. `project` runs this on every generation move
+    /// under the wasm interpreter, where building the tab tree (a dozen
+    /// `String`s per pane) was the whole cost of an edge that changes
+    /// nothing peers see (a msg-only relabel, a non-owner's status edge).
+    /// The fingerprint hashes the RAW fields of exactly the panes
+    /// `own_presence` would publish, in its order: equal raw input yields
+    /// equal sanitized output, so an unchanged fingerprint can never hide a
+    /// change; the converse (raw differs, sanitized equal) costs at most one
+    /// redundant write. The counts-only value is all `Sessions::set_own`
+    /// needs — the current session's own tree is never rendered.
+    fn own_presence_fingerprint(&self) -> (Presence, u64) {
+        use std::hash::Hash;
+        let rows = self.radar.rows(self.tick);
+        let mut h = FxHasher::default();
+        let mut running = 0usize;
+        let mut attention = 0usize;
+        let mut attention_tab_position = None;
+        for (i, r) in rows.iter().enumerate() {
+            let mut tab_attention = 0usize;
+            for p in r.display.panes.iter().filter(|p| p.is_status_origin()) {
+                match p.status() {
+                    Some(Status::Running) => running += 1,
+                    Some(st) if st.needs_you() => tab_attention += 1,
+                    _ => {}
+                }
+            }
+            if tab_attention > 0 {
+                attention += tab_attention;
+                attention_tab_position.get_or_insert(r.tab_position());
+            }
+            if i < MAX_TABS {
+                (r.tab_position(), &r.name).hash(&mut h);
+                for pane in presence_panes(r) {
+                    (pane.pane_id(), pane.is_status_origin(), pane.kind().as_source(), pane.render_status().as_wire())
+                        .hash(&mut h);
+                    presence_label(pane).hash(&mut h);
+                }
+                // Tab boundary, so a pane moving between tabs is an edge.
+                0xffu8.hash(&mut h);
+            }
+        }
+        (running, attention, attention_tab_position).hash(&mut h);
+        let counts = Presence {
+            v: crate::presence::PRESENCE_VERSION,
+            session_name: self.own_session_name.clone(),
+            running,
+            attention,
+            attention_tab_position,
+            updated_epoch_s: self.last_now_epoch_s,
+            tabs: Vec::new(),
+        };
+        (counts, std::hash::Hasher::finish(&h))
     }
 
     /// JSON the host actually writes to disk on `Effect::PersistPresence` —
@@ -1509,12 +1616,10 @@ impl PluginRuntime {
         let mut content_moved = false;
         if !self.own_session_name.is_empty() && self.presence_gen != Some(self.radar.generation()) {
             self.presence_gen = Some(self.radar.generation());
-            let fresh = self.own_presence();
-            render |= self.sessions.set_own(fresh.clone());
-            let mut compare = fresh;
-            compare.updated_epoch_s = 0;
-            if self.last_presence.as_ref() != Some(&compare) {
-                self.last_presence = Some(compare);
+            let (counts, fingerprint) = self.own_presence_fingerprint();
+            render |= self.sessions.set_own(counts);
+            if self.last_presence != Some(fingerprint) {
+                self.last_presence = Some(fingerprint);
                 content_moved = true;
             }
         }

@@ -3394,3 +3394,28 @@ fn followers_still_heartbeat() {
     let out = follower.project(vec![], RadarChange::default(), 10_000);
     assert!(out.effects.iter().any(presence_heartbeat), "liveness is everyone's job, got {:?}", out.effects);
 }
+
+#[test]
+fn an_agent_msg_only_relabel_is_not_a_presence_edge_but_task_and_status_are() {
+    // An agent's published label is its sticky task, never its per-tool
+    // `msg`, so a msg-only relabel moves the radar generation without moving
+    // presence content. The fingerprint must see that (no write), and must
+    // still fire for every field that IS published.
+    let mut rt = two_tab_runtime_owning_tab_0();
+    let base = |rt: &mut PluginRuntime, edit: &dyn Fn(&mut payload::StatusPayload)| {
+        let mut p = payload_for(7, Status::Running);
+        edit(&mut p);
+        rt.status_pipe(&payload::to_wire(&p))
+    };
+    let first = base(&mut rt, &|_| {});
+    assert!(first.effects.iter().any(presence_edge), "setup, got {:?}", first.effects);
+
+    let relabel = base(&mut rt, &|p| p.msg = "reading files".into());
+    assert!(!relabel.effects.iter().any(presence_edge), "msg-only relabel, got {:?}", relabel.effects);
+
+    let task = base(&mut rt, &|p| p.task = "fix the bug".into());
+    assert!(task.effects.iter().any(presence_edge), "task is published, got {:?}", task.effects);
+
+    let done = rt.status_pipe(&payload_json(7, "done"));
+    assert!(done.effects.iter().any(presence_edge), "status is published, got {:?}", done.effects);
+}
