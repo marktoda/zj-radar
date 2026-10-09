@@ -168,6 +168,11 @@ If you write the layout by hand, copy those blocks; if your layout already has
 its own swaps, see
 [Alt+] hides the rail](troubleshooting.md#alt-hides-the-rail-or-stops-cycling).
 
+With [`show_mode true`](configuration.md#options) the rail's footer
+shows the current Zellij mode, so you can delete every `zellij:status-bar` pane
+(one per template, including `tab_template name="ui"` if your layout has it)
+and get those rows back. You lose the status bar's keybinding hints.
+
 For a complete starting layout, copy
 [`examples/radar-sidebar.kdl`](../examples/radar-sidebar.kdl) to
 `~/.config/zellij/layouts/` and run `zellij --layout radar-sidebar`.

@@ -111,6 +111,7 @@ fn parse_cases(doc: &str) -> Vec<Case> {
 ///   height N
 ///   glyphs plain|nerd
 ///   jump_hint            ← footer advertises `alt-[n] jump` (default: hidden)
+///   mode <name>          ← footer shows that Zellij mode (default: none)
 ///   tab <pos> "<name>" [active]
 ///     <kind> <status> "<msg>" [task "<text>"] [exit <N>|?]   ← indented; one line per pane
 ///
@@ -129,6 +130,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
     let mut glyphs = GlyphSet::Plain;
     let mut density = Density::Compact;
     let mut jump_hint = false;
+    let mut mode: Option<crate::mode::Mode> = None;
     let mut now_tick: u64 = 0;
     let mut ledger_lines: Vec<crate::rollup::LedgerLine> = Vec::new();
     // A fixed "now" for the `ledger` directive's age math, so a scenario's
@@ -223,6 +225,29 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         // — default hidden, mirroring `JumpHint`.
         if line.trim() == "jump_hint" {
             jump_hint = true;
+            continue;
+        }
+        // Footer mode label (`show_mode` on): `mode <name>`, the lowercase
+        // `InputMode` name (default: none, as with `show_mode` off).
+        if let Some(rest) = line.strip_prefix("mode ") {
+            use crate::mode::Mode;
+            mode = Some(match rest.trim() {
+                "normal" => Mode::Normal,
+                "locked" => Mode::Locked,
+                "resize" => Mode::Resize,
+                "pane" => Mode::Pane,
+                "tab" => Mode::Tab,
+                "scroll" => Mode::Scroll,
+                "entersearch" => Mode::EnterSearch,
+                "search" => Mode::Search,
+                "renametab" => Mode::RenameTab,
+                "renamepane" => Mode::RenamePane,
+                "session" => Mode::Session,
+                "move" => Mode::Move,
+                "prompt" => Mode::Prompt,
+                "tmux" => Mode::Tmux,
+                other => panic!("reference DSL: unknown mode '{}' in scenario", other),
+            });
             continue;
         }
         // Render tick: `now_tick <N>` (default 0). Statuses apply at tick 0,
@@ -598,6 +623,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         badge: vec![],
         task_lines: crate::config::TaskLines::default(),
         session_tree: false,
+        mode,
     };
     // Scenarios that don't declare an explicit `height` used the old
     // "unboundedly large" sentinel to mean "enough to fit, no overflow, no

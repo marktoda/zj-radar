@@ -81,7 +81,9 @@ other interactive programs never spin; the pane shows a muted label such as
 into a `+N idle ▾` strip and the header count gains `▲`.
 
 **Footer.** With two or more spare lines the rail pins a rule and a tally to the
-bottom: `N working`, plus `· M need you` when M is nonzero. Above it, an
+bottom: `N working`, plus `· M need you` when M is nonzero. With
+[`show_mode true`](configuration.md#options) the tally line also carries the
+current Zellij mode (`NORMAL`, `LOCKED`, …) flush right. Above it, an
 `─ earlier ─` section lists recent completions (newest first, up to ten) with
 a relative age. Click one to jump to its tab if the tab still exists.
 
