@@ -62,6 +62,17 @@ const PRESENCE_PREFIX: &str = "zj-radar.presence.";
 /// spared, a dead session's is swept with its snapshot). See
 /// [`SessionFiles::claim_presence_writer`] for the protocol.
 const PRESENCE_WRITER_SUFFIX: &str = "presence-writer";
+/// Age below which a presence-writer token naming ANOTHER instance survives
+/// a non-preempting (manifest) claim. Why: two clients on different tabs
+/// both receive manifests, so plain last-claim-wins turns every alternate
+/// manifest into a takeover — a token rewrite plus a full re-entrant
+/// republish (`PluginRuntime::presence_writer_acquired`). A token this young
+/// was claimed moments ago by a rail that was then receiving manifests
+/// itself, so its view is not frozen; letting it keep the token bounds the
+/// ping-pong to one takeover per floor. A *preempting* claim (a reveal, the
+/// name first learned — a rail that just became the active view) ignores
+/// the floor, so a quick tab switch back is never left without the token.
+pub(crate) const PRESENCE_WRITER_TAKEOVER_FLOOR: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionFileIds {
@@ -139,6 +150,19 @@ impl SessionFiles {
             snapshot: None,
             permission: PermissionProbe { marker: None, lock_acquired: true },
         }
+    }
+
+    /// One instance's files over a single `root` (cross-module tests drive
+    /// the lib.rs glue against real token/presence files).
+    #[cfg(test)]
+    pub(crate) fn open_for_test(root: &Path, plugin_id: u32, zellij_pid: u32) -> SessionFiles {
+        Self::open_with_roots_at(
+            SessionFileIds { plugin_id, zellij_pid },
+            [root.to_path_buf()],
+            SystemTime::now(),
+            SNAPSHOT_MAX_AGE,
+        )
+        .files
     }
 
     pub(crate) fn permission_marker(&self) -> Option<PermissionMarker> {
@@ -237,23 +261,38 @@ impl SessionFiles {
     /// A claim of a token already ours is one small read and no write, so the
     /// runtime may claim on every manifest.
     ///
-    /// Protocol: a rail claims whenever it is the active view — at load, on
-    /// `Visible(true)`, and on every `TabUpdate`/`PaneUpdate` (which Zellij
-    /// delivers to the active tab's plugins only). The most recent claimant
-    /// has the freshest topology; a hidden rail's tab/pane view is frozen, so
-    /// last-claim-wins is exactly "the freshest view writes". After a detach
-    /// the last-active rail keeps the token and keeps publishing from its
-    /// at-detach topology. Plain last-writer-wins (tmp+rename), no lock: two
-    /// clients on different tabs are both fresh, so either winning is fine.
-    pub(crate) fn claim_presence_writer(&self) -> bool {
+    /// Protocol: a named rail claims whenever it is the active view — when
+    /// its session name is first learned, on `Visible(true)`, and on every
+    /// `TabUpdate`/`PaneUpdate` (which Zellij delivers to the active tab's
+    /// plugins only). The most recent claimant has the freshest topology; a
+    /// hidden rail's tab/pane view is frozen, so last-claim-wins is exactly
+    /// "the freshest view writes". After a detach the last-active rail keeps
+    /// the token and keeps publishing from its at-detach topology. Plain
+    /// last-writer-wins (tmp+rename), no lock — except that a manifest claim
+    /// (`preempt: false`) leaves a foreign token younger than
+    /// [`PRESENCE_WRITER_TAKEOVER_FLOOR`] alone: two clients on different
+    /// tabs are both fresh, so either holding is fine, and the floor stops
+    /// them trading it on every manifest. Returns `false` when the token
+    /// write failed (nothing was taken over).
+    pub(crate) fn claim_presence_writer(&self, preempt: bool) -> bool {
+        self.claim_presence_writer_at(preempt, SystemTime::now())
+    }
+
+    fn claim_presence_writer_at(&self, preempt: bool, now: SystemTime) -> bool {
         let Some(paths) = &self.paths else {
             return false;
         };
         if self.holds_presence_writer() {
             return false;
         }
-        write_via_tmp(&paths.presence_writer_tmp, &paths.presence_writer, paths.plugin_id.as_bytes());
-        true
+        // A missing token (or an mtime hiccup) is no young holder: take it.
+        if !preempt
+            && age_of(std::fs::metadata(&paths.presence_writer), now)
+                .is_some_and(|age| age < PRESENCE_WRITER_TAKEOVER_FLOOR)
+        {
+            return false;
+        }
+        write_via_tmp(&paths.presence_writer_tmp, &paths.presence_writer, paths.plugin_id.as_bytes())
     }
 
     /// Whether the presence-writer token names this instance. Missing or
@@ -408,14 +447,14 @@ impl SessionFiles {
 /// `dest`. On any failure the tmp is removed and the existing `dest` is left
 /// untouched; errors are otherwise swallowed (persistence is best-effort —
 /// see the module doc's disabled-mode story).
-fn write_via_tmp(tmp: &Path, dest: &Path, bytes: &[u8]) {
-    if std::fs::write(tmp, bytes).is_ok() {
-        if std::fs::rename(tmp, dest).is_err() {
-            let _ = std::fs::remove_file(tmp);
-        }
-    } else {
-        let _ = std::fs::remove_file(tmp);
+/// Returns whether `dest` now holds `bytes` (callers that only care about
+/// best effort ignore it).
+fn write_via_tmp(tmp: &Path, dest: &Path, bytes: &[u8]) -> bool {
+    if std::fs::write(tmp, bytes).is_ok() && std::fs::rename(tmp, dest).is_ok() {
+        return true;
     }
+    let _ = std::fs::remove_file(tmp);
+    false
 }
 
 /// THE presence-file recognizer every read/delete path shares: prefix plus
@@ -585,11 +624,31 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
         if !is_owned_session_file(&name) || paths.is_current_session_file(&name) {
             continue;
         }
-        let stale = age_of(entry.metadata(), now).is_some_and(|age| age > max_age);
+        let stale = age_of(liveness_metadata(&paths.root, &name, &entry), now).is_some_and(|age| age > max_age);
         if stale {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// The metadata whose mtime says how long ago the owner of `name` was last
+/// alive. Usually the file's own, but a presence-writer token is written
+/// only on a takeover — a stable holder never touches it — so a session
+/// older than the sweep horizon would lose its live token to ANY session's
+/// plugin load. Its session's presence file (`zj-radar.presence.<pid>.json`,
+/// heartbeated about every 60 s) is the liveness signal instead; the
+/// token's own mtime is the fallback only when that file is missing.
+fn liveness_metadata(root: &Path, name: &str, entry: &std::fs::DirEntry) -> std::io::Result<std::fs::Metadata> {
+    let pid = name
+        .strip_prefix(SESSION_FILE_PREFIX)
+        .and_then(|rest| rest.strip_suffix(&format!(".{PRESENCE_WRITER_SUFFIX}")))
+        .filter(|pid| is_digits(pid));
+    if let Some(pid) = pid {
+        if let Ok(meta) = std::fs::metadata(root.join(format!("{PRESENCE_PREFIX}{pid}.json"))) {
+            return Ok(meta);
+        }
+    }
+    entry.metadata()
 }
 
 fn is_owned_session_file(name: &str) -> bool {
@@ -1000,7 +1059,7 @@ mod tests {
         let min_age = Duration::from_secs(30);
 
         // Missing: a heartbeat writes.
-        files.claim_presence_writer();
+        files.claim_presence_writer(false);
         files.persist_presence_at(Some(min_age), RESCUE, || "first".into(), SystemTime::now());
         assert_eq!(std::fs::read_to_string(&presence).unwrap(), "first");
 
@@ -1038,9 +1097,9 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        a.files.claim_presence_writer();
+        a.files.claim_presence_writer(false);
         a.files.persist_presence(None, RESCUE, || r#"{"session_name":"alpha"}"#.into());
-        b.files.claim_presence_writer();
+        b.files.claim_presence_writer(false);
         b.files.persist_presence(None, RESCUE, || r#"{"session_name":"beta"}"#.into());
         // Each session sees the OTHER's presence, never its own.
         let a_json: Vec<String> = a.files.read_peer_presences().into_iter().map(|p| p.json).collect();
@@ -1063,7 +1122,7 @@ mod tests {
             SNAPSHOT_MAX_AGE,
         );
         assert!(!stale.exists(), "stale presence swept at open");
-        s.files.claim_presence_writer();
+        s.files.claim_presence_writer(false);
         s.files.persist_presence(None, RESCUE, || r#"{"session_name":"me"}"#.into());
         let fresh = dir.path().join("zj-radar.presence.100.json");
         assert!(fresh.exists());
@@ -1096,9 +1155,9 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        fresh_peer.files.claim_presence_writer();
+        fresh_peer.files.claim_presence_writer(false);
         fresh_peer.files.persist_presence(None, RESCUE, || r#"{"session_name":"fresh"}"#.into());
-        old_peer.files.claim_presence_writer();
+        old_peer.files.claim_presence_writer(false);
         old_peer.files.persist_presence(None, RESCUE, || r#"{"session_name":"old"}"#.into());
 
         // Backdate only the "old" peer's file — a dead server's file just
@@ -1167,11 +1226,11 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        alpha_a.files.claim_presence_writer();
+        alpha_a.files.claim_presence_writer(false);
         alpha_a.files.persist_presence(None, RESCUE, || r#"{"session_name":"alpha","running":1,"attention":0}"#.into());
-        alpha_b.files.claim_presence_writer();
+        alpha_b.files.claim_presence_writer(false);
         alpha_b.files.persist_presence(None, RESCUE, || r#"{"session_name":"alpha","running":2,"attention":0}"#.into());
-        beta.files.claim_presence_writer();
+        beta.files.claim_presence_writer(false);
         beta.files.persist_presence(None, RESCUE, || r#"{"session_name":"beta","running":1,"attention":0}"#.into());
 
         reader.files.remove_presences_matching(|json| json.contains(r#""alpha""#));
@@ -1196,7 +1255,7 @@ mod tests {
             SystemTime::now(),
             SNAPSHOT_MAX_AGE,
         );
-        me.files.claim_presence_writer();
+        me.files.claim_presence_writer(false);
         me.files.persist_presence(None, RESCUE, || r#"{"session_name":"alpha","running":1,"attention":0}"#.into());
         // A corpse of a previous server incarnation, same name, older pid.
         std::fs::write(
@@ -1243,12 +1302,12 @@ mod tests {
         let (a, b) = two_rails(dir.path());
         assert!(!a.holds_presence_writer() && !b.holds_presence_writer(), "nobody holds before a claim");
 
-        assert!(a.claim_presence_writer(), "first claim takes the token over");
+        assert!(a.claim_presence_writer(false), "first claim takes the token over");
         assert!(a.holds_presence_writer());
         assert!(!b.holds_presence_writer());
-        assert!(!a.claim_presence_writer(), "re-claiming a held token is no takeover (and no write)");
+        assert!(!a.claim_presence_writer(false), "re-claiming a held token is no takeover (and no write)");
 
-        assert!(b.claim_presence_writer(), "another rail's claim takes it away");
+        assert!(b.claim_presence_writer(true), "another rail's preempting claim takes it away");
         assert!(b.holds_presence_writer());
         assert!(!a.holds_presence_writer(), "the previous holder no longer holds");
         assert_eq!(std::fs::read_to_string(dir.join("zj-radar.100.presence-writer")).unwrap(), "2");
@@ -1258,7 +1317,7 @@ mod tests {
     fn content_write_needs_the_writer_token() {
         let dir = TempDir::new("writer-content");
         let (a, b) = two_rails(dir.path());
-        b.claim_presence_writer();
+        b.claim_presence_writer(false);
         b.persist_presence(None, RESCUE, || "holder".into());
         assert_eq!(presence_100(dir.path()).as_deref(), Some("holder"));
 
@@ -1266,7 +1325,7 @@ mod tests {
         a.persist_presence(None, RESCUE, || unreachable!("a non-holder must not serialize a content edge"));
         assert_eq!(presence_100(dir.path()).as_deref(), Some("holder"));
 
-        a.claim_presence_writer();
+        a.claim_presence_writer(true);
         a.persist_presence(None, RESCUE, || "new holder".into());
         assert_eq!(presence_100(dir.path()).as_deref(), Some("new holder"), "the holder's content edge writes");
     }
@@ -1275,7 +1334,7 @@ mod tests {
     fn non_holder_heartbeat_writes_only_as_a_rescue() {
         let dir = TempDir::new("writer-rescue");
         let (a, b) = two_rails(dir.path());
-        b.claim_presence_writer();
+        b.claim_presence_writer(false);
         b.persist_presence(None, RESCUE, || "holder".into());
         let now = SystemTime::now();
 
@@ -1298,7 +1357,7 @@ mod tests {
     fn presence_writer_token_is_neither_a_peer_presence_nor_debris() {
         let dir = TempDir::new("writer-files");
         let (a, _) = two_rails(dir.path());
-        a.claim_presence_writer();
+        a.claim_presence_writer(false);
         // Another session's token + an orphaned tmp: owned, so swept once stale.
         std::fs::write(dir.join("zj-radar.200.presence-writer"), "9").unwrap();
         std::fs::write(dir.join("zj-radar.200.presence-writer.9.tmp"), "9").unwrap();
@@ -1316,10 +1375,83 @@ mod tests {
         assert!(!dir.join("zj-radar.200.presence-writer.9.tmp").exists(), "and so is its tmp debris");
     }
 
+    fn backdate(path: &Path, by: Duration) {
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(SystemTime::now() - by).unwrap();
+    }
+
+    #[test]
+    fn a_young_foreign_token_is_only_taken_over_by_a_preempting_claim() {
+        // Two clients on different tabs both receive manifests: without a
+        // floor, every alternate manifest is a takeover (token rewrite +
+        // full republish). A token younger than the floor names a holder
+        // that is itself receiving manifests — a manifest claim leaves it.
+        let dir = TempDir::new("writer-floor");
+        let (a, b) = two_rails(dir.path());
+        assert!(a.claim_presence_writer(false), "nobody holds: a claim takes it");
+        let now = SystemTime::now();
+        assert!(!b.claim_presence_writer_at(false, now), "a fresh foreign token is not taken by a manifest claim");
+        assert!(a.holds_presence_writer(), "the young holder keeps it");
+        assert!(
+            b.claim_presence_writer_at(false, now + PRESENCE_WRITER_TAKEOVER_FLOOR + Duration::from_secs(1)),
+            "past the floor a manifest claim takes over"
+        );
+        assert!(b.holds_presence_writer());
+        // A preempting claim (a reveal: this rail just became the active
+        // view) ignores the floor.
+        assert!(a.claim_presence_writer_at(true, SystemTime::now()), "a reveal preempts a young token");
+        assert!(a.holds_presence_writer());
+        // Our own token is never rewritten, young or old.
+        let token = dir.join("zj-radar.100.presence-writer");
+        backdate(&token, Duration::from_secs(60));
+        let mtime = std::fs::metadata(&token).unwrap().modified().unwrap();
+        assert!(!a.claim_presence_writer(true), "own token: no takeover");
+        assert_eq!(std::fs::metadata(&token).unwrap().modified().unwrap(), mtime, "and no rewrite");
+    }
+
+    #[test]
+    fn a_failed_token_write_is_not_a_takeover() {
+        // A directory squatting on the token path: the tmp write succeeds,
+        // the rename fails. Reporting that as a takeover would re-enter the
+        // republish on every manifest without ever holding the token.
+        let dir = TempDir::new("writer-fail");
+        let (a, _) = two_rails(dir.path());
+        std::fs::create_dir(dir.join("zj-radar.100.presence-writer")).unwrap();
+        assert!(!a.claim_presence_writer(true), "the write failed, so nothing was taken over");
+        assert!(!a.holds_presence_writer());
+    }
+
+    #[test]
+    fn a_long_lived_sessions_token_is_aged_by_its_presence_file() {
+        // A stable holder never rewrites its token, so the token's own mtime
+        // says nothing about liveness past a day; the session's presence
+        // file (heartbeated every ~60 s) does.
+        let dir = TempDir::new("writer-sweep");
+        let live_token = dir.join("zj-radar.200.presence-writer");
+        std::fs::write(&live_token, "9").unwrap();
+        backdate(&live_token, SNAPSHOT_MAX_AGE + Duration::from_secs(3600));
+        std::fs::write(dir.join("zj-radar.presence.200.json"), "{}").unwrap();
+
+        let dead_token = dir.join("zj-radar.300.presence-writer");
+        let dead_presence = dir.join("zj-radar.presence.300.json");
+        std::fs::write(&dead_token, "9").unwrap();
+        std::fs::write(&dead_presence, "{}").unwrap();
+        backdate(&dead_token, SNAPSHOT_MAX_AGE + Duration::from_secs(3600));
+        backdate(&dead_presence, SNAPSHOT_MAX_AGE + Duration::from_secs(3600));
+
+        let orphan_token = dir.join("zj-radar.400.presence-writer");
+        std::fs::write(&orphan_token, "9").unwrap();
+        backdate(&orphan_token, SNAPSHOT_MAX_AGE + Duration::from_secs(3600));
+
+        let _ = open(dir.path(), ids(1, 100));
+        assert!(live_token.exists(), "a day-old token of a session with a fresh presence file survives");
+        assert!(!dead_token.exists(), "token and presence both old: swept");
+        assert!(!orphan_token.exists(), "no presence file: aged by its own mtime");
+    }
+
     #[test]
     fn presence_writer_is_inert_when_disabled() {
         let files = SessionFiles::default();
-        assert!(!files.claim_presence_writer());
+        assert!(!files.claim_presence_writer(true));
         assert!(!files.holds_presence_writer());
         files.persist_presence(None, RESCUE, || unreachable!("disabled mode writes nothing"));
     }

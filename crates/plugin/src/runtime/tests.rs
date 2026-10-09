@@ -101,12 +101,7 @@ fn load_rehydrates_snapshot_and_requests_permission_for_owner() {
             // SetTimeout keeps a paint trigger alive so the needs_permission
             // screen reaches the rail before the user grants (pre-grant
             // Zellij sends no state events to trigger a render).
-            effects: vec![
-                Effect::ClaimPresenceWriter,
-                Effect::RequestPermission,
-                Effect::SetTimeout(Cadence::Fast),
-                Effect::SetSelectable(true),
-            ],
+            effects: vec![Effect::RequestPermission, Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true),],
         }
     );
 }
@@ -177,10 +172,7 @@ fn load_denied_marker_records_denial_without_requesting_permission() {
     assert!(matches!(runtime.permission, PermissionState::Resolved { .. }));
     // A denied rail never receives a manifest, so it never learns of a
     // terminal neighbor and stays selectable (see `desired_selectable`).
-    assert_eq!(
-        outcome,
-        Outcome { render: false, effects: vec![Effect::ClaimPresenceWriter, Effect::SetSelectable(true)] }
-    );
+    assert_eq!(outcome, Outcome { render: false, effects: vec![Effect::SetSelectable(true)] });
 }
 
 #[test]
@@ -269,10 +261,7 @@ fn peer_waits_then_requests_after_granted_marker() {
     let load = runtime.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
     assert_eq!(runtime.permission, PermissionState::WaitingForPeer { ticks: 0 });
     // Selectable, not passive: no manifest has shown a terminal neighbor yet.
-    assert_eq!(
-        load.effects,
-        vec![Effect::ClaimPresenceWriter, Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]
-    );
+    assert_eq!(load.effects, vec![Effect::SetTimeout(Cadence::Fast), Effect::SetSelectable(true)]);
 
     let timer = runtime.timer_fast(PermissionProbe { marker: Some(PermissionMarker::Granted), lock_acquired: false });
 
@@ -3378,24 +3367,34 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
 // the active view: load, `Visible(true)`, and every manifest.
 
 fn claims(out: &Outcome) -> bool {
-    out.effects.contains(&Effect::ClaimPresenceWriter)
+    out.effects.iter().any(|e| matches!(e, Effect::ClaimPresenceWriter { .. }))
+}
+
+fn claim(out: &Outcome) -> Option<bool> {
+    out.effects.iter().find_map(|e| match e {
+        Effect::ClaimPresenceWriter { preempt } => Some(*preempt),
+        _ => None,
+    })
 }
 
 #[test]
 fn a_rail_claims_the_presence_writer_whenever_it_is_the_active_view() {
     let mut rt = PluginRuntime::default();
     let load = rt.load(config(), None, PermissionProbe { marker: None, lock_acquired: false });
-    assert!(claims(&load), "a fresh instance counts as visible, got {:?}", load.effects);
+    assert!(!claims(&load), "no name at load yet, so nothing to publish: no claim, got {:?}", load.effects);
     rt.permission = PermissionState::Resolved { granted: true };
-    rt.session_name_changed(Some("work".into()));
+    let named = rt.session_name_changed(Some("work".into()));
+    assert_eq!(claim(&named), Some(true), "learning the name claims, preempting; got {:?}", named.effects);
+    let renamed = rt.session_name_changed(Some("work".into()));
+    assert!(!claims(&renamed), "a repeat ModeUpdate is no claim, got {:?}", renamed.effects);
 
     let visible_manifest = rt.tabs_changed(vec![tab(0, "a", true)]);
-    assert!(claims(&visible_manifest), "every manifest claims (the glue dedups a held token)");
+    assert_eq!(claim(&visible_manifest), Some(false), "every manifest claims, floor-respecting");
 
     let hide = rt.visibility_changed(false);
     assert!(!claims(&hide), "going hidden never claims, got {:?}", hide.effects);
     let reveal = rt.visibility_changed(true);
-    assert!(claims(&reveal), "Visible(true) after hidden claims, got {:?}", reveal.effects);
+    assert_eq!(claim(&reveal), Some(true), "Visible(true) after hidden claims, preempting; got {:?}", reveal.effects);
 
     rt.visibility_changed(false);
     let tab_update = rt.tabs_changed(vec![tab(0, "a", true)]);
@@ -3412,35 +3411,120 @@ fn a_rail_claims_the_presence_writer_whenever_it_is_the_active_view() {
 }
 
 #[test]
+fn a_nameless_rail_never_claims_the_presence_writer() {
+    // A rail loaded in a background tab gets no ModeUpdate, so it has no
+    // name — and `project` withholds every presence write without one. Were
+    // it to hold the token, the active rail's content edges would be dropped
+    // (non-holder) and nobody would publish until the next manifest.
+    let mut rt = granted_runtime();
+    assert!(!claims(&rt.tabs_changed(vec![tab(0, "a", true)])));
+    assert!(!claims(&rt.panes_changed(manifest_with_pane_7())));
+    rt.visibility_changed(false);
+    assert!(!claims(&rt.visibility_changed(true)), "a nameless reveal does not claim");
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(claims(&named), "the moment it can publish, it claims; got {:?}", named.effects);
+}
+
+#[test]
+fn a_hidden_rail_learning_its_name_does_not_claim() {
+    // Its topology is frozen; only an active-view event may take the token.
+    let mut rt = granted_runtime();
+    rt.visibility_changed(false);
+    let named = rt.session_name_changed(Some("work".into()));
+    assert!(!claims(&named), "got {:?}", named.effects);
+    assert_eq!(claim(&rt.visibility_changed(true)), Some(true), "it claims on reveal instead");
+}
+
+#[test]
+fn the_claim_precedes_the_content_edge_in_one_batch() {
+    // lib.rs skips a batch's `PersistPresence` after a takeover already
+    // republished (P6) — sound only if the claim is handled first.
+    let mut rt = runtime_with_granted_permission();
+    rt.own_plugin_tab_changed(Some(0));
+    let out = rt.panes_changed(manifest_with_pane_7());
+    let at = |f: &dyn Fn(&Effect) -> bool| out.effects.iter().position(f);
+    let claim_at = at(&|e| matches!(e, Effect::ClaimPresenceWriter { .. })).expect("a manifest claims");
+    let edge_at = at(&|e| matches!(e, Effect::PersistPresence { .. })).expect("the new pane moves content");
+    assert!(claim_at < edge_at, "got {:?}", out.effects);
+}
+
+/// The lib.rs glue for the two presence effects, against real files: a
+/// claim that took the token over re-enters `presence_writer_acquired`, and
+/// `PersistPresence` goes through the token gate.
+fn apply_presence_effects(rt: &mut PluginRuntime, files: &crate::session_files::SessionFiles, out: Outcome) {
+    for effect in out.effects {
+        match effect {
+            Effect::ClaimPresenceWriter { preempt } => {
+                if files.claim_presence_writer(preempt) {
+                    let acquired = rt.presence_writer_acquired();
+                    apply_presence_effects(rt, files, acquired);
+                }
+            }
+            Effect::PersistPresence { unless_fresher_than } => {
+                files.persist_presence(unless_fresher_than, PRESENCE_RESCUE_AFTER, || rt.presence_json())
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn the_active_rail_publishes_a_pane_its_hidden_sibling_never_saw() {
     // C1 regression (reproduced by the final review): the old leader rule
     // made tab 0's rail the content writer, but a hidden rail's topology is
     // frozen — a pane opened in another tab after the user left tab 0 never
-    // reaches it, so its going pending was published by nobody.
+    // reaches it, so its going pending was published by nobody. Driven
+    // through the real token files: under the old blind-leader rule the
+    // stale rail's write lands last (attention 0); with an active rail that
+    // never took the token, its edge is dropped as a non-holder's over a
+    // fresh file (attention 0 again).
+    let dir = tempfile::tempdir().unwrap();
+    let stale_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 1, 100);
+    let active_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 2, 100);
     let before = manifest(HashMap::from([(0, vec![pane(7)])]));
     let after = manifest(HashMap::from([(0, vec![pane(7)]), (1, vec![pane(9)])]));
 
-    // Tab 0's rail: active once, then the user left — frozen at one tab.
+    // Tab 0's rail: active once (claims, publishes), then the user left.
     let mut stale = runtime_with_granted_permission();
-    stale.tabs_changed(vec![tab(0, "a", true)]);
+    let out = stale.tabs_changed(vec![tab(0, "a", true)]);
+    apply_presence_effects(&mut stale, &stale_files, out);
     stale.own_plugin_tab_changed(Some(0));
-    stale.panes_changed(before);
+    let out = stale.panes_changed(before);
+    apply_presence_effects(&mut stale, &stale_files, out);
+    assert!(stale_files.holds_presence_writer(), "setup: tab 0's rail held the token");
     stale.visibility_changed(false);
+    // Some time on tab 0 passed since its claim (past the takeover floor).
+    let token = dir.path().join("zj-radar.100.presence-writer");
+    std::fs::File::options()
+        .write(true)
+        .open(&token)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+        .unwrap();
 
     // Tab 1's rail: the user is here and opens pane 9.
     let mut active = runtime_with_granted_permission();
-    active.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
     active.own_plugin_tab_changed(Some(1));
-    let claim = active.panes_changed(after);
-    assert!(claims(&claim), "the active rail holds the token, got {:?}", claim.effects);
+    let out = active.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    apply_presence_effects(&mut active, &active_files, out);
+    let out = active.panes_changed(after);
+    apply_presence_effects(&mut active, &active_files, out);
 
-    // The broadcast reaches both instances.
-    stale.status_pipe(&payload_json(9, "pending"));
-    let edge = active.status_pipe(&payload_json(9, "pending"));
-    assert!(edge.effects.iter().any(presence_edge), "the holder emits the content write, got {:?}", edge.effects);
-    let published = crate::presence::Presence::parse(&active.presence_json()).expect("valid presence");
-    assert_eq!(published.attention, 1, "the pending pane 9 is published");
+    // Each broadcast reaches both instances; the frozen one is applied last.
+    // Pane 9 going pending moves only the active view; pane 7 going running
+    // moves both, so the frozen rail emits a content edge of its own.
+    for (payload, frozen_moves) in [(payload_json(9, "pending"), false), (payload_json(7, "running"), true)] {
+        let out = active.status_pipe(&payload);
+        apply_presence_effects(&mut active, &active_files, out);
+        let out = stale.status_pipe(&payload);
+        assert_eq!(out.effects.iter().any(presence_edge), frozen_moves, "setup: {payload}");
+        apply_presence_effects(&mut stale, &stale_files, out);
+    }
 
+    let on_disk = std::fs::read_to_string(dir.path().join("zj-radar.presence.100.json")).unwrap();
+    let published = crate::presence::Presence::parse(&on_disk).expect("valid presence");
+    assert_eq!((published.attention, published.running), (1, 1), "the active view (pane 9 pending) is what peers read");
+    assert!(active_files.holds_presence_writer() && !stale_files.holds_presence_writer());
     let frozen = crate::presence::Presence::parse(&stale.presence_json()).expect("valid presence");
     assert_eq!(frozen.attention, 0, "the hidden view is blind to pane 9 — why it must not write content");
 }

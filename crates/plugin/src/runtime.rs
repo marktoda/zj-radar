@@ -229,18 +229,27 @@ pub(crate) enum Effect {
     /// `PRESENCE_READ_TICK_INTERVAL` Fast ticks (every tick mid-cycle).
     ReadPresences,
     /// Make this instance the session's presence *content* writer — lib.rs
-    /// does `files.claim_presence_writer()` (the `zj-radar.<pid>.presence-writer`
-    /// token, see its doc) and, on a takeover, re-enters through
+    /// does `files.claim_presence_writer(preempt)` (the
+    /// `zj-radar.<pid>.presence-writer` token, see its doc) and, on a
+    /// takeover, re-enters through
     /// [`presence_writer_acquired`](PluginRuntime::presence_writer_acquired)
     /// so the file gets THIS instance's view. Emitted whenever this rail is
-    /// the active view: at `load` (a fresh instance counts as visible), on a
-    /// `Visible(true)` reveal, and on every `TabUpdate`/`PaneUpdate` (Zellij
-    /// sends those to the active tab's plugins only). Never on going hidden,
-    /// ticks or broadcasts. Every manifest rather than only transitions, so a
-    /// rail that receives one always ends up holding the token — e.g. after
-    /// a background tab's rail finished loading (and claimed) later than the
-    /// active rail; a claim of a token already held is one small read.
-    ClaimPresenceWriter,
+    /// the active view AND knows its session name (a nameless rail cannot
+    /// publish, so it must not hold the token): when the name is first
+    /// learned while visible and on a `Visible(true)` reveal (both
+    /// `preempt: true`), and on every `TabUpdate`/`PaneUpdate` (Zellij sends
+    /// those to the active tab's plugins only; `preempt: false`, so two
+    /// clients on different tabs don't ping-pong the token). Never at load
+    /// (no name yet), on going hidden, ticks or broadcasts. Emitted ahead of
+    /// `project`'s own `PersistPresence`, so the glue can skip that write
+    /// after a takeover already republished. Every manifest rather than only
+    /// transitions, so a rail that receives one ends up holding the token; a
+    /// claim of a token already held is one small read.
+    ClaimPresenceWriter {
+        /// Take the token even from a holder younger than
+        /// `session_files::PRESENCE_WRITER_TAKEOVER_FLOOR` (see there).
+        preempt: bool,
+    },
     /// Commit a cross-session cycle selection: switch to `name` and, once
     /// there, jump straight to the tab that needs attention (if any).
     /// Emitted by `timer` when `Sessions::tick` reports an idle commit.
@@ -499,9 +508,10 @@ pub(crate) struct PluginRuntime {
     /// visible and clears the flag even if a `Visible(true)` was lost — a
     /// wrongly-hidden rail would be a stale screen, so the bias is toward
     /// visible. The same events (a reveal, a manifest) are when a rail claims
-    /// the presence-writer token (`Effect::ClaimPresenceWriter`): a hidden
-    /// rail's topology is frozen, so it never claims, but it keeps a token it
-    /// already holds — after a detach the last-active rail goes on publishing.
+    /// the presence-writer token (`Effect::ClaimPresenceWriter`, once the
+    /// session name is known): a hidden rail's topology is frozen, so it
+    /// never claims, but it keeps a token it already holds — after a detach
+    /// the last-active rail goes on publishing.
     hidden: bool,
     /// The tab position the latest manifest located this plugin's own pane
     /// in (`None` until one has). Refreshed by `own_plugin_tab_changed` on
@@ -660,11 +670,22 @@ impl PluginRuntime {
         // Seed the notification baseline from the restored snapshot so that
         // pre-existing completions never fire a spurious Notify effect.
         self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
-        let mut out = self.begin_permission_flow(permission);
-        // Zellij sends no `Visible` at load, so a fresh instance counts as the
-        // active view (see `Effect::ClaimPresenceWriter`).
-        out.effects.insert(0, Effect::ClaimPresenceWriter);
-        out
+        // No presence-writer claim here: the name is never known yet at load
+        // (it rides the first `ModeUpdate`), and a nameless holder would
+        // withhold every write — `session_name_changed` claims instead.
+        self.begin_permission_flow(permission)
+    }
+
+    /// `Effect::ClaimPresenceWriter` for an active-view event, or nothing
+    /// when this instance cannot publish: `project` withholds every presence
+    /// write while `own_session_name` is empty, so a nameless holder (a rail
+    /// loaded in a background tab never receives `ModeUpdate`) would only
+    /// strand the token and drop the named active rail's edges.
+    fn presence_claim(&self, preempt: bool) -> Vec<Effect> {
+        if self.own_session_name.is_empty() {
+            return vec![];
+        }
+        vec![Effect::ClaimPresenceWriter { preempt }]
     }
 
     pub(crate) fn build_rows(&self) -> std::rc::Rc<Vec<TabRow>> {
@@ -720,7 +741,7 @@ impl PluginRuntime {
         if !had_naming_tab && self.radar.has_naming_tab() {
             change.renames = self.radar.recompute_renames(self.config.naming);
         }
-        self.project(vec![Effect::ClaimPresenceWriter], change, crate::clock::now_epoch_s())
+        self.project(self.presence_claim(false), change, crate::clock::now_epoch_s())
     }
 
     pub(crate) fn panes_changed(&mut self, update: PaneUpdate) -> Outcome {
@@ -733,7 +754,7 @@ impl PluginRuntime {
         // entry for our own tab position IS a terminal neighbor. Latch only.
         self.own_tab_saw_terminal |=
             self.own_tab_position.is_some_and(|pos| update.tab_panes.get(&pos).is_some_and(|panes| !panes.is_empty()));
-        let mut effects = vec![Effect::ClaimPresenceWriter]; // the active view (see the effect)
+        let mut effects = self.presence_claim(false); // the active view (see the effect)
         self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
         self.project(effects, change, now)
@@ -1074,6 +1095,7 @@ impl PluginRuntime {
     /// hand-rolling an equality check here.
     pub(crate) fn session_name_changed(&mut self, name: Option<String>) -> Outcome {
         let Some(name) = name else { return Outcome::none() };
+        let first_name = self.own_session_name.is_empty() && !name.is_empty();
         if name != self.own_session_name {
             // The name is presence *content* that no radar mutation tracks —
             // drop the cached compare so `project` re-derives and re-publishes
@@ -1082,7 +1104,13 @@ impl PluginRuntime {
             self.presence_gen = None;
         }
         self.own_session_name = name;
-        self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
+        // The moment this rail can publish, it claims the presence-writer
+        // token — `ModeUpdate` reaches the active tab's plugins only, so this
+        // is an active-view event, and a preempting one (it is the first
+        // claim this instance can make). A hidden rail's view is frozen, so
+        // it waits for a reveal or manifest.
+        let claim = if first_name && !self.hidden { self.presence_claim(true) } else { vec![] };
+        self.project(claim, RadarChange::default(), self.last_now_epoch_s)
     }
 
     /// `Event::Visible`: Zellij's word on whether this instance's tab is on
@@ -1095,8 +1123,13 @@ impl PluginRuntime {
         if !(was_hidden && visible) {
             return Outcome::none(); // going dark, or already in that state
         }
+        // A reveal is a definitive active-view transition, so it preempts a
+        // young token (e.g. a quick switch back to the tab just left). A
+        // `Visible(true)` without a preceding hide (a rail loaded in a
+        // background tab counts as visible) deliberately does not claim here:
+        // Zellij pairs it with a `TabUpdate`, whose claim covers it.
         let change = RadarChange { render: true, force_render: true, ..RadarChange::default() };
-        self.project(vec![Effect::ClaimPresenceWriter], change, self.last_now_epoch_s)
+        self.project(self.presence_claim(true), change, self.last_now_epoch_s)
     }
 
     /// A fresh read of every peer session's presence file, each paired with

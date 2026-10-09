@@ -615,20 +615,28 @@ sends `TabUpdate`/`PaneUpdate` only to the active tab's plugins, so a hidden
 rail's tab/pane view is frozen (a pane opened elsewhere after the user left is
 invisible to it). The token `zj-radar.<pid>.presence-writer` sits next to the
 presence file in the shared root and holds the writer's plugin id. A rail
-claims it (`Effect::ClaimPresenceWriter`) whenever it is the active view: at
-load (Zellij sends no `Visible` then, so a fresh instance counts as visible),
-on `Visible(true)`, and on every manifest. A claim of a token already held is
-one small read; a takeover rewrites the token and republishes the new holder's
+claims it (`Effect::ClaimPresenceWriter`) whenever it is the active view and
+knows its session name: when the name is first learned (`ModeUpdate`, which
+also reaches only the active tab), on `Visible(true)`, and on every manifest.
+A nameless rail never claims: presence writes are withheld without a name, so
+a rail loaded in a background tab (no `ModeUpdate` yet) holding the token
+would drop the active rail's edges. A claim of a token already held is one
+small read; a takeover rewrites the token and republishes the new holder's
 view (`PluginRuntime::presence_writer_acquired`), since the file holds another
-rail's. Every rail whose content fingerprint moved emits the content edge, and
+rail's, and the glue skips the batch's own content write after it. Every rail
+whose content fingerprint moved emits the content edge, and
 `SessionFiles::persist_presence` writes it only for the holder (one token read
 per edge). After a detach the last-active rail keeps the token, so a detached
 session keeps publishing status edges against its at-detach topology. Two
-clients on different tabs are both fresh; the last claim wins. The token is
-pid-scoped like the snapshot, so the snapshot sweep owns it and no presence
-read path ever sees it. The cost is about +230k wasm fuel per real status edge
-on the writing rail (the tree serialize); non-holders pay the fingerprint and
-one token read.
+clients on different tabs are both fresh, so either may hold it: a manifest
+claim leaves a foreign token younger than 5 s alone
+(`PRESENCE_WRITER_TAKEOVER_FLOOR`), which stops them trading it on every
+manifest, while a reveal or first naming preempts. The token is pid-scoped
+like the snapshot, so the snapshot sweep owns it and no presence read path
+ever sees it; because a stable holder never rewrites it, the sweep ages it by
+its session's presence file (heartbeated), not its own mtime. The cost is
+about +230k wasm fuel per real status edge on the writing rail (the tree
+serialize); non-holders pay the fingerprint and one token read.
 
 **Session tree (`session_tree`, display-only).** The option only decides
 whether this rail draws peers' trees. Off, `Sessions::set_show_trees` drops
