@@ -1,0 +1,7 @@
+---
+source: crates/cli/src/state.rs
+expression: render_human(&s)
+---
+main (current)
+  tab 0 t
+       0 claude   pending  x

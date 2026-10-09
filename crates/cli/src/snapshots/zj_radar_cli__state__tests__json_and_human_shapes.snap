@@ -1,0 +1,5 @@
+---
+source: crates/cli/src/state.rs
+expression: render_json(&s)
+---
+{"v":1,"sessions":[{"name":"main","current":true,"stale":false,"age_s":12,"running":0,"attention":0,"attention_tab_position":null,"tabs":[{"position":0,"name":"t","panes":[{"pane_id":0,"origin":"status","kind":"claude","status":"pending","label":"x"}]}]}]}

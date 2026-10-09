@@ -2,8 +2,6 @@
 //! (`zj_radar_core::presence`). Discovery walks Zellij's plugin cache; all
 //! grading/dedupe/filtering is pure over [`RawFile`]s so it tests without IO.
 //! No plugin query, ever (push-driven rule): freshness is reported as `age_s`.
-// Wired up by the `state` subcommand.
-#![allow(dead_code)]
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -139,6 +137,95 @@ pub(crate) fn default_roots() -> Vec<PathBuf> {
     roots
 }
 
+pub(crate) struct StateOptions {
+    pub json: bool,
+    pub needs_attention: bool,
+    pub include_stale: bool,
+    pub session: Option<String>,
+}
+
+/// Apply `--session` and `--needs-attention`. The attention rule is exactly
+/// the presence `attention` count's: status-origin panes that need you
+/// (pending | error). Stale sessions' attention isn't actionable (the rail
+/// won't cycle to them), so they're skipped unless `--include-stale`.
+pub(crate) fn filter(sessions: Vec<SessionView>, opts: &StateOptions) -> Vec<SessionView> {
+    sessions
+        .into_iter()
+        .filter(|s| opts.session.as_deref().is_none_or(|n| n == s.name))
+        .filter_map(|mut s| {
+            if !opts.needs_attention {
+                return Some(s);
+            }
+            if s.stale && !opts.include_stale {
+                return None;
+            }
+            for tab in &mut s.tabs {
+                tab.panes.retain(|p| {
+                    p.origin.as_deref() == Some("status") && zj_radar_core::Status::from_wire(&p.status).needs_you()
+                });
+            }
+            s.tabs.retain(|t| !t.panes.is_empty());
+            (!s.tabs.is_empty()).then_some(s)
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct JsonOut<'a> {
+    v: u32,
+    sessions: &'a [SessionView],
+}
+
+pub(crate) fn render_json(sessions: &[SessionView]) -> String {
+    serde_json::to_string(&JsonOut { v: 1, sessions }).unwrap_or_default()
+}
+
+pub(crate) fn render_human(sessions: &[SessionView]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for s in sessions {
+        let mut head = s.name.clone();
+        if s.current {
+            head.push_str(" (current)");
+        }
+        if s.running > 0 {
+            let _ = write!(head, "  ▶{}", s.running);
+        }
+        if s.attention > 0 {
+            let _ = write!(head, "  !{}", s.attention);
+        }
+        if s.stale {
+            let _ = write!(head, "  (stale, {}s)", s.age_s);
+        }
+        let _ = writeln!(out, "{head}");
+        for tab in &s.tabs {
+            let _ = writeln!(out, "  tab {} {}", tab.position, tab.name);
+            for p in &tab.panes {
+                let id = p.pane_id.map_or_else(|| "-".to_string(), |id| id.to_string());
+                let _ = writeln!(out, "    {id:>4} {:<8} {:<8} {}", p.kind, p.status, p.label);
+            }
+        }
+    }
+    out
+}
+
+/// Exit: 0 ok/match, 1 `--needs-attention` matched nothing, 2 error (stdout
+/// write failure). An absent cache is an empty answer, not an error.
+pub(crate) fn run(opts: StateOptions) -> std::process::ExitCode {
+    use std::io::Write;
+    let current = std::env::var("ZELLIJ_SESSION_NAME").ok();
+    let sessions = filter(collect(read_presence_files(&default_roots(), SystemTime::now()), current.as_deref()), &opts);
+    let text = if opts.json { format!("{}\n", render_json(&sessions)) } else { render_human(&sessions) };
+    if std::io::stdout().write_all(text.as_bytes()).is_err() {
+        return std::process::ExitCode::from(2);
+    }
+    if opts.needs_attention && sessions.is_empty() {
+        std::process::ExitCode::from(1)
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +300,56 @@ mod tests {
         std::fs::write(cache.join("zj-radar.presence.1.json"), presence("w", 1, &[])).unwrap();
         let past = SystemTime::now() - Duration::from_secs(3600);
         assert_eq!(read_presence_files(&[dir.path().to_path_buf()], past)[0].age_s, 0);
+    }
+
+    fn opts() -> StateOptions {
+        StateOptions { json: false, needs_attention: false, include_stale: false, session: None }
+    }
+
+    #[test]
+    fn needs_attention_counts_agent_pending_and_error_only() {
+        let s = collect(
+            vec![raw(
+                presence(
+                    "w",
+                    1,
+                    &[("status", "claude", "pending"), ("command", "test", "error"), ("status", "codex", "running")],
+                ),
+                0,
+            )],
+            None,
+        );
+        let out = filter(s, &StateOptions { needs_attention: true, ..opts() });
+        let panes = &out[0].tabs[0].panes;
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].kind, "claude");
+    }
+
+    #[test]
+    fn needs_attention_skips_stale_unless_asked_and_drops_empties() {
+        let files = || {
+            vec![
+                raw(presence("old", 1, &[("status", "claude", "pending")]), 120),
+                raw(presence("calm", 1, &[("status", "claude", "running")]), 0),
+            ]
+        };
+        assert!(filter(collect(files(), None), &StateOptions { needs_attention: true, ..opts() }).is_empty());
+        let with_stale =
+            filter(collect(files(), None), &StateOptions { needs_attention: true, include_stale: true, ..opts() });
+        assert_eq!(with_stale.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["old"]);
+    }
+
+    #[test]
+    fn session_filter_keeps_one() {
+        let s = collect(vec![raw(presence("a", 1, &[]), 0), raw(presence("b", 1, &[]), 0)], None);
+        let out = filter(s, &StateOptions { session: Some("b".into()), ..opts() });
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn json_and_human_shapes() {
+        let s = collect(vec![raw(presence("main", 1, &[("status", "claude", "pending")]), 12)], Some("main"));
+        insta::assert_snapshot!(render_json(&s));
+        insta::assert_snapshot!(render_human(&s));
     }
 }
