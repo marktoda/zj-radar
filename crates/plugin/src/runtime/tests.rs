@@ -3358,3 +3358,39 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
     let granted = runtime.permission_result(true);
     assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
 }
+
+#[test]
+fn only_the_first_tabs_instance_writes_presence_content_edges() {
+    let mut leader = two_tab_runtime_owning_tab_0();
+    let edge = leader.status_pipe(&payload_json(8, "pending"));
+    assert!(edge.effects.iter().any(presence_edge), "tab 0's rail writes, got {:?}", edge.effects);
+
+    let mut follower = runtime_with_granted_permission();
+    follower.tabs_changed(vec![tab(0, "mine", false), tab(1, "theirs", true)]);
+    follower.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    follower.radar.set_tab_panes_for_position(1, vec![pane(8)]);
+    follower.own_plugin_tab_changed(Some(1));
+    let edge = follower.status_pipe(&payload_json(7, "pending"));
+    assert!(!edge.effects.iter().any(presence_edge), "tab 1's rail leaves content to tab 0, got {:?}", edge.effects);
+}
+
+#[test]
+fn an_unresolved_instance_still_writes_presence() {
+    let mut rt = runtime_with_granted_permission();
+    drive_tabs_and_panes(&mut rt); // own tab never resolved
+    let edge = rt.status_pipe(&payload_json(7, "running"));
+    assert!(edge.effects.iter().any(presence_edge), "never nobody, got {:?}", edge.effects);
+}
+
+#[test]
+fn followers_still_heartbeat() {
+    let mut follower = runtime_with_granted_permission();
+    follower.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    follower.own_plugin_tab_changed(Some(1));
+    // `tabs_changed` ran before the own tab resolved, so that instance wrote
+    // (and stamped) with the real clock; rewind the stamp so the synthetic
+    // 10_000s clock is past the heartbeat window.
+    follower.last_presence_write_epoch_s = 0;
+    let out = follower.project(vec![], RadarChange::default(), 10_000);
+    assert!(out.effects.iter().any(presence_heartbeat), "liveness is everyone's job, got {:?}", out.effects);
+}

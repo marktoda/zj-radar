@@ -1538,9 +1538,12 @@ impl PluginRuntime {
         // same clock against one pid-keyed file. The stamp records
         // intent-to-write, not a confirmed write: lib.rs's persist is
         // best-effort, and a failed one self-heals within the 90s staleness
-        // window (the next overdue pass re-publishes).
+        // window (the next overdue pass re-publishes). Content edges are
+        // written by one instance (`writes_presence_content`); a follower's
+        // moved content reaches disk via the leader's identical write, and a
+        // follower stamps nothing so its heartbeat clock is unaffected.
         if !self.own_session_name.is_empty() {
-            if content_moved {
+            if content_moved && self.radar.writes_presence_content() {
                 fx.push(Effect::PersistPresence { unless_fresher_than: None });
                 self.last_presence_write_epoch_s = now_epoch_s;
             } else if now_epoch_s.saturating_sub(self.last_presence_write_epoch_s) >= PRESENCE_HEARTBEAT_S {
