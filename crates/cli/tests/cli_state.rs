@@ -63,3 +63,10 @@ fn missing_cache_root_is_an_empty_answer() {
     let missing = root.path().join("nope");
     state(&missing).arg("--json").assert().success().stdout("{\"v\":1,\"sessions\":[]}\n");
 }
+
+#[test]
+fn include_stale_requires_needs_attention() {
+    let root = tempfile::tempdir().unwrap();
+    state(root.path()).arg("--include-stale").assert().code(2);
+    state(root.path()).args(["--needs-attention", "--include-stale"]).assert().code(1);
+}

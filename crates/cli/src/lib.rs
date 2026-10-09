@@ -184,7 +184,7 @@ enum Command {
         #[arg(long)]
         needs_attention: bool,
         /// With --needs-attention, also consider stale sessions (no heartbeat for >90s).
-        #[arg(long)]
+        #[arg(long, requires = "needs_attention")]
         include_stale: bool,
         /// Only this session.
         #[arg(long, value_name = "NAME")]

@@ -27,6 +27,11 @@ pub(crate) struct SessionView {
     pub attention: usize,
     pub attention_tab_position: Option<usize>,
     pub tabs: Vec<PresenceTab>,
+    /// The file's format version (0 = pre-v1 writer). Internal: drives the
+    /// `--needs-attention` fallback for files without pane `origin`; not
+    /// part of the JSON output (the envelope's `v` is a different version).
+    #[serde(skip)]
+    pub v: u32,
 }
 
 /// Every `zj-radar.presence.*.json` under each root's `plugin_cache` dirs.
@@ -37,6 +42,10 @@ pub(crate) struct SessionView {
 pub(crate) fn read_presence_files(roots: &[PathBuf], now: SystemTime) -> Vec<RawFile> {
     let mut dirs = Vec::new();
     for root in roots {
+        // A root literally named `zj-radar` is the plugin's `/tmp/zj-radar`
+        // fallback, which IS a plugin cache (flat, no URL tree) — read it
+        // directly. A Zellij cache root is never named that, so the basename
+        // is a safe discriminator for the roots `default_roots` produces.
         if root.file_name().is_some_and(|n| n == "zj-radar") {
             dirs.push(root.clone());
             continue;
@@ -114,6 +123,7 @@ pub(crate) fn collect(files: Vec<RawFile>, current: Option<&str>) -> Vec<Session
             attention: p.attention,
             attention_tab_position: p.attention_tab_position,
             tabs: p.tabs,
+            v: p.v,
             name: p.session_name,
         })
         .collect();
@@ -148,6 +158,12 @@ pub(crate) struct StateOptions {
 /// the presence `attention` count's: status-origin panes that need you
 /// (pending | error). Stale sessions' attention isn't actionable (the rail
 /// won't cycle to them), so they're skipped unless `--include-stale`.
+///
+/// Pre-v1 files (`v == 0`) carry no pane `origin`, so their origin-less panes
+/// count as status-origin (degraded: a v0 command pane in error matches too),
+/// and a v0 session whose `attention` count is non-zero matches even with no
+/// matching tree pane (kept with `tabs: []`) so the predicate agrees with
+/// the count.
 pub(crate) fn filter(sessions: Vec<SessionView>, opts: &StateOptions) -> Vec<SessionView> {
     sessions
         .into_iter()
@@ -159,13 +175,18 @@ pub(crate) fn filter(sessions: Vec<SessionView>, opts: &StateOptions) -> Vec<Ses
             if s.stale && !opts.include_stale {
                 return None;
             }
+            let legacy = s.v == 0;
             for tab in &mut s.tabs {
                 tab.panes.retain(|p| {
-                    p.origin.as_deref() == Some("status") && zj_radar_core::Status::from_wire(&p.status).needs_you()
+                    let agent = match p.origin.as_deref() {
+                        Some(origin) => origin == "status",
+                        None => legacy,
+                    };
+                    agent && zj_radar_core::Status::from_wire(&p.status).needs_you()
                 });
             }
             s.tabs.retain(|t| !t.panes.is_empty());
-            (!s.tabs.is_empty()).then_some(s)
+            (!s.tabs.is_empty() || (legacy && s.attention > 0)).then_some(s)
         })
         .collect()
 }
@@ -337,6 +358,42 @@ mod tests {
         let with_stale =
             filter(collect(files(), None), &StateOptions { needs_attention: true, include_stale: true, ..opts() });
         assert_eq!(with_stale.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["old"]);
+    }
+
+    #[test]
+    fn needs_attention_matches_a_pre_v1_tree_pane_without_origin() {
+        // Pre-v1 writers published no `origin`; treat their panes as
+        // status-origin rather than never matching (degraded: a v0 command
+        // pane in error matches too — documented in producers.md).
+        let v0 = r#"{"session_name":"old","running":0,"attention":1,"tabs":[{"position":0,"name":"t",
+            "panes":[{"kind":"claude","status":"pending","label":"x"},{"kind":"claude","status":"running","label":"y"}]}]}"#;
+        let out = filter(collect(vec![raw(v0.into(), 0)], None), &StateOptions { needs_attention: true, ..opts() });
+        assert_eq!(out.len(), 1, "a v0 pending pane matches");
+        assert_eq!(out[0].tabs[0].panes.len(), 1);
+        assert_eq!(out[0].tabs[0].panes[0].status, "pending");
+    }
+
+    #[test]
+    fn needs_attention_keeps_a_pre_v1_count_without_a_tree() {
+        // A v0 file may carry only counts: the predicate agrees with the
+        // `attention` count, with no pane detail to show.
+        let v0 = r#"{"session_name":"old","running":0,"attention":1}"#;
+        let calm = r#"{"session_name":"calm","running":1,"attention":0}"#;
+        let out = filter(
+            collect(vec![raw(v0.into(), 0), raw(calm.into(), 0)], None),
+            &StateOptions { needs_attention: true, ..opts() },
+        );
+        assert_eq!(out.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["old"]);
+        assert!(out[0].tabs.is_empty());
+        assert!(!render_json(&out).contains("\"v\":0"), "the file version stays out of the JSON");
+    }
+
+    #[test]
+    fn v1_panes_without_origin_never_match() {
+        let v1 = r#"{"v":1,"session_name":"new","running":0,"attention":0,"tabs":[{"position":0,"name":"t",
+            "panes":[{"kind":"claude","status":"pending","label":"x"}]}]}"#;
+        let out = filter(collect(vec![raw(v1.into(), 0)], None), &StateOptions { needs_attention: true, ..opts() });
+        assert!(out.is_empty(), "the v0 fallback is gated on v == 0");
     }
 
     #[test]
