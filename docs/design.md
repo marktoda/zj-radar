@@ -246,7 +246,8 @@ its stores into a snapshot on every state edge and seeds itself from it in
 its write to the next Fast tick (`SnapshotWrite::Deferred`) instead of hitting
 disk per tool hook. `SessionFiles` picks the root: `/cache` first (Zellij
 mounts it as the plugin-URL-scoped folder shared across instances), then
-`/tmp/zj-radar`, then persistence off. `/data` is not used: it is scoped per
+`/tmp/zj-radar` (a WASI mount of the host's `$TMPDIR/zellij-<uid>`), then
+persistence off. `/data` is not used: it is scoped per
 `<plugin_id>-<client_id>` and removed on unload. Snapshot names are scoped by
 the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance holds the same converged stores after a broadcast, so one write per
@@ -649,7 +650,7 @@ they get only the height left after the planned cards and the bottom region
 tab or push the ledger off.
 
 **Liveness is the mtime, graded fresh → stale → dead.** A live session
-rewrites its file at least every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
+rewrites its file about every 60 s (`PRESENCE_HEARTBEAT_S`, a level trigger
 in `project` that bypasses the content gate and, unlike the snapshot, the
 visibility gate: a detached session is alive). Every tab's instance runs that
 clock against the one pid-keyed file, so the heartbeat is a

@@ -152,7 +152,7 @@ changes.
 `zj-radar state` prints what the radar knows about every live session: its
 tabs and the panes the radar tracks (agents and observed commands). It reads
 the files each rail publishes and never queries Zellij; `age_s` says how old
-each session's data is (rails refresh at least every 60 s).
+each session's data is (rails refresh about every 60 s; stale after 90 s).
 
 ```sh
 zj-radar state                     # human-readable
@@ -163,10 +163,10 @@ zj-radar state --session work
 
 Example: `if zj-radar state --needs-attention >/dev/null; then notify-send "an agent needs you"; fi`.
 
-`--needs-attention` keeps agent panes that are pending or error. Sessions with
-no heartbeat for 90 s are marked stale and skipped by it unless you pass
-`--include-stale`. Exit codes, the JSON schema, and known limits are in
-[`producers.md`](producers.md#presence-file-and-state---json).
+Pane detail needs sessions running this release's plugin: after upgrading,
+restart existing sessions or start new ones; older rails publish counts only. The
+`--needs-attention` and stale rules, exit codes, the JSON schema, and known
+limits are in [`producers.md`](producers.md#presence-file-and-state---json).
 
 ## Notifications
 

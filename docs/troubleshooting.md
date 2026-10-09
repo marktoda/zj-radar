@@ -225,7 +225,8 @@ the next broadcast.
 
 **Why:** with one instance per tab, one instance owns the first-run prompt and
 the others wait for Zellij's cached answer. Coordination uses Zellij's shared
-plugin cache, falling back to `/tmp/zj-radar`. If neither is writable, more
+plugin cache, falling back to the plugin's `/tmp/zj-radar` (on the host,
+`$TMPDIR/zellij-<uid>/zj-radar`). If neither is writable, more
 than one instance may prompt and late sidebars start empty until the next
 broadcast.
 

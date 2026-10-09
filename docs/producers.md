@@ -318,8 +318,10 @@ peer rails read it. This is the one consumer-facing contract besides the pipes.
 
 **Location.** `<zellij cache root>/<plugin URL as nested path>/plugin_cache/zj-radar.presence.<zellij_pid>.json`
 (macOS root `~/Library/Caches/org.Zellij-Contributors.Zellij`, Linux
-`~/.cache/zellij`), plus the plugin's `/tmp/zj-radar` fallback root. Written
-by temp file and atomic rename.
+`$XDG_CACHE_HOME/zellij`, default `~/.cache/zellij`). Written by temp file and
+atomic rename. When that cache is unwritable the plugin falls back to its
+`/tmp` mount (host `$TMPDIR/zellij-<uid>/zj-radar`); `state` does not scan
+it, so such a session is not listed.
 
 **Schema (`v` = 1).**
 
@@ -342,7 +344,7 @@ Readers truncate only the structural caps (tabs, and panes per tab). Text is
 never truncated on read: a file with an over-long or control/otherwise
 unsanitary string anywhere is rejected whole.
 
-**Liveness.** Each session rewrites its file at least every 60 s. A file older
+**Liveness.** Each session rewrites its file about every 60 s. A file older
 than 90 s is stale; older than 300 s it is dead and peers reap it. Content
 changes are written by one rail per session: the most recently active one,
 which holds the `zj-radar.<pid>.presence-writer` token beside the file (it has
@@ -351,17 +353,38 @@ publishing. Other rails write only to rescue a file older than 75 s, so a
 session that lost its writer may briefly read as stale but is never reaped.
 
 **`zj-radar state [--json] [--needs-attention] [--include-stale] [--session NAME]`.**
-`--json` prints:
+`--json` prints one line:
 
 ```json
 {"v":1,"sessions":[{"name":"work","current":true,"stale":false,"age_s":12,
-  "running":1,"attention":0,"attention_tab_position":null,"tabs":[...]}]}
+  "running":1,"attention":1,"attention_tab_position":2,
+  "tabs":[{"position":2,"name":"api","panes":[{"pane_id":14,"origin":"status",
+  "kind":"claude","status":"pending","label":"fix login"}]}]}]}
 ```
 
-The envelope `v` is independent of the file's. `--needs-attention` keeps agent
-panes that are pending or error and skips stale sessions unless
-`--include-stale` (which requires `--needs-attention`); session-level
-`running` and `attention` stay unfiltered. Pre-v1 files (`v` absent or 0) have
+| Field | Meaning |
+|---|---|
+| `v` | Output format version, independent of the file's `v`. |
+| `sessions[]` | One per live session (dead files and duplicates dropped), the current session first, then by name. |
+| `name` | Zellij session name. |
+| `current` | `true` when `name` equals `$ZELLIJ_SESSION_NAME`. |
+| `stale` | No write for over 90 s (`age_s` > 90). |
+| `age_s` | Seconds since the file was last written, by its mtime. |
+| `running`, `attention` | The file's counts (agent panes working, and needing you); never filtered. |
+| `attention_tab_position` | The file's tab to land on for attention, or `null`. |
+| `tabs` | The file's `tabs` as written (`[{position, name, panes}]`, panes as in the file schema above). Under `--needs-attention`, only matching panes and the tabs holding them. |
+
+`position` and `attention_tab_position` are 0-based; `zellij action
+go-to-tab` is 1-based, so jump with `go-to-tab $((pos + 1))`. A pane's
+`status` is one of `running`, `pending`, `done`, `error`, `idle` (see
+[the activity model](activity-model.md)); `kind` is an agent (`claude`,
+`codex`, `opencode`, `pi`, `gemini`) or a command class (`test`, `build`,
+`deploy`, `server`, `remote`, `command`, `other`), the `Kind` axis in
+[the activity model](activity-model.md#2-the-three-orthogonal-axes).
+
+`--needs-attention` keeps agent panes that are pending or error and skips
+stale sessions unless `--include-stale` (which requires `--needs-attention`);
+session-level `running` and `attention` stay unfiltered. Pre-v1 files (`v` absent or 0) have
 no pane `origin`, so the match degrades there: their origin-less panes count
 as agents (a command pane in error matches too), and a pre-v1 session with
 `attention` > 0 matches even without a matching pane, listed with `tabs: []`.
@@ -372,8 +395,16 @@ as agents (a command pane in error matches too), and a pre-v1 session with
 | 1 | `--needs-attention` matched nothing. |
 | 2 | Error, including a stdout write failure and clap usage errors. |
 
+Jump to the first pane needing you, in the current session:
+
+```sh
+zj-radar state --json --needs-attention \
+  | jq -r '.sessions[] | select(.current) | .tabs[0] | "\(.position + 1) \(.panes[0].pane_id)"' \
+  | { read -r tab pane && zellij action go-to-tab "$tab" && zellij action focus-pane-id "terminal_$pane"; }
+```
+
 A missing cache is an empty answer. `ZJ_RADAR_CACHE_DIR` (a Zellij cache root)
-replaces every root, with no `/tmp` fallback; it is for tests and sandboxes.
+replaces the platform root; it is for tests and sandboxes.
 There is no `--refresh`: `state` never queries Zellij, so `age_s` is the
 freshness signal.
 

@@ -56,7 +56,8 @@ No wasm build is needed for typical work: the plugin's domain modules and
 The producer interface is the `zj_radar.status.v1` pipe payload. The plugin's
 other external contracts are the `zj_radar.cmd.v1` and `zj_radar.config.v1`
 pipes ([`docs/configuration.md`](docs/configuration.md)) and the presence-file
-format (`crates/core/src/presence.rs`). A new instrumented agent is an
+format ([`docs/producers.md`](docs/producers.md#presence-file-and-state---json)
+is the contract, `crates/core/src/presence.rs` the types). A new instrumented agent is an
 `enum Agent` variant in `crates/cli/src/agents/` plus `Agent::derive`; the
 `source_round_trips_through_kind` guard test lists what else to wire.
 Observed commands like `cargo test` are classified in
