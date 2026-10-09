@@ -37,6 +37,7 @@ mod notify;
 mod producers;
 mod run;
 mod setup;
+mod state;
 mod update;
 
 /// Process-wide failure flag. The setup/run orchestrators report refusals and

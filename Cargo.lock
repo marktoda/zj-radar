@@ -3337,6 +3337,7 @@ dependencies = [
  "assert_cmd",
  "clap 4.6.1",
  "dirs 5.0.1",
+ "insta",
  "kdl 6.7.1",
  "serde",
  "serde_json",
