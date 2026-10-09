@@ -150,6 +150,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         badge: vec![],
         task_lines: crate::config::TaskLines::default(),
         session_tree: false,
+        mode: None,
     }
 }
 
@@ -4194,4 +4195,84 @@ fn lone_fresh_own_entry_with_only_stale_peers_still_renders() {
         !render_session_badge(&entries, &ro(24, 0)).is_empty(),
         "a lone fresh own-entry plus only stale peers must still render the badge"
     );
+}
+
+// ── show_mode: the Zellij input mode, right-aligned on the tally line ──
+
+/// The footer tally for `rows` at `width` with `mode` shown (None = off).
+fn tally_with_mode(rows: &[TabRow], width: usize, mode: Option<crate::mode::Mode>) -> Line {
+    footer_tally(rows, &RenderOpts { mode, ..ro(width, 0) })
+}
+
+#[test]
+fn mode_off_leaves_the_tally_untouched() {
+    let rows = vec![idle_row(1)];
+    let off = tally_with_mode(&rows, 24, None);
+    assert_eq!(strip_sgr(&off.text), "0 working\n", "no label, no padding");
+}
+
+#[test]
+fn mode_normal_renders_right_aligned_and_muted() {
+    use crate::mode::Mode;
+    let rows = vec![idle_row(1)];
+    let line = tally_with_mode(&rows, 24, Some(Mode::Normal));
+    assert_eq!(strip_sgr(&line.text), "0 working         NORMAL\n", "flush right at width 24");
+    let idle = tc_fg(crate::theme::DerivedColors::default().idle_text);
+    assert!(line.text.contains(&Seg::new(&idle, "NORMAL").to_string()), "NORMAL is muted: {:?}", line.text);
+    assert!(line.target.is_none(), "the footer stays click-inert");
+}
+
+#[test]
+fn mode_other_than_normal_renders_in_the_accent_role() {
+    use crate::mode::Mode;
+    let rows = vec![idle_row(1)];
+    let line = tally_with_mode(&rows, 24, Some(Mode::Locked));
+    assert_eq!(strip_sgr(&line.text), "0 working         LOCKED\n");
+    assert!(line.text.contains(&Seg::new(Role::Accent.ansi(), "LOCKED").to_string()), "{:?}", line.text);
+}
+
+#[test]
+fn mode_label_needs_a_one_space_gap_or_is_omitted_whole() {
+    use crate::mode::Mode;
+    let rows = vec![idle_row(1)];
+    // "0 working" (9) + 1 gap + "NORMAL" (6) = 16.
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 16, Some(Mode::Normal)).text), "0 working NORMAL\n");
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 15, Some(Mode::Normal)).text), "0 working\n", "never truncated");
+    // The tally keeps priority even when it must itself truncate.
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 5, Some(Mode::Normal)).text), "0 wo…\n");
+}
+
+#[test]
+fn mode_label_rides_the_need_you_tally_and_drops_in_the_narrow_fallback() {
+    use crate::mode::Mode;
+    let rows = vec![tab(1, "a", display(Status::Running, 0, 1, None)), tab(2, "b", display(Status::Error, 0, 1, None))];
+    // "1 working · 1 need you" is 22 columns; + gap + "SEARCH" = 29.
+    let line = tally_with_mode(&rows, 30, Some(Mode::Search));
+    assert_eq!(strip_sgr(&line.text), "1 working · 1 need you  SEARCH\n");
+    assert!(line.text.contains(&Seg::new(Role::Accent.ansi(), "SEARCH").to_string()));
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 29, Some(Mode::Search)).text), "1 working · 1 need you SEARCH\n");
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 28, Some(Mode::Search)).text), "1 working · 1 need you\n");
+    // The single-run narrow fallback has no room for a label.
+    assert_eq!(strip_sgr(&tally_with_mode(&rows, 10, Some(Mode::Search)).text), "1 working…\n");
+}
+
+#[test]
+fn mode_label_keeps_the_footer_height_and_lockstep() {
+    use crate::mode::Mode;
+    let rows = vec![idle_row(1)];
+    let off = render_rail(&rows, &[], &RenderOpts { height: 20, ..ro(24, 0) });
+    let on = render_rail(&rows, &[], &RenderOpts { height: 20, mode: Some(Mode::Tmux), ..ro(24, 0) });
+    assert_eq!(on.ansi.lines().count(), off.ansi.lines().count());
+    assert_eq!(on.targets, off.targets, "same click-target map, line for line");
+}
+
+#[test]
+fn snapshot_cards_footer_with_mode_grid() {
+    let rows = scenario_canonical();
+    let opts = RenderOpts {
+        height: 24,
+        mode: Some(crate::mode::Mode::Locked),
+        ..ro_full(30, 24, crate::config::Density::Cards, GlyphSet::Plain)
+    };
+    insta::assert_snapshot!("cards_footer_with_mode_grid", grid(&render(&rows, &opts), 30));
 }

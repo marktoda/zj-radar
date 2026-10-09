@@ -208,6 +208,10 @@ pub struct RenderOpts {
     /// read-only tab/agent tree below them. Off (the default) keeps the
     /// compact badge block above the cards.
     pub session_tree: bool,
+    /// The Zellij input mode the footer shows flush right on the tally line
+    /// (`footer_tally`). `None` draws no label: `show_mode` is off, or no
+    /// `ModeUpdate` has arrived yet.
+    pub mode: Option<crate::mode::Mode>,
 }
 
 impl RenderOpts {
@@ -2120,27 +2124,47 @@ fn footer_hint(opts: &RenderOpts) -> Line {
 /// glued to the digit read as a corrupted number, not a signal. Truncated to
 /// width; too-tight-for-both-colors degrades to one run colored by whether the
 /// tally is still loud (`m > 0`).
+///
+/// With `opts.mode` set (`show_mode`), the Zellij input mode's label sits
+/// flush right on the same line: `NORMAL` muted, any other mode in the accent
+/// role. The tally keeps priority — the label renders only when it fits after
+/// the tally with at least one space between, and is otherwise omitted whole,
+/// never truncated mid-word.
 fn footer_tally(rows: &[TabRow], opts: &RenderOpts) -> Line {
     let width = opts.width;
     let idle = tc_fg(opts.theme.idle_text);
     let working = rows.iter().filter(|r| r.display.status == Status::Running).count();
     let need_you = rows.iter().filter(|r| r.display.status.needs_you()).count();
-    if need_you == 0 {
+    let (mut text, tally_w) = if need_you == 0 {
         let tally = format!("{working} working");
         let text = truncate(&tally, width);
-        return Line::new(format!("{}\n", Seg::new(&idle, text)), None, LineBg::Rail);
-    }
-    let left = format!("{working} working · ");
-    let right = format!("{} need you", need_you);
-    let fits = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()) <= width;
-    // `need_you > 0` is guaranteed past the early return, so the loud (bold
-    // attention) form is the only one either branch renders.
-    let text = if fits {
-        format!("{}{}\n", Seg::new(&idle, left), Seg::bold(Role::Attention.ansi(), right))
+        let w = UnicodeWidthStr::width(&*text);
+        (Seg::new(&idle, text).to_string(), w)
     } else {
-        let full = format!("{left}{right}");
-        format!("{}\n", Seg::bold(Role::Attention.ansi(), truncate(&full, width)))
+        let left = format!("{working} working · ");
+        let right = format!("{} need you", need_you);
+        let tally_w = UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str());
+        // `need_you > 0` holds in this branch, so the loud (bold attention)
+        // form is the only one either arm renders.
+        if tally_w <= width {
+            (format!("{}{}", Seg::new(&idle, left), Seg::bold(Role::Attention.ansi(), right)), tally_w)
+        } else {
+            let full = format!("{left}{right}");
+            let text = truncate(&full, width);
+            let w = UnicodeWidthStr::width(&*text);
+            (Seg::bold(Role::Attention.ansi(), text).to_string(), w)
+        }
     };
+    if let Some(mode) = opts.mode {
+        let label = mode.label();
+        let label_w = UnicodeWidthStr::width(label);
+        if tally_w + 1 + label_w <= width {
+            let color = if mode.is_normal() { idle.as_str() } else { Role::Accent.ansi() };
+            text.push_str(&" ".repeat(width - tally_w - label_w));
+            text.push_str(&Seg::new(color, label).to_string());
+        }
+    }
+    text.push('\n');
     Line::new(text, None, LineBg::Rail)
 }
 

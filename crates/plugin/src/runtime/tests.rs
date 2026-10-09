@@ -3682,3 +3682,63 @@ fn presence_fingerprint_moves_exactly_when_published_content_does() {
         }
     });
 }
+
+// ── show_mode: the Zellij input mode on the footer ──
+
+fn mode_runtime(show_mode: bool) -> PluginRuntime {
+    let mut rt = PluginRuntime {
+        permission: PermissionState::Resolved { granted: true },
+        config: config(),
+        ..Default::default()
+    };
+    rt.config.show_mode = show_mode;
+    drive_tabs_and_panes(&mut rt);
+    rt.status_pipe(&payload_json(7, "running"));
+    // Name already known, so the mode events below carry no news but the mode.
+    let _ = rt.session_name_changed(Some("work".into()));
+    let _ = rt.render(40, 30);
+    rt
+}
+
+#[test]
+fn mode_change_with_show_mode_off_requests_no_render() {
+    let mut rt = mode_runtime(false);
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked);
+    assert!(!out.render, "off: a mode change costs no repaint");
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal);
+    assert!(!out.render);
+    assert!(!rt.render(40, 30).contains("NORMAL"), "off: no label drawn");
+}
+
+#[test]
+fn mode_change_with_show_mode_on_repaints_once_per_distinct_mode() {
+    use crate::mode::Mode;
+    let mut rt = mode_runtime(true);
+    let first = rt.mode_changed(Some("work".into()), Mode::Locked);
+    assert!(first.render, "the first mode is news");
+    assert!(rt.render(40, 30).contains("LOCKED"));
+    let repeat = rt.mode_changed(Some("work".into()), Mode::Locked);
+    assert!(!repeat.render, "an identical mode is not");
+    let next = rt.mode_changed(None, Mode::Pane);
+    assert!(next.render, "a new mode repaints even without a session name");
+    assert!(rt.render(40, 30).contains("PANE"));
+}
+
+#[test]
+fn mode_change_on_a_hidden_rail_requests_no_render() {
+    let mut rt = mode_runtime(true);
+    let _ = rt.visibility_changed(false);
+    assert!(!rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked).render);
+}
+
+#[test]
+fn show_mode_live_toggle_repaints_and_shows_the_last_seen_mode() {
+    let mut rt = mode_runtime(false);
+    let _ = rt.mode_changed(Some("work".into()), crate::mode::Mode::Scroll);
+    let on = rt.config_pipe(r#"{"show_mode":true}"#);
+    assert!(on.render, "the toggle repaints");
+    assert!(rt.render(40, 30).contains("SCROLL"), "the mode seen while off is shown once on");
+    let off = rt.config_pipe(r#"{"show_mode":false}"#);
+    assert!(off.render);
+    assert!(!rt.render(40, 30).contains("SCROLL"));
+}

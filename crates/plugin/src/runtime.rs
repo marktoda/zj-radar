@@ -22,8 +22,9 @@
 //!   [`control`](PluginRuntime::control) /
 //!   [`control_pipe`](PluginRuntime::control_pipe) — runtime config + remote
 //!   commands.
-//! - [`session_name_changed`](PluginRuntime::session_name_changed) —
-//!   `Event::ModeUpdate`'s `session_name`, the push-style source that
+//! - [`mode_changed`](PluginRuntime::mode_changed) —
+//!   `Event::ModeUpdate`'s input mode (the `show_mode` footer label) and its
+//!   `session_name`, the push-style source that
 //!   replaced `SessionUpdate` for learning this session's own name
 //!   (`SessionUpdate`'s peer list never populates without a plugin calling
 //!   the blocking `get_session_list()`, which stock zj-radar never does —
@@ -435,11 +436,16 @@ pub(crate) struct PluginRuntime {
     notify_prev: BTreeMap<u32, crate::status::Status>,
     /// Cross-session peer state + the Alt+[/] cycle selection machine.
     sessions: Sessions,
-    /// This session's own name, learned from `session_name_changed`
+    /// This session's own name, learned from `learn_session_name`
     /// (`Event::ModeUpdate`'s `ModeInfo.session_name`). Empty until Zellij's
     /// first `ModeUpdate` lands — `project` withholds `Effect::PersistPresence`
     /// while empty, since an unnamed presence file is useless to peers.
     own_session_name: String,
+    /// The Zellij input mode from the latest `ModeUpdate` (`mode_changed`);
+    /// `None` until the first one lands. Tracked whether or not `show_mode`
+    /// is on, so a live toggle shows the current mode at once — but it reaches
+    /// the render key and the footer only through [`shown_mode`](Self::shown_mode).
+    mode: Option<crate::mode::Mode>,
     /// The last own-`Presence` actually published, canonicalized with
     /// `updated_epoch_s` zeroed before compare-and-cache — so `project` can
     /// content-compare and emit `Effect::PersistPresence` only on a real
@@ -457,7 +463,7 @@ pub(crate) struct PluginRuntime {
     last_presence: Option<u64>,
     /// The most recent `now_epoch_s` any entry point has captured. Reused
     /// (never re-read from the clock) by call paths that have no epoch of
-    /// their own to work with — `presence_json`, `session_name_changed`,
+    /// their own to work with — `presence_json`, `learn_session_name`,
     /// `presences_changed` — so a single event's "now" never forks in two
     /// directions.
     last_now_epoch_s: u64,
@@ -488,7 +494,7 @@ pub(crate) struct PluginRuntime {
     /// touching radar state).
     presence_gen: Option<u64>,
     /// Everything content-derived the last actual `render()` drew: rows,
-    /// ledger lines, badge, theme. Stamped by `render`, consulted by
+    /// ledger lines, badge, theme, shown mode. Stamped by `render`, consulted by
     /// `project`'s render gate — a change whose re-derived key equals what is
     /// already on screen requests no repaint (`RadarChange::force_render`
     /// bypasses, for tick-driven frames). Zellij delivers every broadcast
@@ -538,7 +544,15 @@ pub(crate) struct PluginRuntime {
 }
 
 /// See [`PluginRuntime::last_render_key`].
-type RenderKey = (std::rc::Rc<Vec<TabRow>>, std::rc::Rc<Vec<LedgerLine>>, Vec<BadgeEntry>, theme::DerivedColors);
+/// The last field is the *shown* mode (`shown_mode`): `None` whenever
+/// `show_mode` is off, so mode changes never move the key then.
+type RenderKey = (
+    std::rc::Rc<Vec<TabRow>>,
+    std::rc::Rc<Vec<LedgerLine>>,
+    Vec<BadgeEntry>,
+    theme::DerivedColors,
+    Option<crate::mode::Mode>,
+);
 
 /// Word-at-a-time multiply-rotate hasher (the rustc "Fx" scheme) for
 /// `own_presence_fingerprint`. SipHash's rounds are the dominant cost of the
@@ -649,7 +663,7 @@ impl PluginRuntime {
         self.sessions.set_show_trees(self.config.session_tree);
         // Load's single clock capture, stored eagerly (and reused by
         // `begin_permission_flow`'s arm below, keeping one "now" per event):
-        // `session_name_changed` — often the very next event in — has no
+        // `learn_session_name` — often the very next event in — has no
         // epoch of its own and replays `last_now_epoch_s`, so without this
         // seed the first presence write would go out stamped
         // `updated_epoch_s: 0`.
@@ -672,7 +686,7 @@ impl PluginRuntime {
         self.notify_prev = crate::notify_rules::status_map(&self.radar.notify_views());
         // No presence-writer claim here: the name is never known yet at load
         // (it rides the first `ModeUpdate`), and a nameless holder would
-        // withhold every write — `session_name_changed` claims instead.
+        // withhold every write — `learn_session_name` claims instead.
         self.begin_permission_flow(permission)
     }
 
@@ -1080,21 +1094,50 @@ impl PluginRuntime {
         }
     }
 
+    /// Test-only: a `ModeUpdate` reduced to its session name — what most
+    /// tests drive, with no input mode in play.
+    #[cfg(test)]
+    pub(crate) fn session_name_changed(&mut self, name: Option<String>) -> Outcome {
+        self.learn_session_name(name, RadarChange::default())
+    }
+
+    /// `Event::ModeUpdate`: the session name (`learn_session_name`) and the
+    /// current input mode, in one pass. A new mode requests a repaint only
+    /// while `show_mode` is on, and the render gate drops even that when the
+    /// label on screen already matches (the shown mode is in the render key),
+    /// so with the option off, or on a repeat, a mode change costs nothing.
+    pub(crate) fn mode_changed(&mut self, name: Option<String>, mode: crate::mode::Mode) -> Outcome {
+        let moved = self.mode.replace(mode) != Some(mode);
+        let change = RadarChange { render: moved && self.config.show_mode, ..RadarChange::default() };
+        self.learn_session_name(name, change)
+    }
+
+    /// The mode the footer draws: the latest one, only while `show_mode` is
+    /// on. The render key and `RenderOpts` both read it, so a mode change
+    /// with the option off never differs from what is on screen.
+    fn shown_mode(&self) -> Option<crate::mode::Mode> {
+        self.mode.filter(|_| self.config.show_mode)
+    }
+
     /// Learn (or relearn) this session's own name — the push-style source
     /// that replaced `SessionUpdate` (see `docs/design.md`, "Why not
     /// SessionUpdate"): `Event::ModeUpdate`'s
-    /// `ModeInfo.session_name`. `None` is a true no-op: Zellij can in
-    /// principle fire `ModeUpdate` before the session has a name, and there
-    /// is nothing to do with that yet — re-projecting on every such event
-    /// would waste a `project()` pass for nothing new to report. A `Some`
+    /// `ModeInfo.session_name`. `None` is a no-op unless `change` asks for a
+    /// repaint (a shown mode moved): Zellij can in principle fire
+    /// `ModeUpdate` before the session has a name, and there is nothing to
+    /// learn from that — re-projecting on every such event would waste a
+    /// `project()` pass for nothing new to report. A `Some`
     /// always re-projects, even a repeat of the already-known name:
     /// `ModeUpdate` fires on far more than name changes (any mode/keybind/
     /// pane-group change too), and letting `project`'s own idempotent
     /// content-compares (`PersistPresence`'s cache, `Sessions::set_own`'s
     /// badge diff) absorb the repeats is simpler, and no less correct, than
     /// hand-rolling an equality check here.
-    pub(crate) fn session_name_changed(&mut self, name: Option<String>) -> Outcome {
-        let Some(name) = name else { return Outcome::none() };
+    fn learn_session_name(&mut self, name: Option<String>, change: RadarChange) -> Outcome {
+        let Some(name) = name else {
+            // Nameless: nothing to learn, but a shown mode may still repaint.
+            return if change.render { self.project(vec![], change, self.last_now_epoch_s) } else { Outcome::none() };
+        };
         let first_name = self.own_session_name.is_empty() && !name.is_empty();
         if name != self.own_session_name {
             // The name is presence *content* that no radar mutation tracks —
@@ -1110,7 +1153,7 @@ impl PluginRuntime {
         // claim this instance can make). A hidden rail's view is frozen, so
         // it waits for a reveal or manifest.
         let claim = if first_name && !self.hidden { self.presence_claim(true) } else { vec![] };
-        self.project(claim, RadarChange::default(), self.last_now_epoch_s)
+        self.project(claim, change, self.last_now_epoch_s)
     }
 
     /// `Event::Visible`: Zellij's word on whether this instance's tab is on
@@ -1354,7 +1397,13 @@ impl PluginRuntime {
     /// `rows()` and `ledger_lines()` are memoized on the radar generation, so
     /// consulting this per event costs a compare, not a rollup.
     fn current_render_key(&self) -> RenderKey {
-        (self.radar.rows(self.tick), self.radar.ledger_lines(), self.sessions.badge(), self.theme.clone())
+        (
+            self.radar.rows(self.tick),
+            self.radar.ledger_lines(),
+            self.sessions.badge(),
+            self.theme.clone(),
+            self.shown_mode(),
+        )
     }
 
     /// The `RenderOpts` a paint at `width`×`height` would use right now — the
@@ -1376,6 +1425,7 @@ impl PluginRuntime {
             badge: self.sessions.badge(),
             task_lines: self.config.task_lines,
             session_tree: self.config.session_tree,
+            mode: self.shown_mode(),
         }
     }
 
@@ -1387,7 +1437,8 @@ impl PluginRuntime {
         // Stamp the render gate's baseline from the very values this pass
         // draws — the key IS what's on screen, by construction (`project`
         // compares `current_render_key` against it).
-        self.last_render_key = Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone()));
+        self.last_render_key =
+            Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone(), opts.mode));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
         } else if tabrows.is_empty() && self.radar.ledger_is_empty() && !opts.shows_peer_tree() {
@@ -1489,7 +1540,7 @@ impl PluginRuntime {
 
     /// Spec §10 cadence function. Fast (1s) while anything tick-windowed is
     /// live; Slow (60s) while ledger ages are still changing — or, once
-    /// `session_name_changed` has landed, forever. None — the battery
+    /// `learn_session_name` has landed, forever. None — the battery
     /// property's full-disarm state — therefore survives in exactly two
     /// shapes: *pre-name* (no `ModeUpdate` has delivered a session name yet,
     /// so there is no presence file whose liveness needs a heartbeat) and
@@ -1649,13 +1700,13 @@ impl PluginRuntime {
     /// whichever reason won. Every domain-change entry point funnels through
     /// here with its `now_epoch_s`, which this stores (`last_now_epoch_s`)
     /// for the call paths that have no epoch of their own — `presence_json`,
-    /// `session_name_changed`, `presences_changed`. The freshly computed
+    /// `learn_session_name`, `presences_changed`. The freshly computed
     /// own-`Presence` is content-compared against the last one published,
     /// EXCLUDING `updated_epoch_s` (zeroed on both sides before the
     /// compare/cache) — see `last_presence`'s doc for why a raw compare
     /// would defeat the edge gate on Fast cadence. Withheld while
     /// `own_session_name` is empty — a presence file with no name is useless
-    /// to peers — so it stays quiet until `session_name_changed` (also
+    /// to peers — so it stays quiet until `learn_session_name` (also
     /// routed through here) learns it.
     ///
     /// Same gate also feeds `Sessions::set_own` — the single path for own
@@ -1693,7 +1744,7 @@ impl PluginRuntime {
         }
         let mut render = c.render;
         // Own presence is a pure function of radar state (plus the session
-        // name, handled in `session_name_changed`), so re-derive it only when
+        // name, handled in `learn_session_name`), so re-derive it only when
         // the radar generation moved — the derive is a full `rows()` pass,
         // which every broadcast in an 8-tab session used to pay twice.
         let mut content_moved = false;

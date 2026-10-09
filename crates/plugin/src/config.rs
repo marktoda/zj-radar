@@ -202,6 +202,10 @@ pub struct Config {
     /// Opt-in: off keeps the compact one-line-per-session badge and publishes
     /// no tab tree in this session's presence file.
     pub session_tree: bool,
+    /// Show the current Zellij input mode flush right on the footer tally
+    /// line (`render::footer_tally`). Opt-in: off renders and repaints
+    /// exactly as if the mode were unknown, and a mode change costs nothing.
+    pub show_mode: bool,
     /// Spinner frames per second while a visible rail has full-speed work
     /// spinning (`runtime::Cadence::Frame`). `1` is the plain 1 Hz tick;
     /// clamped to `1..=MAX_SPINNER_FPS`.
@@ -235,6 +239,7 @@ impl Default for Config {
             notify_remote: true,
             notify_when_focused: false,
             session_tree: false,
+            show_mode: false,
             spinner_fps: DEFAULT_SPINNER_FPS,
         }
     }
@@ -335,6 +340,7 @@ config_fields! {
     notify_remote:       "notify_remote"       => parse_bool,
     notify_when_focused: "notify_when_focused" => parse_bool,
     session_tree:        "session_tree"        => parse_bool,
+    show_mode:           "show_mode"           => parse_bool,
     spinner_fps:         "spinner_fps"         => parse_fps,
 }
 
@@ -655,6 +661,20 @@ mod tests {
         assert!(!Config::default().session_tree);
         assert!(Config::from_map(&map(&[("session_tree", "true")])).session_tree);
         assert!(!Config::from_map(&map(&[("session_tree", "garbage")])).session_tree);
+    }
+
+    #[test]
+    fn show_mode_is_opt_in_and_live_overridable() {
+        assert!(!Config::default().show_mode);
+        assert!(!Config::from_map(&map(&[])).show_mode, "absent → off");
+        assert!(Config::from_map(&map(&[("show_mode", "true")])).show_mode);
+        assert!(!Config::from_map(&map(&[("show_mode", "false")])).show_mode);
+        assert!(!Config::from_map(&map(&[("show_mode", "garbage")])).show_mode);
+        let mut c = Config::default();
+        c.apply_overrides(&map(&[("show_mode", "true")]));
+        assert!(c.show_mode, "the live override turns it on");
+        c.apply_overrides(&map(&[("show_mode", "false")]));
+        assert!(!c.show_mode, "and back off");
     }
 
     #[test]

@@ -38,6 +38,7 @@ mod control;
 #[cfg(test)]
 mod hooks_manifest_tests;
 mod ledger;
+mod mode;
 mod notify_rules;
 mod permission;
 mod presence;
@@ -83,6 +84,29 @@ const PIPE_NAME: &str = payload::STATUS_PIPE_NAME;
 const CONFIG_PIPE: &str = config::CONFIG_PIPE;
 #[cfg(target_arch = "wasm32")]
 const CMD_PIPE: &str = control::CMD_PIPE;
+
+/// Zellij's `InputMode` → the host-testable `mode::Mode` mirror. Exhaustive
+/// on purpose: a mode added upstream fails this build instead of rendering
+/// as something else.
+#[cfg(target_arch = "wasm32")]
+fn input_mode(mode: InputMode) -> mode::Mode {
+    match mode {
+        InputMode::Normal => mode::Mode::Normal,
+        InputMode::Locked => mode::Mode::Locked,
+        InputMode::Resize => mode::Mode::Resize,
+        InputMode::Pane => mode::Mode::Pane,
+        InputMode::Tab => mode::Mode::Tab,
+        InputMode::Scroll => mode::Mode::Scroll,
+        InputMode::EnterSearch => mode::Mode::EnterSearch,
+        InputMode::Search => mode::Mode::Search,
+        InputMode::RenameTab => mode::Mode::RenameTab,
+        InputMode::RenamePane => mode::Mode::RenamePane,
+        InputMode::Session => mode::Mode::Session,
+        InputMode::Move => mode::Mode::Move,
+        InputMode::Prompt => mode::Mode::Prompt,
+        InputMode::Tmux => mode::Mode::Tmux,
+    }
+}
 
 #[derive(Default)]
 pub struct State {
@@ -459,7 +483,7 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::ModeUpdate(mode_info) => {
-                let outcome = self.runtime.session_name_changed(mode_info.session_name);
+                let outcome = self.runtime.mode_changed(mode_info.session_name, input_mode(mode_info.mode));
                 self.handle_outcome(outcome)
             }
             Event::Visible(visible) => {

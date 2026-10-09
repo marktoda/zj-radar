@@ -1,0 +1,29 @@
+---
+source: crates/plugin/src/render/tests.rs
+assertion_line: 4280
+expression: "grid(&render(&rows, &opts), 30)"
+---
+ RADAR                   ·4 1!
+▌⠋ 1 web
+▌└ ⠋ ✳ building…
+
+ ◆ 2 api                     ✓
+
+ ● 3 worker
+
+ ○ 4 notes
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────
+1 working · 1 need you  LOCKED
+alt-[n] jump
