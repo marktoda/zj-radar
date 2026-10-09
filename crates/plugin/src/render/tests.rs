@@ -3922,7 +3922,12 @@ fn peer_with_tree(name: &str, tabs: usize, agents: usize) -> BadgeEntry {
             position: t,
             name: format!("t{t}"),
             panes: (0..agents)
-                .map(|p| PresencePane { kind: "claude".into(), status: "running".into(), label: format!("a{t}.{p}") })
+                .map(|p| PresencePane {
+                    kind: "claude".into(),
+                    status: "running".into(),
+                    label: format!("a{t}.{p}"),
+                    ..Default::default()
+                })
                 .collect(),
         })
         .collect();
@@ -3936,7 +3941,12 @@ fn peer_session_tree_lists_tabs_and_agents_with_tab_targets() {
     peer.tabs = vec![PresenceTab {
         position: 2,
         name: "PR 8577".into(),
-        panes: vec![PresencePane { kind: "claude".into(), status: "running".into(), label: "reviewing CI".into() }],
+        panes: vec![PresencePane {
+            kind: "claude".into(),
+            status: "running".into(),
+            label: "reviewing CI".into(),
+            ..Default::default()
+        }],
     }];
     let lines = render_peer_children(&peer, usize::MAX, &ro(36, 18));
     assert_eq!(lines.len(), 2);

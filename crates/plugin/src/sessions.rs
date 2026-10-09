@@ -36,28 +36,9 @@ use std::collections::HashMap;
 use crate::presence::{Presence, PresenceTab};
 use crate::radar_state::Direction;
 
-/// How long a peer's presence file may sit unrefreshed before its badge row
-/// dims to stale. `runtime.rs`'s timer heartbeats an idle-but-alive
-/// session's own file at least once per Slow (60s) tick, so 90s gives 50%
-/// margin against a single missed beat before flagging it — generous
-/// enough that ordinary scheduler jitter never flickers an entry, but a
-/// session that's genuinely gone quiet reads as such promptly. A missed
-/// beat marks stale; only [`DEAD_AFTER_SECS`] reaps (see the module doc).
-pub(crate) const STALE_AFTER_SECS: u64 = 90;
-
-/// How old a peer's presence file must be before the entry is judged dead:
-/// reaped from the badge and reported back ([`PresenceUpdate::dead`]) so
-/// the runtime unlinks the file. Five missed 60s heartbeats past the write
-/// guarantee (`runtime.rs`'s `PRESENCE_HEARTBEAT_S`). The gap over
-/// [`STALE_AFTER_SECS`] is deliberate: stale must stay twitchy — a dim at
-/// 90s is cheap, self-correcting cosmetics — while dead must be
-/// conservative, because a reap also unlinks the on-disk file. Machine-sleep
-/// caveat: right after a wake every file looks old for up to one heartbeat,
-/// so a false reap of a live peer is possible — and harmless, because
-/// dismissal is non-destructive by construction (see `dismiss`'s doc): the
-/// live session's next heartbeat republishes its file and the entry
-/// returns, fresh.
-pub(crate) const DEAD_AFTER_SECS: u64 = 300;
+// Liveness thresholds are shared with the CLI's `state` command — see
+// `zj_radar_core::presence::{STALE_AFTER_SECS, DEAD_AFTER_SECS}` for the rationale.
+pub(crate) use crate::presence::{DEAD_AFTER_SECS, STALE_AFTER_SECS};
 
 /// A peer's [`Presence`] plus its presence file's mtime age at the last
 /// read (see the module doc). `age_secs` is a snapshot from that read, not
@@ -423,6 +404,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         }
     }
     /// Fresh (age 0) peer presence, the shape most tests want.
@@ -446,6 +428,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         });
         // (Bound rather than chained straight off `s.badge()`: the literal
         // brief snippet borrows from a temporary `Vec<BadgeEntry>` that would
@@ -611,6 +594,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 0,
             tabs: vec![],
+            ..Default::default()
         };
         assert!(s.set_own(p.clone()), "first own-count report changes the badge");
         // Same badge-relevant fields, different updated_epoch_s (not part of
@@ -622,6 +606,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 99,
             tabs: vec![],
+            ..Default::default()
         };
         assert!(!s.set_own(p2), "a report identical in badge-relevant fields is not a change");
     }
@@ -793,6 +778,7 @@ mod tests {
             attention_tab_position: None,
             updated_epoch_s: 50,
             tabs: vec![],
+            ..Default::default()
         });
         s.update_presences(vec![(
             r#"{"session_name":"work","running":9,"attention":9,"updated_epoch_s":999}"#.to_string(),

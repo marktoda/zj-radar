@@ -1013,6 +1013,7 @@ impl PluginRuntime {
             }
         }
         Presence {
+            v: 0,
             session_name: self.own_session_name.clone(),
             running,
             attention,
@@ -1035,6 +1036,8 @@ impl PluginRuntime {
                         .filter(|pane| pane.kind().is_agent())
                         .take(MAX_PANES_PER_TAB)
                         .map(|pane| PresencePane {
+                            pane_id: None,
+                            origin: None,
                             kind: pane.kind().as_source().to_string(),
                             status: pane.render_status().as_wire().to_string(),
                             label: crate::payload::sanitize(
