@@ -70,3 +70,48 @@ fn include_stale_requires_needs_attention() {
     state(root.path()).arg("--include-stale").assert().code(2);
     state(root.path()).args(["--needs-attention", "--include-stale"]).assert().code(1);
 }
+
+const CALM: &str = r#"{"v":1,"session_name":"alpha","running":1,"attention":0,"updated_epoch_s":100,"tabs":[]}"#;
+
+#[test]
+fn current_session_is_flagged_and_listed_first() {
+    let root = tempfile::tempdir().unwrap();
+    write_presence(root.path(), "/p/zj_radar.wasm", 10, WAITING, Duration::ZERO);
+    write_presence(root.path(), "/p/zj_radar.wasm", 11, CALM, Duration::ZERO);
+    let out = state(root.path()).env("ZELLIJ_SESSION_NAME", "work").arg("--json").assert().success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let got: Vec<(&str, bool)> = v["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["name"].as_str().unwrap(), s["current"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(got, vec![("work", true), ("alpha", false)], "current first, then by name");
+}
+
+#[test]
+fn include_stale_returns_a_stale_match() {
+    let root = tempfile::tempdir().unwrap();
+    write_presence(root.path(), "/p/zj_radar.wasm", 10, WAITING, Duration::from_secs(120));
+    state(root.path()).arg("--needs-attention").assert().code(1);
+    let out = state(root.path()).args(["--needs-attention", "--include-stale", "--json"]).assert().code(0);
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["sessions"][0]["name"], "work");
+    assert_eq!(v["sessions"][0]["stale"], true);
+    assert!(v["sessions"][0]["age_s"].as_u64().unwrap() >= 120);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_named_like_a_presence_file_is_skipped_promptly() {
+    // A FIFO would block `read_to_string` forever (and a symlink to
+    // /dev/zero would grow without bound): only regular files are read.
+    let root = tempfile::tempdir().unwrap();
+    write_presence(root.path(), "/p/zj_radar.wasm", 10, WAITING, Duration::ZERO);
+    let fifo = root.path().join("file:/p/zj_radar.wasm/plugin_cache/zj-radar.presence.66.json");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success());
+    let out = state(root.path()).arg("--json").timeout(Duration::from_secs(10)).assert().success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["sessions"].as_array().unwrap().len(), 1, "the real file is still listed");
+}

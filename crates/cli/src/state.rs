@@ -11,6 +11,11 @@ use zj_radar_core::presence::{Presence, PresenceTab, DEAD_AFTER_SECS, STALE_AFTE
 const PRESENCE_PREFIX: &str = "zj-radar.presence.";
 /// Bound on the plugin-URL path walk (the URL is spelled out as nested dirs).
 const MAX_DEPTH: usize = 32;
+/// Read bound per presence file. A capped writer's file stays under it even
+/// at its worst (64 tabs × 16 panes, every 96-char label and 24-char token
+/// in 4-byte UTF-8: ~0.8 MiB); anything larger is truncated, fails to
+/// parse, and is skipped like any corrupt file.
+const MAX_PRESENCE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) struct RawFile {
     pub json: String,
@@ -37,19 +42,17 @@ pub(crate) struct SessionView {
 /// Every `zj-radar.presence.*.json` under each root's `plugin_cache` dirs.
 /// A Zellij cache root holds one dir per plugin URL, spelled as a path under
 /// its scheme (`file:/Users/…/zj_radar.wasm/plugin_cache/`), plus per-server
-/// UUID dirs and version dirs we skip. A root that is itself a plugin cache
-/// (the `/tmp` fallback) is read directly.
+/// UUID dirs and version dirs we skip. Only regular files are read (no
+/// symlink follow: a FIFO would block forever, a link to `/dev/zero` would
+/// grow without bound), each at most [`MAX_PRESENCE_BYTES`].
+///
+/// The plugin's `/tmp` fallback root (used only when its `/cache` mount is
+/// unwritable) is not scanned: it is a WASI mount of the host's
+/// `$TMPDIR/zellij-<uid>`, shared with Zellij's own files, and a session
+/// publishing there is simply not listed.
 pub(crate) fn read_presence_files(roots: &[PathBuf], now: SystemTime) -> Vec<RawFile> {
     let mut dirs = Vec::new();
     for root in roots {
-        // A root literally named `zj-radar` is the plugin's `/tmp/zj-radar`
-        // fallback, which IS a plugin cache (flat, no URL tree) — read it
-        // directly. A Zellij cache root is never named that, so the basename
-        // is a safe discriminator for the roots `default_roots` produces.
-        if root.file_name().is_some_and(|n| n == "zj-radar") {
-            dirs.push(root.clone());
-            continue;
-        }
         let Ok(entries) = std::fs::read_dir(root) else { continue };
         for entry in entries.flatten() {
             let is_scheme = entry.file_name().to_string_lossy().ends_with(':');
@@ -66,7 +69,11 @@ pub(crate) fn read_presence_files(roots: &[PathBuf], now: SystemTime) -> Vec<Raw
             if !(name.starts_with(PRESENCE_PREFIX) && name.ends_with(".json")) {
                 continue;
             }
-            let Ok(json) = std::fs::read_to_string(entry.path()) else { continue };
+            // `DirEntry::file_type` does not follow symlinks.
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            let Ok(json) = read_bounded(&entry.path()) else { continue };
             let age_s = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -77,6 +84,13 @@ pub(crate) fn read_presence_files(roots: &[PathBuf], now: SystemTime) -> Vec<Raw
         }
     }
     out
+}
+
+fn read_bounded(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut json = String::new();
+    std::fs::File::open(path)?.take(MAX_PRESENCE_BYTES).read_to_string(&mut json)?;
+    Ok(json)
 }
 
 fn find_plugin_caches(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -132,19 +146,18 @@ pub(crate) fn collect(files: Vec<RawFile>, current: Option<&str>) -> Vec<Session
 }
 
 /// Where to look: `ZJ_RADAR_CACHE_DIR` (a Zellij cache root) if set, else the
-/// platform's; plus the plugin's `/tmp` fallback root(s).
+/// platform's. Never a `/tmp` root (see [`read_presence_files`]).
 pub(crate) fn default_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    match std::env::var_os("ZJ_RADAR_CACHE_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => roots.push(PathBuf::from(dir)),
-        None => {
-            if let Some(cache) = dirs::cache_dir() {
-                roots.push(crate::run::zellij_cache_root_in(&cache, cfg!(target_os = "macos")));
-            }
-            roots.push(PathBuf::from("/tmp/zj-radar"));
-        }
-    }
-    roots
+    let zellij_cache =
+        dirs::cache_dir().map(|cache| crate::run::zellij_cache_root_in(&cache, cfg!(target_os = "macos")));
+    roots_from(
+        std::env::var_os("ZJ_RADAR_CACHE_DIR").filter(|d| !d.is_empty()).map(PathBuf::from),
+        zellij_cache.as_deref(),
+    )
+}
+
+fn roots_from(override_dir: Option<PathBuf>, zellij_cache: Option<&Path>) -> Vec<PathBuf> {
+    override_dir.or_else(|| zellij_cache.map(Path::to_path_buf)).into_iter().collect()
 }
 
 pub(crate) struct StateOptions {
@@ -314,6 +327,42 @@ mod tests {
     }
 
     #[test]
+    fn a_flat_root_is_never_read_as_a_plugin_cache() {
+        // The plugin's `/tmp` fallback is a WASI mount of the host's
+        // `$TMPDIR/zellij-<uid>`, never `/tmp/zj-radar`, and a world-writable
+        // flat dir would let any local user plant sessions: only the
+        // `plugin_cache` dirs under a Zellij cache root's scheme tree count.
+        let dir = tempfile::tempdir().unwrap();
+        let flat = dir.path().join("zj-radar");
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(flat.join("zj-radar.presence.1.json"), presence("planted", 1, &[])).unwrap();
+        assert!(read_presence_files(&[flat], SystemTime::now()).is_empty());
+        assert_eq!(roots_from(None, Some(Path::new("/c"))), vec![PathBuf::from("/c")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_regular_files_are_read_and_reads_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("file:/p/plugin_cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let elsewhere = dir.path().join("real.json");
+        std::fs::write(&elsewhere, presence("linked", 1, &[])).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, cache.join("zj-radar.presence.1.json")).unwrap();
+        // Valid JSON past the read bound (a huge label): truncated, so it
+        // fails to parse instead of being slurped whole.
+        let huge = format!(
+            r#"{{"session_name":"huge","running":0,"attention":0,"pad":"{}"}}"#,
+            "x".repeat(MAX_PRESENCE_BYTES as usize)
+        );
+        std::fs::write(cache.join("zj-radar.presence.2.json"), huge).unwrap();
+        let files = read_presence_files(&[dir.path().to_path_buf()], SystemTime::now());
+        assert_eq!(files.len(), 1, "the symlink is skipped");
+        assert_eq!(files[0].json.len() as u64, MAX_PRESENCE_BYTES, "the oversized file is read only up to the bound");
+        assert!(collect(files, None).is_empty());
+    }
+
+    #[test]
     fn future_mtime_clamps_to_zero() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("file:/p/plugin_cache");
@@ -401,6 +450,20 @@ mod tests {
         let s = collect(vec![raw(presence("a", 1, &[]), 0), raw(presence("b", 1, &[]), 0)], None);
         let out = filter(s, &StateOptions { session: Some("b".into()), ..opts() });
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn human_shape_with_counts_and_a_stale_session() {
+        let busy = serde_json::json!({
+            "v": 1, "session_name": "main", "running": 2, "attention": 1, "attention_tab_position": 1,
+            "updated_epoch_s": 5,
+            "tabs": [{"position": 1, "name": "api", "panes": [
+                {"pane_id": 14, "origin": "status", "kind": "claude", "status": "pending", "label": "fix login"},
+                {"pane_id": 15, "origin": "status", "kind": "codex", "status": "running", "label": "refactor"}]}]
+        })
+        .to_string();
+        let s = collect(vec![raw(busy, 3), raw(presence("old", 1, &[]), 120)], Some("main"));
+        insta::assert_snapshot!(render_human(&s));
     }
 
     #[test]
