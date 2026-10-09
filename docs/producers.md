@@ -338,14 +338,17 @@ agent's `label` is its sticky task (falling back to the agent kind); a
 command's is its command line.
 
 **Caps and hostile text.** 64 tabs, 16 panes per tab, 96-character labels.
-Readers truncate over-cap content. A file with control or otherwise
-unsanitary text is rejected whole.
+Readers truncate only the structural caps (tabs, and panes per tab). Text is
+never truncated on read: a file with an over-long or control/otherwise
+unsanitary string anywhere is rejected whole.
 
 **Liveness.** Each session rewrites its file at least every 60 s. A file older
 than 90 s is stale; older than 300 s it is dead and peers reap it. Content
-changes are written by one rail per session (the one in the lowest-position
-tab); if that tab has no rail, content waits for the heartbeat (up to 60 s
-stale).
+changes are written by one rail per session: the most recently active one,
+which holds the `zj-radar.<pid>.presence-writer` token beside the file (it has
+the freshest view of the session's tabs). After a detach that rail keeps
+publishing. Other rails write only to rescue a file older than 75 s, so a
+session that lost its writer may briefly read as stale but is never reaped.
 
 **`zj-radar state [--json] [--needs-attention] [--include-stale] [--session NAME]`.**
 `--json` prints:
@@ -357,7 +360,11 @@ stale).
 
 The envelope `v` is independent of the file's. `--needs-attention` keeps agent
 panes that are pending or error and skips stale sessions unless
-`--include-stale`; session-level `running` and `attention` stay unfiltered.
+`--include-stale` (which requires `--needs-attention`); session-level
+`running` and `attention` stay unfiltered. Pre-v1 files (`v` absent or 0) have
+no pane `origin`, so the match degrades there: their origin-less panes count
+as agents (a command pane in error matches too), and a pre-v1 session with
+`attention` > 0 matches even without a matching pane, listed with `tabs: []`.
 
 | Exit | Meaning |
 |---|---|

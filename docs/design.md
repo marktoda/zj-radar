@@ -103,8 +103,8 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
         │ Effects: SwitchTab, ShowPane, RenameTab, RequestPermission,
         │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
         │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd,
-        │ Notify, PersistPresence, ReadPresences, DismissPresence,
-        │ SwitchSession, BroadcastStatus, CloseSelf
+        │ Notify, PersistPresence, ClaimPresenceWriter, ReadPresences,
+        │ DismissPresence, SwitchSession, BroadcastStatus, CloseSelf
         ▼
 ```
 
@@ -609,13 +609,26 @@ truncates over-cap content and rejects the whole file if any field fails to
 survive `payload::sanitize` unchanged. `zj-radar state` is why the tree is
 unconditional: it is a public read surface, and `session_tree` is display-only.
 
-**Single writer.** Content changes are written by one rail per session, the
-one in the lowest-position tab (`RadarState::writes_presence_content`); the
-others never write content. Every rail still heartbeats, deduped by mtime. If
-the lowest tab has no rail, content is refreshed only by the heartbeat. The
-cost is about +230k wasm fuel per real status edge on the writing rail
-(against 0.9.0: own-tab edge +14%, other-tab edge +69%; relabel, pane_update
-and tick flat), and followers no longer write at all.
+**Single writer: the presence-writer token.** Content must come from the rail
+with the freshest topology, and that is the most recently active one: Zellij
+sends `TabUpdate`/`PaneUpdate` only to the active tab's plugins, so a hidden
+rail's tab/pane view is frozen (a pane opened elsewhere after the user left is
+invisible to it). The token `zj-radar.<pid>.presence-writer` sits next to the
+presence file in the shared root and holds the writer's plugin id. A rail
+claims it (`Effect::ClaimPresenceWriter`) whenever it is the active view: at
+load (Zellij sends no `Visible` then, so a fresh instance counts as visible),
+on `Visible(true)`, and on every manifest. A claim of a token already held is
+one small read; a takeover rewrites the token and republishes the new holder's
+view (`PluginRuntime::presence_writer_acquired`), since the file holds another
+rail's. Every rail whose content fingerprint moved emits the content edge, and
+`SessionFiles::persist_presence` writes it only for the holder (one token read
+per edge). After a detach the last-active rail keeps the token, so a detached
+session keeps publishing status edges against its at-detach topology. Two
+clients on different tabs are both fresh; the last claim wins. The token is
+pid-scoped like the snapshot, so the snapshot sweep owns it and no presence
+read path ever sees it. The cost is about +230k wasm fuel per real status edge
+on the writing rail (the tree serialize); non-holders pay the fingerprint and
+one token read.
 
 **Session tree (`session_tree`, display-only).** The option only decides
 whether this rail draws peers' trees. Off, `Sessions::set_show_trees` drops
@@ -633,10 +646,15 @@ in `project` that bypasses the content gate and, unlike the snapshot, the
 visibility gate: a detached session is alive). Every tab's instance runs that
 clock against the one pid-keyed file, so the heartbeat is a
 `PersistPresence` with an `unless_fresher_than` window the host honors by
-stat: a file already younger than a quarter of the interval is left alone —
-one stat instead of N writes, and the quarter keeps the file's worst-case age
-(one period plus one window) under the 90 s stale threshold. Content edges
-write unconditionally. Peers read the directory on every
+stat. The token holder leaves a file younger than a quarter of the interval
+alone, which keeps its worst-case write gap (one period plus one window, 75 s)
+under the 90 s stale threshold; its content edges write unconditionally.
+Followers do heartbeat, but only as a rescue: a non-holder's heartbeat or
+content edge writes only when the file is older than `PRESENCE_RESCUE_AFTER`
+(75 s, the holder's worst-case gap), so a stale hidden view never overwrites a
+live holder, yet a session whose holder vanished (instance died, or a closed
+tab's rail with no tab activated since) still refreshes within 135 s: it may
+dim briefly but is never reaped. Peers read the directory on every
 Slow (60 s) tick, and on every fifth Fast tick except mid-cycle; the Slow read
 is what lets an idle rail grade a peer at all, since ages are captured at read
 time. `Sessions::update_presences` grades each file's age: fresh (≤ 90 s),
