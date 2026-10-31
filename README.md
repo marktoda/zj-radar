@@ -127,6 +127,7 @@ plugins {
         remote_commands ""         // extra remote-session launchers
         spinner_fps 4              // working-spinner frames/s (1 = once a second)
         task_lines "lines"         // background tasks: lines · count · off
+        ledger true                // recent completions under ─ earlier ─
         session_tree false         // expand other sessions into tabs + agents
         show_mode false            // Zellij mode on the footer (status bar optional)
     }
