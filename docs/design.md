@@ -599,6 +599,12 @@ saturation is what lets the idle timer fully disarm instead of ticking once a
 minute forever to redraw an age that will never change. A line's tab position
 is a live lookup, so a closed tab's line is click-inert rather than forgotten.
 
+**Display toggle (`ledger`, display-only).** `ledger false` empties what
+`PluginRuntime::shown_ledger` hands the render key, `render_rail`, and
+`natural_height`; recording, merging, and persisting are untouched, so `true`
+brings the history back. Hidden history is not content: with no tabs either,
+the rail shows the onboarding face.
+
 ## 13. Cross-session badge
 
 One session's rail shows counts for every other zj-radar session on the host,
