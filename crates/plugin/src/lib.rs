@@ -108,6 +108,21 @@ fn input_mode(mode: InputMode) -> mode::Mode {
     }
 }
 
+/// The Zellij theme palette's color source: `text_unselected` background/base
+/// when both are truecolor. Pure field copy; the contrast policy lives in the
+/// host-tested `theme::DerivedColors::from_theme_palette`. 8-bit entries (the
+/// built-in default theme, `ansi`) yield `None`: their RGB is the terminal's
+/// own palette, which the plugin cannot see.
+#[cfg(target_arch = "wasm32")]
+fn theme_palette(colors: &Styling) -> Option<theme::DerivedColors> {
+    let rgb = |c: PaletteColor| match c {
+        PaletteColor::Rgb(rgb) => Some(rgb),
+        PaletteColor::EightBit(_) => None,
+    };
+    let text = &colors.text_unselected;
+    theme::DerivedColors::from_theme_palette(rgb(text.background)?, rgb(text.base)?)
+}
+
 #[derive(Default)]
 pub struct State {
     runtime: PluginRuntime,
@@ -483,7 +498,8 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::ModeUpdate(mode_info) => {
-                let outcome = self.runtime.mode_changed(mode_info.session_name, input_mode(mode_info.mode));
+                let palette = theme_palette(&mode_info.style.colors);
+                let outcome = self.runtime.mode_changed(mode_info.session_name, input_mode(mode_info.mode), palette);
                 self.handle_outcome(outcome)
             }
             Event::Visible(visible) => {

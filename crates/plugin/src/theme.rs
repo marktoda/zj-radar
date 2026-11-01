@@ -4,8 +4,16 @@
 //! ANSI-16 codes elsewhere, so the terminal renders them in its own theme and they
 //! always match. This module owns only the *dark-panel* part: the subtle card
 //! surfaces and dim greys, which are truecolor and so MUST be derived from the
-//! terminal's real `default_bg`/`default_fg` (reported per-pane in `PaneInfo`) to
-//! sit correctly against whatever theme the terminal is using.
+//! terminal's colors to sit correctly against whatever theme is in use.
+//!
+//! Color sources, highest precedence first (resolved in `PluginRuntime`):
+//! 1. a pane's reported `default_bg`/`default_fg` (`PaneInfo`). Zellij fills
+//!    these only on an OSC 10/11 from the pane's program or a layout
+//!    override, so on most setups they are `null` (issue #85);
+//! 2. the active Zellij theme's palette, `ModeInfo.style.colors`
+//!    (`text_unselected` background/base, truecolor themes only), which
+//!    rides every `ModeUpdate` ([`DerivedColors::from_theme_palette`]);
+//! 3. the neutral-dark [`FALLBACK_BG`]/[`FALLBACK_FG`].
 
 /// An (r, g, b) color triple — the vocabulary every derived color in this
 /// module (and the renderer's truecolor escapes) is spelled in.
@@ -92,6 +100,26 @@ impl DerivedColors {
             dim_strong: blend(fg, bg, 0.28),
             idle_text: blend(fg, bg, 0.45),
         }
+    }
+}
+
+/// Minimum channel-sum distance between a theme palette's text base and its
+/// background for the pair to stand in for the terminal's bg/fg. Below this
+/// the pair can't say which side is the background (`ayu-light` ships
+/// near-white text on a near-white `text_unselected` background), so the
+/// polarity guess in [`DerivedColors::from_bg_fg`] would be a coin flip and
+/// the next source is the safer answer.
+const MIN_PALETTE_CONTRAST: u32 = 192;
+
+impl DerivedColors {
+    /// Derive from the active Zellij theme's palette (`text_unselected`
+    /// background → bg, base → fg), or `None` when the pair is too close to
+    /// tell bg from fg (see [`MIN_PALETTE_CONTRAST`]). A theme's
+    /// `text_unselected` background is its UI-chrome shade, a near neighbour
+    /// of the terminal bg rather than the bg itself: close enough for a panel
+    /// that is derived *from* the bg anyway.
+    pub fn from_theme_palette(bg: Rgb, fg: Rgb) -> Option<Self> {
+        (luminance(bg).abs_diff(luminance(fg)) >= MIN_PALETTE_CONTRAST).then(|| DerivedColors::from_bg_fg(bg, fg))
     }
 }
 
@@ -254,6 +282,33 @@ mod tests {
             assert!(l > l_bg, "dim {:?} not brighter than bg", dim);
             assert!(l < l_fg, "dim {:?} not dimmer than fg", dim);
         }
+    }
+
+    // ── from_theme_palette ──
+
+    #[test]
+    fn theme_palette_light_theme_takes_the_light_path() {
+        // catppuccin-latte's text_unselected (background, base): the rail must
+        // follow it to the light derivation, not the dark fallback (#85).
+        let d = DerivedColors::from_theme_palette((220, 224, 232), (76, 79, 105)).expect("legible pair");
+        assert_eq!(d, DerivedColors::from_bg_fg((220, 224, 232), (76, 79, 105)));
+        assert!(lum(d.rail_bg) > lum(FALLBACK_BG) * 3, "light theme keeps a light panel, got {:?}", d.rail_bg);
+    }
+
+    #[test]
+    fn theme_palette_dark_theme_derives_from_its_colors() {
+        // catppuccin-frappe
+        let d = DerivedColors::from_theme_palette((41, 44, 60), (198, 208, 245)).expect("legible pair");
+        assert_eq!(d, DerivedColors::from_bg_fg((41, 44, 60), (198, 208, 245)));
+        assert_ne!(d, DerivedColors::default());
+    }
+
+    #[test]
+    fn theme_palette_without_contrast_is_rejected() {
+        // ayu-light: near-white base on a near-white background. Polarity is
+        // unknowable, so fall through to the next source.
+        assert_eq!(DerivedColors::from_theme_palette((231, 234, 237), (252, 252, 252)), None);
+        assert_eq!(DerivedColors::from_theme_palette((40, 40, 40), (40, 40, 40)), None);
     }
 
     #[test]

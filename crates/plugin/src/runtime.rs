@@ -431,7 +431,16 @@ pub(crate) struct PluginRuntime {
     pub(crate) last_render_height: usize,
     pub(crate) config: config::Config,
     pub(crate) permission: PermissionState,
+    /// The colors the renderer uses: always [`resolve_theme`](Self::resolve_theme)'s
+    /// pick of `pane_theme` > `palette_theme` > the neutral fallback.
     pub(crate) theme: theme::DerivedColors,
+    /// Colors from a pane's reported `default_bg`/`default_fg`. Sticky: a
+    /// manifest with no reporting pane leaves the last one in place.
+    pane_theme: Option<theme::DerivedColors>,
+    /// Colors from the Zellij theme palette on the latest `ModeUpdate`
+    /// (`None` = no usable truecolor palette). Each `ModeUpdate` replaces it,
+    /// so a switch to an 8-bit theme drops back to the fallback.
+    palette_theme: Option<theme::DerivedColors>,
     last_rendered: RenderedRail,
     notify_prev: BTreeMap<u32, crate::status::Status>,
     /// Cross-session peer state + the Alt+[/] cycle selection machine.
@@ -762,8 +771,9 @@ impl PluginRuntime {
         self.hidden = false; // manifests reach the active tab's plugins only (see `hidden`)
         let now = crate::clock::now_epoch_s();
         if let Some(theme) = update.theme.clone() {
-            self.theme = theme;
+            self.pane_theme = Some(theme);
         }
+        self.resolve_theme();
         // `PaneUpdate::from_raw` already dropped plugin panes, so a non-empty
         // entry for our own tab position IS a terminal neighbor. Latch only.
         self.own_tab_saw_terminal |=
@@ -1106,10 +1116,31 @@ impl PluginRuntime {
     /// while `show_mode` is on, and the render gate drops even that when the
     /// label on screen already matches (the shown mode is in the render key),
     /// so with the option off, or on a repeat, a mode change costs nothing.
-    pub(crate) fn mode_changed(&mut self, name: Option<String>, mode: crate::mode::Mode) -> Outcome {
+    ///
+    /// `palette` is the theme-palette color source (`DerivedColors::from_theme_palette`
+    /// over `ModeInfo.style.colors`); a change in the resolved colors repaints.
+    pub(crate) fn mode_changed(
+        &mut self,
+        name: Option<String>,
+        mode: crate::mode::Mode,
+        palette: Option<theme::DerivedColors>,
+    ) -> Outcome {
         let moved = self.mode.replace(mode) != Some(mode);
-        let change = RadarChange { render: moved && self.config.show_mode, ..RadarChange::default() };
+        self.palette_theme = palette;
+        let recolored = self.resolve_theme();
+        let change = RadarChange { render: (moved && self.config.show_mode) || recolored, ..RadarChange::default() };
         self.learn_session_name(name, change)
+    }
+
+    /// Recompute [`theme`](Self::theme) from its sources: pane-reported colors
+    /// win, then the Zellij theme palette, then the neutral fallback (issue
+    /// #85: Zellij leaves pane colors `null` unless a program sends OSC 10/11).
+    /// Returns whether the colors changed.
+    fn resolve_theme(&mut self) -> bool {
+        let next = self.pane_theme.clone().or_else(|| self.palette_theme.clone()).unwrap_or_default();
+        let moved = next != self.theme;
+        self.theme = next;
+        moved
     }
 
     /// The mode the footer draws: the latest one, only while `show_mode` is
