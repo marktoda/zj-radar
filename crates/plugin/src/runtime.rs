@@ -572,12 +572,12 @@ impl std::hash::Hasher for FxHasher {
     fn write(&mut self, bytes: &[u8]) {
         // Length first, so zero-padded tails and chunk boundaries can't alias.
         self.add(bytes.len() as u64);
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            self.add(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]));
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for c in chunks {
+            self.add(u64::from_le_bytes(*c));
         }
         let mut tail = 0u64;
-        for (i, b) in chunks.remainder().iter().enumerate() {
+        for (i, b) in remainder.iter().enumerate() {
             tail |= u64::from(*b) << (8 * i);
         }
         self.add(tail);
