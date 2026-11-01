@@ -424,9 +424,15 @@ teardown() { teardown_fakes; }
 @test "parity: a SubagentStop's final report never becomes the running msg" {
   # Only a Stop reads last_assistant_message; a SubagentStop carries the
   # subagent's whole report there.
-  parity_payloads '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","last_assistant_message":"## Findings\n\n- the rail is fine"}' running
+  parity_payloads '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"general-purpose","last_assistant_message":"## Findings\n\n- the rail is fine"}' running
   [ "$(jq -r '.status' <<<"$BASH_PAYLOAD")" = running ]
   [ "$(jq -r '.msg' <<<"$BASH_PAYLOAD")" = working ]
+}
+
+@test "parity: a SubagentStop with empty or missing agent_type sends nothing" {
+  parity_noop '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":""}' running
+  parity_noop '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd","agent_type":"   "}' running
+  parity_noop '{"hook_event_name":"SubagentStop","cwd":"/home/u/myrepo","agent_id":"a55dd"}' running
 }
 @test "cli: a background subagent's own tool hooks send nothing (bash fallback diverges)" {
   # CLI-only by design (notify.sh documents it next to the tasks note): the
@@ -456,7 +462,7 @@ teardown() { teardown_fakes; }
   # Its SubagentStop is dropped too (a plain running over "waiting on …")
   # and removes the marker; the id is then unknown and its hooks report.
   rm -f "$RECORD"
-  echo '{"hook_event_name":"SubagentStop","cwd":"/tmp","agent_id":"a1139"}' | "$CLI" notify claude --status running
+  echo '{"hook_event_name":"SubagentStop","cwd":"/tmp","agent_id":"a1139","agent_type":"general-purpose"}' | "$CLI" notify claude --status running
   [ ! -s "$RECORD" ] || { echo "cli reported a background agent's SubagentStop"; return 1; }
   [ ! -e "${markers[0]}" ]
   echo "$bg" | "$CLI" notify claude --status running

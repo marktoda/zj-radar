@@ -33,6 +33,18 @@ fn status_from_event(event: &str) -> Option<Status> {
 pub fn derive(intake: &Intake) -> Option<AgentUpdate> {
     let v: Value = serde_json::from_str(intake.raw).unwrap_or(Value::Null);
     let event = v.get("hook_event_name").and_then(|x| x.as_str());
+
+    // Internal Claude Code helpers fire SubagentStop with an empty or missing
+    // agent_type after Stop (issue #81). Real agent-tool subagents always carry
+    // an agent_type (e.g. "general-purpose", "Explore"). Drop it so an idle
+    // session is not flipped back to Running.
+    if event == Some("SubagentStop") {
+        let agent_type = v.get("agent_type").and_then(|x| x.as_str()).unwrap_or("");
+        if agent_type.trim().is_empty() {
+            return None;
+        }
+    }
+
     let status = match intake.status_arg {
         Some(s) => Status::from_wire(s),
         None => status_from_event(event?)?,
@@ -404,11 +416,26 @@ mod tests {
     fn subagent_stop_ignores_the_subagents_final_report() {
         // A SubagentStop's `last_assistant_message` is the subagent's whole
         // report; only a Stop reads the field.
-        let raw =
-            r###"{"hook_event_name":"SubagentStop","agent_id":"a1","last_assistant_message":"## Findings\n\n- x"}"###;
+        let raw = r###"{"hook_event_name":"SubagentStop","agent_id":"a1","agent_type":"general-purpose","last_assistant_message":"## Findings\n\n- x"}"###;
         for status_arg in [Some("running"), None] {
             let u = derive(&intake(raw, status_arg)).unwrap();
             assert_eq!((u.status, u.msg.as_str()), (Status::Running, "working"), "{status_arg:?}");
+        }
+    }
+
+    #[test]
+    fn subagent_stop_drops_empty_or_missing_agent_type() {
+        // Internal Claude Code helpers fire SubagentStop with an empty or missing
+        // agent_type after Stop (issue #81). Drop them so a finished turn is not
+        // flipped back to Running.
+        for raw in [
+            r#"{"hook_event_name":"SubagentStop","agent_id":"a1","agent_type":""}"#,
+            r#"{"hook_event_name":"SubagentStop","agent_id":"a1","agent_type":"   "}"#,
+            r#"{"hook_event_name":"SubagentStop","agent_id":"a1"}"#,
+        ] {
+            for status_arg in [Some("running"), None] {
+                assert!(derive(&intake(raw, status_arg)).is_none(), "raw={raw} status_arg={status_arg:?}");
+            }
         }
     }
 

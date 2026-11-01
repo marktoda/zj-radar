@@ -164,6 +164,13 @@ file_activity() { # $1 = verb, $2 = jq path to the file path → tool_activity
 # from the tool being used — same rules as tool_activity() in notify.rs.
 if [[ "$status" == "running" ]]; then
     hook_event="$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null || true)"
+    # Internal Claude Code helpers fire SubagentStop with an empty or missing
+    # agent_type after Stop (issue #81). Drop them so a finished turn stays Done.
+    if [[ "$hook_event" == "SubagentStop" ]]; then
+        agent_type="$(jq -r '.agent_type // empty' <<<"$input" 2>/dev/null || true)"
+        trim "$agent_type"
+        [[ -n "$trim_result" ]] || exit 0
+    fi
     # UserPromptSubmit: capture the first non-empty prompt line as the sticky
     # task label (mirrors task_from_prompt in agents.rs). Slash commands,
     # harness-injected tag lines (e.g. <task-notification>), and bare acks

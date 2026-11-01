@@ -35,6 +35,12 @@ Registers these hooks (all calling the bundled `scripts/notify.sh`):
 | `SessionStart` (`matcher: clear` only) | `idle` (resets the row on `/clear`) |
 | `SessionEnd` | `idle` (clears the row when the Claude session exits) |
 
+A `SubagentStop` with an empty or missing `agent_type` sends nothing:
+Claude Code's internal helpers (prompt suggestions, session recaps, idle
+compaction, progress summaries) fire those, often after the turn's `Stop`,
+and they would flip a finished row back to `running`. Agent-tool subagents
+always carry an `agent_type`.
+
 A *background* subagent's own `PreToolUse`/`PostToolUse` and
 `SubagentStop` hooks send nothing: they fire on the parent's pane after its
 turn ends and would overwrite the parent's "waiting on …" or `needs you`
