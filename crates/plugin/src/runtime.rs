@@ -1392,18 +1392,22 @@ impl PluginRuntime {
         self.project(vec![], change, crate::clock::now_epoch_s())
     }
 
+    /// The ledger the rail draws: empty when `ledger false`. The ring is still
+    /// recorded and persisted, so flipping it back on shows history.
+    fn shown_ledger(&self) -> std::rc::Rc<Vec<crate::rollup::LedgerLine>> {
+        if self.config.ledger {
+            self.radar.ledger_lines()
+        } else {
+            Default::default()
+        }
+    }
+
     /// The content-derived inputs a `render()` at this instant would draw
     /// from — everything except geometry and the wall-clock animation frame.
     /// `rows()` and `ledger_lines()` are memoized on the radar generation, so
     /// consulting this per event costs a compare, not a rollup.
     fn current_render_key(&self) -> RenderKey {
-        (
-            self.radar.rows(self.tick),
-            self.radar.ledger_lines(),
-            self.sessions.badge(),
-            self.theme.clone(),
-            self.shown_mode(),
-        )
+        (self.radar.rows(self.tick), self.shown_ledger(), self.sessions.badge(), self.theme.clone(), self.shown_mode())
     }
 
     /// The `RenderOpts` a paint at `width`×`height` would use right now — the
@@ -1432,7 +1436,7 @@ impl PluginRuntime {
     pub(crate) fn render(&mut self, rows: usize, cols: usize) -> String {
         self.last_render_height = rows;
         let tabrows = self.build_rows();
-        let ledger = self.radar.ledger_lines();
+        let ledger = self.shown_ledger();
         let opts = self.render_opts(cols, rows);
         // Stamp the render gate's baseline from the very values this pass
         // draws — the key IS what's on screen, by construction (`project`
@@ -1441,7 +1445,7 @@ impl PluginRuntime {
             Some((tabrows.clone(), ledger.clone(), opts.badge.clone(), self.theme.clone(), opts.mode));
         let rail = if !self.permission.granted() {
             render::needs_permission(&opts, self.config.grant_hint)
-        } else if tabrows.is_empty() && self.radar.ledger_is_empty() && !opts.shows_peer_tree() {
+        } else if tabrows.is_empty() && ledger.is_empty() && !opts.shows_peer_tree() {
             render::onboarding(&opts)
         } else {
             render::render_rail(&tabrows, &ledger, &opts)
@@ -1462,7 +1466,7 @@ impl PluginRuntime {
     pub(crate) fn natural_height(&self, cols: usize) -> usize {
         let tabrows = self.build_rows();
         let opts = self.render_opts(cols, usize::MAX / 2);
-        render::body_line_count(&tabrows, &self.radar.ledger_lines(), &opts)
+        render::body_line_count(&tabrows, &self.shown_ledger(), &opts)
     }
 
     /// Test-only: force the in-flight `Requesting` state without driving the

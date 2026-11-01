@@ -85,7 +85,8 @@ bottom: `N working`, plus `· M need you` when M is nonzero. With
 [`show_mode true`](configuration.md#options) the tally line also carries the
 current Zellij mode (`NORMAL`, `LOCKED`, …) flush right. Above it, an
 `─ earlier ─` section lists recent completions (newest first, up to ten) with
-a relative age. Click one to jump to its tab if the tab still exists.
+a relative age. Click one to jump to its tab if the tab still exists. Set
+`ledger false` to hide the section; history is still recorded.
 
 **Densities.** `cards` (the default) paints each tab as a tinted band using
 your theme's colors; `comfortable` separates tabs with a blank line;

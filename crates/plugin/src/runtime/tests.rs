@@ -755,6 +755,28 @@ fn no_tabs_with_history_renders_ledger_not_scanning() {
 }
 
 #[test]
+fn ledger_false_hides_history_live_without_dropping_it() {
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "web", true)]);
+    seed_done_ledger(&mut rt, crate::clock::now_epoch_s());
+    assert!(rt.render(24, 40).contains("earlier"), "setup: the ledger shows by default");
+
+    let off = rt.config_pipe(r#"{"ledger":"false"}"#);
+    assert!(off.render, "a ledger toggle repaints");
+    let ansi = rt.render(24, 40);
+    assert!(!ansi.contains("earlier"), "ledger false draws no section: {ansi:?}");
+    assert!(!rt.radar.ledger_is_empty(), "off only hides: the ring is still recorded");
+
+    rt.config_pipe(r#"{"ledger":"true"}"#);
+    assert!(rt.render(24, 40).contains("earlier"), "flipping back on shows the history");
+
+    // Nothing left to draw with the ledger hidden and no tabs: onboarding, not an empty rail.
+    rt.config_pipe(r#"{"ledger":"false"}"#);
+    rt.tabs_changed(vec![]);
+    assert!(rt.render(24, 40).to_lowercase().contains("scanning"), "hidden history is not content");
+}
+
+#[test]
 fn command_attention_next_emits_switch_tab() {
     let mut runtime = granted_runtime();
     // tab 0 active (running), tab 1 pending → attention.

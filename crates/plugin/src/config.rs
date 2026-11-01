@@ -170,6 +170,9 @@ pub struct Config {
     pub jump_hint: JumpHint,
     /// How background tasks show under an agent's pane row.
     pub task_lines: TaskLines,
+    /// Whether the `─ earlier ─` completion ledger renders. Display-only: the
+    /// ring is recorded and persisted either way.
+    pub ledger: bool,
     /// Set on the onboarding layout's rail instances: never fire our own
     /// permission request — wait for the floating onboarding pane to win the
     /// grant, so Zellij binds its prompt to the float, not the rail.
@@ -229,6 +232,7 @@ impl Default for Config {
             grant_hint: GrantHint::default(),
             jump_hint: JumpHint::default(),
             task_lines: TaskLines::default(),
+            ledger: true,
             defer_permission: false,
             interactive_commands: BTreeSet::new(),
             remote_commands: BTreeSet::new(),
@@ -330,6 +334,7 @@ config_fields! {
     jump_hint:  "jump_hint"  => JumpHint::from_config,
     task_lines: "task_lines" => TaskLines::from_config,
     header:              "header"              => parse_bool,
+    ledger:              "ledger"              => parse_bool,
     defer_permission:    "defer_permission"    => parse_bool,
     interactive_commands: "interactive_commands" => parse_name_set,
     remote_commands:      "remote_commands"      => parse_name_set,
@@ -645,6 +650,19 @@ mod tests {
         assert!(!c.notify_pending);
         assert!(!c.notify_remote);
         assert!(c.notify_when_focused);
+    }
+
+    #[test]
+    fn ledger_parses_on_off_and_defaults_on() {
+        assert!(Config::default().ledger);
+        for (v, want) in [("on", true), ("off", false), ("false", false), ("OFF", false)] {
+            assert_eq!(Config::from_map(&map(&[("ledger", v)])).ledger, want, "{v}");
+        }
+        assert!(Config::from_map(&map(&[("ledger", "nope")])).ledger);
+        // a typo on a live override keeps the current setting
+        let mut c = Config::from_map(&map(&[("ledger", "off")]));
+        c.apply_overrides(&map(&[("ledger", "nope")]));
+        assert!(!c.ledger);
     }
 
     #[test]
