@@ -135,12 +135,12 @@ fn name_candidates(panes: &[PaneFacts]) -> Vec<String> {
     let focused = panes.iter().find(|p| p.focused);
 
     let mut out = Vec::new();
-    out.extend(focused.and_then(&repo_of));
-    out.extend(panes.iter().filter_map(&repo_of));
-    out.extend(focused.and_then(&worktree_of));
-    out.extend(panes.iter().filter_map(&worktree_of));
-    out.extend(focused.and_then(&title_of));
-    out.extend(panes.iter().filter_map(&title_of));
+    out.extend(focused.and_then(repo_of));
+    out.extend(panes.iter().filter_map(repo_of));
+    out.extend(focused.and_then(worktree_of));
+    out.extend(panes.iter().filter_map(worktree_of));
+    out.extend(focused.and_then(title_of));
+    out.extend(panes.iter().filter_map(title_of));
     out
 }
 
