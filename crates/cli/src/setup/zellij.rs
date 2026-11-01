@@ -34,7 +34,11 @@ pub(crate) fn inject_mode(inject_flag: bool, yes: bool, dry_run: bool, is_tty: b
 }
 
 /// Pure: the argument vector for `zellij plugin --floating --width 90 --height
-/// 28 file:<wasm_path>`. Unit-tested so the exec call stays thin.
+/// 28 -- file:<wasm_path>`. Unit-tested so the exec call stays thin.
+///
+/// The `--` is required: Zellij declares the URL `last(true)`, which clap 4
+/// (Zellij 0.45+) only accepts after `--`. Clap 3 (Zellij 0.44.x) treats the
+/// `--` as optional (`[--] <URL>`), so the one shape works across the floor.
 pub(crate) fn grant_args(wasm_path: &Path) -> Vec<String> {
     vec![
         "plugin".to_string(),
@@ -43,11 +47,12 @@ pub(crate) fn grant_args(wasm_path: &Path) -> Vec<String> {
         "90".to_string(),
         "--height".to_string(),
         "28".to_string(),
+        "--".to_string(),
         format!("file:{}", wasm_path.display()),
     ]
 }
 
-/// Exec `zellij plugin --floating … file:<wasm_dest>` for the one-time
+/// Exec `zellij plugin --floating … -- file:<wasm_dest>` for the one-time
 /// permission grant. Reports the error but does not exit — callers may choose.
 pub(crate) fn run_grant(config_dir: &Path) {
     use std::process::Command;
@@ -261,9 +266,11 @@ const NO_WASM_REFUSAL: &str = "refused — pass --wasm <path-to-zj_radar.wasm> o
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SetupPath {
     /// config.kdl is a symlink (Nix / home-manager): install prints the layout
-    /// snippet for guidance; uninstall skips the config rewrite (the alias
-    /// lives in the user's Nix config, so removal is their Nix concern) but
-    /// still strips the injected rail from the (separate) layout file.
+    /// snippet for guidance and still pre-seeds the grant (permissions.kdl is
+    /// Zellij's cache, not the managed file); uninstall skips the config
+    /// rewrite (the alias lives in the user's Nix config, so removal is their
+    /// Nix concern) but still strips the injected rail from the (separate)
+    /// layout file.
     Managed,
     /// Install with no wasm source but `--inject`/`--yes` consent: skip the
     /// wasm/alias step and run the layout step only. This makes `setup zellij
@@ -353,6 +360,14 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
                     } else if let Ok(src) = resolve_wasm_src(wasm, download, dry_run, &wasm_dest) {
                         refresh_wasm(src.as_deref(), &wasm_dest, dry_run);
                     }
+                }
+                // permissions.kdl is Zellij's cache, not a Nix-managed file:
+                // the doctor's grant remedy (`setup zellij -y`) must still
+                // seed it, keyed by the stable path the home-manager snippet
+                // links the wasm to. Without this, `--grant` was the only
+                // way to authorize on Nix.
+                if wasm_dest.is_file() && !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty) {
+                    print_grant_hint_if_needed(&facts);
                 }
             }
             return;
@@ -980,6 +995,7 @@ mod tests {
                 "90",
                 "--height",
                 "28",
+                "--",
                 "file:/home/user/.config/zellij/plugins/zj_radar.wasm",
             ]
         );
