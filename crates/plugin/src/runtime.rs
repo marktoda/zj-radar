@@ -505,8 +505,11 @@ pub(crate) struct PluginRuntime {
     /// Zellij told this instance its tab is off-screen (`Event::Visible(false)`
     /// — sent on tab switch, tab close, layout apply, and client detach;
     /// never at load, so a fresh instance counts as visible). Hidden gates
-    /// exactly one thing: the paint (>95% of a tick's interpreter cost, and
-    /// nobody sees it). State keeps ticking at full cadence — the stores'
+    /// two things: the paint (>95% of a tick's interpreter cost, and nobody
+    /// sees it), and the `cmd.v1` verbs (see `control`: every tab's rail
+    /// receives each command, and a hidden rail's frozen `tabs` still mark
+    /// its own tab active, so letting it act would race the visible rail's
+    /// `SwitchTab` with a wrong one). State keeps ticking at full cadence — the stores'
     /// grace clocks count ticks, so a slowed instance would drift from its
     /// siblings until reveal. `Visible(true)` repaints the skipped frame.
     /// Zellij 0.44 routes `TabUpdate`/`PaneUpdate` to the plugins in a
@@ -1060,8 +1063,22 @@ impl PluginRuntime {
     /// (see `timer`), not an immediate effect here. Inert until permission is
     /// granted, mirroring `mouse_click`: session switching is
     /// `ChangeApplicationState` territory, same as `SwitchTab`.
+    ///
+    /// Also inert on a hidden rail. A keybind's `MessagePlugin` and
+    /// `zellij action pipe` reach EVERY tab's rail instance, but only the
+    /// visible one's view is current: `TabUpdate` reaches the active tab's
+    /// plugins only, so a hidden rail's `tabs` still mark its own tab active
+    /// and it would vote for the attention tab after *its* tab — Zellij
+    /// applies each `SwitchTab` in arrival order, the last one wins (#89).
+    /// The session verbs are gated the same way so one press moves one
+    /// cycle selection and commits one `SwitchSession`, not one per tab. A
+    /// rail that was never shown counts as visible but has no tabs, so the
+    /// attention verbs already resolve to nothing there. Two clients on
+    /// different tabs each have a visible rail, and `PipeSource::Keybind`
+    /// names no client, so a press can still move the other client: no
+    /// plugin-side signal tells the rails apart.
     pub(crate) fn control(&mut self, verb: Verb) -> Outcome {
-        if !self.permission.granted() {
+        if !self.permission.granted() || self.hidden {
             return Outcome::none();
         }
         let dir = match verb {

@@ -790,6 +790,55 @@ fn command_attention_next_emits_switch_tab() {
     assert_eq!(out.effects, vec![Effect::SwitchTab { position: 1 }]);
 }
 
+/// #89: one rail instance per tab, all four tabs needing attention. Zellij
+/// sends `TabUpdate` to the active tab's plugins only, so as the user walks
+/// tab 0 → 3 each rail's view freezes on the moment it went dark, with its
+/// own tab marked active; `Visible(false)` marks it hidden. Every rail then
+/// gets each `cmd.v1` press — only the visible one may answer it.
+#[test]
+fn attention_verbs_are_answered_by_the_visible_rail_only() {
+    const TABS: usize = 4;
+    let manifest = |active: usize| (0..TABS).map(|p| tab(p, &format!("t{p}"), p == active)).collect::<Vec<_>>();
+    let mut rails: Vec<PluginRuntime> = (0..TABS).map(|_| granted_runtime()).collect();
+    for (own, rail) in rails.iter_mut().enumerate() {
+        for p in 0..TABS {
+            rail.radar.set_tab_panes_for_position(p, vec![pane(10 + p as u32)]);
+            rail.radar.status_mut().apply(payload_for(10 + p as u32, Status::Pending), 1, 0);
+        }
+        // Visit every tab in order: a rail sees manifests only while its
+        // own tab is active, then goes dark when the user moves on.
+        rail.tabs_changed(manifest(own));
+        rail.visibility_changed(false);
+    }
+    // Back on tab 0: its rail is revealed and gets the fresh manifest; the
+    // others stay dark with their frozen views.
+    rails[0].visibility_changed(true);
+    rails[0].tabs_changed(manifest(0));
+
+    for (verb, want) in [(Verb::AttentionNext, 1), (Verb::AttentionPrev, 3)] {
+        let votes: Vec<(usize, Vec<Effect>)> = rails
+            .iter_mut()
+            .enumerate()
+            .map(|(i, rail)| (i, rail.control(verb).effects))
+            .filter(|(_, effects)| !effects.is_empty())
+            .collect();
+        assert_eq!(
+            votes,
+            vec![(0, vec![Effect::SwitchTab { position: want }])],
+            "{verb:?}: exactly one rail (the visible one) may switch tabs"
+        );
+    }
+}
+
+#[test]
+fn session_verbs_are_inert_on_a_hidden_rail() {
+    let mut rt = runtime_with_granted_permission();
+    rt.presences_changed(vec![fresh(r#"{"session_name":"alpha","running":0,"attention":1}"#)]);
+    rt.visibility_changed(false);
+    assert_eq!(rt.control_pipe("session-next"), Outcome::default());
+    assert_eq!(rt.control_pipe("session-prev"), Outcome::default());
+}
+
 #[test]
 fn command_is_inert_without_permission() {
     let mut runtime = PluginRuntime { config: config(), ..Default::default() };
