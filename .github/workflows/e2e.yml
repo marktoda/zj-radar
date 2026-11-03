@@ -2,9 +2,12 @@ name: E2E
 
 # The live L5 suite (real Zellij in a PTY) runs:
 #  - nightly, on both OSes — the broad regression net;
-#  - on PRs that touch what E2E actually exercises (plugin + core + the
-#    notify.sh producer the harness drives, and the toolchain/lockfiles) —
-#    ubuntu-only there, for pre-merge signal at half the cost;
+#  - on every PR, ubuntu-only, so the required `e2e (ubuntu-latest)` check
+#    always reports. The suite itself runs only when the PR touches what E2E
+#    exercises (plugin + core + the notify.sh producer the harness drives, the
+#    toolchain/lockfiles, this workflow); otherwise the job passes after the
+#    `scope` step. A path filter on the trigger would skip the workflow, and a
+#    required check that never reports blocks the merge;
 #  - as a release gate: release.yml `uses:` this workflow via workflow_call,
 #    so nothing publishes over a red E2E (this replaced the old `tags` trigger,
 #    which raced the release instead of gating it);
@@ -15,15 +18,6 @@ on:
   workflow_dispatch:
   workflow_call:
   pull_request:
-    paths:
-      - "crates/plugin/**"
-      - "crates/core/**"
-      - "plugins/zj-radar-claude/scripts/**"
-      - "Cargo.lock"
-      - "justfile"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/e2e.yml"
 
 permissions:
   contents: read
@@ -48,15 +42,40 @@ jobs:
       issues: write   # nightly-failure-issue (scheduled runs only)
     steps:
       - uses: actions/checkout@v4
+        with:
+          # on a PR: the merge commit and its parents, for the diff below
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      # Nightly, release and manual runs always run the suite. A PR runs it only
+      # when it changes what E2E exercises: HEAD is the PR merged into its
+      # base, so HEAD^1..HEAD is exactly what the PR changes.
+      - name: scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq '^(crates/plugin/|crates/core/|plugins/zj-radar-claude/scripts/|Cargo\.lock$|justfile$|flake\.nix$|flake\.lock$|\.github/workflows/e2e\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::E2E skipped: this PR changes nothing the live suite exercises"
+          fi
       - uses: cachix/install-nix-action@v30
+        if: steps.scope.outputs.run == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
       - uses: nix-community/cache-nix-action@v7
+        if: steps.scope.outputs.run == 'true'
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: live e2e (L5)
+        if: steps.scope.outputs.run == 'true'
         run: nix develop -c just test-e2e
       - name: file a failure issue (nightly visibility)
         if: failure() && github.event_name == 'schedule'
