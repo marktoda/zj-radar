@@ -47,19 +47,9 @@ pub fn run(options: UpdateOptions) {
     // Forward only: a pin older than this CLI would refresh the wasm to the
     // pin while the binary stays put — exactly the version split `update`
     // exists to prevent. Downgrades go through the installer, which replaces
-    // the CLI first (then `setup zellij --download` follows its version).
+    // the CLI first, then `setup zellij --download` fetches the pinned wasm.
     if !cli_behind && target != current {
-        crate::exit::fail_report(
-            "update",
-            format!(
-                "ZJ_RADAR_VERSION=v{target} is older than this CLI (v{current}) — update only moves forward. \
-                 To downgrade, reinstall that release:\n  \
-                 ZJ_RADAR_VERSION=v{target} curl --proto '=https' --tlsv1.2 -LsSf \
-                 https://github.com/{}/releases/latest/download/install.sh | sh\n  \
-                 zj-radar setup zellij --download",
-                crate::setup::repo_slug()
-            ),
-        );
+        crate::exit::fail_report("update", downgrade_message(&target, current, &crate::setup::repo_slug()));
         return;
     }
     if cli_behind {
@@ -220,6 +210,22 @@ fn rerun(exe: &Path, target: &str, args: &[&str]) -> bool {
             false
         }
     }
+}
+
+/// Why `update` refuses a pin older than the CLI, and the commands that do the
+/// downgrade. The pin sits on `sh`, not `curl`: a prefix assignment reaches only
+/// the command it precedes, and it's `sh` running install.sh that reads
+/// `ZJ_RADAR_VERSION` (unset, it installs the latest release). The wasm line
+/// carries the pin too, so it fetches the target even before the shell picks
+/// up the reinstalled binary.
+fn downgrade_message(target: &str, current: &str, repo: &str) -> String {
+    format!(
+        "ZJ_RADAR_VERSION=v{target} is older than this CLI (v{current}) — update only moves forward. \
+         To downgrade, reinstall that release:\n  \
+         curl --proto '=https' --tlsv1.2 -LsSf \
+         https://github.com/{repo}/releases/latest/download/install.sh | ZJ_RADAR_VERSION=v{target} sh\n  \
+         ZJ_RADAR_VERSION=v{target} zj-radar setup zellij --download"
+    )
 }
 
 /// The release to move to: `ZJ_RADAR_VERSION` when pinned (no network), else
@@ -499,6 +505,18 @@ pub(crate) fn replace_binary(fresh: &Path, current: &Path) -> Result<(), String>
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn downgrade_message_pins_the_installer_shell_and_the_wasm_fetch() {
+        let msg = downgrade_message("0.11.0", "0.12.0", "marktoda/zj-radar");
+        // The pin must reach `sh` (which runs install.sh), not just `curl`.
+        assert!(
+            msg.contains("/releases/latest/download/install.sh | ZJ_RADAR_VERSION=v0.11.0 sh\n"),
+            "installer line doesn't pin sh: {msg}"
+        );
+        assert!(!msg.contains("ZJ_RADAR_VERSION=v0.11.0 curl"), "pin is on curl: {msg}");
+        assert!(msg.ends_with("\n  ZJ_RADAR_VERSION=v0.11.0 zj-radar setup zellij --download"), "{msg}");
+    }
 
     #[test]
     fn tag_from_latest_redirect_parses_the_tag_page_url() {
