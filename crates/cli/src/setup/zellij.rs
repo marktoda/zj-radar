@@ -95,9 +95,11 @@ pub(crate) fn zellij_version_output() -> Option<String> {
 
 pub(crate) fn zellij_config_dir() -> Option<PathBuf> {
     resolve_config_dir(
+        ConfigPlatform::current(),
         std::env::var_os("ZELLIJ_CONFIG_DIR"),
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
+        |p| p.is_dir(),
     )
 }
 
@@ -118,25 +120,73 @@ pub(crate) fn zellij_config_dir_or_report() -> Option<PathBuf> {
     dir
 }
 
-/// Mirror Zellij's own config-dir resolution so `setup` writes where Zellij reads:
-/// `ZELLIJ_CONFIG_DIR` wins, then `$XDG_CONFIG_HOME/zellij`, then `~/.config/zellij`.
-/// Skipping `XDG_CONFIG_HOME` would install the alias/wasm into `~/.config` while a
-/// Linux XDG user's Zellij reads elsewhere — the rail never appears and `--check`
-/// reports everything missing. `None` when every source is unset or empty — writers
-/// must refuse rather than invent a path. Pure (env read by the caller) so the
-/// precedence is unit-testable without mutating process-global environment.
+/// Which platform's config-dir convention Zellij follows (its `ProjectDirs`
+/// lookup). Only macOS differs; every other unix uses the XDG layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigPlatform {
+    Xdg,
+    MacOs,
+}
+
+impl ConfigPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Xdg
+        }
+    }
+}
+
+/// Mirror Zellij's own config-dir resolution so `setup` writes where Zellij reads
+/// (`zellij-utils` `home.rs`: `--config-dir`/`ZELLIJ_CONFIG_DIR`, else the first
+/// *existing* entry of `default_config_dirs()`):
+///
+/// 1. `ZELLIJ_CONFIG_DIR`, when set;
+/// 2. `~/.config/zellij`, if it exists;
+/// 3. the platform config dir, if it exists: `$XDG_CONFIG_HOME/zellij` (falling
+///    back to `~/.config/zellij`) on Linux, `~/Library/Application
+///    Support/org.Zellij-Contributors.Zellij` on macOS;
+/// 4. otherwise `~/.config/zellij` — the dir Zellij will pick up once setup
+///    creates it.
+///
+/// Zellij's last candidate, `/etc/zellij`, is deliberately not a target: it is
+/// system-wide and root-owned, and a per-user config (step 4) taking over from
+/// it is the intended effect of a user install.
+///
+/// The existence checks matter: writing an unread `$XDG_CONFIG_HOME/zellij` while
+/// `~/.config/zellij` exists leaves the rail missing, and creating
+/// `~/.config/zellij` on macOS while the user's config lives in Application
+/// Support makes Zellij switch to it, hiding their whole config. `None` when no
+/// path can be formed (every source unset or empty) — writers must refuse rather
+/// than invent a path. Pure (env, platform and `exists` supplied by the caller) so
+/// the precedence is unit-testable per platform without touching the real
+/// environment or filesystem.
 fn resolve_config_dir(
+    platform: ConfigPlatform,
     zellij_config_dir: Option<std::ffi::OsString>,
     xdg_config_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
+    exists: impl Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
     if let Some(dir) = zellij_config_dir.filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(xdg).join("zellij"));
-    }
-    home.filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(".config").join("zellij"))
+    let home = home.filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home_dir = home.as_ref().map(|h| h.join(".config").join("zellij"));
+    let platform_dir = match platform {
+        // `directories` only honors an absolute `XDG_CONFIG_HOME`.
+        ConfigPlatform::Xdg => xdg_config_home
+            .map(PathBuf::from)
+            .filter(|x| x.is_absolute())
+            .map(|x| x.join("zellij"))
+            .or_else(|| home_dir.clone()),
+        ConfigPlatform::MacOs => {
+            home.as_ref().map(|h| h.join("Library").join("Application Support").join("org.Zellij-Contributors.Zellij"))
+        }
+    };
+    let found = [&home_dir, &platform_dir].into_iter().flatten().find(|d| exists(d)).cloned();
+    found.or(home_dir).or(platform_dir)
 }
 
 pub(crate) fn zellij_config_path(config_dir: &Path) -> PathBuf {
@@ -917,19 +967,73 @@ mod tests {
 
     #[test]
     fn resolve_config_dir_prefers_zellij_config_dir() {
-        let got = resolve_config_dir(os("/explicit"), os("/xdg"), os("/home"));
-        assert_eq!(got, Some(PathBuf::from("/explicit")));
+        for platform in [ConfigPlatform::Xdg, ConfigPlatform::MacOs] {
+            // Wins even over an existing ~/.config/zellij.
+            let got = resolve_config_dir(platform, os("/explicit"), os("/xdg"), os("/home"), |_| true);
+            assert_eq!(got, Some(PathBuf::from("/explicit")));
+        }
+    }
+
+    /// `exists` stub: only the listed dirs exist.
+    fn only(dirs: &'static [&'static str]) -> impl Fn(&Path) -> bool {
+        move |p| dirs.iter().any(|d| p == Path::new(d))
+    }
+
+    const MAC_DIR: &str = "/home/Library/Application Support/org.Zellij-Contributors.Zellij";
+
+    #[test]
+    fn resolve_config_dir_xdg_order_matches_zellij() {
+        let x = ConfigPlatform::Xdg;
+        // ~/.config/zellij exists → Zellij reads it even with XDG_CONFIG_HOME set
+        // elsewhere (the bug: setup used to edit $XDG_CONFIG_HOME/zellij).
+        let both = only(&["/home/.config/zellij", "/xdg/zellij"]);
+        assert_eq!(
+            resolve_config_dir(x, None, os("/xdg"), os("/home"), both),
+            Some(PathBuf::from("/home/.config/zellij"))
+        );
+        // Only the XDG dir exists → it.
+        let xdg = only(&["/xdg/zellij"]);
+        assert_eq!(resolve_config_dir(x, None, os("/xdg"), os("/home"), xdg), Some(PathBuf::from("/xdg/zellij")));
+        // Neither exists → ~/.config/zellij, which Zellij reads first once created.
+        assert_eq!(
+            resolve_config_dir(x, None, os("/xdg"), os("/home"), only(&[])),
+            Some(PathBuf::from("/home/.config/zellij"))
+        );
+        // No XDG, empty or relative XDG → ~/.config/zellij.
+        for xdg in [None, os(""), os("rel")] {
+            assert_eq!(
+                resolve_config_dir(x, None, xdg, os("/home"), only(&[])),
+                Some(PathBuf::from("/home/.config/zellij"))
+            );
+        }
+        // No HOME but an XDG_CONFIG_HOME → the XDG dir.
+        assert_eq!(resolve_config_dir(x, None, os("/xdg"), None, only(&[])), Some(PathBuf::from("/xdg/zellij")));
+        // The macOS dir is never consulted on Linux.
+        assert_eq!(
+            resolve_config_dir(x, None, None, os("/home"), only(&[MAC_DIR])),
+            Some(PathBuf::from("/home/.config/zellij"))
+        );
     }
 
     #[test]
-    fn resolve_config_dir_falls_back_to_xdg_then_home() {
-        // No ZELLIJ_CONFIG_DIR → XDG_CONFIG_HOME/zellij (the bug: this used to be
-        // skipped, so XDG users got a silently-ineffective setup).
-        assert_eq!(resolve_config_dir(None, os("/xdg"), os("/home")), Some(PathBuf::from("/xdg/zellij")),);
-        // No ZELLIJ_CONFIG_DIR, no XDG → ~/.config/zellij.
-        assert_eq!(resolve_config_dir(None, None, os("/home")), Some(PathBuf::from("/home/.config/zellij")),);
-        // Empty env values are ignored, not treated as "" paths.
-        assert_eq!(resolve_config_dir(os(""), os(""), os("/home")), Some(PathBuf::from("/home/.config/zellij")),);
+    fn resolve_config_dir_macos_order_matches_zellij() {
+        let m = ConfigPlatform::MacOs;
+        // Config in Application Support, no ~/.config/zellij → Application
+        // Support (the bug: setup created ~/.config/zellij, hiding it).
+        assert_eq!(resolve_config_dir(m, None, None, os("/home"), only(&[MAC_DIR])), Some(PathBuf::from(MAC_DIR)));
+        // ~/.config/zellij exists → it wins over Application Support.
+        let both = only(&["/home/.config/zellij", MAC_DIR]);
+        assert_eq!(resolve_config_dir(m, None, None, os("/home"), both), Some(PathBuf::from("/home/.config/zellij")));
+        // XDG_CONFIG_HOME is not Zellij's platform dir on macOS.
+        assert_eq!(
+            resolve_config_dir(m, None, os("/xdg"), os("/home"), only(&["/xdg/zellij"])),
+            Some(PathBuf::from("/home/.config/zellij"))
+        );
+        // Nothing exists → ~/.config/zellij.
+        assert_eq!(
+            resolve_config_dir(m, None, None, os("/home"), only(&[])),
+            Some(PathBuf::from("/home/.config/zellij"))
+        );
     }
 
     #[test]
@@ -938,8 +1042,10 @@ mod tests {
         // fallback produced the RELATIVE path `.config/zellij` — a setup run
         // from cron/a container would grow a config tree in its CWD. Writers
         // must refuse instead.
-        assert_eq!(resolve_config_dir(None, None, None), None);
-        assert_eq!(resolve_config_dir(os(""), os(""), os("")), None);
+        for platform in [ConfigPlatform::Xdg, ConfigPlatform::MacOs] {
+            assert_eq!(resolve_config_dir(platform, None, None, None, |_| true), None);
+            assert_eq!(resolve_config_dir(platform, os(""), os(""), os(""), |_| true), None);
+        }
     }
 
     // ── inject_mode decision tests ───────────────────────────────────────────
