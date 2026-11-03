@@ -3774,9 +3774,9 @@ fn mode_runtime(show_mode: bool) -> PluginRuntime {
 #[test]
 fn mode_change_with_show_mode_off_requests_no_render() {
     let mut rt = mode_runtime(false);
-    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked);
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked, None);
     assert!(!out.render, "off: a mode change costs no repaint");
-    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal);
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, None);
     assert!(!out.render);
     assert!(!rt.render(40, 30).contains("NORMAL"), "off: no label drawn");
 }
@@ -3785,12 +3785,12 @@ fn mode_change_with_show_mode_off_requests_no_render() {
 fn mode_change_with_show_mode_on_repaints_once_per_distinct_mode() {
     use crate::mode::Mode;
     let mut rt = mode_runtime(true);
-    let first = rt.mode_changed(Some("work".into()), Mode::Locked);
+    let first = rt.mode_changed(Some("work".into()), Mode::Locked, None);
     assert!(first.render, "the first mode is news");
     assert!(rt.render(40, 30).contains("LOCKED"));
-    let repeat = rt.mode_changed(Some("work".into()), Mode::Locked);
+    let repeat = rt.mode_changed(Some("work".into()), Mode::Locked, None);
     assert!(!repeat.render, "an identical mode is not");
-    let next = rt.mode_changed(None, Mode::Pane);
+    let next = rt.mode_changed(None, Mode::Pane, None);
     assert!(next.render, "a new mode repaints even without a session name");
     assert!(rt.render(40, 30).contains("PANE"));
 }
@@ -3800,7 +3800,7 @@ fn a_nameless_mode_update_with_show_mode_off_is_a_no_op() {
     // The production path for a `ModeUpdate` that carries no session name:
     // with the label off it must stay the no-op it was before `mode_changed`.
     let mut rt = mode_runtime(false);
-    let out = rt.mode_changed(None, crate::mode::Mode::Locked);
+    let out = rt.mode_changed(None, crate::mode::Mode::Locked, None);
     assert!(!out.render, "got {:?}", out.effects);
     assert!(out.effects.is_empty(), "got {:?}", out.effects);
 }
@@ -3814,7 +3814,7 @@ fn the_first_named_mode_update_claims_the_writer_and_paints_the_label() {
     };
     rt.config.show_mode = true;
     drive_tabs_and_panes(&mut rt);
-    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal);
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, None);
     assert!(claims(&out), "learning the name claims the writer token, got {:?}", out.effects);
     assert!(out.render, "and the first shown mode repaints");
 }
@@ -3823,17 +3823,59 @@ fn the_first_named_mode_update_claims_the_writer_and_paints_the_label() {
 fn mode_change_on_a_hidden_rail_requests_no_render() {
     let mut rt = mode_runtime(true);
     let _ = rt.visibility_changed(false);
-    assert!(!rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked).render);
+    assert!(!rt.mode_changed(Some("work".into()), crate::mode::Mode::Locked, None).render);
 }
 
 #[test]
 fn show_mode_live_toggle_repaints_and_shows_the_last_seen_mode() {
     let mut rt = mode_runtime(false);
-    let _ = rt.mode_changed(Some("work".into()), crate::mode::Mode::Scroll);
+    let _ = rt.mode_changed(Some("work".into()), crate::mode::Mode::Scroll, None);
     let on = rt.config_pipe(r#"{"show_mode":true}"#);
     assert!(on.render, "the toggle repaints");
     assert!(rt.render(40, 30).contains("SCROLL"), "the mode seen while off is shown once on");
     let off = rt.config_pipe(r#"{"show_mode":false}"#);
     assert!(off.render);
     assert!(!rt.render(40, 30).contains("SCROLL"));
+}
+
+// ── theme color sources: pane default_bg > Zellij theme palette > fallback (#85) ──
+
+fn latte() -> theme::DerivedColors {
+    theme::DerivedColors::from_theme_palette((220, 224, 232), (76, 79, 105)).unwrap()
+}
+
+#[test]
+fn theme_palette_is_used_when_no_pane_reports_colors() {
+    // Zellij 0.45 leaves every pane's default_bg null (manifests carry
+    // `theme: None`), so the ModeUpdate palette must win over the fallback.
+    let mut rt = mode_runtime(false);
+    assert_eq!(rt.theme, theme::DerivedColors::default());
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, Some(latte()));
+    assert!(out.render, "a new palette repaints even with show_mode off");
+    assert_eq!(rt.theme, latte());
+    let _ = rt.panes_changed(manifest_with_pane_7());
+    assert_eq!(rt.theme, latte(), "a colorless manifest keeps the palette");
+    let again = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, Some(latte()));
+    assert!(!again.render, "an unchanged palette costs no repaint");
+}
+
+#[test]
+fn pane_reported_colors_outrank_the_theme_palette() {
+    let mut rt = mode_runtime(false);
+    let pane_colors = theme::DerivedColors::from_bg_fg((0, 0, 0), (200, 200, 200));
+    let _ = rt.panes_changed(PaneUpdate { theme: Some(pane_colors.clone()), ..manifest_with_pane_7() });
+    let _ = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, Some(latte()));
+    assert_eq!(rt.theme, pane_colors, "OSC 10/11-reported colors are the more specific source");
+}
+
+#[test]
+fn theme_switch_to_an_unusable_palette_falls_back() {
+    // A later ModeUpdate is authoritative: switching to an 8-bit theme (the
+    // adapter hands `None`) drops the old palette rather than keeping it.
+    let mut rt = mode_runtime(false);
+    let _ = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, Some(latte()));
+    let _ = rt.render(40, 30); // the latte frame is on screen
+    let out = rt.mode_changed(Some("work".into()), crate::mode::Mode::Normal, None);
+    assert!(out.render);
+    assert_eq!(rt.theme, theme::DerivedColors::default());
 }
