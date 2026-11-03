@@ -1220,8 +1220,9 @@ impl RadarState {
     /// blocking reads) when naming is `Off` — mirroring `rename_tabs`. Unlike
     /// renames it is NOT scoped to the owned tab: the cwd also stamps `repo`
     /// on observed commands (`command_changed`), which titles their desktop
-    /// notification and so feeds the cross-instance claim key — every
-    /// instance must hold the same fact or the election dedupes nothing.
+    /// notification. (The cross-instance claim key deliberately leaves a
+    /// command's title out — `notify_rules::claim_key` — since a hidden rail
+    /// never sees this bootstrap and would otherwise split the election.)
     fn cwd_bootstrap_targets(&mut self, naming_mode: config::NamingMode) -> Vec<u32> {
         if naming_mode == config::NamingMode::Off {
             return Vec::new();
