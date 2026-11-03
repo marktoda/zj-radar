@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::kind::Kind;
-use crate::observation::TrackedObservation;
+use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::status::Status;
 use std::collections::BTreeMap;
 
@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub struct Notification {
     pub pane_id: u32,
     pub status: Status,
+    pub origin: ObservationOrigin,
     pub title: String,
     pub body: String,
 }
@@ -23,8 +24,19 @@ pub struct Notification {
 /// file elect exactly one dispatcher (`SessionFiles::claim_notification`).
 /// The text hash keeps two different messages on the same pane+status (e.g. a
 /// second question) as distinct events.
+///
+/// A command-origin event leaves the title out: its title is the repo, i.e.
+/// the basename of a cwd each instance learns on its own (a hidden tab's rail
+/// may not have resolved a new pane's cwd yet and titles it `""`), so hashing
+/// it would split one event into per-rail keys and dedupe nothing. Pane,
+/// status, and the body (phrase + command line) already identify the event.
+/// A status-pipe title comes from the broadcast payload, identical everywhere.
 pub fn claim_key(n: &Notification) -> String {
-    format!("p{}.{}.{:08x}", n.pane_id, n.status.as_wire(), fnv1a(&n.title, &n.body))
+    let title = match n.origin {
+        ObservationOrigin::Command => "",
+        ObservationOrigin::StatusPipe => n.title.as_str(),
+    };
+    format!("p{}.{}.{:08x}", n.pane_id, n.status.as_wire(), fnv1a(title, &n.body))
 }
 
 /// FNV-1a over title+body. Stability across *builds* is irrelevant — every
@@ -76,7 +88,7 @@ fn build(pane_id: u32, o: &TrackedObservation, status: Status) -> Notification {
     let title = if o.branch.is_empty() { o.repo.clone() } else { format!("{} · {}", o.repo, o.branch) };
     let phrase = phrase(status, o.kind).unwrap_or("");
     let body = if o.msg.is_empty() { phrase.to_string() } else { format!("{phrase} — {}", o.msg) };
-    Notification { pane_id, status, title, body }
+    Notification { pane_id, status, origin: o.origin, title, body }
 }
 
 /// Emit a notification for each pane that transitioned INTO an attention status
@@ -362,6 +374,36 @@ mod tests {
         let cur2 = current(&pairs2);
         let n2 = diff(&prev, &cur2, None, &Config::default());
         assert_ne!(key, claim_key(&n2[0]));
+    }
+
+    #[test]
+    fn command_claim_key_ignores_the_cwd_derived_title() {
+        // Two rails see the same command finish; only one has resolved the
+        // pane's cwd (#98). The toast titles differ, the event does not.
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let known = obs(Status::Done, "proj", "", "cargo build");
+        let unknown = obs(Status::Done, "", "", "cargo build");
+        let a = diff(&prev, &current(&[(7, &known)]), None, &Config::default());
+        let b = diff(&prev, &current(&[(7, &unknown)]), None, &Config::default());
+        assert_ne!(a[0].title, b[0].title);
+        assert_eq!(claim_key(&a[0]), claim_key(&b[0]));
+
+        // A different command on the same pane+status is still its own event.
+        let other = obs(Status::Done, "proj", "", "cargo test");
+        let c = diff(&prev, &current(&[(7, &other)]), None, &Config::default());
+        assert_ne!(claim_key(&a[0]), claim_key(&c[0]));
+    }
+
+    #[test]
+    fn status_pipe_claim_key_keeps_the_payload_title() {
+        let prev = BTreeMap::from([(7, Status::Running)]);
+        let mut a = obs(Status::Done, "pinky", "main", "turn done");
+        a.origin = ObservationOrigin::StatusPipe;
+        let mut b = a.clone();
+        b.repo = "other".to_string();
+        let na = diff(&prev, &current(&[(7, &a)]), None, &Config::default());
+        let nb = diff(&prev, &current(&[(7, &b)]), None, &Config::default());
+        assert_ne!(claim_key(&na[0]), claim_key(&nb[0]));
     }
 
     #[test]
