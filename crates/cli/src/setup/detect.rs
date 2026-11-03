@@ -230,6 +230,36 @@ pub(crate) fn has_unmanaged_radar_alias(lines: &[String]) -> bool {
     lines.iter().zip(&mask).any(|(line, in_plugins)| *in_plugins && is_unmanaged_radar_alias_line(line))
 }
 
+/// The `location` of every hand-owned `radar` alias in a `plugins` block, in
+/// order; `None` for an alias line without a readable `location="…"` (a
+/// bare `radar`, or a location given some other way). Line-level like the
+/// other alias detectors, so a config our KDL parser can't read still answers.
+pub(crate) fn unmanaged_radar_alias_locations(lines: &[String]) -> Vec<Option<String>> {
+    let mask = in_plugins_block_mask(lines);
+    lines
+        .iter()
+        .zip(&mask)
+        .filter(|(line, in_plugins)| **in_plugins && is_unmanaged_radar_alias_line(line))
+        .map(|(line, _)| alias_line_location(line))
+        .collect()
+}
+
+/// The quoted value of the first `location=` property on an alias line, with
+/// KDL's `\"` and `\\` escapes undone (the two `kdl_string` writes).
+fn alias_line_location(line: &str) -> Option<String> {
+    let start = line.find("location=\"")? + "location=\"".len();
+    let mut out = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    None // unterminated on this line: not something we can read
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +344,32 @@ mod tests {
         v.extend(lines.iter().map(|l| format!("    {l}")));
         v.push("}".to_string());
         v
+    }
+
+    #[test]
+    fn unmanaged_radar_alias_locations_reads_each_alias() {
+        let lines = in_plugins(&[
+            "radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\" {",
+            "    naming \"managed\"",
+            "}",
+            "tab-bar location=\"zellij:tab-bar\"",
+            "radar",
+            "radar location=\"file:/a\\\"b\\\\c.wasm\"",
+        ]);
+        assert_eq!(
+            unmanaged_radar_alias_locations(&lines),
+            vec![
+                Some("file:~/.config/zellij/plugins/zj_radar.wasm".to_string()),
+                None,
+                Some("file:/a\"b\\c.wasm".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unmanaged_radar_alias_locations_ignores_radar_outside_plugins() {
+        let lines: Vec<String> = ["keybinds {", "    radar location=\"file:/x.wasm\"", "}"].map(String::from).to_vec();
+        assert!(unmanaged_radar_alias_locations(&lines).is_empty());
     }
 
     #[test]

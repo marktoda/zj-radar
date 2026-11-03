@@ -159,6 +159,33 @@ fn zellij_plugin_location(path: &Path) -> String {
     format!("file:{display_path}")
 }
 
+/// Pure: does a hand-owned `radar` alias in `config_text` load the wasm at
+/// `wasm_dest`? True only when there is at least one such alias and EVERY one
+/// has a `file:` location naming `wasm_dest` (absolute, or `~/…` under
+/// `home`). Then a `setup zellij` install has nothing to change in config.kdl
+/// and only the wasm to refresh, so the user's alias (and its custom keys) is
+/// left as it is instead of being refused as a conflict. Anything less
+/// certain — a bare `radar`, another path, a second alias elsewhere — keeps
+/// the conflict.
+pub(crate) fn hand_owned_alias_loads(config_text: &str, wasm_dest: &Path, home: Option<&Path>) -> bool {
+    let mut stripped = split_lines(config_text);
+    crate::setup::detect::strip_managed_zellij_alias(&mut stripped);
+    let locations = crate::setup::detect::unmanaged_radar_alias_locations(&stripped);
+    !locations.is_empty()
+        && locations.iter().all(|loc| loc.as_deref().is_some_and(|l| location_names(l, wasm_dest, home)))
+}
+
+/// Does the alias location string `location` resolve to `path`?
+fn location_names(location: &str, path: &Path, home: Option<&Path>) -> bool {
+    let Some(file) = location.strip_prefix("file:") else { return false };
+    let resolved = match (file.strip_prefix("~/"), home) {
+        (Some(rel), Some(home)) => home.join(rel),
+        (Some(_), None) => return false,
+        (None, _) => PathBuf::from(file),
+    };
+    resolved.components().eq(path.components())
+}
+
 /// Returns `true` when `path` is a symlink — the hallmark of a Nix / home-manager
 /// managed file that we must not overwrite. Applied to config.kdl AND layout
 /// files alike (hence the name). Uses `symlink_metadata` so the query does not
@@ -424,6 +451,30 @@ pub(crate) fn setup_zellij(uninstall: bool, opts: ZellijSetupOpts<'_>) {
             // passed/downloaded — this arm is every upgrade's path.
             refresh_wasm(src, &wasm_dest, dry_run);
             // alias already up to date — still offer injection and the grant.
+            run_layout_inject(&layout_path, inject_flag, yes, dry_run, is_tty);
+            if !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty) {
+                print_grant_hint_if_needed(&facts);
+            }
+            print_producer_hint_if_needed(&facts);
+        }
+        Outcome::Conflict
+            if hand_owned_alias_loads(
+                &existing,
+                &wasm_dest,
+                std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            ) =>
+        {
+            // The user's own alias already loads the stable wasm path: there
+            // is nothing to write in config.kdl, only the wasm to refresh —
+            // the `Unchanged` arm minus the managed block. Refusing here left
+            // every hand-owned install on its first wasm forever (`update`
+            // re-runs exactly this), and `--force` would replace their alias.
+            println!(
+                "zellij: keeping your own `radar` alias in {} — it already loads {}",
+                config_path.display(),
+                wasm_dest.display()
+            );
+            refresh_wasm(src, &wasm_dest, dry_run);
             run_layout_inject(&layout_path, inject_flag, yes, dry_run, is_tty);
             if !run_preseed(&wasm_dest, facts.granted, yes, dry_run, is_tty) {
                 print_grant_hint_if_needed(&facts);
@@ -913,6 +964,42 @@ mod tests {
     // ── config-dir resolution (matches Zellij's own precedence) ──────────────
     fn os(s: &str) -> Option<OsString> {
         Some(OsString::from(s))
+    }
+
+    // ── hand-owned alias pointing at the stable wasm (#96) ───────────────────
+    #[test]
+    fn hand_owned_alias_at_the_wasm_dest_is_recognized() {
+        let home = Path::new("/home/u");
+        let dest = Path::new("/home/u/.config/zellij/plugins/zj_radar.wasm");
+        for cfg in [
+            "plugins {\n    radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\" {\n        naming \"managed\"\n    }\n}\n",
+            "plugins {\n    radar location=\"file:/home/u/.config/zellij/plugins/zj_radar.wasm\"\n}\n",
+        ] {
+            assert!(hand_owned_alias_loads(cfg, dest, Some(home)), "{cfg}");
+        }
+    }
+
+    #[test]
+    fn hand_owned_alias_elsewhere_stays_a_conflict() {
+        let home = Path::new("/home/u");
+        let dest = Path::new("/home/u/.config/zellij/plugins/zj_radar.wasm");
+        for cfg in [
+            // another wasm
+            "plugins {\n    radar location=\"file:/opt/zj_radar.wasm\"\n}\n",
+            // not a file location
+            "plugins {\n    radar location=\"https://example.com/zj_radar.wasm\"\n}\n",
+            // no readable location
+            "plugins {\n    radar\n}\n",
+            // one alias right, a second one elsewhere
+            "plugins {\n    radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\"\n}\nplugins {\n    radar location=\"file:/opt/x.wasm\"\n}\n",
+            // no hand-owned alias at all
+            "plugins {\n    tab-bar location=\"zellij:tab-bar\"\n}\n",
+        ] {
+            assert!(!hand_owned_alias_loads(cfg, dest, Some(home)), "{cfg}");
+        }
+        // `~/` with no $HOME can't be resolved: fail closed.
+        let tilde = "plugins {\n    radar location=\"file:~/.config/zellij/plugins/zj_radar.wasm\"\n}\n";
+        assert!(!hand_owned_alias_loads(tilde, dest, None));
     }
 
     #[test]
