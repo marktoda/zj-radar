@@ -79,4 +79,22 @@ mod tests {
              via `{bind}…\"` (found {checked}); if the doc changed shape, update this pin"
         );
     }
+
+    /// The documented keybinds go in `config.kdl`, which every session reads,
+    /// so they must broadcast: a `MessagePlugin` that names the plugin
+    /// launches a new rail pane in a session whose layout has none (#107).
+    /// Broadcasting is safe because `pipe()` dispatches on the message name.
+    #[test]
+    fn documented_keybinds_broadcast() {
+        let doc = include_str!("../../../docs/configuration.md");
+        let binds: Vec<&str> = doc.lines().map(str::trim).filter(|l| l.starts_with("MessagePlugin")).collect();
+        assert!(binds.len() >= 2, "expected configuration.md to document MessagePlugin keybinds");
+        for line in binds {
+            assert!(
+                line.starts_with("MessagePlugin {"),
+                "configuration.md keybind {line:?} names a plugin; a targeted MessagePlugin \
+                 launches a rail in sessions without one, so document the broadcast form"
+            );
+        }
+    }
 }

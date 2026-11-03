@@ -86,21 +86,21 @@ keybinds {
     shared_except "locked" {
         // Flush/compact rail
         bind "Alt Shift c" {
-            MessagePlugin "radar" {
+            MessagePlugin {
                 name "zj_radar.config.v1"
                 payload "{\"density\":\"compact\"}"
             }
         }
         // Roomy cards
         bind "Alt Shift v" {
-            MessagePlugin "radar" {
+            MessagePlugin {
                 name "zj_radar.config.v1"
                 payload "{\"density\":\"cards\"}"
             }
         }
         // Hide the identity header
         bind "Alt Shift h" {
-            MessagePlugin "radar" {
+            MessagePlugin {
                 name "zj_radar.config.v1"
                 payload "{\"header\":false}"
             }
@@ -109,11 +109,14 @@ keybinds {
 }
 ```
 
-- `"radar"` is the plugin alias your layout uses. Without an alias, use the
-  full plugin URL instead.
-- `MessagePlugin` reaches every running radar instance (one per tab), so the
-  whole session updates at once. If none is running it launches a headless one
-  to receive the message, which is harmless.
+- `MessagePlugin` with no plugin named broadcasts the message to every
+  running plugin. Each radar instance (one per tab) picks it out by its pipe
+  name, so the whole session updates at once; other plugins ignore it, and in
+  a session without a rail the key does nothing.
+- Don't name the plugin (`MessagePlugin "radar" { … }`) unless every session
+  loads the rail. Keybinds in `config.kdl` apply to every session, and a
+  targeted `MessagePlugin` launches the plugin when no instance is running, so
+  the key opens a new rail pane in a session started with another layout.
 - `config.v1` sets values; it cannot toggle them. Bind one key per value.
 
 ## Binding keys to commands
@@ -126,17 +129,17 @@ keybinds {
     shared_except "locked" {
         // Cycle focus to the next tab needing attention (pending / error / done)
         bind "Alt n" {
-            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "attention-next"; }
+            MessagePlugin { name "zj_radar.cmd.v1"; payload "attention-next"; }
         }
         bind "Alt p" {
-            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "attention-prev"; }
+            MessagePlugin { name "zj_radar.cmd.v1"; payload "attention-prev"; }
         }
         // Cycle the badge selection across sessions; commits ~1s after the last tap.
         bind "Alt s" {
-            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-next"; }
+            MessagePlugin { name "zj_radar.cmd.v1"; payload "session-next"; }
         }
         bind "Alt Shift s" {
-            MessagePlugin "radar" { name "zj_radar.cmd.v1"; payload "session-prev"; }
+            MessagePlugin { name "zj_radar.cmd.v1"; payload "session-prev"; }
         }
     }
 }
@@ -151,6 +154,9 @@ keybinds {
   after the last tap; landing back on your own session cancels. A committed
   switch lands on the target's attention tab if it has one. With only one
   session running these verbs do nothing.
+
+These binds broadcast too, for the reason above: in a session without a
+rail they do nothing.
 
 Unknown verbs are ignored. Both pipes are inert until the sidebar has been
 granted permissions. Mouse gestures (`✓` acknowledge, `✕` dismiss) are
