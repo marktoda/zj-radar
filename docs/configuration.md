@@ -21,7 +21,10 @@ plugins {
 If `setup zellij` wrote your alias, it sits between `// zj-radar: managed
 plugin alias begin`/`end` markers, and a later `setup zellij` rewrites that
 region with only `naming "managed"`. Put custom keys on a hand-owned alias
-outside the markers, or set them over the `config.v1` pipe below.
+outside the markers, or set them over the `config.v1` pipe below. A hand-owned
+alias whose `location` is the stable wasm path
+(`file:~/.config/zellij/plugins/zj_radar.wasm`) is left alone: `setup zellij`
+and `zj-radar update` refresh only the wasm behind it.
 
 Unknown keys are ignored and parsing never fails. An unrecognized value keeps
 the field as it was, so a typo never resets a setting.

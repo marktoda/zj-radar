@@ -2233,6 +2233,49 @@ fn setup_zellij_rerun_with_the_same_wasm_does_not_rewrite() {
     assert!(!stdout.contains("wasm updated"), "{stdout}");
 }
 
+#[test]
+fn setup_zellij_refreshes_the_wasm_behind_a_hand_owned_alias() {
+    // #96: a hand-owned `radar` alias at the stable wasm path is a supported
+    // setup (docs/install.md "Manual setup"). `update` re-runs this install,
+    // which used to refuse it as a conflict and never refresh the wasm.
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let b = src.path().join("b.wasm");
+    fs::write(&b, b"\0asm-B").unwrap();
+    let dest = config_dir.path().join("plugins").join("zj_radar.wasm");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::write(&dest, b"\0asm-A").unwrap();
+    let config = config_dir.path().join("config.kdl");
+    let text = format!(
+        "plugins {{\n    radar location=\"file:{}\" {{\n        naming \"managed\"\n        custom \"mine\"\n    }}\n}}\n",
+        dest.display()
+    );
+    fs::write(&config, &text).unwrap();
+
+    let out = setup_zellij_wasm(&config_dir, &b).success().get_output().clone();
+    assert_eq!(fs::read(&dest).unwrap(), b"\0asm-B", "the wasm must be refreshed");
+    assert_eq!(fs::read_to_string(&config).unwrap(), text, "the user's alias is left as it is");
+    assert!(!config_dir.path().join("config.kdl.zj-radar.bak").exists(), "no config write, so no backup");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("wasm updated"), "{stdout}");
+}
+
+#[test]
+fn setup_zellij_hand_owned_alias_elsewhere_still_conflicts() {
+    let config_dir = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let b = src.path().join("b.wasm");
+    fs::write(&b, b"\0asm-B").unwrap();
+    let config = config_dir.path().join("config.kdl");
+    let text = "plugins {\n    radar location=\"file:/opt/other/zj_radar.wasm\"\n}\n";
+    fs::write(&config, text).unwrap();
+
+    let out = setup_zellij_wasm(&config_dir, &b).failure().get_output().clone();
+    assert_eq!(fs::read_to_string(&config).unwrap(), text);
+    assert!(!config_dir.path().join("plugins").join("zj_radar.wasm").exists(), "nothing installed");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unmanaged `radar` plugin alias"));
+}
+
 #[cfg(unix)]
 #[test]
 fn setup_zellij_rerun_never_writes_through_a_symlinked_wasm() {
