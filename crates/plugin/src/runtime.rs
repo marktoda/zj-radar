@@ -203,10 +203,29 @@ pub(crate) enum Effect {
     /// the same edge and emits this same effect, and the host layer uses the
     /// key to elect exactly one dispatcher (`SessionFiles::claim_notification`)
     /// so N visited tabs don't produce N identical toasts.
+    ///
+    /// `unless_focused` is the pane to stay quiet about if it turns out to be
+    /// the session's shared focus (`SessionFiles::shared_focus`, published by
+    /// `PublishFocus`); `None` when `notify_when_focused` is on. The runtime
+    /// already suppressed on its own `last_focused`, but a hidden rail's is
+    /// frozen at whenever its tab was last active (manifests reach the active
+    /// tab's plugins only), so without this re-check it would dispatch a toast
+    /// for the pane the user is looking at — the visible rail's suppression
+    /// loses the claim race to it.
     Notify {
         key: String,
         title: String,
         body: String,
+        unless_focused: Option<u32>,
+    },
+    /// Record this rail's focused terminal pane as the session's shared focus
+    /// (`SessionFiles::publish_focus`; `None` = no terminal focused yet).
+    /// Emitted on every `PaneUpdate`, which Zellij delivers to the active
+    /// tab's plugins only, so the file always holds the most recently active
+    /// view's focus — what every rail's `Notify` dispatch re-checks against.
+    /// The write happens only when the content changed.
+    PublishFocus {
+        pane_id: Option<u32>,
     },
     /// Publish this session's own [`Presence`] for peer rails to read —
     /// lib.rs does `files.persist_presence(unless_fresher_than, || runtime.presence_json())`.
@@ -784,6 +803,9 @@ impl PluginRuntime {
         let mut effects = self.presence_claim(false); // the active view (see the effect)
         self.sync_selectable(&mut effects);
         let change = self.radar.panes_changed(update, self.tick, now, self.config.naming);
+        // After the radar noted this manifest's focus, ahead of any `Notify`
+        // the projection emits for it.
+        effects.push(Effect::PublishFocus { pane_id: self.radar.last_focused() });
         self.project(effects, change, now)
     }
 
@@ -1724,9 +1746,15 @@ impl PluginRuntime {
         let focused = self.radar.last_focused();
         let notes = crate::notify_rules::diff(&self.notify_prev, &views, focused, &self.config);
         self.notify_prev = crate::notify_rules::status_map(&views);
+        let suppress_focused = !self.config.notify_when_focused;
         notes
             .into_iter()
-            .map(|n| Effect::Notify { key: crate::notify_rules::claim_key(&n), title: n.title, body: n.body })
+            .map(|n| Effect::Notify {
+                key: crate::notify_rules::claim_key(&n),
+                unless_focused: suppress_focused.then_some(n.pane_id),
+                title: n.title,
+                body: n.body,
+            })
             .collect()
     }
 

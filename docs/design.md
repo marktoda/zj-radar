@@ -83,7 +83,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 │  session_files.rs: SessionFiles                                        │
 │    per-session filesystem coordination across instances: snapshots,    │
 │    permission marker/lock, root fallback, pruning, presence files,     │
-│    notification claims                                                 │
+│    notification claims, shared focus                                   │
 │                                                                        │
 │  radar_state.rs / rollup.rs / tab_namer.rs: state + tab model          │
 │    StatusStore + CommandStore (over core's ObservationStore),          │
@@ -104,8 +104,9 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
         │ Effects: SwitchTab, ShowPane, RenameTab, RequestPermission,
         │ SetTimeout(Fast|Slow), SetSelectable, PersistSnapshot,
         │ PersistPermissionMarker, HeartbeatPermissionLock, ResolveCwd,
-        │ Notify, PersistPresence, ClaimPresenceWriter, ReadPresences,
-        │ DismissPresence, SwitchSession, BroadcastStatus, CloseSelf
+        │ Notify, PublishFocus, PersistPresence, ClaimPresenceWriter,
+        │ ReadPresences, DismissPresence, SwitchSession, BroadcastStatus,
+        │ CloseSelf
         ▼
 ```
 
@@ -174,6 +175,22 @@ cleared the row only on the tab you were viewing. A finished status now clears
 only via shared signals: a new broadcast, the return-to-shell exit-clear, or a
 prune. Every tab's instance receives those, so all tabs converge. The former
 `on_focus` wire field is dropped unread like any unknown key.
+
+Focus still gates one thing: the notifier stays quiet about the focused pane
+(unless `notify_when_focused`). Each rail notes focus from its own
+`PaneUpdate`s, which reach only the active tab's plugins, so a hidden rail's
+idea of focus is frozen at whenever its tab was last active. Left alone, a
+hidden rail would notify for the pane the user is looking at and win the
+notification claim over the active rail that suppressed it. So every
+`PaneUpdate` also publishes the rail's focused pane
+(`Effect::PublishFocus`) to `zj-radar.<pid>.focus` in the shared root,
+written only when it changes, and each `Effect::Notify` carries its pane
+(`unless_focused`). Before claiming, the glue reads that file and drops a
+notification for the shared focus. The last-active rail wrote it, so it is
+the focus every rail agrees on. After a detach it keeps the at-detach focus,
+which is what a single rail did before. With two clients, the most recent
+active view wins. Like the presence-writer token, the file is pid-scoped and
+aged by its session's presence file in the sweep.
 
 ## 5. The pipe contract
 

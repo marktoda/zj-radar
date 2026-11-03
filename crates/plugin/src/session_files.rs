@@ -73,6 +73,11 @@ const PRESENCE_WRITER_SUFFIX: &str = "presence-writer";
 /// name first learned — a rail that just became the active view) ignores
 /// the floor, so a quick tab switch back is never left without the token.
 pub(crate) const PRESENCE_WRITER_TAKEOVER_FLOOR: Duration = Duration::from_secs(5);
+/// Suffix of the shared-focus file, `zj-radar.<pid>.focus`: the terminal pane
+/// the most recently active rail last saw focused (decimal; empty = none).
+/// Pid-scoped like the presence-writer token. See
+/// [`SessionFiles::publish_focus`] for why it exists.
+const FOCUS_SUFFIX: &str = "focus";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionFileIds {
@@ -114,6 +119,8 @@ struct SessionPaths {
     presence_tmp: PathBuf,
     presence_writer: PathBuf,
     presence_writer_tmp: PathBuf,
+    focus: PathBuf,
+    focus_tmp: PathBuf,
     /// This instance's id as written into the token (decimal).
     plugin_id: String,
 }
@@ -303,6 +310,35 @@ impl SessionFiles {
             return false;
         };
         std::fs::read_to_string(&paths.presence_writer).is_ok_and(|raw| raw.trim() == paths.plugin_id)
+    }
+
+    /// Record `focused` as the session's shared focus (`Effect::PublishFocus`):
+    /// the terminal pane the user is looking at, as the active rail sees it.
+    /// Zellij delivers `PaneUpdate` to the active tab's plugins only, so a
+    /// hidden rail's own `last_focused` is frozen at whenever its tab was last
+    /// active; [`shared_focus`](Self::shared_focus) is how it learns the
+    /// focus every rail agrees on before dispatching a notification. Last
+    /// writer wins (tmp+rename, no lock); after a detach the file keeps the
+    /// last-active rail's focus. Writes only when the content changes, so the
+    /// per-manifest call is one small read. Disabled mode is a no-op.
+    pub(crate) fn publish_focus(&self, focused: Option<u32>) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        let raw = focused.map(|id| id.to_string()).unwrap_or_default();
+        if std::fs::read_to_string(&paths.focus).is_ok_and(|current| current == raw) {
+            return;
+        }
+        write_via_tmp(&paths.focus_tmp, &paths.focus, raw.as_bytes());
+    }
+
+    /// The session's shared focus ([`publish_focus`](Self::publish_focus)).
+    /// `None` when no rail has published one, it names no pane, or the root
+    /// is disabled — the caller then trusts its own focus alone.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn shared_focus(&self) -> Option<u32> {
+        let paths = self.paths.as_ref()?;
+        std::fs::read_to_string(&paths.focus).ok()?.trim().parse().ok()
     }
 
     /// Raw JSON of every OTHER session's presence file (own pid excluded, tmp
@@ -542,6 +578,8 @@ impl SessionPaths {
         let presence_tmp = root.join(format!("{PRESENCE_PREFIX}{}.json.{}.tmp", ids.zellij_pid, ids.plugin_id));
         let presence_writer = root.join(format!("{session_prefix}.{PRESENCE_WRITER_SUFFIX}"));
         let presence_writer_tmp = root.join(format!("{session_prefix}.{PRESENCE_WRITER_SUFFIX}.{}.tmp", ids.plugin_id));
+        let focus = root.join(format!("{session_prefix}.{FOCUS_SUFFIX}"));
+        let focus_tmp = root.join(format!("{session_prefix}.{FOCUS_SUFFIX}.{}.tmp", ids.plugin_id));
         Self {
             root,
             session_prefix,
@@ -554,6 +592,8 @@ impl SessionPaths {
             presence_tmp,
             presence_writer,
             presence_writer_tmp,
+            focus,
+            focus_tmp,
             plugin_id: ids.plugin_id.to_string(),
         }
     }
@@ -570,6 +610,7 @@ impl SessionPaths {
             || (name.starts_with(&format!("{}.permissions.", self.session_prefix)) && name.ends_with(".tmp"))
             || name.starts_with(&format!("{}.notify.", self.session_prefix))
             || name.starts_with(&format!("{}.{PRESENCE_WRITER_SUFFIX}", self.session_prefix))
+            || name.starts_with(&format!("{}.{FOCUS_SUFFIX}", self.session_prefix))
     }
 
     fn is_own_presence_file(&self, name: &str) -> bool {
@@ -635,13 +676,17 @@ fn prune_stale_files(paths: &SessionPaths, now: SystemTime, max_age: Duration) {
 /// alive. Usually the file's own, but a presence-writer token is written
 /// only on a takeover — a stable holder never touches it — so a session
 /// older than the sweep horizon would lose its live token to ANY session's
-/// plugin load. Its session's presence file (`zj-radar.presence.<pid>.json`,
+/// plugin load. The shared-focus file is the same: it is written only when
+/// focus moves. Their session's presence file (`zj-radar.presence.<pid>.json`,
 /// heartbeated about every 60 s) is the liveness signal instead; the
-/// token's own mtime is the fallback only when that file is missing.
+/// file's own mtime is the fallback only when that file is missing.
 fn liveness_metadata(root: &Path, name: &str, entry: &std::fs::DirEntry) -> std::io::Result<std::fs::Metadata> {
     let pid = name
         .strip_prefix(SESSION_FILE_PREFIX)
-        .and_then(|rest| rest.strip_suffix(&format!(".{PRESENCE_WRITER_SUFFIX}")))
+        .and_then(|rest| {
+            rest.strip_suffix(&format!(".{PRESENCE_WRITER_SUFFIX}"))
+                .or_else(|| rest.strip_suffix(&format!(".{FOCUS_SUFFIX}")))
+        })
         .filter(|pid| is_digits(pid));
     if let Some(pid) = pid {
         if let Ok(meta) = std::fs::metadata(root.join(format!("{PRESENCE_PREFIX}{pid}.json"))) {
@@ -662,16 +707,20 @@ fn is_owned_session_file(name: &str) -> bool {
         return false;
     }
 
-    if matches!(suffix, "json" | "permissions" | "permissions.lock" | PRESENCE_WRITER_SUFFIX) {
+    if matches!(suffix, "json" | "permissions" | "permissions.lock" | PRESENCE_WRITER_SUFFIX | FOCUS_SUFFIX) {
         return true;
     }
-    suffix.strip_prefix("json.").and_then(|rest| rest.strip_suffix(".tmp")).is_some_and(is_digits)
-        || suffix.strip_prefix("permissions.").and_then(|rest| rest.strip_suffix(".tmp")).is_some_and(is_digits)
-        || suffix
-            .strip_prefix(PRESENCE_WRITER_SUFFIX)
+    let tmp_of = |base: &str| {
+        suffix
+            .strip_prefix(base)
             .and_then(|rest| rest.strip_prefix('.'))
             .and_then(|rest| rest.strip_suffix(".tmp"))
             .is_some_and(is_digits)
+    };
+    tmp_of("json")
+        || tmp_of("permissions")
+        || tmp_of(PRESENCE_WRITER_SUFFIX)
+        || tmp_of(FOCUS_SUFFIX)
         || suffix.starts_with("notify.")
 }
 
@@ -1454,5 +1503,61 @@ mod tests {
         assert!(!files.claim_presence_writer(true));
         assert!(!files.holds_presence_writer());
         files.persist_presence(None, RESCUE, || unreachable!("disabled mode writes nothing"));
+    }
+
+    #[test]
+    fn shared_focus_is_what_the_last_publishing_rail_saw() {
+        // A hidden rail's own focus is frozen; the shared file is the focus
+        // every rail agrees on (#97).
+        let dir = TempDir::new("focus-shared");
+        let (a, b) = two_rails(dir.path());
+        assert_eq!(b.shared_focus(), None, "nothing published yet");
+        a.publish_focus(Some(7));
+        assert_eq!(b.shared_focus(), Some(7), "a sibling reads the active rail's focus");
+        b.publish_focus(Some(9));
+        assert_eq!(a.shared_focus(), Some(9), "last writer wins");
+        b.publish_focus(None);
+        assert_eq!(a.shared_focus(), None, "an active view with no focused terminal clears it");
+        let other = open(dir.path(), ids(3, 200)).files;
+        a.publish_focus(Some(7));
+        assert_eq!(other.shared_focus(), None, "another session's focus is not ours");
+    }
+
+    #[test]
+    fn publishing_an_unchanged_focus_does_not_rewrite_the_file() {
+        let dir = TempDir::new("focus-unchanged");
+        let (a, _) = two_rails(dir.path());
+        a.publish_focus(Some(7));
+        let path = dir.join("zj-radar.100.focus");
+        backdate(&path, Duration::from_secs(60));
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        a.publish_focus(Some(7));
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before, "same focus: no write");
+        a.publish_focus(Some(8));
+        assert_ne!(std::fs::metadata(&path).unwrap().modified().unwrap(), before, "moved focus: rewritten");
+    }
+
+    #[test]
+    fn focus_file_is_swept_with_a_dead_session_and_spared_for_the_live_one() {
+        let dir = TempDir::new("focus-sweep");
+        let (a, _) = two_rails(dir.path());
+        a.publish_focus(Some(7));
+        std::fs::write(dir.join("zj-radar.200.focus"), "9").unwrap();
+        std::fs::write(dir.join("zj-radar.200.focus.9.tmp"), "9").unwrap();
+        assert!(is_owned_session_file("zj-radar.200.focus") && is_owned_session_file("zj-radar.200.focus.9.tmp"));
+
+        let later = SystemTime::now() + SNAPSHOT_MAX_AGE + Duration::from_secs(1);
+        let reopened =
+            SessionFiles::open_with_roots_at(ids(3, 100), [dir.path().to_path_buf()], later, SNAPSHOT_MAX_AGE);
+        assert_eq!(reopened.files.shared_focus(), Some(7), "the live session's focus survives the sweep");
+        assert!(!dir.join("zj-radar.200.focus").exists(), "a dead session's focus is swept");
+        assert!(!dir.join("zj-radar.200.focus.9.tmp").exists(), "and so is its tmp debris");
+    }
+
+    #[test]
+    fn focus_is_inert_in_disabled_mode() {
+        let files = SessionFiles::default();
+        files.publish_focus(Some(7));
+        assert_eq!(files.shared_focus(), None);
     }
 }

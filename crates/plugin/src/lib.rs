@@ -251,16 +251,20 @@ impl State {
                 }
                 Effect::ResolveCwd { pane_ids } => self.resolve_cwd(pane_ids),
                 Effect::CloseSelf => close_self(),
-                Effect::Notify { key, title, body } => {
+                Effect::Notify { key, title, body, unless_focused } => {
                     // Every per-tab instance emits this same effect for the
                     // same event; the shared claim file elects exactly one
-                    // dispatcher so N visited tabs ≠ N identical toasts.
-                    if self.session_files.claim_notification(&key) {
+                    // dispatcher so N visited tabs ≠ N identical toasts. A
+                    // hidden rail's own focus is stale, so first re-check the
+                    // focus the active rail published (see the effect).
+                    let focused = unless_focused.is_some_and(|id| self.session_files.shared_focus() == Some(id));
+                    if !focused && self.session_files.claim_notification(&key) {
                         let argv = crate::notify_rules::notify_command(&title, &body);
                         let args: Vec<&str> = argv.iter().map(String::as_str).collect();
                         run_command(&args, std::collections::BTreeMap::new());
                     }
                 }
+                Effect::PublishFocus { pane_id } => self.session_files.publish_focus(pane_id),
                 Effect::PersistPresence { .. } if presence_republished => {}
                 Effect::PersistPresence { unless_fresher_than } => {
                     self.session_files.persist_presence(unless_fresher_than, runtime::PRESENCE_RESCUE_AFTER, || {

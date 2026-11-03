@@ -1852,6 +1852,92 @@ fn focused_done_emits_no_notify_effect() {
     );
 }
 
+/// The lib.rs glue for the two focus-related effects, against real files:
+/// `PublishFocus` writes the shared focus, and `Notify` re-checks it before
+/// the claim election. Returns the keys this instance dispatched.
+fn apply_notify_effects(files: &crate::session_files::SessionFiles, out: Outcome) -> Vec<String> {
+    let mut dispatched = Vec::new();
+    for effect in out.effects {
+        match effect {
+            Effect::PublishFocus { pane_id } => files.publish_focus(pane_id),
+            Effect::Notify { key, unless_focused, .. } => {
+                let focused = unless_focused.is_some_and(|id| files.shared_focus() == Some(id));
+                if !focused && files.claim_notification(&key) {
+                    dispatched.push(key);
+                }
+            }
+            _ => {}
+        }
+    }
+    dispatched
+}
+
+/// Two rails in one session (#97): tab 1's rail was active with pane 9
+/// focused, then the user went to tab 0 and focused `focus_in_tab_0`. Pane 5
+/// in tab 0 finishes; each rail's settle tick runs, the hidden one first.
+/// Returns what each dispatched.
+fn done_with_a_hidden_sibling(focus_in_tab_0: u32) -> (Vec<String>, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 1, 100);
+    let active_files = crate::session_files::SessionFiles::open_for_test(dir.path(), 2, 100);
+    let focused = |id| TerminalPane { id, focused_in_tab: true, ..Default::default() };
+    let panes = |f0: u32| {
+        let tab0 = [5, 6].map(|id| if id == f0 { focused(id) } else { pane(id) }).to_vec();
+        manifest(HashMap::from([(0, tab0), (1, vec![focused(9)])]))
+    };
+
+    let mut hidden = runtime_with_granted_permission();
+    hidden.own_plugin_tab_changed(Some(1));
+    hidden.tabs_changed(vec![tab(0, "a", false), tab(1, "b", true)]);
+    apply_notify_effects(&hidden_files, hidden.panes_changed(panes(5)));
+    hidden.visibility_changed(false);
+
+    let mut active = runtime_with_granted_permission();
+    active.own_plugin_tab_changed(Some(0));
+    active.tabs_changed(vec![tab(0, "a", true), tab(1, "b", false)]);
+    apply_notify_effects(&active_files, active.panes_changed(panes(focus_in_tab_0)));
+    assert_eq!(active.radar.last_focused(), Some(focus_in_tab_0), "setup");
+    assert_eq!(hidden.radar.last_focused(), Some(9), "setup: the hidden rail's focus is frozen");
+
+    for rt in [&mut hidden, &mut active] {
+        rt.status_pipe(&payload_json(5, "running"));
+        rt.timer_fast(PermissionProbe::default());
+        rt.status_pipe(&payload_json(5, "done"));
+    }
+    let from_hidden = apply_notify_effects(&hidden_files, hidden.timer_fast(PermissionProbe::default()));
+    let from_active = apply_notify_effects(&active_files, active.timer_fast(PermissionProbe::default()));
+    (from_hidden, from_active)
+}
+
+#[test]
+fn a_hidden_rail_does_not_notify_for_the_pane_the_active_rail_sees_focused() {
+    let (from_hidden, from_active) = done_with_a_hidden_sibling(5);
+    assert!(from_hidden.is_empty(), "the hidden rail's stale focus must not ding pane 5; got {from_hidden:?}");
+    assert!(from_active.is_empty(), "the active rail suppresses its focused pane; got {from_active:?}");
+}
+
+#[test]
+fn a_hidden_rail_still_notifies_for_a_pane_nobody_is_looking_at() {
+    // Control: the same edge with pane 6 focused fires exactly once.
+    let (from_hidden, from_active) = done_with_a_hidden_sibling(6);
+    assert_eq!(from_hidden.len() + from_active.len(), 1, "one toast; got {from_hidden:?} / {from_active:?}");
+}
+
+#[test]
+fn notify_when_focused_leaves_the_shared_focus_out_of_it() {
+    let mut rt = runtime_with_config(config::Config { notify_when_focused: true, ..config() });
+    rt.tabs_changed(vec![tab(0, "a", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    rt.status_pipe(&payload_json(7, "done"));
+    let out = rt.timer_fast(PermissionProbe::default());
+    let notes: Vec<_> = out.effects.iter().filter(|e| matches!(e, Effect::Notify { .. })).collect();
+    assert!(
+        matches!(notes.as_slice(), [Effect::Notify { unless_focused: None, .. }]),
+        "always-notify carries no focus re-check; got {:?}",
+        out.effects
+    );
+}
+
 #[test]
 fn restored_snapshot_does_not_notify() {
     // Build a snapshot containing an already-Done command pane.
