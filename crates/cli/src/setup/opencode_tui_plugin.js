@@ -65,12 +65,83 @@ const toolNames = new Map();
 // an install that lands mid-session is picked up without a per-event scan.
 let zjRadarOnPath = false;
 
+// The only tool_input keys the Rust side ever reads: `rename_keys` (the
+// adapter's `arg_keys`, crates/cli/src/agents/opencode.rs) maps opencode's
+// camelCase `filePath`/`notebookPath` to `file_path`/`notebook_path`, which
+// `tool_activity` and `bash_activity` (crates/cli/src/agents.rs) read beside
+// `command`. Keep this list in sync with those readers — a `write`/`edit`
+// tool's content args alone can run to megabytes, and nothing downstream
+// ever looks past this set.
+const TOOL_INPUT_KEYS = ["filePath", "notebookPath", "command"];
+
+// Trim a tool call's args down to the keys the Rust adapter reads, dropping
+// everything else (large payload fields, non-string values), and cap each
+// kept value like the free text below — a heredoc `command` can be as large
+// as a `write`'s content, and its readers only look at the head. Non-object
+// args (or none) become `undefined` so the field is omitted entirely.
+function trimToolInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const out = {};
+  for (const key of TOOL_INPUT_KEYS) {
+    if (typeof args[key] === "string") out[key] = capHead(args[key]);
+  }
+  return out;
+}
+
+// Free-text cap for `prompt`/`message` (and each kept tool arg) before they
+// are serialized and piped.
+// The Rust side bounds every wire field at MAX_WIRE_FIELD_CHARS (512) anyway;
+// this only stops a 20 MB paste from being stringified and written to a child
+// on every event (past the CLI's stdin cap the update would be dropped, and a
+// dropped `chat.message` loses the task label). Generous so neither reader
+// loses what it looks at.
+const TEXT_CAP = 4096;
+
+// A string slice that never leaves a lone UTF-16 surrogate at either cut:
+// JSON.stringify would escape it as `\udXXX`, which serde_json rejects — the
+// whole payload would fail to parse and the event would be silently lost.
+function sliceWhole(s, start, end) {
+  let a = start;
+  let b = end;
+  if (a > 0 && a < s.length && isLow(s.charCodeAt(a))) a++;
+  if (b > a && b < s.length && isLow(s.charCodeAt(b))) b--;
+  return s.slice(a, b);
+}
+function isLow(c) { return c >= 0xdc00 && c <= 0xdfff; }
+
+// The prompt's reader (`task_from_prompt`) takes its first non-empty line:
+// keep the head.
+function capHead(s) {
+  return s.length <= TEXT_CAP ? s : sliceWhole(s, 0, TEXT_CAP);
+}
+
+// A message has two readers: the rail's msg (the head) and the trailing-
+// question remap (`trailing_question`, the last non-empty line): keep both
+// ends, joined on a line break so the tail's last line stays the last line.
+function capHeadTail(s) {
+  if (s.length <= TEXT_CAP) return s;
+  const half = TEXT_CAP / 2;
+  return `${sliceWhole(s, 0, half)}\n…\n${sliceWhole(s, s.length - half, s.length)}`;
+}
+
+// Bound a payload before it is queued: trimmed tool args, capped free text.
+// Done at enqueue (not at spawn) so a queued or coalesced payload never pins
+// a tool's full arguments in memory either.
+function bounded(payload) {
+  const out = { ...payload };
+  if ("tool_input" in out) out.tool_input = trimToolInput(out.tool_input);
+  if (typeof out.prompt === "string") out.prompt = capHead(out.prompt);
+  if (typeof out.message === "string") out.message = capHeadTail(out.message);
+  return out;
+}
+
 // Queue: edges FIFO, one droppable slot for the latest tool-activity running.
 let pendingRunning = null;
 const queue = [];
 let processing = false;
 
 function enqueue(status, payload) {
+  payload = bounded(payload);
   // Only tool-activity refreshes are droppable. The prompt-carrying running
   // becomes the sticky task label — coalescing it away under a backlog would
   // lose the label for the whole turn.
