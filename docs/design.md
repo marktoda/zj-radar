@@ -649,6 +649,16 @@ truncates over-cap content and rejects the whole file if any field fails to
 survive `payload::sanitize` unchanged. `zj-radar state` is why the tree is
 unconditional: it is a public read surface, and `session_tree` is display-only.
 
+**Mirrored remote sessions.** A presence file carrying `host` (an ssh
+destination; the plugin never writes one) describes a session on another
+machine, copied into the cache by an external mirror. Its identity everywhere
+in `sessions.rs` is `Presence::label` (`host/session_name`), so a remote
+`work` and a local `work` stay two peers, and `Effect::SwitchSession` on it
+runs `zellij action new-pane -- ssh -t -- <host> zellij attach <name>`
+(`PluginRuntime::remote_attach_argv`, under the existing `RunCommands`
+grant) rather than `switch_session`, which would create an empty local
+session under that name.
+
 **Single writer: the presence-writer token.** Content must come from the rail
 with the freshest topology, and that is the most recently active one: Zellij
 sends `TabUpdate`/`PaneUpdate` only to the active tab's plugins, so a hidden

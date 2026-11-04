@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 /// ceiling, so an oversized name fails the equality check like any other
 /// unclean one).
 const MAX_SESSION_NAME_CHARS: usize = 128;
+/// Cap on `host`: an ssh destination (an alias or `user@host`).
+const MAX_HOST_CHARS: usize = 64;
 pub const MAX_TABS: usize = 64;
 pub const MAX_PANES_PER_TAB: usize = 16;
 pub const MAX_LABEL_CHARS: usize = 96;
@@ -79,11 +81,27 @@ pub struct Presence {
     pub updated_epoch_s: u64,
     #[serde(default)]
     pub tabs: Vec<PresenceTab>,
+    /// Set by a mirror that copies another machine's presence files here:
+    /// the ssh destination that reaches the session. Absent for local
+    /// sessions. A peer with a host is attached through `ssh`, never
+    /// `switch_session`, and its identity is [`Presence::label`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 impl Presence {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The peer's identity and heading: `host/session_name` for a mirrored
+    /// remote session, the bare name otherwise — so a remote `work` and a
+    /// local `work` are two peers, never one.
+    pub fn label(&self) -> String {
+        match &self.host {
+            Some(host) => format!("{host}/{}", self.session_name),
+            None => self.session_name.clone(),
+        }
     }
 
     /// Lenient: bad JSON, a missing/empty name, or any string that doesn't
@@ -102,6 +120,7 @@ impl Presence {
         let clean = |s: &str, max: usize| s == crate::payload::sanitize(s, max);
         let ok = !p.session_name.is_empty()
             && clean(&p.session_name, MAX_SESSION_NAME_CHARS)
+            && p.host.as_deref().is_none_or(|h| !h.is_empty() && clean(h, MAX_HOST_CHARS))
             && p.tabs.iter().all(|tab| {
                 clean(&tab.name, MAX_LABEL_CHARS)
                     && tab.panes.iter().all(|pane| {
@@ -218,5 +237,20 @@ mod tests {
         let long = "x".repeat(10_000);
         let json = format!(r#"{{"session_name":"{long}","running":0,"attention":0}}"#);
         assert_eq!(Presence::parse(&json), None);
+    }
+
+    #[test]
+    fn host_round_trips_labels_and_is_validated() {
+        let local = Presence { session_name: "work".into(), ..Default::default() };
+        assert_eq!(local.label(), "work");
+        assert!(!local.to_json().contains("host"), "an absent host is never written");
+        let remote = Presence { session_name: "work".into(), host: Some("vps".into()), ..Default::default() };
+        assert_eq!(remote.label(), "vps/work");
+        assert_eq!(Presence::parse(&remote.to_json()), Some(remote));
+        let long = format!(r#""{}""#, "h".repeat(65));
+        for bad in [r#""""#, r#""\u001b[31mx""#, long.as_str()] {
+            let json = format!(r#"{{"session_name":"work","running":0,"attention":0,"host":{bad}}}"#);
+            assert_eq!(Presence::parse(&json), None, "host {bad} must be rejected");
+        }
     }
 }

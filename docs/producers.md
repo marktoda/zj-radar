@@ -381,6 +381,7 @@ it, so such a session is not listed.
 | `updated_epoch_s` | When the content was last written. |
 | `tabs` | `[{position, name, panes}]`, one per tab. |
 | `panes[]` | `{pane_id, origin, kind, status, label}`: tracked panes only. `origin` is `"status"` (agent) or `"command"` (observed command); plain shells and editors are excluded. `pane_id` and `origin` are absent in pre-v1 files. |
+| `host` | Optional, never written by the plugin: an ssh destination (an alias or `user@host`, ≤ 64 chars) set by a mirror that copies another machine's presence files into this cache. The peer is listed as `host/session_name`, and clicking it opens a pane running `ssh -t -- <host> zellij attach <session_name>` instead of switching sessions. |
 
 Status-origin panes sort before commands, then the 16-pane cap applies. An
 agent's `label` is its sticky task (falling back to the agent kind); a
@@ -414,6 +415,7 @@ session that lost its writer may briefly read as stale but is never reaped.
 | `v` | Output format version, independent of the file's `v`. |
 | `sessions[]` | One per live session (dead files and duplicates dropped), the current session first, then by name. |
 | `name` | Zellij session name. |
+| `host` | Only for a mirrored remote session: the ssh destination from its presence file. Shown as `host/name` in the human output; such a session is never `current`. |
 | `current` | `true` when `name` equals `$ZELLIJ_SESSION_NAME`. |
 | `stale` | No write for over 90 s (`age_s` > 90). |
 | `age_s` | Seconds since the file was last written, by its mtime. |

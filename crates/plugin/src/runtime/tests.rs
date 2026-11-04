@@ -3965,3 +3965,19 @@ fn theme_switch_to_an_unusable_palette_falls_back() {
     assert!(out.render);
     assert_eq!(rt.theme, theme::DerivedColors::default());
 }
+
+#[test]
+fn a_mirrored_remote_peer_attaches_over_ssh_instead_of_switching() {
+    let mut rt = runtime_with_granted_permission();
+    rt.presences_changed(vec![
+        fresh(r#"{"session_name":"alpha","running":0,"attention":0}"#),
+        fresh(r#"{"session_name":"alpha","running":0,"attention":0,"host":"vps"}"#),
+    ]);
+    assert_eq!(rt.remote_attach_argv("alpha"), None, "a local peer stays on switch_session");
+    let argv = rt.remote_attach_argv("vps/alpha").expect("the mirrored peer has an ssh target");
+    let own = rt.own_session_name.clone();
+    assert!(!own.is_empty());
+    let expected = ["zellij", "--session", own.as_str(), "action", "new-pane", "--name", "vps/alpha", "--"];
+    assert_eq!(argv[..expected.len()], expected.map(str::to_string));
+    assert_eq!(argv[expected.len()..], ["ssh", "-t", "--", "vps", "zellij", "attach", "alpha"].map(str::to_string));
+}

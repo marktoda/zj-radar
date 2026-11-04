@@ -288,9 +288,17 @@ impl State {
                     let outcome = self.runtime.presences_changed(raw);
                     render |= self.handle_outcome(outcome);
                 }
-                Effect::SwitchSession { name, tab_position } => match tab_position {
-                    Some(pos) => switch_session_with_focus(&name, Some(pos), None),
-                    None => switch_session(Some(&name)),
+                Effect::SwitchSession { name, tab_position } => match self.runtime.remote_attach_argv(&name) {
+                    // A mirrored remote peer: `switch_session` would create an
+                    // empty local session under its name instead.
+                    Some(argv) => {
+                        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+                        run_command(&args, std::collections::BTreeMap::new());
+                    }
+                    None => match tab_position {
+                        Some(pos) => switch_session_with_focus(&name, Some(pos), None),
+                        None => switch_session(Some(&name)),
+                    },
                 },
                 Effect::DismissPresence { name } => {
                     // The predicate parses each candidate file the same way
@@ -299,7 +307,7 @@ impl State {
                     // showed them — while `remove_presences_matching` itself
                     // stays parse-agnostic (see its doc for the layering).
                     self.session_files.remove_presences_matching(|json| {
-                        crate::presence::Presence::parse(json).is_some_and(|p| p.session_name == name)
+                        crate::presence::Presence::parse(json).is_some_and(|p| p.label() == name)
                     });
                 }
                 Effect::BroadcastStatus { payload } => {

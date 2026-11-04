@@ -1270,6 +1270,26 @@ impl PluginRuntime {
         self.project(vec![], RadarChange::default(), self.last_now_epoch_s)
     }
 
+    /// The argv that opens a pane attached to a mirrored remote peer (its
+    /// presence carries a `host`), or `None` for a local peer, which
+    /// `Effect::SwitchSession`'s `switch_session` serves. Goes through
+    /// `zellij action new-pane` under the `RunCommands` grant this plugin
+    /// already holds, so no new permission (which would void every existing
+    /// grant) is needed. `--` before the host keeps a hostile presence file
+    /// from smuggling an ssh option.
+    pub(crate) fn remote_attach_argv(&self, label: &str) -> Option<Vec<String>> {
+        let (host, name) = self.sessions.remote_target(label)?;
+        let mut argv = vec!["zellij".to_string()];
+        if !self.own_session_name.is_empty() {
+            argv.extend(["--session".to_string(), self.own_session_name.clone()]);
+        }
+        argv.extend(
+            ["action", "new-pane", "--name", label, "--", "ssh", "-t", "--", &host, "zellij", "attach", &name]
+                .map(str::to_string),
+        );
+        Some(argv)
+    }
+
     pub(crate) fn presences_changed(&mut self, raw: Vec<(String, u64)>) -> Outcome {
         self.sessions.set_show_trees(self.config.session_tree);
         let update = self.sessions.update_presences(raw);
@@ -1322,6 +1342,7 @@ impl PluginRuntime {
                         .collect(),
                 })
                 .collect(),
+            host: None,
         }
     }
 
@@ -1366,6 +1387,7 @@ impl PluginRuntime {
             attention_tab_position,
             updated_epoch_s: self.last_now_epoch_s,
             tabs: Vec::new(),
+            host: None,
         };
         (counts, std::hash::Hasher::finish(&h))
     }

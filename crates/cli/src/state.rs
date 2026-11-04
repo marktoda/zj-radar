@@ -25,6 +25,10 @@ pub(crate) struct RawFile {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct SessionView {
     pub name: String,
+    /// The ssh destination of a mirrored remote session (`host` in its
+    /// presence file); absent for sessions on this machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     pub current: bool,
     pub stale: bool,
     pub age_s: u64,
@@ -37,6 +41,17 @@ pub(crate) struct SessionView {
     /// part of the JSON output (the envelope's `v` is a different version).
     #[serde(skip)]
     pub v: u32,
+}
+
+impl SessionView {
+    /// `host/name` for a mirrored remote session, the bare name otherwise —
+    /// the same identity the rail uses (`Presence::label`).
+    pub(crate) fn label(&self) -> String {
+        match &self.host {
+            Some(host) => format!("{host}/{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// Every `zj-radar.presence.*.json` under each root's `plugin_cache` dirs.
@@ -120,17 +135,17 @@ pub(crate) fn collect(files: Vec<RawFile>, current: Option<&str>) -> Vec<Session
             continue;
         }
         let Some(p) = Presence::parse(&f.json) else { continue };
-        let newer = best.get(&p.session_name).is_none_or(|(kept, age)| {
+        let newer = best.get(&p.label()).is_none_or(|(kept, age)| {
             (p.updated_epoch_s, std::cmp::Reverse(f.age_s)) > (kept.updated_epoch_s, std::cmp::Reverse(*age))
         });
         if newer {
-            best.insert(p.session_name.clone(), (p, f.age_s));
+            best.insert(p.label(), (p, f.age_s));
         }
     }
     let mut out: Vec<SessionView> = best
         .into_values()
         .map(|(p, age_s)| SessionView {
-            current: current == Some(p.session_name.as_str()),
+            current: p.host.is_none() && current == Some(p.session_name.as_str()),
             stale: age_s > STALE_AFTER_SECS,
             age_s,
             running: p.running,
@@ -138,10 +153,11 @@ pub(crate) fn collect(files: Vec<RawFile>, current: Option<&str>) -> Vec<Session
             attention_tab_position: p.attention_tab_position,
             tabs: p.tabs,
             v: p.v,
+            host: p.host,
             name: p.session_name,
         })
         .collect();
-    out.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.name.cmp(&b.name)));
+    out.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.label().cmp(&b.label())));
     out
 }
 
@@ -218,7 +234,7 @@ pub(crate) fn render_human(sessions: &[SessionView]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     for s in sessions {
-        let mut head = s.name.clone();
+        let mut head = s.label();
         if s.current {
             head.push_str(" (current)");
         }
@@ -291,6 +307,17 @@ mod tests {
         );
         let names: Vec<_> = out.iter().map(|s| (s.name.as_str(), s.stale)).collect();
         assert_eq!(names, vec![("live", false), ("old", true)]);
+    }
+
+    #[test]
+    fn a_mirrored_remote_namesake_is_listed_beside_the_local_session_and_is_never_current() {
+        let remote = r#"{"v":1,"session_name":"w","running":1,"attention":0,"updated_epoch_s":500,"host":"vps"}"#;
+        let out = collect(vec![raw(presence("w", 100, &[]), 1), raw(remote.to_string(), 1)], Some("w"));
+        let heads: Vec<(String, bool)> = out.iter().map(|s| (s.label(), s.current)).collect();
+        assert_eq!(heads, vec![("w".to_string(), true), ("vps/w".to_string(), false)]);
+        assert_eq!(out[1].host.as_deref(), Some("vps"));
+        assert!(render_json(&out).contains(r#""host":"vps""#));
+        assert!(!render_json(&out[..1]).contains("host"), "a local session carries no host key");
     }
 
     #[test]
