@@ -733,6 +733,36 @@ impl RadarState {
         }
     }
 
+    /// A shell hook's `zj_radar.exit.v1` report: the command it ran in the
+    /// pane exited non-zero. Applied to the pane's *observed* command row only
+    /// (`CommandStore::on_exit_report` holds the match rules) — never the
+    /// status store, whose entries win `resolve` and would hide the pane's
+    /// later observed commands. `None` when the payload is malformed or the
+    /// report matched no row: nothing changed, nothing to render or persist.
+    pub(crate) fn exit_pipe(&mut self, raw: &str, tick: u64, now_epoch_s: u64) -> Option<RadarChange> {
+        let report = crate::exit::parse(raw)?;
+        if !self.command.on_exit_report(
+            report.pane_id,
+            report.exit,
+            &report.program,
+            Tick(tick),
+            EpochSecs(now_epoch_s),
+        ) {
+            return None;
+        }
+        self.touch();
+        Some(RadarChange {
+            render: true,
+            // Persist now, so a tab opened later rehydrates the Error (a
+            // shell exit, unlike a held pane's, is not re-derivable from the
+            // pane manifest).
+            snapshot: SnapshotWrite::Now,
+            snapshot_pane: Some(report.pane_id),
+            settle: false,
+            ..RadarChange::default()
+        })
+    }
+
     pub(crate) fn status_pipe(
         &mut self,
         raw: &str,

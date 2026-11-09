@@ -693,6 +693,14 @@ pub fn is_shell_prompt(command: &[String]) -> bool {
 /// between tool children) reports `is_foreground=false`, and that report is
 /// the agent alive, not absent. A DEAD root never leaks through here — the
 /// pane manifest's `exited` flag clears its status directly.
+/// The peeled program name of an argv (wrappers, `VAR=value` prefixes, a
+/// path and a login shell's `-` stripped): the same name intake keys the
+/// ignore/interactive sets on, and the first token of the row's display.
+/// The exit pipe's match key ([`crate::exit::program_of_command_line`]).
+pub fn program_of(command: &[String]) -> &str {
+    effective_program(command).1
+}
+
 pub fn is_agent_command(command: &[String]) -> bool {
     let (_, name) = effective_program(command);
     AGENT_NAMES.contains(&name)
@@ -1026,6 +1034,64 @@ impl CommandStore {
             );
         }
         receded
+    }
+
+    /// Apply a shell hook's non-zero exit report (`zj_radar.exit.v1`) to the
+    /// pane's observed command row. Returns whether the row changed.
+    ///
+    /// Applies only when the report can be pinned to the row it would mark:
+    /// - the row is `Running` (with or without an armed tentative-done — the
+    ///   hook fires from `precmd`, so it usually lands here, giving a clean
+    ///   Running→Error edge with no Done in between), or a `Done` that no
+    ///   newer run has replaced and no exit has already decided;
+    /// - its display's first token is `program` (the peeled exe basename),
+    ///   which drops a late report that lost the race to a newer command;
+    /// - no *different* command is pending on the pane (a newer run is in
+    ///   flight, so the report is stale even when the names agree).
+    ///
+    /// A pane with no row — an agent (never tracked here), a command that
+    /// finished inside the debounce window, or one already receded to Idle —
+    /// ignores the report: only commands that earned a row turn red. The
+    /// resulting `Error` carries `exit_code`, so it renders the `✗` and the
+    /// `exit N` tag and, being exempt from the Done TTL, stays until the
+    /// pane's next command takes the row. A zero `exit` is ignored.
+    pub fn on_exit_report(
+        &mut self,
+        pane_id: u32,
+        exit: i32,
+        program: &str,
+        tick: Tick,
+        now_epoch_s: EpochSecs,
+    ) -> bool {
+        let (Tick(tick), EpochSecs(now_epoch_s)) = (tick, now_epoch_s);
+        if exit == 0 {
+            return false;
+        }
+        let Some(s) = self.store.get(pane_id) else { return false };
+        let applies = match s.status {
+            Status::Running => true,
+            Status::Done => s.exit_code.is_none(),
+            _ => false,
+        };
+        if !applies || first_token(&s.msg) != Some(program) {
+            return false;
+        }
+        if self.pending.get(&pane_id).is_some_and(|p| p.command != s.msg) {
+            return false;
+        }
+        // A same-command pending is Zellij re-reporting the run that just
+        // exited; left in place, the next tick would re-promote it to Running
+        // over the Error.
+        self.pending.remove(&pane_id);
+        self.pending_done.remove(&pane_id);
+        let Some(s) = self.store.get_mut(pane_id) else { return false };
+        if s.status == Status::Running {
+            s.completed_epoch_s = Some(now_epoch_s);
+        }
+        s.status = Status::Error;
+        s.exit_code = Some(exit);
+        s.last_change_tick = tick;
+        true
     }
 
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.

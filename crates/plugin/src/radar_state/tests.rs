@@ -1970,3 +1970,34 @@ fn set_remote_commands_sweep_rekinds_an_already_promoted_row() {
     assert!(changed);
     assert_eq!(radar.command(1).unwrap().kind, Kind::Remote, "already-promoted row re-kinds live");
 }
+
+#[test]
+fn exit_pipe_marks_the_observed_command_row_and_leaves_the_status_store_alone() {
+    let mut radar = RadarState::default();
+    radar.command_changed(4, &["cargo".into(), "build".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(4).unwrap().status, Status::Running);
+
+    let report = crate::exit::ExitReport { pane_id: 4, exit: 101, program: "cargo".into() };
+    let change = radar.exit_pipe(&report.to_wire(), 4, 10).expect("the report matched the row");
+    assert!(change.render);
+    assert!(change.snapshot == SnapshotWrite::Now, "a shell exit is not re-derivable from the manifest");
+    let obs = radar.command(4).unwrap();
+    assert_eq!((obs.status, obs.exit_code), (Status::Error, Some(101)));
+    // Never a status-store entry: that would take the pane over for good.
+    assert!(radar.status(4).is_none());
+
+    // The prompt return that follows must not clear the Error.
+    radar.command_changed(4, &["bash".into()], false, 5);
+    radar.timer(5 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(4).unwrap().status, Status::Error);
+}
+
+#[test]
+fn exit_pipe_ignores_malformed_and_unmatched_reports() {
+    let mut radar = RadarState::default();
+    assert!(radar.exit_pipe("garbage", 1, 0).is_none());
+    let report = crate::exit::ExitReport { pane_id: 4, exit: 1, program: "cargo".into() };
+    assert!(radar.exit_pipe(&report.to_wire(), 1, 0).is_none(), "no row on the pane");
+    assert!(radar.command(4).is_none());
+}

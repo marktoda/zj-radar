@@ -18,6 +18,7 @@
 
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.
+pub(crate) use zj_radar_core::exit as exit_pipe;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use zj_radar_core::{command, kind, payload, pipe, status};
 
@@ -106,6 +107,16 @@ enum Command {
         /// (default `generic` → the neutral ⦿ mark).
         #[arg(long)]
         source: Option<String>,
+        /// For `exit` (the shell hook, `zj-radar setup shell`): the pane the
+        /// command ran in (default: `$ZELLIJ_PANE_ID`).
+        #[arg(long, value_name = "ID")]
+        pane: Option<String>,
+        /// For `exit`: the command's non-zero exit code.
+        #[arg(long, value_name = "N", allow_negative_numbers = true)]
+        code: Option<i32>,
+        /// For `exit`: the command line that failed (only its program name is sent).
+        #[arg(long, value_name = "LINE")]
+        cmd: Option<String>,
         /// Print the payload instead of broadcasting.
         #[arg(long)]
         dry_run: bool,
@@ -120,7 +131,8 @@ enum Command {
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
-        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, pi, omp, zellij.
+        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, pi, omp, zellij,
+        /// and the opt-in `shell [bash|zsh|fish]` (failed-command hook; default shell: $SHELL).
         targets: Vec<String>,
         /// Wasm artifact to install when setting up Zellij.
         #[arg(long, value_name = "PATH")]
@@ -204,8 +216,10 @@ pub fn run() -> std::process::ExitCode {
         Command::Run { name, print_cmd } => {
             run::run(run::RunOptions { name, print_cmd });
         }
-        Command::Notify { agent, input, status, msg, task, source, dry_run } => {
-            if agent == "generic" {
+        Command::Notify { agent, input, status, msg, task, source, pane, code, cmd, dry_run } => {
+            if agent == "exit" {
+                notify::run_exit(pane.as_deref(), code, cmd.as_deref(), dry_run);
+            } else if agent == "generic" {
                 notify::run_generic(status.as_deref(), msg.as_deref(), task.as_deref(), source.as_deref(), dry_run);
             } else {
                 // `--msg`/`--task`/`--source` belong to `notify generic`; the

@@ -55,6 +55,52 @@ fn read_capped<R: Read>(reader: R, cap: u64) -> String {
     s
 }
 
+/// `zj-radar notify exit` — the shell hook's report that the command it just
+/// ran exited non-zero. Sent on its own pipe (`zj_radar.exit.v1`), never the
+/// status pipe: the plugin applies it to the pane's observed command row
+/// (`core::exit`). A zero or missing code, an empty command line, or no pane
+/// sends nothing. Like every `notify`, it never fails the calling hook.
+pub fn run_exit(pane: Option<&str>, code: Option<i32>, cmd: Option<&str>, dry_run: bool) {
+    let Some(report) = exit_report(pane, code, cmd, pane_id_from_env) else {
+        if dry_run {
+            eprintln!(
+                "zj-radar: notify exit needs a pane (--pane or $ZELLIJ_PANE_ID), a non-zero --code \
+                 and a --cmd — nothing would be sent"
+            );
+        }
+        return;
+    };
+    let payload = report.to_wire();
+    if dry_run {
+        println!("{payload}");
+        return;
+    }
+    let timeout =
+        parse_pipe_timeout(std::env::var("ZJ_RADAR_PIPE_TIMEOUT").ok(), crate::pipe::DEFAULT_PIPE_TIMEOUT_SECS);
+    let argv = crate::pipe::self_limiting_pipe_argv_to(crate::exit_pipe::EXIT_PIPE_NAME, &payload, timeout.as_secs());
+    send_argv(&argv, timeout, None);
+}
+
+/// The pure half of [`run_exit`]: the report to send, or `None`. `--pane`
+/// (with or without the `terminal_` prefix) wins over the environment.
+fn exit_report(
+    pane: Option<&str>,
+    code: Option<i32>,
+    cmd: Option<&str>,
+    env_pane: impl FnOnce() -> Option<u32>,
+) -> Option<crate::exit_pipe::ExitReport> {
+    let exit = code.filter(|&c| c != 0)?;
+    let program = crate::exit_pipe::program_of_command_line(cmd?);
+    if program.is_empty() {
+        return None;
+    }
+    let pane_id = match pane {
+        Some(raw) => raw.strip_prefix("terminal_").unwrap_or(raw).parse::<u32>().ok()?,
+        None => env_pane()?,
+    };
+    Some(crate::exit_pipe::ExitReport { pane_id, exit, program })
+}
+
 /// Thin IO wrapper: source the payload, derive behind the agent seam, then
 /// broadcast. Never panics; any failure is a silent no-op so the calling hook is
 /// never broken.
@@ -240,8 +286,12 @@ fn send(payload: &str, status: Status, edge: bool) -> bool {
 /// (`Some`) — passed per-`Command` rather than through the process-global
 /// env, which a multi-threaded test binary cannot safely mutate.
 fn send_with(payload: &str, timeout: std::time::Duration, path: Option<&std::ffi::OsStr>) -> bool {
+    send_argv(&crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs()), timeout, path)
+}
+
+/// Spawn one self-limiting pipe argv and wait for it (see [`send`]).
+fn send_argv(argv: &[String], timeout: std::time::Duration, path: Option<&std::ffi::OsStr>) -> bool {
     use wait_timeout::ChildExt;
-    let argv = crate::pipe::self_limiting_pipe_argv(payload, timeout.as_secs());
     let mut cmd = Command::new(&argv[0]);
     if let Some(path) = path {
         // The program (`sh`) resolves through the child's PATH when set here.
@@ -422,6 +472,21 @@ exec sleep 30
     }
 
     // --- bounded stdin read ---
+
+    #[test]
+    fn exit_report_needs_a_nonzero_code_a_program_and_a_pane() {
+        let env = || Some(9);
+        let r = exit_report(None, Some(2), Some("sudo cargo build"), env).unwrap();
+        assert_eq!((r.pane_id, r.exit, r.program.as_str()), (9, 2, "cargo"));
+        let r = exit_report(Some("terminal_3"), Some(1), Some("make"), env).unwrap();
+        assert_eq!(r.pane_id, 3, "--pane wins over the environment");
+        assert!(exit_report(None, Some(0), Some("make"), env).is_none(), "a success sends nothing");
+        assert!(exit_report(None, None, Some("make"), env).is_none());
+        assert!(exit_report(None, Some(1), Some("   "), env).is_none());
+        assert!(exit_report(None, Some(1), None, env).is_none());
+        assert!(exit_report(None, Some(1), Some("make"), || None).is_none(), "outside Zellij");
+        assert!(exit_report(Some("x"), Some(1), Some("make"), env).is_none());
+    }
 
     #[test]
     fn read_capped_reads_small_input_whole() {

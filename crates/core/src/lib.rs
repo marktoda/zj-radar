@@ -44,6 +44,7 @@
 // this crate names it.
 #[doc(hidden)]
 pub mod command;
+pub mod exit;
 pub mod kind;
 #[doc(hidden)]
 pub mod observation;

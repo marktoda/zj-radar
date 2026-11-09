@@ -3965,3 +3965,24 @@ fn theme_switch_to_an_unusable_palette_falls_back() {
     assert!(out.render);
     assert_eq!(rt.theme, theme::DerivedColors::default());
 }
+
+#[test]
+fn exit_pipe_turns_the_command_row_red_and_persists_it_for_later_tabs() {
+    let mut runtime = runtime_with_config(config());
+    runtime.radar.command_mut().on_command_changed(5, &["cargo".into(), "build".into()], true, None, 0);
+    runtime.radar.command_mut().on_timer(Tick(DEBOUNCE_TICKS), EpochSecs(0));
+    let raw = crate::exit::ExitReport { pane_id: 5, exit: 101, program: "cargo".into() }.to_wire();
+
+    let outcome = runtime.exit_pipe(&raw);
+
+    assert!(outcome.render);
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, Effect::PersistSnapshot)));
+    let mut restored = RadarState::default();
+    restored.load_snapshot(&runtime.snapshot_json(None)).expect("valid snapshot");
+    let obs = restored.command(5).unwrap();
+    assert_eq!((obs.status, obs.exit_code), (Status::Error, Some(101)));
+    // A report that matches no row is a no-op: no render, no write.
+    let stray = crate::exit::ExitReport { pane_id: 6, exit: 1, program: "make".into() }.to_wire();
+    let outcome = runtime.exit_pipe(&stray);
+    assert!(!outcome.render && outcome.effects.is_empty());
+}
