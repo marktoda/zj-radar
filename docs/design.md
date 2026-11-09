@@ -135,6 +135,7 @@ seam is the versioned pipe payload.
 | Opencode events | [`producers.md`](producers.md#opencode) |
 | pi events | [`producers.md`](producers.md#pi) |
 | Observed command exiting nonzero | `error` |
+| Shell hook reports a nonzero exit (`zj_radar.exit.v1`, §5) for the pane's observed command | `error` with the exit code, on the observed command row only (`CommandStore::on_exit_report`); agents and commands that never got a row ignore it |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
 | Agent pane's root process exits (manifest `exited`) | `idle` immediately, no grace (§10) |
@@ -142,8 +143,9 @@ seam is the versioned pipe payload.
 Claude's map has no `error` on purpose: its hook vocabulary carries no
 reliable turn-level failure signal (`PostToolUse`'s per-tool `is_error` is
 normal, recoverable behavior), so mapping it to `Error` would paint healthy
-turns red. The two `error` sources are a nonzero command exit and opencode's
-`session.error`.
+turns red. The `error` sources are a nonzero command exit (a held pane's
+own exit, or the shell hook's report for a command at a prompt) and
+opencode's `session.error`.
 
 ### 4.2 Per-pane to per-tab aggregation
 
@@ -281,6 +283,47 @@ writes them. Instances tick on unaligned phases, so a lagging sibling's
 own-pane write can briefly put pre-confirm state back in the file; its own
 timer write repairs it (`RadarState::timer`). With persistence off, late
 sidebars start empty until the next broadcast.
+
+### The shell exit pipe (`zj_radar.exit.v1`)
+
+Zellij reports an exit code only for a held pane whose root command exited.
+A command run at an ordinary shell prompt just hands the foreground back to
+the shell, so the opt-in shell hook (`zj-radar setup shell`, see
+[`producers.md`](producers.md#shells-failed-commands)) reports a failure on a
+second pipe:
+
+```json
+{ "v": 1, "pane_id": 12, "exit": 101, "program": "cargo" }
+```
+
+- Sent once per command that exits non-zero (not 130/148, Ctrl-C/Ctrl-Z),
+  from the shell's post-command hook, via `zj-radar notify exit`. A success
+  sends nothing. Same self-limiting send as the status pipe (§5, *Bound your
+  sends*).
+- `program` is the command line's peeled exe basename (wrappers like
+  `sudo`/`env`/`time`, `VAR=value` prefixes and a path stripped): the first
+  token of the row the plugin shows for that command. Parsing
+  (`crates/core/src/exit.rs`) drops a zero `exit`, an unknown `v`, an empty or
+  whitespace/control-bearing `program`, and payloads over 1 KB.
+- It never touches the status store. A status entry wins `resolve` for its
+  pane, and a pushed `error` would hide that pane's later observed commands.
+  The report goes to the command store instead: `on_exit_report` applies it
+  only when the pane's row is `Running` (with or without the pending-Done
+  confirm armed, which it cancels) or a `Done` no exit code has decided, the
+  row's first display token equals `program`, and no different command is
+  pending. The row becomes a command-origin `Error` carrying `exit_code`,
+  which renders the `✗` and the `exit N` tag, is exempt from the Done TTL,
+  and recedes to the ledger when the pane's next command takes the row.
+- The hook fires from `precmd`, before the next command can start, so the
+  report almost always lands while the row is still `Running` or awaiting
+  its Done confirm: a clean Running → Error edge, never Done then Error. The
+  program-name match drops the rare late report.
+- Commands that finish inside the 2-tick promotion debounce never get a row,
+  so a failing `grep`, `test` or `cd nope` stays quiet. So does an agent,
+  which the command store never tracks. Limit: a real command that fails in
+  under about 2 s stays uncoloured.
+- The Error is persisted to the snapshot at once: unlike a held pane's exit,
+  it cannot be re-derived from the pane manifest.
 
 ## 6. Plugin ↔ Zellij wiring
 

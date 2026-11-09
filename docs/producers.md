@@ -253,6 +253,40 @@ prompt. Send `done` or `error` when your script finishes rather than relying on
 that. A pane whose root process exits clears immediately, which matters for
 `zellij run` script panes.
 
+## Shells: failed commands
+
+Zellij gives no exit code for a command run at an ordinary shell prompt, so a
+failed `cargo build` would otherwise look like a finished one. The opt-in
+shell hook fixes that:
+
+```sh
+zj-radar setup shell          # the shell in $SHELL
+zj-radar setup shell zsh fish # or name them: bash | zsh | fish
+```
+
+It adds a marked block (`# >>> zj-radar shell hook >>>`) to `~/.bashrc`,
+`${ZDOTDIR:-~}/.zshrc`, or `~/.config/fish/conf.d/zj-radar.fish` (honoring
+`$XDG_CONFIG_HOME`). Running it again rewrites a stale block in place,
+`--uninstall` removes it, and `--check` reports on it. Bare `zj-radar setup`
+never touches rc files. Open a new shell for it to take effect.
+
+Inside Zellij, after a command exits non-zero (except 130 and 148, Ctrl-C and
+Ctrl-Z), the hook runs `zj-radar notify exit --code N --cmd "<command line>"`
+in the background. Successful commands send nothing. bash needs 4.4 or newer
+(the hook uses `PS0`). The report rides its own pipe,
+`zj_radar.exit.v1` ([`design.md`](design.md) §5), and only marks the pane's
+*observed* command row: if the radar showed `$ cargo build` running, that row
+turns into `✗ … exit 101` and stays red until you run the next command.
+Commands too quick to have earned a row (under about 2 s), agents, and
+commands whose program doesn't match the row are left alone.
+
+- `notify exit` flags: `--code` (non-zero), `--cmd` (only its program name is
+  sent, peeled past `sudo`/`env`/`VAR=1`/paths), `--pane` (default
+  `$ZELLIJ_PANE_ID`), `--dry-run` (print the payload).
+- bash reads the command line from `history 1`, so a command kept out of
+  history (`HISTCONTROL=ignorespace`, `HISTIGNORE`) reports the previous line,
+  which the program match then drops.
+
 ## Writing your own producer
 
 The plugin's interface is one versioned pipe payload. Broadcast it by name

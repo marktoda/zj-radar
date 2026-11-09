@@ -297,3 +297,8 @@ exit code — see `docs/troubleshooting.md`): a clean `logout` and a dropped
 link are indistinguishable (an ordinary shell pane reports no exit code, so
 both notify as a disconnect), and a *hung* ssh shows as connected until it
 gives up (no termios/heartbeat signal to detect a stalled link).
+With the opt-in shell hook (`zj-radar setup shell`), a session that exits
+non-zero (ssh's 255 on a dropped link) reports its exit code, which turns
+the row into an `error` like any observed command
+([`design.md`](design.md) §5, *The shell exit pipe*); a clean `logout`
+reports nothing and stays a disconnect.
