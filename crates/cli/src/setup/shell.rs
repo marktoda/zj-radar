@@ -86,7 +86,7 @@ fi"#;
 const ZSH_HOOK: &str = r#"if [[ -n "${ZELLIJ_PANE_ID:-}" && -z "${__zj_radar_hooked:-}" ]]; then
   __zj_radar_hooked=1
   typeset -g __zj_radar_cmd=
-  __zj_radar_preexec() { __zj_radar_cmd=$1 }
+  __zj_radar_preexec() { __zj_radar_cmd=$1; }
   __zj_radar_precmd() {
     local s=$?
     if [[ -n $__zj_radar_cmd && $s -ne 0 && $s -ne 130 && $s -ne 148 ]]; then
