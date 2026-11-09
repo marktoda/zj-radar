@@ -370,6 +370,7 @@ config-dir entries with them.
 | `plugins/zj-radar.js` (1.x) and `plugins/zj-radar/tui.js` (2.x) under `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | `setup opencode` | **reversed** by `setup opencode --uninstall` (each only when the marker is present), along with its `.zj-radar.bak` when that backup is ours (a backup of the foreign file `--force` replaced is left for you, with the `mv` that restores it; `--dry-run` names which) and the emptied `zj-radar/` dir |
 | `~/.omp/agent/extensions/zj-radar-omp.js` (or the active omp profile's / `$PI_CODING_AGENT_DIR`'s `extensions/`) | `setup omp` | **reversed** by `setup omp --uninstall` (only when the marker is present), with the same backup handling as `setup pi` |
 | `~/.pi/agent/extensions/zj-radar.js` (or `$PI_CODING_AGENT_DIR/extensions/zj-radar.js`) | `setup pi` | **reversed** by `setup pi --uninstall` (only when the marker is present), along with its `.zj-radar.bak` when that backup is ours (a backup of the foreign file `--force` replaced is left for you, with the `mv` that restores it; `--dry-run` names which) |
+| `~/.bashrc`, `${ZDOTDIR:-~}/.zshrc`, or `$XDG_CONFIG_HOME/fish/conf.d/zj-radar.fish` (default `~/.config/fish/conf.d/`): failed-command hook between `# >>> zj-radar shell hook >>>` markers | `setup shell [bash\|zsh\|fish]` (opt-in; refuses a read-only rc file such as a home-manager link, use `eval "$(zj-radar shell-init <shell>)"` there) | **reversed** by `setup shell <shell> --uninstall`: strips only the marked block. A `shell-init` line you added yourself is yours to remove |
 
 Complete removal:
 
@@ -380,6 +381,7 @@ zj-radar setup codex --uninstall -y
 zj-radar setup opencode --uninstall -y
 zj-radar setup pi --uninstall -y
 zj-radar setup omp --uninstall -y
+zj-radar setup shell bash zsh fish --uninstall -y
 ```
 
 then delete the wasm, the `run` data dir, the grant block, and the binary.
