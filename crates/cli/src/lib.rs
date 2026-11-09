@@ -226,6 +226,11 @@ pub fn run() -> std::process::ExitCode {
                 // agent adapters derive all three from the hook payload. Hint
                 // and continue — never a clap conflict: notify is called from
                 // hooks and must stay exit-0 on any input (see `exit`).
+                if pane.is_some() || code.is_some() || cmd.is_some() {
+                    eprintln!(
+                        "zj-radar: --pane/--code/--cmd apply to `notify exit` only — ignored for `notify {agent}`"
+                    );
+                }
                 if msg.is_some() || task.is_some() || source.is_some() {
                     eprintln!(
                         "zj-radar: --msg/--task/--source apply to `notify generic` only — \

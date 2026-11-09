@@ -63,17 +63,22 @@ fn calls(log: &Path, want: usize) -> Vec<String> {
         let body = std::fs::read_to_string(log).unwrap_or_default();
         let lines: Vec<String> = body.lines().map(str::to_string).collect();
         if lines.len() >= want || Instant::now() > deadline {
-            // Let any unexpected extra send land too.
+            // Let any unexpected extra send land too. The sends run in the
+            // background, so they can land in either order: sort.
             std::thread::sleep(Duration::from_millis(300));
-            return std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect();
+            let mut lines: Vec<String> =
+                std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect();
+            lines.sort();
+            return lines;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 /// The calls every shell must produce for: a failing command, a success, an
-/// empty line, a Ctrl-C exit (130), and a second failure.
-const EXPECTED: [&str; 2] = ["notify|exit|--code|3|--cmd|sh -c 'exit 3'|", "notify|exit|--code|1|--cmd|false|"];
+/// empty line, a Ctrl-C exit (130), and a second failure. Sorted, like
+/// [`calls`]' result.
+const EXPECTED: [&str; 2] = ["notify|exit|--code|1|--cmd|false|", "notify|exit|--code|3|--cmd|sh -c 'exit 3'|"];
 
 fn shell_command(shell: &str, home: &Path, shims: &ShimDir) -> std::process::Command {
     let mut cmd = std::process::Command::new(shell);

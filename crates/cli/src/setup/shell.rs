@@ -106,7 +106,8 @@ const FISH_HOOK: &str = r#"if set -q ZELLIJ_PANE_ID; and not set -q __zj_radar_h
     set -g __zj_radar_hooked 1
     function __zj_radar_postexec --on-event fish_postexec
         set -l s $status
-        if test $s -ne 0 -a $s -ne 130 -a $s -ne 148
+        # fish reports an unknown command itself, past the redirect.
+        if test $s -ne 0 -a $s -ne 130 -a $s -ne 148; and command -q zj-radar
             command zj-radar notify exit --code $s --cmd "$argv[1]" >/dev/null 2>&1 &
             disown 2>/dev/null
         end
