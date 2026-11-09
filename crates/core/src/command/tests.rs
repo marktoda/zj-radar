@@ -1651,3 +1651,42 @@ fn exit_report_program_key_matches_the_row_display() {
         assert!(store.on_exit_report(1, 1, &program, Tick(4), EpochSecs(0)), "{line}");
     }
 }
+
+#[test]
+fn a_fast_same_program_failure_never_repaints_an_earlier_done() {
+    // `cargo build` succeeds: its row confirms Done with no exit code.
+    let mut store = store_running_cargo_build(1);
+    store.on_command_changed(1, &argv(&["bash"]), false, None, 4);
+    store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
+    assert_eq!(store.get(1).unwrap().status, Status::Done);
+    // Later, `cargo fmt --check` fails inside the debounce and Zellij never
+    // saw it: no row, nothing pending. Its report names `cargo` too.
+    assert!(!store.on_exit_report(1, 1, "cargo", Tick(20), EpochSecs(0)));
+    let s = store.get(1).unwrap();
+    assert_eq!((s.status, s.exit_code), (Status::Done, None), "the successful build stays Done");
+}
+
+#[test]
+fn a_fast_failure_zellij_saw_closes_the_done_to_reports_at_once() {
+    let mut store = store_running_cargo_build(1);
+    store.on_command_changed(1, &argv(&["bash"]), false, None, 4);
+    store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
+    // Zellij saw the fast `cargo fmt --check` come and go: pending is cleared
+    // again by the prompt return, but the report is still within the grace.
+    store.on_command_changed(1, &argv(&["cargo", "fmt", "--check"]), true, Some("/w/repo"), 6);
+    store.on_command_changed(1, &argv(&["bash"]), false, None, 6);
+    assert!(!store.on_exit_report(1, 1, "cargo", Tick(7), EpochSecs(0)));
+    assert_eq!(store.get(1).unwrap().status, Status::Done);
+}
+
+#[test]
+fn a_done_takes_a_late_report_only_within_the_grace() {
+    let left = 4;
+    let last = left + DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS;
+    for (at, applies) in [(last, true), (last + 1, false)] {
+        let mut store = store_running_cargo_build(1);
+        store.on_command_changed(1, &argv(&["bash"]), false, None, left);
+        store.on_timer(Tick(left + DEBOUNCE_TICKS), EpochSecs(0));
+        assert_eq!(store.on_exit_report(1, 1, "cargo", Tick(at), EpochSecs(0)), applies, "report at tick {at}");
+    }
+}

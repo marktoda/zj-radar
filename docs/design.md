@@ -309,15 +309,25 @@ second pipe:
   pane, and a pushed `error` would hide that pane's later observed commands.
   The report goes to the command store instead: `on_exit_report` applies it
   only when the pane's row is `Running` (with or without the pending-Done
-  confirm armed, which it cancels) or a `Done` no exit code has decided, the
-  row's first display token equals `program`, and no different command is
-  pending. The row becomes a command-origin `Error` carrying `exit_code`,
+  confirm armed, which it cancels) or a *fresh* `Done`, the row's first
+  display token equals `program`, and no different command is pending. A
+  `Done` is fresh while no exit code has decided it, no foreground command
+  has been seen since its run left the foreground, and that was at most
+  `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS` (2 + 3) ticks ago. An older
+  `Done` is never repainted: a same-program report then comes from a later
+  run too fast to earn a row (`cargo fmt --check` failing after a successful
+  `cargo build`), and marking the build red would be a false failure. The row becomes a command-origin `Error` carrying `exit_code`,
   which renders the `✗` and the `exit N` tag, is exempt from the Done TTL,
   and recedes to the ledger when the pane's next command takes the row.
 - The hook fires from `precmd`, before the next command can start, so the
   report almost always lands while the row is still `Running` or awaiting
   its Done confirm: a clean Running → Error edge, never Done then Error. The
-  program-name match drops the rare late report.
+  program-name match and the Done freshness window drop the rare late report.
+- Limit: a hook in a shell nested inside the pane's observed command (the
+  shell `nix develop` or `poetry shell` opens) reports into the same pane, so
+  a failing `nix build` there marks the still-running `nix develop` row red.
+  The plugin cannot tell the two apart; the program-name match only stops
+  it when the programs differ.
 - Commands that finish inside the 2-tick promotion debounce never get a row,
   so a failing `grep`, `test` or `cd nope` stays quiet. So does an agent,
   which the command store never tracks. Limit: a real command that fails in

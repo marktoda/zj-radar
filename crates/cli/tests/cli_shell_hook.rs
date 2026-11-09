@@ -78,7 +78,7 @@ fn calls(log: &Path, want: usize) -> Vec<String> {
 /// The calls every shell must produce for: a failing command, a success, an
 /// empty line, a Ctrl-C exit (130), and a second failure. Sorted, like
 /// [`calls`]' result.
-const EXPECTED: [&str; 2] = ["notify|exit|--code|1|--cmd|false|", "notify|exit|--code|3|--cmd|sh -c 'exit 3'|"];
+const EXPECTED: [&str; 2] = ["notify|exit|--code|1|--cmd=false|", "notify|exit|--code|3|--cmd=sh -c 'exit 3'|"];
 
 fn shell_command(shell: &str, home: &Path, shims: &ShimDir) -> std::process::Command {
     let mut cmd = std::process::Command::new(shell);

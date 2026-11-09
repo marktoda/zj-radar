@@ -30,6 +30,15 @@ pub const DEBOUNCE_TICKS: u64 = 2;
 /// exempt — failures persist until re-run or prune.
 pub const DONE_TTL_TICKS: u64 = 60;
 
+/// Ticks past the Running→Done confirm during which a shell hook's exit report
+/// (`zj_radar.exit.v1`) may still turn that `Done` red. The hook fires from
+/// `precmd`, at the prompt return that armed the confirm, so its report
+/// normally lands while the row is still Running; this only absorbs a slow
+/// `zellij pipe` spawn. Past it, a same-program report is from a later, faster
+/// run (a `cargo fmt --check` failing under the debounce after a successful
+/// `cargo build`) and must not repaint the earlier row.
+pub const EXIT_REPORT_GRACE_TICKS: u64 = 3;
+
 /// An instant on the plugin's per-instance tick counter. One of the two
 /// clocks this store is driven by — see [`EpochSecs`] for why they are
 /// distinct types.
@@ -162,6 +171,12 @@ pub struct CommandStore {
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
     /// identical exits.
     exited: HashMap<u32, Option<i32>>,
+    /// Exit-report window: panes whose Running row has left the foreground,
+    /// keyed to the tick it left. While open (and young — see
+    /// [`EXIT_REPORT_GRACE_TICKS`]) a shell hook's exit report may still mark
+    /// the row's `Done`. Any newer foreground command closes it, because the
+    /// row's run is then no longer the pane's latest.
+    exit_window: HashMap<u32, u64>,
     /// The effective interactive set: [`DEFAULT_INTERACTIVE`] ∪ the user's
     /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
     /// Matched on the peeled program name at intake.
@@ -181,6 +196,7 @@ impl Default for CommandStore {
             pending: HashMap::new(),
             pending_done: HashMap::new(),
             exited: HashMap::new(),
+            exit_window: HashMap::new(),
             interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
             remote_extras: HashSet::new(),
         }
@@ -765,6 +781,10 @@ impl CommandStore {
             // never reach here (`is_remote_extra`): `classify`'s dedicated
             // branch above already decided their Kind from the argv shape.
             let kind = if self.is_remote_extra(name) { Kind::Remote } else { kind };
+            // A foreground command after the row's run: an exit report can no
+            // longer be pinned to that run's Done (an interactive command
+            // re-arms the window below when it ends a Running row).
+            self.exit_window.remove(&pane_id);
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -812,6 +832,7 @@ impl CommandStore {
     fn arm_tentative_done(&mut self, pane_id: u32, tick: u64) {
         if self.store.get(pane_id).is_some_and(|s| s.status == Status::Running) {
             self.pending_done.entry(pane_id).or_insert(tick);
+            self.exit_window.entry(pane_id).or_insert(tick);
         }
     }
 
@@ -860,6 +881,7 @@ impl CommandStore {
                 } else {
                     changed = true;
                 }
+                self.exit_window.remove(&pane_id);
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
                         receded.push((pane_id, prev));
@@ -994,6 +1016,7 @@ impl CommandStore {
         // same way promotion derives it) labels the completion below.
         let pending = self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
+        self.exit_window.remove(&pane_id);
         let identity = pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
 
         let mut receded = None;
@@ -1042,8 +1065,12 @@ impl CommandStore {
     /// Applies only when the report can be pinned to the row it would mark:
     /// - the row is `Running` (with or without an armed tentative-done — the
     ///   hook fires from `precmd`, so it usually lands here, giving a clean
-    ///   Running→Error edge with no Done in between), or a `Done` that no
-    ///   newer run has replaced and no exit has already decided;
+    ///   Running→Error edge with no Done in between), or a `Done` whose run
+    ///   left the foreground at most `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS`
+    ///   ago, with no foreground command seen since and no exit already
+    ///   deciding it. An older Done is never repainted: the report is then
+    ///   from a later run too fast to earn a row (`cargo fmt --check` failing
+    ///   after a successful `cargo build`), and would mark the wrong run;
     /// - its display's first token is `program` (the peeled exe basename),
     ///   which drops a late report that lost the race to a newer command;
     /// - no *different* command is pending on the pane (a newer run is in
@@ -1070,7 +1097,13 @@ impl CommandStore {
         let Some(s) = self.store.get(pane_id) else { return false };
         let applies = match s.status {
             Status::Running => true,
-            Status::Done => s.exit_code.is_none(),
+            Status::Done => {
+                s.exit_code.is_none()
+                    && self
+                        .exit_window
+                        .get(&pane_id)
+                        .is_some_and(|&left| tick.saturating_sub(left) <= DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS)
+            }
             _ => false,
         };
         if !applies || first_token(&s.msg) != Some(program) {
@@ -1084,6 +1117,7 @@ impl CommandStore {
         // over the Error.
         self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
+        self.exit_window.remove(&pane_id);
         let Some(s) = self.store.get_mut(pane_id) else { return false };
         if s.status == Status::Running {
             s.completed_epoch_s = Some(now_epoch_s);
@@ -1104,6 +1138,7 @@ impl CommandStore {
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
+        self.exit_window.retain(|id, _| live.contains(id));
         dropped
     }
 

@@ -72,7 +72,7 @@ const BASH_HOOK: &str = r#"if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -z "${__zj_radar
     if [ "$__zj_radar_ran" = 1 ] && [ "$s" -ne 0 ] && [ "$s" -ne 130 ] && [ "$s" -ne 148 ]; then
       line=$(HISTTIMEFORMAT= builtin history 1)
       [[ $line =~ ^[[:space:]]*[0-9]+\*?[[:space:]]+(.*)$ ]] && line=${BASH_REMATCH[1]}
-      ( command zj-radar notify exit --code "$s" --cmd "$line" >/dev/null 2>&1 & )
+      ( command zj-radar notify exit --code "$s" --cmd="$line" >/dev/null 2>&1 & )
     fi
     __zj_radar_ran=0
     return "$s"
@@ -92,7 +92,7 @@ const ZSH_HOOK: &str = r#"if [[ -n "${ZELLIJ_PANE_ID:-}" && -z "${__zj_radar_hoo
   __zj_radar_precmd() {
     local s=$?
     if [[ -n $__zj_radar_cmd && $s -ne 0 && $s -ne 130 && $s -ne 148 ]]; then
-      command zj-radar notify exit --code "$s" --cmd "$__zj_radar_cmd" >/dev/null 2>&1 &!
+      command zj-radar notify exit --code "$s" --cmd="$__zj_radar_cmd" >/dev/null 2>&1 &!
     fi
     __zj_radar_cmd=
     return $s
@@ -110,7 +110,7 @@ const FISH_HOOK: &str = r#"if set -q ZELLIJ_PANE_ID; and not set -q __zj_radar_h
         set -l s $status
         # fish reports an unknown command itself, past the redirect.
         if test $s -ne 0 -a $s -ne 130 -a $s -ne 148; and command -q zj-radar
-            command zj-radar notify exit --code $s --cmd "$argv[1]" >/dev/null 2>&1 &
+            command zj-radar notify exit --code $s --cmd="$argv[1]" >/dev/null 2>&1 &
             disown 2>/dev/null
         end
     end

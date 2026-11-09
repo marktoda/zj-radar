@@ -290,6 +290,12 @@ commands whose program doesn't match the row are left alone.
   `cargo build` sends `cb`), which never matches the observed `cargo` row,
   so that failure is dropped silently. zsh sends the alias-expanded line, so
   aliases match there; a function still doesn't.
+- A successful row is never turned red by a later, faster run of the same
+  program: a report reaches a `Done` row only within a few seconds of its
+  command ending, and never once another command has been seen in the pane.
+- A shell nested inside a running command (`nix develop`, `poetry shell`)
+  inherits `ZELLIJ_PANE_ID` and reports into the same pane, so a failure of
+  the same program in it (`nix build`) marks the outer, still-running row red.
 
 ## Writing your own producer
 
