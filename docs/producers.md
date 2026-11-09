@@ -286,6 +286,10 @@ commands whose program doesn't match the row are left alone.
 - bash reads the command line from `history 1`, so a command kept out of
   history (`HISTCONTROL=ignorespace`, `HISTIGNORE`) reports the previous line,
   which the program match then drops.
+- An alias or shell function is sent as typed in bash and fish (`cb` for
+  `cargo build` sends `cb`), which never matches the observed `cargo` row,
+  so that failure is dropped silently. zsh sends the alias-expanded line, so
+  aliases match there; a function still doesn't.
 
 ## Writing your own producer
 

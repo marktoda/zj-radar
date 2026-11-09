@@ -685,14 +685,6 @@ pub fn is_shell_prompt(command: &[String]) -> bool {
     IGNORE_NAMES.contains(&name)
 }
 
-/// Whether an instrumented agent (`AGENT_NAMES`) is the pane's live command —
-/// direct evidence the pushed status's producer is still running. Used to
-/// cancel the stale-Running grace clock after a mid-turn foreground flicker
-/// resolves back to the agent. Like `is_shell_prompt`, the foreground flag is
-/// deliberately not consulted: a childless agent ROOT (`zellij run -- claude`,
-/// between tool children) reports `is_foreground=false`, and that report is
-/// the agent alive, not absent. A DEAD root never leaks through here — the
-/// pane manifest's `exited` flag clears its status directly.
 /// The peeled program name of an argv (wrappers, `VAR=value` prefixes, a
 /// path and a login shell's `-` stripped): the same name intake keys the
 /// ignore/interactive sets on, and the first token of the row's display.
@@ -701,6 +693,14 @@ pub fn program_of(command: &[String]) -> &str {
     effective_program(command).1
 }
 
+/// Whether an instrumented agent (`AGENT_NAMES`) is the pane's live command —
+/// direct evidence the pushed status's producer is still running. Used to
+/// cancel the stale-Running grace clock after a mid-turn foreground flicker
+/// resolves back to the agent. Like `is_shell_prompt`, the foreground flag is
+/// deliberately not consulted: a childless agent ROOT (`zellij run -- claude`,
+/// between tool children) reports `is_foreground=false`, and that report is
+/// the agent alive, not absent. A DEAD root never leaks through here — the
+/// pane manifest's `exited` flag clears its status directly.
 pub fn is_agent_command(command: &[String]) -> bool {
     let (_, name) = effective_program(command);
     AGENT_NAMES.contains(&name)

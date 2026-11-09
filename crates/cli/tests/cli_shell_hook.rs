@@ -126,9 +126,9 @@ fn zsh_hook_reports_only_failed_commands() {
     let rc = install_hook(home.path(), "zsh");
     let shims = ShimDir::new();
     let log = fake_cli(&shims);
-    // Drive the hooks the way zsh's line editor does: preexec with the line,
-    // the command, then precmd.
-    let run = |line: &str| format!("__zj_radar_preexec {line:?}; {line}; __zj_radar_precmd; ");
+    // Drive the hooks the way zsh's line editor does: preexec with the line
+    // as typed, size-limited and alias-expanded, the command, then precmd.
+    let run = |line: &str| format!("__zj_radar_preexec {line:?} {line:?} {line:?}; {line}; __zj_radar_precmd; ");
     let script = format!(
         "source {rc:?}; {}{}__zj_radar_precmd; {}{}",
         run("sh -c 'exit 3'"),

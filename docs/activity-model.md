@@ -300,5 +300,7 @@ gives up (no termios/heartbeat signal to detect a stalled link).
 With the opt-in shell hook (`zj-radar setup shell`), a session that exits
 non-zero (ssh's 255 on a dropped link) reports its exit code, which turns
 the row into an `error` like any observed command
-([`design.md`](design.md) §5, *The shell exit pipe*); a clean `logout`
-reports nothing and stays a disconnect.
+([`design.md`](design.md) §5, *The shell exit pipe*). ssh exits with the
+remote shell's status, so only a logout that exits zero reports nothing and
+stays a disconnect; a `logout` or Ctrl-D right after a failed remote command
+exits non-zero too, and that row turns into an `error` the same way.

@@ -81,12 +81,14 @@ const BASH_HOOK: &str = r#"if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -z "${__zj_radar
   PROMPT_COMMAND="__zj_radar_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 fi"#;
 
-// zsh's preexec receives the command line as typed; precmd sees its `$?`.
+// zsh's preexec receives the command line as typed (`$1`) and with aliases
+// expanded (`$3`); the expanded one names the program the radar observed, so
+// an alias like `cb` for `cargo build` still matches. precmd sees its `$?`.
 // `&!` starts the send already disowned (no job notice at the next prompt).
 const ZSH_HOOK: &str = r#"if [[ -n "${ZELLIJ_PANE_ID:-}" && -z "${__zj_radar_hooked:-}" ]]; then
   __zj_radar_hooked=1
   typeset -g __zj_radar_cmd=
-  __zj_radar_preexec() { __zj_radar_cmd=$1; }
+  __zj_radar_preexec() { __zj_radar_cmd=${3:-$1}; }
   __zj_radar_precmd() {
     local s=$?
     if [[ -n $__zj_radar_cmd && $s -ne 0 && $s -ne 130 && $s -ne 148 ]]; then
