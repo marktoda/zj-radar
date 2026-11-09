@@ -1664,6 +1664,47 @@ fn a_compound_report_naming_other_programs_only_is_dropped() {
 }
 
 #[test]
+fn a_later_segment_failing_never_paints_the_earlier_successful_row() {
+    // `cargo build && ./target/debug/app`: the build succeeds, then `app`
+    // takes the foreground and fails before it can be promoted to a row.
+    let mut store = store_running_cargo_build(1);
+    store.on_command_changed(1, &argv(&["./target/debug/app"]), true, Some("/w/repo"), 4);
+    store.on_command_changed(1, &argv(&["zsh"]), false, None, 4);
+    let programs = crate::exit::programs_of_command_line("cargo build && ./target/debug/app");
+    assert!(!store.on_exit_report(1, 1, &programs, Tick(4), EpochSecs(0)), "app ran last, not cargo");
+    store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
+    let s = store.get(1).unwrap();
+    assert_eq!((s.status, s.exit_code), (Status::Done, None), "the build row stays a success");
+}
+
+#[test]
+fn a_compound_line_whose_last_foreground_command_is_the_row_turns_it_red() {
+    // `cd crates/cli && cargo test`: `cd` is a builtin (never a foreground
+    // command), so `cargo` is the last program Zellij saw.
+    let mut store = CommandStore::default();
+    store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/w/repo"), 1);
+    store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
+    store.on_command_changed(1, &argv(&["zsh"]), false, None, 5);
+    let programs = crate::exit::programs_of_command_line("cd crates/cli && cargo test");
+    assert!(store.on_exit_report(1, 101, &programs, Tick(5), EpochSecs(0)));
+    let s = store.get(1).unwrap();
+    assert_eq!((s.status, s.exit_code), (Status::Error, Some(101)));
+}
+
+#[test]
+fn a_rail_with_no_foreground_history_for_the_pane_still_applies_a_matching_report() {
+    // A rail loaded from the snapshot mid-run has the Running row but has
+    // never seen the pane's foreground: the other rules decide alone.
+    let mut store = CommandStore::default();
+    store.insert_snapshot_observation(
+        1,
+        TrackedObservation::command(Status::Running, "repo".into(), "cargo build".into(), Kind::Command, 0),
+    );
+    assert!(store.on_exit_report(1, 1, &["cargo"], Tick(1), EpochSecs(0)));
+    assert_eq!(store.get(1).unwrap().status, Status::Error);
+}
+
+#[test]
 fn a_fast_same_program_failure_never_repaints_an_earlier_done() {
     // `cargo build` succeeds: its row confirms Done with no exit code.
     let mut store = store_running_cargo_build(1);

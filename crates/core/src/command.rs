@@ -177,6 +177,14 @@ pub struct CommandStore {
     /// the row's `Done`. Any newer foreground command closes it, because the
     /// row's run is then no longer the pane's latest.
     exit_window: HashMap<u32, u64>,
+    /// The peeled program of the last real foreground command Zellij reported
+    /// per pane, promoted or not (a command that exits inside the debounce
+    /// still lands here), and kept across the return to the prompt. An exit
+    /// report describes the last thing the shell ran, so it may only mark a
+    /// row whose program this is: in `cargo build && ./app`, a fast failing
+    /// `app` names `app` here, and the report must not paint the successful
+    /// `cargo build` row red.
+    last_fg: HashMap<u32, String>,
     /// The effective interactive set: [`DEFAULT_INTERACTIVE`] ∪ the user's
     /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
     /// Matched on the peeled program name at intake.
@@ -197,6 +205,7 @@ impl Default for CommandStore {
             pending_done: HashMap::new(),
             exited: HashMap::new(),
             exit_window: HashMap::new(),
+            last_fg: HashMap::new(),
             interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
             remote_extras: HashSet::new(),
         }
@@ -785,6 +794,7 @@ impl CommandStore {
             // longer be pinned to that run's Done (an interactive command
             // re-arms the window below when it ends a Running row).
             self.exit_window.remove(&pane_id);
+            self.last_fg.insert(pane_id, name.to_string());
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -1075,6 +1085,13 @@ impl CommandStore {
     ///   basename of each segment of the failed command line, so
     ///   `cd x && cargo test` matches a `cargo` row), which drops a late
     ///   report that lost the race to a newer command;
+    /// - the row's program is the last foreground program Zellij reported
+    ///   for the pane (`last_fg`): the report describes the last command the
+    ///   shell ran, so in `cargo build && ./app` a failing `app` (seen in the
+    ///   foreground, never promoted) leaves the successful build row alone.
+    ///   An instance that has seen no foreground command for the pane yet (a
+    ///   rail loaded from the snapshot mid-run) has no evidence either way
+    ///   and lets the other rules decide;
     /// - no *different* command is pending on the pane (a newer run is in
     ///   flight, so the report is stale even when the names agree).
     ///
@@ -1108,8 +1125,10 @@ impl CommandStore {
             }
             _ => false,
         };
-        let named = first_token(&s.msg).is_some_and(|t| programs.iter().any(|p| p.as_ref() == t));
-        if !applies || !named {
+        let row_program = first_token(&s.msg);
+        let named = row_program.is_some_and(|t| programs.iter().any(|p| p.as_ref() == t));
+        let last_ran = self.last_fg.get(&pane_id).is_none_or(|p| Some(p.as_str()) == row_program);
+        if !applies || !named || !last_ran {
             return false;
         }
         if self.pending.get(&pane_id).is_some_and(|p| p.command != s.msg) {
@@ -1142,6 +1161,7 @@ impl CommandStore {
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
         self.exit_window.retain(|id, _| live.contains(id));
+        self.last_fg.retain(|id, _| live.contains(id));
         dropped
     }
 

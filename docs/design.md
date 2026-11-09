@@ -314,13 +314,20 @@ second pipe:
   The report goes to the command store instead: `on_exit_report` applies it
   only when the pane's row is `Running` (with or without the pending-Done
   confirm armed, which it cancels) or a *fresh* `Done`, the row's first
-  display token is one of `programs`, and no different command is pending. A
+  display token is one of `programs` *and* is the last program Zellij saw
+  in the pane's foreground (promoted or not), and no different command is
+  pending. The last-foreground rule pins the report to the command the
+  shell ran last: in `cargo build && ./app`, a fast failing `app` was the
+  last foreground program, so the successful `cargo build` row stays a
+  success (a rail with no foreground history for the pane, e.g. one loaded
+  from the snapshot mid-run, skips this rule). A
   `Done` is fresh while no exit code has decided it, no foreground command
   has been seen since its run left the foreground, and that was at most
   `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS` (2 + 3) ticks ago. An older
   `Done` is never repainted: a same-program report then comes from a later
   run too fast to earn a row (`cargo fmt --check` failing after a successful
-  `cargo build`), and marking the build red would be a false failure. The row becomes a command-origin `Error` carrying `exit_code`,
+  `cargo build`), and marking the build red would be a false failure. The
+  row becomes a command-origin `Error` carrying `exit_code`,
   which renders the `✗` and the `exit N` tag, is exempt from the Done TTL,
   and recedes to the ledger when the pane's next command takes the row.
   A remote row (`ssh` exiting 255) that goes straight from `Running` to
@@ -338,7 +345,10 @@ second pipe:
 - Commands that finish inside the 2-tick promotion debounce never get a row,
   so a failing `grep`, `test` or `cd nope` stays quiet. So does an agent,
   which the command store never tracks. Limit: a real command that fails in
-  under about 2 s stays uncoloured.
+  under about 2 s stays uncoloured. Limit: a same-program chain
+  (`cargo build && cargo test`, the test failing fast) marks the build row
+  with the test's exit code, and a later segment so fast that Zellij never
+  reports it in the foreground can still mark the row before it.
 - The Error is persisted to the snapshot at once: unlike a held pane's exit,
   it cannot be re-derived from the pane manifest.
 

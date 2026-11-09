@@ -312,6 +312,11 @@ commands whose program doesn't match the row are left alone.
 - A successful row is never turned red by a later, faster run of the same
   program: a report reaches a `Done` row only within a few seconds of its
   command ending, and never once another command has been seen in the pane.
+- In a chain, only the command that ran last can turn red: with
+  `cargo build && ./app`, a failing `app` leaves the successful build row
+  alone. Two limits: in a same-program chain (`cargo build && cargo test`)
+  the row is marked with whichever command failed, and a later command too
+  fast for Zellij to see in the foreground can still mark the row before it.
 - A shell nested inside a running command (`nix develop`, `poetry shell`)
   inherits `ZELLIJ_PANE_ID` and reports into the same pane, so a failure of
   the same program in it (`nix build`) marks the outer, still-running row red.
