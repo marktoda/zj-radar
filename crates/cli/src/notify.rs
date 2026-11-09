@@ -90,15 +90,15 @@ fn exit_report(
     env_pane: impl FnOnce() -> Option<u32>,
 ) -> Option<crate::exit_pipe::ExitReport> {
     let exit = code.filter(|&c| c != 0)?;
-    let program = crate::exit_pipe::program_of_command_line(cmd?);
-    if program.is_empty() {
+    let programs = crate::exit_pipe::programs_of_command_line(cmd?);
+    if programs.is_empty() {
         return None;
     }
     let pane_id = match pane {
         Some(raw) => raw.strip_prefix("terminal_").unwrap_or(raw).parse::<u32>().ok()?,
         None => env_pane()?,
     };
-    Some(crate::exit_pipe::ExitReport { pane_id, exit, program })
+    Some(crate::exit_pipe::ExitReport { pane_id, exit, programs })
 }
 
 /// Thin IO wrapper: source the payload, derive behind the agent seam, then
@@ -477,7 +477,9 @@ exec sleep 30
     fn exit_report_needs_a_nonzero_code_a_program_and_a_pane() {
         let env = || Some(9);
         let r = exit_report(None, Some(2), Some("sudo cargo build"), env).unwrap();
-        assert_eq!((r.pane_id, r.exit, r.program.as_str()), (9, 2, "cargo"));
+        assert_eq!((r.pane_id, r.exit, r.programs.as_slice()), (9, 2, ["cargo".to_string()].as_slice()));
+        let r = exit_report(None, Some(1), Some("cd crates/cli && cargo test"), env).unwrap();
+        assert_eq!(r.programs, ["cd", "cargo"], "every segment of a compound line");
         let r = exit_report(Some("terminal_3"), Some(1), Some("make"), env).unwrap();
         assert_eq!(r.pane_id, 3, "--pane wins over the environment");
         assert!(exit_report(None, Some(0), Some("make"), env).is_none(), "a success sends nothing");

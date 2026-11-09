@@ -267,22 +267,41 @@ zj-radar setup shell zsh fish # or name them: bash | zsh | fish
 It adds a marked block (`# >>> zj-radar shell hook >>>`) to `~/.bashrc`,
 `${ZDOTDIR:-~}/.zshrc`, or `~/.config/fish/conf.d/zj-radar.fish` (honoring
 `$XDG_CONFIG_HOME`). Running it again rewrites a stale block in place,
-`--uninstall` removes it, and `--check` reports on it. Bare `zj-radar setup`
+`--uninstall` removes it, and `--check` reports on it. `zj-radar setup zsh`
+(or `bash`, `fish`) is shorthand for `setup shell zsh`. Bare `zj-radar setup`
 never touches rc files. Open a new shell for it to take effect.
+
+If your rc file is managed elsewhere (home-manager links it into the
+read-only `/nix/store`), `setup shell` refuses to write it and says so. Load
+the hook from your own config instead; `zj-radar shell-init <shell>` prints
+it alone:
+
+```sh
+eval "$(zj-radar shell-init zsh)"     # .zshrc, or home-manager's programs.zsh.initContent
+eval "$(zj-radar shell-init bash)"    # .bashrc, or programs.bash.initExtra
+zj-radar shell-init fish | source     # fish config, or programs.fish.interactiveShellInit
+```
 
 Inside Zellij, after a command exits non-zero (except 130 and 148, Ctrl-C and
 Ctrl-Z), the hook runs `zj-radar notify exit --code N --cmd "<command line>"`
 in the background. Successful commands send nothing. bash needs 4.4 or newer
-(the hook uses `PS0`). The report rides its own pipe,
+(the hook uses `PS0`); on an older bash (macOS's `/bin/bash` is 3.2) the hook
+would never fire, so `setup shell bash` warns and `--check` fails. The report rides its own pipe,
 `zj_radar.exit.v1` ([`design.md`](design.md) §5), and only marks the pane's
 *observed* command row: if the radar showed `$ cargo build` running, that row
 turns into `✗ … exit 101` and stays red until you run the next command.
 Commands too quick to have earned a row (under about 2 s), agents, and
 commands whose program doesn't match the row are left alone.
 
-- `notify exit` flags: `--code` (non-zero), `--cmd` (only its program name is
-  sent, peeled past `sudo`/`env`/`VAR=1`/paths), `--pane` (default
-  `$ZELLIJ_PANE_ID`), `--dry-run` (print the payload).
+- `notify exit` flags: `--code` (non-zero), `--cmd` (only its program names
+  are sent: the line is split on `&&`, `||`, `;` and `|`, and each segment
+  peeled past `sudo`/`env`/`VAR=1`/paths, so `cd crates/cli && cargo test`
+  matches the `cargo` row), `--pane` (default `$ZELLIJ_PANE_ID`), `--dry-run`
+  (print the payload).
+- A pipeline's status is its last command's unless `pipefail` is set:
+  `make 2>&1 | tee log` exits with `tee`'s 0 when `make` fails, so nothing is
+  reported. With `set -o pipefail` the failure is reported, and the `make`
+  row matches.
 - bash reads the command line from `history 1`, so a command kept out of
   history (`HISTCONTROL=ignorespace`, `HISTIGNORE`) reports the previous line,
   which the program match then drops.

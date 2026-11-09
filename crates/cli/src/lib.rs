@@ -114,7 +114,7 @@ enum Command {
         /// For `exit`: the command's non-zero exit code.
         #[arg(long, value_name = "N", allow_negative_numbers = true)]
         code: Option<i32>,
-        /// For `exit`: the command line that failed (only its program name is sent).
+        /// For `exit`: the command line that failed (only its program names are sent).
         #[arg(long, value_name = "LINE")]
         cmd: Option<String>,
         /// Print the payload instead of broadcasting.
@@ -178,6 +178,12 @@ enum Command {
         // which a "write nothing" flag must not.
         #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall", "dry_run", "check"])]
         grant: bool,
+    },
+    /// Print the failed-command shell hook alone, for a config `setup shell`
+    /// can't edit: `eval "$(zj-radar shell-init zsh)"`, `zj-radar shell-init fish | source`.
+    ShellInit {
+        /// bash, zsh or fish.
+        shell: String,
     },
     /// Update the CLI and the sidebar wasm to the latest release together
     /// (set ZJ_RADAR_VERSION to pin a specific release tag).
@@ -268,6 +274,9 @@ pub fn run() -> std::process::ExitCode {
                 layout: layout.as_deref(),
                 grant,
             });
+        }
+        Command::ShellInit { shell } => {
+            setup::print_shell_init(&shell);
         }
         Command::Update { check } => {
             update::run(update::UpdateOptions { check });

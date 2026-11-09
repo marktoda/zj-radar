@@ -293,24 +293,28 @@ the shell, so the opt-in shell hook (`zj-radar setup shell`, see
 second pipe:
 
 ```json
-{ "v": 1, "pane_id": 12, "exit": 101, "program": "cargo" }
+{ "v": 1, "pane_id": 12, "exit": 101, "programs": ["cd", "cargo"] }
 ```
 
 - Sent once per command that exits non-zero (not 130/148, Ctrl-C/Ctrl-Z),
   from the shell's post-command hook, via `zj-radar notify exit`. A success
   sends nothing. Same self-limiting send as the status pipe (§5, *Bound your
   sends*).
-- `program` is the command line's peeled exe basename (wrappers like
-  `sudo`/`env`/`time`, `VAR=value` prefixes and a path stripped): the first
-  token of the row the plugin shows for that command. Parsing
-  (`crates/core/src/exit.rs`) drops a zero `exit`, an unknown `v`, an empty or
-  whitespace/control-bearing `program`, and payloads over 1 KB.
+- `programs` holds the peeled exe basename (wrappers like
+  `sudo`/`env`/`time`, `VAR=value` prefixes and a path stripped) of each
+  segment of the command line, split on `&&`, `||`, `;` and `|`,
+  deduplicated, at most 8. One of them is the first token of the row the
+  plugin shows for the command that failed, so `cd crates/cli && cargo test`
+  sends `["cd", "cargo"]` and matches the `cargo` row. Parsing
+  (`crates/core/src/exit.rs`) drops a zero `exit`, an unknown `v`, an empty
+  or over-long `programs` list, an empty or whitespace/control-bearing entry,
+  and payloads over 1 KB.
 - It never touches the status store. A status entry wins `resolve` for its
   pane, and a pushed `error` would hide that pane's later observed commands.
   The report goes to the command store instead: `on_exit_report` applies it
   only when the pane's row is `Running` (with or without the pending-Done
   confirm armed, which it cancels) or a *fresh* `Done`, the row's first
-  display token equals `program`, and no different command is pending. A
+  display token is one of `programs`, and no different command is pending. A
   `Done` is fresh while no exit code has decided it, no foreground command
   has been seen since its run left the foreground, and that was at most
   `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS` (2 + 3) ticks ago. An older
@@ -319,6 +323,9 @@ second pipe:
   `cargo build`), and marking the build red would be a false failure. The row becomes a command-origin `Error` carrying `exit_code`,
   which renders the `✗` and the `exit N` tag, is exempt from the Done TTL,
   and recedes to the ledger when the pane's next command takes the row.
+  A remote row (`ssh` exiting 255) that goes straight from `Running` to
+  `Error` this way flashes its tab, as the Running → Done disconnect confirm
+  does (§4.1).
 - The hook fires from `precmd`, before the next command can start, so the
   report almost always lands while the row is still `Running` or awaiting
   its Done confirm: a clean Running → Error edge, never Done then Error. The

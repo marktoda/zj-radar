@@ -81,7 +81,9 @@ other interactive programs never spin; the pane shows a muted label such as
 default a failed build at a prompt reads as finished (`●`). Run
 `zj-radar setup shell` once and a command that exits non-zero turns its row
 red (`✗ … exit 101`) until you run the next one. Commands too quick to get a
-row (under about 2 s) stay unmarked. Details are in
+row (under about 2 s) stay unmarked. If your rc files are read-only
+(home-manager), load the hook with `eval "$(zj-radar shell-init zsh)"`
+instead. Details are in
 [`producers.md`](producers.md#shells-failed-commands).
 
 **Overflow.** When tabs outnumber the lines available, trailing idle tabs fold

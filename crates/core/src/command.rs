@@ -704,7 +704,7 @@ pub fn is_shell_prompt(command: &[String]) -> bool {
 /// The peeled program name of an argv (wrappers, `VAR=value` prefixes, a
 /// path and a login shell's `-` stripped): the same name intake keys the
 /// ignore/interactive sets on, and the first token of the row's display.
-/// The exit pipe's match key ([`crate::exit::program_of_command_line`]).
+/// The exit pipe's match key ([`crate::exit::programs_of_command_line`]).
 pub fn program_of(command: &[String]) -> &str {
     effective_program(command).1
 }
@@ -1071,8 +1071,10 @@ impl CommandStore {
     ///   deciding it. An older Done is never repainted: the report is then
     ///   from a later run too fast to earn a row (`cargo fmt --check` failing
     ///   after a successful `cargo build`), and would mark the wrong run;
-    /// - its display's first token is `program` (the peeled exe basename),
-    ///   which drops a late report that lost the race to a newer command;
+    /// - its display's first token is one of `programs` (the peeled exe
+    ///   basename of each segment of the failed command line, so
+    ///   `cd x && cargo test` matches a `cargo` row), which drops a late
+    ///   report that lost the race to a newer command;
     /// - no *different* command is pending on the pane (a newer run is in
     ///   flight, so the report is stale even when the names agree).
     ///
@@ -1086,7 +1088,7 @@ impl CommandStore {
         &mut self,
         pane_id: u32,
         exit: i32,
-        program: &str,
+        programs: &[impl AsRef<str>],
         tick: Tick,
         now_epoch_s: EpochSecs,
     ) -> bool {
@@ -1106,7 +1108,8 @@ impl CommandStore {
             }
             _ => false,
         };
-        if !applies || first_token(&s.msg) != Some(program) {
+        let named = first_token(&s.msg).is_some_and(|t| programs.iter().any(|p| p.as_ref() == t));
+        if !applies || !named {
             return false;
         }
         if self.pending.get(&pane_id).is_some_and(|p| p.command != s.msg) {

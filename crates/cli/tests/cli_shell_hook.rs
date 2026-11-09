@@ -80,6 +80,20 @@ fn calls(log: &Path, want: usize) -> Vec<String> {
 /// [`calls`]' result.
 const EXPECTED: [&str; 2] = ["notify|exit|--code|1|--cmd=false|", "notify|exit|--code|3|--cmd=sh -c 'exit 3'|"];
 
+/// The script line that puts the fake `zj-radar` first on PATH. Set from
+/// inside the script, after the shell's startup files ran: a distro's global
+/// rc can reset PATH under `env_clear()` (NixOS's `/etc/zshenv` and bash's
+/// system rc do, since `__NIXOS_SET_ENVIRONMENT_DONE` is unset), which would
+/// drop the shim dir set in the environment and leave nothing recorded.
+fn path_line(shell: &str, shims: &ShimDir) -> String {
+    let dir = shims.dir.path().display().to_string();
+    if shell == "fish" {
+        format!("set -gx PATH {dir:?} $PATH; ")
+    } else {
+        format!("export PATH={dir:?}:\"$PATH\"; ")
+    }
+}
+
 fn shell_command(shell: &str, home: &Path, shims: &ShimDir) -> std::process::Command {
     let mut cmd = std::process::Command::new(shell);
     cmd.env_clear()
@@ -104,7 +118,7 @@ fn bash_hook_reports_only_failed_commands() {
     let log = fake_cli(&shims);
     // An interactive bash reading its commands from a pipe still runs PS0
     // and PROMPT_COMMAND around each line, like a terminal session.
-    let script = "sh -c 'exit 3'\ntrue\n\nsh -c 'exit 130'\nfalse\n\n\n";
+    let script = format!("{}\nsh -c 'exit 3'\ntrue\n\nsh -c 'exit 130'\nfalse\n\n\n", path_line("bash", &shims));
     let mut cmd = shell_command("bash", home.path(), &shims);
     cmd.arg("--rcfile").arg(&rc).arg("-i").stdin(std::process::Stdio::piped());
     let mut child = cmd.spawn().unwrap();
@@ -130,7 +144,8 @@ fn zsh_hook_reports_only_failed_commands() {
     // as typed, size-limited and alias-expanded, the command, then precmd.
     let run = |line: &str| format!("__zj_radar_preexec {line:?} {line:?} {line:?}; {line}; __zj_radar_precmd; ");
     let script = format!(
-        "source {rc:?}; {}{}__zj_radar_precmd; {}{}",
+        "{}source {rc:?}; {}{}__zj_radar_precmd; {}{}",
+        path_line("zsh", &shims),
         run("sh -c 'exit 3'"),
         run("true"),
         run("sh -c 'exit 130'"),
@@ -153,8 +168,14 @@ fn fish_hook_reports_only_failed_commands() {
     // fish fires `fish_postexec` after each interactive command line; emit
     // it the same way, right after the command so `$status` is its exit.
     let run = |line: &str| format!("{line}; emit fish_postexec {line:?}; ");
-    let script =
-        format!("source {rc:?}; {}{}{}{}", run("sh -c 'exit 3'"), run("true"), run("sh -c 'exit 130'"), run("false"),);
+    let script = format!(
+        "{}source {rc:?}; {}{}{}{}",
+        path_line("fish", &shims),
+        run("sh -c 'exit 3'"),
+        run("true"),
+        run("sh -c 'exit 130'"),
+        run("false"),
+    );
     shell_command("fish", home.path(), &shims).args(["--no-config", "-c", &script]).status().unwrap();
     assert_eq!(calls(&log, 2), EXPECTED);
 }
@@ -165,7 +186,7 @@ fn notify_exit_sends_the_program_on_the_exit_pipe() {
     shims.add_recorder("zellij");
     Command::cargo_bin("zj-radar")
         .unwrap()
-        .args(["notify", "exit", "--code", "101", "--cmd", "RUST_LOG=1 sudo cargo build --release"])
+        .args(["notify", "exit", "--code", "101", "--cmd", "cd x && RUST_LOG=1 sudo cargo build --release"])
         .env("PATH", shims.path_env())
         .env("ZELLIJ", "0")
         .env("ZELLIJ_PANE_ID", "terminal_4")
@@ -173,7 +194,7 @@ fn notify_exit_sends_the_program_on_the_exit_pipe() {
         .success();
     let argv = shims.sole_pipe_argv();
     assert!(argv.contains("--name zj_radar.exit.v1"), "{argv}");
-    for field in [r#""exit":101"#, r#""pane_id":4"#, r#""program":"cargo""#, r#""v":1"#] {
+    for field in [r#""exit":101"#, r#""pane_id":4"#, r#""programs":["cd","cargo"]"#, r#""v":1"#] {
         assert!(argv.contains(field), "{field} in {argv}");
     }
 }
@@ -218,4 +239,68 @@ fn setup_shell_is_idempotent_and_uninstalls_cleanly() {
     setup(&["shell", "bash", "--uninstall", "-y"]).assert().success();
     assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export EDITOR=vim\n");
     setup(&["shell", "bash", "--check"]).assert().failure();
+}
+
+#[test]
+fn setup_shell_refuses_a_read_only_rc_and_points_at_shell_init() {
+    // home-manager links the rc file into the read-only /nix/store: a 0444
+    // file in a 0555 directory, reached through a symlink from $HOME.
+    use std::os::unix::fs::PermissionsExt;
+    let home = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let target = store.path().join("zshrc");
+    std::fs::write(&target, "export EDITOR=vim\n").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+    std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(&target, home.path().join(".zshrc")).unwrap();
+
+    let out = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "shell", "zsh", "-y"])
+        .env("HOME", home.path())
+        .env("ZDOTDIR", home.path())
+        .output()
+        .unwrap();
+    std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a refused install fails the command");
+    assert!(stderr.contains("read-only") && stderr.contains("zj-radar shell-init zsh"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "export EDITOR=vim\n", "left untouched");
+    assert!(std::fs::symlink_metadata(home.path().join(".zshrc")).unwrap().file_type().is_symlink());
+}
+
+#[test]
+fn shell_init_prints_the_hook_alone() {
+    for shell in ["bash", "zsh", "fish"] {
+        let out = Command::cargo_bin("zj-radar").unwrap().args(["shell-init", shell]).output().unwrap();
+        assert!(out.status.success(), "{shell}");
+        let hook = String::from_utf8(out.stdout).unwrap();
+        assert!(hook.contains("zj-radar notify exit --code"), "{shell}: {hook}");
+        assert!(!hook.contains(">>> zj-radar"), "no rc markers: {shell}");
+    }
+    Command::cargo_bin("zj-radar").unwrap().args(["shell-init", "tcsh"]).assert().failure();
+}
+
+#[test]
+fn bash_hook_loaded_through_shell_init_reports_failures() {
+    if !have("bash") {
+        eprintln!("bash not installed — skipping");
+        return;
+    }
+    let home = TempDir::new().unwrap();
+    let shims = ShimDir::new();
+    let log = fake_cli(&shims);
+    let bin = assert_cmd::cargo::cargo_bin("zj-radar");
+    let rc = home.path().join("rc");
+    std::fs::write(&rc, format!("eval \"$({bin:?} shell-init bash)\"\n")).unwrap();
+    let script = format!("{}\nfalse\n\n", path_line("bash", &shims));
+    let mut cmd = shell_command("bash", home.path(), &shims);
+    cmd.arg("--rcfile").arg(&rc).arg("-i").stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    {
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    }
+    child.wait().unwrap();
+    assert_eq!(calls(&log, 1), ["notify|exit|--code|1|--cmd=false|"]);
 }

@@ -13,7 +13,11 @@
 //!
 //! Never part of the bare `setup` sweep: it edits the user's own rc files.
 //! The block sits between [`SHELL_BLOCK_BEGIN`] and [`SHELL_BLOCK_END`];
-//! install rewrites a stale block in place, uninstall removes it.
+//! install rewrites a stale block in place, uninstall removes it. An rc file
+//! `setup` can't write (home-manager links it into the read-only
+//! `/nix/store`) is refused with a pointer to `zj-radar shell-init <shell>`,
+//! which prints the hook alone for the user's own config to load
+//! (`eval "$(zj-radar shell-init zsh)"`, `zj-radar shell-init fish | source`).
 
 use super::*;
 
@@ -213,6 +217,82 @@ pub(crate) fn shells_for(named: &[String], login_shell: Option<&str>) -> Result<
     })
 }
 
+/// `zj-radar shell-init <shell>`: print the hook alone (no rc markers) for a
+/// config `setup shell` can't or shouldn't edit, loaded with
+/// `eval "$(zj-radar shell-init bash|zsh)"` or `zj-radar shell-init fish | source`
+/// (or pasted into home-manager's `programs.zsh.initContent` and the like).
+pub(crate) fn print_shell_init(name: &str) {
+    match Shell::from_name(name) {
+        Some(shell) => println!("{}", shell.hook()),
+        None => crate::exit::fail_report("shell-init", format!("unknown shell '{name}' (supported: bash, zsh, fish)")),
+    }
+}
+
+/// Why `setup` can't write `path` in place, if it can't: the file, or the
+/// directory its atomic write renames into, has no write permission (a
+/// home-manager rc file links into the read-only `/nix/store`). Mode bits,
+/// not an access probe, so the answer is the same for root.
+pub(crate) fn unwritable_reason(path: &Path) -> Option<String> {
+    let readonly = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.permissions().readonly());
+    if readonly(path) {
+        return Some(format!("{} is read-only", path.display()));
+    }
+    let dir = path.parent()?;
+    readonly(dir).then(|| format!("its directory {} is read-only", dir.display()))
+}
+
+/// The refusal for an rc file `setup` can't write, pointing at `shell-init`.
+fn shell_init_hint(shell: Shell) -> String {
+    match shell {
+        Shell::Fish => "add `zj-radar shell-init fish | source` to your fish config instead".to_string(),
+        _ => format!(
+            "add `eval \"$(zj-radar shell-init {0})\"` to your {0} config instead \
+             (with home-manager: programs.{0}.initContent / initExtra)",
+            shell.name()
+        ),
+    }
+}
+
+/// `(major, minor)` from `BASH_VERSINFO`'s first two fields, printed as `M.m`.
+pub(crate) fn parse_bash_version(raw: &str) -> Option<(u32, u32)> {
+    let (major, minor) = raw.trim().split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// The bash hook marks "a command ran" in `PS0`, which bash added in 4.4.
+pub(crate) fn bash_has_ps0(version: (u32, u32)) -> bool {
+    version >= (4, 4)
+}
+
+/// The version of the bash the user runs: `$SHELL` when it is a bash, else
+/// the `bash` on PATH. `None` when it can't be run.
+fn user_bash_version() -> Option<(u32, u32)> {
+    let login = std::env::var("SHELL").ok().filter(|s| s.rsplit('/').next() == Some("bash"));
+    let out = std::process::Command::new(login.as_deref().unwrap_or("bash"))
+        .args(["-c", r#"printf '%s.%s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    parse_bash_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A warning when `shell` is a bash too old for the hook (macOS's
+/// `/bin/bash` is 3.2): it would install cleanly and never report.
+fn old_bash_warning(shell: Shell) -> Option<String> {
+    if shell != Shell::Bash {
+        return None;
+    }
+    let version = user_bash_version()?;
+    (!bash_has_ps0(version)).then(|| {
+        format!(
+            "bash {}.{} has no PS0 (needs 4.4 or newer), so the hook never reports a failure; \
+             use a newer bash as your shell",
+            version.0, version.1
+        )
+    })
+}
+
 /// `--check` for one shell: is our block in its rc file, and current?
 /// Returns whether something is missing.
 pub(crate) fn check_shell(shell: Shell) -> bool {
@@ -223,10 +303,16 @@ pub(crate) fn check_shell(shell: Shell) -> bool {
     };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     match edit_rc(&existing, &shell_block(shell), true) {
-        Ok(Outcome::Unchanged) => {
-            println!("{label}: ✓ hook installed in {}", path.display());
-            false
-        }
+        Ok(Outcome::Unchanged) => match old_bash_warning(shell) {
+            Some(warning) => {
+                println!("{label}: ✗ hook installed in {}, but {warning}", path.display());
+                true
+            }
+            None => {
+                println!("{label}: ✓ hook installed in {}", path.display());
+                false
+            }
+        },
         Ok(_) if existing.contains(SHELL_BLOCK_BEGIN) => {
             println!(
                 "{label}: ✗ hook in {} is out of date — run `zj-radar setup shell {}`",
@@ -282,6 +368,10 @@ pub(crate) fn setup_shell(shell: Shell, uninstall: bool, opts: BridgeSetupOpts) 
             return;
         }
     };
+    if let Some(reason) = unwritable_reason(&path) {
+        crate::exit::fail_report(&label, format!("refused — {reason}; {}", shell_init_hint(shell)));
+        return;
+    }
     if opts.dry_run {
         println!("--- {} (dry-run) ---\n{new}", path.display());
         return;
@@ -299,6 +389,9 @@ pub(crate) fn setup_shell(shell: Shell, uninstall: bool, opts: BridgeSetupOpts) 
             println!("{label}: removed the hook from {} — open a new shell", path.display());
         } else {
             println!("{label}: hooked {} — open a new shell (or re-source it) in a Zellij pane", path.display());
+            if let Some(warning) = old_bash_warning(shell) {
+                eprintln!("{label}: ⚠ {warning}");
+            }
         }
     }
 }
@@ -375,5 +468,38 @@ mod tests {
             assert!(hook.contains("130") && hook.contains("148"), "{shell:?}");
             assert!(hook.contains("ZELLIJ_PANE_ID"), "{shell:?}");
         }
+    }
+
+    #[test]
+    fn bash_versions_before_4_4_lack_ps0() {
+        assert_eq!(parse_bash_version("3.2"), Some((3, 2)));
+        assert_eq!(parse_bash_version("5.2\n"), Some((5, 2)));
+        assert_eq!(parse_bash_version("."), None);
+        assert_eq!(parse_bash_version(""), None);
+        assert!(!bash_has_ps0((3, 2)));
+        assert!(!bash_has_ps0((4, 3)));
+        assert!(bash_has_ps0((4, 4)));
+        assert!(bash_has_ps0((5, 0)));
+    }
+
+    #[test]
+    fn a_read_only_rc_file_or_directory_is_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let rc = dir.path().join(".zshrc");
+        std::fs::write(&rc, "x\n").unwrap();
+        assert_eq!(unwritable_reason(&rc), None);
+        std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(unwritable_reason(&rc).is_some_and(|r| r.contains("read-only")));
+        std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(unwritable_reason(&rc).is_some_and(|r| r.contains("directory")));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_shell_init_hint_names_the_load_line() {
+        assert!(shell_init_hint(Shell::Zsh).contains(r#"eval "$(zj-radar shell-init zsh)""#));
+        assert!(shell_init_hint(Shell::Fish).contains("zj-radar shell-init fish | source"));
     }
 }

@@ -1535,7 +1535,7 @@ fn store_running_cargo_build(pane: u32) -> CommandStore {
 #[test]
 fn exit_report_on_a_running_row_turns_it_error_with_the_code() {
     let mut store = store_running_cargo_build(1);
-    assert!(store.on_exit_report(1, 101, "cargo", Tick(4), EpochSecs(50)));
+    assert!(store.on_exit_report(1, 101, &["cargo"], Tick(4), EpochSecs(50)));
     let s = store.get(1).unwrap();
     assert_eq!(s.status, Status::Error);
     assert_eq!(s.exit_code, Some(101));
@@ -1548,7 +1548,7 @@ fn exit_report_during_the_done_confirm_cancels_it_and_wins() {
     let mut store = store_running_cargo_build(1);
     // Back at the prompt: the tentative-done is armed.
     store.on_command_changed(1, &argv(&["zsh"]), false, None, 4);
-    assert!(store.on_exit_report(1, 2, "cargo", Tick(4), EpochSecs(0)));
+    assert!(store.on_exit_report(1, 2, &["cargo"], Tick(4), EpochSecs(0)));
     // The confirm would have flipped Running→Done; it must not touch the Error.
     store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
     let s = store.get(1).unwrap();
@@ -1561,7 +1561,7 @@ fn exit_report_before_the_shell_returns_is_not_re_promoted() {
     // Zellij re-reports the still-foreground run (a same-command pending)…
     store.on_command_changed(1, &argv(&["cargo", "build"]), true, Some("/w/repo"), 4);
     // …and the report beats the prompt-return CommandChanged.
-    assert!(store.on_exit_report(1, 1, "cargo", Tick(5), EpochSecs(0)));
+    assert!(store.on_exit_report(1, 1, &["cargo"], Tick(5), EpochSecs(0)));
     store.on_timer(Tick(5 + DEBOUNCE_TICKS), EpochSecs(0));
     store.on_command_changed(1, &argv(&["zsh"]), false, None, 8);
     store.on_timer(Tick(8 + DEBOUNCE_TICKS), EpochSecs(0));
@@ -1574,7 +1574,7 @@ fn exit_report_after_the_done_confirm_turns_the_done_red() {
     store.on_command_changed(1, &argv(&["bash"]), false, None, 4);
     store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(7));
     assert_eq!(store.get(1).unwrap().status, Status::Done);
-    assert!(store.on_exit_report(1, 1, "cargo", Tick(7), EpochSecs(9)));
+    assert!(store.on_exit_report(1, 1, &["cargo"], Tick(7), EpochSecs(9)));
     let s = store.get(1).unwrap();
     assert_eq!((s.status, s.exit_code), (Status::Error, Some(1)));
     assert_eq!(s.completed_epoch_s, Some(7), "the Done's completion stamp stands");
@@ -1586,7 +1586,7 @@ fn exit_report_after_the_done_confirm_turns_the_done_red() {
 #[test]
 fn exit_report_for_another_program_is_dropped() {
     let mut store = store_running_cargo_build(1);
-    assert!(!store.on_exit_report(1, 1, "make", Tick(4), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["make"], Tick(4), EpochSecs(0)));
     assert_eq!(store.get(1).unwrap().status, Status::Running);
 }
 
@@ -1597,7 +1597,7 @@ fn late_exit_report_after_a_newer_command_started_is_dropped() {
     store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
     // The next command is pending (not yet promoted) when the old report lands.
     store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/w/repo"), 7);
-    assert!(!store.on_exit_report(1, 1, "cargo", Tick(7), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["cargo"], Tick(7), EpochSecs(0)));
     assert_eq!(store.get(1).unwrap().status, Status::Done);
 }
 
@@ -1605,10 +1605,10 @@ fn late_exit_report_after_a_newer_command_started_is_dropped() {
 fn exit_report_without_a_row_or_on_a_receded_row_is_ignored() {
     let mut store = CommandStore::default();
     // No row at all: a command that finished inside the debounce, or an agent.
-    assert!(!store.on_exit_report(1, 1, "grep", Tick(1), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["grep"], Tick(1), EpochSecs(0)));
     store.on_command_changed(2, &argv(&["claude"]), true, None, 1);
     store.on_timer(Tick(1 + DEBOUNCE_TICKS), EpochSecs(0));
-    assert!(!store.on_exit_report(2, 1, "claude", Tick(4), EpochSecs(0)));
+    assert!(!store.on_exit_report(2, 1, &["claude"], Tick(4), EpochSecs(0)));
     assert!(store.get(2).is_none());
     // A Done that receded to Idle.
     let mut store = store_running_cargo_build(3);
@@ -1616,24 +1616,24 @@ fn exit_report_without_a_row_or_on_a_receded_row_is_ignored() {
     store.on_timer(Tick(4 + DEBOUNCE_TICKS), EpochSecs(0));
     store.on_timer(Tick(4 + DEBOUNCE_TICKS + DONE_TTL_TICKS), EpochSecs(0));
     assert_eq!(store.get(3).unwrap().status, Status::Idle);
-    assert!(!store.on_exit_report(3, 1, "cargo", Tick(200), EpochSecs(0)));
+    assert!(!store.on_exit_report(3, 1, &["cargo"], Tick(200), EpochSecs(0)));
     assert_eq!(store.get(3).unwrap().status, Status::Idle);
 }
 
 #[test]
 fn exit_report_never_overrides_a_decided_exit_or_a_zero_code() {
     let mut store = store_running_cargo_build(1);
-    assert!(!store.on_exit_report(1, 0, "cargo", Tick(4), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 0, &["cargo"], Tick(4), EpochSecs(0)));
     // A held pane's own exit already decided the outcome.
     store.on_exit(1, Some(0), Tick(4), EpochSecs(0));
-    assert!(!store.on_exit_report(1, 1, "cargo", Tick(5), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["cargo"], Tick(5), EpochSecs(0)));
     assert_eq!(store.get(1).unwrap().status, Status::Done);
 }
 
 #[test]
 fn the_next_command_takes_the_row_from_a_reported_error() {
     let mut store = store_running_cargo_build(1);
-    assert!(store.on_exit_report(1, 1, "cargo", Tick(4), EpochSecs(0)));
+    assert!(store.on_exit_report(1, 1, &["cargo"], Tick(4), EpochSecs(0)));
     store.on_command_changed(1, &argv(&["bash"]), false, None, 4);
     store.on_command_changed(1, &argv(&["cargo", "test"]), true, Some("/w/repo"), 6);
     let report = store.on_timer(Tick(6 + DEBOUNCE_TICKS), EpochSecs(0));
@@ -1645,11 +1645,22 @@ fn the_next_command_takes_the_row_from_a_reported_error() {
 #[test]
 fn exit_report_program_key_matches_the_row_display() {
     // The hook's command line, peeled, names the row's first token.
-    for line in ["cargo build", "sudo cargo build", "RUST_LOG=1 cargo build", "/usr/bin/cargo build"] {
+    for line in [
+        "cargo build", "sudo cargo build", "RUST_LOG=1 cargo build", "/usr/bin/cargo build",
+        "cd crates/cli && cargo build", "cargo build 2>&1 | tee log",
+    ] {
         let mut store = store_running_cargo_build(1);
-        let program = crate::exit::program_of_command_line(line);
-        assert!(store.on_exit_report(1, 1, &program, Tick(4), EpochSecs(0)), "{line}");
+        let programs = crate::exit::programs_of_command_line(line);
+        assert!(store.on_exit_report(1, 1, &programs, Tick(4), EpochSecs(0)), "{line}");
     }
+}
+
+#[test]
+fn a_compound_report_naming_other_programs_only_is_dropped() {
+    let mut store = store_running_cargo_build(1);
+    let programs = crate::exit::programs_of_command_line("cd nope && make");
+    assert!(!store.on_exit_report(1, 1, &programs, Tick(4), EpochSecs(0)));
+    assert_eq!(store.get(1).unwrap().status, Status::Running);
 }
 
 #[test]
@@ -1661,7 +1672,7 @@ fn a_fast_same_program_failure_never_repaints_an_earlier_done() {
     assert_eq!(store.get(1).unwrap().status, Status::Done);
     // Later, `cargo fmt --check` fails inside the debounce and Zellij never
     // saw it: no row, nothing pending. Its report names `cargo` too.
-    assert!(!store.on_exit_report(1, 1, "cargo", Tick(20), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["cargo"], Tick(20), EpochSecs(0)));
     let s = store.get(1).unwrap();
     assert_eq!((s.status, s.exit_code), (Status::Done, None), "the successful build stays Done");
 }
@@ -1675,7 +1686,7 @@ fn a_fast_failure_zellij_saw_closes_the_done_to_reports_at_once() {
     // again by the prompt return, but the report is still within the grace.
     store.on_command_changed(1, &argv(&["cargo", "fmt", "--check"]), true, Some("/w/repo"), 6);
     store.on_command_changed(1, &argv(&["bash"]), false, None, 6);
-    assert!(!store.on_exit_report(1, 1, "cargo", Tick(7), EpochSecs(0)));
+    assert!(!store.on_exit_report(1, 1, &["cargo"], Tick(7), EpochSecs(0)));
     assert_eq!(store.get(1).unwrap().status, Status::Done);
 }
 
@@ -1687,6 +1698,6 @@ fn a_done_takes_a_late_report_only_within_the_grace() {
         let mut store = store_running_cargo_build(1);
         store.on_command_changed(1, &argv(&["bash"]), false, None, left);
         store.on_timer(Tick(left + DEBOUNCE_TICKS), EpochSecs(0));
-        assert_eq!(store.on_exit_report(1, 1, "cargo", Tick(at), EpochSecs(0)), applies, "report at tick {at}");
+        assert_eq!(store.on_exit_report(1, 1, &["cargo"], Tick(at), EpochSecs(0)), applies, "report at tick {at}");
     }
 }
