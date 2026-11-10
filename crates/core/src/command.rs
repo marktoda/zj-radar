@@ -1169,7 +1169,11 @@ impl CommandStore {
     /// plus the pending / exit-dedup bookkeeping. `RadarState::panes_changed`
     /// grants absent panes one manifest of grace before pruning, and the grace
     /// must see the bookkeeping too, or a mid-move manifest flash would drop a
-    /// debounce promotion or exit-dedup marker in flight.
+    /// debounce promotion, exit-dedup marker or exit-report window in flight.
+    /// `last_fg` is deliberately left out: it outlives every run (it is kept
+    /// across the prompt return), so listing it would grant grace to every
+    /// pane that ever ran a command; a prune that drops it costs at most one
+    /// report applied without the last-foreground check, like a fresh rail.
     pub fn tracked_pane_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.store
             .observations()
@@ -1177,6 +1181,7 @@ impl CommandStore {
             .chain(self.pending.keys().copied())
             .chain(self.pending_done.keys().copied())
             .chain(self.exited.keys().copied())
+            .chain(self.exit_window.keys().copied())
     }
 
     /// Resolved displayable state for a pane, or None.
