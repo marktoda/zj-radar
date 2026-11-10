@@ -18,6 +18,7 @@
 
 // Re-export the shared core so the CLI submodules keep addressing these as
 // `crate::status`, `crate::payload`, … with no per-reference churn.
+pub(crate) use zj_radar_core::exit as exit_pipe;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use zj_radar_core::{command, kind, payload, pipe, status};
 
@@ -106,6 +107,16 @@ enum Command {
         /// (default `generic` → the neutral ⦿ mark).
         #[arg(long)]
         source: Option<String>,
+        /// For `exit` (the shell hook, `zj-radar setup shell`): the pane the
+        /// command ran in (default: `$ZELLIJ_PANE_ID`).
+        #[arg(long, value_name = "ID")]
+        pane: Option<String>,
+        /// For `exit`: the command's non-zero exit code.
+        #[arg(long, value_name = "N", allow_negative_numbers = true)]
+        code: Option<i32>,
+        /// For `exit`: the command line that failed (only its program names are sent).
+        #[arg(long, value_name = "LINE")]
+        cmd: Option<String>,
         /// Print the payload instead of broadcasting.
         #[arg(long)]
         dry_run: bool,
@@ -120,7 +131,8 @@ enum Command {
     },
     /// Idempotently wire installed agents and Zellij to use zj-radar.
     Setup {
-        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, pi, omp, zellij.
+        /// Targets to set up (default: detected agents only). Supported: claude, codex, opencode, pi, omp, zellij,
+        /// and the opt-in `shell [bash|zsh|fish]` (failed-command hook; default shell: $SHELL).
         targets: Vec<String>,
         /// Wasm artifact to install when setting up Zellij.
         #[arg(long, value_name = "PATH")]
@@ -167,6 +179,12 @@ enum Command {
         #[arg(long, conflicts_with_all = ["wasm", "download", "inject", "layout", "uninstall", "dry_run", "check"])]
         grant: bool,
     },
+    /// Print the failed-command shell hook alone, for a config `setup shell`
+    /// can't edit: `eval "$(zj-radar shell-init zsh)"`, `zj-radar shell-init fish | source`.
+    ShellInit {
+        /// bash, zsh or fish.
+        shell: String,
+    },
     /// Update the CLI and the sidebar wasm to the latest release together
     /// (set ZJ_RADAR_VERSION to pin a specific release tag).
     Update {
@@ -204,14 +222,21 @@ pub fn run() -> std::process::ExitCode {
         Command::Run { name, print_cmd } => {
             run::run(run::RunOptions { name, print_cmd });
         }
-        Command::Notify { agent, input, status, msg, task, source, dry_run } => {
-            if agent == "generic" {
+        Command::Notify { agent, input, status, msg, task, source, pane, code, cmd, dry_run } => {
+            if agent == "exit" {
+                notify::run_exit(pane.as_deref(), code, cmd.as_deref(), dry_run);
+            } else if agent == "generic" {
                 notify::run_generic(status.as_deref(), msg.as_deref(), task.as_deref(), source.as_deref(), dry_run);
             } else {
                 // `--msg`/`--task`/`--source` belong to `notify generic`; the
                 // agent adapters derive all three from the hook payload. Hint
                 // and continue — never a clap conflict: notify is called from
                 // hooks and must stay exit-0 on any input (see `exit`).
+                if pane.is_some() || code.is_some() || cmd.is_some() {
+                    eprintln!(
+                        "zj-radar: --pane/--code/--cmd apply to `notify exit` only — ignored for `notify {agent}`"
+                    );
+                }
                 if msg.is_some() || task.is_some() || source.is_some() {
                     eprintln!(
                         "zj-radar: --msg/--task/--source apply to `notify generic` only — \
@@ -249,6 +274,9 @@ pub fn run() -> std::process::ExitCode {
                 layout: layout.as_deref(),
                 grant,
             });
+        }
+        Command::ShellInit { shell } => {
+            setup::print_shell_init(&shell);
         }
         Command::Update { check } => {
             update::run(update::UpdateOptions { check });

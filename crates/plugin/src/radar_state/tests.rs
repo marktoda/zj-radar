@@ -1970,3 +1970,66 @@ fn set_remote_commands_sweep_rekinds_an_already_promoted_row() {
     assert!(changed);
     assert_eq!(radar.command(1).unwrap().kind, Kind::Remote, "already-promoted row re-kinds live");
 }
+
+#[test]
+fn exit_pipe_marks_the_observed_command_row_and_leaves_the_status_store_alone() {
+    let mut radar = RadarState::default();
+    radar.command_changed(4, &["cargo".into(), "build".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(4).unwrap().status, Status::Running);
+
+    let report = crate::exit::ExitReport { pane_id: 4, exit: 101, programs: vec!["cargo".into()] };
+    let change = radar.exit_pipe(&report.to_wire(), 4, 10).expect("the report matched the row");
+    assert!(change.render);
+    assert!(change.snapshot == SnapshotWrite::Now, "a shell exit is not re-derivable from the manifest");
+    let obs = radar.command(4).unwrap();
+    assert_eq!((obs.status, obs.exit_code), (Status::Error, Some(101)));
+    // Never a status-store entry: that would take the pane over for good.
+    assert!(radar.status(4).is_none());
+
+    // The prompt return that follows must not clear the Error.
+    radar.command_changed(4, &["bash".into()], false, 5);
+    radar.timer(5 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(4).unwrap().status, Status::Error);
+}
+
+#[test]
+fn exit_pipe_flashes_the_tab_when_a_running_remote_session_fails() {
+    // ssh exiting 255 is reported by the shell hook while the row is still
+    // Running, so it goes straight to Error and never passes the
+    // Running→Done confirm that flashes in `timer`: the exit pipe is its
+    // disconnect edge (mirrors `remote_disconnect_via_shell_return_flashes_the_tab`).
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    radar.command_changed(7, &["ssh".into(), "prod-db".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    assert_eq!(radar.command(7).unwrap().kind, Kind::Remote);
+
+    let report = crate::exit::ExitReport { pane_id: 7, exit: 255, programs: vec!["ssh".into()] };
+    radar.exit_pipe(&report.to_wire(), 4, 0).expect("the report matched the row");
+    assert_eq!(radar.command(7).unwrap().status, Status::Error);
+    assert!(radar.rows(4)[0].flash, "a Running-remote → Error edge flashes the tab");
+    assert!(!radar.rows(6)[0].flash, "the window (tick+2) has elapsed");
+}
+
+#[test]
+fn exit_pipe_does_not_flash_for_a_local_command() {
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    radar.command_changed(7, &["cargo".into(), "build".into()], true, 1);
+    radar.timer(1 + DEBOUNCE_TICKS, 0);
+    let report = crate::exit::ExitReport { pane_id: 7, exit: 101, programs: vec!["cargo".into()] };
+    radar.exit_pipe(&report.to_wire(), 4, 0).expect("the report matched the row");
+    assert!(!radar.rows(4)[0].flash);
+}
+
+#[test]
+fn exit_pipe_ignores_malformed_and_unmatched_reports() {
+    let mut radar = RadarState::default();
+    assert!(radar.exit_pipe("garbage", 1, 0).is_none());
+    let report = crate::exit::ExitReport { pane_id: 4, exit: 1, programs: vec!["cargo".into()] };
+    assert!(radar.exit_pipe(&report.to_wire(), 1, 0).is_none(), "no row on the pane");
+    assert!(radar.command(4).is_none());
+}

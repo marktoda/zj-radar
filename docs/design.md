@@ -135,6 +135,7 @@ seam is the versioned pipe payload.
 | Opencode events | [`producers.md`](producers.md#opencode) |
 | pi events | [`producers.md`](producers.md#pi) |
 | Observed command exiting nonzero | `error` |
+| Shell hook reports a nonzero exit (`zj_radar.exit.v1`, §5) for the pane's observed command | `error` with the exit code, on the observed command row only (`CommandStore::on_exit_report`); agents and commands that never got a row ignore it |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
 | Agent pane returns to its shell prompt | terminal statuses clear at once; a `Running` arms the stale grace clock (§10) |
 | Agent pane's root process exits (manifest `exited`) | `idle` immediately, no grace (§10) |
@@ -142,8 +143,9 @@ seam is the versioned pipe payload.
 Claude's map has no `error` on purpose: its hook vocabulary carries no
 reliable turn-level failure signal (`PostToolUse`'s per-tool `is_error` is
 normal, recoverable behavior), so mapping it to `Error` would paint healthy
-turns red. The two `error` sources are a nonzero command exit and opencode's
-`session.error`.
+turns red. The `error` sources are a nonzero command exit (a held pane's
+own exit, or the shell hook's report for a command at a prompt) and
+opencode's `session.error`.
 
 ### 4.2 Per-pane to per-tab aggregation
 
@@ -281,6 +283,74 @@ writes them. Instances tick on unaligned phases, so a lagging sibling's
 own-pane write can briefly put pre-confirm state back in the file; its own
 timer write repairs it (`RadarState::timer`). With persistence off, late
 sidebars start empty until the next broadcast.
+
+### The shell exit pipe (`zj_radar.exit.v1`)
+
+Zellij reports an exit code only for a held pane whose root command exited.
+A command run at an ordinary shell prompt just hands the foreground back to
+the shell, so the opt-in shell hook (`zj-radar setup shell`, see
+[`producers.md`](producers.md#shells-failed-commands)) reports a failure on a
+second pipe:
+
+```json
+{ "v": 1, "pane_id": 12, "exit": 101, "programs": ["cd", "cargo"] }
+```
+
+- Sent once per command that exits non-zero (not 130/148, Ctrl-C/Ctrl-Z),
+  from the shell's post-command hook, via `zj-radar notify exit`. A success
+  sends nothing. Same self-limiting send as the status pipe (§5, *Bound your
+  sends*).
+- `programs` holds the peeled exe basename (wrappers like
+  `sudo`/`env`/`time`, `VAR=value` prefixes and a path stripped) of each
+  segment of the command line, split on `&&`, `||`, `;` and `|`,
+  deduplicated, at most 8. One of them is the first token of the row the
+  plugin shows for the command that failed, so `cd crates/cli && cargo test`
+  sends `["cd", "cargo"]` and matches the `cargo` row. Parsing
+  (`crates/core/src/exit.rs`) drops a zero `exit`, an unknown `v`, an empty
+  or over-long `programs` list, an empty or whitespace/control-bearing entry,
+  and payloads over 1 KB.
+- It never touches the status store. A status entry wins `resolve` for its
+  pane, and a pushed `error` would hide that pane's later observed commands.
+  The report goes to the command store instead: `on_exit_report` applies it
+  only when the pane's row is `Running` (with or without the pending-Done
+  confirm armed, which it cancels) or a *fresh* `Done`, the row's first
+  display token is one of `programs` *and* is the last program Zellij saw
+  in the pane's foreground (promoted or not), and no different command is
+  pending. The last-foreground rule pins the report to the command the
+  shell ran last: in `cargo build && ./app`, a fast failing `app` was the
+  last foreground program, so the successful `cargo build` row stays a
+  success (a rail with no foreground history for the pane, e.g. one loaded
+  from the snapshot mid-run, skips this rule). A
+  `Done` is fresh while no exit code has decided it, no foreground command
+  has been seen since its run left the foreground, and that was at most
+  `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS` (2 + 3) ticks ago. An older
+  `Done` is never repainted: a same-program report then comes from a later
+  run too fast to earn a row (`cargo fmt --check` failing after a successful
+  `cargo build`), and marking the build red would be a false failure. The
+  row becomes a command-origin `Error` carrying `exit_code`,
+  which renders the `✗` and the `exit N` tag, is exempt from the Done TTL,
+  and recedes to the ledger when the pane's next command takes the row.
+  A remote row (`ssh` exiting 255) that goes straight from `Running` to
+  `Error` this way flashes its tab, as the Running → Done disconnect confirm
+  does (§4.1).
+- The hook fires from `precmd`, before the next command can start, so the
+  report almost always lands while the row is still `Running` or awaiting
+  its Done confirm: a clean Running → Error edge, never Done then Error. The
+  program-name match and the Done freshness window drop the rare late report.
+- Limit: a hook in a shell nested inside the pane's observed command (the
+  shell `nix develop` or `poetry shell` opens) reports into the same pane, so
+  a failing `nix build` there marks the still-running `nix develop` row red.
+  The plugin cannot tell the two apart; the program-name match only stops
+  it when the programs differ.
+- Commands that finish inside the 2-tick promotion debounce never get a row,
+  so a failing `grep`, `test` or `cd nope` stays quiet. So does an agent,
+  which the command store never tracks. Limit: a real command that fails in
+  under about 2 s stays uncoloured. Limit: a same-program chain
+  (`cargo build && cargo test`, the test failing fast) marks the build row
+  with the test's exit code, and a later segment so fast that Zellij never
+  reports it in the foreground can still mark the row before it.
+- The Error is persisted to the snapshot at once: unlike a held pane's exit,
+  it cannot be re-derived from the pane manifest.
 
 ## 6. Plugin ↔ Zellij wiring
 

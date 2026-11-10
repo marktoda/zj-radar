@@ -30,6 +30,15 @@ pub const DEBOUNCE_TICKS: u64 = 2;
 /// exempt — failures persist until re-run or prune.
 pub const DONE_TTL_TICKS: u64 = 60;
 
+/// Ticks past the Running→Done confirm during which a shell hook's exit report
+/// (`zj_radar.exit.v1`) may still turn that `Done` red. The hook fires from
+/// `precmd`, at the prompt return that armed the confirm, so its report
+/// normally lands while the row is still Running; this only absorbs a slow
+/// `zellij pipe` spawn. Past it, a same-program report is from a later, faster
+/// run (a `cargo fmt --check` failing under the debounce after a successful
+/// `cargo build`) and must not repaint the earlier row.
+pub const EXIT_REPORT_GRACE_TICKS: u64 = 3;
+
 /// An instant on the plugin's per-instance tick counter. One of the two
 /// clocks this store is driven by — see [`EpochSecs`] for why they are
 /// distinct types.
@@ -162,6 +171,20 @@ pub struct CommandStore {
     /// Exit-dedup: last-seen exit status per pane, to avoid re-applying
     /// identical exits.
     exited: HashMap<u32, Option<i32>>,
+    /// Exit-report window: panes whose Running row has left the foreground,
+    /// keyed to the tick it left. While open (and young — see
+    /// [`EXIT_REPORT_GRACE_TICKS`]) a shell hook's exit report may still mark
+    /// the row's `Done`. Any newer foreground command closes it, because the
+    /// row's run is then no longer the pane's latest.
+    exit_window: HashMap<u32, u64>,
+    /// The peeled program of the last real foreground command Zellij reported
+    /// per pane, promoted or not (a command that exits inside the debounce
+    /// still lands here), and kept across the return to the prompt. An exit
+    /// report describes the last thing the shell ran, so it may only mark a
+    /// row whose program this is: in `cargo build && ./app`, a fast failing
+    /// `app` names `app` here, and the report must not paint the successful
+    /// `cargo build` row red.
+    last_fg: HashMap<u32, String>,
     /// The effective interactive set: [`DEFAULT_INTERACTIVE`] ∪ the user's
     /// `interactive_commands` extras (composed in [`Self::set_interactive_extras`]).
     /// Matched on the peeled program name at intake.
@@ -181,6 +204,8 @@ impl Default for CommandStore {
             pending: HashMap::new(),
             pending_done: HashMap::new(),
             exited: HashMap::new(),
+            exit_window: HashMap::new(),
+            last_fg: HashMap::new(),
             interactive: DEFAULT_INTERACTIVE.iter().map(|s| s.to_string()).collect(),
             remote_extras: HashSet::new(),
         }
@@ -685,6 +710,14 @@ pub fn is_shell_prompt(command: &[String]) -> bool {
     IGNORE_NAMES.contains(&name)
 }
 
+/// The peeled program name of an argv (wrappers, `VAR=value` prefixes, a
+/// path and a login shell's `-` stripped): the same name intake keys the
+/// ignore/interactive sets on, and the first token of the row's display.
+/// The exit pipe's match key ([`crate::exit::programs_of_command_line`]).
+pub fn program_of(command: &[String]) -> &str {
+    effective_program(command).1
+}
+
 /// Whether an instrumented agent (`AGENT_NAMES`) is the pane's live command —
 /// direct evidence the pushed status's producer is still running. Used to
 /// cancel the stale-Running grace clock after a mid-turn foreground flicker
@@ -757,6 +790,11 @@ impl CommandStore {
             // never reach here (`is_remote_extra`): `classify`'s dedicated
             // branch above already decided their Kind from the argv shape.
             let kind = if self.is_remote_extra(name) { Kind::Remote } else { kind };
+            // A foreground command after the row's run: an exit report can no
+            // longer be pinned to that run's Done (an interactive command
+            // re-arms the window below when it ends a Running row).
+            self.exit_window.remove(&pane_id);
+            self.last_fg.insert(pane_id, name.to_string());
             if interactive {
                 // An interactive command (editor/pager/TUI) is the pane's fg:
                 // any PRIOR Running command has ended, exactly as in the ignore
@@ -804,6 +842,7 @@ impl CommandStore {
     fn arm_tentative_done(&mut self, pane_id: u32, tick: u64) {
         if self.store.get(pane_id).is_some_and(|s| s.status == Status::Running) {
             self.pending_done.entry(pane_id).or_insert(tick);
+            self.exit_window.entry(pane_id).or_insert(tick);
         }
     }
 
@@ -852,6 +891,7 @@ impl CommandStore {
                 } else {
                     changed = true;
                 }
+                self.exit_window.remove(&pane_id);
                 if let Some(prev) = self.store.insert(pane_id, obs) {
                     if prev.status.is_completion() {
                         receded.push((pane_id, prev));
@@ -986,6 +1026,7 @@ impl CommandStore {
         // same way promotion derives it) labels the completion below.
         let pending = self.pending.remove(&pane_id);
         self.pending_done.remove(&pane_id);
+        self.exit_window.remove(&pane_id);
         let identity = pending.map(|p| (sanitize(basename(&p.cwd), MAX_REPO_CHARS), p.command, p.kind));
 
         let mut receded = None;
@@ -1028,6 +1069,87 @@ impl CommandStore {
         receded
     }
 
+    /// Apply a shell hook's non-zero exit report (`zj_radar.exit.v1`) to the
+    /// pane's observed command row. Returns whether the row changed.
+    ///
+    /// Applies only when the report can be pinned to the row it would mark:
+    /// - the row is `Running` (with or without an armed tentative-done — the
+    ///   hook fires from `precmd`, so it usually lands here, giving a clean
+    ///   Running→Error edge with no Done in between), or a `Done` whose run
+    ///   left the foreground at most `DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS`
+    ///   ago, with no foreground command seen since and no exit already
+    ///   deciding it. An older Done is never repainted: the report is then
+    ///   from a later run too fast to earn a row (`cargo fmt --check` failing
+    ///   after a successful `cargo build`), and would mark the wrong run;
+    /// - its display's first token is one of `programs` (the peeled exe
+    ///   basename of each segment of the failed command line, so
+    ///   `cd x && cargo test` matches a `cargo` row), which drops a late
+    ///   report that lost the race to a newer command;
+    /// - the row's program is the last foreground program Zellij reported
+    ///   for the pane (`last_fg`): the report describes the last command the
+    ///   shell ran, so in `cargo build && ./app` a failing `app` (seen in the
+    ///   foreground, never promoted) leaves the successful build row alone.
+    ///   An instance that has seen no foreground command for the pane yet (a
+    ///   rail loaded from the snapshot mid-run) has no evidence either way
+    ///   and lets the other rules decide;
+    /// - no *different* command is pending on the pane (a newer run is in
+    ///   flight, so the report is stale even when the names agree).
+    ///
+    /// A pane with no row — an agent (never tracked here), a command that
+    /// finished inside the debounce window, or one already receded to Idle —
+    /// ignores the report: only commands that earned a row turn red. The
+    /// resulting `Error` carries `exit_code`, so it renders the `✗` and the
+    /// `exit N` tag and, being exempt from the Done TTL, stays until the
+    /// pane's next command takes the row. A zero `exit` is ignored.
+    pub fn on_exit_report(
+        &mut self,
+        pane_id: u32,
+        exit: i32,
+        programs: &[impl AsRef<str>],
+        tick: Tick,
+        now_epoch_s: EpochSecs,
+    ) -> bool {
+        let (Tick(tick), EpochSecs(now_epoch_s)) = (tick, now_epoch_s);
+        if exit == 0 {
+            return false;
+        }
+        let Some(s) = self.store.get(pane_id) else { return false };
+        let applies = match s.status {
+            Status::Running => true,
+            Status::Done => {
+                s.exit_code.is_none()
+                    && self
+                        .exit_window
+                        .get(&pane_id)
+                        .is_some_and(|&left| tick.saturating_sub(left) <= DEBOUNCE_TICKS + EXIT_REPORT_GRACE_TICKS)
+            }
+            _ => false,
+        };
+        let row_program = first_token(&s.msg);
+        let named = row_program.is_some_and(|t| programs.iter().any(|p| p.as_ref() == t));
+        let last_ran = self.last_fg.get(&pane_id).is_none_or(|p| Some(p.as_str()) == row_program);
+        if !applies || !named || !last_ran {
+            return false;
+        }
+        if self.pending.get(&pane_id).is_some_and(|p| p.command != s.msg) {
+            return false;
+        }
+        // A same-command pending is Zellij re-reporting the run that just
+        // exited; left in place, the next tick would re-promote it to Running
+        // over the Error.
+        self.pending.remove(&pane_id);
+        self.pending_done.remove(&pane_id);
+        self.exit_window.remove(&pane_id);
+        let Some(s) = self.store.get_mut(pane_id) else { return false };
+        if s.status == Status::Running {
+            s.completed_epoch_s = Some(now_epoch_s);
+        }
+        s.status = Status::Error;
+        s.exit_code = Some(exit);
+        s.last_change_tick = tick;
+        true
+    }
+
     /// Drop entries (resolved + pending + exit-dedup) for panes not in `live`.
     /// Returns every dropped observation (`ObservationStore::prune`'s
     /// contract): the caller reads emptiness as "persisted state changed" and
@@ -1038,6 +1160,8 @@ impl CommandStore {
         self.pending.retain(|id, _| live.contains(id));
         self.pending_done.retain(|id, _| live.contains(id));
         self.exited.retain(|id, _| live.contains(id));
+        self.exit_window.retain(|id, _| live.contains(id));
+        self.last_fg.retain(|id, _| live.contains(id));
         dropped
     }
 
@@ -1045,7 +1169,11 @@ impl CommandStore {
     /// plus the pending / exit-dedup bookkeeping. `RadarState::panes_changed`
     /// grants absent panes one manifest of grace before pruning, and the grace
     /// must see the bookkeeping too, or a mid-move manifest flash would drop a
-    /// debounce promotion or exit-dedup marker in flight.
+    /// debounce promotion, exit-dedup marker or exit-report window in flight.
+    /// `last_fg` is deliberately left out: it outlives every run (it is kept
+    /// across the prompt return), so listing it would grant grace to every
+    /// pane that ever ran a command; a prune that drops it costs at most one
+    /// report applied without the last-foreground check, like a fresh rail.
     pub fn tracked_pane_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.store
             .observations()
@@ -1053,6 +1181,7 @@ impl CommandStore {
             .chain(self.pending.keys().copied())
             .chain(self.pending_done.keys().copied())
             .chain(self.exited.keys().copied())
+            .chain(self.exit_window.keys().copied())
     }
 
     /// Resolved displayable state for a pane, or None.

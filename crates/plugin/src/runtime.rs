@@ -1428,6 +1428,14 @@ impl PluginRuntime {
         self.project(vec![], change, now)
     }
 
+    pub(crate) fn exit_pipe(&mut self, raw: &str) -> Outcome {
+        let now = crate::clock::now_epoch_s();
+        let Some(change) = self.radar.exit_pipe(raw, self.tick, now) else {
+            return Outcome::none();
+        };
+        self.project(vec![], change, now)
+    }
+
     pub(crate) fn snapshot_json(&self, existing: Option<&str>) -> String {
         self.radar.snapshot_json(existing, self.tick)
     }

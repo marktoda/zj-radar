@@ -733,6 +733,46 @@ impl RadarState {
         }
     }
 
+    /// A shell hook's `zj_radar.exit.v1` report: the command it ran in the
+    /// pane exited non-zero. Applied to the pane's *observed* command row only
+    /// (`CommandStore::on_exit_report` holds the match rules) — never the
+    /// status store, whose entries win `resolve` and would hide the pane's
+    /// later observed commands. `None` when the payload is malformed or the
+    /// report matched no row: nothing changed, nothing to render or persist.
+    pub(crate) fn exit_pipe(&mut self, raw: &str, tick: u64, now_epoch_s: u64) -> Option<RadarChange> {
+        let report = crate::exit::parse(raw)?;
+        // Captured BEFORE the report applies: a Running remote session the
+        // hook reports failed (ssh exiting 255) goes straight to Error and
+        // never passes the Running→Done confirm that flashes the tab in
+        // `timer`, so this is its disconnect edge — see `arm_flash`'s doc. A
+        // Done it repaints already flashed at its confirm.
+        let was_remote_running =
+            self.command.get(report.pane_id).is_some_and(|o| o.kind.is_remote() && o.status == Status::Running);
+        if !self.command.on_exit_report(
+            report.pane_id,
+            report.exit,
+            &report.programs,
+            Tick(tick),
+            EpochSecs(now_epoch_s),
+        ) {
+            return None;
+        }
+        if was_remote_running {
+            self.arm_flash(report.pane_id, tick);
+        }
+        self.touch();
+        Some(RadarChange {
+            render: true,
+            // Persist now, so a tab opened later rehydrates the Error (a
+            // shell exit, unlike a held pane's, is not re-derivable from the
+            // pane manifest).
+            snapshot: SnapshotWrite::Now,
+            snapshot_pane: Some(report.pane_id),
+            settle: false,
+            ..RadarChange::default()
+        })
+    }
+
     pub(crate) fn status_pipe(
         &mut self,
         raw: &str,
@@ -1030,7 +1070,7 @@ impl RadarState {
     /// Arm the tab-level ping flash for the tab holding `pane_id`, if it is
     /// still seated in one. Shared by `status_pipe`'s live not-Pending →
     /// Pending edge and a Running-remote → completion edge (`timer`,
-    /// `panes_changed`'s exit handling) — both are "make the user aware"
+    /// `panes_changed`'s exit handling, `exit_pipe`) — both are "make the user aware"
     /// edges that fire whether or not a desktop notification also does.
     fn arm_flash(&mut self, pane_id: u32, tick: u64) {
         if let Some(tab_id) = self.tab_of_pane(pane_id) {

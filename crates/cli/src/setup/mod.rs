@@ -1,4 +1,4 @@
-//! `zj-radar setup [claude|codex|opencode|pi|omp|zellij]` — idempotent,
+//! `zj-radar setup [claude|codex|opencode|pi|omp|zellij|shell]` — idempotent,
 //! conflict-aware local wiring. Claude is wired through Claude Code's own
 //! plugin marketplace (we drive the `claude plugin` CLI, never its files);
 //! Codex gets hooks.json entries; Opencode gets vendored JS bridge plugins
@@ -7,7 +7,8 @@
 //! vendored JS bridge extension in its auto-loaded extensions dir, and so
 //! does omp (oh-my-pi, a pi fork);
 //! Zellij setup installs the wasm at a stable path and manages the `radar`
-//! alias in `config.kdl`.
+//! alias in `config.kdl`. `shell` (opt-in, never swept by bare `setup`)
+//! adds a marked failed-command hook block to bash/zsh/fish rc files.
 
 mod analyze;
 mod check;
@@ -20,6 +21,7 @@ mod omp;
 mod opencode;
 mod pi;
 mod preseed;
+mod shell;
 mod vendored;
 mod zellij;
 pub(crate) use analyze::*;
@@ -31,6 +33,7 @@ pub(crate) use edit::*;
 pub(crate) use omp::*;
 pub(crate) use opencode::*;
 pub(crate) use pi::*;
+pub(crate) use shell::*;
 pub(crate) use zellij::*;
 
 use std::path::{Path, PathBuf};
@@ -266,16 +269,32 @@ pub fn run(options: SetupOptions<'_>) {
     let want_pi = bare || named("pi");
     let want_omp = bare || named("omp");
     let want_zellij = named("zellij") || options.wasm.is_some() || options.download;
-    for a in options
-        .targets
-        .iter()
-        .filter(|a| !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "omp" | "zellij"))
-    {
+    // `shell` is opt-in only (it edits the user's rc files); `bash`/`zsh`/
+    // `fish` name which shells it hooks and imply it.
+    let want_shell = named("shell") || Shell::ALL.iter().any(|s| named(s.name()));
+    for a in options.targets.iter().filter(|a| {
+        !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "omp" | "zellij" | "shell")
+            && Shell::from_name(a).is_none()
+    }) {
         crate::exit::fail_report(
             "zj-radar",
-            format!("setup does not support '{a}' (supported: claude, codex, opencode, pi, omp, zellij). Skipping."),
+            format!(
+                "setup does not support '{a}' (supported: claude, codex, opencode, pi, omp, zellij, \
+                 shell [bash|zsh|fish]). Skipping."
+            ),
         );
     }
+    let shells = if want_shell {
+        match shells_for(options.targets, std::env::var("SHELL").ok().as_deref()) {
+            Ok(shells) => shells,
+            Err(e) => {
+                crate::exit::fail_report("shell", e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     // Cross-target flag hygiene: `--wasm`/`--download` *imply* the zellij
     // target (they're zellij artifacts, see `want_zellij`), but `--inject`/
     // `--layout` do not — silently ignoring them on a codex-only invocation
@@ -323,6 +342,9 @@ pub fn run(options: SetupOptions<'_>) {
         }
         if named("omp") || (both && (which("omp") || omp_extension_is_ours_on_disk())) {
             missing |= check_omp();
+        }
+        for &shell in &shells {
+            missing |= check_shell(shell);
         }
         if missing {
             // The items above are the diagnostic; this sets the exit code so
@@ -410,6 +432,19 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             BridgeSetupOpts {
                 explicit: named("omp"),
+                force: options.force,
+                dry_run: options.dry_run,
+                yes: options.yes,
+                is_tty,
+            },
+        );
+    }
+    for &shell in &shells {
+        setup_shell(
+            shell,
+            uninstall,
+            BridgeSetupOpts {
+                explicit: true,
                 force: options.force,
                 dry_run: options.dry_run,
                 yes: options.yes,

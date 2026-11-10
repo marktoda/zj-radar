@@ -106,14 +106,20 @@ const SELF_LIMITING_SEND: &str = concat!(
 /// even if the spawner dies first. POSIX `sh` only — the same portability
 /// bar as every other host command this workspace spawns.
 pub fn self_limiting_pipe_argv(payload: &str, timeout_secs: u64) -> Vec<String> {
+    self_limiting_pipe_argv_to(STATUS_PIPE_NAME, payload, timeout_secs)
+}
+
+/// [`self_limiting_pipe_argv`] for a named pipe other than the status pipe
+/// (the shell hook's `zj_radar.exit.v1`). Same subtree, same guarantees.
+pub fn self_limiting_pipe_argv_to(pipe_name: &str, payload: &str, timeout_secs: u64) -> Vec<String> {
     vec![
         "sh".to_string(),
         "-c".to_string(),
         SELF_LIMITING_SEND.to_string(),
-        "zj-radar-pipe".to_string(),  // $0 — a label for ps output
-        timeout_secs.to_string(),     // $1
-        STATUS_PIPE_NAME.to_string(), // $2
-        payload.to_string(),          // $3
+        "zj-radar-pipe".to_string(), // $0 — a label for ps output
+        timeout_secs.to_string(),    // $1
+        pipe_name.to_string(),       // $2
+        payload.to_string(),         // $3
     ]
 }
 

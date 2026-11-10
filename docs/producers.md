@@ -253,6 +253,74 @@ prompt. Send `done` or `error` when your script finishes rather than relying on
 that. A pane whose root process exits clears immediately, which matters for
 `zellij run` script panes.
 
+## Shells: failed commands
+
+Zellij gives no exit code for a command run at an ordinary shell prompt, so a
+failed `cargo build` would otherwise look like a finished one. The opt-in
+shell hook fixes that:
+
+```sh
+zj-radar setup shell          # the shell in $SHELL
+zj-radar setup shell zsh fish # or name them: bash | zsh | fish
+```
+
+It adds a marked block (`# >>> zj-radar shell hook >>>`) to `~/.bashrc`,
+`${ZDOTDIR:-~}/.zshrc`, or `~/.config/fish/conf.d/zj-radar.fish` (honoring
+`$XDG_CONFIG_HOME`). Running it again rewrites a stale block in place,
+`--uninstall` removes it, and `--check` reports on it. `zj-radar setup zsh`
+(or `bash`, `fish`) is shorthand for `setup shell zsh`. Bare `zj-radar setup`
+never touches rc files. Open a new shell for it to take effect.
+
+If your rc file is managed elsewhere (home-manager links it into the
+read-only `/nix/store`), `setup shell` refuses to write it and says so. Load
+the hook from your own config instead; `zj-radar shell-init <shell>` prints
+it alone:
+
+```sh
+eval "$(zj-radar shell-init zsh)"     # .zshrc, or home-manager's programs.zsh.initContent
+eval "$(zj-radar shell-init bash)"    # .bashrc, or programs.bash.initExtra
+zj-radar shell-init fish | source     # fish config, or programs.fish.interactiveShellInit
+```
+
+Inside Zellij, after a command exits non-zero (except 130 and 148, Ctrl-C and
+Ctrl-Z), the hook runs `zj-radar notify exit --code N --cmd "<command line>"`
+in the background. Successful commands send nothing. bash needs 4.4 or newer
+(the hook uses `PS0`); on an older bash (macOS's `/bin/bash` is 3.2) the hook
+would never fire, so `setup shell bash` warns and `--check` fails. The report rides its own pipe,
+`zj_radar.exit.v1` ([`design.md`](design.md) §5), and only marks the pane's
+*observed* command row: if the radar showed `$ cargo build` running, that row
+turns into `✗ … exit 101` and stays red until you run the next command.
+Commands too quick to have earned a row (under about 2 s), agents, and
+commands whose program doesn't match the row are left alone.
+
+- `notify exit` flags: `--code` (non-zero), `--cmd` (only its program names
+  are sent: the line is split on `&&`, `||`, `;` and `|`, and each segment
+  peeled past `sudo`/`env`/`VAR=1`/paths, so `cd crates/cli && cargo test`
+  matches the `cargo` row), `--pane` (default `$ZELLIJ_PANE_ID`), `--dry-run`
+  (print the payload).
+- A pipeline's status is its last command's unless `pipefail` is set:
+  `make 2>&1 | tee log` exits with `tee`'s 0 when `make` fails, so nothing is
+  reported. With `set -o pipefail` the failure is reported, and the `make`
+  row matches.
+- bash reads the command line from `history 1`, so a command kept out of
+  history (`HISTCONTROL=ignorespace`, `HISTIGNORE`) reports the previous line,
+  which the program match then drops.
+- An alias or shell function is sent as typed in bash and fish (`cb` for
+  `cargo build` sends `cb`), which never matches the observed `cargo` row,
+  so that failure is dropped silently. zsh sends the alias-expanded line, so
+  aliases match there; a function still doesn't.
+- A successful row is never turned red by a later, faster run of the same
+  program: a report reaches a `Done` row only within a few seconds of its
+  command ending, and never once another command has been seen in the pane.
+- In a chain, only the command that ran last can turn red: with
+  `cargo build && ./app`, a failing `app` leaves the successful build row
+  alone. Two limits: in a same-program chain (`cargo build && cargo test`)
+  the row is marked with whichever command failed, and a later command too
+  fast for Zellij to see in the foreground can still mark the row before it.
+- A shell nested inside a running command (`nix develop`, `poetry shell`)
+  inherits `ZELLIJ_PANE_ID` and reports into the same pane, so a failure of
+  the same program in it (`nix build`) marks the outer, still-running row red.
+
 ## Writing your own producer
 
 The plugin's interface is one versioned pipe payload. Broadcast it by name

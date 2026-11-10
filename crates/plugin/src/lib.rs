@@ -26,7 +26,7 @@
 
 // Re-export the shared core so the plugin glue and modules keep addressing these
 // as `crate::status`, `crate::payload`, … with no per-reference churn.
-pub(crate) use zj_radar_core::{command, kind, observation, payload, status, task};
+pub(crate) use zj_radar_core::{command, exit, kind, observation, payload, status, task};
 // `pipe` is consumed only by the wasm glue (`Effect::BroadcastStatus`), which
 // is cfg'd off host builds — an unconditional import would warn there.
 #[cfg(target_arch = "wasm32")]
@@ -84,6 +84,8 @@ const PIPE_NAME: &str = payload::STATUS_PIPE_NAME;
 const CONFIG_PIPE: &str = config::CONFIG_PIPE;
 #[cfg(target_arch = "wasm32")]
 const CMD_PIPE: &str = control::CMD_PIPE;
+#[cfg(target_arch = "wasm32")]
+const EXIT_PIPE: &str = exit::EXIT_PIPE_NAME;
 
 /// Zellij's `InputMode` → the host-testable `mode::Mode` mirror. Exhaustive
 /// on purpose: a mode added upstream fails this build instead of rendering
@@ -534,6 +536,7 @@ impl ZellijPlugin for State {
             PIPE_NAME => self.runtime.status_pipe(raw),
             CONFIG_PIPE => self.runtime.config_pipe(raw),
             CMD_PIPE => self.runtime.control_pipe(raw),
+            EXIT_PIPE => self.runtime.exit_pipe(raw),
             _ => return false,
         };
         self.handle_outcome(outcome)
