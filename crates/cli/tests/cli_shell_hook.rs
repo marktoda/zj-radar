@@ -1,7 +1,9 @@
 //! The failed-command shell hook end to end: `setup shell` writes the rc
 //! block, a real shell runs it, and `notify exit` sends the
 //! `zj_radar.exit.v1` report. Each shell's test spawns that shell and is
-//! skipped (with a note on stderr) when it isn't installed.
+//! skipped (with a note on stderr) when it isn't installed, unless
+//! `ZJ_RADAR_REQUIRE_SHELLS` is set: then a missing shell fails the test, so
+//! a CI job that means to run every shell can't pass by skipping them.
 
 mod support;
 
@@ -18,6 +20,21 @@ fn have(shell: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// Whether `shell` is installed. A missing one logs a note and returns false
+/// (the test skips), or panics when `ZJ_RADAR_REQUIRE_SHELLS` is set and not
+/// empty. That switch is narrower than `CI`: a CI job sets it once its
+/// environment provides bash, zsh and fish.
+fn require(shell: &str) -> bool {
+    if have(shell) {
+        return true;
+    }
+    if std::env::var_os("ZJ_RADAR_REQUIRE_SHELLS").is_some_and(|v| !v.is_empty()) {
+        panic!("{shell} not installed but ZJ_RADAR_REQUIRE_SHELLS is set: install it (flake.nix devShell)");
+    }
+    eprintln!("{shell} not installed — skipping");
+    false
 }
 
 /// `setup shell <shell> -y` under an isolated HOME; returns the rc file.
@@ -108,8 +125,7 @@ fn shell_command(shell: &str, home: &Path, shims: &ShimDir) -> std::process::Com
 
 #[test]
 fn bash_hook_reports_only_failed_commands() {
-    if !have("bash") {
-        eprintln!("bash not installed — skipping");
+    if !require("bash") {
         return;
     }
     let home = TempDir::new().unwrap();
@@ -132,8 +148,7 @@ fn bash_hook_reports_only_failed_commands() {
 
 #[test]
 fn zsh_hook_reports_only_failed_commands() {
-    if !have("zsh") {
-        eprintln!("zsh not installed — skipping");
+    if !require("zsh") {
         return;
     }
     let home = TempDir::new().unwrap();
@@ -156,9 +171,48 @@ fn zsh_hook_reports_only_failed_commands() {
 }
 
 #[test]
+fn zsh_hook_registered_through_add_zsh_hook_runs_beside_another_precmd() {
+    if !require("zsh") {
+        return;
+    }
+    let home = TempDir::new().unwrap();
+    let rc = install_hook(home.path(), "zsh");
+    let shims = ShimDir::new();
+    let log = fake_cli(&shims);
+    let (own, added) = (home.path().join("own-precmd"), home.path().join("added-precmd"));
+    // An interactive zsh reading its lines from a pipe runs its preexec and
+    // precmd hooks around each one, like a terminal session. The rc file
+    // registers the hook through add-zsh-hook; the user's own `precmd` (run
+    // before every hook) and a second add-zsh-hook function each mark a file,
+    // and both must leave the hook seeing the command's `$?`.
+    let script = format!(
+        "{}source {rc:?}; precmd() {{ print >> {own:?} }}; __user_precmd() {{ print >> {added:?} }}; add-zsh-hook          precmd __user_precmd
+sh -c 'exit 3'
+true
+
+sh -c 'exit 130'
+false
+
+
+",
+        path_line("zsh", &shims),
+    );
+    let mut cmd = shell_command("zsh", home.path(), &shims);
+    cmd.args(["-f", "-i"]).stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    {
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    }
+    child.wait().unwrap();
+    assert_eq!(calls(&log, 2), EXPECTED);
+    assert!(own.exists(), "the user's precmd still runs");
+    assert!(added.exists(), "another add-zsh-hook precmd still runs");
+}
+
+#[test]
 fn fish_hook_reports_only_failed_commands() {
-    if !have("fish") {
-        eprintln!("fish not installed — skipping");
+    if !require("fish") {
         return;
     }
     let home = TempDir::new().unwrap();
@@ -283,8 +337,7 @@ fn shell_init_prints_the_hook_alone() {
 
 #[test]
 fn bash_hook_loaded_through_shell_init_reports_failures() {
-    if !have("bash") {
-        eprintln!("bash not installed — skipping");
+    if !require("bash") {
         return;
     }
     let home = TempDir::new().unwrap();
