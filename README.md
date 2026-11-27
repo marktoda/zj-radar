@@ -20,6 +20,7 @@ jump to that tab.
   <img alt="Opencode" src="https://img.shields.io/badge/Opencode-supported-4B8BBE">
   <img alt="pi" src="https://img.shields.io/badge/pi-supported-6E56CF">
   <img alt="omp" src="https://img.shields.io/badge/omp-supported-6E56CF">
+  <img alt="Copilot CLI" src="https://img.shields.io/badge/Copilot%20CLI-supported-6e40c9">
 </p>
 
 <p align="center">
@@ -67,6 +68,7 @@ zj-radar setup codex     # Codex hooks; then run `/hooks` inside Codex to trust 
 zj-radar setup opencode  # Opencode bridge plugin; then restart opencode
 zj-radar setup pi        # pi bridge extension; then restart pi or run /reload
 zj-radar setup omp       # omp (oh-my-pi) bridge extension; then restart omp
+zj-radar setup copilot   # Copilot CLI hook file; then start a new copilot session
 ```
 
 Want to look before you commit? `zj-radar run` starts a throwaway session with
@@ -77,8 +79,8 @@ manual setup, and the full removal list are in
 
 ## What you get
 
-- Per-tab and per-pane status for Claude Code, Codex, Opencode, pi, and
-  omp, plus any script that can send JSON.
+- Per-tab and per-pane status for Claude Code, Codex, Opencode, pi, omp, and
+  Copilot CLI, plus any script that can send JSON.
 - Jump to the tab that needs you: click its row, or bind `attention-next`
   ([keybinds](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md#binding-keys-to-commands)).
 - Your Zellij stays yours: no new terminal, no tmux wrapper, no orchestrator.
@@ -159,7 +161,7 @@ The full option table, runtime pipes, and keybinds are in
 | [`docs/install.md`](https://github.com/marktoda/zj-radar/blob/main/docs/install.md) | Install paths (CLI, source, Nix, manual), layouts, permissions, `--check`, full removal. |
 | [`docs/using.md`](https://github.com/marktoda/zj-radar/blob/main/docs/using.md) | Reading the rail: glyphs, tree rows, tags, footer, mouse gestures, cross-session badge, notifications. |
 | [`docs/configuration.md`](https://github.com/marktoda/zj-radar/blob/main/docs/configuration.md) | Option table, the `config.v1` and `cmd.v1` pipes, keybinds. |
-| [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, Opencode, pi, omp, `notify generic`, and the wire format for your own producer. |
+| [`docs/producers.md`](https://github.com/marktoda/zj-radar/blob/main/docs/producers.md) | Claude Code, Codex, Opencode, pi, omp, Copilot CLI, `notify generic`, and the wire format for your own producer. |
 | [`docs/troubleshooting.md`](https://github.com/marktoda/zj-radar/blob/main/docs/troubleshooting.md) | Symptom → fix: blank rail, no status, stuck rows, layout quirks, terminal rendering. |
 | [`docs/activity-model.md`](https://github.com/marktoda/zj-radar/blob/main/docs/activity-model.md) | Why builds spin, servers don't, and editors stay quiet. |
 | [`docs/design.md`](https://github.com/marktoda/zj-radar/blob/main/docs/design.md) | Architecture and mechanisms. |

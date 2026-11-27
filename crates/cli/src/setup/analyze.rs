@@ -3,8 +3,8 @@ use super::*;
 use crate::agents::Agent;
 use crate::producers::ProducerTexts;
 use crate::setup::detect::{
-    codex_hook_handler_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line, notify_is_ours,
-    omp_extension_is_ours, opencode_plugin_is_ours, pi_extension_is_ours, strip_managed_zellij_alias,
+    codex_hook_handler_is_ours, copilot_hook_is_ours, has_unmanaged_radar_alias, is_unmanaged_radar_alias_line,
+    notify_is_ours, omp_extension_is_ours, opencode_plugin_is_ours, pi_extension_is_ours, strip_managed_zellij_alias,
 };
 
 use std::path::{Path, PathBuf};
@@ -414,6 +414,30 @@ pub(crate) fn analyze_omp(env: &OmpEnv) -> OmpFacts {
         omp_on_path: env.omp_on_path,
         zj_radar_on_path: env.zj_radar_on_path,
         extension_is_ours: env.extension_text.as_deref().map(omp_extension_is_ours),
+    }
+}
+
+pub(crate) struct CopilotEnv {
+    pub copilot_on_path: bool,
+    pub zj_radar_on_path: bool,
+    pub hooks_text: Option<String>,
+}
+
+/// Copilot CLI's doctor facts. No version floor beyond the pinned 1.0.117
+/// contract `agents/copilot.rs` documents: an older build that lacks an event
+/// this wires just never fires that hook, same as any other no-op.
+pub(crate) struct CopilotFacts {
+    pub copilot_on_path: bool,
+    pub zj_radar_on_path: bool,
+    /// `None` = absent; `Some(true)` = ours; `Some(false)` = foreign.
+    pub hooks_is_ours: Option<bool>,
+}
+
+pub(crate) fn analyze_copilot(env: &CopilotEnv) -> CopilotFacts {
+    CopilotFacts {
+        copilot_on_path: env.copilot_on_path,
+        zj_radar_on_path: env.zj_radar_on_path,
+        hooks_is_ours: env.hooks_text.as_deref().map(copilot_hook_is_ours),
     }
 }
 

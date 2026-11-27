@@ -119,6 +119,35 @@ your launch environment sits where omp never looks.
 **Fix:** run `zj-radar setup omp --check` in the environment you launch omp
 from, then restart omp. Details in [producers](producers.md#omp).
 
+## A Copilot pane never shows "needs you" or which tool is running
+
+**Symptom:** Copilot works in a pane and `running`/`done`/`error` appear, but
+it never shows `◆ needs you` for a permission prompt, and never shows a
+specific tool activity (`editing foo.rs`, `running tests`) the way Claude or
+Codex panes do.
+
+**Why:** by design, not a bug. Real-CLI testing against Copilot 1.0.117
+found that its `preToolUse` and `permissionRequest` hooks *deny the tool
+call* when their hook command fails (even a plain "command not found" when
+`zj-radar` isn't on `PATH` yet) — a status producer must never be able to
+break the agent it reports on, so zj-radar does not wire either hook.
+Approvals and tool activity are therefore not observed at all for Copilot
+panes. Details in [producers](producers.md#copilot-cli).
+
+**Fix:** none — this is the tradeoff, not a misconfiguration.
+
+## A Copilot pane shows no status at all
+
+**Symptom:** Copilot works in a pane, but its row never appears.
+
+**Why:** the hook file is read at session start, so a `copilot` session
+already running when you ran `zj-radar setup copilot` has no hook yet.
+`$COPILOT_HOME` (default `~/.copilot`) must match between `setup copilot`
+and the environment you launch `copilot` from.
+
+**Fix:** run `zj-radar setup copilot --check`, then start a new `copilot`
+session. Details in [producers](producers.md#copilot-cli).
+
 ## No background-task lines under a Claude pane
 
 **Symptom:** Claude backgrounds a test run or a subagent, and the pane shows

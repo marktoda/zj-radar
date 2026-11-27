@@ -96,7 +96,7 @@ const IGNORE_NAMES: &[&str] = &[
 /// deliberately absent: they fall through to ordinary command-tracking, which
 /// still surfaces a Running/Done lifecycle under their own `Kind`.
 /// Matched on the peeled program — including a node/bun-hosted agent script.
-pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode", "pi", "omp"];
+pub const AGENT_NAMES: &[&str] = &["claude", "codex", "opencode", "pi", "omp", "copilot"];
 
 /// Interactive programs — editors, pagers, monitors, git TUIs, file managers —
 /// that sit open waiting on the *user* rather than doing bounded work

@@ -14,6 +14,7 @@ mod analyze;
 mod check;
 mod claude;
 mod codex;
+mod copilot;
 pub(crate) mod detect;
 mod download;
 mod edit;
@@ -28,6 +29,7 @@ pub(crate) use analyze::*;
 pub(crate) use check::*;
 pub(crate) use claude::*;
 pub(crate) use codex::*;
+pub(crate) use copilot::*;
 pub(crate) use download::*;
 pub(crate) use edit::*;
 pub(crate) use omp::*;
@@ -141,6 +143,70 @@ pub(crate) const OMP_EXTENSION_MARKER: &str = "ZJ_RADAR_OMP_EXTENSION=v1";
 pub(crate) const OMP_EXTENSION_FILE_NAME: &str = "zj-radar-omp.js";
 /// The vendored omp bridge extension (see `flake.nix`'s filter).
 pub(crate) const OMP_EXTENSION_JS: &str = include_str!("omp_extension.js");
+
+/// The file `setup copilot` writes: `$COPILOT_HOME/hooks/<name>.json` (default
+/// `~/.copilot/hooks/<name>.json`). Copilot CLI loads every `*.json` file in
+/// that directory, so — unlike Codex's single shared `hooks.json` — this file
+/// is exclusively ours: no foreign content to merge around, no merge-in-place
+/// editor.
+pub(crate) const COPILOT_HOOK_FILE_NAME: &str = "zj-radar.json";
+/// The ownership marker stamped into every entry's `env` block
+/// (`{"ZJ_RADAR_COPILOT_HOOK": "<version>"}`) — the JSON-native analogue of
+/// `CODEX_HOOK_MARKER`/`OPENCODE_PLUGIN_MARKER_PREFIX`. It rides Copilot's
+/// `env` hook field rather than a shell `KEY=VALUE` command prefix: unlike
+/// Codex's `hooks.json`, a single `command` string here must run unmodified
+/// under both bash and PowerShell (`command` "sets both at once"), and a
+/// `VAR=val cmd` prefix is bash/POSIX-only — precisely the portability gap
+/// `env` exists to close (see `CODEX_HOOK_COMMAND_WINDOWS`'s own workaround
+/// for the shell-prefix version of this problem). Keyed on the quoted key
+/// name so a future version bump still matches.
+pub(crate) const COPILOT_HOOK_MARKER_PREFIX: &str = "\"ZJ_RADAR_COPILOT_HOOK\"";
+#[cfg(test)]
+pub(crate) const COPILOT_HOOK_MARKER: &str = "\"ZJ_RADAR_COPILOT_HOOK\": \"v1\"";
+/// Hand-authored (not generated): the whole hook set is fixed and small
+/// enough to review as plain text, like the bundled Claude plugin's
+/// `hooks/hooks.json` — unlike the opencode/pi/omp bridges this needs no
+/// `include_str!`/`flake.nix` entry since it lives in Rust source, not a
+/// vendored non-Rust asset.
+///
+/// Deliberately **not** every event Copilot documents — see
+/// `agents/copilot.rs`'s module docs for the full rationale. In short:
+/// real-CLI testing against Copilot 1.0.117 found `preToolUse` and
+/// `permissionRequest` deny the tool call when their hook command fails
+/// (including a plain "command not found" when `zj-radar` isn't on `PATH`),
+/// so neither is wired; `postToolUse` is left out too since its
+/// non-blocking nature was never proven; `subagentStart`/`subagentStop` are
+/// unneeded once every wired event is filtered on `agentId`/`parentAgentId`
+/// (`agents/copilot.rs::is_subagent_scoped`). What remains — `sessionStart`,
+/// `sessionEnd`, `userPromptSubmitted`, `agentStop`, `errorOccurred` — has no
+/// documented decision/response contract: each gets its own entry passing an
+/// explicit `--status` (`agents/copilot.rs` tells same-status events apart
+/// by payload shape, not by event name — Copilot's documented hook payload,
+/// unlike Claude's and Codex's, carries no field naming which event fired).
+/// `timeoutSec` mirrors the bundled Claude plugin's split: 7 for `running`
+/// (2s send deadline + 5s headroom), 10 for the edges `done`/`error`/`idle`
+/// (5s + 5s) — see docs/producers.md#bound-your-sends.
+pub(crate) const COPILOT_HOOKS_JSON: &str = r#"{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "type": "command", "command": "zj-radar notify copilot --status idle", "env": { "ZJ_RADAR_COPILOT_HOOK": "v1" }, "timeoutSec": 10 }
+    ],
+    "sessionEnd": [
+      { "type": "command", "command": "zj-radar notify copilot --status idle", "env": { "ZJ_RADAR_COPILOT_HOOK": "v1" }, "timeoutSec": 10 }
+    ],
+    "userPromptSubmitted": [
+      { "type": "command", "command": "zj-radar notify copilot --status running", "env": { "ZJ_RADAR_COPILOT_HOOK": "v1" }, "timeoutSec": 7 }
+    ],
+    "agentStop": [
+      { "type": "command", "command": "zj-radar notify copilot --status done", "env": { "ZJ_RADAR_COPILOT_HOOK": "v1" }, "timeoutSec": 10 }
+    ],
+    "errorOccurred": [
+      { "type": "command", "command": "zj-radar notify copilot --status error", "env": { "ZJ_RADAR_COPILOT_HOOK": "v1" }, "timeoutSec": 10 }
+    ]
+  }
+}
+"#;
 
 pub struct SetupOptions<'a> {
     pub targets: &'a [String],
@@ -268,18 +334,19 @@ pub fn run(options: SetupOptions<'_>) {
     let want_claude = bare || named("claude");
     let want_pi = bare || named("pi");
     let want_omp = bare || named("omp");
+    let want_copilot = bare || named("copilot");
     let want_zellij = named("zellij") || options.wasm.is_some() || options.download;
     // `shell` is opt-in only (it edits the user's rc files); `bash`/`zsh`/
     // `fish` name which shells it hooks and imply it.
     let want_shell = named("shell") || Shell::ALL.iter().any(|s| named(s.name()));
     for a in options.targets.iter().filter(|a| {
-        !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "omp" | "zellij" | "shell")
+        !matches!(a.as_str(), "claude" | "codex" | "opencode" | "pi" | "omp" | "copilot" | "zellij" | "shell")
             && Shell::from_name(a).is_none()
     }) {
         crate::exit::fail_report(
             "zj-radar",
             format!(
-                "setup does not support '{a}' (supported: claude, codex, opencode, pi, omp, zellij, \
+                "setup does not support '{a}' (supported: claude, codex, opencode, pi, omp, copilot, zellij, \
                  shell [bash|zsh|fish]). Skipping."
             ),
         );
@@ -342,6 +409,9 @@ pub fn run(options: SetupOptions<'_>) {
         }
         if named("omp") || (both && (which("omp") || omp_extension_is_ours_on_disk())) {
             missing |= check_omp();
+        }
+        if named("copilot") || (both && (which("copilot") || copilot_hook_is_ours_on_disk())) {
+            missing |= check_copilot();
         }
         for &shell in &shells {
             missing |= check_shell(shell);
@@ -432,6 +502,18 @@ pub fn run(options: SetupOptions<'_>) {
             uninstall,
             BridgeSetupOpts {
                 explicit: named("omp"),
+                force: options.force,
+                dry_run: options.dry_run,
+                yes: options.yes,
+                is_tty,
+            },
+        );
+    }
+    if want_copilot {
+        setup_copilot(
+            uninstall,
+            BridgeSetupOpts {
+                explicit: named("copilot"),
                 force: options.force,
                 dry_run: options.dry_run,
                 yes: options.yes,

@@ -2,7 +2,7 @@
 
 zj-radar is a [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
 plus a host-side CLI and producer adapters for Claude Code, Codex, Opencode,
-and pi. This guide covers building, testing, and proposing changes.
+pi, omp, and Copilot CLI. This guide covers building, testing, and proposing changes.
 
 ## Project shape
 

@@ -64,6 +64,13 @@ pub(crate) fn omp_extension_is_ours(text: &str) -> bool {
     text.contains(OMP_EXTENSION_MARKER_PREFIX)
 }
 
+/// True iff a Copilot hook file's text carries our ownership marker (any
+/// version: `{"ZJ_RADAR_COPILOT_HOOK": "v1"}`, `"v2"`, …). The single reader
+/// behind `setup copilot`'s gating, the doctor, and producer detection.
+pub(crate) fn copilot_hook_is_ours(text: &str) -> bool {
+    text.contains(COPILOT_HOOK_MARKER_PREFIX)
+}
+
 /// The layout name a `config.kdl` selects via `default_layout "name"`, or
 /// `None` when unset. Line-scan like the other config detectors: the node at
 /// line start (not commented out), its first argument quoted or bare. This is

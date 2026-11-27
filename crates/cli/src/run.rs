@@ -1193,6 +1193,7 @@ mod tests {
                 opencode_tui_plugin: None,
                 pi_extension: None,
                 omp_extension: None,
+                copilot_hooks: None,
             },
         }
     }
