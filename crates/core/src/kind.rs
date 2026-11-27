@@ -15,7 +15,7 @@ use crate::status::GlyphSet;
 macro_rules! kinds {
     ( $( $variant:ident => $source:literal, $plain:literal, $nerd:literal );+ $(;)? ) => {
         /// What kind of process owns a pane. Agents (Claude, Codex, Opencode, Pi, Omp,
-        /// Gemini) and task types (Test, Build, Deploy, Server, Remote) are peers — only
+        /// Gemini, Copilot) and task types (Test, Build, Deploy, Server, Remote) are peers — only
         /// the mark glyph differs; the renderer and sorter treat all variants
         /// identically.
         ///
@@ -74,6 +74,7 @@ kinds! {
     Pi       => "pi",       '✴', '\u{f03ff}'; // nf-md-pi
     Omp      => "omp",      '✷', '\u{f0400}'; // nf-md-pi-box
     Gemini   => "gemini",   '✦', '\u{f0eb9}'; // nf-md-star-four-points (sparkle)
+    Copilot  => "copilot",  '✶', '\u{f4b8}';  // nf-oct-copilot
     Command  => "command",  '$', '$';
     Other    => "other",    '⦿', '⦿';
     Test     => "test",     '⚗', '⚗';
@@ -92,7 +93,7 @@ impl Kind {
     /// must declare which side it is here before it compiles.
     pub fn is_agent(self) -> bool {
         match self {
-            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Omp | Kind::Gemini => true,
+            Kind::Claude | Kind::Codex | Kind::Opencode | Kind::Pi | Kind::Omp | Kind::Gemini | Kind::Copilot => true,
             Kind::Command | Kind::Other | Kind::Test | Kind::Build | Kind::Deploy | Kind::Server | Kind::Remote => {
                 false
             }
@@ -114,6 +115,7 @@ impl Kind {
             | Kind::Pi
             | Kind::Omp
             | Kind::Gemini
+            | Kind::Copilot
             | Kind::Command
             | Kind::Other
             | Kind::Test
@@ -136,6 +138,7 @@ impl Kind {
             | Kind::Pi
             | Kind::Omp
             | Kind::Gemini
+            | Kind::Copilot
             | Kind::Command
             | Kind::Other
             | Kind::Test
@@ -172,6 +175,7 @@ mod tests {
         assert_eq!(Kind::from_source("codex"), Kind::Codex);
         assert_eq!(Kind::from_source("opencode"), Kind::Opencode);
         assert_eq!(Kind::from_source("gemini"), Kind::Gemini);
+        assert_eq!(Kind::from_source("copilot"), Kind::Copilot);
         assert_eq!(Kind::from_source("command"), Kind::Command);
     }
 
@@ -210,6 +214,7 @@ mod tests {
         assert_eq!(Kind::Codex.mark(Plain), '❉');
         assert_eq!(Kind::Opencode.mark(Plain), '✺');
         assert_eq!(Kind::Gemini.mark(Plain), '✦');
+        assert_eq!(Kind::Copilot.mark(Plain), '✶');
         assert_eq!(Kind::Command.mark(Plain), '$');
         assert_eq!(Kind::Other.mark(Plain), '⦿');
         assert_eq!(Kind::Test.mark(Plain), '⚗');
@@ -222,12 +227,13 @@ mod tests {
     #[test]
     fn nerd_set_upgrades_agent_marks() {
         use GlyphSet::Nerd;
-        // Agent marks become heavier font-native MDI glyphs in the Nerd set.
+        // Agent marks become heavier font-native MDI/Octicon glyphs in the Nerd set.
         assert_eq!(Kind::Claude.mark(Nerd), '\u{f06a9}');
         assert_eq!(Kind::Codex.mark(Nerd), '\u{f167a}');
         assert_eq!(Kind::Opencode.mark(Nerd), '\u{f0169}');
         assert_eq!(Kind::Gemini.mark(Nerd), '\u{f0eb9}');
-        // Task marks are shared across sets.
+        assert_eq!(Kind::Copilot.mark(Nerd), '\u{f4b8}'); // nf-oct-copilot
+                                                          // Task marks are shared across sets.
         assert_eq!(Kind::Build.mark(Nerd), '⚙');
         assert_eq!(Kind::Command.mark(Nerd), '$');
     }
@@ -290,7 +296,7 @@ mod tests {
     fn all_enumerates_every_variant() {
         // `ALL` drives the exhaustiveness of the other tests; pin its size so a
         // dropped table row is caught here instead of silently shrinking coverage.
-        assert_eq!(Kind::ALL.len(), 13);
+        assert_eq!(Kind::ALL.len(), 14);
         assert_eq!(Kind::Other.as_source(), "other");
     }
 

@@ -59,7 +59,7 @@ one failed. Set `task_lines count` to always show just that count, or
 only, for now, and it needs the `zj-radar` CLI installed.
 The full semantics are in [`activity-model.md`](activity-model.md).
 
-**Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✷` omp · `✦` gemini ·
+**Kind marks.** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✷` omp · `✶` copilot · `✦` gemini ·
 `$` command · `⚙` build · `⚗` test · `⇡` deploy · `❯` server · `⇄` remote ·
 `⦿` other.
 

@@ -11,6 +11,7 @@
 
 mod claude;
 mod codex;
+mod copilot;
 mod omp;
 mod opencode;
 mod pi;
@@ -63,13 +64,15 @@ pub enum Agent {
     Opencode,
     Pi,
     Omp,
+    Copilot,
 }
 
 impl Agent {
     /// Every push-reporter agent, in declaration order. Lets the coherence
     /// guards iterate the variants without re-typing the list (mirrors
     /// `Kind::ALL`).
-    pub const ALL: &'static [Agent] = &[Agent::Claude, Agent::Codex, Agent::Opencode, Agent::Pi, Agent::Omp];
+    pub const ALL: &'static [Agent] =
+        &[Agent::Claude, Agent::Codex, Agent::Opencode, Agent::Pi, Agent::Omp, Agent::Copilot];
 
     /// Parse the `notify <agent>` CLI argument. Inverse of [`Agent::source`].
     pub fn from_cli(s: &str) -> Option<Agent> {
@@ -85,6 +88,7 @@ impl Agent {
             Agent::Opencode => "opencode",
             Agent::Pi => "pi",
             Agent::Omp => "omp",
+            Agent::Copilot => "copilot",
         }
     }
 
@@ -96,6 +100,7 @@ impl Agent {
             Agent::Opencode => opencode::derive(intake),
             Agent::Pi => pi::derive(intake),
             Agent::Omp => omp::derive(intake),
+            Agent::Copilot => copilot::derive(intake),
         }
     }
 }
@@ -549,6 +554,7 @@ mod tests {
                 Agent::Opencode => Kind::Opencode,
                 Agent::Pi => Kind::Pi,
                 Agent::Omp => Kind::Omp,
+                Agent::Copilot => Kind::Copilot,
             };
             assert_eq!(
                 Kind::from_source(agent.source()),
@@ -596,10 +602,10 @@ mod tests {
     fn all_lists_every_variant() {
         for &a in Agent::ALL {
             match a {
-                Agent::Claude | Agent::Codex | Agent::Opencode | Agent::Pi | Agent::Omp => {}
+                Agent::Claude | Agent::Codex | Agent::Opencode | Agent::Pi | Agent::Omp | Agent::Copilot => {}
             }
         }
-        assert_eq!(Agent::ALL.len(), 5, "a variant is missing from Agent::ALL");
+        assert_eq!(Agent::ALL.len(), 6, "a variant is missing from Agent::ALL");
     }
 
     /// The clap doc-comment on the `agent` arg (lib.rs) cannot be dynamic. This

@@ -61,6 +61,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 │ Opencode    → JS bridge → native CLI            (running/pending/done/error) │
 │ pi          → extension → native CLI            (running/pending/done/error) │
 │ omp         → extension → native CLI            (running/pending/done/error) │
+│ Copilot CLI → native CLI via hook file           (running/done/error)   │
 │ any script  → zj-radar notify generic                                   │
 └───────────────────────────┬─────────────────────────────────────────────┘
    zellij pipe --name zj_radar.status.v1 -- {v,source,pane,status,repo,branch,msg,task,ack,tasks}
@@ -134,6 +135,7 @@ seam is the versioned pipe payload.
 | Codex ephemeral-fork hooks (`transcript_path: null`) | ignored |
 | Opencode events | [`producers.md`](producers.md#opencode) |
 | pi events | [`producers.md`](producers.md#pi) |
+| Copilot CLI events | [`producers.md`](producers.md#copilot-cli) |
 | Observed command exiting nonzero | `error` |
 | Shell hook reports a nonzero exit (`zj_radar.exit.v1`, §5) for the pane's observed command | `error` with the exit code, on the observed command row only (`CommandStore::on_exit_report`); agents and commands that never got a row ignore it |
 | Observed remote session (`ssh`/`mosh`/…) ending | `done`, notified as a disconnect (`error` if the exit code is nonzero, notified as "connection lost") — `activity-model.md` §3 |
@@ -202,7 +204,7 @@ on the name and keeps its own copy of the state.
 ```json
 { "v": 1,
   "source": "claude",                 // Kind vocabulary: claude | codex | opencode | pi | omp |
-                                      //   gemini | command | test | build | deploy |
+                                      //   copilot | gemini | command | test | build | deploy |
                                       //   server | remote | other
   "pane": { "type": "terminal", "id": 12 },
   "status": "running",                // running | pending | done | error | idle
@@ -514,11 +516,37 @@ parser rejects a one-line `{ plugin location="radar" }` without a trailing `;`.
   blocking dialogs; its queue lives on `globalThis` because module globals are
   shared across those bindings. The `ZJ_RADAR_OMP_EXTENSION=<v>` marker is
   what idempotency, `--uninstall`, and `--check` key on.
+- **Copilot CLI**: `zj-radar setup copilot` writes a marker-owned hook file
+  to `$COPILOT_HOME/hooks/zj-radar.json` (default `~/.copilot/hooks/`).
+  Copilot loads every `*.json` file in that directory itself, so — unlike
+  Codex's single shared `hooks.json` — the file is exclusively ours: install
+  reuses the vendored-bridge machinery (`pi::setup_extension_file`) as if it
+  were a fourth JS bridge, just with JSON content and a JSON-native marker
+  (`{"ZJ_RADAR_COPILOT_HOOK": "<v>"}` in each entry's `env` block, read by
+  `COPILOT_HOOK_MARKER_PREFIX`) instead of a header-comment one — a shell
+  `KEY=VALUE` command prefix (Codex's trick) cannot cross bash/PowerShell
+  portably, which is exactly what Copilot's `env` hook field exists to avoid.
+  Only 5 of Copilot's events are wired (`sessionStart`, `sessionEnd`,
+  `userPromptSubmitted`, `agentStop`, `errorOccurred`): real-CLI testing
+  against 1.0.117 found `preToolUse` and `permissionRequest` deny the tool
+  call when their hook command fails (including a missing `zj-radar` on
+  `PATH`), so neither is wired, `postToolUse` is dropped as unproven safe,
+  and `subagentStart`/`subagentStop` are replaced by a blanket
+  `agentId`/`parentAgentId` filter in `agents/copilot.rs` (covering a
+  background tool call's own events, not just the two dedicated ones).
+  Approvals and tool activity are therefore not observed at all. Copilot's
+  own hook payload carries no field naming which event fired, so every
+  wired event gets its own hook entry passing an explicit `--status`.
+  `agents/copilot.rs` never reads `prompt`, `error.message`, or
+  `transcriptPath` — only the top-level `recoverable` and `cwd` fields are
+  read from the payload, so no raw prompt, tool, or model-error text
+  crosses the wire.
 
 **Two install surfaces, two answers.** Claude Code has a plugin system that
 bundles hooks, so a plugin is the right shape: one install command, clean
-uninstall, no user-file surgery. Codex, Opencode, pi, and omp have hook or plugin
-surfaces but no marketplace, so `zj-radar setup` edits their native config.
+uninstall, no user-file surgery. Codex, Opencode, pi, omp, and Copilot CLI
+have hook or plugin surfaces but no marketplace, so `zj-radar setup` edits
+their native config.
 The rules the installer keeps (`crates/cli/src/setup/`): strip-own-then-re-add
 keyed on a marker string, so re-runs are idempotent and `--uninstall` removes
 only ours; refuse to write a file that exists but does not parse; atomic
@@ -830,8 +858,8 @@ being unavailable degrades only rehydration.
 functions in `crates/cli/src/setup/analyze.rs`, each fed a thin `Env` of
 already-read values by the IO shell. `Facts` is the single home for derived
 facts: alias present (managed vs unmanaged), rail injected, grant present,
-producer wired, Codex hooks/notify state, opencode plugin ownership, pi
-and omp extension ownership. Both
+producer wired, Codex hooks/notify state, opencode plugin ownership, pi,
+omp, and Copilot hook-file ownership. Both
 consumers project from it: `*_check_items` renders `--check`, and the install
 orchestrators gate on it. The pure mutators (`edit_*` → `Outcome`) share only
 the low-level detectors in `setup/detect.rs`. The legacy-notify vs hooks

@@ -311,6 +311,46 @@ pub(crate) fn omp_check_items(f: &OmpFacts) -> Vec<CheckItem> {
     ]
 }
 
+/// Returns true when any item is `Missing` — see [`check_codex`].
+pub(crate) fn check_copilot() -> bool {
+    let env = CopilotEnv {
+        copilot_on_path: which("copilot"),
+        zj_radar_on_path: which("zj-radar"),
+        hooks_text: copilot_hooks_text(),
+    };
+    let items = copilot_check_items(&analyze_copilot(&env));
+    println!("copilot:");
+    print_check_items(&items)
+}
+
+pub(crate) fn copilot_check_items(f: &CopilotFacts) -> Vec<CheckItem> {
+    vec![
+        agent_binary_item(
+            "copilot binary",
+            f.copilot_on_path,
+            f.hooks_is_ours == Some(true),
+            "the hook file is installed",
+        ),
+        if f.zj_radar_on_path {
+            CheckItem::ok("zj-radar binary", "found on PATH")
+        } else {
+            CheckItem::missing("zj-radar binary", "not found on PATH")
+        },
+        match f.hooks_is_ours {
+            // `copilot` is in `AGENT_NAMES`: without the hook file its pane is dark.
+            None => CheckItem::missing(
+                "hooks",
+                "zj-radar hook file not installed — copilot panes stay dark until it is; run `zj-radar setup copilot` and start a new copilot session",
+            ),
+            Some(true) => CheckItem::ok("hooks", "zj-radar hook file installed"),
+            Some(false) => CheckItem::warn(
+                "hooks",
+                "zj-radar.json present but not ours (no marker) — re-run `zj-radar setup copilot --force` to replace it",
+            ),
+        },
+    ]
+}
+
 /// The agent-binary item for an instrumented agent. Missing from PATH is
 /// only `Missing` when our wiring (bridge, hooks, notify slot) isn't installed
 /// either: `setup` accepts a PATH-less (bun/Nix-run) agent, so with our wiring

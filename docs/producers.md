@@ -1,9 +1,9 @@
 # Producers: sending agent status to the sidebar
 
 The sidebar only displays. A **producer** is whatever broadcasts agent status
-to it. zj-radar ships producers for Claude Code, Codex, Opencode, pi, and omp
-(oh-my-pi), a `notify generic` command for any script, and documents the wire
-format so you can write your own.
+to it. zj-radar ships producers for Claude Code, Codex, Opencode, pi, omp
+(oh-my-pi), and Copilot CLI, a `notify generic` command for any script, and
+documents the wire format so you can write your own.
 
 Install the [sidebar](install.md) first. Every producer below needs the
 `zj-radar` CLI on `PATH` except the Claude plugin, which falls back to a
@@ -221,6 +221,77 @@ reports only in the interactive TUI under Zellij, and `omp --no-extensions`
 disables it. omp honors `$PI_CODING_AGENT_DIR`, so pi and omp can share one
 extensions dir: the two bridges have different file names, and each stays
 silent inside the other agent's process.
+
+## Copilot CLI
+
+```sh
+zj-radar setup copilot
+```
+
+This writes a marker-owned hook file to `$COPILOT_HOME/hooks/zj-radar.json`
+(default `~/.copilot/hooks/zj-radar.json`). Copilot CLI loads every `*.json`
+file it finds in that directory itself, so — unlike Codex's single shared
+`hooks.json` — this file is exclusively ours: a clean uninstall is one file
+delete and there is no foreign content to merge around. Hooks are read at
+session start, so start a new `copilot` session for a freshly written or
+changed hook file to take effect.
+
+| Copilot event | rail |
+|---|---|
+| `userPromptSubmitted` | running |
+| `agentStop` | done |
+| `errorOccurred` (top-level `recoverable: false`) | error |
+| `sessionStart` / `sessionEnd` | idle |
+
+**Only five of Copilot's events are wired, on purpose.** [GitHub's Copilot
+hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)
+confirms `preToolUse` and `permissionRequest` are fail-closed: a crash, a
+missing `zj-radar` on `PATH`, or any other non-timeout non-zero exit denies
+the tool call. A status producer must never be able to break the agent it
+reports on, so neither is wired, and `postToolUse` is left out too since its
+own safety was never proven. `subagentStart` / `subagentStop` are dropped as
+a separate wiring concern: every wired event is filtered on
+`agentId`/`parentAgentId` instead (below), which covers a background tool
+call's own events too, not just the two dedicated ones. Consequences worth
+stating plainly:
+
+- **Approvals are not observed.** A Copilot pane never shows `pending` for a
+  permission prompt; zj-radar has no visibility into Copilot's approval
+  flow at all.
+- **Tool activity is not observed.** A Copilot pane never shows which tool
+  is running, only that the turn is `running`.
+
+Copilot's hook payload — unlike Claude Code's and Codex's — carries no field
+naming which event fired (only `sessionId`, `timestamp`, `cwd`, plus each
+event's own fields), so the hook file gives every wired event its own entry
+passing an explicit `--status`.
+
+**What is sent, exactly.** `userPromptSubmitted` carries the user's `prompt`,
+but zj-radar never reads it: unlike the other adapters, no task label is
+captured from it, so the wire payload never carries any of the user's raw
+prompt text — only `cwd` (for repo/branch) and the bare `running` status.
+`errorOccurred`'s `error.message` is never read, for any purpose; only the
+top-level `recoverable` field (a sibling of `error`, not nested under it) is
+read (`true` → ignored, treated as Copilot's own normal retry/continue
+behavior, not a failure; `false` or absent → `error` with the fixed label
+`errored`). `agentStop`'s real payload (confirmed against the real CLI) is
+`sessionId`/`timestamp`/`cwd`/
+`transcriptPath`/`stopReason`/`stop_hook_active` — no message-shaped field —
+so `done` always carries a bare, empty message; `transcriptPath` (the full
+conversation) is never opened.
+
+**Subagent and background events never clobber the pane.** Every wired
+event is checked for a non-empty `agentId`/`parentAgentId` (and their
+Claude-Code-style snake_case aliases — Copilot's own payloads mix casing:
+its real `agentStop` carries both `stopReason` and `stop_hook_active`) and
+dropped if either is present, so a background tool call's own hooks can
+never arrive late and overwrite the foreground turn's row.
+
+Not covered: Copilot's `notification` hook (fires for any system
+notification, with no sub-type to tell a permission prompt from other pings,
+so mapping it to a status would risk showing the wrong one) and
+background-task lines (the `┊` sub-lines under a pane — Claude only, and
+undocumented for Copilot).
 
 ## Any script: `zj-radar notify generic`
 

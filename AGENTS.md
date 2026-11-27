@@ -7,8 +7,9 @@ zj-radar is a [Zellij](https://zellij.dev) sidebar (Rust → `wasm32-wasip1`)
 plus a host-side `zj-radar` CLI and producer adapters for Claude Code (a
 bundled Claude plugin), Codex (hooks installed by `zj-radar setup codex`),
 Opencode (a JS bridge installed by `zj-radar setup opencode`), pi (an
-extension installed by `zj-radar setup pi`), and omp, a pi fork (an
-extension installed by `zj-radar setup omp`).
+extension installed by `zj-radar setup pi`), omp, a pi fork (an
+extension installed by `zj-radar setup omp`), and Copilot CLI (a hook file
+installed by `zj-radar setup copilot`).
 
 ## Read first
 
